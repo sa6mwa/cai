@@ -140,8 +140,9 @@ typedef struct cai_agent_runtime_event {
    * UTF-8 event payload; not NUL-terminated. Its exact meaning depends on
    * type: text/reasoning bytes, a tool receipt/error, terminal output, or a
    * final review report. For CAI_AGENT_EVENT_SUBAGENT_STARTED, this is the
-   * bounded delegated instruction text selected by the parent agent. Hosts
-   * should treat it as untrusted model output when rendering it.
+   * bounded launch display summary selected by the parent agent; without a
+   * summary it is the delegated instruction text. Hosts should treat it as
+   * untrusted model output when rendering it.
    */
   const char *data;
   /** Number of bytes in data. */
@@ -189,6 +190,11 @@ typedef struct cai_agent_runtime_event {
    * NULL. tool_call_id remains the child tool's own provider invocation ID.
    */
   const char *parent_tool_call_id;
+  /**
+   * Optional compact JSON-object metadata produced while preparing this
+   * subagent invocation. Present on its lifecycle events, otherwise NULL.
+   */
+  const char *subagent_metadata_json;
 } cai_agent_runtime_event;
 
 /**
@@ -257,6 +263,82 @@ typedef struct cai_agent_subagent_parameter {
 } cai_agent_subagent_parameter;
 
 /**
+ * One validated model-supplied argument visible to a subagent prepare hook.
+ * string_value is set for string and enum parameters; integer_value is set
+ * for integer parameters. The record is borrowed for the callback only.
+ */
+typedef struct cai_agent_subagent_argument {
+  /** Declared parameter name, or CAI's optional instructions field. */
+  const char *name;
+  /** CAI_AGENT_SUBAGENT_PARAMETER_* discriminator. */
+  int type;
+  /** Non-zero when the model supplied this value. */
+  int is_present;
+  /** Borrowed UTF-8 string/enum value, otherwise NULL. */
+  const char *string_value;
+  /** Integer value when type is CAI_AGENT_SUBAGENT_PARAMETER_INTEGER. */
+  long long integer_value;
+} cai_agent_subagent_argument;
+
+/**
+ * Immutable input to a host-defined synchronous subagent prepare hook.
+ * Every pointer is borrowed for the callback only. The callback runs on CAI's
+ * agent worker before a child runtime exists; it must not call back into the
+ * parent runtime or a language runtime.
+ */
+typedef struct cai_agent_subagent_prepare_request {
+  /** Enabled host-defined profile name. */
+  const char *profile_name;
+  /** Canonical absolute workspace directory. */
+  const char *workspace_directory;
+  /** Child input CAI would use without this hook. */
+  const char *default_child_input;
+  /** Validated declared values; never includes model/effort overrides. */
+  const cai_agent_subagent_argument *arguments;
+  size_t argument_count;
+  /** Effective child model after host-approved override selection. */
+  const char *model;
+  /** Effective child reasoning effort, or NULL when unspecified. */
+  const char *reasoning_effort;
+  /** Effective child reasoning-summary mode, or NULL when unspecified. */
+  const char *reasoning_summary;
+} cai_agent_subagent_prepare_request;
+
+/**
+ * Borrowed output from a synchronous subagent prepare hook. child_input is
+ * required. display_summary and metadata_json are optional. metadata_json
+ * must be a JSON object and is surfaced in lifecycle events and tool results.
+ * CAI copies all selected values before the callback returns.
+ */
+typedef struct cai_agent_subagent_prepare_result {
+  /** Non-empty final child input, bounded by CAI's subagent input limit. */
+  const char *child_input;
+  /** Optional concise host-derived operator-facing launch summary. */
+  const char *display_summary;
+  /** Optional compact JSON-object metadata for this invocation. */
+  const char *metadata_json;
+} cai_agent_subagent_prepare_result;
+
+/**
+ * Prepare one child invocation before CAI opens its child runtime. Return
+ * CAI_OK only after filling a valid result. context must outlive the parent
+ * runtime; CAI neither frees it nor invokes this callback through Lua.
+ */
+typedef int (*cai_agent_subagent_prepare_fn)(
+    void *context, const cai_agent_subagent_prepare_request *request,
+    cai_agent_subagent_prepare_result *result, cai_error *error);
+
+/**
+ * Native prepare backend used by language bindings that cannot safely invoke
+ * their own runtime from CAI's worker thread. The descriptor and context are
+ * borrowed while the parent runtime is live.
+ */
+typedef struct cai_agent_subagent_prepare_backend {
+  cai_agent_subagent_prepare_fn prepare;
+  void *context;
+} cai_agent_subagent_prepare_backend;
+
+/**
  * Host-defined profile available to CAI's synchronous subagent lifecycle.
  * Every pointer is borrowed only for cai_agent_runtime_open; CAI snapshots
  * the descriptor and its allowlists. name is a lowercase ASCII identifier and
@@ -302,6 +384,10 @@ typedef struct cai_agent_subagent_profile {
    * omitted, CAI forwards the current user turn into {{instructions}}.
    */
   int expose_instructions;
+  /** Optional native preflight that prepares this profile's child input. */
+  cai_agent_subagent_prepare_fn prepare;
+  /** Context borrowed by prepare for the lifetime of the parent runtime. */
+  void *prepare_context;
 } cai_agent_subagent_profile;
 
 /** Borrowed immutable projection of a runtime goal. */

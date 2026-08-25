@@ -5471,7 +5471,9 @@ static int run_chatgpt_smith_subagent_regression(void) {
       NULL,
       0U,
       NULL,
-      1};
+      1,
+      NULL,
+      NULL};
   const char *git_init[] = {"git", "init", NULL, NULL};
   const char *git_config_name[] = {"git",       "-C",          NULL, "config",
                                    "user.name", "Test Tester", NULL};

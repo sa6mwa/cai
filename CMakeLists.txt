@@ -112,11 +112,15 @@ set(CAI_C_PKT_SYSTEMS_VERSION "0.9.0" CACHE STRING
 # ABI 3 is the latest released ABI. Values 5 through 7 were only used by this
 # unreleased development branch and must not survive a reconfigure. Preserve
 # any other packager-selected ABI override.
-if(CAI_ABI_VERSION STREQUAL "3" OR CAI_ABI_VERSION STREQUAL "5" OR
+if(NOT DEFINED CAI_ABI_VERSION OR CAI_ABI_VERSION STREQUAL "" OR
+   CAI_ABI_VERSION STREQUAL "3" OR CAI_ABI_VERSION STREQUAL "5" OR
    CAI_ABI_VERSION STREQUAL "6" OR CAI_ABI_VERSION STREQUAL "7")
   set(CAI_ABI_VERSION "4" CACHE STRING "Shared library ABI/SOVERSION." FORCE)
 else()
-  set(CAI_ABI_VERSION "4" CACHE STRING "Shared library ABI/SOVERSION.")
+  # Preserve an explicit packager value while giving its cache entry the
+  # project-defined type and help text.
+  set(CAI_ABI_VERSION "${CAI_ABI_VERSION}" CACHE STRING
+      "Shared library ABI/SOVERSION." FORCE)
 endif()
 set(CAI_MINIMUM_CURL_VERSION "7.86.0")
 set(CAI_LONEJSON_VERSION "0.42.0")

@@ -161,6 +161,7 @@ typedef struct runtime_event_state {
   char review_handoff[1024];
   char subagent_instruction[1024];
   char subagent_handoff[1024];
+  char subagent_metadata_json[1024];
   char reasoning_summary[1024];
   char subagent_session_id[CAI_AGENT_SESSION_ID_MAX];
   int wrong_thread;
@@ -1920,6 +1921,11 @@ static int test_runtime_event(void *context,
       snprintf(state->subagent_session_id, sizeof(state->subagent_session_id),
                "%s", event->runtime_session_id);
     }
+    if (event->subagent_metadata_json != NULL) {
+      snprintf(state->subagent_metadata_json,
+               sizeof(state->subagent_metadata_json), "%s",
+               event->subagent_metadata_json);
+    }
   }
   if (event->type == CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF) {
     state->saw_subagent_handed_off = 1;
@@ -1942,6 +1948,41 @@ static int test_runtime_event(void *context,
                event->tool_path);
     }
   }
+  return CAI_OK;
+}
+
+typedef struct test_subagent_prepare_state {
+  int calls;
+  int saw_valid_request;
+} test_subagent_prepare_state;
+
+static int test_subagent_prepare(
+    void *context, const cai_agent_subagent_prepare_request *request,
+    cai_agent_subagent_prepare_result *result, cai_error *error) {
+  test_subagent_prepare_state *state;
+
+  (void)error;
+  state = (test_subagent_prepare_state *)context;
+  if (state == NULL || request == NULL || result == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  state->calls++;
+  if (strcmp(request->profile_name, "worker") == 0 &&
+      strcmp(request->workspace_directory, "/tmp") == 0 &&
+      request->argument_count == 2U &&
+      strcmp(request->arguments[0].name, "format") == 0 &&
+      request->arguments[0].is_present &&
+      strcmp(request->arguments[0].string_value, "json") == 0 &&
+      strcmp(request->arguments[1].name, "instructions") == 0 &&
+      !request->arguments[1].is_present &&
+      strcmp(request->model, CAI_MODEL_GPT_5_6_LUNA) == 0 &&
+      strcmp(request->reasoning_effort, CAI_REASONING_EFFORT_LOW) == 0 &&
+      strcmp(request->reasoning_summary, CAI_REASONING_SUMMARY_AUTO) == 0) {
+    state->saw_valid_request = 1;
+  }
+  result->child_input = "Prepared JSON worker task.";
+  result->display_summary = "Preparing the JSON worker.";
+  result->metadata_json = "{\"kind\":\"worker\"}";
   return CAI_OK;
 }
 
@@ -25289,6 +25330,10 @@ static void test_smith_review_runtime(test_state *state) {
   runtime_event_state events;
   cai_error error;
   char review_session_id[CAI_AGENT_SESSION_ID_MAX];
+  char revision_workspace[] = "/tmp/cai-review-revision-XXXXXX";
+  char revision_git_directory[PATH_MAX];
+  char revision_git_path[PATH_MAX];
+  char *revision_saved_path;
   int i;
 
   if (http_mock_client_open_script(state, "smith_review_runtime_mock", script,
@@ -25308,6 +25353,7 @@ static void test_smith_review_runtime(test_state *state) {
   store.context = &store_state;
   store_state.load_only_saved_scope = 1;
   review_session_id[0] = '\0';
+  revision_saved_path = NULL;
   memset(&events, 0, sizeof(events));
   events.owner = pthread_self();
   cai_agent_runtime_config_init(&config);
@@ -25391,25 +25437,60 @@ static void test_smith_review_runtime(test_state *state) {
   expect_str(state, "smith_review_storage_scope", store_state.scope,
              "smith-review:review-isolation");
   runtime = NULL;
-  cai_agent_runtime_config_init(&revision_config);
-  revision_config.preset = CAI_SMITH_REVIEW_PRESET;
-  revision_config.workspace_directory = "/tmp";
-  revision_config.model = CAI_MODEL_GPT_5_6_LUNA;
-  revision_config.disable_default_session_store = 1;
-  revision_config.session_store = &store;
-  revision_config.session_scope = "review-revision-expression";
-  expect_int(
-      state, "smith_review_revision_runtime_open",
-      cai_agent_runtime_open(mock.client, &revision_config, &runtime, &error),
-      CAI_OK);
-  if (runtime != NULL) {
-    cai_agent_review_request_init(&request);
-    request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
-    request.base_branch = "HEAD~2";
-    expect_int(state, "smith_review_revision_expression",
-               cai_agent_runtime_submit_review(runtime, &request, &error),
-               CAI_OK);
-    cai_agent_runtime_close(runtime);
+  if (mkdtemp(revision_workspace) == NULL ||
+      snprintf(revision_git_directory, sizeof(revision_git_directory), "%s/bin",
+               revision_workspace) >= (int)sizeof(revision_git_directory) ||
+      mkdir(revision_git_directory, 0700) != 0 ||
+      snprintf(revision_git_path, sizeof(revision_git_path), "%s/git",
+               revision_git_directory) >= (int)sizeof(revision_git_path)) {
+    test_fail(state, "smith_review_revision_git_setup",
+              "failed to create fake git executable");
+  } else {
+    write_file_or_die(revision_git_path,
+                      "#!/bin/sh\nprintf '%s\\n' "
+                      "0123456789abcdef0123456789abcdef01234567\n");
+    if (chmod(revision_git_path, 0700) != 0) {
+      test_fail(state, "smith_review_revision_git_mode",
+                "failed to make fake git executable");
+    } else {
+      if (getenv("PATH") != NULL) {
+        revision_saved_path = cai_strdup(NULL, getenv("PATH"));
+      }
+      if (setenv("PATH", revision_git_directory, 1) != 0) {
+        test_fail(state, "smith_review_revision_git_path",
+                  "failed to set fake git PATH");
+      }
+      cai_agent_runtime_config_init(&revision_config);
+      revision_config.preset = CAI_SMITH_REVIEW_PRESET;
+      revision_config.workspace_directory = revision_workspace;
+      revision_config.model = CAI_MODEL_GPT_5_6_LUNA;
+      revision_config.disable_default_session_store = 1;
+      revision_config.session_store = &store;
+      revision_config.session_scope = "review-revision-expression";
+      expect_int(state, "smith_review_revision_runtime_open",
+                 cai_agent_runtime_open(mock.client, &revision_config, &runtime,
+                                        &error),
+                 CAI_OK);
+      if (runtime != NULL) {
+        cai_agent_review_request_init(&request);
+        request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
+        request.base_branch = "HEAD~2";
+        expect_int(state, "smith_review_revision_expression",
+                   cai_agent_runtime_submit_review(runtime, &request, &error),
+                   CAI_OK);
+        cai_agent_runtime_close(runtime);
+      }
+      if (revision_saved_path != NULL) {
+        (void)setenv("PATH", revision_saved_path, 1);
+      } else {
+        (void)unsetenv("PATH");
+      }
+      cai_free_mem(NULL, revision_saved_path);
+      revision_saved_path = NULL;
+    }
+    unlink(revision_git_path);
+    rmdir(revision_git_directory);
+    rmdir(revision_workspace);
   }
   expect_str(state, "smith_review_revision_storage_scope", store_state.scope,
              "smith-review:review-revision-expression");
@@ -25698,8 +25779,8 @@ static void test_agent_runtime_subagent(test_state *state) {
   static const char *parent_required[] = {
       "delegate this task", "\"name\":\"run_worker\"", "`run_worker`"};
   static const char *parent_forbidden[] = {"\"name\":\"run_subagent\""};
-  static const char *child_required[] = {
-      "Return json result for delegate this task", "You are Worker"};
+  static const char *child_required[] = {"Prepared JSON worker task.",
+                                         "You are Worker"};
   static const char *final_required[] = {
       "\"call_id\":\"call_subagent\"",
       "The subagent completed without a text handover.", "<subagent_handoff"};
@@ -25726,6 +25807,7 @@ static void test_agent_runtime_subagent(test_state *state) {
   cai_agent_run_state run_state;
   runtime_event_state events;
   runtime_session_store_state store_state;
+  test_subagent_prepare_state prepare_state;
   cai_error error;
   int i;
 
@@ -25767,9 +25849,12 @@ static void test_agent_runtime_subagent(test_state *state) {
   profile.instruction_template =
       "Return {{format}} result for {{instructions}}";
   profile.expose_instructions = 1;
+  profile.prepare = test_subagent_prepare;
+  profile.prepare_context = &prepare_state;
   cai_error_init(&error);
   runtime = NULL;
   memset(&events, 0, sizeof(events));
+  memset(&prepare_state, 0, sizeof(prepare_state));
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
   store.checkpoint = test_runtime_session_store_checkpoint;
@@ -25814,7 +25899,13 @@ static void test_agent_runtime_subagent(test_state *state) {
     expect_int(state, "agent_runtime_subagent_started_event",
                events.saw_subagent_started, 1L);
     expect_substr(state, "agent_runtime_subagent_started_instruction",
-                  events.subagent_instruction, "Return json result for");
+                  events.subagent_instruction, "Preparing the JSON worker.");
+    expect_int(state, "agent_runtime_subagent_prepare_called",
+               prepare_state.calls, 1L);
+    expect_int(state, "agent_runtime_subagent_prepare_request",
+               prepare_state.saw_valid_request, 1L);
+    expect_str(state, "agent_runtime_subagent_prepare_metadata",
+               events.subagent_metadata_json, "{\"kind\":\"worker\"}");
     expect_int(state, "agent_runtime_subagent_handoff_event",
                events.saw_subagent_handed_off, 1L);
     expect_int(state, "agent_runtime_subagent_event_source",
@@ -25840,8 +25931,8 @@ static void test_agent_runtime_review_subagent(test_state *state) {
       "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
       "\"item\":{\"id\":\"fc_review\",\"type\":\"function_call\","
       "\"call_id\":\"call_review\",\"name\":\"run_review\","
-      "\"arguments\":\"{\\\"target\\\":\\\"custom\\\",\\\"instructions\\\":"
-      "\\\"Review the requested change.\\\"}\"}}\n\n"
+      "\"arguments\":\"{\\\"target\\\":\\\"base\\\",\\\"base\\\":"
+      "\\\"trunk\\\"}\"}}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_parent_review_tool\",\"usage\":{\"input_tokens\":2,"
       "\"output_tokens\":2,\"total_tokens\":4}}}\n\n";
@@ -25867,8 +25958,13 @@ static void test_agent_runtime_review_subagent(test_state *state) {
   static const char *parent_forbidden[] = {"\"name\":\"run_subagent\"",
                                            "\"model\":{\"type\":"};
   static const char *review_required[] = {
-      "Review the requested change.", "You are Cai Smith, a code reviewer",
-      "\"name\":\"exec_command\"", "\"name\":\"write_stdin\""};
+      "Review the code changes against the base branch 'trunk'. The merge base "
+      "commit for this comparison is 0123456789abcdef0123456789abcdef01234567. "
+      "Run `git diff 0123456789abcdef0123456789abcdef01234567` to inspect "
+      "the changes relative to trunk. Provide prioritized, actionable "
+      "findings.",
+      "You are Cai Smith, a code reviewer", "\"name\":\"exec_command\"",
+      "\"name\":\"write_stdin\""};
   static const char *final_required[] = {
       "\"call_id\":\"call_review\"", "<review_handoff",
       "No qualifying defects.", "structured_result_json"};
@@ -25889,6 +25985,12 @@ static void test_agent_runtime_review_subagent(test_state *state) {
   cai_agent_run_state run_state;
   runtime_event_state events;
   cai_error error;
+  char workspace[] = "/tmp/cai-review-base-XXXXXX";
+  char git_directory[PATH_MAX];
+  char git_path[PATH_MAX];
+  char *saved_path;
+  char *saved_git_dir;
+  char *saved_git_work_tree;
   int i;
 
   if (http_mock_client_open_script(state, "agent_runtime_review_subagent",
@@ -25898,10 +26000,59 @@ static void test_agent_runtime_review_subagent(test_state *state) {
   }
   cai_error_init(&error);
   runtime = NULL;
+  saved_path = NULL;
+  saved_git_dir = NULL;
+  saved_git_work_tree = NULL;
+  if (mkdtemp(workspace) == NULL ||
+      snprintf(git_directory, sizeof(git_directory), "%s/bin", workspace) >=
+          (int)sizeof(git_directory) ||
+      mkdir(git_directory, 0700) != 0 ||
+      snprintf(git_path, sizeof(git_path), "%s/git", git_directory) >=
+          (int)sizeof(git_path)) {
+    test_fail(state, "agent_runtime_review_subagent_git_setup",
+              "failed to create fake git executable");
+    http_mock_client_close(state, "agent_runtime_review_subagent", &mock);
+    cai_error_cleanup(&error);
+    return;
+  }
+  write_file_or_die(
+      git_path, "#!/bin/sh\n"
+                "if [ -n \"$GIT_DIR\" ] || [ -n \"$GIT_WORK_TREE\" ]; then\n"
+                "  exit 2\n"
+                "fi\n"
+                "printf '%s\\n' 0123456789abcdef0123456789abcdef01234567\n");
+  if (chmod(git_path, 0700) != 0) {
+    test_fail(state, "agent_runtime_review_subagent_git_mode",
+              "failed to make fake git executable");
+    unlink(git_path);
+    rmdir(git_directory);
+    rmdir(workspace);
+    http_mock_client_close(state, "agent_runtime_review_subagent", &mock);
+    cai_error_cleanup(&error);
+    return;
+  }
+  if (getenv("PATH") != NULL) {
+    saved_path = cai_strdup(NULL, getenv("PATH"));
+  }
+  if (getenv("GIT_DIR") != NULL) {
+    saved_git_dir = cai_strdup(NULL, getenv("GIT_DIR"));
+  }
+  if (getenv("GIT_WORK_TREE") != NULL) {
+    saved_git_work_tree = cai_strdup(NULL, getenv("GIT_WORK_TREE"));
+  }
+  if (setenv("PATH", git_directory, 1) != 0) {
+    test_fail(state, "agent_runtime_review_subagent_git_path",
+              "failed to set fake git PATH");
+  }
+  if (setenv("GIT_DIR", "/tmp/cai-review-external-git-dir", 1) != 0 ||
+      setenv("GIT_WORK_TREE", "/tmp/cai-review-external-work-tree", 1) != 0) {
+    test_fail(state, "agent_runtime_review_subagent_git_override",
+              "failed to set external git overrides");
+  }
   memset(&events, 0, sizeof(events));
   events.owner = pthread_self();
   cai_agent_runtime_config_init(&config);
-  config.workspace_directory = "/tmp";
+  config.workspace_directory = workspace;
   config.preset = CAI_SMITH_PRESET;
   config.disable_default_session_store = 1;
   config.event_callback = test_runtime_event;
@@ -25927,7 +26078,8 @@ static void test_agent_runtime_review_subagent(test_state *state) {
     expect_int(state, "agent_runtime_review_subagent_started_event",
                events.saw_subagent_started, 1L);
     expect_substr(state, "agent_runtime_review_subagent_started_instruction",
-                  events.subagent_instruction, "Review the requested change.");
+                  events.subagent_instruction,
+                  "Reviewing changes against trunk.");
     expect_int(state, "agent_runtime_review_subagent_handoff_event",
                events.saw_subagent_handed_off, 1L);
     expect_int(state, "agent_runtime_review_subagent_no_raw_report",
@@ -25942,6 +26094,27 @@ static void test_agent_runtime_review_subagent(test_state *state) {
                   events.subagent_handoff, "No qualifying defects.");
     cai_agent_runtime_close(runtime);
   }
+  if (saved_path != NULL) {
+    (void)setenv("PATH", saved_path, 1);
+  } else {
+    (void)unsetenv("PATH");
+  }
+  if (saved_git_dir != NULL) {
+    (void)setenv("GIT_DIR", saved_git_dir, 1);
+  } else {
+    (void)unsetenv("GIT_DIR");
+  }
+  if (saved_git_work_tree != NULL) {
+    (void)setenv("GIT_WORK_TREE", saved_git_work_tree, 1);
+  } else {
+    (void)unsetenv("GIT_WORK_TREE");
+  }
+  cai_free_mem(NULL, saved_path);
+  cai_free_mem(NULL, saved_git_dir);
+  cai_free_mem(NULL, saved_git_work_tree);
+  unlink(git_path);
+  rmdir(git_directory);
+  rmdir(workspace);
   http_mock_client_close(state, "agent_runtime_review_subagent", &mock);
   cai_error_cleanup(&error);
 }

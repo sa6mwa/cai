@@ -1520,6 +1520,9 @@ static int cai_patch_write_atomic(
   offset = 0U;
   while (offset < length) {
     nwritten = write(fd, data + offset, length - offset);
+    if (nwritten < 0 && errno == EINTR) {
+      continue;
+    }
     if (nwritten <= 0) {
       close(fd);
       unlinkat(parent_fd, temporary, 0);

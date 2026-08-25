@@ -746,6 +746,23 @@ subagents. Every child is opened with subagents disabled, including the built-in
 reviewer. This non-recursive rule is structural, not prompt guidance: no child
 receives the subagent tool declaration or callback.
 
+A custom profile may provide a synchronous native `prepare` hook. CAI invokes
+it on the parent worker after parsing and validating the declared tool arguments
+and resolving host-approved model/reasoning overrides, but before it opens the
+child runtime. The hook receives immutable typed arguments, the canonical
+workspace, the default rendered child input, and effective child settings. It
+must return a bounded replacement child input and may return a concise
+operator-facing `display_summary` plus compact JSON-object metadata. CAI copies
+the results before the callback returns. The hook cannot re-enter the parent
+runtime or a language runtime; a failure rejects the tool call before any child
+session exists. Its context remains host-owned and must outlive the parent.
+
+Lua deliberately has no Lua-function prepare callback: CAI's worker must never
+enter `lua_State`. A C host embedding Lua attaches a C-only
+`cai.native_backend("subagent_prepare", backend_pointer)` as
+`prepare_backend` on a Lua subagent descriptor. The backend carries the same
+native callback and opaque context; Lua pins it until the runtime closes.
+
 Model-requested model/reasoning values are requests, not authority. The host
 must configure exact allowlists. If omitted,
 the child inherits the active parent values. A rejected override produces a
@@ -773,7 +790,12 @@ visible in the tool schema instead of being reconstructed from parent prose.
 Omitting `target` means `uncommitted`. Thus “review this codebase against
 trunk” becomes `{"target":"base","base":"trunk"}`; a plain repository
 review becomes `{"target":"uncommitted"}`. CAI renders those values through
-the same trusted review-request renderer used by the host-driven API. The
+the same trusted review-request preparation used by the host-driven API. For a
+`base` target CAI runs exactly `git merge-base HEAD <base>` in the workspace
+through a forked direct `execve` child (never a shell or `system(3)`). The
+child removes inherited `GIT_*` overrides so discovery is anchored to the
+configured workspace, then gives the reviewer Codex's resolved merge-base
+request including the SHA. The
 reviewer discovers repository instructions, Git state, refs, and the selected
 diff itself. The parent calls `run_review` immediately for a user-requested
 repository review unless the user requests another approach; it does not
@@ -810,9 +832,11 @@ and originating parent tool-call ID; the parent session ID is already known
 from the runtime that delivered them. Any TUI/GUI can therefore render the
 process without adopting CAI's presentation layer.
 
-`SUBAGENT_STARTED` carries the bounded delegated instruction text in its data
-payload, together with the profile name, child session ID, and originating
-tool-call ID. A terminal UI should show a short, control-safe task preview
+`SUBAGENT_STARTED` carries the bounded launch display summary in its data
+payload, together with the profile name, child session ID, originating
+tool-call ID, and optional prepared JSON metadata. Without a supplied summary,
+CAI uses the final delegated child input. A terminal UI should show a short,
+control-safe task preview
 when the parent delegates work (for example, `Starting review subagent — task:
 review changes against trunk`). It must treat the task text as untrusted model
 output and avoid presenting raw tool-call JSON. The C and Lua Smith terminal
@@ -829,13 +853,15 @@ Every profile returns a generic, model-readable handover:
   "status": "completed | failed | cancelled",
   "child_session_id": "xid",
   "handover_markdown": "human-readable outcome",
-  "structured_result_json": "optional profile-defined JSON text"
+  "structured_result_json": "optional profile-defined JSON text",
+  "preparation_metadata_json": "optional host-produced JSON object"
 }
 ```
 
 `handover_markdown` is the presentation and parent-context form, not session
 serialization. `structured_result_json` preserves profile-specific data for a host
-that needs it. The built-in review profile keeps its validated findings JSON as
+that needs it. `preparation_metadata_json` preserves compact host-derived launch
+provenance for a renderer or orchestrator. The built-in review profile keeps its validated findings JSON as
 the structured result and renders the established review report into the
 handover; raw review JSON must not be shown as the user's only result.
 
@@ -1325,6 +1351,14 @@ consumer closes; their native contexts must remain live for that period. The
 adapter never calls into `lua_State`, so stores remain usable from the runtime
 worker thread. Lua-level MCP callbacks remain supported independently for
 applications that deliberately implement the backend in Lua.
+
+`cai.native_backend(kind, backend_pointer)` is the matching C-only facility for
+worker-thread callbacks that are not storage. Its initial kind is
+`"subagent_prepare"`, whose pointer is a complete
+`cai_agent_subagent_prepare_backend`. Attach the resulting typed handle as
+`prepare_backend` in a Lua subagent descriptor. CAI copies the descriptor,
+pins the backend until the runtime closes, and never calls Lua from the prepare
+hook.
 
 ### 11.5 User-initiated transcript export
 

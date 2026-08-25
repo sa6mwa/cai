@@ -58,6 +58,7 @@ static int cai_lua_absindex(lua_State *L, int index) {
 #define CAI_LUA_SPOOL_READER "cai.spooled_reader"
 #define CAI_LUA_AGENT_RUNTIME "cai.agent_runtime"
 #define CAI_LUA_NATIVE_STORE "cai.native_store"
+#define CAI_LUA_NATIVE_BACKEND "cai.native_backend"
 
 int luaopen_cai(lua_State *L);
 static int cai_lua_push_usage(lua_State *L, const cai_token_usage *usage);
@@ -113,6 +114,7 @@ typedef struct cai_lua_agent_runtime {
   int session_store_ref;
   int instruction_store_ref;
   int skill_provider_ref;
+  int subagent_prepare_backends_ref;
   int mcp_clients_ref;
   size_t mcp_client_count;
   int review_parent_ref;
@@ -124,6 +126,17 @@ typedef struct cai_lua_agent_runtime {
   size_t callback_calls;
   int close_requested;
 } cai_lua_agent_runtime;
+
+typedef enum cai_lua_native_backend_kind {
+  CAI_LUA_NATIVE_BACKEND_SUBAGENT_PREPARE = 1
+} cai_lua_native_backend_kind;
+
+/* Native backends are C-only: CAI worker callbacks never re-enter Lua. */
+typedef struct cai_lua_native_backend {
+  cai_lua_native_backend_kind kind;
+  cai_agent_subagent_prepare_backend subagent_prepare;
+  size_t active_runtimes;
+} cai_lua_native_backend;
 
 typedef struct cai_lua_response {
   cai_response *ptr;
@@ -2883,6 +2896,7 @@ typedef struct cai_lua_subagent_config {
   const char ***summaries;
   cai_agent_subagent_parameter **parameters;
   const char ****parameter_enum_values;
+  cai_lua_native_backend **prepare_backends;
   size_t count;
   const char **review_models;
   size_t review_model_count;
@@ -2922,6 +2936,7 @@ static void cai_lua_subagent_config_cleanup(cai_lua_subagent_config *config) {
   free(config->summaries);
   free(config->parameters);
   free(config->parameter_enum_values);
+  free(config->prepare_backends);
   free((void *)config->review_models);
   free((void *)config->review_efforts);
   free((void *)config->review_summaries);
@@ -3143,9 +3158,12 @@ static int cai_lua_subagent_config_from_table(lua_State *L, int index,
         count, sizeof(*out->parameters));
     out->parameter_enum_values =
         (const char ****)calloc(count, sizeof(*out->parameter_enum_values));
+    out->prepare_backends = (cai_lua_native_backend **)calloc(
+        count, sizeof(*out->prepare_backends));
     if (out->profiles == NULL || out->presets == NULL || out->models == NULL ||
         out->efforts == NULL || out->summaries == NULL ||
-        out->parameters == NULL || out->parameter_enum_values == NULL) {
+        out->parameters == NULL || out->parameter_enum_values == NULL ||
+        out->prepare_backends == NULL) {
       lua_pop(L, 1);
       cai_lua_subagent_config_cleanup(out);
       return -1;
@@ -3189,6 +3207,27 @@ static int cai_lua_subagent_config_from_table(lua_State *L, int index,
           cai_lua_opt_string_field(L, -1, "instruction_template", NULL);
       out->profiles[i].expose_instructions =
           cai_lua_opt_bool_field(L, -1, "expose_instructions", 0);
+    }
+    if (status == 1) {
+      cai_lua_native_backend *backend;
+
+      lua_getfield(L, -1, "prepare_backend");
+      if (lua_isnil(L, -1)) {
+        lua_pop(L, 1);
+      } else {
+        backend = (cai_lua_native_backend *)luaL_testudata(
+            L, -1, CAI_LUA_NATIVE_BACKEND);
+        lua_pop(L, 1);
+        if (backend == NULL ||
+            backend->kind != CAI_LUA_NATIVE_BACKEND_SUBAGENT_PREPARE ||
+            backend->subagent_prepare.prepare == NULL) {
+          status = 0;
+        } else {
+          out->prepare_backends[i] = backend;
+          out->profiles[i].prepare = backend->subagent_prepare.prepare;
+          out->profiles[i].prepare_context = backend->subagent_prepare.context;
+        }
+      }
     }
     lua_getfield(L, -1, "preset");
     if (status != 1 || !lua_istable(L, -1)) {
@@ -3260,6 +3299,10 @@ static int cai_lua_agent_runtime_event(void *context,
   if (event->parent_tool_call_id != NULL) {
     lua_pushstring(L, event->parent_tool_call_id);
     lua_setfield(L, -2, "parent_tool_call_id");
+  }
+  if (event->subagent_metadata_json != NULL) {
+    lua_pushstring(L, event->subagent_metadata_json);
+    lua_setfield(L, -2, "subagent_metadata_json");
   }
   if (event->terminal_id != NULL) {
     lua_pushstring(L, event->terminal_id);
@@ -3362,6 +3405,7 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   runtime->session_store_ref = LUA_NOREF;
   runtime->instruction_store_ref = LUA_NOREF;
   runtime->skill_provider_ref = LUA_NOREF;
+  runtime->subagent_prepare_backends_ref = LUA_NOREF;
   runtime->mcp_clients_ref = LUA_NOREF;
   runtime->review_parent_ref = LUA_NOREF;
   runtime->review_children_ref = LUA_NOREF;
@@ -3578,6 +3622,31 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   cai_lua_client_enter(client);
   rc = cai_agent_runtime_open(client->ptr, &config, &runtime->ptr, &error);
   cai_lua_client_leave(client);
+  if (rc == CAI_OK && subagent_config.prepare_backends != NULL) {
+    size_t backend_count;
+    size_t i;
+
+    backend_count = 0U;
+    lua_newtable(L);
+    for (i = 0U; i < subagent_config.count; i++) {
+      if (subagent_config.prepare_backends[i] == NULL) {
+        continue;
+      }
+      lua_getfield(L, 2, "subagents");
+      lua_rawgeti(L, -1, (lua_Integer)i + 1);
+      lua_getfield(L, -1, "prepare_backend");
+      lua_remove(L, -2);
+      lua_remove(L, -2);
+      lua_rawseti(L, -2, (lua_Integer)backend_count + 1);
+      subagent_config.prepare_backends[i]->active_runtimes++;
+      backend_count++;
+    }
+    if (backend_count == 0U) {
+      lua_pop(L, 1);
+    } else {
+      runtime->subagent_prepare_backends_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    }
+  }
   cai_lua_subagent_config_cleanup(&subagent_config);
   free(mcp_clients);
   if (rc != CAI_OK) {
@@ -4175,6 +4244,27 @@ static void cai_lua_agent_runtime_release(lua_State *L,
     lua_pop(L, 1);
     luaL_unref(L, LUA_REGISTRYINDEX, self->skill_provider_ref);
     self->skill_provider_ref = LUA_NOREF;
+  }
+  if (self->subagent_prepare_backends_ref != LUA_NOREF) {
+    size_t i;
+    size_t count;
+
+    lua_rawgeti(L, LUA_REGISTRYINDEX, self->subagent_prepare_backends_ref);
+    count = (size_t)lua_rawlen(L, -1);
+    for (i = 0U; i < count; i++) {
+      cai_lua_native_backend *backend;
+
+      lua_rawgeti(L, -1, (lua_Integer)i + 1);
+      backend = (cai_lua_native_backend *)luaL_testudata(
+          L, -1, CAI_LUA_NATIVE_BACKEND);
+      if (backend != NULL && backend->active_runtimes > 0U) {
+        backend->active_runtimes--;
+      }
+      lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+    luaL_unref(L, LUA_REGISTRYINDEX, self->subagent_prepare_backends_ref);
+    self->subagent_prepare_backends_ref = LUA_NOREF;
   }
   if (self->parent_client != NULL && self->parent_client->child_runtimes > 0U) {
     self->parent_client->child_runtimes--;
@@ -6238,6 +6328,74 @@ static int cai_lua_native_store_new(lua_State *L) {
                                           "unsupported native store kind"),
                         &error);
   }
+}
+
+static int cai_lua_native_backend_gc(lua_State *L) {
+  cai_lua_native_backend *backend;
+
+  backend =
+      (cai_lua_native_backend *)luaL_checkudata(L, 1, CAI_LUA_NATIVE_BACKEND);
+  if (backend->active_runtimes != 0U) {
+    return 0;
+  }
+  memset(backend, 0, sizeof(*backend));
+  return 0;
+}
+
+static int cai_lua_native_backend_close(lua_State *L) {
+  cai_lua_native_backend *backend;
+  cai_error error;
+
+  backend =
+      (cai_lua_native_backend *)luaL_checkudata(L, 1, CAI_LUA_NATIVE_BACKEND);
+  if (backend->active_runtimes != 0U) {
+    cai_error_init(&error);
+    return cai_lua_fail(
+        L,
+        cai_lua_set_error(&error, CAI_ERR_INVALID,
+                          "native backend is in use by an agent runtime"),
+        &error);
+  }
+  return cai_lua_native_backend_gc(L);
+}
+
+static int cai_lua_native_backend_new(lua_State *L) {
+  const char *kind;
+  const cai_agent_subagent_prepare_backend *prepare;
+  cai_lua_native_backend *backend;
+  cai_error error;
+
+  cai_error_init(&error);
+  if (!lua_isstring(L, 1) || lua_type(L, 2) != LUA_TLIGHTUSERDATA) {
+    return cai_lua_fail(
+        L,
+        cai_lua_set_error(&error, CAI_ERR_INVALID,
+                          "native backend requires a kind and C pointer"),
+        &error);
+  }
+  kind = lua_tostring(L, 1);
+  if (strcmp(kind, "subagent_prepare") != 0) {
+    return cai_lua_fail(L,
+                        cai_lua_set_error(&error, CAI_ERR_INVALID,
+                                          "unsupported native backend kind"),
+                        &error);
+  }
+  prepare = (const cai_agent_subagent_prepare_backend *)lua_touserdata(L, 2);
+  if (prepare == NULL || prepare->prepare == NULL) {
+    return cai_lua_fail(
+        L,
+        cai_lua_set_error(&error, CAI_ERR_INVALID,
+                          "subagent_prepare backend is incomplete"),
+        &error);
+  }
+  backend = (cai_lua_native_backend *)lua_newuserdata(L, sizeof(*backend));
+  memset(backend, 0, sizeof(*backend));
+  backend->kind = CAI_LUA_NATIVE_BACKEND_SUBAGENT_PREPARE;
+  backend->subagent_prepare = *prepare;
+  luaL_getmetatable(L, CAI_LUA_NATIVE_BACKEND);
+  lua_setmetatable(L, -2);
+  cai_lua_error_cleanup(&error);
+  return 1;
 }
 
 static void cai_lua_exec_config(lua_State *L, int index,
@@ -10720,6 +10878,9 @@ static const luaL_Reg cai_lua_spool_reader_methods[] = {
 static const luaL_Reg cai_lua_native_store_methods[] = {
     {"close", cai_lua_native_store_close}, {NULL, NULL}};
 
+static const luaL_Reg cai_lua_native_backend_methods[] = {
+    {"close", cai_lua_native_backend_close}, {NULL, NULL}};
+
 static const luaL_Reg cai_lua_registry_methods[] = {
     {"register_raw_tool", cai_lua_registry_register_raw_tool},
     {"register_raw_spooled_tool", cai_lua_registry_register_raw_spooled_tool},
@@ -10933,6 +11094,8 @@ int luaopen_cai(lua_State *L) {
                     cai_lua_spool_reader_gc);
   cai_lua_metatable(L, CAI_LUA_NATIVE_STORE, cai_lua_native_store_methods,
                     cai_lua_native_store_gc);
+  cai_lua_metatable(L, CAI_LUA_NATIVE_BACKEND, cai_lua_native_backend_methods,
+                    cai_lua_native_backend_gc);
   lua_newtable(L);
   lua_pushcfunction(L, cai_lua_open);
   lua_setfield(L, -2, "open");
@@ -10940,6 +11103,8 @@ int luaopen_cai(lua_State *L) {
   lua_setfield(L, -2, "tool_registry");
   lua_pushcfunction(L, cai_lua_native_store_new);
   lua_setfield(L, -2, "native_store");
+  lua_pushcfunction(L, cai_lua_native_backend_new);
+  lua_setfield(L, -2, "native_backend");
   lua_pushcfunction(L, cai_lua_mcp_new);
   lua_setfield(L, -2, "mcp_handler");
   lua_pushcfunction(L, cai_lua_mcp_client_new);

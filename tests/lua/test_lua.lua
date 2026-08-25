@@ -91,6 +91,7 @@ end
 assert(type(cai.open) == "function")
 assert(type(cai.tool_registry) == "function")
 assert(type(cai.native_store) == "function")
+assert(type(cai.native_backend) == "function")
 assert(type(cai.mcp_handler) == "function")
 assert(type(cai.mcp_client) == "function")
 assert(type(cai.chatgpt_auth) == "function")
@@ -977,6 +978,7 @@ do
       "rejected Lua runtime must release callback registry references")
   end
   native_store_test.reset_sessions()
+  local prepare_backend = native_store_test.new_subagent_prepare_backend()
   local custom_runtime = assert_ok(dummy_client:new_agent_runtime({
     workspace_directory = ".",
     disable_default_session_store = true,
@@ -1016,6 +1018,7 @@ do
         },
         instruction_template = "Return {{format}} for {{instructions}}.",
         expose_instructions = true,
+        prepare_backend = prepare_backend,
         preset = {
           name = "vectis-summarizer",
           prompt_version = "vectis-summarizer-1",
@@ -1037,7 +1040,14 @@ do
   end), nil, "Lua custom preset export")
   assert(table.concat(custom_chunks):find("vectis-engineer", 1, true),
     "Lua custom preset export metadata")
+  do
+    local ok, err = prepare_backend:close()
+    assert_not_ok(ok, err, "Lua prepare backend must remain retained by runtime")
+  end
   custom_runtime:close()
+  assert(pcall(function()
+    prepare_backend:close()
+  end), "Lua prepare backend closes after runtime")
   do
     local poll_client = assert_ok(cai.open({
       api_key = "test-key",

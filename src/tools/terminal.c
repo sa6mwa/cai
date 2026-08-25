@@ -581,7 +581,12 @@ static void cai_terminal_manager_destroy(cai_terminal_manager *manager) {
   }
   pthread_mutex_lock(&manager->lock);
   if (manager->running && manager->pid > 0) {
-    (void)kill(-manager->pid, SIGKILL);
+    /* The parent marks the command running before the child has necessarily
+     * completed setsid(). If its process group is not available yet, target
+     * the known child directly so reader teardown cannot wait on its shell. */
+    if (kill(-manager->pid, SIGKILL) != 0 && errno == ESRCH) {
+      (void)kill(manager->pid, SIGKILL);
+    }
   }
   pthread_mutex_unlock(&manager->lock);
   if (manager->reader_started) {
@@ -946,7 +951,6 @@ static int cai_terminal_fill_result(cai_terminal_manager *manager,
   if (output != NULL) {
     output[count] = '\0';
   }
-  manager->delivered_offset += count;
   result->session_id = cai_tool_result_strdup(manager->terminal_id, error);
   result->output = output;
   result->running = manager->running;
@@ -974,6 +978,11 @@ static int cai_terminal_fill_result(cai_terminal_manager *manager,
   } else if (manager->completed && WIFSIGNALED(manager->child_status)) {
     result->signal = WTERMSIG(manager->child_status);
     result->has_signal = 1;
+  }
+  /* Do not acknowledge output until the complete result is durable for the
+   * caller. A later poll must be able to retry after an allocation failure. */
+  if (result->session_id != NULL && result->output != NULL) {
+    manager->delivered_offset += count;
   }
   pthread_mutex_unlock(&manager->lock);
   if (result->session_id == NULL || result->output == NULL) {

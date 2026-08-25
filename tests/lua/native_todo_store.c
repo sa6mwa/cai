@@ -1,3 +1,4 @@
+#include <cai/agent_runtime.h>
 #include <cai/cai.h>
 #include <cai/mcp.h>
 #include <cai/session_store.h>
@@ -24,6 +25,7 @@ typedef struct native_session_store_state {
 
 static native_todo_store_state native_todo_store;
 static native_session_store_state native_session_store;
+static int native_subagent_prepare_calls;
 
 int luaopen_cai_native_todo_store_test(lua_State *L);
 
@@ -229,6 +231,22 @@ static cai_mcp_session_callbacks native_mcp_session_store = {
     native_mcp_session_create, native_mcp_session_load, native_mcp_session_save,
     native_mcp_session_destroy, native_mcp_session_cleanup};
 
+static int native_subagent_prepare(
+    void *context, const cai_agent_subagent_prepare_request *request,
+    cai_agent_subagent_prepare_result *result, cai_error *error) {
+  (void)context;
+  (void)request;
+  (void)error;
+  native_subagent_prepare_calls++;
+  result->child_input = "Native Lua backend prepared this task.";
+  result->display_summary = "Preparing native delegated task.";
+  result->metadata_json = "{\"source\":\"lua-native\"}";
+  return CAI_OK;
+}
+
+static cai_agent_subagent_prepare_backend native_subagent_backend = {
+    native_subagent_prepare, NULL};
+
 static int native_store_new(lua_State *L, const char *kind, void *callbacks,
                             void *context, int has_context) {
   lua_getglobal(L, "require");
@@ -253,6 +271,24 @@ static int native_store_new(lua_State *L, const char *kind, void *callbacks,
   return 1;
 }
 
+static int native_backend_new(lua_State *L, const char *kind, void *backend) {
+  lua_getglobal(L, "require");
+  if (!lua_isfunction(L, -1)) {
+    return luaL_error(L, "Lua require function is unavailable");
+  }
+  lua_pushstring(L, "cai");
+  lua_call(L, 1, 1);
+  lua_getfield(L, -1, "native_backend");
+  if (!lua_isfunction(L, -1)) {
+    return luaL_error(L, "cai.native_backend is unavailable");
+  }
+  lua_pushstring(L, kind);
+  lua_pushlightuserdata(L, backend);
+  lua_call(L, 2, 1);
+  lua_remove(L, -2);
+  return 1;
+}
+
 static int native_todo_store_new(lua_State *L) {
   return native_store_new(L, "todo", &native_todo_store_callbacks,
                           &native_todo_store, 1);
@@ -266,6 +302,10 @@ static int native_agent_session_store_new(lua_State *L) {
 static int native_mcp_session_store_new(lua_State *L) {
   return native_store_new(L, "mcp_session", &native_mcp_session_store,
                           &native_session_store, 1);
+}
+
+static int native_subagent_prepare_backend_new(lua_State *L) {
+  return native_backend_new(L, "subagent_prepare", &native_subagent_backend);
 }
 
 static int native_todo_store_reset(lua_State *L) {
@@ -328,6 +368,7 @@ int luaopen_cai_native_todo_store_test(lua_State *L) {
       {"destroy_count", native_todo_store_destroy_count},
       {"new_agent_session", native_agent_session_store_new},
       {"new_mcp_session", native_mcp_session_store_new},
+      {"new_subagent_prepare_backend", native_subagent_prepare_backend_new},
       {"reset_sessions", native_session_store_reset},
       {"checkpoint_count", native_session_store_checkpoint_count},
       {"cleanup_count", native_session_store_cleanup_count},

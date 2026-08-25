@@ -7,6 +7,7 @@
 
 #include "cai_internal.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -15,10 +16,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
 extern char *realpath(const char *path, char *resolved_path);
+extern char **environ;
 
 #define CAI_RUNTIME_DEFAULT_EVENT_LIMIT 256U
 #define CAI_RUNTIME_DEFAULT_STEERING_LIMIT 32U
@@ -35,6 +38,9 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_RUNTIME_SUBAGENT_OUTPUT_MAX_BYTES (256U * 1024U)
 #define CAI_RUNTIME_SUBAGENT_PARAMETER_MAX 16U
 #define CAI_RUNTIME_SUBAGENT_TEMPLATE_MAX (16U * 1024U)
+#define CAI_RUNTIME_SUBAGENT_SUMMARY_MAX 2048U
+#define CAI_RUNTIME_SUBAGENT_METADATA_MAX (16U * 1024U)
+#define CAI_RUNTIME_GIT_CAPTURE_MAX 512U
 
 typedef struct cai_runtime_subagent_parameter {
   char *name;
@@ -68,6 +74,8 @@ typedef struct cai_runtime_subagent_profile {
   size_t parameter_count;
   char *instruction_template;
   int expose_instructions;
+  cai_agent_subagent_prepare_fn prepare;
+  void *prepare_context;
 } cai_runtime_subagent_profile;
 
 typedef struct cai_runtime_event_node {
@@ -80,6 +88,7 @@ typedef struct cai_runtime_event_node {
   char *runtime_session_id;
   char *subagent_name;
   char *parent_tool_call_id;
+  char *subagent_metadata_json;
   struct cai_runtime_event_node *next;
 } cai_runtime_event_node;
 
@@ -175,6 +184,8 @@ typedef struct cai_runtime_subagent_args {
   char *model;
   char *reasoning_effort;
   char *reasoning_summary;
+  const char *display_summary;
+  const char *metadata_json;
 } cai_runtime_subagent_args;
 
 typedef struct cai_runtime_review_subagent_args {
@@ -194,6 +205,8 @@ typedef struct cai_runtime_subagent_result {
   char *handover_markdown;
   char *structured_result_json;
   int has_structured_result_json;
+  char *preparation_metadata_json;
+  int has_preparation_metadata_json;
 } cai_runtime_subagent_result;
 
 #define CAI_RUNTIME_SUBAGENT_STRING_SLOTS                                      \
@@ -258,7 +271,10 @@ static const lonejson_field cai_runtime_subagent_result_fields[] = {
                                     handover_markdown, "handover_markdown"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_runtime_subagent_result,
                                           structured_result_json,
-                                          "structured_result_json")};
+                                          "structured_result_json"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_runtime_subagent_result,
+                                          preparation_metadata_json,
+                                          "preparation_metadata_json")};
 LONEJSON_MAP_DEFINE(cai_runtime_subagent_result_map,
                     cai_runtime_subagent_result,
                     cai_runtime_subagent_result_fields);
@@ -613,6 +629,7 @@ static void cai_runtime_event_node_free(cai_runtime_event_node *node) {
   cai_free_mem(NULL, node->runtime_session_id);
   cai_free_mem(NULL, node->subagent_name);
   cai_free_mem(NULL, node->parent_tool_call_id);
+  cai_free_mem(NULL, node->subagent_metadata_json);
   cai_free_mem(NULL, node);
 }
 
@@ -713,6 +730,7 @@ static int cai_runtime_event_node_set_subagent(cai_runtime_event_node *node,
                                                const char *session_id,
                                                const char *subagent_name,
                                                const char *parent_tool_call_id,
+                                               const char *metadata_json,
                                                cai_error *error) {
   if (node == NULL || session_id == NULL || session_id[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -738,6 +756,14 @@ static int cai_runtime_event_node_set_subagent(cai_runtime_event_node *node,
                            "failed to retain parent subagent tool call id");
     }
     node->event.parent_tool_call_id = node->parent_tool_call_id;
+  }
+  if (metadata_json != NULL) {
+    node->subagent_metadata_json = cai_strdup(NULL, metadata_json);
+    if (node->subagent_metadata_json == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to retain subagent metadata");
+    }
+    node->event.subagent_metadata_json = node->subagent_metadata_json;
   }
   node->event.runtime_session_id = node->runtime_session_id;
   return CAI_OK;
@@ -803,7 +829,7 @@ static int cai_runtime_forward_subagent_event(
   if (rc == CAI_OK) {
     rc = cai_runtime_event_node_set_subagent(
         node, execution->child_session_id, execution->profile_name,
-        execution->parent_tool_call_id, error);
+        execution->parent_tool_call_id, NULL, error);
   }
   if (rc == CAI_OK && event->tool_path != NULL) {
     node->tool_path = cai_strdup(NULL, event->tool_path);
@@ -1676,6 +1702,10 @@ static int cai_runtime_capture_subagents(cai_agent_runtime *runtime,
     }
     if (rc == CAI_OK)
       target->expose_instructions = source->expose_instructions ? 1 : 0;
+    if (rc == CAI_OK) {
+      target->prepare = source->prepare;
+      target->prepare_context = source->prepare_context;
+    }
     if (rc == CAI_OK)
       target->runtime = runtime;
     if (rc == CAI_OK)
@@ -5484,6 +5514,187 @@ static int cai_runtime_review_text_valid(const char *value, size_t maximum) {
   return 1;
 }
 
+static int cai_runtime_git_executable(char output[PATH_MAX], cai_error *error) {
+  const char *path;
+  const char *cursor;
+  const char *next;
+  size_t length;
+
+  path = getenv("PATH");
+  if (path == NULL || path[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "PATH is required to locate git for review");
+  }
+  cursor = path;
+  while (*cursor != '\0') {
+    next = strchr(cursor, ':');
+    length = next != NULL ? (size_t)(next - cursor) : strlen(cursor);
+    if (length > 0U && length <= PATH_MAX - sizeof("/git")) {
+      memcpy(output, cursor, length);
+      memcpy(output + length, "/git", sizeof("/git"));
+      if (access(output, X_OK) == 0) {
+        return CAI_OK;
+      }
+    }
+    if (next == NULL) {
+      break;
+    }
+    cursor = next + 1U;
+  }
+  return cai_set_error(error, CAI_ERR_INVALID,
+                       "git executable was not found on PATH for review");
+}
+
+/* Git's repository-selection variables override a process's current working
+ * directory. Build the child environment before fork so the child can go
+ * straight from async-signal-safe setup to execve(). */
+static int cai_runtime_git_environment(char ***out, cai_error *error) {
+  char **environment;
+  size_t count;
+  size_t index;
+  size_t kept;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "review git environment output is required");
+  }
+  *out = NULL;
+  count = 0U;
+  while (environ[count] != NULL) {
+    count++;
+  }
+  environment = (char **)cai_alloc(NULL, (count + 1U) * sizeof(*environment));
+  if (environment == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate review git environment");
+  }
+  kept = 0U;
+  for (index = 0U; index < count; index++) {
+    /* GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR, GIT_INDEX_FILE, object
+     * directory variables, and Git's configuration overrides all begin here.
+     * A base review must resolve against its configured workspace instead. */
+    if (strncmp(environ[index], "GIT_", sizeof("GIT_") - 1U) == 0) {
+      continue;
+    }
+    environment[kept++] = environ[index];
+  }
+  environment[kept] = NULL;
+  *out = environment;
+  return CAI_OK;
+}
+
+static int cai_runtime_git_merge_base(const char *workspace, const char *base,
+                                      char output[CAI_RUNTIME_GIT_CAPTURE_MAX],
+                                      cai_error *error) {
+  char executable[PATH_MAX];
+  char program[] = "git";
+  char merge_base[] = "merge-base";
+  char head[] = "HEAD";
+  char base_copy[257];
+  char *argv[5];
+  char **environment;
+  char buffer[128];
+  size_t length;
+  ssize_t count;
+  int pipe_fds[2];
+  int status;
+  pid_t pid;
+  int rc;
+
+  output[0] = '\0';
+  environment = NULL;
+  if (!cai_runtime_review_ref_valid(base)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "review base_branch must be a safe git ref");
+  }
+  memcpy(base_copy, base, strlen(base) + 1U);
+  argv[0] = program;
+  argv[1] = merge_base;
+  argv[2] = head;
+  argv[3] = base_copy;
+  argv[4] = NULL;
+  rc = cai_runtime_git_executable(executable, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_runtime_git_environment(&environment, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (pipe(pipe_fds) != 0) {
+    cai_free_mem(NULL, environment);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to create review git pipe",
+                                strerror(errno));
+  }
+  pid = fork();
+  if (pid < 0) {
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    cai_free_mem(NULL, environment);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to fork review git process",
+                                strerror(errno));
+  }
+  if (pid == 0) {
+    (void)close(pipe_fds[0]);
+    if (dup2(pipe_fds[1], STDOUT_FILENO) < 0 ||
+        dup2(pipe_fds[1], STDERR_FILENO) < 0 || chdir(workspace) != 0) {
+      _exit(127);
+    }
+    (void)close(pipe_fds[1]);
+    execve(executable, argv, environment);
+    _exit(127);
+  }
+  cai_free_mem(NULL, environment);
+  close(pipe_fds[1]);
+  length = 0U;
+  for (;;) {
+    count = read(pipe_fds[0], buffer, sizeof(buffer));
+    if (count > 0) {
+      size_t copied = (size_t)count;
+
+      if (copied >
+          sizeof(output[0]) * CAI_RUNTIME_GIT_CAPTURE_MAX - 1U - length) {
+        copied = sizeof(output[0]) * CAI_RUNTIME_GIT_CAPTURE_MAX - 1U - length;
+      }
+      if (copied > 0U) {
+        memcpy(output + length, buffer, copied);
+        length += copied;
+        output[length] = '\0';
+      }
+      continue;
+    }
+    if (count == 0) {
+      break;
+    }
+    if (errno != EINTR) {
+      close(pipe_fds[0]);
+      (void)waitpid(pid, &status, 0);
+      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to read review git output",
+                                  strerror(errno));
+    }
+  }
+  close(pipe_fds[0]);
+  while (waitpid(pid, &status, 0) < 0) {
+    if (errno != EINTR) {
+      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to wait for review git process",
+                                  strerror(errno));
+    }
+  }
+  while (length > 0U && isspace((unsigned char)output[length - 1U])) {
+    output[--length] = '\0';
+  }
+  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0 ||
+      !cai_runtime_review_commit_valid(output)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "failed to resolve the review merge base");
+  }
+  return CAI_OK;
+}
+
 static int
 cai_runtime_render_review_request(const cai_agent_review_request *request,
                                   char **out, cai_error *error) {
@@ -5572,6 +5783,55 @@ cai_runtime_render_review_request(const cai_agent_review_request *request,
   return CAI_OK;
 }
 
+static int
+cai_runtime_prepare_review_request(const cai_agent_runtime *runtime,
+                                   const cai_agent_review_request *request,
+                                   char **out, cai_error *error) {
+  static const char base_format[] =
+      "Review the code changes against the base branch '%s'. The merge base "
+      "commit for this comparison is %s. Run `git diff %s` to inspect the "
+      "changes relative to %s. Provide prioritized, actionable findings.";
+  char merge_base[CAI_RUNTIME_GIT_CAPTURE_MAX];
+  int length;
+
+  if (runtime == NULL || request == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "review preparation requires a runtime and request");
+  }
+  *out = NULL;
+  if (request->target != CAI_AGENT_REVIEW_BASE_BRANCH) {
+    return cai_runtime_render_review_request(request, out, error);
+  }
+  if (!cai_runtime_review_ref_valid(request->base_branch)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "review base_branch must be a safe git ref");
+  }
+  if (cai_runtime_git_merge_base(runtime->workspace_directory,
+                                 request->base_branch, merge_base,
+                                 error) != CAI_OK) {
+    return error != NULL ? error->code : CAI_ERR_INVALID;
+  }
+  length = snprintf(NULL, 0, base_format, request->base_branch, merge_base,
+                    merge_base, request->base_branch);
+  if (length < 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "failed to render review merge-base request");
+  }
+  *out = (char *)cai_alloc(NULL, (size_t)length + 1U);
+  if (*out == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate review merge-base request");
+  }
+  if (snprintf(*out, (size_t)length + 1U, base_format, request->base_branch,
+               merge_base, merge_base, request->base_branch) != length) {
+    cai_free_mem(NULL, *out);
+    *out = NULL;
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "failed to render review merge-base request");
+  }
+  return CAI_OK;
+}
+
 int cai_agent_runtime_submit_review(cai_agent_runtime *runtime,
                                     const cai_agent_review_request *request,
                                     cai_error *error) {
@@ -5593,7 +5853,7 @@ int cai_agent_runtime_submit_review(cai_agent_runtime *runtime,
                          "request");
   }
   text = NULL;
-  rc = cai_runtime_render_review_request(request, &text, error);
+  rc = cai_runtime_prepare_review_request(runtime, request, &text, error);
   if (rc == CAI_OK) {
     rc =
         cai_runtime_enqueue_input(runtime, text, CAI_RUNTIME_INPUT_TURN, error);
@@ -6035,108 +6295,27 @@ static int cai_runtime_subagent_allowed(const char *value, char **allowed,
   return 0;
 }
 
-static int
-cai_runtime_find_subagent(cai_agent_runtime *runtime, const char *name,
-                          const cai_runtime_subagent_profile **out_profile,
-                          int *out_review, cai_error *error) {
-  size_t i;
-
-  *out_profile = NULL;
-  *out_review = 0;
-  if (!cai_runtime_subagent_name_valid(name)) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "subagent profile name is invalid");
-  }
-  if (strcmp(name, "review") == 0) {
-    if (!runtime->review_subagent_enabled) {
-      return cai_set_error(error, CAI_ERR_INVALID,
-                           "the review subagent is disabled");
-    }
-    *out_review = 1;
-    return CAI_OK;
-  }
-  for (i = 0U; i < runtime->subagent_count; i++) {
-    if (strcmp(name, runtime->subagents[i].name) == 0) {
-      *out_profile = &runtime->subagents[i];
-      return CAI_OK;
-    }
-  }
-  return cai_set_error(error, CAI_ERR_INVALID,
-                       "requested subagent profile is not enabled");
-}
-
-static int cai_runtime_emit_subagent_lifecycle(
-    cai_agent_runtime *parent, int type, const char *child_session_id,
-    const char *profile_name, const char *parent_tool_call_id, const char *data,
-    size_t data_length, cai_error *error) {
-  cai_runtime_event_node *node;
-  char tool_name[80];
-  int length;
-  int rc;
-
-  length = strcmp(profile_name, "review") == 0
-               ? snprintf(tool_name, sizeof(tool_name), "run_review")
-               : snprintf(tool_name, sizeof(tool_name), "run_%s", profile_name);
-  if (length < 0 || (size_t)length >= sizeof(tool_name)) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "subagent lifecycle tool name is invalid");
-  }
-  pthread_mutex_lock(&parent->lock);
-  rc = cai_runtime_wait_event_capacity_locked(parent, error);
-  if (rc == CAI_OK) {
-    rc = cai_runtime_event_node_new(type, data, data_length, tool_name,
-                                    parent_tool_call_id, parent->state, &node,
-                                    error);
-  } else {
-    node = NULL;
-  }
-  if (rc == CAI_OK) {
-    rc = cai_runtime_event_node_set_subagent(
-        node, child_session_id, profile_name, parent_tool_call_id, error);
-  }
-  if (rc == CAI_OK) {
-    cai_runtime_append_event_node_locked(parent, node);
-  } else {
-    cai_runtime_event_node_free(node);
-  }
-  pthread_mutex_unlock(&parent->lock);
-  return rc;
-}
-
-static int cai_runtime_subagent_scope(cai_agent_runtime *parent, char *out,
-                                      size_t capacity, cai_error *error) {
-  int length;
-
-  length = snprintf(out, capacity, CAI_RUNTIME_SUBAGENT_SCOPE_PREFIX "%s",
-                    parent->session_id);
-  if (length < 0 || (size_t)length >= capacity) {
-    return cai_set_error(error, CAI_ERR_LIMIT,
-                         "subagent session scope is too long");
-  }
-  return CAI_OK;
-}
-
-static int cai_runtime_open_tool_subagent(
-    cai_agent_runtime *parent, const cai_runtime_subagent_profile *profile,
-    int review, const cai_runtime_subagent_args *args,
-    cai_runtime_subagent_execution *execution, cai_agent_runtime **out,
-    cai_error *error) {
-  cai_agent_runtime_config config;
-  cai_agent_preset review_preset;
-  char scope[CAI_AGENT_SESSION_ID_MAX +
-             sizeof(CAI_RUNTIME_SUBAGENT_SCOPE_PREFIX)];
+static int cai_runtime_resolve_subagent_settings(
+    const cai_agent_runtime *parent,
+    const cai_runtime_subagent_profile *profile, int review,
+    const cai_runtime_subagent_args *args, const char **out_model,
+    const char **out_effort, const char **out_summary, cai_error *error) {
+  char **allowed_models;
+  char **allowed_efforts;
+  char **allowed_summaries;
+  size_t allowed_model_count;
+  size_t allowed_effort_count;
+  size_t allowed_summary_count;
   const char *model;
   const char *effort;
   const char *summary;
-  char **allowed_models;
-  size_t allowed_model_count;
-  char **allowed_efforts;
-  size_t allowed_effort_count;
-  char **allowed_summaries;
-  size_t allowed_summary_count;
-  int rc;
 
-  *out = NULL;
+  if (parent == NULL || args == NULL || out_model == NULL ||
+      out_effort == NULL || out_summary == NULL ||
+      (!review && profile == NULL)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "subagent settings require a parent and profile");
+  }
   model = parent->smith_model != NULL ? parent->smith_model
                                       : parent->preset_default_model;
   effort = parent->smith_reasoning_effort != NULL
@@ -6176,13 +6355,115 @@ static int cai_runtime_open_tool_subagent(
         error, CAI_ERR_INVALID,
         "requested subagent reasoning-summary override is not host-approved");
   }
-  if (args->model != NULL)
-    model = args->model;
-  if (args->reasoning_effort != NULL)
-    effort = args->reasoning_effort;
-  if (args->reasoning_summary != NULL)
-    summary = args->reasoning_summary;
-  rc = cai_runtime_subagent_scope(parent, scope, sizeof(scope), error);
+  *out_model = args->model != NULL ? args->model : model;
+  *out_effort =
+      args->reasoning_effort != NULL ? args->reasoning_effort : effort;
+  *out_summary =
+      args->reasoning_summary != NULL ? args->reasoning_summary : summary;
+  return CAI_OK;
+}
+
+static int
+cai_runtime_find_subagent(cai_agent_runtime *runtime, const char *name,
+                          const cai_runtime_subagent_profile **out_profile,
+                          int *out_review, cai_error *error) {
+  size_t i;
+
+  *out_profile = NULL;
+  *out_review = 0;
+  if (!cai_runtime_subagent_name_valid(name)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "subagent profile name is invalid");
+  }
+  if (strcmp(name, "review") == 0) {
+    if (!runtime->review_subagent_enabled) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "the review subagent is disabled");
+    }
+    *out_review = 1;
+    return CAI_OK;
+  }
+  for (i = 0U; i < runtime->subagent_count; i++) {
+    if (strcmp(name, runtime->subagents[i].name) == 0) {
+      *out_profile = &runtime->subagents[i];
+      return CAI_OK;
+    }
+  }
+  return cai_set_error(error, CAI_ERR_INVALID,
+                       "requested subagent profile is not enabled");
+}
+
+static int cai_runtime_emit_subagent_lifecycle(
+    cai_agent_runtime *parent, int type, const char *child_session_id,
+    const char *profile_name, const char *parent_tool_call_id, const char *data,
+    size_t data_length, const char *metadata_json, cai_error *error) {
+  cai_runtime_event_node *node;
+  char tool_name[80];
+  int length;
+  int rc;
+
+  length = strcmp(profile_name, "review") == 0
+               ? snprintf(tool_name, sizeof(tool_name), "run_review")
+               : snprintf(tool_name, sizeof(tool_name), "run_%s", profile_name);
+  if (length < 0 || (size_t)length >= sizeof(tool_name)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "subagent lifecycle tool name is invalid");
+  }
+  pthread_mutex_lock(&parent->lock);
+  rc = cai_runtime_wait_event_capacity_locked(parent, error);
+  if (rc == CAI_OK) {
+    rc = cai_runtime_event_node_new(type, data, data_length, tool_name,
+                                    parent_tool_call_id, parent->state, &node,
+                                    error);
+  } else {
+    node = NULL;
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_event_node_set_subagent(node, child_session_id,
+                                             profile_name, parent_tool_call_id,
+                                             metadata_json, error);
+  }
+  if (rc == CAI_OK) {
+    cai_runtime_append_event_node_locked(parent, node);
+  } else {
+    cai_runtime_event_node_free(node);
+  }
+  pthread_mutex_unlock(&parent->lock);
+  return rc;
+}
+
+static int cai_runtime_subagent_scope(cai_agent_runtime *parent, char *out,
+                                      size_t capacity, cai_error *error) {
+  int length;
+
+  length = snprintf(out, capacity, CAI_RUNTIME_SUBAGENT_SCOPE_PREFIX "%s",
+                    parent->session_id);
+  if (length < 0 || (size_t)length >= capacity) {
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "subagent session scope is too long");
+  }
+  return CAI_OK;
+}
+
+static int cai_runtime_open_tool_subagent(
+    cai_agent_runtime *parent, const cai_runtime_subagent_profile *profile,
+    int review, const cai_runtime_subagent_args *args,
+    cai_runtime_subagent_execution *execution, cai_agent_runtime **out,
+    cai_error *error) {
+  cai_agent_runtime_config config;
+  cai_agent_preset review_preset;
+  char scope[CAI_AGENT_SESSION_ID_MAX +
+             sizeof(CAI_RUNTIME_SUBAGENT_SCOPE_PREFIX)];
+  const char *model;
+  const char *effort;
+  const char *summary;
+  int rc;
+
+  *out = NULL;
+  rc = cai_runtime_resolve_subagent_settings(parent, profile, review, args,
+                                             &model, &effort, &summary, error);
+  if (rc == CAI_OK)
+    rc = cai_runtime_subagent_scope(parent, scope, sizeof(scope), error);
   if (rc != CAI_OK)
     return rc;
   cai_agent_runtime_config_init(&config);
@@ -6414,8 +6695,12 @@ static int cai_runtime_run_subagent(void *context, const void *params,
     pthread_mutex_unlock(&parent->lock);
     rc = cai_runtime_emit_subagent_lifecycle(
         parent, CAI_AGENT_EVENT_SUBAGENT_STARTED, execution.child_session_id,
-        args->profile, execution.parent_tool_call_id, args->instructions,
-        strlen(args->instructions), error);
+        args->profile, execution.parent_tool_call_id,
+        args->display_summary != NULL ? args->display_summary
+                                      : args->instructions,
+        strlen(args->display_summary != NULL ? args->display_summary
+                                             : args->instructions),
+        args->metadata_json, error);
   }
   terminal = 0;
   while (rc == CAI_OK && !terminal) {
@@ -6511,7 +6796,7 @@ static int cai_runtime_run_subagent(void *context, const void *params,
     rc = cai_runtime_emit_subagent_lifecycle(
         parent, CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF, execution.child_session_id,
         args->profile, execution.parent_tool_call_id, handover,
-        strlen(handover), error);
+        strlen(handover), args->metadata_json, error);
   }
   if (child != NULL)
     cai_agent_runtime_close(child);
@@ -6537,9 +6822,16 @@ static int cai_runtime_run_subagent(void *context, const void *params,
           cai_tool_result_strdup(structured, error);
       result->has_structured_result_json = 1;
     }
+    if (args->metadata_json != NULL) {
+      result->preparation_metadata_json =
+          cai_tool_result_strdup(args->metadata_json, error);
+      result->has_preparation_metadata_json = 1;
+    }
     if (result->profile == NULL || result->status == NULL ||
         result->child_session_id == NULL || result->handover_markdown == NULL ||
-        (structured != NULL && result->structured_result_json == NULL)) {
+        (structured != NULL && result->structured_result_json == NULL) ||
+        (args->metadata_json != NULL &&
+         result->preparation_metadata_json == NULL)) {
       rc = error != NULL && error->code != CAI_OK ? error->code : CAI_ERR_NOMEM;
     }
   }
@@ -6554,14 +6846,19 @@ static int cai_runtime_run_review_subagent(void *context, const void *params,
                                            void *out, cai_error *error) {
   static const char *const target_uncommitted = "uncommitted";
   static char review_profile[] = "review";
+  cai_agent_runtime *runtime;
   const cai_runtime_review_subagent_args *args;
   cai_runtime_subagent_args delegated;
   cai_agent_review_request request;
   char *instructions;
+  char display_summary[CAI_RUNTIME_SUBAGENT_SUMMARY_MAX + 1U];
+  char metadata_json[512];
+  const char *summary;
   int rc;
 
+  runtime = (cai_agent_runtime *)context;
   args = (const cai_runtime_review_subagent_args *)params;
-  if (args == NULL) {
+  if (runtime == NULL || args == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "run_review arguments are required");
   }
@@ -6605,9 +6902,41 @@ static int cai_runtime_run_review_subagent(void *context, const void *params,
                          "review target must be uncommitted, base, commit, or "
                          "custom");
   }
-  rc = cai_runtime_render_review_request(&request, &instructions, error);
+  rc = cai_runtime_prepare_review_request(runtime, &request, &instructions,
+                                          error);
   if (rc != CAI_OK) {
     return rc;
+  }
+  summary = "Reviewing current uncommitted changes.";
+  (void)snprintf(metadata_json, sizeof(metadata_json),
+                 "{\"target\":\"uncommitted\"}");
+  if (request.target == CAI_AGENT_REVIEW_BASE_BRANCH) {
+    if (snprintf(display_summary, sizeof(display_summary),
+                 "Reviewing changes against %s.",
+                 request.base_branch) >= (int)sizeof(display_summary)) {
+      cai_free_mem(NULL, instructions);
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "review display summary is too long");
+    }
+    summary = display_summary;
+    (void)snprintf(metadata_json, sizeof(metadata_json),
+                   "{\"target\":\"base\",\"base\":\"%s\"}",
+                   request.base_branch);
+  } else if (request.target == CAI_AGENT_REVIEW_COMMIT) {
+    if (snprintf(display_summary, sizeof(display_summary),
+                 "Reviewing commit %s.",
+                 request.commit) >= (int)sizeof(display_summary)) {
+      cai_free_mem(NULL, instructions);
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "review display summary is too long");
+    }
+    summary = display_summary;
+    (void)snprintf(metadata_json, sizeof(metadata_json),
+                   "{\"target\":\"commit\",\"commit\":\"%s\"}", request.commit);
+  } else if (request.target == CAI_AGENT_REVIEW_CUSTOM) {
+    summary = "Reviewing the requested custom scope.";
+    (void)snprintf(metadata_json, sizeof(metadata_json),
+                   "{\"target\":\"custom\"}");
   }
   memset(&delegated, 0, sizeof(delegated));
   delegated.profile = review_profile;
@@ -6615,6 +6944,8 @@ static int cai_runtime_run_review_subagent(void *context, const void *params,
   delegated.model = args->model;
   delegated.reasoning_effort = args->reasoning_effort;
   delegated.reasoning_summary = args->reasoning_summary;
+  delegated.display_summary = summary;
+  delegated.metadata_json = metadata_json;
   rc = cai_runtime_run_subagent(context, &delegated, out, error);
   cai_free_mem(NULL, instructions);
   return rc;
@@ -6709,6 +7040,7 @@ cai_runtime_subagent_result_cleanup(cai_runtime_subagent_result *result) {
   cai_free_mem(NULL, result->child_session_id);
   cai_free_mem(NULL, result->handover_markdown);
   cai_free_mem(NULL, result->structured_result_json);
+  cai_free_mem(NULL, result->preparation_metadata_json);
   memset(result, 0, sizeof(*result));
 }
 
@@ -6937,6 +7269,142 @@ static int cai_runtime_render_profile_subagent_instructions(
   return CAI_OK;
 }
 
+static int cai_runtime_prepare_profile_subagent(
+    cai_runtime_subagent_profile *profile,
+    const cai_runtime_profile_subagent_args *parsed, char **child_input,
+    char **display_summary, char **metadata_json, cai_error *error) {
+  cai_agent_subagent_argument
+      arguments[CAI_RUNTIME_SUBAGENT_PARAMETER_MAX + 1U];
+  cai_agent_subagent_prepare_request request;
+  cai_agent_subagent_prepare_result result;
+  cai_runtime_subagent_args settings;
+  lonejson_error json_error;
+  const char *model;
+  const char *effort;
+  const char *summary;
+  const char *metadata_start;
+  const char *metadata_end;
+  char *prepared_input;
+  size_t argument_count;
+  size_t i;
+  int rc;
+
+  *display_summary = NULL;
+  *metadata_json = NULL;
+  prepared_input = NULL;
+  if (profile->prepare == NULL) {
+    return CAI_OK;
+  }
+  memset(arguments, 0, sizeof(arguments));
+  argument_count = 0U;
+  for (i = 0U; i < profile->parameter_count; i++) {
+    arguments[argument_count].name = profile->parameters[i].name;
+    arguments[argument_count].type = profile->parameters[i].type;
+    if (profile->parameters[i].type == CAI_AGENT_SUBAGENT_PARAMETER_INTEGER) {
+      arguments[argument_count].is_present = parsed->integer_present[i];
+      arguments[argument_count].integer_value = (long long)parsed->integers[i];
+    } else {
+      arguments[argument_count].string_value = parsed->strings[i];
+      arguments[argument_count].is_present = parsed->strings[i] != NULL;
+    }
+    argument_count++;
+  }
+  if (profile->expose_instructions) {
+    arguments[argument_count].name = "instructions";
+    arguments[argument_count].type = CAI_AGENT_SUBAGENT_PARAMETER_STRING;
+    arguments[argument_count].string_value =
+        parsed->strings[CAI_RUNTIME_SUBAGENT_PARAMETER_MAX];
+    arguments[argument_count].is_present =
+        arguments[argument_count].string_value != NULL;
+    argument_count++;
+  }
+  memset(&settings, 0, sizeof(settings));
+  settings.profile = profile->name;
+  settings.instructions = *child_input;
+  settings.model = parsed->strings[CAI_RUNTIME_SUBAGENT_PARAMETER_MAX + 1U];
+  settings.reasoning_effort =
+      parsed->strings[CAI_RUNTIME_SUBAGENT_PARAMETER_MAX + 2U];
+  settings.reasoning_summary =
+      parsed->strings[CAI_RUNTIME_SUBAGENT_PARAMETER_MAX + 3U];
+  rc = cai_runtime_resolve_subagent_settings(profile->runtime, profile, 0,
+                                             &settings, &model, &effort,
+                                             &summary, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  memset(&request, 0, sizeof(request));
+  request.profile_name = profile->name;
+  request.workspace_directory = profile->runtime->workspace_directory;
+  request.default_child_input = *child_input;
+  request.arguments = arguments;
+  request.argument_count = argument_count;
+  request.model = model;
+  request.reasoning_effort = effort;
+  request.reasoning_summary = summary;
+  memset(&result, 0, sizeof(result));
+  rc = profile->prepare(profile->prepare_context, &request, &result, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (result.child_input == NULL || result.child_input[0] == '\0' ||
+      strlen(result.child_input) > 32768U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "subagent prepare hook returned invalid child input");
+  }
+  if (result.display_summary != NULL &&
+      (result.display_summary[0] == '\0' ||
+       strlen(result.display_summary) > CAI_RUNTIME_SUBAGENT_SUMMARY_MAX)) {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "subagent prepare hook returned invalid display summary");
+  }
+  if (result.metadata_json != NULL) {
+    if (result.metadata_json[0] == '\0' ||
+        strlen(result.metadata_json) > CAI_RUNTIME_SUBAGENT_METADATA_MAX) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "subagent prepare metadata is invalid or too large");
+    }
+    lonejson_error_init(&json_error);
+    if (CAI_LJ->validate_cstr(CAI_LJ, result.metadata_json, &json_error) !=
+        LONEJSON_STATUS_OK) {
+      return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                  "subagent prepare metadata must be JSON",
+                                  json_error.message);
+    }
+    metadata_start = result.metadata_json;
+    while (*metadata_start != '\0' && isspace((unsigned char)*metadata_start))
+      metadata_start++;
+    metadata_end = result.metadata_json + strlen(result.metadata_json);
+    while (metadata_end > metadata_start &&
+           isspace((unsigned char)metadata_end[-1]))
+      metadata_end--;
+    if (*metadata_start != '{' || metadata_end <= metadata_start ||
+        metadata_end[-1] != '}') {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "subagent prepare metadata must be a JSON object");
+    }
+  }
+  rc = cai_runtime_copy_string(result.child_input, &prepared_input, error);
+  if (rc == CAI_OK && result.display_summary != NULL) {
+    rc =
+        cai_runtime_copy_string(result.display_summary, display_summary, error);
+  }
+  if (rc == CAI_OK && result.metadata_json != NULL) {
+    rc = cai_runtime_copy_string(result.metadata_json, metadata_json, error);
+  }
+  if (rc != CAI_OK) {
+    cai_free_mem(NULL, prepared_input);
+    cai_free_mem(NULL, *display_summary);
+    cai_free_mem(NULL, *metadata_json);
+    *display_summary = NULL;
+    *metadata_json = NULL;
+  } else {
+    cai_free_mem(NULL, *child_input);
+    *child_input = prepared_input;
+  }
+  return rc;
+}
+
 static int cai_runtime_validate_profile_subagent_args(
     const cai_runtime_subagent_profile *profile,
     const cai_runtime_profile_subagent_args *args, cai_error *error) {
@@ -6992,6 +7460,8 @@ static int cai_runtime_run_profile_subagent(void *context,
   lonejson_status status;
   char *active_user_turn;
   char *instructions;
+  char *display_summary;
+  char *metadata_json;
   size_t field_count;
   int has_active_user_turn;
   int rc;
@@ -7036,9 +7506,16 @@ static int cai_runtime_run_profile_subagent(void *context,
     }
   }
   instructions = NULL;
+  display_summary = NULL;
+  metadata_json = NULL;
   if (rc == CAI_OK)
     rc = cai_runtime_render_profile_subagent_instructions(
         profile, &parsed, active_user_turn, &instructions, error);
+  if (rc == CAI_OK) {
+    rc = cai_runtime_prepare_profile_subagent(profile, &parsed, &instructions,
+                                              &display_summary, &metadata_json,
+                                              error);
+  }
   if (rc == CAI_OK) {
     memset(&delegated, 0, sizeof(delegated));
     delegated.profile = profile->name;
@@ -7048,6 +7525,8 @@ static int cai_runtime_run_profile_subagent(void *context,
         parsed.strings[CAI_RUNTIME_SUBAGENT_PARAMETER_MAX + 2U];
     delegated.reasoning_summary =
         parsed.strings[CAI_RUNTIME_SUBAGENT_PARAMETER_MAX + 3U];
+    delegated.display_summary = display_summary;
+    delegated.metadata_json = metadata_json;
     rc = cai_runtime_run_subagent(profile->runtime, &delegated, &result, error);
   }
   if (rc == CAI_OK) {
@@ -7065,6 +7544,8 @@ static int cai_runtime_run_profile_subagent(void *context,
   }
   cai_free_mem(NULL, active_user_turn);
   cai_free_mem(NULL, instructions);
+  cai_free_mem(NULL, display_summary);
+  cai_free_mem(NULL, metadata_json);
   CAI_LJ->cleanup(CAI_LJ, &map, &parsed);
   cai_runtime_subagent_result_cleanup(&result);
   return rc;
