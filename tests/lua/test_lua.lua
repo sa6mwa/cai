@@ -1183,7 +1183,7 @@ do
     logger = runtime_logger,
     event_callback = function() end,
   }))
-  assert(table.concat(runtime_logger_chunks):find("agent runtime opened", 1, true),
+  assert(table.concat(runtime_logger_chunks):find("cai.agent.runtime.opened", 1, true),
     "Lua Smith runtime accepts and retains a native pslog logger")
   assert_eq(runtime:state(), "idle", "Lua Smith runtime initial state")
   assert(type(runtime:session_id()) == "string", "Lua Smith runtime session id")

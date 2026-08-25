@@ -645,7 +645,7 @@ static void cai_runtime_log_opened(const cai_agent_runtime *runtime) {
   if (runtime != NULL && !runtime->logger_disabled && runtime->logger != NULL &&
       runtime->logger->infof != NULL) {
     runtime->logger->infof(
-        runtime->logger, "agent runtime opened",
+        runtime->logger, "cai.agent.runtime.opened",
         "session_id=%s workspace=%s preset=%s review=%d",
         runtime->session_id != NULL ? runtime->session_id : "",
         runtime->workspace_directory != NULL ? runtime->workspace_directory
@@ -667,7 +667,8 @@ static void cai_runtime_log_input_accepted(const cai_agent_runtime *runtime,
               : kind == CAI_RUNTIME_INPUT_QUEUED_TURN ? "queued"
                                                       : "turn";
   runtime->logger->debugf(
-      runtime->logger, "agent input accepted", "session_id=%s kind=%s",
+      runtime->logger, "cai.agent.runtime.input.accepted",
+      "session_id=%s kind=%s",
       runtime->session_id != NULL ? runtime->session_id : "", kind_name);
 }
 
@@ -680,9 +681,10 @@ static void cai_runtime_log_tool_event(const cai_agent_runtime *runtime,
       runtime->logger == NULL) {
     return;
   }
-  message = event->type == CAI_TOOL_EVENT_START    ? "agent tool started"
-            : event->type == CAI_TOOL_EVENT_OUTPUT ? "agent tool completed"
-                                                   : "agent tool failed";
+  message = event->type == CAI_TOOL_EVENT_START ? "cai.agent.runtime.tool.start"
+            : event->type == CAI_TOOL_EVENT_OUTPUT
+                ? "cai.agent.runtime.tool.done"
+                : "cai.agent.runtime.tool.error";
   if (event->type == CAI_TOOL_EVENT_ERROR && runtime->logger->warnf != NULL) {
     runtime->logger->warnf(
         runtime->logger, message, "session_id=%s tool=%s action=%d call_id=%s",
@@ -710,8 +712,8 @@ static void cai_runtime_log_subagent_lifecycle(const cai_agent_runtime *runtime,
     return;
   }
   message = type == CAI_AGENT_EVENT_SUBAGENT_STARTED
-                ? "agent subagent started"
-                : "agent subagent handed off";
+                ? "cai.agent.runtime.subagent.start"
+                : "cai.agent.runtime.subagent.done";
   runtime->logger->debugf(
       runtime->logger, message,
       "session_id=%s profile=%s child_session_id=%s instruction_bytes=%lu",

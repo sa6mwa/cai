@@ -753,13 +753,20 @@ static int g_test_debugf_count = 0;
 static int g_test_warnf_count = 0;
 static int g_test_errorf_count = 0;
 static char g_test_subagent_started_kvfmt[256];
+static int g_test_agent_runtime_legacy_log_name_count = 0;
+
+static void test_pslog_runtime_log_name(const char *msg) {
+  if (msg != NULL && strncmp(msg, "agent ", sizeof("agent ") - 1U) == 0) {
+    g_test_agent_runtime_legacy_log_name_count++;
+  }
+}
 
 static void test_pslog_infof(pslog_logger *log, const char *msg,
                              const char *kvfmt, ...) {
   va_list args;
 
   (void)log;
-  (void)msg;
+  test_pslog_runtime_log_name(msg);
   va_start(args, kvfmt);
   va_end(args);
   if (kvfmt != NULL) {
@@ -772,7 +779,7 @@ static void test_pslog_tracef(pslog_logger *log, const char *msg,
   va_list args;
 
   (void)log;
-  (void)msg;
+  test_pslog_runtime_log_name(msg);
   va_start(args, kvfmt);
   va_end(args);
   if (kvfmt != NULL) {
@@ -785,12 +792,12 @@ static void test_pslog_debugf(pslog_logger *log, const char *msg,
   va_list args;
 
   (void)log;
-  (void)msg;
+  test_pslog_runtime_log_name(msg);
   va_start(args, kvfmt);
   va_end(args);
   if (kvfmt != NULL) {
     g_test_debugf_count++;
-    if (msg != NULL && strcmp(msg, "agent subagent started") == 0) {
+    if (msg != NULL && strcmp(msg, "cai.agent.runtime.subagent.start") == 0) {
       (void)snprintf(g_test_subagent_started_kvfmt,
                      sizeof(g_test_subagent_started_kvfmt), "%s", kvfmt);
     }
@@ -802,7 +809,7 @@ static void test_pslog_warnf(pslog_logger *log, const char *msg,
   va_list args;
 
   (void)log;
-  (void)msg;
+  test_pslog_runtime_log_name(msg);
   va_start(args, kvfmt);
   va_end(args);
   if (kvfmt != NULL) {
@@ -815,7 +822,7 @@ static void test_pslog_errorf(pslog_logger *log, const char *msg,
   va_list args;
 
   (void)log;
-  (void)msg;
+  test_pslog_runtime_log_name(msg);
   va_start(args, kvfmt);
   va_end(args);
   if (kvfmt != NULL) {
@@ -25887,6 +25894,7 @@ static void test_agent_runtime_subagent(test_state *state) {
   g_test_infof_count = 0;
   g_test_debugf_count = 0;
   g_test_subagent_started_kvfmt[0] = '\0';
+  g_test_agent_runtime_legacy_log_name_count = 0;
   expect_int(state, "agent_runtime_subagent_open",
              cai_agent_runtime_open(mock.client, &config, &runtime, &error),
              CAI_OK);
@@ -25932,6 +25940,8 @@ static void test_agent_runtime_subagent(test_state *state) {
                g_test_infof_count > 0, 1L);
     expect_int(state, "agent_runtime_subagent_lifecycle_logged",
                g_test_debugf_count > 0, 1L);
+    expect_int(state, "agent_runtime_subagent_dotted_log_names",
+               g_test_agent_runtime_legacy_log_name_count, 0L);
     expect_str(state, "agent_runtime_subagent_lifecycle_kvfmt",
                g_test_subagent_started_kvfmt,
                "session_id=%s profile=%s child_session_id=%s "
