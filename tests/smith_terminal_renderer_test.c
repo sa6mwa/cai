@@ -52,7 +52,8 @@ static void deliver(render_state *renderer, int type, const char *data,
 }
 
 static void deliver_subagent_started(render_state *renderer, const char *name,
-                                     const char *task) {
+                                     const char *task,
+                                     const char *instruction) {
   cai_agent_runtime_event event;
   cai_error error;
 
@@ -62,6 +63,7 @@ static void deliver_subagent_started(render_state *renderer, const char *name,
   event.subagent_name = name;
   event.data = task;
   event.data_length = task != NULL ? strlen(task) : 0U;
+  event.subagent_instruction = instruction;
   if (render_event(renderer, &event, &error) != CAI_OK) {
     fprintf(stderr, "render subagent start failed: %s\n",
             error.message != NULL ? error.message : "unknown error");
@@ -95,6 +97,7 @@ static char *capture_fixture(void) {
   }
 
   memset(&renderer, 0, sizeof(renderer));
+  renderer.show_subagent_instruction = 1;
   deliver(&renderer, CAI_AGENT_EVENT_REASONING_SUMMARY, "**Planning ", NULL, 0,
           0, 0);
   deliver(&renderer, CAI_AGENT_EVENT_REASONING_SUMMARY,
@@ -110,7 +113,8 @@ static char *capture_fixture(void) {
   deliver(&renderer, CAI_AGENT_EVENT_TOOL_CALL_COMPLETED, NULL, "read_file",
           CAI_AGENT_TOOL_ACTION_READ, 0, 0);
   deliver_subagent_started(&renderer, "review",
-                           "Review changes against trunk.\033[31m");
+                           "Review changes against trunk.\033[31m",
+                           "Review the exact delegated change set.");
   renderer.review_report_visible = 0;
   report = "{\"findings\":[{\"title\":\"Use stable state\",\"body\":\"Avoid "
            "raw JSON.\","
@@ -165,6 +169,9 @@ int main(void) {
                   "Starting \033[0mreview\033[90m subagent\033[0m"
                   "\033[90m — task: \033[0mReview changes against trunk."
                   "\\x1B[31m\n");
+  expect_contains("subagent instruction", output,
+                  "  instruction: \033[0mReview the exact delegated change "
+                  "set.\n");
   expect_contains("review explanation", output, "One actionable issue.\n");
   expect_contains("review finding", output,
                   "- Use stable state — /tmp/project/a.c:7-7\n");

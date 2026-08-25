@@ -1,6 +1,7 @@
 #include <cai/agent_runtime.h>
 #include <cai/auth.h>
 #include <lonejson.h>
+#include <pslog.h>
 
 #include <errno.h>
 #include <poll.h>
@@ -25,6 +26,7 @@ typedef struct render_state {
   int reasoning_open;
   int suppress_review_text;
   int review_report_visible;
+  int show_subagent_instruction;
   int reasoning_heading_seen;
   size_t reasoning_probe_length;
   char command[161];
@@ -108,23 +110,32 @@ static const char *skip_space(const char *text) {
 static void print_usage(const char *program) {
   fprintf(stderr,
           "usage: %s [--chatgpt-auth] [--chatgpt-auth-json <path>] "
-          "[--model <model>]\n\n"
+          "[--model <model>] [-v|--verbose] [-vv]\n\n"
           "Smith uses CAI's ChatGPT subscription auth by default. Run "
-          "make chatgpt-login first.\n\n"
-          "  --chatgpt-auth       Compatibility alias for the default "
-          "ChatGPT auth path.\n"
-          "  --chatgpt-auth-json <path>\n"
-          "                       Use a specific CAI auth.json file.\n"
-          "  --model <model>      Override the model. Defaults to "
-          "gpt-5.6-luna.\n",
+          "make chatgpt-login first.\n\n",
           program != NULL ? program : "cai_example_smith_terminal");
+  fputs("  --chatgpt-auth       Compatibility alias for the default "
+        "ChatGPT auth path.\n"
+        "  --chatgpt-auth-json <path>\n"
+        "                       Use a specific CAI auth.json file.\n",
+        stderr);
+  fputs("  --model <model>      Override the model. Defaults to "
+        "gpt-5.6-luna.\n"
+        "  -v, --verbose        Enable debug lifecycle logging on stderr.\n"
+        "  -vv                  Enable trace logging and show delegated "
+        "instructions.\n",
+        stderr);
+  fputs("\nLogging defaults to disabled; LOG_LEVEL and other LOG_* pslog "
+        "settings override these defaults.\n",
+        stderr);
 }
 
 static int parse_args(int argc, char **argv, const char **auth_json,
-                      const char **model) {
+                      const char **model, int *verbosity) {
   int i;
 
   *auth_json = getenv("CAI_CHATGPT_AUTH_JSON");
+  *verbosity = 0;
   *model = getenv("CAI_SMITH_MODEL");
   if (*model == NULL || (*model)[0] == '\0') {
     *model = getenv("CAI_TERMINAL_CHAT_MODEL");
@@ -134,6 +145,14 @@ static int parse_args(int argc, char **argv, const char **auth_json,
   }
   for (i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--chatgpt-auth") == 0) {
+      continue;
+    }
+    if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
+      (*verbosity)++;
+      continue;
+    }
+    if (strcmp(argv[i], "-vv") == 0) {
+      *verbosity += 2;
       continue;
     }
     if (strcmp(argv[i], "--chatgpt-auth-json") == 0) {
@@ -161,6 +180,36 @@ static int parse_args(int argc, char **argv, const char **auth_json,
     return 0;
   }
   return 1;
+}
+
+static pslog_logger *smith_example_logger_open(int verbosity,
+                                               pslog_logger **out_root) {
+  pslog_config config;
+  pslog_logger *root;
+  pslog_logger *logger;
+
+  if (out_root == NULL) {
+    return NULL;
+  }
+  *out_root = NULL;
+  pslog_default_config(&config);
+  config.mode = PSLOG_MODE_CONSOLE;
+  config.color = PSLOG_COLOR_AUTO;
+  config.output = pslog_output_from_fp(stderr, 0);
+  config.min_level = verbosity >= 2   ? PSLOG_LEVEL_TRACE
+                     : verbosity == 1 ? PSLOG_LEVEL_DEBUG
+                                      : PSLOG_LEVEL_DISABLED;
+  root = pslog_new_from_env(NULL, &config);
+  if (root == NULL) {
+    return NULL;
+  }
+  logger = root->withf(root, "component=%s", "smith-example");
+  if (logger == NULL) {
+    root->destroy(root);
+    return NULL;
+  }
+  *out_root = root;
+  return logger;
 }
 
 static int start_review(cai_agent_runtime *parent, const char *command,
@@ -516,7 +565,8 @@ static void render_subagent_handoff(const cai_agent_runtime_event *event) {
 
 /* The delegated task is model-controlled. Keep control bytes visible, and
  * bound the preview so a long subagent request does not overwhelm the chat. */
-static void render_subagent_started(const cai_agent_runtime_event *event) {
+static void render_subagent_started(const cai_agent_runtime_event *event,
+                                    const render_state *state) {
   const char *name;
   size_t displayed;
 
@@ -536,6 +586,17 @@ static void render_subagent_started(const cai_agent_runtime_event *event) {
     }
   }
   fputc('\n', stdout);
+  if (state != NULL && state->show_subagent_instruction &&
+      event->subagent_instruction != NULL) {
+    fputs(GRAY "  instruction: " RESET, stdout);
+    render_review_text(event->subagent_instruction,
+                       strlen(event->subagent_instruction));
+    if (event->subagent_instruction[0] == '\0' ||
+        event->subagent_instruction[strlen(event->subagent_instruction) - 1U] !=
+            '\n') {
+      fputc('\n', stdout);
+    }
+  }
 }
 
 static int runtime_accepts_prompt(cai_agent_run_state state) {
@@ -673,7 +734,7 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
     state->review_report_visible = 0;
   } else if (event->type == CAI_AGENT_EVENT_SUBAGENT_STARTED) {
     render_close_message(state);
-    render_subagent_started(event);
+    render_subagent_started(event, state);
   } else if (event->type == CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF) {
     render_close_message(state);
     render_subagent_handoff(event);
@@ -703,6 +764,8 @@ int main(int argc, char **argv) {
   cai_client *client;
   cai_agent_runtime *runtime;
   cai_agent_runtime *review;
+  pslog_logger *logger;
+  pslog_logger *logger_root;
   cai_agent_run_state status;
   cai_error error;
   struct pollfd poll_fds[3];
@@ -713,6 +776,7 @@ int main(int argc, char **argv) {
   char exported_path[8192];
   const char *auth_json;
   const char *model;
+  int verbosity;
   int exit_requested;
   int input_enabled;
   int prompt_shown;
@@ -724,12 +788,14 @@ int main(int argc, char **argv) {
   runtime = NULL;
   review = NULL;
   chatgpt_auth = NULL;
+  logger = NULL;
+  logger_root = NULL;
   chatgpt_auth_path_display = NULL;
   exit_requested = 0;
   prompt_shown = 0;
   wakeup_fd = -1;
   memset(&renderer, 0, sizeof(renderer));
-  rc = parse_args(argc, argv, &auth_json, &model);
+  rc = parse_args(argc, argv, &auth_json, &model, &verbosity);
   if (rc < 0) {
     return 0;
   }
@@ -740,8 +806,16 @@ int main(int argc, char **argv) {
     fputs("getcwd failed\n", stderr);
     return 1;
   }
+  logger = smith_example_logger_open(verbosity, &logger_root);
+  if (logger == NULL) {
+    fputs("smith-terminal: failed to initialize logger\n", stderr);
+    return 1;
+  }
+  renderer.show_subagent_instruction = verbosity >= 2;
   cai_client_config_init(&client_config);
+  client_config.logger = logger;
   cai_chatgpt_auth_config_init(&chatgpt_auth_config);
+  chatgpt_auth_config.logger = logger;
   chatgpt_auth_config.auth_json_path = auth_json;
   rc = cai_chatgpt_auth_open(&chatgpt_auth_config, &chatgpt_auth, &error);
   if (rc == CAI_OK) {
@@ -762,6 +836,7 @@ int main(int argc, char **argv) {
   cai_agent_runtime_config_init(&runtime_config);
   runtime_config.workspace_directory = workspace;
   runtime_config.model = model;
+  runtime_config.logger = logger;
   runtime_config.event_callback = render_event;
   runtime_config.event_context = &renderer;
   if (rc == CAI_OK) {
@@ -918,6 +993,12 @@ int main(int argc, char **argv) {
   }
   if (chatgpt_auth != NULL) {
     chatgpt_auth->close(chatgpt_auth);
+  }
+  if (logger != NULL) {
+    logger->destroy(logger);
+  }
+  if (logger_root != NULL) {
+    logger_root->destroy(logger_root);
   }
   cai_string_destroy(chatgpt_auth_path_display);
   cai_error_cleanup(&error);

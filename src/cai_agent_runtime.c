@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <openssl/sha.h>
+#include <pslog.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -89,6 +90,7 @@ typedef struct cai_runtime_event_node {
   char *subagent_name;
   char *parent_tool_call_id;
   char *subagent_metadata_json;
+  char *subagent_instruction;
   struct cai_runtime_event_node *next;
 } cai_runtime_event_node;
 
@@ -450,6 +452,8 @@ struct cai_agent_runtime {
   cai_runtime_goal_control_node *goal_control_tail;
   cai_agent_runtime_event_fn event_callback;
   void *event_context;
+  pslog_logger *logger;
+  int logger_disabled;
   cai_terminal_event_fn terminal_event_callback;
   void *terminal_event_context;
   char *terminal_origin_tool_call_id;
@@ -630,7 +634,90 @@ static void cai_runtime_event_node_free(cai_runtime_event_node *node) {
   cai_free_mem(NULL, node->subagent_name);
   cai_free_mem(NULL, node->parent_tool_call_id);
   cai_free_mem(NULL, node->subagent_metadata_json);
+  cai_free_mem(NULL, node->subagent_instruction);
   cai_free_mem(NULL, node);
+}
+
+/* Runtime logs intentionally describe lifecycle state, not user input, tool
+ * arguments, streamed output, or delegated instructions. Hosts receive those
+ * values through the event callback when they choose to render them. */
+static void cai_runtime_log_opened(const cai_agent_runtime *runtime) {
+  if (runtime != NULL && !runtime->logger_disabled && runtime->logger != NULL &&
+      runtime->logger->infof != NULL) {
+    runtime->logger->infof(
+        runtime->logger, "agent runtime opened",
+        "session_id=%s workspace=%s preset=%s review=%d",
+        runtime->session_id != NULL ? runtime->session_id : "",
+        runtime->workspace_directory != NULL ? runtime->workspace_directory
+                                             : "",
+        runtime->preset_name != NULL ? runtime->preset_name : "",
+        runtime->review_mode);
+  }
+}
+
+static void cai_runtime_log_input_accepted(const cai_agent_runtime *runtime,
+                                           cai_runtime_input_kind kind) {
+  const char *kind_name;
+
+  if (runtime == NULL || runtime->logger_disabled || runtime->logger == NULL ||
+      runtime->logger->debugf == NULL) {
+    return;
+  }
+  kind_name = kind == CAI_RUNTIME_INPUT_STEERING      ? "steering"
+              : kind == CAI_RUNTIME_INPUT_QUEUED_TURN ? "queued"
+                                                      : "turn";
+  runtime->logger->debugf(
+      runtime->logger, "agent input accepted", "session_id=%s kind=%s",
+      runtime->session_id != NULL ? runtime->session_id : "", kind_name);
+}
+
+static void cai_runtime_log_tool_event(const cai_agent_runtime *runtime,
+                                       const cai_tool_event *event,
+                                       int action) {
+  const char *message;
+
+  if (runtime == NULL || event == NULL || runtime->logger_disabled ||
+      runtime->logger == NULL) {
+    return;
+  }
+  message = event->type == CAI_TOOL_EVENT_START    ? "agent tool started"
+            : event->type == CAI_TOOL_EVENT_OUTPUT ? "agent tool completed"
+                                                   : "agent tool failed";
+  if (event->type == CAI_TOOL_EVENT_ERROR && runtime->logger->warnf != NULL) {
+    runtime->logger->warnf(
+        runtime->logger, message, "session_id=%s tool=%s action=%d call_id=%s",
+        runtime->session_id != NULL ? runtime->session_id : "",
+        event->name != NULL ? event->name : "", action,
+        event->call_id != NULL ? event->call_id : "");
+  } else if (runtime->logger->debugf != NULL) {
+    runtime->logger->debugf(
+        runtime->logger, message, "session_id=%s tool=%s action=%d call_id=%s",
+        runtime->session_id != NULL ? runtime->session_id : "",
+        event->name != NULL ? event->name : "", action,
+        event->call_id != NULL ? event->call_id : "");
+  }
+}
+
+static void cai_runtime_log_subagent_lifecycle(const cai_agent_runtime *runtime,
+                                               int type,
+                                               const char *profile_name,
+                                               const char *child_session_id,
+                                               size_t instruction_length) {
+  const char *message;
+
+  if (runtime == NULL || runtime->logger_disabled || runtime->logger == NULL ||
+      runtime->logger->debugf == NULL) {
+    return;
+  }
+  message = type == CAI_AGENT_EVENT_SUBAGENT_STARTED
+                ? "agent subagent started"
+                : "agent subagent handed off";
+  runtime->logger->debugf(
+      runtime->logger, message,
+      "session_id=%s profile=%s child_session_id=%s instruction_bytes=%zu",
+      runtime->session_id != NULL ? runtime->session_id : "",
+      profile_name != NULL ? profile_name : "",
+      child_session_id != NULL ? child_session_id : "", instruction_length);
 }
 
 static void cai_runtime_input_node_free(cai_runtime_input_node *node) {
@@ -726,12 +813,10 @@ static int cai_runtime_event_node_new(int type, const char *data,
   return CAI_OK;
 }
 
-static int cai_runtime_event_node_set_subagent(cai_runtime_event_node *node,
-                                               const char *session_id,
-                                               const char *subagent_name,
-                                               const char *parent_tool_call_id,
-                                               const char *metadata_json,
-                                               cai_error *error) {
+static int cai_runtime_event_node_set_subagent(
+    cai_runtime_event_node *node, const char *session_id,
+    const char *subagent_name, const char *parent_tool_call_id,
+    const char *metadata_json, const char *instruction, cai_error *error) {
   if (node == NULL || session_id == NULL || session_id[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "subagent event requires a child session id");
@@ -764,6 +849,14 @@ static int cai_runtime_event_node_set_subagent(cai_runtime_event_node *node,
                            "failed to retain subagent metadata");
     }
     node->event.subagent_metadata_json = node->subagent_metadata_json;
+  }
+  if (instruction != NULL) {
+    node->subagent_instruction = cai_strdup(NULL, instruction);
+    if (node->subagent_instruction == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to retain subagent instruction");
+    }
+    node->event.subagent_instruction = node->subagent_instruction;
   }
   node->event.runtime_session_id = node->runtime_session_id;
   return CAI_OK;
@@ -829,7 +922,7 @@ static int cai_runtime_forward_subagent_event(
   if (rc == CAI_OK) {
     rc = cai_runtime_event_node_set_subagent(
         node, execution->child_session_id, execution->profile_name,
-        execution->parent_tool_call_id, NULL, error);
+        execution->parent_tool_call_id, NULL, NULL, error);
   }
   if (rc == CAI_OK && event->tool_path != NULL) {
     node->tool_path = cai_strdup(NULL, event->tool_path);
@@ -3046,6 +3139,7 @@ static int cai_runtime_tool_event(void *context, const cai_tool_event *event,
              ? CAI_AGENT_EVENT_TOOL_CALL_COMPLETED
              : CAI_AGENT_EVENT_TOOL_CALL_FAILED;
   tool_action = cai_runtime_tool_action(runtime, event->name);
+  cai_runtime_log_tool_event(runtime, event, tool_action);
   tool_path = cai_runtime_tool_path_from_arguments(event);
   tool_path_count = 0U;
   data = NULL;
@@ -4939,6 +5033,14 @@ int cai_agent_runtime_open(cai_client *client,
   runtime->goal_control_limit = CAI_RUNTIME_DEFAULT_GOAL_CONTROL_LIMIT;
   runtime->event_callback = config->event_callback;
   runtime->event_context = config->event_context;
+  if (config->logger != NULL) {
+    runtime->logger = config->logger;
+    runtime->logger_disabled = config->logger_disabled;
+  } else {
+    runtime->logger = CAI_CLIENT_IMPL(client)->logger;
+    runtime->logger_disabled =
+        config->logger_disabled || CAI_CLIENT_IMPL(client)->logger_disabled;
+  }
   runtime->review_mode = review_mode;
   runtime->terminal_enabled =
       !config->disable_terminal &&
@@ -5247,6 +5349,7 @@ int cai_agent_runtime_open(cai_client *client,
     return rc;
   }
   runtime->worker_started = 1;
+  cai_runtime_log_opened(runtime);
   *out = runtime;
   return CAI_OK;
 }
@@ -5432,6 +5535,7 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
   }
   pthread_cond_broadcast(&runtime->condition);
   pthread_mutex_unlock(&runtime->lock);
+  cai_runtime_log_input_accepted(runtime, kind);
   return CAI_OK;
 }
 
@@ -5983,6 +6087,8 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
   config.turn_queue_limit = parent->turn_limit;
   config.event_callback = parent->review_event_callback;
   config.event_context = parent->review_event_context;
+  config.logger = parent->logger;
+  config.logger_disabled = parent->logger_disabled;
   review = NULL;
   rc = cai_agent_runtime_open(parent->client, &config, &review, error);
   if (rc == CAI_OK) {
@@ -6396,7 +6502,8 @@ cai_runtime_find_subagent(cai_agent_runtime *runtime, const char *name,
 static int cai_runtime_emit_subagent_lifecycle(
     cai_agent_runtime *parent, int type, const char *child_session_id,
     const char *profile_name, const char *parent_tool_call_id, const char *data,
-    size_t data_length, const char *metadata_json, cai_error *error) {
+    size_t data_length, const char *metadata_json, const char *instruction,
+    cai_error *error) {
   cai_runtime_event_node *node;
   char tool_name[80];
   int length;
@@ -6421,7 +6528,7 @@ static int cai_runtime_emit_subagent_lifecycle(
   if (rc == CAI_OK) {
     rc = cai_runtime_event_node_set_subagent(node, child_session_id,
                                              profile_name, parent_tool_call_id,
-                                             metadata_json, error);
+                                             metadata_json, instruction, error);
   }
   if (rc == CAI_OK) {
     cai_runtime_append_event_node_locked(parent, node);
@@ -6429,6 +6536,11 @@ static int cai_runtime_emit_subagent_lifecycle(
     cai_runtime_event_node_free(node);
   }
   pthread_mutex_unlock(&parent->lock);
+  if (rc == CAI_OK) {
+    cai_runtime_log_subagent_lifecycle(
+        parent, type, profile_name, child_session_id,
+        instruction != NULL ? strlen(instruction) : 0U);
+  }
   return rc;
 }
 
@@ -6503,6 +6615,8 @@ static int cai_runtime_open_tool_subagent(
   config.model = model;
   config.reasoning_effort = effort;
   config.reasoning_summary = summary;
+  config.logger = parent->logger;
+  config.logger_disabled = parent->logger_disabled;
   config.developer_instructions_extension =
       parent->smith_developer_instructions_extension;
   config.terminal_tool_config =
@@ -6700,7 +6814,7 @@ static int cai_runtime_run_subagent(void *context, const void *params,
                                       : args->instructions,
         strlen(args->display_summary != NULL ? args->display_summary
                                              : args->instructions),
-        args->metadata_json, error);
+        args->metadata_json, args->instructions, error);
   }
   terminal = 0;
   while (rc == CAI_OK && !terminal) {
@@ -6796,7 +6910,7 @@ static int cai_runtime_run_subagent(void *context, const void *params,
     rc = cai_runtime_emit_subagent_lifecycle(
         parent, CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF, execution.child_session_id,
         args->profile, execution.parent_tool_call_id, handover,
-        strlen(handover), args->metadata_json, error);
+        strlen(handover), args->metadata_json, NULL, error);
   }
   if (child != NULL)
     cai_agent_runtime_close(child);

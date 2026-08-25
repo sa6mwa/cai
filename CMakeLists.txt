@@ -847,7 +847,7 @@ if(CAI_BUILD_EXAMPLES)
       "${CAI_GENERATED_INCLUDE_DIR}"
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
       "${CAI_LONEJSON_INCLUDE_DIR}")
-    if(_cai_example STREQUAL "mcp_server")
+    if(_cai_example STREQUAL "mcp_server" OR _cai_example STREQUAL "smith_terminal")
       target_include_directories(cai_example_${_cai_example} PRIVATE
         "${CAI_PSLOG_INCLUDE_DIR}")
     endif()
@@ -855,13 +855,13 @@ if(CAI_BUILD_EXAMPLES)
     if(_cai_example STREQUAL "smhi_weather")
       cai_link_direct_curl_user(cai_example_${_cai_example})
     endif()
-    if(_cai_example STREQUAL "mcp_server")
+    if(_cai_example STREQUAL "mcp_server" OR _cai_example STREQUAL "smith_terminal")
       if(CAI_PSLOG_LINK)
         target_link_libraries(cai_example_${_cai_example} PRIVATE
           ${CAI_PSLOG_LINK})
       else()
         message(FATAL_ERROR
-          "The mcp-server example requires libpslog. Install libpslog, set "
+          "The ${_cai_example} example requires libpslog. Install libpslog, set "
           "CAI_PSLOG_LIBRARY, or configure with CAI_BUILD_EXAMPLES=OFF.")
       endif()
     endif()
@@ -972,8 +972,13 @@ if(CAI_BUILD_TESTS)
     target_include_directories(cai_smith_terminal_renderer_test PRIVATE
       "${CAI_PUBLIC_INCLUDE_DIR}"
       "${CAI_GENERATED_INCLUDE_DIR}"
-      "${CAI_LONEJSON_INCLUDE_DIR}")
+      "${CAI_LONEJSON_INCLUDE_DIR}"
+      "${CAI_PSLOG_INCLUDE_DIR}")
     cai_link_internal_consumer(cai_smith_terminal_renderer_test)
+    if(CAI_PSLOG_LINK)
+      target_link_libraries(cai_smith_terminal_renderer_test PRIVATE
+        ${CAI_PSLOG_LINK})
+    endif()
     cai_configure_c_target(cai_smith_terminal_renderer_test)
     add_test(NAME cai_smith_terminal_renderer_test
       COMMAND cai_smith_terminal_renderer_test)

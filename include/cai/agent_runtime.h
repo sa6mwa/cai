@@ -195,6 +195,12 @@ typedef struct cai_agent_runtime_event {
    * subagent invocation. Present on its lifecycle events, otherwise NULL.
    */
   const char *subagent_metadata_json;
+  /**
+   * Exact final instruction submitted to a child runtime. Present only on
+   * CAI_AGENT_EVENT_SUBAGENT_STARTED; unlike data, this is not abbreviated
+   * for display. Borrowed until the event callback returns.
+   */
+  const char *subagent_instruction;
 } cai_agent_runtime_event;
 
 /**
@@ -554,6 +560,14 @@ typedef struct cai_agent_runtime_config {
   cai_agent_runtime_event_fn event_callback;
   /** Context passed to event_callback. */
   void *event_context;
+  /**
+   * Optional runtime logger. NULL inherits the owning client's logger. The
+   * logger is borrowed until runtime close; CAI logs lifecycle metrics and
+   * diagnostic messages but never user prompts or streamed model output.
+   */
+  struct pslog_logger *logger;
+  /** Non-zero disables runtime logging, including inherited client logging. */
+  int logger_disabled;
   /** Maximum queued normal turns; zero selects the bounded default. */
   size_t turn_queue_limit;
   /**

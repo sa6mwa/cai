@@ -400,19 +400,24 @@ that include lonejson-backed cai headers or use static linking still need the
 lonejson development package. The pkg-config file exposes lonejson as a public
 requirement and libcurl 7.86.0 or newer as a private link requirement.
 `pslog.h`/`libpslog` is only needed by source builds, logging integrations
-that construct pslog loggers directly, and the MCP server examples. cai
+that construct pslog loggers directly, and the logging-enabled MCP and Smith
+terminal examples. cai
 release archives do not compile in single-header dependency variants.
 
 ## Logging
 
-`cai_client_config.logger` accepts a borrowed `pslog_logger *`. cai never owns
-or destroys that logger; set `logger_disabled` to nonzero to suppress logging
-even when a logger is present.
+`cai_client_config.logger` and `cai_agent_runtime_config.logger` accept a
+borrowed `pslog_logger *`. CAI never owns or destroys either logger. A runtime
+inherits its client logger when no runtime logger is supplied; set the relevant
+`logger_disabled` field to nonzero to suppress logging.
 
-Current cai-owned log events cover client setup, OpenRouter server-continuity
+Current cai-owned log events cover client setup, runtime open/input/tool/
+subagent lifecycle, OpenRouter server-continuity
 warnings, HTTP request start/completion, API error status responses, transport
 failures, and configured HTTP response-size limit failures. API keys and
-request/response bodies are not logged. HTTP request starts are trace-level,
+request/response bodies are not logged; runtime logs likewise exclude user
+prompts, tool arguments, delegated instructions, and streamed model output.
+HTTP request starts are trace-level,
 successful completions are debug-level, 4xx API responses are warn-level, and
 5xx/transport failures are error-level.
 

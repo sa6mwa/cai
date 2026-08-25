@@ -1,4 +1,5 @@
 local cai = require("cai")
+local pslog = require("pslog")
 
 local reset = "\27[0m"
 local gray = "\27[90m"
@@ -30,10 +31,17 @@ end
 local model = nil
 local auth_json = os.getenv("CAI_CHATGPT_AUTH_JSON")
 local use_chatgpt_auth = true
+local verbosity = 0
 local i = 1
 while i <= #arg do
   if arg[i] == "--chatgpt-auth" then
     use_chatgpt_auth = true
+    i = i + 1
+  elseif arg[i] == "-v" or arg[i] == "--verbose" then
+    verbosity = verbosity + 1
+    i = i + 1
+  elseif arg[i] == "-vv" then
+    verbosity = verbosity + 2
     i = i + 1
   elseif arg[i] == "--chatgpt-auth-json" then
     auth_json = arg[i + 1]
@@ -51,8 +59,11 @@ while i <= #arg do
     end
     i = i + 2
   elseif arg[i] == "--help" or arg[i] == "-h" then
-    io.stderr:write("usage: lua examples/lua-smith-terminal/main.lua [--chatgpt-auth] [--chatgpt-auth-json <path>] [--model <model>]\n\n" ..
-      "Smith uses CAI's ChatGPT subscription auth by default. Run make chatgpt-login first.\n")
+    io.stderr:write("usage: lua examples/lua-smith-terminal/main.lua [--chatgpt-auth] [--chatgpt-auth-json <path>] [--model <model>] [-v|--verbose] [-vv]\n\n" ..
+      "Smith uses CAI's ChatGPT subscription auth by default. Run make chatgpt-login first.\n\n" ..
+      "  -v, --verbose  Enable debug lifecycle logging on stderr.\n" ..
+      "  -vv            Enable trace logging and show delegated instructions.\n\n" ..
+      "Logging defaults to disabled; LOG_LEVEL and other LOG_* pslog settings override these defaults.\n")
     os.exit(0)
   else
     io.stderr:write("unknown argument: " .. tostring(arg[i]) .. "\n")
@@ -70,6 +81,13 @@ if not model or model == "" then
   model = "gpt-5.6-luna"
 end
 
+local logger = pslog.from_env("LOG_", {
+  output = "stderr",
+  mode = "console",
+  color = "auto",
+  min_level = verbosity >= 2 and "trace" or (verbosity == 1 and "debug" or "disabled"),
+}):with("component", "smith-example")
+
 local render = smith_renderer.new(cai, {
   write = io.write,
   flush = io.flush,
@@ -79,6 +97,7 @@ local render = smith_renderer.new(cai, {
   green = green,
   magenta = magenta,
   red = red,
+  show_subagent_instruction = verbosity >= 2,
 })
 
 local function review_request(command)
@@ -128,10 +147,12 @@ end
 local client = ok(cai.open({
   chatgpt_auth = use_chatgpt_auth,
   chatgpt_auth_json = auth_json,
+  logger = logger,
 }), nil, "cai.open")
 local runtime = ok(client:new_smith_runtime({
   workspace_directory = os.getenv("PWD") or ".",
   model = model,
+  logger = logger,
   event_callback = render.event,
 }), nil, "client:new_smith_runtime")
 
@@ -179,3 +200,4 @@ end
 
 runtime:close()
 client:close()
+logger:close()

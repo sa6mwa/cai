@@ -109,6 +109,7 @@ typedef struct cai_lua_agent_runtime {
   cai_agent_runtime *ptr;
   lua_State *L;
   cai_lua_client *parent_client;
+  pslog_lua_logger_ref logger_ref;
   int parent_ref;
   int callback_ref;
   int session_store_ref;
@@ -124,6 +125,7 @@ typedef struct cai_lua_agent_runtime {
   size_t review_child_count;
   size_t active_calls;
   size_t callback_calls;
+  int has_logger_ref;
   int close_requested;
 } cai_lua_agent_runtime;
 
@@ -3304,6 +3306,10 @@ static int cai_lua_agent_runtime_event(void *context,
     lua_pushstring(L, event->subagent_metadata_json);
     lua_setfield(L, -2, "subagent_metadata_json");
   }
+  if (event->subagent_instruction != NULL) {
+    lua_pushstring(L, event->subagent_instruction);
+    lua_setfield(L, -2, "subagent_instruction");
+  }
   if (event->terminal_id != NULL) {
     lua_pushstring(L, event->terminal_id);
     lua_setfield(L, -2, "terminal_id");
@@ -3355,10 +3361,13 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   cai_mcp_client **mcp_clients;
   cai_mcp_tool_registration_config mcp_tool_config;
   cai_lua_subagent_config subagent_config;
+  pslog_lua_logger_ref logger_ref;
   cai_error error;
   size_t mcp_client_count;
   int mcp_clients_ref;
+  int has_logger_ref;
   int subagent_status;
+  struct pslog_logger *logger;
   int rc;
 
   client = cai_lua_check_client(L, 1);
@@ -3409,6 +3418,9 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   runtime->mcp_clients_ref = LUA_NOREF;
   runtime->review_parent_ref = LUA_NOREF;
   runtime->review_children_ref = LUA_NOREF;
+  memset(&logger_ref, 0, sizeof(logger_ref));
+  has_logger_ref = 0;
+  logger = NULL;
   native_session_store = NULL;
   native_skill_store = NULL;
   lua_getfield(L, 2, "event_callback");
@@ -3562,6 +3574,7 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
       cai_lua_opt_size_field(L, 2, "steering_queue_limit", 0U);
   config.turn_queue_limit =
       cai_lua_opt_size_field(L, 2, "turn_queue_limit", 0U);
+  config.logger_disabled = cai_lua_opt_bool_field(L, 2, "logger_disabled", 0);
   if (runtime->callback_ref != LUA_NOREF) {
     config.event_callback = cai_lua_agent_runtime_event;
     config.event_context = runtime;
@@ -3619,9 +3632,14 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   config.subagents = subagent_config.profiles;
   config.subagent_count = subagent_config.count;
   cai_error_init(&error);
-  cai_lua_client_enter(client);
-  rc = cai_agent_runtime_open(client->ptr, &config, &runtime->ptr, &error);
-  cai_lua_client_leave(client);
+  rc =
+      cai_lua_logger_field(L, 2, &logger_ref, &has_logger_ref, &logger, &error);
+  if (rc == CAI_OK) {
+    config.logger = logger;
+    cai_lua_client_enter(client);
+    rc = cai_agent_runtime_open(client->ptr, &config, &runtime->ptr, &error);
+    cai_lua_client_leave(client);
+  }
   if (rc == CAI_OK && subagent_config.prepare_backends != NULL) {
     size_t backend_count;
     size_t i;
@@ -3650,6 +3668,7 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   cai_lua_subagent_config_cleanup(&subagent_config);
   free(mcp_clients);
   if (rc != CAI_OK) {
+    cai_lua_unref_pslog_logger(&logger_ref, &has_logger_ref);
     if (runtime->callback_ref != LUA_NOREF) {
       luaL_unref(L, LUA_REGISTRYINDEX, runtime->callback_ref);
     }
@@ -3664,6 +3683,10 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
     lua_pop(L, 1);
     return cai_lua_fail(L, rc, &error);
   }
+  runtime->logger_ref = logger_ref;
+  runtime->has_logger_ref = has_logger_ref;
+  memset(&logger_ref, 0, sizeof(logger_ref));
+  has_logger_ref = 0;
   client->child_runtimes++;
   if (config.global_instruction_store != NULL) {
     lua_getfield(L, 2, "global_instruction_store");
@@ -4297,6 +4320,7 @@ static void cai_lua_agent_runtime_release(lua_State *L,
     luaL_unref(L, LUA_REGISTRYINDEX, self->review_children_ref);
     self->review_children_ref = LUA_NOREF;
   }
+  cai_lua_unref_pslog_logger(&self->logger_ref, &self->has_logger_ref);
   self->parent_client = NULL;
 }
 

@@ -210,6 +210,24 @@ The runtime serializes all model requests and all tool invocations. Smith sets
 model response is a protocol error unless a future preset explicitly provides
 a deterministic serialisation policy.
 
+### 4.3 Runtime observability
+
+`cai_agent_runtime_config.logger` accepts an optional borrowed
+`pslog_logger *`. When it is NULL, the runtime inherits its client logger;
+`logger_disabled` suppresses either source. CAI never owns either logger.
+Runtime logs are structured lifecycle diagnostics—open, accepted input kind,
+tool lifecycle, and subagent lifecycle—and contain no user prompts, tool
+arguments, delegated instruction text, or streamed model output. This lets a
+host retain its own privacy and presentation policy while still observing
+runtime health.
+
+The complete final child instruction is exposed separately as
+`subagent_instruction` on `SUBAGENT_STARTED`. It is borrowed until the event
+callback returns and is never abbreviated. The existing event `data` remains
+the concise launch display summary. Hosts normally render only that summary;
+they can inspect or reveal the full instruction for audit, diagnostics, or an
+explicit advanced UI mode without reconstructing it from tool arguments.
+
 ## 5. Public API shape
 
 Existing `cai_agent`, `cai_session`, `cai_stream_sinks`, local tool registry,
@@ -834,14 +852,15 @@ process without adopting CAI's presentation layer.
 
 `SUBAGENT_STARTED` carries the bounded launch display summary in its data
 payload, together with the profile name, child session ID, originating
-tool-call ID, and optional prepared JSON metadata. Without a supplied summary,
-CAI uses the final delegated child input. A terminal UI should show a short,
+tool-call ID, optional prepared JSON metadata, and the exact final
+`subagent_instruction`. Without a supplied summary, CAI uses the final
+delegated child input. A terminal UI should show a short,
 control-safe task preview
 when the parent delegates work (for example, `Starting review subagent — task:
 review changes against trunk`). It must treat the task text as untrusted model
 output and avoid presenting raw tool-call JSON. The C and Lua Smith terminal
-examples demonstrate this presentation; other hosts can render the same event
-according to their own UX.
+examples demonstrate this presentation and reveal the full instruction only
+with `-vv`; other hosts can render the same event according to their own UX.
 
 #### 6.3.3 Handover contract
 

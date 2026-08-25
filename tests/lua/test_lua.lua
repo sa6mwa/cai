@@ -1158,6 +1158,14 @@ do
   end
   local native_session_store = assert(native_store_test.new_agent_session())
   local wrong_session_store = assert(native_store_test.new_mcp_session())
+  local runtime_logger_chunks = {}
+  local runtime_logger = pslog.new_json({
+    output = function(chunk)
+      runtime_logger_chunks[#runtime_logger_chunks + 1] = chunk
+    end,
+    no_color = true,
+    disable_timestamp = true,
+  })
   assert_not_ok(cai.native_store("agent_session", nil),
     "native agent session stores must require a C callback table")
   assert_throws(function()
@@ -1172,8 +1180,11 @@ do
     workspace_directory = ".",
     session_store = native_session_store,
     disable_terminal = true,
+    logger = runtime_logger,
     event_callback = function() end,
   }))
+  assert(table.concat(runtime_logger_chunks):find("agent runtime opened", 1, true),
+    "Lua Smith runtime accepts and retains a native pslog logger")
   assert_eq(runtime:state(), "idle", "Lua Smith runtime initial state")
   assert(type(runtime:session_id()) == "string", "Lua Smith runtime session id")
   assert(type(runtime:wakeup_fd()) == "number", "Lua Smith runtime wakeup fd")
@@ -1220,6 +1231,7 @@ do
     assert_not_ok(value, err, "client close must reject a live Lua agent runtime")
   end
   runtime:close()
+  runtime_logger:close()
   native_session_store:close()
   local review_runtime = assert_ok(dummy_client:new_smith_review_runtime({
     workspace_directory = ".",

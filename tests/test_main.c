@@ -159,6 +159,7 @@ typedef struct runtime_event_state {
   char failure_message[256];
   char review_report[1024];
   char review_handoff[1024];
+  char subagent_display_summary[1024];
   char subagent_instruction[1024];
   char subagent_handoff[1024];
   char subagent_metadata_json[1024];
@@ -1914,8 +1915,13 @@ static int test_runtime_event(void *context,
   if (event->type == CAI_AGENT_EVENT_SUBAGENT_STARTED) {
     state->saw_subagent_started = 1;
     if (event->data != NULL) {
+      snprintf(state->subagent_display_summary,
+               sizeof(state->subagent_display_summary), "%.*s",
+               (int)event->data_length, event->data);
+    }
+    if (event->subagent_instruction != NULL) {
       snprintf(state->subagent_instruction, sizeof(state->subagent_instruction),
-               "%.*s", (int)event->data_length, event->data);
+               "%s", event->subagent_instruction);
     }
     if (event->runtime_session_id != NULL) {
       snprintf(state->subagent_session_id, sizeof(state->subagent_session_id),
@@ -25873,6 +25879,8 @@ static void test_agent_runtime_subagent(test_state *state) {
   config.subagent_count = 1U;
   config.event_callback = test_runtime_event;
   config.event_context = &events;
+  g_test_infof_count = 0;
+  g_test_debugf_count = 0;
   expect_int(state, "agent_runtime_subagent_open",
              cai_agent_runtime_open(mock.client, &config, &runtime, &error),
              CAI_OK);
@@ -25898,8 +25906,10 @@ static void test_agent_runtime_subagent(test_state *state) {
                CAI_AGENT_COMPLETED);
     expect_int(state, "agent_runtime_subagent_started_event",
                events.saw_subagent_started, 1L);
-    expect_substr(state, "agent_runtime_subagent_started_instruction",
-                  events.subagent_instruction, "Preparing the JSON worker.");
+    expect_str(state, "agent_runtime_subagent_started_display_summary",
+               events.subagent_display_summary, "Preparing the JSON worker.");
+    expect_str(state, "agent_runtime_subagent_started_instruction",
+               events.subagent_instruction, "Prepared JSON worker task.");
     expect_int(state, "agent_runtime_subagent_prepare_called",
                prepare_state.calls, 1L);
     expect_int(state, "agent_runtime_subagent_prepare_request",
@@ -25912,10 +25922,27 @@ static void test_agent_runtime_subagent(test_state *state) {
                events.subagent_session_id[0] != '\0', 1L);
     expect_int(state, "agent_runtime_subagent_event_owner", events.wrong_thread,
                0L);
+    expect_int(state, "agent_runtime_subagent_runtime_open_logged",
+               g_test_infof_count > 0, 1L);
+    expect_int(state, "agent_runtime_subagent_lifecycle_logged",
+               g_test_debugf_count > 0, 1L);
     expect_int(state, "agent_runtime_subagent_handoff_checkpoint_retried",
                store_state.fail_checkpoint_once, 0L);
     cai_agent_runtime_close(runtime);
   }
+  g_test_infof_count = 0;
+  g_test_debugf_count = 0;
+  config.logger_disabled = 1;
+  runtime = NULL;
+  expect_int(state, "agent_runtime_subagent_logger_disabled_open",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_OK);
+  cai_agent_runtime_close(runtime);
+  expect_int(state, "agent_runtime_subagent_logger_disabled_info",
+             g_test_infof_count, 0L);
+  expect_int(state, "agent_runtime_subagent_logger_disabled_debug",
+             g_test_debugf_count, 0L);
+  config.logger_disabled = 0;
   profile.instruction_template = "{{unknown_field}}";
   runtime = NULL;
   expect_int(state, "agent_runtime_subagent_rejects_unknown_template_field",
@@ -26077,9 +26104,12 @@ static void test_agent_runtime_review_subagent(test_state *state) {
                CAI_AGENT_COMPLETED);
     expect_int(state, "agent_runtime_review_subagent_started_event",
                events.saw_subagent_started, 1L);
+    expect_str(state, "agent_runtime_review_subagent_started_display_summary",
+               events.subagent_display_summary,
+               "Reviewing changes against trunk.");
     expect_substr(state, "agent_runtime_review_subagent_started_instruction",
                   events.subagent_instruction,
-                  "Reviewing changes against trunk.");
+                  "Review the code changes against the base branch 'trunk'.");
     expect_int(state, "agent_runtime_review_subagent_handoff_event",
                events.saw_subagent_handed_off, 1L);
     expect_int(state, "agent_runtime_review_subagent_no_raw_report",
