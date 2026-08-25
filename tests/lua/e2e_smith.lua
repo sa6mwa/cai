@@ -229,11 +229,9 @@ local ok, err = xpcall(function()
     "In your final response include the exact marker LUA_SMITH_REVIEW_FOLLOWUP.",
   }, " ")
   local subagent_prompt = table.concat({
-    "Use run_subagent exactly twice before answering.",
-    "First call the `checker` profile with instructions to validate the marker",
-    "SUBAGENT_CHECKER_CONFIRMED. Then call `review` to review the current",
-    "committed project. Do not set model, reasoning_effort, or reasoning_summary",
-    "for either call. Do not call either profile more than once.",
+    "Use run_checker exactly once with no arguments before answering.",
+    "Then call run_review exactly once with target uncommitted.",
+    "Do not set model, reasoning_effort, or reasoning_summary for either call.",
     "After both handovers return, include exactly the marker",
     "LUA_SMITH_SUBAGENTS_CONFIRMED.",
   }, " ")
@@ -262,6 +260,7 @@ local ok, err = xpcall(function()
       {
         name = "checker",
         description = "Return a compact checker JSON handover.",
+        expose_instructions = true,
         preset = {
           name = "checker",
           prompt_version = "checker-1",

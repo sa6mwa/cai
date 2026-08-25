@@ -364,8 +364,10 @@ static int cai_skill_parse_frontmatter(const char *text, const char *fallback,
     line_end = strchr(cursor, '\n');
     line_length =
         line_end != NULL ? (size_t)(line_end - cursor) : strlen(cursor);
-    if ((line_length == 3U && strncmp(cursor, "---", 3U) == 0) ||
-        (line_length == 4U && strncmp(cursor, "---\r", 4U) == 0)) {
+    if (line_length > 0U && cursor[line_length - 1U] == '\r') {
+      line_length--;
+    }
+    if (line_length == 3U && strncmp(cursor, "---", 3U) == 0) {
       break;
     }
     if (line_length > 5U && strncmp(cursor, "name:", 5U) == 0) {

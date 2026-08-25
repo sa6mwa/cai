@@ -296,7 +296,7 @@ function M.new(cai, output, colors)
       end
     elseif event.type == cai.AGENT_EVENT_TOOL_CALL_COMPLETED and
         event.tool_name ~= "exec_command" and event.tool_name ~= "write_stdin" and
-        event.tool_name ~= "run_subagent" then
+        event.tool_action ~= cai.AGENT_TOOL_ACTION_SUBAGENT then
       close_message()
       local verbs = {
         [cai.AGENT_TOOL_ACTION_READ] = "Read",

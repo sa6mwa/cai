@@ -257,7 +257,7 @@ static int cai_smith_build_tool_contract(const cai_allocator *allocator,
       "SKILL.md and permitted package-relative resources. Do not assume Codex "
       "plugins, external skill providers, or other undisclosed skill APIs. ";
   static const char *const subagents =
-      "Use run_subagent only for an enabled delegated role; it runs one "
+      "Use only enabled subagent tools for delegated roles; each runs one "
       "isolated child synchronously and returns its durable handover. ";
   static const char *const serial =
       "Tool calls are serial: complete and assess one call before issuing "

@@ -724,6 +724,25 @@ int cai_agent_register_lonejson_tool(cai_agent *agent, const char *name,
                                         context, error);
 }
 
+int cai_agent_register_lonejson_tool_schema_internal(
+    cai_agent *agent, const char *name, const char *description,
+    const char *schema_json, int strict, const lonejson_map *params_map,
+    const lonejson_map *result_map, cai_tool_fn callback, void *context,
+    cai_error *error) {
+  cai_agent_impl *impl;
+
+  if (agent == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is required");
+  }
+  impl = CAI_AGENT_IMPL(agent);
+  if (impl == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
+  }
+  return cai_tool_registry_register_lonejson_schema_owned(
+      impl->tools, name, description, schema_json, strict, params_map,
+      result_map, callback, context, NULL, error);
+}
+
 int cai_agent_register_raw_tool(cai_agent *agent, const char *name,
                                 const char *description,
                                 const char *schema_json, int strict,

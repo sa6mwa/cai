@@ -50,8 +50,9 @@ extern "C" {
 /** Register configured global skills and the constrained read_skill tool. */
 #define CAI_AGENT_PRESET_TOOL_SKILLS (1UL << 8)
 /**
- * Register CAI's synchronous run_subagent tool when the runtime has at least
- * one enabled subagent profile. Child agents never receive this capability.
+ * Register generated synchronous subagent tools when the runtime has at least
+ * one enabled profile. The built-in reviewer is run_review and host profiles
+ * are run_<name>; child agents never receive this capability.
  */
 #define CAI_AGENT_PRESET_TOOL_SUBAGENTS (1UL << 9)
 

@@ -1000,6 +1000,22 @@ do
         allowed_models = { cai.MODEL_GPT_5_6_LUNA },
         allowed_reasoning_efforts = { cai.REASONING_EFFORT_LOW },
         allowed_reasoning_summaries = { cai.REASONING_SUMMARY_CONCISE },
+        parameters = {
+          {
+            name = "format",
+            description = "Required output format.",
+            type = "enum",
+            required = true,
+            enum_values = { "json", "markdown" },
+          },
+          {
+            name = "max_items",
+            description = "Optional output limit.",
+            type = "integer",
+          },
+        },
+        instruction_template = "Return {{format}} for {{instructions}}.",
+        expose_instructions = true,
         preset = {
           name = "vectis-summarizer",
           prompt_version = "vectis-summarizer-1",

@@ -185,7 +185,7 @@ typedef struct cai_agent_runtime_event {
   /** Enabled subagent profile for subagent lifecycle events, otherwise NULL. */
   const char *subagent_name;
   /**
-   * Parent run_subagent invocation ID for forwarded child events, otherwise
+   * Parent subagent invocation ID for forwarded child events, otherwise
    * NULL. tool_call_id remains the child tool's own provider invocation ID.
    */
   const char *parent_tool_call_id;
@@ -230,8 +230,34 @@ typedef struct cai_agent_review_request {
 /** Initialize a zero-defaultable review request. */
 void cai_agent_review_request_init(cai_agent_review_request *request);
 
+/** Supported model-facing parameter kinds for a subagent profile tool. */
+typedef enum cai_agent_subagent_parameter_type {
+  CAI_AGENT_SUBAGENT_PARAMETER_STRING = 0,
+  CAI_AGENT_SUBAGENT_PARAMETER_INTEGER = 1,
+  CAI_AGENT_SUBAGENT_PARAMETER_ENUM = 2
+} cai_agent_subagent_parameter_type;
+
 /**
- * Host-defined profile available to the synchronous run_subagent tool.
+ * One declared field for a generated run_<profile> tool. enum_values is
+ * required and non-empty for CAI_AGENT_SUBAGENT_PARAMETER_ENUM, and ignored
+ * otherwise. Pointers are borrowed only for cai_agent_runtime_open.
+ */
+typedef struct cai_agent_subagent_parameter {
+  /** Lowercase ASCII field name, excluding CAI-reserved names. */
+  const char *name;
+  /** Short model-facing field description. */
+  const char *description;
+  /** CAI_AGENT_SUBAGENT_PARAMETER_* discriminator. */
+  int type;
+  /** Non-zero requires this field in the generated tool invocation. */
+  int required;
+  /** Exact string values accepted for an enum field. */
+  const char *const *enum_values;
+  size_t enum_value_count;
+} cai_agent_subagent_parameter;
+
+/**
+ * Host-defined profile available to CAI's synchronous subagent lifecycle.
  * Every pointer is borrowed only for cai_agent_runtime_open; CAI snapshots
  * the descriptor and its allowlists. name is a lowercase ASCII identifier and
  * may not be "review", which is reserved for Smith's built-in reviewer.
@@ -259,6 +285,23 @@ typedef struct cai_agent_subagent_profile {
   /** Exact allowed reasoning-summary overrides; NULL/zero rejects overrides. */
   const char *const *allowed_reasoning_summaries;
   size_t allowed_reasoning_summary_count;
+  /**
+   * Optional declared parameters for the generated run_<name> tool. CAI
+   * validates their types and enum values before rendering the child input.
+   */
+  const cai_agent_subagent_parameter *parameters;
+  size_t parameter_count;
+  /**
+   * Optional child-input template. {{field_name}} expands a declared value and
+   * {{instructions}} expands the optional free-form field. NULL selects a
+   * bounded structured argument rendering.
+   */
+  const char *instruction_template;
+  /**
+   * Non-zero exposes an optional instructions string on run_<name>. When it is
+   * omitted, CAI forwards the current user turn into {{instructions}}.
+   */
+  int expose_instructions;
 } cai_agent_subagent_profile;
 
 /** Borrowed immutable projection of a runtime goal. */
@@ -357,8 +400,9 @@ typedef struct cai_agent_runtime_config {
   const char *const *review_allowed_reasoning_summaries;
   size_t review_allowed_reasoning_summary_count;
   /**
-   * Optional host-defined profiles for run_subagent. CAI snapshots these
-   * descriptors at open; children cannot recursively launch subagents.
+   * Optional host-defined profiles for generated run_<name> tools. CAI
+   * snapshots these descriptors at open; children cannot recursively launch
+   * subagents.
    */
   const cai_agent_subagent_profile *subagents;
   size_t subagent_count;

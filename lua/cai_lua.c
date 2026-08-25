@@ -2881,6 +2881,8 @@ typedef struct cai_lua_subagent_config {
   const char ***models;
   const char ***efforts;
   const char ***summaries;
+  cai_agent_subagent_parameter **parameters;
+  const char ****parameter_enum_values;
   size_t count;
   const char **review_models;
   size_t review_model_count;
@@ -2896,15 +2898,30 @@ static void cai_lua_subagent_config_cleanup(cai_lua_subagent_config *config) {
   if (config == NULL)
     return;
   for (i = 0U; i < config->count; i++) {
+    size_t j;
+
     free((void *)config->models[i]);
     free((void *)config->efforts[i]);
     free((void *)config->summaries[i]);
+    if (config->parameters != NULL && config->parameter_enum_values != NULL) {
+      for (j = 0U; j < config->profiles[i].parameter_count; j++) {
+        free((void *)config->parameter_enum_values[i][j]);
+      }
+    }
+    if (config->parameter_enum_values != NULL) {
+      free((void *)config->parameter_enum_values[i]);
+    }
+    if (config->parameters != NULL) {
+      free(config->parameters[i]);
+    }
   }
   free(config->profiles);
   free(config->presets);
   free(config->models);
   free(config->efforts);
   free(config->summaries);
+  free(config->parameters);
+  free(config->parameter_enum_values);
   free((void *)config->review_models);
   free((void *)config->review_efforts);
   free((void *)config->review_summaries);
@@ -2956,6 +2973,94 @@ static int cai_lua_subagent_string_list(lua_State *L, int index,
   *out = values;
   *out_count = count;
   return 1;
+}
+
+static int cai_lua_subagent_parameters_from_table(
+    lua_State *L, int index, cai_agent_subagent_profile *profile,
+    cai_agent_subagent_parameter **out_parameters,
+    const char ****out_enum_values) {
+  cai_agent_subagent_parameter *parameters;
+  const char ***enum_values;
+  size_t count;
+  size_t i;
+  int status;
+
+  *out_parameters = NULL;
+  *out_enum_values = NULL;
+  lua_getfield(L, index, "parameters");
+  if (lua_isnil(L, -1)) {
+    lua_pop(L, 1);
+    return 1;
+  }
+  if (!lua_istable(L, -1)) {
+    lua_pop(L, 1);
+    return 0;
+  }
+  count = (size_t)lua_rawlen(L, -1);
+  if (count > 16U) {
+    lua_pop(L, 1);
+    return 0;
+  }
+  parameters = NULL;
+  enum_values = NULL;
+  if (count > 0U) {
+    parameters =
+        (cai_agent_subagent_parameter *)calloc(count, sizeof(*parameters));
+    enum_values = (const char ***)calloc(count, sizeof(*enum_values));
+    if (parameters == NULL || enum_values == NULL) {
+      free(parameters);
+      free(enum_values);
+      lua_pop(L, 1);
+      return -1;
+    }
+  }
+  for (i = 0U; i < count; i++) {
+    const char *type;
+
+    lua_rawgeti(L, -1, (lua_Integer)i + 1);
+    if (!lua_istable(L, -1)) {
+      lua_pop(L, 2);
+      goto invalid;
+    }
+    parameters[i].name = cai_lua_opt_string_field(L, -1, "name", NULL);
+    parameters[i].description =
+        cai_lua_opt_string_field(L, -1, "description", NULL);
+    parameters[i].required = cai_lua_opt_bool_field(L, -1, "required", 0);
+    type = cai_lua_opt_string_field(L, -1, "type", "string");
+    if (strcmp(type, "string") == 0) {
+      parameters[i].type = CAI_AGENT_SUBAGENT_PARAMETER_STRING;
+    } else if (strcmp(type, "integer") == 0) {
+      parameters[i].type = CAI_AGENT_SUBAGENT_PARAMETER_INTEGER;
+    } else if (strcmp(type, "enum") == 0) {
+      parameters[i].type = CAI_AGENT_SUBAGENT_PARAMETER_ENUM;
+      status =
+          cai_lua_subagent_string_list(L, -1, "enum_values", &enum_values[i],
+                                       &parameters[i].enum_value_count);
+      if (status != 1) {
+        lua_pop(L, 1);
+        goto invalid;
+      }
+      parameters[i].enum_values = enum_values[i];
+    } else {
+      lua_pop(L, 1);
+      goto invalid;
+    }
+    lua_pop(L, 1);
+  }
+  lua_pop(L, 1);
+  profile->parameters = parameters;
+  profile->parameter_count = count;
+  *out_parameters = parameters;
+  *out_enum_values = enum_values;
+  return 1;
+
+invalid:
+  for (i = 0U; i < count; i++) {
+    free((void *)enum_values[i]);
+  }
+  free(parameters);
+  free(enum_values);
+  return 0;
 }
 
 static int cai_lua_subagent_preset_from_table(lua_State *L, int index,
@@ -3034,8 +3139,13 @@ static int cai_lua_subagent_config_from_table(lua_State *L, int index,
     out->models = (const char ***)calloc(count, sizeof(*out->models));
     out->efforts = (const char ***)calloc(count, sizeof(*out->efforts));
     out->summaries = (const char ***)calloc(count, sizeof(*out->summaries));
+    out->parameters = (cai_agent_subagent_parameter **)calloc(
+        count, sizeof(*out->parameters));
+    out->parameter_enum_values =
+        (const char ****)calloc(count, sizeof(*out->parameter_enum_values));
     if (out->profiles == NULL || out->presets == NULL || out->models == NULL ||
-        out->efforts == NULL || out->summaries == NULL) {
+        out->efforts == NULL || out->summaries == NULL ||
+        out->parameters == NULL || out->parameter_enum_values == NULL) {
       lua_pop(L, 1);
       cai_lua_subagent_config_cleanup(out);
       return -1;
@@ -3069,6 +3179,17 @@ static int cai_lua_subagent_config_from_table(lua_State *L, int index,
           &out->profiles[i].allowed_reasoning_summary_count);
     if (status == 1)
       out->profiles[i].allowed_reasoning_summaries = out->summaries[i];
+    if (status == 1) {
+      status = cai_lua_subagent_parameters_from_table(
+          L, -1, &out->profiles[i], &out->parameters[i],
+          &out->parameter_enum_values[i]);
+    }
+    if (status == 1) {
+      out->profiles[i].instruction_template =
+          cai_lua_opt_string_field(L, -1, "instruction_template", NULL);
+      out->profiles[i].expose_instructions =
+          cai_lua_opt_bool_field(L, -1, "expose_instructions", 0);
+    }
     lua_getfield(L, -1, "preset");
     if (status != 1 || !lua_istable(L, -1)) {
       lua_pop(L, 2);

@@ -358,7 +358,7 @@ response begins with its own visible label.
 An independently opened reviewer emits `REVIEW_REPORT`, containing its
 schema-validated JSON, for hosts that explicitly want the structured report.
 `REVIEW_HANDED_OFF` carries a human-readable Markdown rendering after that
-report enters parent history. When a reviewer runs through `run_subagent`, CAI
+report enters parent history. When a reviewer runs through `run_review`, CAI
 does not forward the child raw JSON text or `REVIEW_REPORT` event into the
 parent event stream: the parent receives the Markdown handoff instead. This
 keeps structured data available to the tool caller without making raw JSON the
@@ -716,9 +716,18 @@ facility.
 subagent descriptors. A descriptor has a stable non-empty `name`, concise
 description, and a complete child preset (including prompt revision, identity,
 developer prompt, defaults, and selected local/MCP/hosted tool policy).
-Descriptors also carry explicit allowlists for model-requested model and
-reasoning overrides. CAI copies descriptor strings at open. Names must be
-unique and are restricted to the model-tool identifier grammar.
+Descriptors also declare the generated tool's bounded string, integer, and
+enum task fields; an optional CAI-rendered instruction template; whether an
+optional free-form `instructions` field is exposed; and explicit allowlists for
+model-requested model and reasoning overrides. CAI copies descriptor strings at
+open. Profile names are unique and use the model-tool identifier grammar;
+parameter names use lowercase letters, digits, and underscores so they remain
+safe JSON keys and template placeholders.
+
+Lua uses the same descriptor shape under `subagents`: parameter `type` is the
+string `"string"`, `"integer"`, or `"enum"`, and enum values are supplied as
+`enum_values`. The binding borrows Lua strings only while opening the runtime;
+CAI snapshots the C-facing descriptor before the worker can run.
 
 The built-in `review` profile is reserved. Hosts cannot replace it with a
 custom descriptor, but may disable it with an explicit runtime configuration
@@ -745,45 +754,50 @@ silently substitute a more expensive or unsupported model.
 
 #### 6.3.2 Model-facing tool and lifecycle
 
-An ordinary parent with at least one enabled profile receives one
-`run_subagent` function tool. Its schema is bounded and contains:
+An ordinary parent receives one generated function tool per enabled profile,
+never a profile-selector catch-all. Built-in review is `run_review`; a host
+profile named `checker` is `run_checker`. Each invocation contract is therefore
+visible in the tool schema instead of being reconstructed from parent prose.
+
+`run_review` has a typed review target:
 
 ```json
 {
-  "profile": "review | host-defined name",
-  "instructions": "delegated task",
-  "model": "optional host-approved override",
-  "reasoning_effort": "optional host-approved override",
-  "reasoning_summary": "optional host-approved override"
+  "target": "uncommitted | base | commit | custom",
+  "base": "required only for target base",
+  "commit": "required only for target commit",
+  "instructions": "required only for target custom"
 }
 ```
 
-The rendered parent developer instructions enumerate only enabled profile names
-and their concise descriptions. The model may select `review` naturally when
-the task calls for review; CAI does not parse a slash command. A host UI may
-still map `/review …` to either the existing host-driven API or an ordinary
-parent turn that causes the model to call `run_subagent`.
+Omitting `target` means `uncommitted`. Thus “review this codebase against
+trunk” becomes `{"target":"base","base":"trunk"}`; a plain repository
+review becomes `{"target":"uncommitted"}`. CAI renders those values through
+the same trusted review-request renderer used by the host-driven API. The
+reviewer discovers repository instructions, Git state, refs, and the selected
+diff itself. The parent calls `run_review` immediately for a user-requested
+repository review unless the user requests another approach; it does not
+inspect the workspace or Git first.
 
-When the built-in review profile is enabled, its conditional developer section
-also directs the parent to call `run_subagent` immediately for a user-requested
-code-repository review unless the user asks for another approach. The parent
-does not inspect the workspace or Git first: the reviewer owns that discovery.
+A host-defined profile declares its generated tool fields as bounded `string`,
+`integer`, or string `enum` parameters, each with a description and required
+bit. It may declare an `instruction_template` containing only
+`{{field_name}}` and `{{instructions}}`; CAI validates and renders that
+template before the child starts. Without a template CAI supplies a bounded,
+labelled argument rendering. `expose_instructions` adds an optional free-form
+`instructions` field. When omitted, CAI forwards the active user turn, so the
+parent can delegate without inventing or expanding task prose.
 
-`instructions` is delegation context, not a second developer prompt. The
-`run_subagent` tool description directs the parent to forward the user's
-requested delegation verbatim where practical, or use the shortest faithful
-paraphrase. It must not manufacture a review scope, checklist, plan,
-assumptions, or other detail not supplied by the user: the selected child
-profile already defines how it operates. Thus “review this repository against
-trunk” should delegate that request, not a model-authored multi-sentence review
-plan.
+The generated review/profile schema exposes `model`, `reasoning_effort`, or
+`reasoning_summary` only when the host configured the corresponding exact
+allowlist. Otherwise those override fields do not exist in the model-facing
+schema. The child's configured defaults still apply. This prevents a model from
+repeatedly requesting an override the host has not authorized.
 
-For a user-requested `review`, the tool description directs the parent to
-delegate before inspecting Git, repository files, or instructions itself. It
-passes only the user-supplied review target/context (for example, `against
-trunk`). The review profile owns its own repository-instruction discovery, Git
-state and ref inspection, and diff selection. This keeps the parent from
-duplicating work and makes review delegation immediate and observable.
+The rendered parent developer instructions list only enabled tool names and
+concise descriptions. CAI does not parse slash commands: a host UI may map
+`/review …` to the direct review API or let an ordinary parent turn call
+`run_review`.
 
 Starting a child journals and checkpoints the parent pause before the tool
 reports success. Parent immediate and steering submissions are rejected while
@@ -829,7 +843,7 @@ Before CAI returns the tool output or resumes the parent, it appends a
 provenance-delimited assistant-context handover to the parent local history,
 journals the resolution, and checkpoints the parent. Thus the next parent
 request sees the child outcome even across a crash. The same handover becomes
-the `run_subagent` tool result and is sent through lifecycle events for the
+the generated subagent-tool result and is sent through lifecycle events for the
 host renderer. A checkpoint failure leaves the parent paused and makes handover
 completion retryable without duplicate injection.
 
@@ -859,7 +873,8 @@ to the host as events before they are returned to the model.
 | `get_goal` | function | Read the session’s current goal and accounting. |
 | `create_goal` | function | Create an explicit user-requested goal. |
 | `update_goal` | function | Mark an eligible goal complete or blocked. |
-| `run_subagent` | function | Synchronously run one enabled built-in or host-defined child, then return and durably inject its handover. Smith enables built-in `review` by default. |
+| `run_review` | function | Synchronously run the isolated built-in reviewer with typed `uncommitted`, `base`, `commit`, or `custom` scope, then inject its durable handover. Smith enables it by default. |
+| `run_<profile>` | function | One generated typed schema for each host-defined profile; run it synchronously and durably inject its handover. |
 | MCP tools/resources | dynamic | Register configured remote MCP capabilities as CAI tools with server-qualified names. |
 
 `cai/tools/read.h` already supplies a local reading basis. CAI’s existing local

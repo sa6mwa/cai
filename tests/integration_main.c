@@ -5441,12 +5441,9 @@ static int run_chatgpt_smith_subagent_regression(void) {
       "and no Markdown: {\"schema\":\"cai.checker.v1\",\"status\":"
       "\"passed\",\"marker\":\"SUBAGENT_CHECKER_CONFIRMED\"}.";
   static const char parent_prompt[] =
-      "Use run_subagent exactly twice before answering. First call profile "
-      "`checker` with instructions to validate the marker "
-      "SUBAGENT_CHECKER_CONFIRMED. Then call profile `review` to review the "
-      "current uncommitted change. Do not set model, reasoning_effort, or "
-      "reasoning_summary for either call. Do not call either profile more than "
-      "once. "
+      "Use run_checker exactly once, with no arguments, before answering. "
+      "Then call run_review exactly once with target uncommitted. Do not set "
+      "model, reasoning_effort, or reasoning_summary for either call. "
       "After both handovers return, briefly state that they were received and "
       "include exactly the marker SMITH_SUBAGENTS_LIVE_CONFIRMED.";
   static const cai_agent_preset checker_preset = {
@@ -5470,7 +5467,11 @@ static int run_chatgpt_smith_subagent_regression(void) {
       NULL,
       0U,
       NULL,
-      0U};
+      0U,
+      NULL,
+      0U,
+      NULL,
+      1};
   const char *git_init[] = {"git", "init", NULL, NULL};
   const char *git_config_name[] = {"git",       "-C",          NULL, "config",
                                    "user.name", "Test Tester", NULL};

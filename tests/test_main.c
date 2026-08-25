@@ -24622,8 +24622,9 @@ static void test_global_skills_catalog(test_state *state) {
   }
   snprintf(file_path, sizeof(file_path), "%s/SKILL.md", valid_path);
   write_file_or_die(
-      file_path, "---\nname: format\ndescription: Format a source tree.\n---\n"
-                 "Run the formatter.\n");
+      file_path,
+      "---\r\nname: format\r\ndescription: Format a source tree.\r\n---\r\n"
+      "Run the formatter.\r\n");
   snprintf(file_path, sizeof(file_path), "%s/SKILL.md", invalid_path);
   write_file_or_die(file_path, "not frontmatter\n");
   cai_skill_config_init(&config);
@@ -25676,9 +25677,8 @@ static void test_agent_runtime_subagent(test_state *state) {
   static const char parent_tool_response[] =
       "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
       "\"item\":{\"id\":\"fc_subagent\",\"type\":\"function_call\","
-      "\"call_id\":\"call_subagent\",\"name\":\"run_subagent\","
-      "\"arguments\":\"{\\\"profile\\\":\\\"worker\\\",\\\"instructions\\\":"
-      "\\\"Return delegated result.\\\"}\"}}\n\n"
+      "\"call_id\":\"call_subagent\",\"name\":\"run_worker\","
+      "\"arguments\":\"{\\\"format\\\":\\\"json\\\"}\"}}\n\n"
       "data: "
       "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_parent_"
       "subagent\",\"usage\":{\"input_tokens\":2,\"output_tokens\":2,\"total_"
@@ -25696,16 +25696,18 @@ static void test_agent_runtime_subagent(test_state *state) {
       "subagent_final\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2,"
       "\"total_tokens\":5}}}\n\n";
   static const char *parent_required[] = {
-      "delegate this task", "\"name\":\"run_subagent\"", "`worker`"};
-  static const char *child_required[] = {"Return delegated result.",
-                                         "You are Worker"};
+      "delegate this task", "\"name\":\"run_worker\"", "`run_worker`"};
+  static const char *parent_forbidden[] = {"\"name\":\"run_subagent\""};
+  static const char *child_required[] = {
+      "Return json result for delegate this task", "You are Worker"};
   static const char *final_required[] = {
       "\"call_id\":\"call_subagent\"",
       "The subagent completed without a text handover.", "<subagent_handoff"};
   static const mock_http_expectation script[] = {
       {"POST /v1/responses HTTP/", parent_required,
-       sizeof(parent_required) / sizeof(parent_required[0]), NULL, 0U, 200,
-       "OK", "text/event-stream", NULL, parent_tool_response},
+       sizeof(parent_required) / sizeof(parent_required[0]), parent_forbidden,
+       sizeof(parent_forbidden) / sizeof(parent_forbidden[0]), 200, "OK",
+       "text/event-stream", NULL, parent_tool_response},
       {"POST /v1/responses HTTP/", child_required,
        sizeof(child_required) / sizeof(child_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, child_response},
@@ -25716,6 +25718,8 @@ static void test_agent_runtime_subagent(test_state *state) {
   cai_agent_preset parent_preset;
   cai_agent_preset child_preset;
   cai_agent_subagent_profile profile;
+  cai_agent_subagent_parameter parameters[1];
+  static const char *const formats[] = {"json", "text"};
   cai_agent_runtime_config config;
   cai_agent_session_store store;
   cai_agent_runtime *runtime;
@@ -25748,9 +25752,21 @@ static void test_agent_runtime_subagent(test_state *state) {
   child_preset.default_reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
   child_preset.developer_instructions = "You are Worker.";
   memset(&profile, 0, sizeof(profile));
+  memset(parameters, 0, sizeof(parameters));
+  parameters[0].name = "format";
+  parameters[0].description = "Required delegated output format.";
+  parameters[0].type = CAI_AGENT_SUBAGENT_PARAMETER_ENUM;
+  parameters[0].required = 1;
+  parameters[0].enum_values = formats;
+  parameters[0].enum_value_count = sizeof(formats) / sizeof(formats[0]);
   profile.name = "worker";
   profile.description = "Return a concise delegated result.";
   profile.preset = &child_preset;
+  profile.parameters = parameters;
+  profile.parameter_count = sizeof(parameters) / sizeof(parameters[0]);
+  profile.instruction_template =
+      "Return {{format}} result for {{instructions}}";
+  profile.expose_instructions = 1;
   cai_error_init(&error);
   runtime = NULL;
   memset(&events, 0, sizeof(events));
@@ -25798,7 +25814,7 @@ static void test_agent_runtime_subagent(test_state *state) {
     expect_int(state, "agent_runtime_subagent_started_event",
                events.saw_subagent_started, 1L);
     expect_substr(state, "agent_runtime_subagent_started_instruction",
-                  events.subagent_instruction, "Return delegated result.");
+                  events.subagent_instruction, "Return json result for");
     expect_int(state, "agent_runtime_subagent_handoff_event",
                events.saw_subagent_handed_off, 1L);
     expect_int(state, "agent_runtime_subagent_event_source",
@@ -25809,6 +25825,12 @@ static void test_agent_runtime_subagent(test_state *state) {
                store_state.fail_checkpoint_once, 0L);
     cai_agent_runtime_close(runtime);
   }
+  profile.instruction_template = "{{unknown_field}}";
+  runtime = NULL;
+  expect_int(state, "agent_runtime_subagent_rejects_unknown_template_field",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_ERR_INVALID);
+  cai_agent_runtime_close(runtime);
   http_mock_client_close(state, "agent_runtime_subagent", &mock);
   cai_error_cleanup(&error);
 }
@@ -25817,8 +25839,8 @@ static void test_agent_runtime_review_subagent(test_state *state) {
   static const char parent_tool_response[] =
       "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
       "\"item\":{\"id\":\"fc_review\",\"type\":\"function_call\","
-      "\"call_id\":\"call_review\",\"name\":\"run_subagent\","
-      "\"arguments\":\"{\\\"profile\\\":\\\"review\\\",\\\"instructions\\\":"
+      "\"call_id\":\"call_review\",\"name\":\"run_review\","
+      "\"arguments\":\"{\\\"target\\\":\\\"custom\\\",\\\"instructions\\\":"
       "\\\"Review the requested change.\\\"}\"}}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_parent_review_tool\",\"usage\":{\"input_tokens\":2,"
@@ -25838,15 +25860,12 @@ static void test_agent_runtime_review_subagent(test_state *state) {
       "\"resp_parent_review_final\",\"usage\":{\"input_tokens\":3,"
       "\"output_tokens\":2,\"total_tokens\":5}}}\n\n";
   static const char *parent_required[] = {
-      "review this change",
-      "\"name\":\"run_subagent\"",
-      "`review`",
-      "do not invent scope or plans",
-      "For review, delegate immediately without inspecting the workspace or "
-      "Git",
-      "for a user-requested code-repository review, call `run_subagent` "
+      "review this change", "\"name\":\"run_review\"", "`run_review`",
+      "for a user-requested code-repository review, call it "
       "immediately",
       "Do not inspect the workspace or Git first"};
+  static const char *parent_forbidden[] = {"\"name\":\"run_subagent\"",
+                                           "\"model\":{\"type\":"};
   static const char *review_required[] = {
       "Review the requested change.", "You are Cai Smith, a code reviewer",
       "\"name\":\"exec_command\"", "\"name\":\"write_stdin\""};
@@ -25855,8 +25874,9 @@ static void test_agent_runtime_review_subagent(test_state *state) {
       "No qualifying defects.", "structured_result_json"};
   static const mock_http_expectation script[] = {
       {"POST /v1/responses HTTP/", parent_required,
-       sizeof(parent_required) / sizeof(parent_required[0]), NULL, 0U, 200,
-       "OK", "text/event-stream", NULL, parent_tool_response},
+       sizeof(parent_required) / sizeof(parent_required[0]), parent_forbidden,
+       sizeof(parent_forbidden) / sizeof(parent_forbidden[0]), 200, "OK",
+       "text/event-stream", NULL, parent_tool_response},
       {"POST /v1/responses HTTP/", review_required,
        sizeof(review_required) / sizeof(review_required[0]), NULL, 0U, 200,
        "OK", "text/event-stream", NULL, review_response},
@@ -27887,8 +27907,10 @@ static void test_goal_tools(test_state *state) {
   cai_source_callbacks source_callbacks;
   lonejson_spooled file_data;
   read_state state_reader;
+  raw_tool_state reserved_goal_tool;
   write_state writer;
   char state_json[2048];
+  size_t goal_registry_base;
   cai_error error;
 
   cai_error_init(&error);
@@ -27901,6 +27923,7 @@ static void test_goal_tools(test_state *state) {
   state_source = NULL;
   resumed_state_source = NULL;
   memset(&file_data, 0, sizeof(file_data));
+  memset(&reserved_goal_tool, 0, sizeof(reserved_goal_tool));
   memset(&writer, 0, sizeof(writer));
   cai_client_config_init(&client_config);
   client_config.api_key = "test-key";
@@ -27914,6 +27937,19 @@ static void test_goal_tools(test_state *state) {
              CAI_OK);
   expect_int(state, "goal_session",
              cai_agent_new_session(agent, &session, &error), CAI_OK);
+  goal_registry_base = cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools);
+  expect_int(state, "goal_register_reserved_create",
+             cai_agent_register_raw_tool(
+                 agent, CAI_GOAL_CREATE_TOOL_NAME, "Reserved goal create", "{}",
+                 0, test_raw_tool, &reserved_goal_tool, &error),
+             CAI_OK);
+  expect_int(state, "goal_register_rolls_back_partial",
+             cai_agent_register_goal_tools(agent, session, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "goal_register_rollback_count",
+             (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools),
+             (long)goal_registry_base + 1L);
+  cai_tool_registry_truncate(CAI_AGENT_IMPL(agent)->tools, goal_registry_base);
   expect_int(state, "goal_register",
              cai_agent_register_goal_tools(agent, session, &error), CAI_OK);
   callbacks.write = test_write;

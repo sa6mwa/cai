@@ -170,7 +170,7 @@ For an isolated review run, C hosts set
 `client:new_smith_review_runtime(config)`. Submit an explicit target with
 `cai_agent_runtime_submit_review` or `runtime:submit_review`, then render the
 final `CAI_AGENT_EVENT_REVIEW_REPORT` JSON event as an operator-facing report.
-An inline `run_subagent` review instead delivers one Markdown
+An inline `run_review` review instead delivers one Markdown
 `CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF` result; render that event rather than raw
 review JSON. The review preset has a
 fresh session and no CAI patch, goal, MCP, or image-generation tools. It does

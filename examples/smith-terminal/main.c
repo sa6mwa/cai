@@ -681,7 +681,7 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
              event->tool_name != NULL &&
              strcmp(event->tool_name, CAI_TERMINAL_EXEC_TOOL_NAME) != 0 &&
              strcmp(event->tool_name, CAI_TERMINAL_WRITE_TOOL_NAME) != 0 &&
-             strcmp(event->tool_name, "run_subagent") != 0) {
+             event->tool_action != CAI_AGENT_TOOL_ACTION_SUBAGENT) {
     render_close_message(state);
     render_tool_completion(event);
   } else if (event->type == CAI_AGENT_EVENT_RUN_FAILED) {

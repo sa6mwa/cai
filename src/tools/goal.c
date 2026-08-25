@@ -323,10 +323,32 @@ static int cai_goal_clear(void *value, const void *params, void *out,
   return CAI_OK;
 }
 
+static int cai_goal_register(cai_tool_registry *registry, cai_session *session,
+                             const char *name, const char *description,
+                             const char *schema, const lonejson_map *args_map,
+                             cai_tool_fn callback, cai_error *error) {
+  cai_goal_context *context;
+  int rc;
+
+  context = (cai_goal_context *)cai_alloc(NULL, sizeof(*context));
+  if (context == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate goal tool context");
+  }
+  context->session = session;
+  rc = cai_tool_registry_register_lonejson_schema_owned(
+      registry, name, description, schema, 0, args_map, &cai_goal_result_map,
+      callback, context, cai_goal_context_cleanup, error);
+  if (rc != CAI_OK) {
+    cai_goal_context_cleanup(context);
+  }
+  return rc;
+}
+
 int cai_agent_register_goal_tools(cai_agent *agent, cai_session *session,
                                   cai_error *error) {
-  cai_goal_context *context;
   cai_agent_impl *impl;
+  size_t start_count;
   int rc;
 
   if (agent == NULL || agent->impl == NULL || session == NULL ||
@@ -334,60 +356,36 @@ int cai_agent_register_goal_tools(cai_agent *agent, cai_session *session,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "goal tools require an agent session");
   }
-  context = (cai_goal_context *)cai_alloc(NULL, sizeof(*context));
-  if (context == NULL) {
-    return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to allocate goal tool context");
-  }
-  context->session = session;
   impl = CAI_AGENT_IMPL(agent);
-  rc = cai_tool_registry_register_lonejson_schema_owned(
-      impl->tools, CAI_GOAL_GET_TOOL_NAME,
-      "Get the current durable goal and its accounting.", cai_goal_get_schema,
-      0, &cai_goal_get_args_map, &cai_goal_result_map, cai_goal_get, context,
-      cai_goal_context_cleanup, error);
+  start_count = cai_tool_registry_count(impl->tools);
+  rc = cai_goal_register(impl->tools, session, CAI_GOAL_GET_TOOL_NAME,
+                         "Get the current durable goal and its accounting.",
+                         cai_goal_get_schema, &cai_goal_get_args_map,
+                         cai_goal_get, error);
   if (rc == CAI_OK) {
-    context = (cai_goal_context *)cai_alloc(NULL, sizeof(*context));
-    if (context == NULL) {
-      return cai_set_error(error, CAI_ERR_NOMEM,
-                           "failed to allocate goal tool context");
-    }
-    context->session = session;
-    rc = cai_tool_registry_register_lonejson_schema_owned(
-        impl->tools, CAI_GOAL_CREATE_TOOL_NAME,
+    rc = cai_goal_register(
+        impl->tools, session, CAI_GOAL_CREATE_TOOL_NAME,
         "Create a goal only when the user explicitly requests one; fails while "
         "an unfinished goal exists.",
-        cai_goal_create_schema, 0, &cai_goal_create_args_map,
-        &cai_goal_result_map, cai_goal_create, context,
-        cai_goal_context_cleanup, error);
+        cai_goal_create_schema, &cai_goal_create_args_map, cai_goal_create,
+        error);
   }
   if (rc == CAI_OK) {
-    context = (cai_goal_context *)cai_alloc(NULL, sizeof(*context));
-    if (context == NULL) {
-      return cai_set_error(error, CAI_ERR_NOMEM,
-                           "failed to allocate goal tool context");
-    }
-    context->session = session;
-    rc = cai_tool_registry_register_lonejson_schema_owned(
-        impl->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+    rc = cai_goal_register(
+        impl->tools, session, CAI_GOAL_UPDATE_TOOL_NAME,
         "Set an existing goal to complete or blocked only when that status is "
         "true.",
-        cai_goal_update_schema, 0, &cai_goal_update_args_map,
-        &cai_goal_result_map, cai_goal_update, context,
-        cai_goal_context_cleanup, error);
+        cai_goal_update_schema, &cai_goal_update_args_map, cai_goal_update,
+        error);
   }
   if (rc == CAI_OK) {
-    context = (cai_goal_context *)cai_alloc(NULL, sizeof(*context));
-    if (context == NULL) {
-      return cai_set_error(error, CAI_ERR_NOMEM,
-                           "failed to allocate goal tool context");
-    }
-    context->session = session;
-    rc = cai_tool_registry_register_lonejson_schema_owned(
-        impl->tools, CAI_GOAL_CLEAR_TOOL_NAME,
+    rc = cai_goal_register(
+        impl->tools, session, CAI_GOAL_CLEAR_TOOL_NAME,
         "Clear the current goal without marking it complete.",
-        cai_goal_clear_schema, 0, &cai_goal_get_args_map, &cai_goal_result_map,
-        cai_goal_clear, context, cai_goal_context_cleanup, error);
+        cai_goal_clear_schema, &cai_goal_get_args_map, cai_goal_clear, error);
+  }
+  if (rc != CAI_OK) {
+    cai_tool_registry_truncate(impl->tools, start_count);
   }
   return rc;
 }
