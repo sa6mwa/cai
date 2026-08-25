@@ -1303,6 +1303,7 @@ if(CAI_BUILD_TESTS)
     smith_review_runtime
     smith_review_parent_handoff
     agent_runtime_subagent
+    agent_runtime_poll_only_subagent
     agent_runtime_review_subagent
     smith_review_pause_checkpoint_failure
     agent_runtime_lifecycle

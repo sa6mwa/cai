@@ -61,6 +61,7 @@ static const char *g_current_test_name = NULL;
 
 void cai_mcp_test_set_sleep_ms_fn(void (*fn)(long ms));
 int cai_mcp_test_header_callback_unterminated(void);
+void cai_patch_test_pause_before_publish(int enabled);
 
 static long g_mcp_test_sleep_last_ms = 0L;
 static int g_mcp_test_sleep_count = 0;
@@ -25973,6 +25974,106 @@ static void test_agent_runtime_subagent(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_agent_runtime_poll_only_subagent(test_state *state) {
+  static const char parent_tool_response[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"fc_poll_subagent\",\"type\":\"function_call\","
+      "\"call_id\":\"call_poll_subagent\",\"name\":\"run_worker\","
+      "\"arguments\":\"{\\\"instructions\\\":\\\"inspect\\\"}\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_poll_parent\",\"usage\":{\"input_tokens\":1,"
+      "\"output_tokens\":1,\"total_tokens\":2}}}\n\n";
+  static const char child_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"one \"}\n\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"two \"}\n\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"three\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_poll_child\",\"usage\":{\"input_tokens\":1,"
+      "\"output_tokens\":3,\"total_tokens\":4}}}\n\n";
+  static const char parent_final_response[] =
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_poll_parent_final\",\"usage\":{\"input_tokens\":2,"
+      "\"output_tokens\":1,\"total_tokens\":3}}}\n\n";
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, parent_tool_response},
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, child_response},
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, parent_final_response}};
+  http_mock_client mock;
+  cai_agent_preset parent_preset;
+  cai_agent_preset child_preset;
+  cai_agent_subagent_profile profile;
+  cai_agent_runtime_config config;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  cai_error error;
+  struct timespec delay;
+  int i;
+
+  if (http_mock_client_open_script(state, "agent_runtime_poll_only_subagent",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    return;
+  }
+  memset(&parent_preset, 0, sizeof(parent_preset));
+  parent_preset.name = "poll-only-parent";
+  parent_preset.prompt_version = "poll-only-parent-1";
+  parent_preset.default_identity = "Parent";
+  parent_preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  parent_preset.default_reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  parent_preset.default_reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  parent_preset.developer_instructions = "You are Parent.";
+  parent_preset.tool_capabilities = CAI_AGENT_PRESET_TOOL_SUBAGENTS;
+  memset(&child_preset, 0, sizeof(child_preset));
+  child_preset.name = "poll-only-worker";
+  child_preset.prompt_version = "poll-only-worker-1";
+  child_preset.default_identity = "Worker";
+  child_preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  child_preset.default_reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  child_preset.default_reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  child_preset.developer_instructions = "You are Worker.";
+  memset(&profile, 0, sizeof(profile));
+  profile.name = "worker";
+  profile.description = "Return delegated results.";
+  profile.preset = &child_preset;
+  profile.instruction_template = "Perform {{instructions}}.";
+  profile.expose_instructions = 1;
+  cai_error_init(&error);
+  runtime = NULL;
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = "/tmp";
+  config.preset_descriptor = &parent_preset;
+  config.disable_default_session_store = 1;
+  config.event_queue_limit = 1U;
+  config.subagents = &profile;
+  config.subagent_count = 1U;
+  expect_int(state, "agent_runtime_poll_only_subagent_open",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_int(state, "agent_runtime_poll_only_subagent_submit",
+               cai_agent_runtime_submit(runtime, "delegate this task", &error),
+               CAI_OK);
+    delay.tv_sec = 0;
+    delay.tv_nsec = 10000000L;
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "agent_runtime_poll_only_subagent_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "agent_runtime_poll_only_subagent_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    cai_agent_runtime_close(runtime);
+  }
+  http_mock_client_close(state, "agent_runtime_poll_only_subagent", &mock);
+  cai_error_cleanup(&error);
+}
+
 static void test_agent_runtime_review_subagent(test_state *state) {
   static const char parent_tool_response[] =
       "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
@@ -28587,9 +28688,8 @@ static void test_patch_tool(test_state *state) {
   char ambiguous_path[PATH_MAX];
   char race_path[PATH_MAX];
   char update_race_path[PATH_MAX];
-  char race_temporary_path[PATH_MAX];
+  char update_race_external_path[PATH_MAX];
   char *contents;
-  char *race_patch;
   char *too_many_patch;
   cai_patch_tool_config config;
   cai_tool_registry *registry;
@@ -28600,8 +28700,6 @@ static void test_patch_tool(test_state *state) {
   cai_error error;
   size_t offset;
   size_t i;
-  size_t race_capacity;
-  size_t race_length;
   pid_t race_pid;
   struct stat renamed_stat;
 
@@ -28621,6 +28719,8 @@ static void test_patch_tool(test_state *state) {
   snprintf(race_path, sizeof(race_path), "%s/raced.txt", dir_template);
   snprintf(update_race_path, sizeof(update_race_path), "%s/update-raced.txt",
            dir_template);
+  snprintf(update_race_external_path, sizeof(update_race_external_path),
+           "%s/update-raced-external.txt", dir_template);
   write_file_or_die(alpha_path, "one\ntwo\nthree\nfour\n");
   memset(&config, 0, sizeof(config));
   config.root_path = dir_template;
@@ -28677,29 +28777,16 @@ static void test_patch_tool(test_state *state) {
   contents = read_file_or_die(beta_path);
   expect_str(state, "patch_added_content", contents, "beta\n");
   free(contents);
-  race_capacity = 4U * 1024U * 1024U;
-  race_patch = (char *)malloc(race_capacity);
-  if (race_patch == NULL) {
-    test_fail(state, "patch_race_allocate", "allocation failed");
-  } else {
-    static const char begin_race_patch[] = "*** Begin Patch\n"
-                                           "*** Add File: raced.txt\n";
-    static const char end_race_patch[] = "*** End Patch";
+  {
+    static const char race_patch[] = "*** Begin Patch\n"
+                                     "*** Add File: raced.txt\n"
+                                     "+patched\n"
+                                     "*** End Patch";
     int child_status;
     int child_reaped;
     int race_fd;
-    int saw_temporary;
 
-    race_length = strlen(begin_race_patch);
-    memcpy(race_patch, begin_race_patch, race_length);
-    while (race_length + 3U + sizeof(end_race_patch) <= race_capacity) {
-      race_patch[race_length++] = '+';
-      race_patch[race_length++] = 'x';
-      race_patch[race_length++] = '\n';
-    }
-    memcpy(race_patch + race_length, end_race_patch, sizeof(end_race_patch));
-    config.max_patch_bytes = race_capacity;
-    config.max_file_bytes = race_capacity;
+    cai_patch_test_pause_before_publish(1);
     race_pid = fork();
     if (race_pid == 0) {
       cai_error child_error;
@@ -28710,34 +28797,13 @@ static void test_patch_tool(test_state *state) {
       cai_error_cleanup(&child_error);
       _exit(child_rc == CAI_ERR_INVALID ? 0 : 1);
     }
+    cai_patch_test_pause_before_publish(0);
     if (race_pid < 0) {
       test_fail(state, "patch_race_fork", "fork failed");
     } else {
       child_reaped = 0;
-      saw_temporary = 0;
-      (void)snprintf(race_temporary_path, sizeof(race_temporary_path),
-                     "%s/.cai-patch-%ld-0", dir_template, (long)race_pid);
-      for (i = 0U; i < 5000U; i++) {
-        struct timespec pause_time;
-
-        if (access(race_temporary_path, F_OK) == 0) {
-          saw_temporary = 1;
-          break;
-        }
-        if (waitpid(race_pid, &child_status, WNOHANG) == race_pid) {
-          child_reaped = 1;
-          break;
-        }
-        pause_time.tv_sec = 0;
-        pause_time.tv_nsec = 1000000L;
-        (void)nanosleep(&pause_time, NULL);
-      }
-      if (!saw_temporary) {
-        test_fail(state, "patch_race_temporary",
-                  "temporary file was not observed");
-      } else if (kill(race_pid, SIGSTOP) != 0 ||
-                 waitpid(race_pid, &child_status, WUNTRACED) != race_pid ||
-                 !WIFSTOPPED(child_status)) {
+      if (waitpid(race_pid, &child_status, WUNTRACED) != race_pid ||
+          !WIFSTOPPED(child_status)) {
         test_fail(state, "patch_race_stop", "failed to stop patch writer");
       } else {
         race_fd = open(race_path, O_CREAT | O_EXCL | O_WRONLY, 0600);
@@ -28749,10 +28815,10 @@ static void test_patch_tool(test_state *state) {
           test_fail(state, "patch_race_create",
                     "failed to create raced target");
         }
-        if (kill(race_pid, SIGCONT) != 0) {
-          test_fail(state, "patch_race_continue",
-                    "failed to continue patch writer");
-        }
+      }
+      if (kill(race_pid, SIGCONT) != 0) {
+        test_fail(state, "patch_race_continue",
+                  "failed to continue patch writer");
       }
       if (!child_reaped && waitpid(race_pid, &child_status, 0) == race_pid) {
         child_reaped = 1;
@@ -28767,9 +28833,6 @@ static void test_patch_tool(test_state *state) {
                  "external\n");
       free(contents);
     }
-    free(race_patch);
-    config.max_patch_bytes = 0U;
-    config.max_file_bytes = 0U;
   }
   {
     static const char update_race_patch[] =
@@ -28782,93 +28845,58 @@ static void test_patch_tool(test_state *state) {
     int child_status;
     int child_reaped;
     int race_fd;
-    int saw_temporary;
 
-    race_capacity = 4U * 1024U * 1024U;
-    race_patch = (char *)malloc(race_capacity);
-    if (race_patch == NULL) {
-      test_fail(state, "patch_update_race_allocate", "allocation failed");
+    write_file_or_die(update_race_path, "before\n");
+    cai_patch_test_pause_before_publish(1);
+    race_pid = fork();
+    if (race_pid == 0) {
+      cai_error child_error;
+      int child_rc;
+
+      cai_error_init(&child_error);
+      child_rc =
+          cai_apply_patch(&config, update_race_patch, NULL, &child_error);
+      cai_error_cleanup(&child_error);
+      _exit(child_rc == CAI_ERR_INVALID ? 0 : 1);
+    }
+    cai_patch_test_pause_before_publish(0);
+    if (race_pid < 0) {
+      test_fail(state, "patch_update_race_fork", "fork failed");
     } else {
-      memcpy(race_patch, "before\n", sizeof("before\n") - 1U);
-      memset(race_patch + sizeof("before\n") - 1U, 'x',
-             race_capacity - sizeof("before\n") - 1U);
-      race_patch[race_capacity - 2U] = '\n';
-      race_patch[race_capacity - 1U] = '\0';
-      write_file_or_die(update_race_path, race_patch);
-      config.max_patch_bytes = sizeof(update_race_patch);
-      config.max_file_bytes = race_capacity;
-      race_pid = fork();
-      if (race_pid == 0) {
-        cai_error child_error;
-        int child_rc;
-
-        cai_error_init(&child_error);
-        child_rc =
-            cai_apply_patch(&config, update_race_patch, NULL, &child_error);
-        cai_error_cleanup(&child_error);
-        _exit(child_rc == CAI_ERR_INVALID ? 0 : 1);
-      }
-      if (race_pid < 0) {
-        test_fail(state, "patch_update_race_fork", "fork failed");
+      child_reaped = 0;
+      if (waitpid(race_pid, &child_status, WUNTRACED) != race_pid ||
+          !WIFSTOPPED(child_status)) {
+        test_fail(state, "patch_update_race_stop",
+                  "failed to stop patch writer");
       } else {
-        child_reaped = 0;
-        saw_temporary = 0;
-        (void)snprintf(race_temporary_path, sizeof(race_temporary_path),
-                       "%s/.cai-patch-%ld-0", dir_template, (long)race_pid);
-        for (i = 0U; i < 5000U; i++) {
-          struct timespec pause_time;
-
-          if (access(race_temporary_path, F_OK) == 0) {
-            saw_temporary = 1;
-            break;
+        race_fd = open(update_race_external_path,
+                       O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+        if (race_fd < 0 || write(race_fd, "external\n", 9U) != 9 ||
+            close(race_fd) != 0 ||
+            rename(update_race_external_path, update_race_path) != 0) {
+          if (race_fd >= 0) {
+            close(race_fd);
           }
-          if (waitpid(race_pid, &child_status, WNOHANG) == race_pid) {
-            child_reaped = 1;
-            break;
-          }
-          pause_time.tv_sec = 0;
-          pause_time.tv_nsec = 1000000L;
-          (void)nanosleep(&pause_time, NULL);
+          test_fail(state, "patch_update_race_replace",
+                    "failed to atomically replace raced target");
         }
-        if (!saw_temporary) {
-          test_fail(state, "patch_update_race_temporary",
-                    "temporary file was not observed");
-        } else if (kill(race_pid, SIGSTOP) != 0 ||
-                   waitpid(race_pid, &child_status, WUNTRACED) != race_pid ||
-                   !WIFSTOPPED(child_status)) {
-          test_fail(state, "patch_update_race_stop",
-                    "failed to stop patch writer");
-        } else {
-          race_fd = open(update_race_path, O_WRONLY | O_TRUNC | O_CLOEXEC);
-          if (race_fd < 0 || write(race_fd, "external\n", 9U) != 9 ||
-              close(race_fd) != 0) {
-            if (race_fd >= 0) {
-              close(race_fd);
-            }
-            test_fail(state, "patch_update_race_replace",
-                      "failed to replace raced target");
-          }
-          if (kill(race_pid, SIGCONT) != 0) {
-            test_fail(state, "patch_update_race_continue",
-                      "failed to continue patch writer");
-          }
-        }
-        if (!child_reaped && waitpid(race_pid, &child_status, 0) == race_pid) {
-          child_reaped = 1;
-        }
-        if (!child_reaped || !WIFEXITED(child_status) ||
-            WEXITSTATUS(child_status) != 0) {
-          test_fail(state, "patch_update_race_rejected",
-                    "patch writer did not reject replacement");
-        }
-        contents = read_file_or_die(update_race_path);
-        expect_str(state, "patch_update_race_preserves_external", contents,
-                   "external\n");
-        free(contents);
       }
-      free(race_patch);
-      config.max_patch_bytes = 0U;
-      config.max_file_bytes = 0U;
+      if (kill(race_pid, SIGCONT) != 0) {
+        test_fail(state, "patch_update_race_continue",
+                  "failed to continue patch writer");
+      }
+      if (!child_reaped && waitpid(race_pid, &child_status, 0) == race_pid) {
+        child_reaped = 1;
+      }
+      if (!child_reaped || !WIFEXITED(child_status) ||
+          WEXITSTATUS(child_status) != 0) {
+        test_fail(state, "patch_update_race_rejected",
+                  "patch writer did not reject replacement");
+      }
+      contents = read_file_or_die(update_race_path);
+      expect_str(state, "patch_update_race_preserves_external", contents,
+                 "external\n");
+      free(contents);
     }
   }
   cai_error_cleanup(&error);
@@ -28988,6 +29016,7 @@ static void test_patch_tool(test_state *state) {
   unlink(ambiguous_path);
   unlink(race_path);
   unlink(update_race_path);
+  unlink(update_race_external_path);
   rmdir(dir_template);
   cai_error_cleanup(&error);
 }
@@ -39961,6 +39990,7 @@ static const test_entry test_entries[] = {
     {"smith_review_runtime", test_smith_review_runtime},
     {"smith_review_parent_handoff", test_smith_review_parent_handoff},
     {"agent_runtime_subagent", test_agent_runtime_subagent},
+    {"agent_runtime_poll_only_subagent", test_agent_runtime_poll_only_subagent},
     {"agent_runtime_review_subagent", test_agent_runtime_review_subagent},
     {"smith_review_pause_checkpoint_failure",
      test_smith_review_pause_checkpoint_failure},

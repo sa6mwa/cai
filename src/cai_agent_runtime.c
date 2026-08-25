@@ -913,6 +913,12 @@ static int cai_runtime_forward_subagent_event(
       return rc;
     }
   }
+  /* Preserve the child handover above, but a poll-only parent deliberately
+   * has no event consumer. Forwarding child observations into its bounded
+   * queue would otherwise block the child and deadlock the parent turn. */
+  if (parent->event_callback == NULL) {
+    return CAI_OK;
+  }
   pthread_mutex_lock(&parent->lock);
   rc = cai_runtime_wait_event_capacity_locked(parent, error);
   if (rc == CAI_OK) {
@@ -6518,6 +6524,12 @@ static int cai_runtime_emit_subagent_lifecycle(
   if (length < 0 || (size_t)length >= sizeof(tool_name)) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "subagent lifecycle tool name is invalid");
+  }
+  if (parent->event_callback == NULL) {
+    cai_runtime_log_subagent_lifecycle(
+        parent, type, profile_name, child_session_id,
+        instruction != NULL ? strlen(instruction) : 0U);
+    return CAI_OK;
   }
   pthread_mutex_lock(&parent->lock);
   rc = cai_runtime_wait_event_capacity_locked(parent, error);

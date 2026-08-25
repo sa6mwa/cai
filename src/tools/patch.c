@@ -9,8 +9,16 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+extern long syscall(long number, ...);
+#endif
 #include <sys/types.h>
 #include <unistd.h>
+
+#if defined(CAI_TESTING)
+#include <signal.h>
+#endif
 
 extern char *realpath(const char *path, char *resolved_path);
 
@@ -24,6 +32,10 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_PATCH_ADD 1
 #define CAI_PATCH_DELETE 2
 #define CAI_PATCH_UPDATE 3
+
+#if defined(__linux__) && !defined(RENAME_EXCHANGE)
+#define RENAME_EXCHANGE (1U << 1)
+#endif
 
 typedef struct cai_patch_context {
   char *root_path;
@@ -482,6 +494,87 @@ static int cai_patch_file_matches(int parent_fd, const char *name,
              ? 1
              : 0;
 }
+
+/* rename changes ctime even when it moves the exact same inode. Exchange
+ * publication therefore compares all stable file-version fields after the
+ * move, while cai_patch_verify_file() performs the full pre-exchange check. */
+static int cai_patch_relocated_file_matches(int parent_fd, const char *name,
+                                            const struct stat *expected) {
+  struct stat actual;
+
+  if (expected == NULL ||
+      fstatat(parent_fd, name, &actual, AT_SYMLINK_NOFOLLOW) != 0 ||
+      !S_ISREG(actual.st_mode)) {
+    return 0;
+  }
+#if defined(__APPLE__)
+  return actual.st_dev == expected->st_dev &&
+         actual.st_ino == expected->st_ino &&
+         actual.st_mode == expected->st_mode &&
+         actual.st_nlink == expected->st_nlink &&
+         actual.st_uid == expected->st_uid &&
+         actual.st_gid == expected->st_gid &&
+         actual.st_size == expected->st_size &&
+         actual.st_mtimespec.tv_sec == expected->st_mtimespec.tv_sec &&
+         actual.st_mtimespec.tv_nsec == expected->st_mtimespec.tv_nsec;
+#else
+  return actual.st_dev == expected->st_dev &&
+         actual.st_ino == expected->st_ino &&
+         actual.st_mode == expected->st_mode &&
+         actual.st_nlink == expected->st_nlink &&
+         actual.st_uid == expected->st_uid &&
+         actual.st_gid == expected->st_gid &&
+         actual.st_size == expected->st_size &&
+         actual.st_mtim.tv_sec == expected->st_mtim.tv_sec &&
+         actual.st_mtim.tv_nsec == expected->st_mtim.tv_nsec;
+#endif
+}
+
+/* Replacing an existing pathname safely needs an atomic exchange rather than
+ * a stat-then-rename sequence. The latter can overwrite a new inode installed
+ * between verification and publication. Platforms without an exchange
+ * primitive reject existing-file updates rather than silently weakening that
+ * concurrency guarantee. */
+static int cai_patch_rename_exchange(int parent_fd, const char *left,
+                                     const char *right) {
+#if defined(__linux__) && defined(SYS_renameat2)
+  return (int)syscall(SYS_renameat2, parent_fd, left, parent_fd, right,
+                      RENAME_EXCHANGE);
+#elif defined(__APPLE__)
+  return renameatx_np(parent_fd, left, parent_fd, right, RENAME_SWAP);
+#else
+  (void)parent_fd;
+  (void)left;
+  (void)right;
+  errno = ENOTSUP;
+  return -1;
+#endif
+}
+
+static void cai_patch_unlink_if_matches(int parent_fd, const char *name,
+                                        const struct stat *expected) {
+  if (cai_patch_file_matches(parent_fd, name, expected)) {
+    (void)unlinkat(parent_fd, name, 0);
+  }
+}
+
+#if defined(CAI_TESTING)
+void cai_patch_test_pause_before_publish(int enabled);
+
+static volatile sig_atomic_t cai_patch_test_pause_before_publish_enabled;
+
+void cai_patch_test_pause_before_publish(int enabled) {
+  cai_patch_test_pause_before_publish_enabled = enabled != 0 ? 1 : 0;
+}
+
+static void cai_patch_before_publish(void) {
+  if (cai_patch_test_pause_before_publish_enabled != 0) {
+    (void)raise(SIGSTOP);
+  }
+}
+#else
+static void cai_patch_before_publish(void) {}
+#endif
 
 static int cai_patch_read_file(int parent_fd, const char *name, size_t maximum,
                                char **out, size_t *out_length,
@@ -1472,6 +1565,7 @@ static int cai_patch_write_atomic(
   size_t offset;
   ssize_t nwritten;
   struct stat st;
+  struct stat temporary_stat;
   mode_t mode;
   int fd;
   int saved_errno;
@@ -1553,6 +1647,7 @@ static int cai_patch_write_atomic(
     /* linkat() creates the destination atomically and fails with EEXIST. It
      * keeps add and move publication from replacing a file created after
      * preflight, unlike renameat(). */
+    cai_patch_before_publish();
     if (linkat(parent_fd, temporary, parent_fd, name, 0) != 0) {
       saved_errno = errno;
       unlinkat(parent_fd, temporary, 0);
@@ -1580,12 +1675,28 @@ static int cai_patch_write_atomic(
                                   strerror(errno));
     }
   } else {
+    if (expected_destination == NULL) {
+      unlinkat(parent_fd, temporary, 0);
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "patch update destination is required");
+    }
     if (cai_patch_verify_file(parent_fd, name, expected_destination, error) !=
         CAI_OK) {
       unlinkat(parent_fd, temporary, 0);
       return error != NULL ? error->code : CAI_ERR_INVALID;
     }
-    if (renameat(parent_fd, temporary, parent_fd, name) != 0) {
+    if (fstatat(parent_fd, temporary, &temporary_stat, AT_SYMLINK_NOFOLLOW) !=
+            0 ||
+        !S_ISREG(temporary_stat.st_mode) || temporary_stat.st_nlink != 1) {
+      unlinkat(parent_fd, temporary, 0);
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "patch temporary file is not private");
+    }
+    cai_patch_before_publish();
+    /* Atomically move the current destination aside. Validating the displaced
+     * file makes this a compare-and-restore publication: if another writer
+     * won the race, put its inode back instead of overwriting it. */
+    if (cai_patch_rename_exchange(parent_fd, temporary, name) != 0) {
       saved_errno = errno;
       unlinkat(parent_fd, temporary, 0);
       errno = saved_errno;
@@ -1593,7 +1704,36 @@ static int cai_patch_write_atomic(
                                   "failed to publish patched file",
                                   strerror(errno));
     }
+    if (!cai_patch_relocated_file_matches(parent_fd, temporary,
+                                          expected_destination)) {
+      if (cai_patch_rename_exchange(parent_fd, temporary, name) != 0) {
+        return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                    "failed to restore concurrent patch file",
+                                    strerror(errno));
+      }
+      cai_patch_unlink_if_matches(parent_fd, temporary, &temporary_stat);
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "patch file changed since preflight");
+    }
+    if (!cai_patch_relocated_file_matches(parent_fd, name, &temporary_stat)) {
+      /* A writer changed the destination after the exchange. Keep that newer
+       * file in place and discard only the now-obsolete preflight inode. */
+      cai_patch_unlink_if_matches(parent_fd, temporary, expected_destination);
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "patch file changed during publication");
+    }
     *out_published = 1;
+    if (out_published_stat != NULL) {
+      *out_published_stat = temporary_stat;
+    }
+    if (unlinkat(parent_fd, temporary, 0) != 0) {
+      saved_errno = errno;
+      errno = saved_errno;
+      return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                  "failed to finalize patched file",
+                                  strerror(errno));
+    }
+    return CAI_OK;
   }
   if (*out_published && out_published_stat != NULL) {
     if (fstatat(parent_fd, name, &st, AT_SYMLINK_NOFOLLOW) != 0 ||
