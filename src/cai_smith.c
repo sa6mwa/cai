@@ -283,10 +283,7 @@ static int cai_smith_build_tool_contract(const cai_allocator *allocator,
       "listed in the developer instructions. ";
   static const char *const subagents =
       "Use run_subagent only for an enabled delegated role; it runs one "
-      "isolated child synchronously and returns its durable handover. Forward "
-      "the user's delegated request verbatim or minimally; do not invent "
-      "scope, checklists, plans, or assumptions because the child profile "
-      "already supplies its operating behavior. ";
+      "isolated child synchronously and returns its durable handover. ";
   static const char *const serial =
       "Tool calls are serial: complete and assess one call before issuing "
       "another.";

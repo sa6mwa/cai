@@ -733,12 +733,20 @@ still map `/review …` to either the existing host-driven API or an ordinary
 parent turn that causes the model to call `run_subagent`.
 
 `instructions` is delegation context, not a second developer prompt. The
-parent must forward the user's requested delegation verbatim where practical,
-or use the shortest faithful paraphrase. It must not manufacture a review
-scope, checklist, plan, assumptions, or other detail not supplied by the user:
-the selected child profile already defines how it operates. Thus “review this
-repository against trunk” should delegate that request, not a model-authored
-multi-sentence review plan.
+`run_subagent` tool description directs the parent to forward the user's
+requested delegation verbatim where practical, or use the shortest faithful
+paraphrase. It must not manufacture a review scope, checklist, plan,
+assumptions, or other detail not supplied by the user: the selected child
+profile already defines how it operates. Thus “review this repository against
+trunk” should delegate that request, not a model-authored multi-sentence review
+plan.
+
+For a user-requested `review`, the tool description directs the parent to
+delegate before inspecting Git, repository files, or instructions itself. It
+passes only the user-supplied review target/context (for example, `against
+trunk`). The review profile owns its own repository-instruction discovery, Git
+state and ref inspection, and diff selection. This keeps the parent from
+duplicating work and makes review delegation immediate and observable.
 
 Starting a child journals and checkpoints the parent pause before the tool
 reports success. Parent immediate and steering submissions are rejected while
