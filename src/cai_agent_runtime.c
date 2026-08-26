@@ -422,6 +422,10 @@ struct cai_agent_runtime {
   /* Per-owner-call copies returned by get_goal. */
   char *goal_snapshot_objective;
   char *goal_snapshot_status;
+  /* Highest durable journal record whose effect is reflected in the current
+   * runtime/session state. Accepted queue entries deliberately do not advance
+   * this watermark until the worker applies them. */
+  unsigned long long checkpoint_event_sequence;
   unsigned long long applied_event_sequence;
   unsigned long long next_event_sequence;
   unsigned long long journal_v2_start_sequence;
@@ -2006,10 +2010,17 @@ static int cai_runtime_append_journal_event_locked(
   return rc;
 }
 
-static int
-cai_runtime_mark_input_consumed_locked(cai_agent_runtime *runtime,
-                                       unsigned long long input_sequence,
-                                       cai_error *error) {
+static void
+cai_runtime_mark_checkpoint_event_locked(cai_agent_runtime *runtime,
+                                         unsigned long long sequence) {
+  if (sequence > runtime->checkpoint_event_sequence) {
+    runtime->checkpoint_event_sequence = sequence;
+  }
+}
+
+static int cai_runtime_mark_input_consumed_locked(
+    cai_agent_runtime *runtime, unsigned long long input_sequence,
+    unsigned long long *out_sequence, cai_error *error) {
   char data[32];
   int rc;
 
@@ -2026,7 +2037,7 @@ cai_runtime_mark_input_consumed_locked(cai_agent_runtime *runtime,
    * is covered by that snapshot's watermark; a crash before the checkpoint
    * therefore replays the input instead of losing it. */
   rc = cai_runtime_append_journal_event_locked(runtime, "input_consumed", data,
-                                               NULL, error);
+                                               out_sequence, error);
   return rc;
 }
 
@@ -2237,7 +2248,7 @@ static int cai_runtime_checkpoint(cai_agent_runtime *runtime, int emit_event,
     return CAI_OK;
   }
   pthread_mutex_lock(&runtime->lock);
-  applied_event_sequence = runtime->next_event_sequence;
+  applied_event_sequence = runtime->checkpoint_event_sequence;
   pthread_mutex_unlock(&runtime->lock);
   state = NULL;
   model = cai_strdup(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
@@ -2630,6 +2641,12 @@ cai_runtime_apply_goal_control(cai_agent_runtime *runtime,
   }
   if (rc == CAI_OK) {
     rc = cai_runtime_refresh_goal_projection(runtime, error);
+  }
+  if (rc == CAI_OK && control->journal_sequence != 0U) {
+    pthread_mutex_lock(&runtime->lock);
+    cai_runtime_mark_checkpoint_event_locked(runtime,
+                                             control->journal_sequence);
+    pthread_mutex_unlock(&runtime->lock);
   }
   if (rc == CAI_OK && runtime->event_callback != NULL) {
     pthread_mutex_lock(&runtime->lock);
@@ -3293,6 +3310,7 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
                                                          cai_error *error) {
   cai_agent_runtime *runtime;
   cai_runtime_input_node *input;
+  unsigned long long consumed_sequence;
   int budget_limited;
   int has_steering;
   int rc;
@@ -3303,6 +3321,7 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
                          "invalid Smith steering tool-round boundary");
   }
   rc = CAI_OK;
+  consumed_sequence = 0U;
   pthread_mutex_lock(&runtime->lock);
   if (runtime->review_mode) {
     /* A review must report only its final assistant message, not analysis
@@ -3326,7 +3345,10 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
       }
       runtime->steering_count--;
       rc = cai_runtime_mark_input_consumed_locked(
-          runtime, input->journal_sequence, error);
+          runtime, input->journal_sequence, &consumed_sequence, error);
+      if (rc == CAI_OK) {
+        cai_runtime_mark_checkpoint_event_locked(runtime, consumed_sequence);
+      }
       if (rc == CAI_OK) {
         rc = cai_runtime_enqueue_locked(
             runtime, CAI_AGENT_EVENT_STEERING_DELIVERED, input->text,
@@ -3775,6 +3797,7 @@ static void *cai_runtime_worker(void *context) {
   cai_run_options options;
   cai_runtime_input_node *input;
   cai_error error;
+  unsigned long long consumed_sequence;
   int budget_limited;
   int rc;
 
@@ -3885,9 +3908,13 @@ static void *cai_runtime_worker(void *context) {
       static const char message[] = "queued user turn rejected because the "
                                     "goal token budget is exhausted";
 
+      consumed_sequence = 0U;
       pthread_mutex_lock(&runtime->lock);
       rc = cai_runtime_mark_input_consumed_locked(
-          runtime, input->journal_sequence, &error);
+          runtime, input->journal_sequence, &consumed_sequence, &error);
+      if (rc == CAI_OK) {
+        cai_runtime_mark_checkpoint_event_locked(runtime, consumed_sequence);
+      }
       pthread_mutex_unlock(&runtime->lock);
       if (rc == CAI_OK) {
         rc = cai_runtime_checkpoint(runtime, 1, &error);
@@ -3914,15 +3941,21 @@ static void *cai_runtime_worker(void *context) {
     if (rc == CAI_OK) {
       rc = cai_runtime_set_active_user_turn(runtime, input->text, &error);
     }
+    consumed_sequence = 0U;
     if (rc == CAI_OK) {
       pthread_mutex_lock(&runtime->lock);
       rc = cai_runtime_mark_input_consumed_locked(
-          runtime, input->journal_sequence, &error);
+          runtime, input->journal_sequence, &consumed_sequence, &error);
       pthread_mutex_unlock(&runtime->lock);
     }
     cai_runtime_input_node_free(input);
     if (rc == CAI_OK) {
       rc = cai_session_commit_pending_inputs(runtime->session, &error);
+    }
+    if (rc == CAI_OK) {
+      pthread_mutex_lock(&runtime->lock);
+      cai_runtime_mark_checkpoint_event_locked(runtime, consumed_sequence);
+      pthread_mutex_unlock(&runtime->lock);
     }
     budget_limited = 0;
     if (rc == CAI_OK) {
@@ -5260,6 +5293,7 @@ int cai_agent_runtime_open(cai_client *client,
           runtime->session_store->context, runtime->session_scope, session_id,
           sizeof(session_id), &state, &runtime->applied_event_sequence, error);
       if (rc == CAI_OK && state != NULL) {
+        runtime->checkpoint_event_sequence = runtime->applied_event_sequence;
         rc = cai_session_import_state_source(runtime->session, state, error);
         if (rc == CAI_OK) {
           rc = cai_runtime_validate_resumed_preset(runtime, error);
@@ -5322,6 +5356,10 @@ int cai_agent_runtime_open(cai_client *client,
         rc = cai_runtime_append_journal_event_locked(
             runtime, "input_journal_v2", NULL,
             &runtime->journal_v2_start_sequence, error);
+        if (rc == CAI_OK) {
+          cai_runtime_mark_checkpoint_event_locked(
+              runtime, runtime->journal_v2_start_sequence);
+        }
         pthread_mutex_unlock(&runtime->lock);
       }
     }
@@ -5335,6 +5373,10 @@ int cai_agent_runtime_open(cai_client *client,
       rc = cai_runtime_append_journal_event_locked(
           runtime, "input_journal_v2", NULL,
           &runtime->journal_v2_start_sequence, error);
+      if (rc == CAI_OK) {
+        cai_runtime_mark_checkpoint_event_locked(
+            runtime, runtime->journal_v2_start_sequence);
+      }
       pthread_mutex_unlock(&runtime->lock);
     }
     /* The local JSONL backend discovers sessions through checkpoints.  Create
@@ -6039,6 +6081,7 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
   cai_agent_preset preset;
   cai_agent_runtime *review;
   cai_error event_error;
+  unsigned long long pause_marker_sequence;
   int pause_marker_appended;
   int rc;
 
@@ -6048,6 +6091,7 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
   }
   *out_review = NULL;
   pause_marker_appended = 0;
+  pause_marker_sequence = 0U;
   rc = cai_runtime_owner(parent, error);
   if (rc != CAI_OK) {
     return rc;
@@ -6138,10 +6182,12 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
   if (rc == CAI_OK && !parent->stopping) {
     parent->active_review = review;
     parent->review_pause_pending = 1;
-    rc = cai_runtime_append_journal_event_locked(
-        parent, "review_pending", review->session_id, NULL, error);
+    rc = cai_runtime_append_journal_event_locked(parent, "review_pending",
+                                                 review->session_id,
+                                                 &pause_marker_sequence, error);
     if (rc == CAI_OK && parent->session_store != NULL) {
       pause_marker_appended = 1;
+      cai_runtime_mark_checkpoint_event_locked(parent, pause_marker_sequence);
     }
   } else if (rc == CAI_OK) {
     rc = cai_set_error(error, CAI_ERR_CANCELLED,
@@ -6294,6 +6340,7 @@ static int cai_runtime_finish_review_internal(cai_agent_runtime *parent,
   size_t context_length;
   size_t report_length;
   cai_error event_error;
+  unsigned long long handoff_marker_sequence;
   int rc;
 
   if (require_parent_owner) {
@@ -6319,6 +6366,7 @@ static int cai_runtime_finish_review_internal(cai_agent_runtime *parent,
   display = NULL;
   context_length = 0U;
   report_length = 0U;
+  handoff_marker_sequence = 0U;
   if (!parent->review_handoff_staged) {
     if (parent->review_handoff == NULL) {
       rc = cai_runtime_make_review_handoff(review, &context, &context_length,
@@ -6348,9 +6396,11 @@ static int cai_runtime_finish_review_internal(cai_agent_runtime *parent,
   if (!parent->review_handoff_resolved) {
     pthread_mutex_lock(&parent->lock);
     rc = cai_runtime_append_journal_event_locked(
-        parent, "review_handoff_committed", review->session_id, NULL, error);
+        parent, "review_handoff_committed", review->session_id,
+        &handoff_marker_sequence, error);
     if (rc == CAI_OK) {
       parent->review_handoff_resolved = 1;
+      cai_runtime_mark_checkpoint_event_locked(parent, handoff_marker_sequence);
     }
     pthread_mutex_unlock(&parent->lock);
     if (rc != CAI_OK) {

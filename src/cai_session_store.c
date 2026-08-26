@@ -355,6 +355,113 @@ static int cai_local_find_last_record_before(int fd, long before_end,
   return CAI_OK;
 }
 
+typedef int (*cai_local_record_fn)(void *context, int fd, long record_start,
+                                   long record_end, cai_error *error);
+
+/* Visit complete top-level JSON objects in journal order. Checkpoint state is
+ * arbitrary JSON and can span physical lines, so only object framing—not a
+ * line prefix—can distinguish one journal record from its embedded state. */
+static int cai_local_visit_complete_records(int fd,
+                                            cai_local_record_fn callback,
+                                            void *context, cai_error *error) {
+  char buffer[4096];
+  off_t end;
+  off_t offset;
+  long record_start;
+  long record_end;
+  int depth;
+  int in_string;
+  int escaped;
+  int awaiting_newline;
+
+  if (fd < 0 || callback == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session record visitor arguments are required");
+  }
+  end = lseek(fd, 0, SEEK_END);
+  if (end < 0) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to seek session checkpoint log");
+  }
+  offset = 0;
+  record_start = -1L;
+  record_end = 0L;
+  depth = 0;
+  in_string = 0;
+  escaped = 0;
+  awaiting_newline = 0;
+  while (offset < end) {
+    ssize_t nread;
+    size_t amount;
+    size_t index;
+
+    amount = end - offset > (off_t)sizeof(buffer) ? sizeof(buffer)
+                                                  : (size_t)(end - offset);
+    if (lseek(fd, offset, SEEK_SET) < 0) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to seek session checkpoint log");
+    }
+    nread = read(fd, buffer, amount);
+    if (nread != (ssize_t)amount) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to read session checkpoint log");
+    }
+    for (index = 0U; index < amount; index++, offset++) {
+      char ch;
+
+      ch = buffer[index];
+      if (awaiting_newline) {
+        if (ch == '\n') {
+          int rc;
+
+          rc = callback(context, fd, record_start, record_end, error);
+          if (rc != CAI_OK) {
+            return rc;
+          }
+          awaiting_newline = 0;
+          record_start = -1L;
+          continue;
+        }
+        awaiting_newline = 0;
+        record_start = -1L;
+        depth = 0;
+        in_string = 0;
+        escaped = 0;
+      }
+      if (record_start < 0L) {
+        if (ch == '{') {
+          record_start = (long)offset;
+          depth = 1;
+        }
+        continue;
+      }
+      if (in_string) {
+        if (escaped) {
+          escaped = 0;
+        } else if (ch == '\\') {
+          escaped = 1;
+        } else if (ch == '"') {
+          in_string = 0;
+        }
+      } else if (ch == '"') {
+        in_string = 1;
+      } else if (ch == '{') {
+        depth++;
+      } else if (ch == '}') {
+        depth--;
+        if (depth == 0) {
+          record_end = (long)offset + 1L;
+          awaiting_newline = 1;
+        } else if (depth < 0) {
+          record_start = -1L;
+          depth = 0;
+        }
+      }
+    }
+  }
+  return CAI_OK;
+}
+
 static int cai_store_repair_incomplete_tail(int fd, cai_error *error) {
   off_t end;
   long start;
@@ -570,20 +677,122 @@ static int cai_local_session_append_event(void *context, const char *scope,
   return rc;
 }
 
+typedef struct cai_local_event_replay_context {
+  unsigned long long after_sequence;
+  unsigned long long previous_sequence;
+  cai_agent_session_event_fn callback;
+  void *callback_context;
+} cai_local_event_replay_context;
+
+static int cai_local_replay_complete_event(void *context, int fd,
+                                           long record_start, long record_end,
+                                           cai_error *error) {
+  static const char event_prefix[] = "{\"record_type\":\"event\",";
+  cai_local_event_replay_context *replay;
+  cai_local_event_doc doc;
+  cai_agent_session_event event;
+  lonejson_error json_error;
+  lonejson_status status;
+  char prefix[sizeof(event_prefix) - 1U];
+  char *record;
+  size_t length;
+  size_t offset;
+  ssize_t nread;
+  int rc;
+
+  if (context == NULL || record_start < 0L || record_end <= record_start) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "invalid session event record bounds");
+  }
+  replay = (cai_local_event_replay_context *)context;
+  length = (size_t)(record_end - record_start);
+  if ((long)length != record_end - record_start) {
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "session event record is too large");
+  }
+  if (length < sizeof(prefix)) {
+    return CAI_OK;
+  }
+  if (lseek(fd, (off_t)record_start, SEEK_SET) < 0) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to seek session event record");
+  }
+  offset = 0U;
+  while (offset < sizeof(prefix)) {
+    nread = read(fd, prefix + offset, sizeof(prefix) - offset);
+    if (nread <= 0) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to read session event record");
+    }
+    offset += (size_t)nread;
+  }
+  if (memcmp(prefix, event_prefix, sizeof(prefix)) != 0) {
+    return CAI_OK;
+  }
+  if (length == (size_t)-1) {
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "session event record is too large");
+  }
+  record = (char *)malloc(length + 1U);
+  if (record == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate session event record");
+  }
+  if (lseek(fd, (off_t)record_start, SEEK_SET) < 0) {
+    free(record);
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to seek session event record");
+  }
+  offset = 0U;
+  while (offset < length) {
+    nread = read(fd, record + offset, length - offset);
+    if (nread <= 0) {
+      free(record);
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to read session event record");
+    }
+    offset += (size_t)nread;
+  }
+  record[length] = '\0';
+  memset(&doc, 0, sizeof(doc));
+  CAI_LJ->init(CAI_LJ, &cai_local_event_map, &doc);
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->parse_buffer(CAI_LJ, &cai_local_event_map, &doc, record,
+                                length, &json_error);
+  free(record);
+  if (status != LONEJSON_STATUS_OK || strcmp(doc.record_type, "event") != 0) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_local_event_map, &doc);
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "invalid session event record",
+                                json_error.message);
+  }
+  if (doc.sequence == 0U || doc.sequence <= replay->previous_sequence) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_local_event_map, &doc);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session event sequences must be strictly increasing");
+  }
+  replay->previous_sequence = doc.sequence;
+  rc = CAI_OK;
+  if (doc.sequence > replay->after_sequence) {
+    event.sequence = doc.sequence;
+    event.type = doc.type;
+    event.data = doc.data;
+    rc = replay->callback(replay->callback_context, &event, error);
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_local_event_map, &doc);
+  return rc;
+}
+
 static int cai_local_session_load_events_after(
     void *context, const char *scope, const char *session_id,
     unsigned long long after_sequence, cai_agent_session_event_fn callback,
     void *callback_context, cai_error *error) {
   cai_local_session_store *store;
+  cai_local_event_replay_context replay;
   char hash[65];
   char filename[160];
-  char *line;
-  size_t line_capacity;
-  ssize_t line_length;
-  unsigned long long previous_sequence;
   int scope_fd;
   int fd;
-  FILE *fp;
   int rc;
 
   if (context == NULL || callback == NULL ||
@@ -592,12 +801,12 @@ static int cai_local_session_load_events_after(
                          "valid session event replay arguments are required");
   }
   store = (cai_local_session_store *)context;
-  line = NULL;
-  line_capacity = 0U;
-  previous_sequence = 0U;
+  memset(&replay, 0, sizeof(replay));
+  replay.after_sequence = after_sequence;
+  replay.callback = callback;
+  replay.callback_context = callback_context;
   scope_fd = -1;
   fd = -1;
-  fp = NULL;
   rc = cai_store_open_scope(store, scope, &scope_fd, hash, error);
   if (rc == CAI_OK && snprintf(filename, sizeof(filename), "%s.jsonl",
                                session_id) >= (int)sizeof(filename)) {
@@ -622,63 +831,10 @@ static int cai_local_session_load_events_after(
                        "failed to lock session event log");
   }
   if (rc == CAI_OK) {
-    fp = fdopen(fd, "rb");
-    if (fp == NULL) {
-      rc = cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to read session event log");
-    } else {
-      fd = -1;
-    }
-  }
-  while (rc == CAI_OK && fp != NULL &&
-         (line_length = getline(&line, &line_capacity, fp)) >= 0) {
-    cai_local_event_doc doc;
-    cai_agent_session_event event;
-    lonejson_error json_error;
-    lonejson_status status;
-
-    if (line_length == 0 || line[line_length - 1] != '\n') {
-      break;
-    }
-    if (strncmp(line, "{\"record_type\":\"event\",", 23U) != 0) {
-      continue;
-    }
-    memset(&doc, 0, sizeof(doc));
-    CAI_LJ->init(CAI_LJ, &cai_local_event_map, &doc);
-    lonejson_error_init(&json_error);
-    status = CAI_LJ->parse_buffer(CAI_LJ, &cai_local_event_map, &doc, line,
-                                  (size_t)line_length, &json_error);
-    if (status != LONEJSON_STATUS_OK || strcmp(doc.record_type, "event") != 0) {
-      CAI_LJ->cleanup(CAI_LJ, &cai_local_event_map, &doc);
-      rc = cai_set_error_detail(error, CAI_ERR_INVALID,
-                                "invalid session event record",
-                                json_error.message);
-      break;
-    }
-    if (doc.sequence == 0U || doc.sequence <= previous_sequence) {
-      rc = cai_set_error(error, CAI_ERR_INVALID,
-                         "session event sequences must be strictly increasing");
-    } else {
-      previous_sequence = doc.sequence;
-    }
-    if (rc == CAI_OK && doc.sequence > after_sequence) {
-      event.sequence = doc.sequence;
-      event.type = doc.type;
-      event.data = doc.data;
-      rc = callback(callback_context, &event, error);
-    }
-    CAI_LJ->cleanup(CAI_LJ, &cai_local_event_map, &doc);
-  }
-  if (rc == CAI_OK && fp != NULL && ferror(fp)) {
-    rc = cai_set_error(error, CAI_ERR_TRANSPORT,
-                       "failed to read session event log");
+    rc = cai_local_visit_complete_records(fd, cai_local_replay_complete_event,
+                                          &replay, error);
   }
 done:
-  free(line);
-  if (fp != NULL) {
-    (void)flock(fileno(fp), LOCK_UN);
-    fclose(fp);
-  }
   if (fd >= 0) {
     (void)flock(fd, LOCK_UN);
     close(fd);

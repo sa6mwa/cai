@@ -209,6 +209,16 @@ typedef struct runtime_session_store_state {
   char saved_checkpoint[8192];
 } runtime_session_store_state;
 
+typedef struct runtime_goal_checkpoint_race_state {
+  runtime_session_store_state store;
+  pthread_mutex_t lock;
+  pthread_cond_t condition;
+  int block_checkpoint;
+  int checkpoint_waiting;
+  int checkpoint_released;
+  unsigned long long blocked_applied_event_sequence;
+} runtime_goal_checkpoint_race_state;
+
 typedef struct session_event_capture_state {
   int count;
   unsigned long long sequence;
@@ -2157,6 +2167,37 @@ static int test_runtime_session_store_checkpoint(
           NULL) {
     store->saw_goal_checkpoint_without_tool_output = 1;
   }
+  return CAI_OK;
+}
+
+static int test_runtime_goal_race_checkpoint(
+    void *context, const char *scope, const char *session_id, cai_source *state,
+    unsigned long long applied_event_sequence, cai_error *error) {
+  runtime_goal_checkpoint_race_state *race;
+  int should_block;
+  int rc;
+
+  race = (runtime_goal_checkpoint_race_state *)context;
+  if (race == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "goal checkpoint race state is required");
+  }
+  rc = test_runtime_session_store_checkpoint(
+      &race->store, scope, session_id, state, applied_event_sequence, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  pthread_mutex_lock(&race->lock);
+  should_block = race->block_checkpoint && !race->checkpoint_waiting;
+  if (should_block) {
+    race->blocked_applied_event_sequence = applied_event_sequence;
+    race->checkpoint_waiting = 1;
+    pthread_cond_broadcast(&race->condition);
+    while (!race->checkpoint_released) {
+      pthread_cond_wait(&race->condition, &race->lock);
+    }
+  }
+  pthread_mutex_unlock(&race->lock);
   return CAI_OK;
 }
 
@@ -27103,6 +27144,100 @@ static void test_agent_runtime_host_goal_controls(test_state *state) {
   rmdir(workspace);
 }
 
+static void test_agent_runtime_goal_checkpoint_watermark(test_state *state) {
+  char workspace[] = "/tmp/cai-runtime-goal-watermark-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_runtime_config config;
+  cai_agent_goal_request request;
+  cai_agent_runtime *runtime;
+  cai_agent_session_store store;
+  runtime_goal_checkpoint_race_state race;
+  cai_client *client;
+  cai_error error;
+  struct timespec delay;
+  int waiting;
+  int i;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "runtime_goal_watermark_workspace", "mkdtemp failed");
+    return;
+  }
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  memset(&race, 0, sizeof(race));
+  memset(&store, 0, sizeof(store));
+  if (pthread_mutex_init(&race.lock, NULL) != 0 ||
+      pthread_cond_init(&race.condition, NULL) != 0) {
+    test_fail(state, "runtime_goal_watermark_lock", "pthread init failed");
+    rmdir(workspace);
+    cai_error_cleanup(&error);
+    return;
+  }
+  store.checkpoint = test_runtime_goal_race_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &race;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.timeout_ms = 100L;
+  client_config.http_2_disabled = 1;
+  expect_int(state, "runtime_goal_watermark_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = workspace;
+  config.model = CAI_MODEL_GPT_5_NANO;
+  config.session_store = &store;
+  config.disable_default_session_store = 1;
+  expect_int(state, "runtime_goal_watermark_open",
+             cai_agent_runtime_open(client, &config, &runtime, &error), CAI_OK);
+  if (runtime != NULL) {
+    pthread_mutex_lock(&race.lock);
+    race.block_checkpoint = 1;
+    pthread_mutex_unlock(&race.lock);
+    expect_int(
+        state, "runtime_goal_watermark_submit",
+        cai_agent_runtime_submit(runtime, "checkpoint race turn", &error),
+        CAI_OK);
+    delay.tv_sec = 0;
+    delay.tv_nsec = 10000000L;
+    waiting = 0;
+    for (i = 0; i < 100 && !waiting; i++) {
+      pthread_mutex_lock(&race.lock);
+      waiting = race.checkpoint_waiting;
+      pthread_mutex_unlock(&race.lock);
+      if (!waiting) {
+        (void)nanosleep(&delay, NULL);
+      }
+    }
+    expect_int(state, "runtime_goal_watermark_checkpoint_waiting", waiting, 1L);
+    cai_agent_goal_request_init(&request);
+    request.objective = "must survive checkpoint race";
+    expect_int(state, "runtime_goal_watermark_create",
+               cai_agent_runtime_create_goal(runtime, &request, &error),
+               CAI_OK);
+    expect_int(state, "runtime_goal_watermark_goal_event_sequence",
+               (long)race.store.replay_event_sequence, 4L);
+    pthread_mutex_lock(&race.lock);
+    race.checkpoint_released = 1;
+    pthread_cond_broadcast(&race.condition);
+    pthread_mutex_unlock(&race.lock);
+    expect_int(state, "runtime_goal_watermark_snapshot_sequence",
+               (long)race.blocked_applied_event_sequence, 3L);
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  pthread_cond_destroy(&race.condition);
+  pthread_mutex_destroy(&race.lock);
+  cai_error_cleanup(&error);
+  rmdir(workspace);
+}
+
 static void test_agent_runtime_goal_budget(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -27270,6 +27405,7 @@ static void test_agent_local_session_store(test_state *state) {
   char opaque_omega_path[PATH_MAX];
   char event_scope_path[PATH_MAX];
   char event_file_path[PATH_MAX];
+  char multiline_event_file_path[PATH_MAX];
   char newer_event_file_path[PATH_MAX];
   char incomplete_file_path[PATH_MAX];
   char invalid_session_file_path[PATH_MAX];
@@ -27460,6 +27596,47 @@ static void test_agent_local_session_store(test_state *state) {
              "resume this steering input");
   cai_source_close(loaded);
   loaded = NULL;
+  reader.text = "{\n"
+                "  \"entries\": [\n"
+                "{\"record_type\":\"event\",\"sequence\":999,"
+                "\"type\":\"embedded\",\"data\":\"not a journal record\"}\n"
+                "  ]\n"
+                "}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_multiline_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_multiline_checkpoint",
+               store.checkpoint(store.context, "/tmp/cai-session-store-scope",
+                                "multiline-events", source, 8U, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  source = NULL;
+  event.sequence = 9U;
+  event.type = "turn_queued";
+  event.data = "actual journal event";
+  expect_int(state, "local_session_store_multiline_append_event",
+             store.append_event(store.context, "/tmp/cai-session-store-scope",
+                                "multiline-events", &event, &error),
+             CAI_OK);
+  memset(&event_capture, 0, sizeof(event_capture));
+  expect_int(state, "local_session_store_multiline_replay",
+             store.load_events_after(
+                 store.context, "/tmp/cai-session-store-scope",
+                 "multiline-events", 8U, test_session_event_capture,
+                 &event_capture, &error),
+             CAI_OK);
+  expect_int(state, "local_session_store_multiline_replay_count",
+             event_capture.count, 1L);
+  expect_int(state, "local_session_store_multiline_replay_sequence",
+             (long)event_capture.sequence, 9L);
+  expect_str(state, "local_session_store_multiline_replay_type",
+             event_capture.type, "turn_queued");
+  (void)snprintf(multiline_event_file_path, sizeof(multiline_event_file_path),
+                 "%s/%s/%s", template_directory, scope_path,
+                 "multiline-events.jsonl");
   fp = fopen(file_path, "ab");
   if (fp == NULL ||
       fwrite("{\"record_type\":\"event\",\"sequence\":8,"
@@ -27651,6 +27828,7 @@ static void test_agent_local_session_store(test_state *state) {
   unlink(linked_event_path);
   unlink(external_event_path);
   unlink(event_file_path);
+  unlink(multiline_event_file_path);
   (void)snprintf(event_file_path, sizeof(event_file_path), "%s/%s",
                  template_directory, event_scope_path);
   rmdir(event_file_path);
@@ -40420,6 +40598,8 @@ static const test_entry test_entries[] = {
     {"agent_runtime_semantic_events", test_agent_runtime_semantic_events},
     {"agent_runtime_poll_only", test_agent_runtime_poll_only},
     {"agent_runtime_host_goal_controls", test_agent_runtime_host_goal_controls},
+    {"agent_runtime_goal_checkpoint_watermark",
+     test_agent_runtime_goal_checkpoint_watermark},
     {"agent_runtime_goal_budget", test_agent_runtime_goal_budget},
     {"agent_local_session_store", test_agent_local_session_store},
     {"agent_local_session_store_rejects_unsafe_scope",
