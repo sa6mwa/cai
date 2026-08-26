@@ -30808,6 +30808,27 @@ static void test_view_image_tool(test_state *state) {
 
   expect_int(state, "view_image_registry_new",
              cai_tool_registry_new(&registry, &error), CAI_OK);
+  config.root_path = invalid_path;
+  config.default_workdir = dir_template;
+  expect_int(
+      state, "view_image_reject_file_root",
+      cai_tool_registry_register_view_image_tool(registry, &config, &error),
+      CAI_ERR_INVALID);
+  expect_substr(state, "view_image_reject_file_root_message", error.message,
+                "sandbox root must be a directory");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  config.root_path = dir_template;
+  config.default_workdir = invalid_path;
+  expect_int(
+      state, "view_image_reject_file_workdir",
+      cai_tool_registry_register_view_image_tool(registry, &config, &error),
+      CAI_ERR_INVALID);
+  expect_substr(state, "view_image_reject_file_workdir_message", error.message,
+                "working directory must be a directory");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  config.default_workdir = dir_template;
   expect_int(
       state, "view_image_register",
       cai_tool_registry_register_view_image_tool(registry, &config, &error),

@@ -128,6 +128,22 @@ static int cai_view_image_realpath_copy(const char *path, char **out,
                              error);
 }
 
+static int cai_view_image_require_directory(const char *path,
+                                            const char *description,
+                                            cai_error *error) {
+  struct stat st;
+
+  if (stat(path, &st) != 0) {
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to inspect view_image directory",
+                                strerror(errno));
+  }
+  if (!S_ISDIR(st.st_mode)) {
+    return cai_set_error(error, CAI_ERR_INVALID, description);
+  }
+  return CAI_OK;
+}
+
 static int cai_view_image_context_new(const cai_view_image_tool_config *config,
                                       cai_view_image_context **out,
                                       cai_error *error) {
@@ -149,11 +165,21 @@ static int cai_view_image_context_new(const cai_view_image_tool_config *config,
   memset(context, 0, sizeof(*context));
   rc = cai_view_image_realpath_copy(config->root_path, &context->root_path,
                                     error);
+  if (rc == CAI_OK) {
+    rc = cai_view_image_require_directory(
+        context->root_path, "view_image sandbox root must be a directory",
+        error);
+  }
   workdir = config->default_workdir != NULL ? config->default_workdir
                                             : config->root_path;
   if (rc == CAI_OK) {
     rc =
         cai_view_image_realpath_copy(workdir, &context->default_workdir, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_view_image_require_directory(
+        context->default_workdir,
+        "view_image working directory must be a directory", error);
   }
   if (rc == CAI_OK && !cai_view_image_path_is_under_root(
                           context->root_path, context->default_workdir)) {
