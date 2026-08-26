@@ -32189,6 +32189,85 @@ static void test_terminal_reader_start_failure(test_state *state) {
   rmdir(dir_template);
 }
 
+static void test_terminal_external_child_reap(test_state *state) {
+  char dir_template[] = "/tmp/cai-terminal-external-reap-XXXXXX";
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  struct sigaction ignored_action;
+  struct sigaction previous_action;
+  int sigchld_ignored;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_external_reap_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  memset(&writer, 0, sizeof(writer));
+  memset(&ignored_action, 0, sizeof(ignored_action));
+  registry = NULL;
+  sink = NULL;
+  sigchld_ignored = 0;
+  cai_error_init(&error);
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  config.default_yield_time_ms = 100L;
+  config.max_yield_time_ms = 100L;
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  expect_int(state, "terminal_external_reap_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(
+        state, "terminal_external_reap_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
+  }
+  if (registry != NULL) {
+    expect_int(state, "terminal_external_reap_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  }
+  if (sink != NULL) {
+    ignored_action.sa_handler = SIG_IGN;
+    if (sigemptyset(&ignored_action.sa_mask) != 0 ||
+        sigaction(SIGCHLD, &ignored_action, &previous_action) != 0) {
+      test_fail(state, "terminal_external_reap_ignore_sigchld",
+                "failed to ignore SIGCHLD");
+    } else {
+      sigchld_ignored = 1;
+      expect_int(state, "terminal_external_reap_exec",
+                 cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                       "{\"cmd\":\"printf reaped\","
+                                       "\"yield_time_ms\":100}",
+                                       sink, &error),
+                 CAI_OK);
+      expect_substr(state, "terminal_external_reap_output", writer.buffer,
+                    "reaped");
+      expect_substr(state, "terminal_external_reap_completed", writer.buffer,
+                    "\"completed\":true");
+      if (strstr(writer.buffer, "\"exit_code\"") != NULL ||
+          strstr(writer.buffer, "\"signal\"") != NULL) {
+        test_fail(state, "terminal_external_reap_status_unavailable",
+                  "externally reaped command reported an unavailable status");
+      }
+    }
+  }
+  if (sigchld_ignored) {
+    if (sigaction(SIGCHLD, &previous_action, NULL) != 0) {
+      test_fail(state, "terminal_external_reap_restore_sigchld",
+                "failed to restore SIGCHLD disposition");
+    }
+  }
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
+}
+
 static void test_terminal_concurrent_start(test_state *state) {
   char dir_template[] = "/tmp/cai-terminal-race-XXXXXX";
   cai_terminal_tool_config config;
@@ -40139,6 +40218,7 @@ static const test_entry test_entries[] = {
     {"terminal_tools", test_terminal_tools},
     {"terminal_capture_truncation", test_terminal_capture_truncation},
     {"terminal_reader_start_failure", test_terminal_reader_start_failure},
+    {"terminal_external_child_reap", test_terminal_external_child_reap},
     {"terminal_concurrent_start", test_terminal_concurrent_start},
     {"terminal_concurrent_operation", test_terminal_concurrent_operation},
     {"read_tool", test_read_tool},

@@ -133,6 +133,7 @@ typedef struct cai_terminal_manager {
    * metadata belonging to a just-completed command. */
   int operation_active;
   int child_status;
+  int child_status_known;
   char *output;
   size_t output_length;
   size_t output_capacity;
@@ -552,6 +553,15 @@ static void *cai_terminal_reader(void *value) {
       pthread_mutex_lock(&manager->lock);
       manager->child_reaped = 1;
       manager->child_status = status;
+      manager->child_status_known = 1;
+      pthread_cond_broadcast(&manager->changed);
+      pthread_mutex_unlock(&manager->lock);
+    } else if (waited < 0 && errno == ECHILD) {
+      /* Hosts may ignore SIGCHLD or reap it in their own handler. The command
+       * has still completed, but its exit status is no longer available. */
+      pthread_mutex_lock(&manager->lock);
+      manager->child_reaped = 1;
+      manager->child_status_known = 0;
       pthread_cond_broadcast(&manager->changed);
       pthread_mutex_unlock(&manager->lock);
     }
@@ -944,6 +954,7 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
   manager->child_reaped = 0;
   manager->pty_eof = 0;
   manager->child_status = 0;
+  manager->child_status_known = 0;
   manager->termination_requested = 0;
   manager->completion_event_emitted = 0;
   manager->output_length = 0U;
@@ -1024,10 +1035,12 @@ static int cai_terminal_fill_result(cai_terminal_manager *manager,
                               ? LLONG_MAX
                               : (long long)duration;
   }
-  if (manager->completed && WIFEXITED(manager->child_status)) {
+  if (manager->completed && manager->child_status_known &&
+      WIFEXITED(manager->child_status)) {
     result->exit_code = WEXITSTATUS(manager->child_status);
     result->has_exit_code = 1;
-  } else if (manager->completed && WIFSIGNALED(manager->child_status)) {
+  } else if (manager->completed && manager->child_status_known &&
+             WIFSIGNALED(manager->child_status)) {
     result->signal = WTERMSIG(manager->child_status);
     result->has_signal = 1;
   }
