@@ -667,6 +667,11 @@ int cai_agent_runtime_get_goal(cai_agent_runtime *runtime,
  * apply at the next model/tool safe boundary; when idle they apply promptly.
  * These functions are owner-thread-only. They may be called while sampling.
  */
+/**
+ * Queue a new durable goal. This is create-only: it fails while an unfinished
+ * goal exists or another create is pending. Complete or clear the old goal
+ * first; use cai_agent_runtime_set_goal_objective to modify its objective.
+ */
 int cai_agent_runtime_create_goal(cai_agent_runtime *runtime,
                                   const cai_agent_goal_request *request,
                                   cai_error *error);

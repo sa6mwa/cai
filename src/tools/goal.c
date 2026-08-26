@@ -93,11 +93,11 @@ static const char cai_goal_clear_schema[] =
 
 static long long cai_goal_now(void) { return (long long)time(NULL); }
 
-static int cai_goal_status_is_terminal(const char *status) {
-  return status != NULL &&
-         (strcmp(status, "complete") == 0 || strcmp(status, "blocked") == 0 ||
-          strcmp(status, "usage_limited") == 0 ||
-          strcmp(status, "budget_limited") == 0);
+static int cai_goal_status_allows_replacement(const char *status) {
+  /* Match Codex's insert-only goal creation: completion is the only durable
+   * state that permits a new goal to replace the previous one. A blocked or
+   * limited goal still needs an explicit host/user clear or resume decision. */
+  return status != NULL && strcmp(status, "complete") == 0;
 }
 
 static void cai_goal_context_cleanup(void *value) { cai_free_mem(NULL, value); }
@@ -168,10 +168,11 @@ static int cai_goal_create(void *value, const void *params, void *out,
   }
   session = CAI_SESSION_IMPL(context->session);
   if (session->goal_status != NULL &&
-      !cai_goal_status_is_terminal(session->goal_status)) {
+      !cai_goal_status_allows_replacement(session->goal_status)) {
     return cai_set_error(
         error, CAI_ERR_INVALID,
-        "cannot create a new goal while an unfinished goal exists");
+        "cannot create a new goal because this session has an unfinished goal; "
+        "complete or clear the existing goal first");
   }
   objective = cai_strdup(&CAI_SESSION_CLIENT_IMPL(context->session)->allocator,
                          args->objective);

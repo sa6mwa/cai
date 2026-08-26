@@ -1175,8 +1175,10 @@ contract:
 
 - `get_goal` returns current status, objective, optional token budget, elapsed
   time, token use, remaining budget, and progress accounting;
-- `create_goal` requires an explicit user/system/developer request and fails
-  while a non-terminal goal exists;
+- `create_goal` requires an explicit user/system/developer request and is
+  insert-only: it fails unless no goal exists or the existing goal is
+  `complete`; `blocked`, `budget_limited`, and `usage_limited` goals require
+  an explicit clear or resume decision;
 - `update_goal` accepts only `complete` or `blocked` from the model;
 - `clear_goal` is Smith's idempotent equivalent of Codex's `/goal clear`:
   it removes the current goal without asserting completion, so a subsequent
@@ -1190,6 +1192,8 @@ Goal statuses are `active`, `paused`, `complete`, `blocked`, `usage_limited`,
 and `budget_limited`. Only `active` is model-settable at creation and only
 `complete`/`blocked` at update. Hosts can create, pause, resume, replace an
 objective, set or remove a token budget, and clear a goal through the runtime.
+Host `create_goal` follows the same insert-only rule; `set_goal_objective` is
+the explicit update path, and a host that wants a fresh goal must clear first.
 Those controls are accepted during sampling, journaled before success, and
 applied at the next model/tool safe boundary. `cai_agent_runtime_get_goal`
 returns the UI-facing snapshot, including elapsed active seconds and a

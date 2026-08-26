@@ -2342,6 +2342,25 @@ static int cai_runtime_goal_paused(const cai_agent_runtime *runtime) {
          strcmp(session->goal_status, "paused") == 0;
 }
 
+/* The host create operation mirrors Codex's insert-only create_goal tool.
+ * Explicit host updates use set_goal_objective instead, and CAI's clear_goal
+ * extension starts a genuinely fresh goal. */
+static int cai_runtime_goal_create_allowed(const char *status, int has_goal) {
+  return !has_goal || (status != NULL && strcmp(status, "complete") == 0);
+}
+
+static int
+cai_runtime_goal_create_is_pending_locked(const cai_agent_runtime *runtime) {
+  const cai_runtime_goal_control_node *node;
+
+  for (node = runtime->goal_control_head; node != NULL; node = node->next) {
+    if (node->kind == CAI_RUNTIME_GOAL_CREATE) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static int cai_runtime_goal_replace_status(cai_session *session,
                                            const char *value,
                                            cai_error *error) {
@@ -2473,6 +2492,13 @@ cai_runtime_apply_goal_control(cai_agent_runtime *runtime,
   event_data = "updated";
   rc = CAI_OK;
   if (control->kind == CAI_RUNTIME_GOAL_CREATE) {
+    if (!cai_runtime_goal_create_allowed(goal->goal_status,
+                                         goal->goal_status != NULL)) {
+      return cai_set_error(
+          error, CAI_ERR_INVALID,
+          "cannot create a new goal because this session has an unfinished "
+          "goal; complete or clear the existing goal first");
+    }
     copy = cai_strdup(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                       control->text);
     if (copy == NULL) {
@@ -7986,6 +8012,18 @@ static int cai_runtime_enqueue_goal_control(cai_agent_runtime *runtime,
     cai_runtime_goal_control_node_free(node);
     return cai_set_error(error, CAI_ERR_LIMIT,
                          "agent goal control queue is full");
+  }
+  if (kind == CAI_RUNTIME_GOAL_CREATE &&
+      (!cai_runtime_goal_create_allowed(runtime->goal_projection_status,
+                                        runtime->goal_projection_has_goal) ||
+       cai_runtime_goal_create_is_pending_locked(runtime))) {
+    pthread_mutex_unlock(&runtime->lock);
+    cai_free_mem(NULL, journal_data);
+    cai_runtime_goal_control_node_free(node);
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "cannot create a new goal because this session has an unfinished "
+        "or pending goal; complete or clear the existing goal first");
   }
   rc = cai_runtime_append_journal_event_locked(runtime, journal_type, data,
                                                &node->journal_sequence, error);

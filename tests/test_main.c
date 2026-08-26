@@ -27011,6 +27011,18 @@ static void test_agent_runtime_host_goal_controls(test_state *state) {
     expect_str(state, "runtime_host_goal_status", goal.status, "active");
     expect_int(state, "runtime_host_goal_remaining", goal.remaining_tokens,
                20L);
+    request.objective = "must not replace active host goal";
+    expect_int(state, "runtime_host_goal_duplicate_active",
+               cai_agent_runtime_create_goal(runtime, &request, &error),
+               CAI_ERR_INVALID);
+    expect_substr(state, "runtime_host_goal_duplicate_active_error",
+                  error.message, "unfinished or pending goal");
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "runtime_host_goal_duplicate_active_snapshot",
+               cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    expect_str(state, "runtime_host_goal_duplicate_active_objective",
+               goal.objective, "exercise host goal controls");
     for (objective_index = 0U;
          objective_index < sizeof(objectives) / sizeof(objectives[0]);
          objective_index++) {
@@ -27049,6 +27061,14 @@ static void test_agent_runtime_host_goal_controls(test_state *state) {
                  cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
     }
     expect_str(state, "runtime_host_goal_paused", goal.status, "paused");
+    request.objective = "must not replace paused host goal";
+    expect_int(state, "runtime_host_goal_duplicate_paused",
+               cai_agent_runtime_create_goal(runtime, &request, &error),
+               CAI_ERR_INVALID);
+    expect_substr(state, "runtime_host_goal_duplicate_paused_error",
+                  error.message, "unfinished or pending goal");
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
     expect_int(state, "runtime_host_goal_resume",
                cai_agent_runtime_resume_goal(runtime, &error), CAI_OK);
     expect_int(
@@ -28488,9 +28508,11 @@ static void test_goal_tools(test_state *state) {
              CAI_AGENT_IMPL(agent)->tools->run(
                  CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
                  "{\"objective\":\"replacement after block\"}", sink, &error),
-             CAI_OK);
-  expect_substr(state, "goal_create_after_blocked_status", writer.buffer,
-                "\"status\":\"active\"");
+             CAI_ERR_INVALID);
+  expect_substr(state, "goal_create_after_blocked_error", error.message,
+                "unfinished goal");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   writer.length = 0U;
   writer.buffer[0] = '\0';
   expect_int(state, "goal_clear",
@@ -28503,6 +28525,22 @@ static void test_goal_tools(test_state *state) {
   }
   expect_substr(state, "goal_clear_confirmed", writer.buffer,
                 "\"cleared\":true");
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "goal_create_after_clear",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
+                 "{\"objective\":\"replacement after clear\"}", sink, &error),
+             CAI_OK);
+  expect_substr(state, "goal_create_after_clear_status", writer.buffer,
+                "\"status\":\"active\"");
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "goal_clear_after_recreate",
+             CAI_AGENT_IMPL(agent)->tools->run(CAI_AGENT_IMPL(agent)->tools,
+                                               CAI_GOAL_CLEAR_TOOL_NAME, "{}",
+                                               sink, &error),
+             CAI_OK);
   writer.length = 0U;
   writer.buffer[0] = '\0';
   expect_int(state, "goal_clear_idempotent",

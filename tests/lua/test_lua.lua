@@ -1144,6 +1144,15 @@ do
     end
     assert(goal and goal.status == "active", "Lua host goal creation")
     assert(goal.remaining_tokens == 12, "Lua host goal remaining budget")
+    local duplicate_goal, duplicate_goal_error = goal_runtime:create_goal({
+      objective = "must not replace active Lua host goal",
+    })
+    local duplicate_goal_failure = assert_not_ok(duplicate_goal,
+      duplicate_goal_error, "Lua host goal duplicate create")
+    assert(tostring(duplicate_goal_failure.message or ""):find("unfinished or pending goal", 1,
+      true), "Lua host goal duplicate create reason")
+    assert(goal_runtime:goal().objective == "Exercise host goals",
+      "Lua host goal duplicate create preserves objective")
     assert_ok(goal_runtime:pause_goal())
     for _ = 1, 10 do
       goal_runtime:pump(10)
