@@ -1610,24 +1610,35 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_install_metadata_test PROPERTIES
       LABELS "packaging;local"
       TIMEOUT 30)
+    set(CAI_HOST_DEPENDENCY_MODE_TEST_ARGS
+      "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+      "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+      "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
+      "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
+      "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
+      "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
+      "-DCAI_LONEJSON_INCLUDE_DIR=${CAI_LONEJSON_INCLUDE_DIR}"
+      "-DCAI_LONEJSON_LIBRARY=${CAI_LONEJSON_LIBRARY}"
+      "-DCAI_PSLOG_INCLUDE_DIR=${CAI_PSLOG_INCLUDE_DIR}"
+      "-DCAI_PSLOG_LIBRARY=${CAI_PSLOG_LIBRARY}"
+      "-DCAI_PARENT_CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+      "-DCAI_C_COMPILER=${CMAKE_C_COMPILER}"
+      "-DCAI_LONEJSON_ABI_VERSION=${CAI_LONEJSON_ABI_VERSION}")
     add_test(NAME cai_host_dependency_mode_unsupported_target
       COMMAND "${CMAKE_COMMAND}"
-        "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
-        "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
-        "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
-        "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
-        "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
-        "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
-        "-DCAI_LONEJSON_INCLUDE_DIR=${CAI_LONEJSON_INCLUDE_DIR}"
-        "-DCAI_LONEJSON_LIBRARY=${CAI_LONEJSON_LIBRARY}"
-        "-DCAI_PSLOG_INCLUDE_DIR=${CAI_PSLOG_INCLUDE_DIR}"
-        "-DCAI_PSLOG_LIBRARY=${CAI_PSLOG_LIBRARY}"
-        "-DCAI_PARENT_CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+        ${CAI_HOST_DEPENDENCY_MODE_TEST_ARGS}
         "-DCAI_GENERATOR=${CMAKE_GENERATOR}"
-        "-DCAI_C_COMPILER=${CMAKE_C_COMPILER}"
-        "-DCAI_LONEJSON_ABI_VERSION=${CAI_LONEJSON_ABI_VERSION}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_dependency_mode_test.cmake")
     set_tests_properties(cai_host_dependency_mode_unsupported_target PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 10)
+    add_test(NAME cai_host_dependency_mode_unsupported_target_makefiles
+      COMMAND "${CMAKE_COMMAND}"
+        ${CAI_HOST_DEPENDENCY_MODE_TEST_ARGS}
+        "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/host-dependency-mode-makefiles-parent"
+        "-DCAI_GENERATOR=Unix Makefiles"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_dependency_mode_test.cmake")
+    set_tests_properties(cai_host_dependency_mode_unsupported_target_makefiles PROPERTIES
       LABELS "packaging;local"
       TIMEOUT 10)
     add_test(NAME cai_rpath_token_test
@@ -1675,8 +1686,7 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_cmake_presets_test PROPERTIES
       LABELS "packaging;local"
       TIMEOUT 15)
-    if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt" AND
-       CMAKE_GENERATOR MATCHES "Ninja")
+    if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
       add_test(NAME cai_cpkt_link_targets_test
         COMMAND "${CMAKE_COMMAND}"
           "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
