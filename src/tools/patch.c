@@ -575,11 +575,17 @@ static void cai_patch_unlink_if_matches(int parent_fd, const char *name,
 
 #if defined(CAI_TESTING)
 void cai_patch_test_pause_before_publish(int enabled);
+void cai_patch_test_fail_directory_sync(int enabled);
 
 static volatile sig_atomic_t cai_patch_test_pause_before_publish_enabled;
+static volatile sig_atomic_t cai_patch_test_fail_directory_sync_enabled;
 
 void cai_patch_test_pause_before_publish(int enabled) {
   cai_patch_test_pause_before_publish_enabled = enabled != 0 ? 1 : 0;
+}
+
+void cai_patch_test_fail_directory_sync(int enabled) {
+  cai_patch_test_fail_directory_sync_enabled = enabled != 0 ? 1 : 0;
 }
 
 static void cai_patch_before_publish(void) {
@@ -590,6 +596,23 @@ static void cai_patch_before_publish(void) {
 #else
 static void cai_patch_before_publish(void) {}
 #endif
+
+static int cai_patch_sync_directory(int parent_fd, cai_error *error) {
+#if defined(CAI_TESTING)
+  if (cai_patch_test_fail_directory_sync_enabled != 0) {
+    errno = EIO;
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to synchronize patch directory",
+                                strerror(errno));
+  }
+#endif
+  if (fsync(parent_fd) != 0) {
+    return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to synchronize patch directory",
+                                strerror(errno));
+  }
+  return CAI_OK;
+}
 
 static int cai_patch_read_file(int parent_fd, const char *name, size_t maximum,
                                char **out, size_t *out_length,
@@ -1828,6 +1851,31 @@ static int cai_patch_commit(cai_patch_plan *plan, cai_error *error) {
         goto rollback;
       }
       change->primary_removed = 1;
+    }
+  }
+  /* The file data is synced before it is published, but rename/link/unlink
+   * changes live in the parent directory. Do not report a completed patch
+   * until each affected directory entry is durable too: a later session
+   * checkpoint can otherwise claim an edit that a crash rolls back. */
+  for (i = 0U; i < plan->count; i++) {
+    cai_patch_change *change;
+    int target_parent_fd;
+
+    change = &plan->items[i];
+    if (change->target_published) {
+      target_parent_fd = change->resolved_move_path != NULL
+                             ? change->move_parent_fd
+                             : change->primary_parent_fd;
+      rc = cai_patch_sync_directory(target_parent_fd, error);
+      if (rc != CAI_OK) {
+        goto rollback;
+      }
+    }
+    if (change->primary_removed) {
+      rc = cai_patch_sync_directory(change->primary_parent_fd, error);
+      if (rc != CAI_OK) {
+        goto rollback;
+      }
     }
   }
   return CAI_OK;

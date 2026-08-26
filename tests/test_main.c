@@ -62,6 +62,7 @@ static const char *g_current_test_name = NULL;
 void cai_mcp_test_set_sleep_ms_fn(void (*fn)(long ms));
 int cai_mcp_test_header_callback_unterminated(void);
 void cai_patch_test_pause_before_publish(int enabled);
+void cai_patch_test_fail_directory_sync(int enabled);
 void cai_terminal_test_set_reader_create_failure(int enabled);
 void cai_terminal_test_set_child_pre_setsid_hold(int enabled);
 
@@ -25393,6 +25394,8 @@ static void test_smith_review_runtime(test_state *state) {
   cai_error error;
   char review_session_id[CAI_AGENT_SESSION_ID_MAX];
   char revision_workspace[] = "/tmp/cai-review-revision-XXXXXX";
+  char revision_path_root[] = "/tmp/cai-review-path-XXXXXX";
+  char revision_saved_cwd[PATH_MAX];
   char revision_git_directory[PATH_MAX];
   char revision_git_path[PATH_MAX];
   char *revision_saved_path;
@@ -25500,8 +25503,10 @@ static void test_smith_review_runtime(test_state *state) {
              "smith-review:review-isolation");
   runtime = NULL;
   if (mkdtemp(revision_workspace) == NULL ||
+      mkdtemp(revision_path_root) == NULL ||
+      getcwd(revision_saved_cwd, sizeof(revision_saved_cwd)) == NULL ||
       snprintf(revision_git_directory, sizeof(revision_git_directory), "%s/bin",
-               revision_workspace) >= (int)sizeof(revision_git_directory) ||
+               revision_path_root) >= (int)sizeof(revision_git_directory) ||
       mkdir(revision_git_directory, 0700) != 0 ||
       snprintf(revision_git_path, sizeof(revision_git_path), "%s/git",
                revision_git_directory) >= (int)sizeof(revision_git_path)) {
@@ -25518,9 +25523,9 @@ static void test_smith_review_runtime(test_state *state) {
       if (getenv("PATH") != NULL) {
         revision_saved_path = cai_strdup(NULL, getenv("PATH"));
       }
-      if (setenv("PATH", revision_git_directory, 1) != 0) {
+      if (chdir(revision_path_root) != 0 || setenv("PATH", "bin", 1) != 0) {
         test_fail(state, "smith_review_revision_git_path",
-                  "failed to set fake git PATH");
+                  "failed to set relative fake git PATH");
       }
       cai_agent_runtime_config_init(&revision_config);
       revision_config.preset = CAI_SMITH_REVIEW_PRESET;
@@ -25547,11 +25552,16 @@ static void test_smith_review_runtime(test_state *state) {
       } else {
         (void)unsetenv("PATH");
       }
+      if (chdir(revision_saved_cwd) != 0) {
+        test_fail(state, "smith_review_revision_restore_cwd",
+                  "failed to restore current directory");
+      }
       cai_free_mem(NULL, revision_saved_path);
       revision_saved_path = NULL;
     }
     unlink(revision_git_path);
     rmdir(revision_git_directory);
+    rmdir(revision_path_root);
     rmdir(revision_workspace);
   }
   expect_str(state, "smith_review_revision_storage_scope", store_state.scope,
@@ -26452,6 +26462,13 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   runtime_config.event_queue_limit = 1U;
   runtime_config.event_callback = test_runtime_event;
   runtime_config.event_context = &events;
+  runtime_config.session_id = "";
+  expect_int(state, "runtime_reject_empty_custom_session_id",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  runtime_config.session_id = NULL;
   session_open_before = time(NULL);
   expect_int(state, "runtime_open",
              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
@@ -28937,6 +28954,7 @@ static void test_patch_tool(test_state *state) {
   char race_alias_path[PATH_MAX];
   char update_race_path[PATH_MAX];
   char update_race_external_path[PATH_MAX];
+  char sync_failure_path[PATH_MAX];
   char *contents;
   char *too_many_patch;
   cai_patch_tool_config config;
@@ -28971,6 +28989,8 @@ static void test_patch_tool(test_state *state) {
            dir_template);
   snprintf(update_race_external_path, sizeof(update_race_external_path),
            "%s/update-raced-external.txt", dir_template);
+  snprintf(sync_failure_path, sizeof(sync_failure_path), "%s/sync-failure.txt",
+           dir_template);
   write_file_or_die(alpha_path, "one\ntwo\nthree\nfour\n");
   memset(&config, 0, sizeof(config));
   config.root_path = dir_template;
@@ -29027,6 +29047,20 @@ static void test_patch_tool(test_state *state) {
   contents = read_file_or_die(beta_path);
   expect_str(state, "patch_added_content", contents, "beta\n");
   free(contents);
+  cai_patch_test_fail_directory_sync(1);
+  expect_int(state, "patch_sync_failure_rejected",
+             cai_apply_patch(&config,
+                             "*** Begin Patch\n"
+                             "*** Add File: sync-failure.txt\n"
+                             "+must not be reported as complete\n"
+                             "*** End Patch",
+                             NULL, &error),
+             CAI_ERR_INVALID);
+  cai_patch_test_fail_directory_sync(0);
+  expect_int(state, "patch_sync_failure_rollback",
+             access(sync_failure_path, F_OK) != 0, 1L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   {
     static const char race_patch[] = "*** Begin Patch\n"
                                      "*** Add File: raced.txt\n"
@@ -29318,6 +29352,7 @@ static void test_patch_tool(test_state *state) {
   unlink(race_path);
   unlink(update_race_path);
   unlink(update_race_external_path);
+  unlink(sync_failure_path);
   rmdir(dir_template);
   cai_error_cleanup(&error);
 }

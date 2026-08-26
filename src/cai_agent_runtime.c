@@ -5036,6 +5036,10 @@ int cai_agent_runtime_open(cai_client *client,
         error, CAI_ERR_INVALID,
         "agent runtime client and workspace directory are required");
   }
+  if (config->session_id != NULL && config->session_id[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "agent session identifier must not be empty");
+  }
   cai_agent_preset_from_smith(&builtin_preset);
   preset = config->preset_descriptor != NULL ? config->preset_descriptor
                                              : &builtin_preset;
@@ -5699,6 +5703,7 @@ static int cai_runtime_git_executable(char output[PATH_MAX], cai_error *error) {
   const char *path;
   const char *cursor;
   const char *next;
+  char candidate[PATH_MAX];
   size_t length;
 
   path = getenv("PATH");
@@ -5711,9 +5716,11 @@ static int cai_runtime_git_executable(char output[PATH_MAX], cai_error *error) {
     next = strchr(cursor, ':');
     length = next != NULL ? (size_t)(next - cursor) : strlen(cursor);
     if (length > 0U && length <= PATH_MAX - sizeof("/git")) {
-      memcpy(output, cursor, length);
-      memcpy(output + length, "/git", sizeof("/git"));
-      if (access(output, X_OK) == 0) {
+      memcpy(candidate, cursor, length);
+      memcpy(candidate + length, "/git", sizeof("/git"));
+      /* execve() follows chdir(workspace). A relative PATH entry would
+       * otherwise resolve against another directory than this probe. */
+      if (realpath(candidate, output) != NULL && access(output, X_OK) == 0) {
         return CAI_OK;
       }
     }
