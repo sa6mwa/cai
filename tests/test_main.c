@@ -32313,6 +32313,8 @@ static void test_terminal_external_child_reap(test_state *state) {
   struct sigaction ignored_action;
   struct sigaction previous_action;
   int sigchld_ignored;
+  int rc;
+  int i;
 
   if (mkdtemp(dir_template) == NULL) {
     test_fail(state, "terminal_external_reap_mkdtemp", "mkdtemp failed");
@@ -32324,6 +32326,7 @@ static void test_terminal_external_child_reap(test_state *state) {
   registry = NULL;
   sink = NULL;
   sigchld_ignored = 0;
+  rc = CAI_OK;
   cai_error_init(&error);
   config.root_path = dir_template;
   config.default_workdir = dir_template;
@@ -32352,14 +32355,28 @@ static void test_terminal_external_child_reap(test_state *state) {
                 "failed to ignore SIGCHLD");
     } else {
       sigchld_ignored = 1;
-      expect_int(state, "terminal_external_reap_exec",
-                 cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
-                                       "{\"cmd\":\"printf reaped\","
-                                       "\"yield_time_ms\":100}",
-                                       sink, &error),
-                 CAI_OK);
+      rc = cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                 "{\"cmd\":\"printf reaped\","
+                                 "\"yield_time_ms\":100}",
+                                 sink, &error);
+      expect_int(state, "terminal_external_reap_exec", rc, CAI_OK);
       expect_substr(state, "terminal_external_reap_output", writer.buffer,
                     "reaped");
+      /* Output may arrive before the reader's subsequent waitpid() observes
+       * ECHILD. Poll through the documented terminal continuation surface so
+       * this test validates eventual completion rather than one scheduling
+       * order between output and automatic child reaping. */
+      for (i = 0; rc == CAI_OK && i < 5 &&
+                  strstr(writer.buffer, "\"completed\":true") == NULL;
+           i++) {
+        writer.buffer[0] = '\0';
+        writer.length = 0U;
+        rc = cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                   "{\"session_id\":\"terminal-1\","
+                                   "\"yield_time_ms\":100}",
+                                   sink, &error);
+      }
+      expect_int(state, "terminal_external_reap_poll", rc, CAI_OK);
       expect_substr(state, "terminal_external_reap_completed", writer.buffer,
                     "\"completed\":true");
       if (strstr(writer.buffer, "\"exit_code\"") != NULL ||
