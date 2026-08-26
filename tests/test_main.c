@@ -32398,6 +32398,111 @@ static void test_terminal_external_child_reap(test_state *state) {
   rmdir(dir_template);
 }
 
+static void test_terminal_closes_inherited_fds(test_state *state) {
+#if defined(__linux__)
+  char dir_template[] = "/tmp/cai-terminal-fd-isolation-XXXXXX";
+  char secret_template[] = "/tmp/cai-terminal-fd-secret-XXXXXX";
+  static const char secret[] = "model-must-not-read-this-host-secret";
+  char request[512];
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  int secret_fd;
+  int descriptor_flags;
+  int rc;
+  int i;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_fd_isolation_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  secret_fd = mkstemp(secret_template);
+  if (secret_fd < 0) {
+    test_fail(state, "terminal_fd_isolation_mkstemp", "mkstemp failed");
+    rmdir(dir_template);
+    return;
+  }
+  if (write(secret_fd, secret, sizeof(secret) - 1U) !=
+          (ssize_t)(sizeof(secret) - 1U) ||
+      lseek(secret_fd, 0, SEEK_SET) < 0) {
+    test_fail(state, "terminal_fd_isolation_write", "failed to seed secret");
+    close(secret_fd);
+    unlink(secret_template);
+    rmdir(dir_template);
+    return;
+  }
+  descriptor_flags = fcntl(secret_fd, F_GETFD);
+  if (descriptor_flags < 0 ||
+      fcntl(secret_fd, F_SETFD, descriptor_flags & ~FD_CLOEXEC) != 0) {
+    test_fail(state, "terminal_fd_isolation_inheritable",
+              "failed to make secret descriptor inheritable");
+    close(secret_fd);
+    unlink(secret_template);
+    rmdir(dir_template);
+    return;
+  }
+  if (snprintf(request, sizeof(request),
+               "{\"cmd\":\"if [ -e /proc/self/fd/%d ]; then cat "
+               "/proc/self/fd/%d; else printf sealed; fi\","
+               "\"yield_time_ms\":100}",
+               secret_fd, secret_fd) >= (int)sizeof(request)) {
+    test_fail(state, "terminal_fd_isolation_request", "request is too long");
+    close(secret_fd);
+    unlink(secret_template);
+    rmdir(dir_template);
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  memset(&writer, 0, sizeof(writer));
+  registry = NULL;
+  sink = NULL;
+  cai_error_init(&error);
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  config.default_yield_time_ms = 100L;
+  config.max_yield_time_ms = 100L;
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  rc = cai_tool_registry_new(&registry, &error);
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_register_terminal_tools(registry, &config, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME, request,
+                               sink, &error);
+  }
+  expect_int(state, "terminal_fd_isolation_exec", rc, CAI_OK);
+  for (i = 0; rc == CAI_OK && i < 5 && strstr(writer.buffer, "sealed") == NULL;
+       i++) {
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    rc = cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                               "{\"session_id\":\"terminal-1\","
+                               "\"yield_time_ms\":100}",
+                               sink, &error);
+  }
+  expect_int(state, "terminal_fd_isolation_poll", rc, CAI_OK);
+  expect_substr(state, "terminal_fd_isolation_sealed", writer.buffer, "sealed");
+  expect_int(state, "terminal_fd_isolation_secret_hidden",
+             strstr(writer.buffer, secret) == NULL, 1L);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  close(secret_fd);
+  unlink(secret_template);
+  rmdir(dir_template);
+#else
+  (void)state;
+#endif
+}
+
 static void test_terminal_concurrent_start(test_state *state) {
   char dir_template[] = "/tmp/cai-terminal-race-XXXXXX";
   cai_terminal_tool_config config;
@@ -40349,6 +40454,7 @@ static const test_entry test_entries[] = {
     {"terminal_capture_truncation", test_terminal_capture_truncation},
     {"terminal_reader_start_failure", test_terminal_reader_start_failure},
     {"terminal_external_child_reap", test_terminal_external_child_reap},
+    {"terminal_closes_inherited_fds", test_terminal_closes_inherited_fds},
     {"terminal_concurrent_start", test_terminal_concurrent_start},
     {"terminal_concurrent_operation", test_terminal_concurrent_operation},
     {"read_tool", test_read_tool},

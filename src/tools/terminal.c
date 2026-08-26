@@ -4,12 +4,15 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -18,6 +21,8 @@
 
 #if defined(__linux__)
 #include <pty.h>
+#include <sys/syscall.h>
+extern long syscall(long number, ...);
 #elif defined(__APPLE__) || defined(__FreeBSD__)
 #include <util.h>
 #endif
@@ -37,6 +42,7 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_TERMINAL_MAX_POLL_YIELD_MS 300000L
 #define CAI_TERMINAL_DEFAULT_OUTPUT_MAX (3U * 1024U * 1024U)
 #define CAI_TERMINAL_STDIN_WRITE_TIMEOUT_MS 1000L
+#define CAI_TERMINAL_CLOSE_FD_FALLBACK_LIMIT 1048576
 
 /*
  * The terminal is an explicit host-side capability, but it must not inherit
@@ -55,6 +61,133 @@ static char cai_terminal_safe_tmpdir[] = "TMPDIR=/tmp";
 /* A PTY causes tools such as git to select less; never let its history file
  * become an untracked workspace artifact. */
 static char cai_terminal_safe_lesshistfile[] = "LESSHISTFILE=/dev/null";
+
+#if defined(__linux__)
+typedef struct cai_terminal_linux_dirent64 {
+  unsigned long long inode;
+  long long offset;
+  unsigned short record_length;
+  unsigned char type;
+  char name[1];
+} cai_terminal_linux_dirent64;
+
+static int cai_terminal_linux_fd_name(const char *name, size_t length,
+                                      int *out) {
+  unsigned long value;
+  size_t index;
+
+  value = 0U;
+  if (name == NULL || out == NULL || length == 0U) {
+    return 0;
+  }
+  for (index = 0U; index < length && name[index] != '\0'; index++) {
+    if (name[index] < '0' || name[index] > '9' ||
+        value > (unsigned long)(INT_MAX - (name[index] - '0')) / 10U) {
+      return 0;
+    }
+    value = value * 10U + (unsigned long)(name[index] - '0');
+  }
+  if (index == 0U || index == length || name[index] != '\0') {
+    return 0;
+  }
+  *out = (int)value;
+  return 1;
+}
+
+/* Some supported Linux kernels predate close_range(). Enumerating procfs with
+ * raw syscalls remains safe after fork and closes precisely the descriptor
+ * snapshot inherited by the child, without a costly RLIMIT_NOFILE sweep. */
+static int cai_terminal_linux_close_inherited_fds_proc(void) {
+#if defined(SYS_openat) && defined(SYS_getdents64)
+  char buffer[4096];
+  int directory_fd;
+  int rc;
+
+  directory_fd = (int)syscall(SYS_openat, AT_FDCWD, "/proc/self/fd",
+                              O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
+  if (directory_fd < 0) {
+    return -1;
+  }
+  rc = 0;
+  for (;;) {
+    ssize_t count;
+    size_t cursor;
+
+    count =
+        (ssize_t)syscall(SYS_getdents64, directory_fd, buffer, sizeof(buffer));
+    if (count == 0) {
+      break;
+    }
+    if (count < 0) {
+      rc = -1;
+      break;
+    }
+    cursor = 0U;
+    while (cursor < (size_t)count) {
+      cai_terminal_linux_dirent64 *entry;
+      size_t name_length;
+      int fd;
+
+      if ((size_t)count - cursor <
+          offsetof(cai_terminal_linux_dirent64, name)) {
+        rc = -1;
+        break;
+      }
+      entry = (cai_terminal_linux_dirent64 *)(buffer + cursor);
+      if (entry->record_length <
+              offsetof(cai_terminal_linux_dirent64, name) + 1U ||
+          entry->record_length > (size_t)count - cursor) {
+        rc = -1;
+        break;
+      }
+      name_length =
+          entry->record_length - offsetof(cai_terminal_linux_dirent64, name);
+      if (cai_terminal_linux_fd_name(entry->name, name_length, &fd) &&
+          fd >= 3 && fd != directory_fd) {
+        (void)close(fd);
+      }
+      cursor += entry->record_length;
+    }
+    if (rc != 0) {
+      break;
+    }
+  }
+  (void)close(directory_fd);
+  return rc;
+#else
+  return -1;
+#endif
+}
+#endif
+
+/* The terminal child runs model-requested code. Do not leak host sockets,
+ * files, pipes, or credentials through descriptors intentionally kept
+ * inheritable by the embedding process. This executes only after fork, so it
+ * uses direct descriptor syscalls only. */
+static void cai_terminal_close_inherited_fds(int fd_limit) {
+#if !defined(__APPLE__) && !defined(__FreeBSD__)
+  int fd;
+#endif
+#if defined(__linux__) && defined(SYS_close_range)
+  if (syscall(SYS_close_range, 3U, UINT_MAX, 0U) == 0) {
+    return;
+  }
+#endif
+#if defined(__linux__)
+  if (cai_terminal_linux_close_inherited_fds_proc() == 0) {
+    return;
+  }
+#endif
+#if defined(__APPLE__) || defined(__FreeBSD__)
+  closefrom(3);
+#else
+  /* Older Linux kernels lack close_range(). An open descriptor can never be
+   * trusted merely because it predates terminal setup. */
+  for (fd = 3; fd < fd_limit; fd++) {
+    (void)close(fd);
+  }
+#endif
+}
 
 #if defined(CAI_TESTING)
 void cai_terminal_test_set_reader_create_failure(int enabled);
@@ -828,6 +961,7 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
   int master;
   int slave;
   int join_reader;
+  int inherited_fd_limit;
   pid_t pid;
   pthread_t reader;
   char *command_copy;
@@ -836,6 +970,7 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
   (void)tty;
   master = -1;
   slave = -1;
+  inherited_fd_limit = CAI_TERMINAL_CLOSE_FD_FALLBACK_LIMIT;
   memset(&reader, 0, sizeof(reader));
   command_copy = cai_strdup(NULL, cmd);
   workdir_copy = cai_strdup(NULL, workdir);
@@ -890,6 +1025,14 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
                                 "failed to create terminal PTY",
                                 strerror(errno));
   }
+  {
+    struct rlimit descriptor_limit;
+
+    if (getrlimit(RLIMIT_NOFILE, &descriptor_limit) == 0 &&
+        descriptor_limit.rlim_cur < (rlim_t)INT_MAX) {
+      inherited_fd_limit = (int)descriptor_limit.rlim_cur;
+    }
+  }
   pid = fork();
   if (pid < 0) {
     cai_terminal_close_fd(&master);
@@ -936,6 +1079,7 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
       _exit(126);
     }
     close(workdir_fd);
+    cai_terminal_close_inherited_fds(inherited_fd_limit);
     execve(manager->shell_path, argv, environment);
     _exit(127);
   }
