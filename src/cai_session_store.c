@@ -495,6 +495,7 @@ static int cai_local_session_load_events_after(
   char *line;
   size_t line_capacity;
   ssize_t line_length;
+  unsigned long long previous_sequence;
   int scope_fd;
   int fd;
   FILE *fp;
@@ -508,6 +509,7 @@ static int cai_local_session_load_events_after(
   store = (cai_local_session_store *)context;
   line = NULL;
   line_capacity = 0U;
+  previous_sequence = 0U;
   scope_fd = -1;
   fd = -1;
   fp = NULL;
@@ -568,7 +570,13 @@ static int cai_local_session_load_events_after(
                                 json_error.message);
       break;
     }
-    if (doc.sequence > after_sequence) {
+    if (doc.sequence == 0U || doc.sequence <= previous_sequence) {
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "session event sequences must be strictly increasing");
+    } else {
+      previous_sequence = doc.sequence;
+    }
+    if (rc == CAI_OK && doc.sequence > after_sequence) {
       event.sequence = doc.sequence;
       event.type = doc.type;
       event.data = doc.data;

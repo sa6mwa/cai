@@ -27440,6 +27440,35 @@ static void test_agent_local_session_store(test_state *state) {
              "resume this steering input");
   cai_source_close(loaded);
   loaded = NULL;
+  fp = fopen(file_path, "ab");
+  if (fp == NULL ||
+      fwrite("{\"record_type\":\"event\",\"sequence\":8,"
+             "\"type\":\"steering_queued\",\"data\":\"duplicate\"}\n",
+             1U,
+             strlen("{\"record_type\":\"event\",\"sequence\":8,"
+                    "\"type\":\"steering_queued\",\"data\":\"duplicate\"}\n"),
+             fp) !=
+          strlen("{\"record_type\":\"event\",\"sequence\":8,"
+                 "\"type\":\"steering_queued\",\"data\":\"duplicate\"}\n")) {
+    test_fail(state, "local_session_store_duplicate_event_write",
+              "failed to append duplicate event record");
+  }
+  if (fp != NULL) {
+    fclose(fp);
+  }
+  memset(&event_capture, 0, sizeof(event_capture));
+  expect_int(state, "local_session_store_duplicate_event_rejected",
+             store.load_events_after(
+                 store.context, "/tmp/cai-session-store-scope", "session_one",
+                 loaded_sequence, test_session_event_capture, &event_capture,
+                 &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "local_session_store_duplicate_event_first_replayed",
+             event_capture.count, 1L);
+  expect_substr(state, "local_session_store_duplicate_event_error",
+                error.message, "strictly increasing");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   reader.text = "{\"version\":4}";
   reader.offset = 0U;
   reader.closed = 0;
