@@ -26142,7 +26142,7 @@ static void test_agent_runtime_review_subagent(test_state *state) {
       "\"item\":{\"id\":\"fc_review\",\"type\":\"function_call\","
       "\"call_id\":\"call_review\",\"name\":\"run_review\","
       "\"arguments\":\"{\\\"target\\\":\\\"base\\\",\\\"base\\\":"
-      "\\\"trunk\\\"}\"}}\n\n"
+      "\\\"trunk~2\\\"}\"}}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_parent_review_tool\",\"usage\":{\"input_tokens\":2,"
       "\"output_tokens\":2,\"total_tokens\":4}}}\n\n";
@@ -26168,10 +26168,11 @@ static void test_agent_runtime_review_subagent(test_state *state) {
   static const char *parent_forbidden[] = {"\"name\":\"run_subagent\"",
                                            "\"model\":{\"type\":"};
   static const char *review_required[] = {
-      "Review the code changes against the base branch 'trunk'. The merge base "
+      "Review the code changes against the base branch 'trunk~2'. The merge "
+      "base "
       "commit for this comparison is 0123456789abcdef0123456789abcdef01234567. "
       "Run `git diff 0123456789abcdef0123456789abcdef01234567` to inspect "
-      "the changes relative to trunk. Provide prioritized, actionable "
+      "the changes relative to trunk~2. Provide prioritized, actionable "
       "findings.",
       "You are Cai Smith, a code reviewer", "\"name\":\"exec_command\"",
       "\"name\":\"write_stdin\""};
@@ -26289,10 +26290,14 @@ static void test_agent_runtime_review_subagent(test_state *state) {
                events.saw_subagent_started, 1L);
     expect_str(state, "agent_runtime_review_subagent_started_display_summary",
                events.subagent_display_summary,
-               "Reviewing changes against trunk.");
+               "Reviewing changes against trunk~2.");
+    expect_str(state, "agent_runtime_review_subagent_started_metadata",
+               events.subagent_metadata_json,
+               "{\"target\":\"base\",\"base\":\"trunk~2\"}");
     expect_substr(state, "agent_runtime_review_subagent_started_instruction",
                   events.subagent_instruction,
-                  "Review the code changes against the base branch 'trunk'.");
+                  "Review the code changes against the base branch "
+                  "'trunk~2'.");
     expect_int(state, "agent_runtime_review_subagent_handoff_event",
                events.saw_subagent_handed_off, 1L);
     expect_int(state, "agent_runtime_review_subagent_no_raw_report",

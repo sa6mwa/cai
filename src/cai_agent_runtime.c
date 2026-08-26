@@ -129,6 +129,12 @@ typedef struct cai_runtime_review_report_doc {
   double overall_confidence_score;
 } cai_runtime_review_report_doc;
 
+typedef struct cai_runtime_review_metadata_doc {
+  const char *target;
+  const char *base;
+  const char *commit;
+} cai_runtime_review_metadata_doc;
+
 static const lonejson_field cai_runtime_review_line_range_fields[] = {
     LONEJSON_FIELD_I64_REQ(cai_runtime_review_line_range, start, "start"),
     LONEJSON_FIELD_I64_REQ(cai_runtime_review_line_range, end, "end")};
@@ -180,6 +186,17 @@ LONEJSON_MAP_DEFINE(cai_runtime_review_report_map,
                     cai_runtime_review_report_doc,
                     cai_runtime_review_report_fields);
 
+static const lonejson_field cai_runtime_review_metadata_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_runtime_review_metadata_doc, target,
+                                    "target"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_runtime_review_metadata_doc, base,
+                                          "base"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_runtime_review_metadata_doc,
+                                          commit, "commit")};
+LONEJSON_MAP_DEFINE(cai_runtime_review_metadata_map,
+                    cai_runtime_review_metadata_doc,
+                    cai_runtime_review_metadata_fields);
+
 typedef struct cai_runtime_subagent_args {
   char *profile;
   char *instructions;
@@ -227,6 +244,11 @@ typedef struct cai_runtime_lonejson_sink {
   cai_sink *sink;
   cai_error *error;
 } cai_runtime_lonejson_sink;
+
+typedef struct cai_runtime_lonejson_buffer {
+  cai_buffer_builder *builder;
+  cai_error *error;
+} cai_runtime_lonejson_buffer;
 
 static const lonejson_field cai_runtime_subagent_args_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_runtime_subagent_args, profile,
@@ -7054,6 +7076,69 @@ static int cai_runtime_run_subagent(void *context, const void *params,
   return rc;
 }
 
+static lonejson_status
+cai_runtime_lonejson_buffer_write(void *user, const void *data, size_t length,
+                                  lonejson_error *json_error) {
+  cai_runtime_lonejson_buffer *context;
+
+  (void)json_error;
+  context = (cai_runtime_lonejson_buffer *)user;
+  if (context == NULL || context->builder == NULL || context->error == NULL ||
+      cai_buffer_append(context->builder, (const char *)data, length,
+                        context->error) != CAI_OK) {
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static int
+cai_runtime_serialize_review_metadata(const cai_agent_review_request *request,
+                                      char **out, cai_error *error) {
+  cai_runtime_review_metadata_doc doc;
+  cai_runtime_lonejson_buffer buffer_context;
+  cai_buffer_builder builder;
+  lonejson_error json_error;
+  lonejson_status status;
+
+  if (request == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "review metadata request and output are required");
+  }
+  *out = NULL;
+  memset(&doc, 0, sizeof(doc));
+  if (request->target == CAI_AGENT_REVIEW_UNCOMMITTED) {
+    doc.target = "uncommitted";
+  } else if (request->target == CAI_AGENT_REVIEW_BASE_BRANCH) {
+    doc.target = "base";
+    doc.base = request->base_branch;
+  } else if (request->target == CAI_AGENT_REVIEW_COMMIT) {
+    doc.target = "commit";
+    doc.commit = request->commit;
+  } else {
+    doc.target = "custom";
+  }
+  memset(&builder, 0, sizeof(builder));
+  buffer_context.builder = &builder;
+  buffer_context.error = error;
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->serialize_sink(CAI_LJ, &cai_runtime_review_metadata_map,
+                                  &doc, cai_runtime_lonejson_buffer_write,
+                                  &buffer_context, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    cai_free_mem(NULL, builder.data);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to serialize review metadata",
+                                json_error.message);
+  }
+  if (builder.data == NULL ||
+      builder.length > CAI_RUNTIME_SUBAGENT_METADATA_MAX) {
+    cai_free_mem(NULL, builder.data);
+    return cai_set_error(error, CAI_ERR_LIMIT, "review metadata is too large");
+  }
+  *out = builder.data;
+  return CAI_OK;
+}
+
 static int cai_runtime_run_review_subagent(void *context, const void *params,
                                            void *out, cai_error *error) {
   static const char *const target_uncommitted = "uncommitted";
@@ -7064,7 +7149,7 @@ static int cai_runtime_run_review_subagent(void *context, const void *params,
   cai_agent_review_request request;
   char *instructions;
   char display_summary[CAI_RUNTIME_SUBAGENT_SUMMARY_MAX + 1U];
-  char metadata_json[512];
+  char *metadata_json;
   const char *summary;
   int rc;
 
@@ -7076,6 +7161,7 @@ static int cai_runtime_run_review_subagent(void *context, const void *params,
   }
   cai_agent_review_request_init(&request);
   instructions = NULL;
+  metadata_json = NULL;
   if (args->target == NULL || args->target[0] == '\0' ||
       strcmp(args->target, target_uncommitted) == 0) {
     if (args->base != NULL || args->commit != NULL ||
@@ -7120,8 +7206,6 @@ static int cai_runtime_run_review_subagent(void *context, const void *params,
     return rc;
   }
   summary = "Reviewing current uncommitted changes.";
-  (void)snprintf(metadata_json, sizeof(metadata_json),
-                 "{\"target\":\"uncommitted\"}");
   if (request.target == CAI_AGENT_REVIEW_BASE_BRANCH) {
     if (snprintf(display_summary, sizeof(display_summary),
                  "Reviewing changes against %s.",
@@ -7131,9 +7215,6 @@ static int cai_runtime_run_review_subagent(void *context, const void *params,
                            "review display summary is too long");
     }
     summary = display_summary;
-    (void)snprintf(metadata_json, sizeof(metadata_json),
-                   "{\"target\":\"base\",\"base\":\"%s\"}",
-                   request.base_branch);
   } else if (request.target == CAI_AGENT_REVIEW_COMMIT) {
     if (snprintf(display_summary, sizeof(display_summary),
                  "Reviewing commit %s.",
@@ -7143,12 +7224,13 @@ static int cai_runtime_run_review_subagent(void *context, const void *params,
                            "review display summary is too long");
     }
     summary = display_summary;
-    (void)snprintf(metadata_json, sizeof(metadata_json),
-                   "{\"target\":\"commit\",\"commit\":\"%s\"}", request.commit);
   } else if (request.target == CAI_AGENT_REVIEW_CUSTOM) {
     summary = "Reviewing the requested custom scope.";
-    (void)snprintf(metadata_json, sizeof(metadata_json),
-                   "{\"target\":\"custom\"}");
+  }
+  rc = cai_runtime_serialize_review_metadata(&request, &metadata_json, error);
+  if (rc != CAI_OK) {
+    cai_free_mem(NULL, instructions);
+    return rc;
   }
   memset(&delegated, 0, sizeof(delegated));
   delegated.profile = review_profile;
@@ -7160,6 +7242,7 @@ static int cai_runtime_run_review_subagent(void *context, const void *params,
   delegated.metadata_json = metadata_json;
   rc = cai_runtime_run_subagent(context, &delegated, out, error);
   cai_free_mem(NULL, instructions);
+  cai_free_mem(NULL, metadata_json);
   return rc;
 }
 
