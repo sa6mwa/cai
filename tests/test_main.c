@@ -27860,6 +27860,41 @@ static void test_agent_local_session_store(test_state *state) {
 }
 
 static void
+test_agent_local_session_store_rejects_long_default_path(test_state *state) {
+  char long_state[PATH_MAX];
+  char *saved_xdg_state;
+  cai_agent_session_store store;
+  cai_error error;
+
+  cai_error_init(&error);
+  memset(&store, 0, sizeof(store));
+  saved_xdg_state = getenv("XDG_STATE_HOME") != NULL
+                        ? cai_strdup(NULL, getenv("XDG_STATE_HOME"))
+                        : NULL;
+  long_state[0] = '/';
+  memset(long_state + 1U, 'a', sizeof(long_state) - 2U);
+  long_state[sizeof(long_state) - 1U] = '\0';
+  if (setenv("XDG_STATE_HOME", long_state, 1) != 0) {
+    test_fail(state, "local_session_store_long_default_path_setenv",
+              "failed to set oversized XDG_STATE_HOME");
+  } else {
+    expect_int(state, "local_session_store_long_default_path_rejected",
+               cai_agent_local_session_store_open(NULL, &store, &error),
+               CAI_ERR_INVALID);
+    cai_agent_local_session_store_close(&store);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+  }
+  if (saved_xdg_state != NULL) {
+    (void)setenv("XDG_STATE_HOME", saved_xdg_state, 1);
+  } else {
+    (void)unsetenv("XDG_STATE_HOME");
+  }
+  cai_free_mem(NULL, saved_xdg_state);
+  cai_error_cleanup(&error);
+}
+
+static void
 test_agent_local_session_store_rejects_unsafe_scope(test_state *state) {
   char root_directory[] = "/tmp/cai-unsafe-session-store-XXXXXX";
   char scope_path[PATH_MAX];
@@ -40637,6 +40672,8 @@ static const test_entry test_entries[] = {
      test_agent_runtime_goal_checkpoint_watermark},
     {"agent_runtime_goal_budget", test_agent_runtime_goal_budget},
     {"agent_local_session_store", test_agent_local_session_store},
+    {"agent_local_session_store_rejects_long_default_path",
+     test_agent_local_session_store_rejects_long_default_path},
     {"agent_local_session_store_rejects_unsafe_scope",
      test_agent_local_session_store_rejects_unsafe_scope},
     {"agent_runtime_resume", test_agent_runtime_resume},

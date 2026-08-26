@@ -1261,6 +1261,7 @@ int cai_agent_local_session_store_open(
   const char *xdg_state;
   const char *home;
   char default_path[PATH_MAX];
+  int written;
   int rc;
 
   if (out == NULL) {
@@ -1273,15 +1274,19 @@ int cai_agent_local_session_store_open(
     xdg_state = getenv("XDG_STATE_HOME");
     home = getenv("HOME");
     if (xdg_state != NULL && xdg_state[0] != '\0') {
-      (void)snprintf(default_path, sizeof(default_path), "%s/cai/sessions",
-                     xdg_state);
+      written = snprintf(default_path, sizeof(default_path), "%s/cai/sessions",
+                         xdg_state);
     } else if (home != NULL && home[0] != '\0') {
-      (void)snprintf(default_path, sizeof(default_path),
-                     "%s/.local/state/cai/sessions", home);
+      written = snprintf(default_path, sizeof(default_path),
+                         "%s/.local/state/cai/sessions", home);
     } else {
       return cai_set_error(
           error, CAI_ERR_INVALID,
           "XDG_STATE_HOME or HOME is required for local sessions");
+    }
+    if (written < 0 || (size_t)written >= sizeof(default_path)) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "default session store path is too long");
     }
     root = default_path;
   }
