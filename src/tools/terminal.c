@@ -939,6 +939,26 @@ static int cai_terminal_wait(cai_terminal_manager *manager, size_t initial,
   return CAI_OK;
 }
 
+/* Termination escalation needs a full grace interval even when the command
+ * produces output.  The ordinary wait helper deliberately returns on either
+ * output or completion for interactive polling, whereas this helper waits
+ * only for the child to finish. */
+static int cai_terminal_wait_for_completion(cai_terminal_manager *manager,
+                                            long wait_ms) {
+  struct timespec deadline;
+
+  cai_terminal_deadline(&deadline, wait_ms);
+  pthread_mutex_lock(&manager->lock);
+  while (manager->running) {
+    if (pthread_cond_timedwait(&manager->changed, &manager->lock, &deadline) !=
+        0) {
+      break;
+    }
+  }
+  pthread_mutex_unlock(&manager->lock);
+  return CAI_OK;
+}
+
 static long cai_terminal_clamp_yield(long long requested, int has_requested,
                                      long default_yield_ms, long max_yield_ms,
                                      long min_yield_ms) {
@@ -1553,12 +1573,12 @@ static int cai_terminal_write_callback(void *value, const void *params,
     if (binding->manager->running) {
       pthread_mutex_unlock(&binding->manager->lock);
       cai_terminal_send_signal(binding->manager, SIGTERM);
-      (void)cai_terminal_wait(binding->manager, initial, 250L);
+      (void)cai_terminal_wait_for_completion(binding->manager, 250L);
       pthread_mutex_lock(&binding->manager->lock);
       if (binding->manager->running) {
         pthread_mutex_unlock(&binding->manager->lock);
         cai_terminal_send_signal(binding->manager, SIGKILL);
-        (void)cai_terminal_wait(binding->manager, initial, 250L);
+        (void)cai_terminal_wait_for_completion(binding->manager, 250L);
       } else {
         pthread_mutex_unlock(&binding->manager->lock);
       }

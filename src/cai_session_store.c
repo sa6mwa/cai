@@ -61,17 +61,34 @@ static int cai_store_make_directory(const char *path, cai_error *error) {
   memcpy(buffer, path, length + 1U);
   for (cursor = buffer + 1; *cursor != '\0'; cursor++) {
     if (*cursor == '/') {
+      struct stat st;
+
       *cursor = '\0';
-      if (mkdir(buffer, 0700) != 0 && errno != EEXIST) {
-        return cai_set_error(error, CAI_ERR_TRANSPORT,
-                             "failed to create session store directory");
+      if (mkdir(buffer, 0700) != 0) {
+        if (errno != EEXIST) {
+          return cai_set_error(error, CAI_ERR_TRANSPORT,
+                               "failed to create session store directory");
+        }
+        if (lstat(buffer, &st) != 0 || !S_ISDIR(st.st_mode)) {
+          return cai_set_error(
+              error, CAI_ERR_TRANSPORT,
+              "session store path component is not a directory");
+        }
       }
       *cursor = '/';
     }
   }
-  if (mkdir(buffer, 0700) != 0 && errno != EEXIST) {
-    return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to create session store directory");
+  if (mkdir(buffer, 0700) != 0) {
+    struct stat st;
+
+    if (errno != EEXIST) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to create session store directory");
+    }
+    if (lstat(buffer, &st) != 0 || !S_ISDIR(st.st_mode)) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "session store root is not a directory");
+    }
   }
   return CAI_OK;
 }

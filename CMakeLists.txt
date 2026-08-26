@@ -1316,6 +1316,7 @@ if(CAI_BUILD_TESTS)
     agent_runtime_goal_budget
     agent_local_session_store
     agent_local_session_store_rejects_long_default_path
+    agent_local_session_store_rejects_file_root
     agent_local_session_store_rejects_unsafe_scope
     agent_runtime_resume
     agent_runtime_markdown_export

@@ -25171,6 +25171,15 @@ static void test_smith_profile(test_state *state) {
   terminal_config.root_path = "/";
   config.terminal_tool_config = &terminal_config;
   agent = NULL;
+  expect_int(state, "smith_reject_terminal_root",
+             cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  if (agent != NULL) {
+    cai_agent_destroy(agent);
+  }
+  agent = NULL;
   expect_int(
       state, "smith_review_reject_terminal_root",
       cai_client_new_smith_review_agent(mock.client, &config, &agent, &error),
@@ -27891,6 +27900,33 @@ test_agent_local_session_store_rejects_long_default_path(test_state *state) {
     (void)unsetenv("XDG_STATE_HOME");
   }
   cai_free_mem(NULL, saved_xdg_state);
+  cai_error_cleanup(&error);
+}
+
+static void
+test_agent_local_session_store_rejects_file_root(test_state *state) {
+  char root_file[] = "/tmp/cai-session-store-file-root-XXXXXX";
+  cai_agent_local_session_store_config config;
+  cai_agent_session_store store;
+  cai_error error;
+  int fd;
+
+  cai_error_init(&error);
+  memset(&store, 0, sizeof(store));
+  fd = mkstemp(root_file);
+  if (fd < 0) {
+    test_fail(state, "local_session_store_file_root_setup", "mkstemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  close(fd);
+  cai_agent_local_session_store_config_init(&config);
+  config.root_directory = root_file;
+  expect_int(state, "local_session_store_file_root_rejected",
+             cai_agent_local_session_store_open(&config, &store, &error),
+             CAI_ERR_TRANSPORT);
+  cai_agent_local_session_store_close(&store);
+  unlink(root_file);
   cai_error_cleanup(&error);
 }
 
@@ -32115,8 +32151,11 @@ static void test_terminal_tools(test_state *state) {
   cai_error error;
   int rc;
   int i;
+  long long terminate_grace_elapsed_ms;
   char *blocked_stdin_request;
   size_t blocked_stdin_request_size;
+  struct timespec terminate_grace_finished;
+  struct timespec terminate_grace_started;
 
   if (mkdtemp(dir_template) == NULL) {
     test_fail(state, "terminal_mkdtemp", "mkdtemp failed");
@@ -32249,6 +32288,44 @@ static void test_terminal_tools(test_state *state) {
     expect_int(state, "terminal_event_cancelled", events.cancelled, 1L);
     writer.buffer[0] = '\0';
     writer.length = 0U;
+    expect_int(state, "terminal_terminate_grace_exec",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                   "{\"cmd\":\"trap '' INT; "
+                   "trap 'printf term-noted; while :; do :; done' TERM; "
+                   "printf ready; while :; do :; done\","
+                   "\"yield_time_ms\":100}",
+                   sink, &error),
+               CAI_OK);
+    expect_substr(state, "terminal_terminate_grace_ready", writer.buffer,
+                  "ready");
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    (void)clock_gettime(CLOCK_MONOTONIC, &terminate_grace_started);
+    expect_int(state, "terminal_terminate_grace",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                   "{\"session_id\":\"terminal-1\",\"terminate\":true,"
+                   "\"yield_time_ms\":100}",
+                   sink, &error),
+               CAI_OK);
+    (void)clock_gettime(CLOCK_MONOTONIC, &terminate_grace_finished);
+    terminate_grace_elapsed_ms = (long long)(terminate_grace_finished.tv_sec -
+                                             terminate_grace_started.tv_sec) *
+                                     1000LL +
+                                 (long long)(terminate_grace_finished.tv_nsec -
+                                             terminate_grace_started.tv_nsec) /
+                                     1000000LL;
+    expect_substr(state, "terminal_terminate_grace_signal", writer.buffer,
+                  "term-noted");
+    expect_substr(state, "terminal_terminate_grace_finished", writer.buffer,
+                  "\"completed\":true");
+    expect_int(state, "terminal_terminate_grace_elapsed",
+               terminate_grace_elapsed_ms >= 200LL, 1L);
+    expect_int(state, "terminal_terminate_grace_cancelled", events.cancelled,
+               2L);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
     expect_int(state, "terminal_exec_interactive",
                cai_tool_registry_run(
                    registry, CAI_TERMINAL_EXEC_TOOL_NAME,
@@ -32303,7 +32380,7 @@ static void test_terminal_tools(test_state *state) {
                   "\"detached_processes_possible\":true");
     expect_substr(state, "terminal_detached_duration", writer.buffer,
                   "\"duration_ms\":");
-    expect_int(state, "terminal_event_started", events.started, 4L);
+    expect_int(state, "terminal_event_started", events.started, 5L);
     expect_int(state, "terminal_event_completed", events.completed, 3L);
     expect_str(state, "terminal_event_id", events.terminal_id, "terminal-1");
     writer.buffer[0] = '\0';
@@ -40674,6 +40751,8 @@ static const test_entry test_entries[] = {
     {"agent_local_session_store", test_agent_local_session_store},
     {"agent_local_session_store_rejects_long_default_path",
      test_agent_local_session_store_rejects_long_default_path},
+    {"agent_local_session_store_rejects_file_root",
+     test_agent_local_session_store_rejects_file_root},
     {"agent_local_session_store_rejects_unsafe_scope",
      test_agent_local_session_store_rejects_unsafe_scope},
     {"agent_runtime_resume", test_agent_runtime_resume},

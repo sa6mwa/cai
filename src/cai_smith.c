@@ -967,11 +967,9 @@ int cai_client_new_preset_agent(cai_client *client,
     }
     if (terminal_config.root_path != NULL &&
         strcmp(terminal_config.root_path, config->workspace_directory) != 0) {
-      cai_agent_destroy(*out);
-      *out = NULL;
-      return cai_set_error(
-          error, CAI_ERR_INVALID,
-          "Smith terminal root must equal workspace directory");
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith terminal root must equal workspace directory");
+      goto agent_tools_finished;
     }
     terminal_config.root_path = config->workspace_directory;
     if (terminal_config.default_workdir == NULL) {
@@ -979,9 +977,7 @@ int cai_client_new_preset_agent(cai_client *client,
     }
     rc = cai_agent_register_terminal_tools(*out, &terminal_config, error);
     if (rc != CAI_OK) {
-      cai_agent_destroy(*out);
-      *out = NULL;
-      return rc;
+      goto agent_tools_finished;
     }
   }
   memset(&read_config, 0, sizeof(read_config));
@@ -1019,6 +1015,7 @@ int cai_client_new_preset_agent(cai_client *client,
       skill_catalog = NULL;
     }
   }
+agent_tools_finished:
   if (rc != CAI_OK) {
     cai_agent_destroy(*out);
     *out = NULL;
@@ -1160,7 +1157,7 @@ int cai_client_new_preset_review_agent(cai_client *client,
                             &skill_catalog, &skill_catalog_prompt, error);
   }
   if (rc != CAI_OK) {
-    return rc;
+    goto review_instructions_failed;
   }
   if (preset->review_developer_instructions != NULL) {
     rc = cai_preset_render_template(
