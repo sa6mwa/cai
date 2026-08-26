@@ -4524,6 +4524,7 @@ static int cai_lua_agent_runtime_start_review(lua_State *L) {
   review->session_store_ref = LUA_NOREF;
   review->instruction_store_ref = LUA_NOREF;
   review->skill_provider_ref = LUA_NOREF;
+  review->subagent_prepare_backends_ref = LUA_NOREF;
   review->mcp_clients_ref = LUA_NOREF;
   review->review_parent_ref = cai_lua_ref_parent(L, 1);
   review->review_children_ref = LUA_NOREF;

@@ -34,6 +34,21 @@ local function assert_throws(fn, label)
   return err
 end
 
+local function registry_free_reference_count()
+  local registry = debug.getregistry()
+  local seen = {}
+  local count = 0
+  local reference = registry[1]
+
+  while type(reference) == "number" and reference ~= 0 do
+    assert(not seen[reference], "Lua registry reference free list contains a cycle")
+    seen[reference] = true
+    count = count + 1
+    reference = registry[reference]
+  end
+  return count
+end
+
 local function spool_text(text, chunk_size)
   return {
     pos = 1,
@@ -917,6 +932,28 @@ do
     "second offline review child must reach a terminal failure state")
   assert_ok(parent:finish_review(second_review))
   second_review:close()
+  parent:close()
+  review_client:close()
+end
+
+do
+  local review_client = assert_ok(cai.open({
+    api_key = "test-key",
+    base_url = "http://127.0.0.1:1/v1",
+    timeout_ms = 1,
+  }))
+  local parent = assert_ok(review_client:new_smith_runtime({
+    workspace_directory = ".",
+    disable_default_session_store = true,
+  }))
+  local review = assert_ok(parent:start_review({ target = "uncommitted" }))
+  assert(native_store_test.make_free_registry_reference() > 0,
+    "native fixture must create a reusable Lua registry reference")
+  local free_before = registry_free_reference_count()
+  assert(free_before > 0, "closed runtime must return its Lua registry reference")
+  review:close()
+  assert_eq(registry_free_reference_count(), free_before + 2,
+    "closing review must preserve prior Lua registry reference slots")
   parent:close()
   review_client:close()
 end

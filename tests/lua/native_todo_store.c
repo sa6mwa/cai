@@ -360,6 +360,16 @@ static int native_session_store_mcp_destroy_count(lua_State *L) {
   return 1;
 }
 
+static int native_registry_make_free_reference(lua_State *L) {
+  int reference;
+
+  lua_pushboolean(L, 1);
+  reference = luaL_ref(L, LUA_REGISTRYINDEX);
+  luaL_unref(L, LUA_REGISTRYINDEX, reference);
+  lua_pushinteger(L, (lua_Integer)reference);
+  return 1;
+}
+
 int luaopen_cai_native_todo_store_test(lua_State *L) {
   static const luaL_Reg functions[] = {
       {"new", native_todo_store_new},
@@ -376,6 +386,7 @@ int luaopen_cai_native_todo_store_test(lua_State *L) {
       {"mcp_load_count", native_session_store_mcp_load_count},
       {"mcp_save_count", native_session_store_mcp_save_count},
       {"mcp_destroy_count", native_session_store_mcp_destroy_count},
+      {"make_free_registry_reference", native_registry_make_free_reference},
       {NULL, NULL}};
 
   lua_newtable(L);
