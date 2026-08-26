@@ -495,6 +495,21 @@ static int cai_patch_file_matches(int parent_fd, const char *name,
              : 0;
 }
 
+/* Publication rollback needs only to prove that the destination is still the
+ * inode CAI installed. Link counts and timestamps may legitimately change when
+ * a concurrent process observes the temporary publication name. */
+static int cai_patch_file_identity_matches(int parent_fd, const char *name,
+                                           const struct stat *expected) {
+  struct stat actual;
+
+  return expected != NULL &&
+                 fstatat(parent_fd, name, &actual, AT_SYMLINK_NOFOLLOW) == 0 &&
+                 S_ISREG(actual.st_mode) && actual.st_dev == expected->st_dev &&
+                 actual.st_ino == expected->st_ino
+             ? 1
+             : 0;
+}
+
 /* rename changes ctime even when it moves the exact same inode. Exchange
  * publication therefore compares all stable file-version fields after the
  * move, while cai_patch_verify_file() performs the full pre-exchange check. */
@@ -1657,6 +1672,18 @@ static int cai_patch_write_atomic(
                                   strerror(errno));
     }
     *out_published = 1;
+    /* Capture the published inode before checking its final link count. A
+     * concurrent hard link can make that validation fail, but rollback must
+     * still be able to remove the destination CAI just published. */
+    if (out_published_stat != NULL &&
+        fstatat(parent_fd, name, out_published_stat, AT_SYMLINK_NOFOLLOW) !=
+            0) {
+      saved_errno = errno;
+      errno = saved_errno;
+      return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                  "failed to inspect published patch file",
+                                  strerror(errno));
+    }
     if (unlinkat(parent_fd, temporary, 0) != 0) {
       saved_errno = errno;
       /* A successful retry restores the ordinary single-link publication. If
@@ -1812,9 +1839,9 @@ rollback:
     change = &plan->items[i];
     if (change->kind == CAI_PATCH_ADD) {
       if (change->target_published && change->published_stat_valid &&
-          cai_patch_file_matches(change->primary_parent_fd,
-                                 change->primary_name,
-                                 &change->published_stat)) {
+          cai_patch_file_identity_matches(change->primary_parent_fd,
+                                          change->primary_name,
+                                          &change->published_stat)) {
         (void)unlinkat(change->primary_parent_fd, change->primary_name, 0);
       }
       continue;
@@ -1823,14 +1850,15 @@ rollback:
         ((change->kind == CAI_PATCH_UPDATE &&
           change->resolved_move_path == NULL && change->target_published &&
           change->published_stat_valid &&
-          cai_patch_file_matches(change->primary_parent_fd,
-                                 change->primary_name,
-                                 &change->published_stat)) ||
+          cai_patch_file_identity_matches(change->primary_parent_fd,
+                                          change->primary_name,
+                                          &change->published_stat)) ||
          (change->primary_removed &&
           (change->resolved_move_path == NULL ||
            (change->target_published && change->published_stat_valid &&
-            cai_patch_file_matches(change->move_parent_fd, change->move_name,
-                                   &change->published_stat)))))) {
+            cai_patch_file_identity_matches(change->move_parent_fd,
+                                            change->move_name,
+                                            &change->published_stat)))))) {
       cai_error ignored;
       int ignored_published;
       struct stat ignored_stat;
@@ -1851,8 +1879,9 @@ rollback:
     }
     if (change->resolved_move_path != NULL && change->target_published &&
         change->published_stat_valid &&
-        cai_patch_file_matches(change->move_parent_fd, change->move_name,
-                               &change->published_stat)) {
+        cai_patch_file_identity_matches(change->move_parent_fd,
+                                        change->move_name,
+                                        &change->published_stat)) {
       (void)unlinkat(change->move_parent_fd, change->move_name, 0);
     }
   }

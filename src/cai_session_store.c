@@ -249,30 +249,51 @@ static int cai_store_write_all(int fd, const void *data, size_t length,
   return CAI_OK;
 }
 
-static int cai_store_repair_incomplete_tail(int fd, cai_error *error) {
+/* Find the last complete top-level JSON object before before_end. Checkpoints
+ * contain arbitrary JSON state and may therefore span several physical lines;
+ * line-oriented recovery would mistake a state newline for a record boundary.
+ */
+static int cai_local_find_last_record_before(int fd, long before_end,
+                                             long *out_start, long *out_end,
+                                             long *out_complete_end,
+                                             int *out_found, cai_error *error) {
   char buffer[4096];
   off_t end;
-  off_t cursor;
-  off_t complete_end;
+  off_t offset;
+  long record_start;
+  long candidate_end;
+  int depth;
+  int in_string;
+  int escaped;
+  int awaiting_newline;
 
-  end = lseek(fd, 0, SEEK_END);
+  if (out_start == NULL || out_end == NULL || out_complete_end == NULL ||
+      out_found == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session checkpoint record outputs are required");
+  }
+  *out_found = 0;
+  *out_complete_end = 0L;
+  end = before_end > 0L ? (off_t)before_end : lseek(fd, 0, SEEK_END);
   if (end < 0) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to seek session checkpoint log");
   }
-  if (end == 0) {
-    return CAI_OK;
-  }
-  cursor = end;
-  complete_end = -1;
-  while (cursor > 0 && complete_end < 0) {
+  offset = 0;
+  record_start = -1L;
+  candidate_end = 0L;
+  depth = 0;
+  in_string = 0;
+  escaped = 0;
+  awaiting_newline = 0;
+  while (offset < end) {
     ssize_t nread;
-    size_t amount;
     size_t i;
 
-    amount = cursor > (off_t)sizeof(buffer) ? sizeof(buffer) : (size_t)cursor;
-    cursor -= (off_t)amount;
-    if (lseek(fd, cursor, SEEK_SET) < 0) {
+    size_t amount = end - offset > (off_t)sizeof(buffer)
+                        ? sizeof(buffer)
+                        : (size_t)(end - offset);
+    if (lseek(fd, offset, SEEK_SET) < 0) {
       return cai_set_error(error, CAI_ERR_TRANSPORT,
                            "failed to seek session checkpoint log");
     }
@@ -281,15 +302,79 @@ static int cai_store_repair_incomplete_tail(int fd, cai_error *error) {
       return cai_set_error(error, CAI_ERR_TRANSPORT,
                            "failed to read session checkpoint log");
     }
-    for (i = amount; i > 0U; i--) {
-      if (buffer[i - 1U] == '\n') {
-        complete_end = cursor + (off_t)i;
-        break;
+    for (i = 0U; i < amount; i++, offset++) {
+      char ch = buffer[i];
+
+      if (awaiting_newline) {
+        if (ch == '\n') {
+          *out_start = record_start;
+          *out_end = candidate_end;
+          *out_complete_end = (long)offset + 1L;
+          *out_found = 1;
+          awaiting_newline = 0;
+          record_start = -1L;
+          continue;
+        }
+        awaiting_newline = 0;
+        record_start = -1L;
+        depth = 0;
+        in_string = 0;
+        escaped = 0;
+      }
+      if (record_start < 0L) {
+        if (ch == '{') {
+          record_start = (long)offset;
+          depth = 1;
+        }
+        continue;
+      }
+      if (in_string) {
+        if (escaped) {
+          escaped = 0;
+        } else if (ch == '\\') {
+          escaped = 1;
+        } else if (ch == '"') {
+          in_string = 0;
+        }
+      } else if (ch == '"') {
+        in_string = 1;
+      } else if (ch == '{') {
+        depth++;
+      } else if (ch == '}') {
+        depth--;
+        if (depth == 0) {
+          candidate_end = (long)offset + 1L;
+          awaiting_newline = 1;
+        } else if (depth < 0) {
+          record_start = -1L;
+          depth = 0;
+        }
       }
     }
   }
-  if (complete_end != end &&
-      ftruncate(fd, complete_end < 0 ? 0 : complete_end) != 0) {
+  return CAI_OK;
+}
+
+static int cai_store_repair_incomplete_tail(int fd, cai_error *error) {
+  off_t end;
+  long start;
+  long record_end;
+  long complete_end;
+  int found;
+  int rc;
+
+  end = lseek(fd, 0, SEEK_END);
+  if (end < 0) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to seek session checkpoint log");
+  }
+  rc = cai_local_find_last_record_before(fd, 0L, &start, &record_end,
+                                         &complete_end, &found, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if ((off_t)complete_end != end &&
+      ftruncate(fd, found ? (off_t)complete_end : 0) != 0) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to remove incomplete session checkpoint");
   }
@@ -694,61 +779,6 @@ static int cai_local_checkpoint_source_open(int fd, long start, long end,
   return CAI_OK;
 }
 
-static int cai_local_find_last_line_before(int fd, long before_end,
-                                           long *out_start, long *out_end,
-                                           int *out_found, cai_error *error) {
-  char buffer[4096];
-  off_t end;
-  off_t cursor;
-  off_t record_end;
-
-  if (out_start == NULL || out_end == NULL || out_found == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "session checkpoint record outputs are required");
-  }
-  *out_found = 0;
-  end = before_end > 0L ? (off_t)before_end : lseek(fd, 0, SEEK_END);
-  if (end <= 0) {
-    return CAI_OK;
-  }
-  cursor = end;
-  record_end = -1;
-  while (cursor > 0) {
-    ssize_t nread;
-    size_t i;
-    size_t amount;
-
-    amount = cursor > (off_t)sizeof(buffer) ? sizeof(buffer) : (size_t)cursor;
-    cursor -= (off_t)amount;
-    if (lseek(fd, cursor, SEEK_SET) < 0) {
-      return cai_set_error(error, CAI_ERR_TRANSPORT,
-                           "failed to seek session checkpoint log");
-    }
-    nread = read(fd, buffer, amount);
-    if (nread != (ssize_t)amount) {
-      return cai_set_error(error, CAI_ERR_TRANSPORT,
-                           "failed to read session checkpoint log");
-    }
-    for (i = amount; i > 0U; i--) {
-      if (buffer[i - 1U] == '\n' && record_end < 0) {
-        record_end = cursor + (off_t)i;
-      } else if (buffer[i - 1U] == '\n') {
-        *out_start = (long)(cursor + (off_t)i);
-        *out_end = (long)record_end;
-        *out_found = 1;
-        return CAI_OK;
-      }
-    }
-  }
-  if (record_end < 0) {
-    return CAI_OK;
-  }
-  *out_start = 0L;
-  *out_end = (long)record_end;
-  *out_found = 1;
-  return CAI_OK;
-}
-
 static int cai_local_checkpoint_record_bounds(
     int fd, long record_start, long record_end, long *out_state_start,
     long *out_state_end, unsigned long long *out_applied_event_sequence,
@@ -774,7 +804,7 @@ static int cai_local_checkpoint_record_bounds(
   header[nread] = '\0';
   if (strncmp(header, prefix, sizeof(prefix) - 1U) != 0) {
     *out_state_start = record_start;
-    *out_state_end = record_end - 1L;
+    *out_state_end = record_end;
     *out_applied_event_sequence = 0U;
     return CAI_OK;
   }
@@ -798,7 +828,7 @@ static int cai_local_checkpoint_record_bounds(
                          "invalid session checkpoint record");
   }
   *out_state_start = record_start + (long)(end - header) + 9L;
-  *out_state_end = record_end - 2L;
+  *out_state_end = record_end - 1L;
   *out_applied_event_sequence = sequence;
   return CAI_OK;
 }
@@ -817,6 +847,7 @@ cai_local_find_latest_checkpoint(int fd, long *out_state_start,
   char record_prefix[sizeof(event_prefix)];
   long start;
   long end;
+  long complete_end;
   long before_end;
   ssize_t nread;
   int found_record;
@@ -833,8 +864,8 @@ cai_local_find_latest_checkpoint(int fd, long *out_state_start,
   *out_found = 0;
   before_end = 0L;
   for (;;) {
-    rc = cai_local_find_last_line_before(fd, before_end, &start, &end,
-                                         &found_record, error);
+    rc = cai_local_find_last_record_before(fd, before_end, &start, &end,
+                                           &complete_end, &found_record, error);
     if (rc != CAI_OK) {
       return rc;
     }

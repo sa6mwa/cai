@@ -305,6 +305,7 @@ static int cai_skill_read_source(cai_source *source, char **out, size_t maximum,
     }
     if (length + nread + 1U > capacity) {
       size_t next = capacity == 0U ? 4096U : capacity;
+      char *resized;
       while (next < length + nread + 1U) {
         if (next > maximum / 2U) {
           next = maximum + 1U;
@@ -312,12 +313,13 @@ static int cai_skill_read_source(cai_source *source, char **out, size_t maximum,
         }
         next *= 2U;
       }
-      data = (char *)cai_realloc_mem(NULL, data, next);
-      if (data == NULL) {
+      resized = (char *)cai_realloc_mem(NULL, data, next);
+      if (resized == NULL) {
         rc = cai_set_error(error, CAI_ERR_NOMEM,
                            "failed to read skill resource");
         break;
       }
+      data = resized;
       capacity = next;
     }
     memcpy(data + length, chunk, nread);

@@ -27357,7 +27357,7 @@ static void test_agent_local_session_store(test_state *state) {
   if (fp != NULL) {
     fclose(fp);
   }
-  reader.text = "{\"version\":3}";
+  reader.text = "{\n  \"version\": 3,\n  \"nested\": {\"ok\": true}\n}";
   reader.offset = 0U;
   reader.closed = 0;
   expect_int(state, "local_session_store_repair_source",
@@ -27438,9 +27438,9 @@ static void test_agent_local_session_store(test_state *state) {
     expect_int(
         state, "local_session_store_read",
         (long)cai_source_read(loaded, buffer, sizeof(buffer) - 1U, &error),
-        (long)strlen("{\"version\":3}"));
+        (long)strlen("{\n  \"version\": 3,\n  \"nested\": {\"ok\": true}\n}"));
     expect_str(state, "local_session_store_latest_value", buffer,
-               "{\"version\":3}");
+               "{\n  \"version\": 3,\n  \"nested\": {\"ok\": true}\n}");
     expect_int(state, "local_session_store_reset",
                cai_source_reset(loaded, &error), CAI_OK);
   }
@@ -28756,6 +28756,7 @@ static void test_patch_tool(test_state *state) {
   char alias_path[PATH_MAX];
   char ambiguous_path[PATH_MAX];
   char race_path[PATH_MAX];
+  char race_alias_path[PATH_MAX];
   char update_race_path[PATH_MAX];
   char update_race_external_path[PATH_MAX];
   char *contents;
@@ -28786,6 +28787,8 @@ static void test_patch_tool(test_state *state) {
   snprintf(ambiguous_path, sizeof(ambiguous_path), "%s/ambiguous.txt",
            dir_template);
   snprintf(race_path, sizeof(race_path), "%s/raced.txt", dir_template);
+  snprintf(race_alias_path, sizeof(race_alias_path), "%s/raced-alias.txt",
+           dir_template);
   snprintf(update_race_path, sizeof(update_race_path), "%s/update-raced.txt",
            dir_template);
   snprintf(update_race_external_path, sizeof(update_race_external_path),
@@ -28900,6 +28903,57 @@ static void test_patch_tool(test_state *state) {
       contents = read_file_or_die(race_path);
       expect_str(state, "patch_race_preserves_external", contents,
                  "external\n");
+      free(contents);
+    }
+  }
+  {
+    static const char hardlink_race_patch[] = "*** Begin Patch\n"
+                                              "*** Add File: raced.txt\n"
+                                              "+patched\n"
+                                              "*** End Patch";
+    char temporary_path[PATH_MAX];
+    int child_status;
+
+    if (unlink(race_path) != 0) {
+      test_fail(state, "patch_hardlink_race_reset",
+                "failed to clear raced target");
+    }
+    cai_patch_test_pause_before_publish(1);
+    race_pid = fork();
+    if (race_pid == 0) {
+      cai_error child_error;
+      int child_rc;
+
+      cai_error_init(&child_error);
+      child_rc =
+          cai_apply_patch(&config, hardlink_race_patch, NULL, &child_error);
+      cai_error_cleanup(&child_error);
+      _exit(child_rc == CAI_ERR_INVALID ? 0 : 1);
+    }
+    cai_patch_test_pause_before_publish(0);
+    if (race_pid < 0) {
+      test_fail(state, "patch_hardlink_race_fork", "fork failed");
+    } else if (waitpid(race_pid, &child_status, WUNTRACED) != race_pid ||
+               !WIFSTOPPED(child_status)) {
+      test_fail(state, "patch_hardlink_race_stop",
+                "failed to stop patch writer");
+    } else {
+      snprintf(temporary_path, sizeof(temporary_path), "%s/.cai-patch-%ld-0",
+               dir_template, (long)race_pid);
+      if (link(temporary_path, race_alias_path) != 0) {
+        test_fail(state, "patch_hardlink_race_link",
+                  "failed to link patch temporary");
+      }
+      if (kill(race_pid, SIGCONT) != 0 ||
+          waitpid(race_pid, &child_status, 0) != race_pid ||
+          !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+        test_fail(state, "patch_hardlink_race_rejected",
+                  "patch writer did not reject hard link");
+      }
+      expect_int(state, "patch_hardlink_race_rollback", access(race_path, F_OK),
+                 -1L);
+      contents = read_file_or_die(race_alias_path);
+      expect_str(state, "patch_hardlink_race_alias", contents, "patched\n");
       free(contents);
     }
   }
