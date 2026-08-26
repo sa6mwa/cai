@@ -98,8 +98,11 @@ void cai_agent_local_session_store_config_init(
  * gets one private JSONL file. The local store does not interpret scope keys
  * as paths. The returned callback table owns private local-store state and is
  * valid until cai_agent_local_session_store_close.
- * Checkpoints are fsync'd before this function returns. Tied journal mtimes
- * select the lexicographically later session identifier deterministically.
+ * Checkpoints are fsync'd before this function returns. Each checkpoint stores
+ * its own creation timestamp, so later journal-event appends do not affect
+ * newest-checkpoint selection. Tied checkpoint timestamps select the
+ * lexicographically later session identifier deterministically. Legacy
+ * checkpoint records without a timestamp fall back to their journal mtime.
  */
 int cai_agent_local_session_store_open(
     const cai_agent_local_session_store_config *config,

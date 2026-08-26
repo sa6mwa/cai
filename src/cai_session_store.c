@@ -12,6 +12,7 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef PATH_MAX
@@ -90,6 +91,35 @@ static int cai_store_make_directory(const char *path, cai_error *error) {
                            "session store root is not a directory");
     }
   }
+  return CAI_OK;
+}
+
+/*
+ * Persist checkpoint recency in the checkpoint itself.  A journal's mtime
+ * cannot represent this: a later event append intentionally advances it
+ * without creating resumable state.
+ */
+static int cai_store_checkpoint_created_at_ns(unsigned long long *out,
+                                              cai_error *error) {
+  struct timespec now;
+  unsigned long long seconds;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "checkpoint timestamp output is required");
+  }
+  if (clock_gettime(CLOCK_REALTIME, &now) != 0 || now.tv_sec < 0 ||
+      now.tv_nsec < 0 || now.tv_nsec >= 1000000000L) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to obtain checkpoint timestamp");
+  }
+  seconds = (unsigned long long)now.tv_sec;
+  if (seconds > ((unsigned long long)-1 - (unsigned long long)now.tv_nsec) /
+                    1000000000U) {
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "checkpoint timestamp is out of range");
+  }
+  *out = seconds * 1000000000U + (unsigned long long)now.tv_nsec;
   return CAI_OK;
 }
 
@@ -517,6 +547,7 @@ static int cai_local_session_checkpoint(
   char filename[160];
   char buffer[8192];
   char record_prefix[128];
+  unsigned long long created_at_ns;
   int scope_fd;
   int fd;
   int rc;
@@ -530,6 +561,7 @@ static int cai_local_session_checkpoint(
   store = (cai_local_session_store *)context;
   scope_fd = -1;
   fd = -1;
+  created_at_ns = 0U;
   rc = cai_store_open_scope(store, scope, &scope_fd, hash, error);
   if (rc == CAI_OK && snprintf(filename, sizeof(filename), "%s.jsonl",
                                session_id) >= (int)sizeof(filename)) {
@@ -553,11 +585,16 @@ static int cai_local_session_checkpoint(
   if (rc == CAI_OK) {
     rc = cai_store_repair_incomplete_tail(fd, error);
   }
+  if (rc == CAI_OK) {
+    rc = cai_store_checkpoint_created_at_ns(&created_at_ns, error);
+  }
   if (rc == CAI_OK &&
-      snprintf(record_prefix, sizeof(record_prefix),
-               "{\"record_type\":\"checkpoint\","
-               "\"applied_event_sequence\":%llu,\"state\":",
-               applied_event_sequence) >= (int)sizeof(record_prefix)) {
+      snprintf(
+          record_prefix, sizeof(record_prefix),
+          "{\"record_type\":\"checkpoint\",\"checkpoint_created_at_ns\":%llu,"
+          "\"applied_event_sequence\":%llu,\"state\":",
+          created_at_ns,
+          applied_event_sequence) >= (int)sizeof(record_prefix)) {
     rc = cai_set_error(error, CAI_ERR_TRANSPORT,
                        "failed to format session checkpoint record");
   }
@@ -955,17 +992,21 @@ static int cai_local_checkpoint_source_open(int fd, long start, long end,
 static int cai_local_checkpoint_record_bounds(
     int fd, long record_start, long record_end, long *out_state_start,
     long *out_state_end, unsigned long long *out_applied_event_sequence,
+    unsigned long long *out_created_at_ns, int *out_has_created_at_ns,
     cai_error *error) {
-  static const char prefix[] = "{\"record_type\":\"checkpoint\","
-                               "\"applied_event_sequence\":";
+  static const char prefix[] = "{\"record_type\":\"checkpoint\",";
+  static const char timestamp_prefix[] = "\"checkpoint_created_at_ns\":";
+  static const char sequence_prefix[] = "\"applied_event_sequence\":";
   char header[192];
   char *cursor;
   char *end;
   ssize_t nread;
+  unsigned long long created_at_ns;
   unsigned long long sequence;
 
   if (out_state_start == NULL || out_state_end == NULL ||
-      out_applied_event_sequence == NULL || record_end <= record_start) {
+      out_applied_event_sequence == NULL || out_created_at_ns == NULL ||
+      out_has_created_at_ns == NULL || record_end <= record_start) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "session checkpoint record bounds are required");
   }
@@ -979,9 +1020,39 @@ static int cai_local_checkpoint_record_bounds(
     *out_state_start = record_start;
     *out_state_end = record_end;
     *out_applied_event_sequence = 0U;
+    *out_created_at_ns = 0U;
+    *out_has_created_at_ns = 0;
     return CAI_OK;
   }
   cursor = header + sizeof(prefix) - 1U;
+  created_at_ns = 0U;
+  *out_has_created_at_ns = 0;
+  if (strncmp(cursor, timestamp_prefix, sizeof(timestamp_prefix) - 1U) == 0) {
+    cursor += sizeof(timestamp_prefix) - 1U;
+    end = cursor;
+    while (*end >= '0' && *end <= '9') {
+      unsigned long long digit;
+
+      digit = (unsigned long long)(*end - '0');
+      if (created_at_ns > ((unsigned long long)-1 - digit) / 10U) {
+        return cai_set_error(error, CAI_ERR_INVALID,
+                             "invalid session checkpoint record");
+      }
+      created_at_ns = created_at_ns * 10U + digit;
+      end++;
+    }
+    if (end == cursor || strncmp(end, ",", 1U) != 0) {
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "invalid session checkpoint record");
+    }
+    cursor = end + 1;
+    *out_has_created_at_ns = 1;
+  }
+  if (strncmp(cursor, sequence_prefix, sizeof(sequence_prefix) - 1U) != 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "invalid session checkpoint record");
+  }
+  cursor += sizeof(sequence_prefix) - 1U;
   sequence = 0U;
   end = cursor;
   while (*end >= '0' && *end <= '9') {
@@ -1003,6 +1074,7 @@ static int cai_local_checkpoint_record_bounds(
   *out_state_start = record_start + (long)(end - header) + 9L;
   *out_state_end = record_end - 1L;
   *out_applied_event_sequence = sequence;
+  *out_created_at_ns = created_at_ns;
   return CAI_OK;
 }
 
@@ -1011,11 +1083,11 @@ static int cai_local_checkpoint_record_bounds(
  * are deliberately allowed to precede the first checkpoint: such a journal
  * records durable intent, but cannot itself resume an agent session.
  */
-static int
-cai_local_find_latest_checkpoint(int fd, long *out_state_start,
-                                 long *out_state_end,
-                                 unsigned long long *out_applied_event_sequence,
-                                 int *out_found, cai_error *error) {
+static int cai_local_find_latest_checkpoint(
+    int fd, long *out_state_start, long *out_state_end,
+    unsigned long long *out_applied_event_sequence,
+    unsigned long long *out_created_at_ns, int *out_has_created_at_ns,
+    int *out_found, cai_error *error) {
   static const char event_prefix[] = "{\"record_type\":\"event\",";
   char record_prefix[sizeof(event_prefix)];
   long start;
@@ -1027,13 +1099,16 @@ cai_local_find_latest_checkpoint(int fd, long *out_state_start,
   int rc;
 
   if (fd < 0 || out_state_start == NULL || out_state_end == NULL ||
-      out_applied_event_sequence == NULL || out_found == NULL) {
+      out_applied_event_sequence == NULL || out_created_at_ns == NULL ||
+      out_has_created_at_ns == NULL || out_found == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "session checkpoint search outputs are required");
   }
   *out_state_start = 0L;
   *out_state_end = 0L;
   *out_applied_event_sequence = 0U;
+  *out_created_at_ns = 0U;
+  *out_has_created_at_ns = 0;
   *out_found = 0;
   before_end = 0L;
   for (;;) {
@@ -1061,9 +1136,10 @@ cai_local_find_latest_checkpoint(int fd, long *out_state_start,
       before_end = start;
       continue;
     }
-    rc = cai_local_checkpoint_record_bounds(fd, start, end, out_state_start,
-                                            out_state_end,
-                                            out_applied_event_sequence, error);
+    rc = cai_local_checkpoint_record_bounds(
+        fd, start, end, out_state_start, out_state_end,
+        out_applied_event_sequence, out_created_at_ns, out_has_created_at_ns,
+        error);
     if (rc == CAI_OK) {
       *out_found = 1;
     }
@@ -1071,28 +1147,51 @@ cai_local_find_latest_checkpoint(int fd, long *out_state_start,
   }
 }
 
-static int cai_store_candidate_is_newer(const struct stat *candidate,
-                                        const char *candidate_name,
-                                        const struct stat *current,
-                                        const char *current_name) {
+static unsigned long long cai_store_stat_mtime_ns(const struct stat *st) {
+  unsigned long long seconds;
+  long nanoseconds;
+
 #ifdef __APPLE__
-  if (candidate->st_mtimespec.tv_sec != current->st_mtimespec.tv_sec) {
-    return candidate->st_mtimespec.tv_sec > current->st_mtimespec.tv_sec;
+  if (st->st_mtimespec.tv_sec < 0 || st->st_mtimespec.tv_nsec < 0) {
+    return 0U;
   }
-  if (candidate->st_mtimespec.tv_nsec != current->st_mtimespec.tv_nsec) {
-    return candidate->st_mtimespec.tv_nsec > current->st_mtimespec.tv_nsec;
-  }
+  seconds = (unsigned long long)st->st_mtimespec.tv_sec;
+  nanoseconds = st->st_mtimespec.tv_nsec;
 #else
-  if (candidate->st_mtim.tv_sec != current->st_mtim.tv_sec) {
-    return candidate->st_mtim.tv_sec > current->st_mtim.tv_sec;
+  if (st->st_mtim.tv_sec < 0 || st->st_mtim.tv_nsec < 0) {
+    return 0U;
   }
-  if (candidate->st_mtim.tv_nsec != current->st_mtim.tv_nsec) {
-    return candidate->st_mtim.tv_nsec > current->st_mtim.tv_nsec;
-  }
+  seconds = (unsigned long long)st->st_mtim.tv_sec;
+  nanoseconds = st->st_mtim.tv_nsec;
 #endif
+  if (nanoseconds >= 1000000000L ||
+      seconds > ((unsigned long long)-1 - (unsigned long long)nanoseconds) /
+                    1000000000U) {
+    return (unsigned long long)-1;
+  }
+  return seconds * 1000000000U + (unsigned long long)nanoseconds;
+}
+
+static int cai_store_candidate_is_newer(
+    unsigned long long candidate_created_at_ns, const char *candidate_name,
+    unsigned long long current_created_at_ns, const char *current_name) {
+  if (candidate_created_at_ns != current_created_at_ns) {
+    return candidate_created_at_ns > current_created_at_ns;
+  }
   /* Generated XIDs sort chronologically, so this deterministic fallback also
-   * selects the newer generated session on filesystems with tied mtimes. */
+   * selects the newer generated session on filesystems with tied timestamps. */
   return strcmp(candidate_name, current_name) > 0;
+}
+
+static unsigned long long
+cai_store_checkpoint_order(unsigned long long created_at_ns,
+                           int has_created_at_ns,
+                           const struct stat *journal_stat) {
+  if (has_created_at_ns) {
+    return created_at_ns;
+  }
+  /* Journals written by older CAI versions have no checkpoint timestamp. */
+  return cai_store_stat_mtime_ns(journal_stat);
 }
 
 static int cai_local_session_load_latest(
@@ -1103,7 +1202,7 @@ static int cai_local_session_load_latest(
   char hash[65];
   DIR *directory;
   struct dirent *entry;
-  struct stat candidate_stat;
+  unsigned long long candidate_created_at_ns;
   char candidate[160];
   int scope_fd;
   int fd;
@@ -1123,7 +1222,7 @@ static int cai_local_session_load_latest(
   store = (cai_local_session_store *)context;
   scope_fd = -1;
   candidate[0] = '\0';
-  memset(&candidate_stat, 0, sizeof(candidate_stat));
+  candidate_created_at_ns = 0U;
   rc = cai_store_open_scope(store, scope, &scope_fd, hash, error);
   if (rc != CAI_OK) {
     return rc;
@@ -1139,8 +1238,11 @@ static int cai_local_session_load_latest(
     long state_start;
     long state_end;
     unsigned long long applied_event_sequence;
+    unsigned long long created_at_ns;
+    unsigned long long checkpoint_order;
     int journal_fd;
     int found_checkpoint;
+    int has_created_at_ns;
     size_t length;
 
     length = strlen(entry->d_name);
@@ -1171,9 +1273,9 @@ static int cai_local_session_load_latest(
                          "failed to lock session checkpoint log");
       break;
     }
-    rc = cai_local_find_latest_checkpoint(journal_fd, &state_start, &state_end,
-                                          &applied_event_sequence,
-                                          &found_checkpoint, error);
+    rc = cai_local_find_latest_checkpoint(
+        journal_fd, &state_start, &state_end, &applied_event_sequence,
+        &created_at_ns, &has_created_at_ns, &found_checkpoint, error);
     (void)flock(journal_fd, LOCK_UN);
     close(journal_fd);
     if (rc != CAI_OK) {
@@ -1182,11 +1284,13 @@ static int cai_local_session_load_latest(
     if (!found_checkpoint) {
       continue;
     }
+    checkpoint_order =
+        cai_store_checkpoint_order(created_at_ns, has_created_at_ns, &st);
     if (candidate[0] == '\0' ||
-        cai_store_candidate_is_newer(&st, entry->d_name, &candidate_stat,
-                                     candidate)) {
+        cai_store_candidate_is_newer(checkpoint_order, entry->d_name,
+                                     candidate_created_at_ns, candidate)) {
       memcpy(candidate, entry->d_name, length + 1U);
-      candidate_stat = st;
+      candidate_created_at_ns = checkpoint_order;
     }
   }
   closedir(directory);
@@ -1231,11 +1335,13 @@ static int cai_local_session_load_latest(
   {
     long state_start;
     long state_end;
+    unsigned long long created_at_ns;
     int found_checkpoint;
+    int has_created_at_ns;
 
-    rc = cai_local_find_latest_checkpoint(fd, &state_start, &state_end,
-                                          out_applied_event_sequence,
-                                          &found_checkpoint, error);
+    rc = cai_local_find_latest_checkpoint(
+        fd, &state_start, &state_end, out_applied_event_sequence,
+        &created_at_ns, &has_created_at_ns, &found_checkpoint, error);
     if (rc == CAI_OK && found_checkpoint) {
       rc = cai_local_checkpoint_source_open(fd, state_start, state_end, out,
                                             error);

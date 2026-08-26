@@ -27697,6 +27697,68 @@ static void test_agent_local_session_store(test_state *state) {
                 error.message, "strictly increasing");
   cai_error_cleanup(&error);
   cai_error_init(&error);
+  reader.text = "{\"checkpoint\":\"older\"}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_recency_older_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_recency_older_checkpoint",
+               store.checkpoint(store.context, "checkpoint-recency",
+                                "older-checkpoint", source, 0U, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  source = NULL;
+  {
+    struct timespec pause_time;
+
+    pause_time.tv_sec = 0;
+    pause_time.tv_nsec = 10000000L;
+    (void)nanosleep(&pause_time, NULL);
+  }
+  reader.text = "{\"checkpoint\":\"newer\"}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_recency_newer_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_recency_newer_checkpoint",
+               store.checkpoint(store.context, "checkpoint-recency",
+                                "newer-checkpoint", source, 0U, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  source = NULL;
+  event.sequence = 1U;
+  event.type = "turn_queued";
+  event.data = "later journal event";
+  expect_int(state, "local_session_store_recency_later_event",
+             store.append_event(store.context, "checkpoint-recency",
+                                "older-checkpoint", &event, &error),
+             CAI_OK);
+  memset(session_id, 0, sizeof(session_id));
+  expect_int(state, "local_session_store_recency_load",
+             store.load_latest(store.context, "checkpoint-recency", session_id,
+                               sizeof(session_id), &loaded, &loaded_sequence,
+                               &error),
+             CAI_OK);
+  expect_str(state, "local_session_store_recency_id", session_id,
+             "newer-checkpoint");
+  if (loaded == NULL) {
+    test_fail(state, "local_session_store_recency_load",
+              "newest checkpoint missing");
+  } else {
+    memset(buffer, 0, sizeof(buffer));
+    expect_int(
+        state, "local_session_store_recency_read",
+        (long)cai_source_read(loaded, buffer, sizeof(buffer) - 1U, &error),
+        (long)strlen("{\"checkpoint\":\"newer\"}"));
+    expect_str(state, "local_session_store_recency_value", buffer,
+               "{\"checkpoint\":\"newer\"}");
+  }
+  cai_source_close(loaded);
+  loaded = NULL;
   reader.text = "{\"version\":4}";
   reader.offset = 0U;
   reader.closed = 0;
@@ -27791,7 +27853,7 @@ static void test_agent_local_session_store(test_state *state) {
                                &loaded_sequence, &error),
              CAI_OK);
   expect_str(state, "local_session_store_skip_incomplete_journal_id",
-             session_id, "session_one");
+             session_id, "multiline-events");
   expect_int(state, "local_session_store_skip_incomplete_journal_source",
              loaded != NULL, 1L);
   cai_source_close(loaded);
@@ -27822,6 +27884,47 @@ static void test_agent_local_session_store(test_state *state) {
              loaded == NULL, 1L);
   expect_str(state, "local_session_store_event_only_no_session", session_id,
              "");
+  fp = fopen(file_path, "ab");
+  if (fp == NULL ||
+      fwrite(
+          "{\"record_type\":\"checkpoint\","
+          "\"applied_event_sequence\":9,\"state\":{\"version\":6}}\n",
+          1U,
+          strlen("{\"record_type\":\"checkpoint\","
+                 "\"applied_event_sequence\":9,\"state\":{\"version\":6}}\n"),
+          fp) !=
+          strlen("{\"record_type\":\"checkpoint\","
+                 "\"applied_event_sequence\":9,\"state\":{\"version\":6}}\n")) {
+    test_fail(state, "local_session_store_legacy_checkpoint_write",
+              "failed to append legacy checkpoint");
+  }
+  if (fp != NULL) {
+    fclose(fp);
+  }
+  memset(session_id, 0, sizeof(session_id));
+  expect_int(state, "local_session_store_legacy_checkpoint_load",
+             store.load_latest(store.context, "/tmp/cai-session-store-scope",
+                               session_id, sizeof(session_id), &loaded,
+                               &loaded_sequence, &error),
+             CAI_OK);
+  expect_str(state, "local_session_store_legacy_checkpoint_id", session_id,
+             "session_one");
+  expect_int(state, "local_session_store_legacy_checkpoint_watermark",
+             (long)loaded_sequence, 9L);
+  if (loaded == NULL) {
+    test_fail(state, "local_session_store_legacy_checkpoint_load",
+              "legacy checkpoint missing");
+  } else {
+    memset(buffer, 0, sizeof(buffer));
+    expect_int(
+        state, "local_session_store_legacy_checkpoint_read",
+        (long)cai_source_read(loaded, buffer, sizeof(buffer) - 1U, &error),
+        (long)strlen("{\"version\":6}"));
+    expect_str(state, "local_session_store_legacy_checkpoint_value", buffer,
+               "{\"version\":6}");
+  }
+  cai_source_close(loaded);
+  loaded = NULL;
   fp = fopen(file_path, "ab");
   if (fp == NULL ||
       fwrite("{\"record_type\":\"checkpoint\","

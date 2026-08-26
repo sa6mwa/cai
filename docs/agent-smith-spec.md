@@ -1251,7 +1251,7 @@ or CAS remain backend policy.
 
 ### 11.2 Default local backend
 
-The local store root is `${XDG_STATE_HOME:-$HOME/.local/state}/cai/agent`.
+The local store root is `${XDG_STATE_HOME:-$HOME/.local/state}/cai/sessions`.
 Each session is one append-only JSONL file under
 `sessions/<scope-sha256>/<session-xid>.jsonl`. Generated session IDs are
 canonical [XID](https://github.com/rs/xid)-compatible 20-character,
@@ -1263,6 +1263,12 @@ human scope, opaque scope key, preset, model/profile, rendered prompt manifest
 version/hash, creation time, and format version. The hash is a file-layout
 component, not the selection key; exact absolute path remains the default scope
 filter.
+
+Each complete checkpoint record carries its own creation timestamp. Latest
+selection compares that checkpoint timestamp rather than the journal file's
+mtime, since durable input-event appends may occur after a checkpoint without
+changing the resumable snapshot. Existing records without the timestamp use
+their journal mtime only as a compatibility fallback.
 
 Writes use a same-directory temporary append/snapshot protocol, fsync the file
 before acknowledging a record, and maintain a compact snapshot record in the
