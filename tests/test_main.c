@@ -28297,6 +28297,52 @@ static void test_agent_runtime_resume(test_state *state) {
   if (runtime != NULL) {
     cai_agent_runtime_close(runtime);
   }
+  /* A synchronous child cannot survive a process restart. Its pending marker
+   * carries the parent tool-call ID so resume can durably close that tool round
+   * with a failed handover before the parent accepts more work. */
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json =
+      "{\"version\":1,\"model\":\"custom-resumed-model\","
+      "\"previous_response_id\":\"resp_saved\",\"history\":[]}";
+  store_state.load_applied_event_sequence = 2U;
+  store_state.replay_event_count = 2U;
+  store_state.replay_event_sequences[0] = 1U;
+  (void)snprintf(store_state.replay_event_types[0],
+                 sizeof(store_state.replay_event_types[0]), "%s",
+                 "input_journal_v2");
+  store_state.replay_event_sequences[1] = 2U;
+  (void)snprintf(store_state.replay_event_types[1],
+                 sizeof(store_state.replay_event_types[1]), "%s",
+                 "subagent_pending");
+  (void)snprintf(store_state.replay_event_data_items[1],
+                 sizeof(store_state.replay_event_data_items[1]), "%s",
+                 "worker\ncall_interrupted");
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_resume_subagent_recovery_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  expect_int(state, "runtime_resume_subagent_recovery_checkpoint",
+             store_state.checkpoints > 0, 1L);
+  expect_int(state, "runtime_resume_subagent_recovery_watermark",
+             (long)store_state.saved_applied_event_sequence, 3L);
+  expect_int(state, "runtime_resume_subagent_recovery_event_sequence",
+             (long)store_state.replay_event_sequences[2], 3L);
+  expect_str(state, "runtime_resume_subagent_recovery_event_type",
+             store_state.replay_event_types[2], "subagent_handoff_committed");
+  expect_substr(state, "runtime_resume_subagent_recovery_context",
+                store_state.saved_checkpoint,
+                "<subagent_handoff profile=\\\"worker\\\"");
+  expect_substr(state, "runtime_resume_subagent_recovery_tool_output",
+                store_state.saved_checkpoint,
+                "\"call_id\":\"call_interrupted\"");
+  expect_substr(state, "runtime_resume_subagent_recovery_failed_status",
+                store_state.saved_checkpoint, "\\\"status\\\":\\\"failed\\\"");
+  if (runtime != NULL) {
+    cai_agent_runtime_close(runtime);
+  }
   /* A checkpointed review pause is recovered before replayed normal input can
    * reach the worker.  Simulate the crash window after a parent accepted a
    * queued follow-up and before its child was handed off. */

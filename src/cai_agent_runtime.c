@@ -303,6 +303,14 @@ LONEJSON_MAP_DEFINE(cai_runtime_subagent_result_map,
                     cai_runtime_subagent_result,
                     cai_runtime_subagent_result_fields);
 
+static int cai_runtime_serialize_subagent_result_json(
+    const char *profile, const char *status, const char *child_session_id,
+    const char *handover_markdown, char **out, cai_error *error);
+static int cai_runtime_recover_interrupted_subagent(cai_agent_runtime *runtime,
+                                                    cai_error *error);
+static void
+cai_runtime_subagent_result_cleanup(cai_runtime_subagent_result *result);
+
 typedef struct cai_runtime_input_node {
   char *text;
   unsigned long long journal_sequence;
@@ -529,6 +537,11 @@ struct cai_agent_runtime {
   size_t review_allowed_reasoning_summary_count;
   int subagent_active;
   char *active_subagent_parent_tool_call_id;
+  /* A checkpointed synchronous child cannot survive a process restart. Keep
+   * its durable launch identity only until recovery has synthesized the failed
+   * handover and matching parent tool result. */
+  char *resumed_subagent_profile;
+  char *resumed_subagent_parent_tool_call_id;
   struct cai_agent_runtime *active_review;
   int review_launching;
   /* A review pause is journaled and checkpointed independently of the live
@@ -3601,6 +3614,68 @@ static int cai_runtime_find_journal_v2(void *context,
   return CAI_OK;
 }
 
+static void cai_runtime_clear_resumed_subagent(cai_agent_runtime *runtime) {
+  if (runtime == NULL) {
+    return;
+  }
+  cai_free_mem(NULL, runtime->resumed_subagent_profile);
+  cai_free_mem(NULL, runtime->resumed_subagent_parent_tool_call_id);
+  runtime->resumed_subagent_profile = NULL;
+  runtime->resumed_subagent_parent_tool_call_id = NULL;
+}
+
+static int
+cai_runtime_replay_subagent_event(cai_agent_runtime *runtime,
+                                  const cai_agent_session_event *event,
+                                  cai_error *error) {
+  const char *separator;
+  char *profile;
+  char *call_id;
+  size_t profile_length;
+
+  if (event->sequence > runtime->applied_event_sequence) {
+    return CAI_OK;
+  }
+  if (strcmp(event->type, "subagent_handoff_committed") == 0) {
+    cai_runtime_clear_resumed_subagent(runtime);
+    runtime->subagent_active = 0;
+    runtime->review_pause_pending = 0;
+    return CAI_OK;
+  }
+  if (event->data == NULL || event->data[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "subagent pending journal event has no launch data");
+  }
+  separator = strchr(event->data, '\n');
+  if (separator == NULL || separator == event->data || separator[1] == '\0' ||
+      strchr(separator + 1U, '\n') != NULL) {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "subagent pending journal event cannot restore its parent tool call");
+  }
+  profile_length = (size_t)(separator - event->data);
+  profile = cai_strndup(NULL, event->data, profile_length);
+  call_id = cai_strdup(NULL, separator + 1U);
+  if (profile == NULL || call_id == NULL) {
+    cai_free_mem(NULL, profile);
+    cai_free_mem(NULL, call_id);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to restore pending subagent launch");
+  }
+  if (!cai_runtime_subagent_name_valid(profile)) {
+    cai_free_mem(NULL, profile);
+    cai_free_mem(NULL, call_id);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "subagent pending journal profile is invalid");
+  }
+  cai_runtime_clear_resumed_subagent(runtime);
+  runtime->resumed_subagent_profile = profile;
+  runtime->resumed_subagent_parent_tool_call_id = call_id;
+  runtime->subagent_active = 1;
+  runtime->review_pause_pending = 1;
+  return CAI_OK;
+}
+
 static int cai_runtime_replay_journal_event(
     void *context, const cai_agent_session_event *event, cai_error *error) {
   cai_agent_runtime *runtime;
@@ -3619,6 +3694,10 @@ static int cai_runtime_replay_journal_event(
   input_event = strcmp(event->type, "steering_queued") == 0 ||
                 strcmp(event->type, "turn_queued") == 0 ||
                 strcmp(event->type, "turn_submitted") == 0;
+  if (strcmp(event->type, "subagent_pending") == 0 ||
+      strcmp(event->type, "subagent_handoff_committed") == 0) {
+    return cai_runtime_replay_subagent_event(runtime, event, error);
+  }
   if (strcmp(event->type, "review_pending") == 0 ||
       strcmp(event->type, "review_handoff_committed") == 0) {
     /* A review transition takes effect only once the checkpoint that records
@@ -5389,6 +5468,9 @@ int cai_agent_runtime_open(cai_client *client,
         pthread_mutex_unlock(&runtime->lock);
       }
     }
+    if (rc == CAI_OK && resumed_checkpoint) {
+      rc = cai_runtime_recover_interrupted_subagent(runtime, error);
+    }
     /* A durable journal is v2 from its first checkpoint.  In particular,
      * an input accepted after this empty anchor must not be treated as a
      * legacy watermark-only record if the process crashes before its own
@@ -5439,6 +5521,7 @@ int cai_agent_runtime_open(cai_client *client,
     cai_free_mem(NULL, runtime->goal_snapshot_objective);
     cai_free_mem(NULL, runtime->goal_snapshot_status);
     cai_free_mem(NULL, runtime->active_subagent_parent_tool_call_id);
+    cai_runtime_clear_resumed_subagent(runtime);
     cai_runtime_clear_smith_profile(runtime);
     cai_runtime_clear_subagents(runtime);
     cai_free_mem(NULL, runtime->review_handoff);
@@ -6763,19 +6846,13 @@ static int cai_runtime_open_tool_subagent(
   return cai_agent_runtime_open(parent->client, &config, out, error);
 }
 
-static int cai_runtime_subagent_handoff(cai_agent_runtime *parent,
-                                        const char *profile_name,
-                                        const char *child_session_id,
-                                        const char *handover,
-                                        int *checkpoint_started,
-                                        cai_error *error) {
+static int cai_runtime_add_subagent_handoff_context(
+    cai_agent_runtime *parent, const char *profile_name,
+    const char *child_session_id, const char *handover, cai_error *error) {
   char *context;
   int length;
   int rc;
 
-  if (checkpoint_started != NULL) {
-    *checkpoint_started = 0;
-  }
   length = snprintf(
       NULL, 0,
       "<subagent_handoff profile=\"%s\" child_session_id=\"%s\">\n"
@@ -6803,10 +6880,32 @@ static int cai_runtime_subagent_handoff(cai_agent_runtime *parent,
   cai_free_mem(NULL, context);
   if (rc == CAI_OK)
     rc = cai_session_commit_pending_inputs(parent->session, error);
+  return rc;
+}
+
+static int cai_runtime_subagent_handoff(cai_agent_runtime *parent,
+                                        const char *profile_name,
+                                        const char *child_session_id,
+                                        const char *handover,
+                                        int *checkpoint_started,
+                                        cai_error *error) {
+  unsigned long long handoff_marker_sequence;
+  int rc;
+
+  if (checkpoint_started != NULL) {
+    *checkpoint_started = 0;
+  }
+  handoff_marker_sequence = 0U;
+  rc = cai_runtime_add_subagent_handoff_context(
+      parent, profile_name, child_session_id, handover, error);
   if (rc == CAI_OK) {
     pthread_mutex_lock(&parent->lock);
     rc = cai_runtime_append_journal_event_locked(
-        parent, "subagent_handoff_committed", child_session_id, NULL, error);
+        parent, "subagent_handoff_committed", child_session_id,
+        &handoff_marker_sequence, error);
+    if (rc == CAI_OK) {
+      cai_runtime_mark_checkpoint_event_locked(parent, handoff_marker_sequence);
+    }
     pthread_mutex_unlock(&parent->lock);
   }
   if (rc == CAI_OK && checkpoint_started != NULL) {
@@ -6852,16 +6951,21 @@ static int cai_runtime_run_subagent(void *context, const void *params,
   cai_agent_run_state child_state;
   cai_agent_review_request review_request;
   char *handover;
+  char *pending_data;
   char *structured;
   int review;
   int rc;
   int terminal;
   int handoff_checkpoint_started;
+  int pending_length;
+  unsigned long long pending_marker_sequence;
 
   parent = (cai_agent_runtime *)context;
   args = (const cai_runtime_subagent_args *)params;
   result = (cai_runtime_subagent_result *)out;
   child_state = CAI_AGENT_CANCELLED;
+  pending_data = NULL;
+  pending_marker_sequence = 0U;
   if (parent == NULL || args == NULL || result == NULL ||
       args->instructions == NULL || args->instructions[0] == '\0' ||
       strlen(args->instructions) > 32768U) {
@@ -6884,12 +6988,40 @@ static int cai_runtime_run_subagent(void *context, const void *params,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "only one synchronous subagent may run at a time");
   }
+  if (parent->active_subagent_parent_tool_call_id == NULL ||
+      parent->active_subagent_parent_tool_call_id[0] == '\0') {
+    pthread_mutex_unlock(&parent->lock);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "subagent launch requires a parent tool call id");
+  }
+  pending_length = snprintf(NULL, 0, "%s\n%s", args->profile,
+                            parent->active_subagent_parent_tool_call_id);
+  if (pending_length < 0) {
+    pthread_mutex_unlock(&parent->lock);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "failed to render pending subagent launch");
+  }
+  pending_data = (char *)cai_alloc(NULL, (size_t)pending_length + 1U);
+  if (pending_data == NULL ||
+      snprintf(pending_data, (size_t)pending_length + 1U, "%s\n%s",
+               args->profile,
+               parent->active_subagent_parent_tool_call_id) != pending_length) {
+    pthread_mutex_unlock(&parent->lock);
+    cai_free_mem(NULL, pending_data);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to retain pending subagent launch");
+  }
   parent->subagent_active = 1;
   if (review)
     parent->review_pause_pending = 1;
   rc = cai_runtime_append_journal_event_locked(parent, "subagent_pending",
-                                               args->profile, NULL, error);
+                                               pending_data,
+                                               &pending_marker_sequence, error);
+  if (rc == CAI_OK) {
+    cai_runtime_mark_checkpoint_event_locked(parent, pending_marker_sequence);
+  }
   pthread_mutex_unlock(&parent->lock);
+  cai_free_mem(NULL, pending_data);
   if (rc == CAI_OK)
     rc = cai_runtime_checkpoint(parent, 0, error);
   if (rc != CAI_OK) {
@@ -7091,6 +7223,51 @@ cai_runtime_lonejson_buffer_write(void *user, const void *data, size_t length,
   return LONEJSON_STATUS_OK;
 }
 
+static int cai_runtime_serialize_subagent_result_json(
+    const char *profile, const char *status, const char *child_session_id,
+    const char *handover_markdown, char **out, cai_error *error) {
+  cai_runtime_subagent_result result;
+  cai_runtime_lonejson_buffer buffer_context;
+  cai_buffer_builder builder;
+  lonejson_error json_error;
+  lonejson_status serialize_status;
+
+  if (profile == NULL || status == NULL || child_session_id == NULL ||
+      handover_markdown == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "subagent recovery result is incomplete");
+  }
+  *out = NULL;
+  memset(&result, 0, sizeof(result));
+  result.profile = cai_strdup(NULL, profile);
+  result.status = cai_strdup(NULL, status);
+  result.child_session_id = cai_strdup(NULL, child_session_id);
+  result.handover_markdown = cai_strdup(NULL, handover_markdown);
+  if (result.profile == NULL || result.status == NULL ||
+      result.child_session_id == NULL || result.handover_markdown == NULL) {
+    cai_runtime_subagent_result_cleanup(&result);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to prepare subagent recovery result");
+  }
+  memset(&builder, 0, sizeof(builder));
+  buffer_context.builder = &builder;
+  buffer_context.error = error;
+  lonejson_error_init(&json_error);
+  serialize_status = CAI_LJ->serialize_sink(
+      CAI_LJ, &cai_runtime_subagent_result_map, &result,
+      cai_runtime_lonejson_buffer_write, &buffer_context, &json_error);
+  if (serialize_status != LONEJSON_STATUS_OK || builder.data == NULL) {
+    cai_free_mem(NULL, builder.data);
+    cai_runtime_subagent_result_cleanup(&result);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to serialize subagent recovery result",
+                                json_error.message);
+  }
+  cai_runtime_subagent_result_cleanup(&result);
+  *out = builder.data;
+  return CAI_OK;
+}
+
 static int
 cai_runtime_serialize_review_metadata(const cai_agent_review_request *request,
                                       char **out, cai_error *error) {
@@ -7137,6 +7314,69 @@ cai_runtime_serialize_review_metadata(const cai_agent_review_request *request,
   }
   *out = builder.data;
   return CAI_OK;
+}
+
+static int cai_runtime_recover_interrupted_subagent(cai_agent_runtime *runtime,
+                                                    cai_error *error) {
+  static const char child_session_id[] = "unavailable";
+  static const char handover[] =
+      "# Subagent handoff\n\nThe subagent was interrupted by a process "
+      "restart before it completed. Treat this delegation as failed and rerun "
+      "it if its result is still needed.";
+  char *tool_output;
+  unsigned long long handoff_marker_sequence;
+  int rc;
+
+  if (runtime == NULL || runtime->resumed_subagent_profile == NULL) {
+    return CAI_OK;
+  }
+  if (runtime->resumed_subagent_parent_tool_call_id == NULL ||
+      runtime->resumed_subagent_parent_tool_call_id[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "interrupted subagent has no parent tool call id");
+  }
+  tool_output = NULL;
+  handoff_marker_sequence = 0U;
+  rc = cai_runtime_serialize_subagent_result_json(
+      runtime->resumed_subagent_profile, "failed", child_session_id, handover,
+      &tool_output, error);
+  if (rc == CAI_OK) {
+    rc = cai_runtime_add_subagent_handoff_context(
+        runtime, runtime->resumed_subagent_profile, child_session_id, handover,
+        error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_add_function_call_output(
+        runtime->session, runtime->resumed_subagent_parent_tool_call_id,
+        tool_output, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_commit_pending_inputs(runtime->session, error);
+  }
+  if (rc == CAI_OK) {
+    pthread_mutex_lock(&runtime->lock);
+    rc = cai_runtime_append_journal_event_locked(
+        runtime, "subagent_handoff_committed", child_session_id,
+        &handoff_marker_sequence, error);
+    if (rc == CAI_OK) {
+      cai_runtime_mark_checkpoint_event_locked(runtime,
+                                               handoff_marker_sequence);
+    }
+    pthread_mutex_unlock(&runtime->lock);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_checkpoint(runtime, 0, error);
+  }
+  if (rc == CAI_OK) {
+    pthread_mutex_lock(&runtime->lock);
+    runtime->subagent_active = 0;
+    runtime->review_pause_pending = 0;
+    pthread_cond_broadcast(&runtime->condition);
+    pthread_mutex_unlock(&runtime->lock);
+    cai_runtime_clear_resumed_subagent(runtime);
+  }
+  cai_free_mem(NULL, tool_output);
+  return rc;
 }
 
 static int cai_runtime_run_review_subagent(void *context, const void *params,
@@ -8593,6 +8833,7 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
   cai_free_mem(NULL, runtime->goal_snapshot_status);
   cai_free_mem(NULL, runtime->terminal_origin_tool_call_id);
   cai_free_mem(NULL, runtime->active_subagent_parent_tool_call_id);
+  cai_runtime_clear_resumed_subagent(runtime);
   cai_free_mem(NULL, runtime->active_user_turn);
   cai_runtime_clear_smith_profile(runtime);
   cai_runtime_clear_subagents(runtime);

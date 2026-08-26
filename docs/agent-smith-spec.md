@@ -893,6 +893,13 @@ the generated subagent-tool result and is sent through lifecycle events for the
 host renderer. A checkpoint failure leaves the parent paused and makes handover
 completion retryable without duplicate injection.
 
+If a process restarts after a durable `subagent_pending` checkpoint but before
+the child can hand over, CAI does not attempt to resurrect the child. It writes
+a synthetic failed handover and the matching parent function-call output, then
+checkpoints that recovery before allowing queued parent work to proceed. The
+pending record therefore includes both the validated profile name and the
+originating parent tool-call ID.
+
 Child sessions remain distinct in the configured session store and are not
 implicitly candidates for parent `resume_latest`; their identity and lifecycle
 are linked from the parent handover record. Store-aware hosts can retain or

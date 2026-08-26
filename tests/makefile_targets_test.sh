@@ -322,6 +322,10 @@ if ! printf '%s\n' "$clangd_body" | grep -F 'build/debug' >/dev/null ||
   printf '%s\n' 'clangd-check must validate only the native debug compile database' >&2
   exit 1
 fi
+if ! grep -F -- '--tweaks=' "$repo_root/cmake/clangd_check.cmake" >/dev/null; then
+  printf '%s\n' 'clangd check must disable unsupported clangd developer tweaks' >&2
+  exit 1
+fi
 
 hardening_body=$(awk '
   /^prerelease-hardening:/ {
