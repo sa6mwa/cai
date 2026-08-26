@@ -56,6 +56,43 @@ static char cai_terminal_safe_tmpdir[] = "TMPDIR=/tmp";
  * become an untracked workspace artifact. */
 static char cai_terminal_safe_lesshistfile[] = "LESSHISTFILE=/dev/null";
 
+#if defined(CAI_TESTING)
+void cai_terminal_test_set_reader_create_failure(int enabled);
+void cai_terminal_test_set_child_pre_setsid_hold(int enabled);
+
+static volatile sig_atomic_t cai_terminal_test_reader_create_failure;
+static volatile sig_atomic_t cai_terminal_test_child_pre_setsid_hold;
+
+void cai_terminal_test_set_reader_create_failure(int enabled) {
+  cai_terminal_test_reader_create_failure = enabled != 0 ? 1 : 0;
+}
+
+void cai_terminal_test_set_child_pre_setsid_hold(int enabled) {
+  cai_terminal_test_child_pre_setsid_hold = enabled != 0 ? 1 : 0;
+}
+
+static void cai_terminal_test_before_setsid(void) {
+  if (cai_terminal_test_child_pre_setsid_hold != 0) {
+    (void)raise(SIGSTOP);
+  }
+}
+
+static int cai_terminal_start_reader(pthread_t *reader, void *(*entry)(void *),
+                                     void *context) {
+  if (cai_terminal_test_reader_create_failure != 0) {
+    return EAGAIN;
+  }
+  return pthread_create(reader, NULL, entry, context);
+}
+#else
+static void cai_terminal_test_before_setsid(void) {}
+
+static int cai_terminal_start_reader(pthread_t *reader, void *(*entry)(void *),
+                                     void *context) {
+  return pthread_create(reader, NULL, entry, context);
+}
+#endif
+
 typedef struct cai_terminal_manager {
   pthread_mutex_t lock;
   pthread_cond_t changed;
@@ -875,6 +912,7 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
     environment[6] = cai_terminal_safe_lesshistfile;
     environment[7] = NULL;
 
+    cai_terminal_test_before_setsid();
     (void)setsid();
     (void)ioctl(slave, TIOCSCTTY, 0);
     dup2(slave, STDIN_FILENO);
@@ -917,9 +955,13 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
     manager->output[0] = '\0';
   }
   pthread_mutex_unlock(&manager->lock);
-  if (pthread_create(&manager->reader, NULL, cai_terminal_reader, manager) !=
-      0) {
-    (void)kill(-pid, SIGKILL);
+  if (cai_terminal_start_reader(&manager->reader, cai_terminal_reader,
+                                manager) != 0) {
+    /* Child setup has not necessarily reached setsid(), so its process group
+     * may not exist yet. Kill the known child in that case before waitpid. */
+    if (kill(-pid, SIGKILL) != 0 && errno == ESRCH) {
+      (void)kill(pid, SIGKILL);
+    }
     (void)waitpid(pid, NULL, 0);
     pthread_mutex_lock(&manager->lock);
     cai_terminal_close_fd(&manager->pty_fd);

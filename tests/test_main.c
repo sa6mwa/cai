@@ -62,6 +62,8 @@ static const char *g_current_test_name = NULL;
 void cai_mcp_test_set_sleep_ms_fn(void (*fn)(long ms));
 int cai_mcp_test_header_callback_unterminated(void);
 void cai_patch_test_pause_before_publish(int enabled);
+void cai_terminal_test_set_reader_create_failure(int enabled);
+void cai_terminal_test_set_child_pre_setsid_hold(int enabled);
 
 static long g_mcp_test_sleep_last_ms = 0L;
 static int g_mcp_test_sleep_count = 0;
@@ -32084,6 +32086,80 @@ static void test_terminal_capture_truncation(test_state *state) {
   rmdir(dir_template);
 }
 
+static void test_terminal_reader_start_failure(test_state *state) {
+  char dir_template[] = "/tmp/cai-terminal-reader-failure-XXXXXX";
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  double started;
+  double elapsed;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_reader_failure_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  config.default_yield_time_ms = 0L;
+  config.max_yield_time_ms = 100L;
+  registry = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  cai_error_init(&error);
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  expect_int(state, "terminal_reader_failure_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(
+        state, "terminal_reader_failure_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
+  }
+  if (registry != NULL) {
+    expect_int(state, "terminal_reader_failure_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  }
+  if (sink != NULL) {
+    cai_terminal_test_set_child_pre_setsid_hold(1);
+    cai_terminal_test_set_reader_create_failure(1);
+    started = test_now_seconds();
+    expect_int(state, "terminal_reader_failure_exec",
+               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                     "{\"cmd\":\"sleep 2\","
+                                     "\"yield_time_ms\":0}",
+                                     sink, &error),
+               CAI_ERR_TRANSPORT);
+    elapsed = test_now_seconds() - started;
+    cai_terminal_test_set_reader_create_failure(0);
+    cai_terminal_test_set_child_pre_setsid_hold(0);
+    expect_int(state, "terminal_reader_failure_prompt", elapsed < 1.0, 1L);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_reader_failure_reuse",
+               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                     "{\"cmd\":\"printf recovered\","
+                                     "\"yield_time_ms\":100}",
+                                     sink, &error),
+               CAI_OK);
+    expect_substr(state, "terminal_reader_failure_reuse_output", writer.buffer,
+                  "recovered");
+  }
+  cai_terminal_test_set_reader_create_failure(0);
+  cai_terminal_test_set_child_pre_setsid_hold(0);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
+}
+
 static void test_terminal_concurrent_start(test_state *state) {
   char dir_template[] = "/tmp/cai-terminal-race-XXXXXX";
   cai_terminal_tool_config config;
@@ -40033,6 +40109,7 @@ static const test_entry test_entries[] = {
     {"terminal_registration_rollback", test_terminal_registration_rollback},
     {"terminal_tools", test_terminal_tools},
     {"terminal_capture_truncation", test_terminal_capture_truncation},
+    {"terminal_reader_start_failure", test_terminal_reader_start_failure},
     {"terminal_concurrent_start", test_terminal_concurrent_start},
     {"terminal_concurrent_operation", test_terminal_concurrent_operation},
     {"read_tool", test_read_tool},
