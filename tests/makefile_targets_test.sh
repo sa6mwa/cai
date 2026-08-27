@@ -73,7 +73,7 @@ for script in \
   scripts/deps.sh scripts/test.sh scripts/host_test.sh \
   scripts/build.sh scripts/package.sh scripts/package-verify.sh \
   scripts/cross_build.sh scripts/cross_test.sh \
-  scripts/clean.sh scripts/with_build_lock.sh scripts/release_version.sh \
+  scripts/clean.sh scripts/release_version.sh \
   scripts/run_linux_release_matrix.sh scripts/test_release_from_source.sh \
   scripts/verify_release_privacy.sh scripts/validate_luarocks.sh \
   scripts/osxcross_available.sh \
@@ -371,7 +371,7 @@ if ! printf '%s\n' "$prerelease_live_body" | grep -F 'rm -f "$(RELEASE_LIVE_GATE
 fi
 
 release_pipeline_body=$(awk '
-  /^release-pipeline-locked:/ {
+  /^release-pipeline:/ {
     in_target = 1
     next
   }
@@ -404,7 +404,7 @@ if [ "$(printf '%s\n' "$release_pipeline_body" | grep -nF '$(MAKE) release-matri
 fi
 
 release_matrix_body=$(awk '
-  /^release-matrix-locked:/ {
+  /^release-matrix:/ {
     in_target = 1
     next
   }
@@ -547,27 +547,17 @@ if [ "$release_first_command" != '$(MAKE) lifecycle-version-contract' ]; then
     "$release_first_command" >&2
   exit 1
 fi
-if ! printf '%s\n' "$release_second_command" | \
-     grep -F 'bash ./scripts/with_build_lock.sh bash -c' >/dev/null || \
-   ! printf '%s\n' "$release_second_command" | grep -F '$(MAKE) clean' >/dev/null || \
-   ! printf '%s\n' "$release_second_command" | grep -F '$(MAKE) release-pipeline' >/dev/null; then
-  printf 'release must hold the generated-state lock while cleaning and running release-pipeline: %s\n' \
+if [ "$release_second_command" != '$(MAKE) clean' ]; then
+  printf 'release must clean immediately after lifecycle-version-contract: %s\n' \
     "$release_second_command" >&2
   exit 1
 fi
-if ! grep -F 'CAI_BUILD_LOCK_HELD' "$repo_root/scripts/with_build_lock.sh" >/dev/null || \
-   ! grep -F 'flock -x' "$repo_root/scripts/with_build_lock.sh" >/dev/null; then
-  printf '%s\n' 'build-state locking helper must hold and propagate an exclusive lock' >&2
+release_third_command=$(printf '%s\n' "$release_body" | sed -n '/^[[:space:]]*[^[:space:]#]/ { n; n; s/^[[:space:]]*//; p; q; }')
+if [ "$release_third_command" != '$(MAKE) release-pipeline' ]; then
+  printf 'release must invoke the shared release-pipeline after clean: %s\n' \
+    "$release_third_command" >&2
   exit 1
 fi
-for lock_consumer in \
-  scripts/build.sh scripts/clean.sh scripts/deps.sh scripts/test.sh scripts/package.sh; do
-  if ! grep -F 'scripts/with_build_lock.sh' "$repo_root/$lock_consumer" >/dev/null; then
-    printf 'generated-state operation must use the shared lock: %s\n' \
-      "$lock_consumer" >&2
-    exit 1
-  fi
-done
 
 lifecycle_version_contract_body=$(awk '
   /^lifecycle-version-contract:/ {
@@ -605,7 +595,7 @@ if ! printf '%s\n' "$lifecycle_version_contract_body" | grep -F 'tag_type="$$(gi
 fi
 
 release_pipeline_body=$(awk '
-  /^release-pipeline-locked:/ {
+  /^release-pipeline:/ {
     in_target = 1
     next
   }

@@ -28132,6 +28132,42 @@ test_agent_local_session_store_rejects_file_root(test_state *state) {
 }
 
 static void
+test_agent_local_session_store_rejects_insecure_root(test_state *state) {
+  char root_directory[] = "/tmp/cai-insecure-session-store-XXXXXX";
+  cai_agent_local_session_store_config config;
+  cai_agent_session_store store;
+  cai_error error;
+
+  cai_error_init(&error);
+  memset(&store, 0, sizeof(store));
+  if (mkdtemp(root_directory) == NULL) {
+    test_fail(state, "local_session_store_insecure_root_tmpdir",
+              "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  if (chmod(root_directory, 0755) != 0) {
+    test_fail(state, "local_session_store_insecure_root_chmod",
+              "failed to relax root permissions");
+    rmdir(root_directory);
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_local_session_store_config_init(&config);
+  config.root_directory = root_directory;
+  expect_int(state, "local_session_store_insecure_root_rejected",
+             cai_agent_local_session_store_open(&config, &store, &error),
+             CAI_ERR_TRANSPORT);
+  cai_agent_local_session_store_close(&store);
+  if (chmod(root_directory, 0700) != 0) {
+    test_fail(state, "local_session_store_insecure_root_restore",
+              "failed to restore root permissions");
+  }
+  rmdir(root_directory);
+  cai_error_cleanup(&error);
+}
+
+static void
 test_agent_local_session_store_rejects_unsafe_scope(test_state *state) {
   char root_directory[] = "/tmp/cai-unsafe-session-store-XXXXXX";
   char scope_path[PATH_MAX];
@@ -41069,6 +41105,8 @@ static const test_entry test_entries[] = {
      test_agent_local_session_store_rejects_long_default_path},
     {"agent_local_session_store_rejects_file_root",
      test_agent_local_session_store_rejects_file_root},
+    {"agent_local_session_store_rejects_insecure_root",
+     test_agent_local_session_store_rejects_insecure_root},
     {"agent_local_session_store_rejects_unsafe_scope",
      test_agent_local_session_store_rejects_unsafe_scope},
     {"agent_runtime_resume", test_agent_runtime_resume},

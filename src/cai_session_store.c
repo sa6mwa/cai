@@ -1454,6 +1454,19 @@ int cai_agent_local_session_store_open(
   if (rc != CAI_OK) {
     return rc;
   }
+  {
+    int root_fd;
+
+    root_fd = cai_store_directory_fd(root, error);
+    if (root_fd < 0) {
+      return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+    }
+    rc = cai_store_validate_private_directory_fd(root_fd, error);
+    (void)close(root_fd);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
   store = (cai_local_session_store *)cai_alloc(NULL, sizeof(*store));
   if (store == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,

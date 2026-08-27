@@ -83,7 +83,9 @@ typedef struct cai_agent_session_store {
 typedef struct cai_agent_local_session_store_config {
   /**
    * Root directory for CAI session data; NULL selects
-   * $XDG_STATE_HOME/cai/sessions, or $HOME/.local/state/cai/sessions.
+   * $XDG_STATE_HOME/cai/sessions, or $HOME/.local/state/cai/sessions. The
+   * resulting directory must be private (owned by the effective user with no
+   * group or other permissions).
    */
   const char *root_directory;
 } cai_agent_local_session_store_config;
