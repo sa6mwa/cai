@@ -258,6 +258,9 @@ clangd-check: build-debug
 	$(CMAKE) -DCAI_SOURCE_DIR="$(ROOT)" -DCAI_BUILD_DIR="$(ROOT)/build/debug" -P cmake/clangd_check.cmake
 
 release-pipeline:
+	bash ./scripts/with_build_lock.sh $(MAKE) --no-print-directory release-pipeline-locked
+
+release-pipeline-locked:
 	$(MAKE) format
 	$(MAKE) require-clean-worktree
 	$(MAKE) test-debug
@@ -404,7 +407,10 @@ lua-env:
 		"$(CAI_C_PKT_SYSTEMS_PREFIX)/lib" \
 		"$(CAI_PSLOG_PREFIX)/lib"
 
-lua-test: lua-rock
+lua-test:
+	bash ./scripts/with_build_lock.sh $(MAKE) --no-print-directory lua-test-locked
+
+lua-test-locked: lua-rock
 	$(CMAKE) --preset debug-lua
 	$(CMAKE) --build --preset debug-lua --target cai_lua_native_todo_store_test
 	eval "$$(luarocks path --tree $(LUA_ROCK_TREE))" && \
@@ -476,6 +482,9 @@ verify-release-archives: package-verify
 verify-release-privacy: package-verify
 
 release-matrix:
+	bash ./scripts/with_build_lock.sh $(MAKE) --no-print-directory release-matrix-locked
+
+release-matrix-locked:
 	$(MAKE) clean-dist
 	$(MAKE) build-release
 	$(CTEST) --test-dir build/x86_64-linux-gnu-release --output-on-failure $(CTEST_FLAGS)
@@ -487,8 +496,7 @@ release-matrix:
 
 release:
 	$(MAKE) lifecycle-version-contract
-	$(MAKE) clean
-	$(MAKE) release-pipeline
+	bash ./scripts/with_build_lock.sh bash -c '$(MAKE) clean && $(MAKE) release-pipeline'
 
 compose-check:
 	@$(COMPOSE) version >/dev/null
@@ -601,8 +609,7 @@ mcp-inspector-e2e:
 	$(CTEST) --preset debug --output-on-failure $(CTEST_FLAGS) -R '^cai_mcp_inspector_e2e$$'
 
 format:
-	bash ./scripts/build.sh configure-debug
-	$(CMAKE) --build build/debug --target clang-format
+	bash ./scripts/with_build_lock.sh bash -c 'bash ./scripts/build.sh configure-debug && $(CMAKE) --build build/debug --target clang-format'
 
 clean:
 	bash ./scripts/clean.sh

@@ -3,6 +3,11 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+if [[ -z "${CAI_BUILD_LOCK_HELD:-}" ||
+      "${CAI_BUILD_LOCK_HELD}" != "${CAI_BUILD_LOCK_PATH:-}" ]]; then
+  exec "$repo_root/scripts/with_build_lock.sh" "$0" "$@"
+fi
+
 remove_generated_path() {
   local path=$1
   local full_path="$repo_root/$path"

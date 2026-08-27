@@ -1477,6 +1477,12 @@ if(CAI_BUILD_TESTS)
   set_tests_properties(cai_makefile_targets_test PROPERTIES
     LABELS "unit;local"
     TIMEOUT 3)
+  add_test(NAME cai_build_lock_test
+    COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_lock_test.sh"
+      "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(cai_build_lock_test PROPERTIES
+    LABELS "unit;local"
+    TIMEOUT 5)
   add_test(NAME cai_e2e_service_ownership_test
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/e2e_service_ownership_test.sh"
       "${CMAKE_CURRENT_SOURCE_DIR}")

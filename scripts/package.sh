@@ -3,6 +3,10 @@ set -euo pipefail
 
 mode=${1:-release-matrix}
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -z "${CAI_BUILD_LOCK_HELD:-}" ||
+      "${CAI_BUILD_LOCK_HELD}" != "${CAI_BUILD_LOCK_PATH:-}" ]]; then
+  exec "$repo_root/scripts/with_build_lock.sh" "$0" "$@"
+fi
 cd "$repo_root"
 
 case "$mode" in
