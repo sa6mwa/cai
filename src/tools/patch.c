@@ -1640,8 +1640,11 @@ static int cai_patch_write_atomic(
                                 "failed to create patch temporary file",
                                 strerror(errno));
   }
+  /* New files stay private. The temporary is created 0600, and fchmod(0644)
+   * would bypass a restrictive process umask after creation. Existing files
+   * retain their exact executable/read-write mode. */
   mode = expected_destination != NULL ? expected_destination->st_mode & 0777
-                                      : 0644;
+                                      : 0600;
   if (fchmod(fd, mode) != 0) {
     close(fd);
     unlinkat(parent_fd, temporary, 0);

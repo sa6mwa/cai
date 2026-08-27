@@ -264,6 +264,11 @@ cai_response_request_upload_size(const cai_response_request_upload *upload);
 void cai_response_request_upload_close(cai_response_request_upload *upload);
 #ifdef CAI_TESTING
 int cai_test_response_request_upload_active(void);
+void cai_session_store_test_set_fail_scope_parent_sync(int enabled);
+typedef void (*cai_agent_runtime_test_export_cleanup_fn)(const char *path,
+                                                         void *context);
+void cai_agent_runtime_test_set_export_cleanup_hook(
+    cai_agent_runtime_test_export_cleanup_fn hook, void *context);
 #endif
 int cai_response_create_params_set_raw_input_json(
     cai_response_create_params *params, const char *raw_input_json,

@@ -85,6 +85,26 @@ static void test_mcp_sleep_start_capture(void) {
   cai_mcp_test_set_sleep_ms_fn(test_mcp_sleep_capture);
 }
 
+typedef struct runtime_export_cleanup_replace_state {
+  const char *moved_path;
+  const char *replacement_path;
+  int called;
+  int succeeded;
+} runtime_export_cleanup_replace_state;
+
+static void test_runtime_export_replace_before_cleanup(const char *path,
+                                                       void *context) {
+  runtime_export_cleanup_replace_state *state;
+
+  state = (runtime_export_cleanup_replace_state *)context;
+  if (state == NULL || path == NULL || rename(path, state->moved_path) != 0 ||
+      rename(state->replacement_path, path) != 0) {
+    return;
+  }
+  state->called = 1;
+  state->succeeded = 1;
+}
+
 typedef struct read_state {
   const char *text;
   size_t offset;
@@ -27977,6 +27997,79 @@ static void test_agent_local_session_store(test_state *state) {
 }
 
 static void
+test_agent_local_session_store_scope_parent_sync(test_state *state) {
+  char root_directory[] = "/tmp/cai-session-store-sync-XXXXXX";
+  char scope_path[PATH_MAX];
+  char journal_path[PATH_MAX];
+  char hash[65];
+  unsigned char digest[SHA256_DIGEST_LENGTH];
+  static const char hex[] = "0123456789abcdef";
+  cai_agent_local_session_store_config config;
+  cai_agent_session_store store;
+  cai_source_callbacks callbacks;
+  cai_source *source;
+  read_state reader;
+  cai_error error;
+  size_t i;
+
+  cai_error_init(&error);
+  source = NULL;
+  memset(&store, 0, sizeof(store));
+  if (mkdtemp(root_directory) == NULL) {
+    test_fail(state, "local_session_store_sync_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  (void)SHA256((const unsigned char *)"scope-parent-sync",
+               strlen("scope-parent-sync"), digest);
+  for (i = 0U; i < sizeof(digest); i++) {
+    hash[i * 2U] = hex[digest[i] >> 4U];
+    hash[i * 2U + 1U] = hex[digest[i] & 0x0fU];
+  }
+  hash[64] = '\0';
+  (void)snprintf(scope_path, sizeof(scope_path), "%s/%s", root_directory, hash);
+  (void)snprintf(journal_path, sizeof(journal_path), "%s/session.jsonl",
+                 scope_path);
+  cai_agent_local_session_store_config_init(&config);
+  config.root_directory = root_directory;
+  expect_int(state, "local_session_store_sync_open",
+             cai_agent_local_session_store_open(&config, &store, &error),
+             CAI_OK);
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.read = test_read;
+  callbacks.reset = test_reset;
+  callbacks.close = test_read_close;
+  callbacks.context = &reader;
+  reader.text = "{\"version\":1}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_sync_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  cai_session_store_test_set_fail_scope_parent_sync(1);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_sync_failure",
+               store.checkpoint(store.context, "scope-parent-sync", "session",
+                                source, 0U, &error),
+               CAI_ERR_TRANSPORT);
+  }
+  cai_session_store_test_set_fail_scope_parent_sync(0);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_sync_recovery",
+               store.checkpoint(store.context, "scope-parent-sync", "session",
+                                source, 0U, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  cai_agent_local_session_store_close(&store);
+  unlink(journal_path);
+  rmdir(scope_path);
+  rmdir(root_directory);
+  cai_error_cleanup(&error);
+}
+
+static void
 test_agent_local_session_store_rejects_long_default_path(test_state *state) {
   char long_state[PATH_MAX];
   char *saved_xdg_state;
@@ -28435,6 +28528,9 @@ static void test_agent_runtime_markdown_export(test_state *state) {
   char path[PATH_MAX];
   char expected_path[PATH_MAX];
   char failed_path[PATH_MAX];
+  char replaced_path[PATH_MAX];
+  char moved_path[PATH_MAX];
+  char replacement_source_path[PATH_MAX];
   char file_text[65536];
   char checkpoint_json[4096];
   cai_client_config client_config;
@@ -28453,6 +28549,7 @@ static void test_agent_runtime_markdown_export(test_state *state) {
   struct rlimit limited_limit;
   struct sigaction old_xfsz;
   struct sigaction ignored_xfsz;
+  runtime_export_cleanup_replace_state replacement_state;
   int size_limit_changed;
   int signal_changed;
 
@@ -28470,6 +28567,7 @@ static void test_agent_runtime_markdown_export(test_state *state) {
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
   memset(&captured, 0, sizeof(captured));
+  memset(&replacement_state, 0, sizeof(replacement_state));
   (void)snprintf(checkpoint_json, sizeof(checkpoint_json), "%s%s%s%s",
                  "{\"version\":1,\"model\":\"gpt-5-nano\","
                  "\"goal_objective\":\"finish the handover\","
@@ -28604,7 +28702,17 @@ static void test_agent_runtime_markdown_export(test_state *state) {
                CAI_ERR_TRANSPORT);
     (void)snprintf(failed_path, sizeof(failed_path), "%s/%s", workspace,
                    "partial.md");
+    (void)snprintf(replaced_path, sizeof(replaced_path), "%s/%s", workspace,
+                   "partial-replaced.md");
+    (void)snprintf(moved_path, sizeof(moved_path), "%s/%s", workspace,
+                   "partial-moved.md");
+    (void)snprintf(replacement_source_path, sizeof(replacement_source_path),
+                   "%s/%s", workspace, "partial-replacement-source.md");
     (void)unlink(failed_path);
+    (void)unlink(replaced_path);
+    (void)unlink(moved_path);
+    (void)unlink(replacement_source_path);
+    write_file_or_die(replacement_source_path, "concurrent replacement\n");
     memset(&ignored_xfsz, 0, sizeof(ignored_xfsz));
     ignored_xfsz.sa_handler = SIG_IGN;
     sigemptyset(&ignored_xfsz.sa_mask);
@@ -28629,6 +28737,31 @@ static void test_agent_runtime_markdown_export(test_state *state) {
                    CAI_ERR_TRANSPORT);
         expect_int(state, "runtime_export_partial_file_removed",
                    access(failed_path, F_OK) != 0, 1L);
+        replacement_state.moved_path = moved_path;
+        replacement_state.replacement_path = replacement_source_path;
+        cai_agent_runtime_test_set_export_cleanup_hook(
+            test_runtime_export_replace_before_cleanup, &replacement_state);
+        cai_error_cleanup(&error);
+        cai_error_init(&error);
+        expect_int(state, "runtime_export_replaced_file_failure",
+                   cai_agent_runtime_export_markdown_file(
+                       runtime, "cai", replaced_path, NULL, 0U, &error),
+                   CAI_ERR_TRANSPORT);
+        cai_agent_runtime_test_set_export_cleanup_hook(NULL, NULL);
+        expect_int(state, "runtime_export_replaced_file_hook",
+                   replacement_state.called && replacement_state.succeeded, 1L);
+        fp = fopen(replaced_path, "rb");
+        if (fp == NULL) {
+          test_fail(state, "runtime_export_replaced_file_survives",
+                    "replacement file was removed");
+        } else {
+          read_count = fread(file_text, 1U, sizeof(file_text) - 1U, fp);
+          file_text[read_count] = '\0';
+          fclose(fp);
+          fp = NULL;
+          expect_str(state, "runtime_export_replaced_file_contents", file_text,
+                     "concurrent replacement\n");
+        }
       }
     }
     if (size_limit_changed) {
@@ -28648,6 +28781,9 @@ static void test_agent_runtime_markdown_export(test_state *state) {
     cai_error_cleanup(&error);
     cai_error_init(&error);
     unlink(path);
+    unlink(replaced_path);
+    unlink(moved_path);
+    unlink(replacement_source_path);
     cai_agent_runtime_close(runtime);
     runtime = NULL;
     (void)snprintf(store_state.loaded_session_id,
@@ -28684,6 +28820,10 @@ static void test_agent_runtime_markdown_export(test_state *state) {
   if (signal_changed) {
     (void)sigaction(SIGXFSZ, &old_xfsz, NULL);
   }
+  cai_agent_runtime_test_set_export_cleanup_hook(NULL, NULL);
+  unlink(replaced_path);
+  unlink(moved_path);
+  unlink(replacement_source_path);
   rmdir(workspace);
 }
 
@@ -29167,6 +29307,11 @@ static void test_patch_tool(test_state *state) {
                                          "*** Add File: hidden.txt\n"
                                          "+hidden\n"
                                          "*** End Patch";
+  static const char restrictive_umask_patch[] =
+      "*** Begin Patch\n"
+      "*** Add File: restrictive-umask.txt\n"
+      "+private\n"
+      "*** End Patch";
   char dir_template[] = "/tmp/cai-patch-test-XXXXXX";
   char alpha_path[PATH_MAX];
   char beta_path[PATH_MAX];
@@ -29180,6 +29325,7 @@ static void test_patch_tool(test_state *state) {
   char update_race_path[PATH_MAX];
   char update_race_external_path[PATH_MAX];
   char sync_failure_path[PATH_MAX];
+  char restrictive_umask_path[PATH_MAX];
   char *contents;
   char *too_many_patch;
   cai_patch_tool_config config;
@@ -29193,6 +29339,8 @@ static void test_patch_tool(test_state *state) {
   size_t i;
   pid_t race_pid;
   struct stat renamed_stat;
+  struct stat restrictive_umask_stat;
+  mode_t original_umask;
 
   if (mkdtemp(dir_template) == NULL) {
     test_fail(state, "patch_tempdir", "mkdtemp failed");
@@ -29216,6 +29364,8 @@ static void test_patch_tool(test_state *state) {
            "%s/update-raced-external.txt", dir_template);
   snprintf(sync_failure_path, sizeof(sync_failure_path), "%s/sync-failure.txt",
            dir_template);
+  snprintf(restrictive_umask_path, sizeof(restrictive_umask_path),
+           "%s/restrictive-umask.txt", dir_template);
   write_file_or_die(alpha_path, "one\ntwo\nthree\nfour\n");
   memset(&config, 0, sizeof(config));
   config.root_path = dir_template;
@@ -29565,6 +29715,15 @@ static void test_patch_tool(test_state *state) {
              stat(renamed_path, &renamed_stat) == 0 &&
                  (renamed_stat.st_mode & 0777) == 0751,
              1L);
+  original_umask = umask(0077);
+  expect_int(state, "patch_add_respects_restrictive_umask",
+             cai_apply_patch(&config, restrictive_umask_patch, NULL, &error),
+             CAI_OK);
+  umask(original_umask);
+  expect_int(state, "patch_add_restrictive_umask_mode",
+             stat(restrictive_umask_path, &restrictive_umask_stat) == 0 &&
+                 (restrictive_umask_stat.st_mode & 0777) == 0600,
+             1L);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   expect_int(state, "patch_reject_escape",
@@ -29578,6 +29737,7 @@ static void test_patch_tool(test_state *state) {
   unlink(update_race_path);
   unlink(update_race_external_path);
   unlink(sync_failure_path);
+  unlink(restrictive_umask_path);
   rmdir(dir_template);
   cai_error_cleanup(&error);
 }
@@ -40903,6 +41063,8 @@ static const test_entry test_entries[] = {
      test_agent_runtime_goal_checkpoint_watermark},
     {"agent_runtime_goal_budget", test_agent_runtime_goal_budget},
     {"agent_local_session_store", test_agent_local_session_store},
+    {"agent_local_session_store_scope_parent_sync",
+     test_agent_local_session_store_scope_parent_sync},
     {"agent_local_session_store_rejects_long_default_path",
      test_agent_local_session_store_rejects_long_default_path},
     {"agent_local_session_store_rejects_file_root",

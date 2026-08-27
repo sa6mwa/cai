@@ -23,6 +23,18 @@ typedef struct cai_local_session_store {
   char *root_directory;
 } cai_local_session_store;
 
+#if defined(CAI_TESTING)
+static int cai_session_store_test_fail_scope_parent_sync_enabled;
+
+void cai_session_store_test_set_fail_scope_parent_sync(int enabled) {
+  cai_session_store_test_fail_scope_parent_sync_enabled = enabled != 0 ? 1 : 0;
+}
+
+static int cai_session_store_test_fail_scope_parent_sync(void) {
+  return cai_session_store_test_fail_scope_parent_sync_enabled;
+}
+#endif
+
 typedef struct cai_local_checkpoint_source {
   FILE *fp;
   long start;
@@ -260,10 +272,35 @@ static int cai_store_open_scope(cai_local_session_store *store,
   }
   scope_fd =
       openat(root_fd, hash, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-  close(root_fd);
   if (scope_fd < 0) {
+    close(root_fd);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to open scoped session directory");
+  }
+  /* A scope directory is durable state: syncing only its journal and
+   * directory does not persist its entry in the store root after a crash. Do
+   * this for both a newly-created directory and one created concurrently. */
+#if defined(CAI_TESTING)
+  if (cai_session_store_test_fail_scope_parent_sync() != 0) {
+    errno = EIO;
+    rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                              "failed to sync session store root directory",
+                              strerror(errno));
+  } else {
+    rc = CAI_OK;
+  }
+#else
+  rc = CAI_OK;
+#endif
+  if (rc == CAI_OK && fsync(root_fd) != 0) {
+    rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                              "failed to sync session store root directory",
+                              strerror(errno));
+  }
+  close(root_fd);
+  if (rc != CAI_OK) {
+    close(scope_fd);
+    return rc;
   }
   rc = cai_store_validate_private_directory_fd(scope_fd, error);
   if (rc != CAI_OK) {

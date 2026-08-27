@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -42,6 +43,18 @@ extern char **environ;
 #define CAI_RUNTIME_SUBAGENT_SUMMARY_MAX 2048U
 #define CAI_RUNTIME_SUBAGENT_METADATA_MAX (16U * 1024U)
 #define CAI_RUNTIME_GIT_CAPTURE_MAX 512U
+
+#if defined(CAI_TESTING)
+static cai_agent_runtime_test_export_cleanup_fn
+    cai_runtime_test_export_cleanup_hook;
+static void *cai_runtime_test_export_cleanup_context;
+
+void cai_agent_runtime_test_set_export_cleanup_hook(
+    cai_agent_runtime_test_export_cleanup_fn hook, void *context) {
+  cai_runtime_test_export_cleanup_hook = hook;
+  cai_runtime_test_export_cleanup_context = context;
+}
+#endif
 
 typedef struct cai_runtime_subagent_parameter {
   char *name;
@@ -8669,7 +8682,9 @@ int cai_agent_runtime_export_markdown_file(cai_agent_runtime *runtime,
   int fd;
   FILE *fp;
   cai_sink *sink;
+  struct stat created_stat;
   int created;
+  int created_stat_valid;
   int rc;
 
   rc = cai_runtime_owner(runtime, error);
@@ -8683,6 +8698,7 @@ int cai_agent_runtime_export_markdown_file(cai_agent_runtime *runtime,
   default_path = NULL;
   chosen_path = path;
   created = 0;
+  created_stat_valid = 0;
   pthread_mutex_lock(&runtime->lock);
   rc = cai_runtime_export_idle_locked(runtime, error);
   if (rc == CAI_OK && (chosen_path == NULL || chosen_path[0] == '\0')) {
@@ -8740,6 +8756,13 @@ int cai_agent_runtime_export_markdown_file(cai_agent_runtime *runtime,
                                 strerror(errno));
     } else {
       created = 1;
+      if (fstat(fd, &created_stat) != 0) {
+        rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to inspect conversation export file",
+                                  strerror(errno));
+      } else {
+        created_stat_valid = 1;
+      }
     }
   }
   if (rc == CAI_OK) {
@@ -8779,8 +8802,23 @@ int cai_agent_runtime_export_markdown_file(cai_agent_runtime *runtime,
     }
     fp = NULL;
   }
-  if (rc != CAI_OK && created) {
-    (void)unlink(chosen_path);
+  if (rc != CAI_OK && created && created_stat_valid) {
+    struct stat current_stat;
+
+#if defined(CAI_TESTING)
+    if (cai_runtime_test_export_cleanup_hook != NULL) {
+      cai_runtime_test_export_cleanup_hook(
+          chosen_path, cai_runtime_test_export_cleanup_context);
+    }
+#endif
+    /* Never clean up a pathname that another writer has replaced after we
+     * created it. The failed export may have been renamed away, but the new
+     * pathname belongs to that other writer and must survive. */
+    if (lstat(chosen_path, &current_stat) == 0 &&
+        current_stat.st_dev == created_stat.st_dev &&
+        current_stat.st_ino == created_stat.st_ino) {
+      (void)unlink(chosen_path);
+    }
   }
   if (rc == CAI_OK && out_path != NULL) {
     memcpy(out_path, chosen_path, path_length + 1U);
