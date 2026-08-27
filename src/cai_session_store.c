@@ -57,6 +57,48 @@ static const lonejson_field cai_local_event_fields[] = {
 LONEJSON_MAP_DEFINE(cai_local_event_map, cai_local_event_doc,
                     cai_local_event_fields);
 
+static int cai_store_sync_parent_directory(const char *path, cai_error *error) {
+  char parent[PATH_MAX];
+  char *parent_end;
+  int parent_fd;
+  int sync_failed;
+
+  if (path == NULL || strlen(path) >= sizeof(parent)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session store path is too long");
+  }
+  memcpy(parent, path, strlen(path) + 1U);
+  parent_end = strrchr(parent, '/');
+  if (parent_end == parent) {
+    parent[1] = '\0';
+  } else if (parent_end != NULL) {
+    *parent_end = '\0';
+  } else {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session store path must be absolute");
+  }
+  parent_fd = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  if (parent_fd < 0) {
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to open session store parent directory");
+  }
+#if defined(CAI_TESTING)
+  sync_failed = cai_session_store_test_fail_scope_parent_sync() != 0 ? 1 : 0;
+#else
+  sync_failed = 0;
+#endif
+  if (sync_failed != 0) {
+    errno = EIO;
+  } else if (fsync(parent_fd) == 0) {
+    (void)close(parent_fd);
+    return CAI_OK;
+  }
+  (void)close(parent_fd);
+  return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                              "failed to sync session store parent directory",
+                              strerror(errno));
+}
+
 static int cai_store_make_directory(const char *path, cai_error *error) {
   char buffer[PATH_MAX];
   char *cursor;
@@ -77,7 +119,14 @@ static int cai_store_make_directory(const char *path, cai_error *error) {
       struct stat st;
 
       *cursor = '\0';
-      if (mkdir(buffer, 0700) != 0) {
+      if (mkdir(buffer, 0700) == 0) {
+        int rc;
+
+        rc = cai_store_sync_parent_directory(buffer, error);
+        if (rc != CAI_OK) {
+          return rc;
+        }
+      } else {
         if (errno != EEXIST) {
           return cai_set_error(error, CAI_ERR_TRANSPORT,
                                "failed to create session store directory");
@@ -91,7 +140,9 @@ static int cai_store_make_directory(const char *path, cai_error *error) {
       *cursor = '/';
     }
   }
-  if (mkdir(buffer, 0700) != 0) {
+  if (mkdir(buffer, 0700) == 0) {
+    return cai_store_sync_parent_directory(buffer, error);
+  } else {
     struct stat st;
 
     if (errno != EEXIST) {

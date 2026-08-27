@@ -1,6 +1,9 @@
 if(NOT DEFINED CAI_SOURCE_DIR OR CAI_SOURCE_DIR STREQUAL "")
   message(FATAL_ERROR "CAI_SOURCE_DIR is required")
 endif()
+if(NOT DEFINED CAI_BINARY_DIR OR CAI_BINARY_DIR STREQUAL "")
+  message(FATAL_ERROR "CAI_BINARY_DIR is required")
+endif()
 
 set(_cai_prompt "${CAI_SOURCE_DIR}/prompts/smith/gpt-5.6-codex.md")
 set(_cai_manifest "${CAI_SOURCE_DIR}/prompts/smith/manifest.json")
@@ -29,4 +32,21 @@ string(JSON _cai_manifest_version GET "${_cai_manifest_contents}"
 if(NOT _cai_manifest_hash STREQUAL _cai_prompt_sha256 OR
    NOT _cai_manifest_version STREQUAL "smith-7")
   message(FATAL_ERROR "Smith prompt manifest does not describe the source asset")
+endif()
+
+set(_cai_generated_header
+    "${CAI_BINARY_DIR}/generated/private/cai_smith_gpt_5_6_prompt.h")
+if(NOT EXISTS "${_cai_generated_header}")
+  message(FATAL_ERROR "Smith generated prompt header is required")
+endif()
+file(TIMESTAMP "${_cai_generated_header}" _cai_header_before "%s.%f" UTC)
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" -S "${CAI_SOURCE_DIR}" -B "${CAI_BINARY_DIR}"
+  RESULT_VARIABLE _cai_reconfigure_result)
+if(NOT _cai_reconfigure_result EQUAL 0)
+  message(FATAL_ERROR "Smith prompt reconfigure failed")
+endif()
+file(TIMESTAMP "${_cai_generated_header}" _cai_header_after "%s.%f" UTC)
+if(NOT _cai_header_before STREQUAL _cai_header_after)
+  message(FATAL_ERROR "Smith generated prompt header changed without content changes")
 endif()

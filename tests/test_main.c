@@ -28069,6 +28069,40 @@ test_agent_local_session_store_scope_parent_sync(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_agent_local_session_store_root_parent_sync(test_state *state) {
+  char root_directory[] = "/tmp/cai-session-store-root-sync-XXXXXX";
+  cai_agent_local_session_store_config config;
+  cai_agent_session_store store;
+  cai_error error;
+
+  cai_error_init(&error);
+  memset(&store, 0, sizeof(store));
+  if (mkdtemp(root_directory) == NULL) {
+    test_fail(state, "local_session_store_root_sync_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  if (rmdir(root_directory) != 0) {
+    test_fail(state, "local_session_store_root_sync_remove", "rmdir failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_local_session_store_config_init(&config);
+  config.root_directory = root_directory;
+  cai_session_store_test_set_fail_scope_parent_sync(1);
+  expect_int(state, "local_session_store_root_sync_failure",
+             cai_agent_local_session_store_open(&config, &store, &error),
+             CAI_ERR_TRANSPORT);
+  cai_session_store_test_set_fail_scope_parent_sync(0);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_agent_local_session_store_close(&store);
+  if (rmdir(root_directory) != 0) {
+    test_fail(state, "local_session_store_root_sync_cleanup", "rmdir failed");
+  }
+  cai_error_cleanup(&error);
+}
+
 static void
 test_agent_local_session_store_rejects_long_default_path(test_state *state) {
   char long_state[PATH_MAX];
@@ -41101,6 +41135,8 @@ static const test_entry test_entries[] = {
     {"agent_local_session_store", test_agent_local_session_store},
     {"agent_local_session_store_scope_parent_sync",
      test_agent_local_session_store_scope_parent_sync},
+    {"agent_local_session_store_root_parent_sync",
+     test_agent_local_session_store_root_parent_sync},
     {"agent_local_session_store_rejects_long_default_path",
      test_agent_local_session_store_rejects_long_default_path},
     {"agent_local_session_store_rejects_file_root",

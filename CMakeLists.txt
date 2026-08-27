@@ -652,13 +652,25 @@ while(CAI_SMITH_PROMPT_OFFSET LESS CAI_SMITH_PROMPT_LENGTH)
        "${CAI_SMITH_PROMPT_OFFSET} + ${CAI_SMITH_PROMPT_CHUNK_LENGTH}")
 endwhile()
 file(MAKE_DIRECTORY "${CAI_SMITH_PRIVATE_INCLUDE_DIR}")
-file(WRITE "${CAI_SMITH_PRIVATE_INCLUDE_DIR}/cai_smith_gpt_5_6_prompt.h"
+string(CONCAT CAI_SMITH_PROMPT_HEADER
   "/* Generated from prompts/smith/gpt-5.6-codex.md. */\n"
   "#ifndef CAI_SMITH_GPT_5_6_PROMPT_H\n"
   "#define CAI_SMITH_GPT_5_6_PROMPT_H\n"
   "#define CAI_SMITH_GPT_5_6_PROMPT_SOURCE_SHA256 \"${CAI_SMITH_GPT_5_6_PROMPT_SHA256}\"\n"
   "static const char *const cai_smith_gpt_5_6_prompt_parts[] = {\n${CAI_SMITH_PROMPT_C}NULL};\n"
   "#endif\n")
+set(CAI_SMITH_PROMPT_HEADER_PATH
+    "${CAI_SMITH_PRIVATE_INCLUDE_DIR}/cai_smith_gpt_5_6_prompt.h")
+set(CAI_SMITH_PROMPT_HEADER_CHANGED TRUE)
+if(EXISTS "${CAI_SMITH_PROMPT_HEADER_PATH}")
+  file(READ "${CAI_SMITH_PROMPT_HEADER_PATH}" CAI_SMITH_EXISTING_PROMPT_HEADER)
+  if(CAI_SMITH_EXISTING_PROMPT_HEADER STREQUAL CAI_SMITH_PROMPT_HEADER)
+    set(CAI_SMITH_PROMPT_HEADER_CHANGED FALSE)
+  endif()
+endif()
+if(CAI_SMITH_PROMPT_HEADER_CHANGED)
+  file(WRITE "${CAI_SMITH_PROMPT_HEADER_PATH}" "${CAI_SMITH_PROMPT_HEADER}")
+endif()
 
 if(NOT CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
   find_package(lonejson CONFIG QUIET COMPONENTS curl oidc openssl)
@@ -1316,6 +1328,7 @@ if(CAI_BUILD_TESTS)
     agent_runtime_goal_budget
     agent_local_session_store
     agent_local_session_store_scope_parent_sync
+    agent_local_session_store_root_parent_sync
     agent_local_session_store_rejects_long_default_path
     agent_local_session_store_rejects_file_root
     agent_local_session_store_rejects_insecure_root
@@ -1506,6 +1519,7 @@ if(CAI_BUILD_TESTS)
   add_test(NAME cai_smith_prompt_asset_test
     COMMAND "${CMAKE_COMMAND}"
       "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+      "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/smith_prompt_asset_test.cmake")
   set_tests_properties(cai_smith_prompt_asset_test PROPERTIES
     LABELS "unit;local"
