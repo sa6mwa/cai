@@ -1131,6 +1131,41 @@ do
     callback_client:close()
   end
   do
+    local callback_client = assert_ok(cai.open({
+      api_key = "test-key",
+      base_url = "http://127.0.0.1:1/v1",
+      timeout_ms = 1,
+    }))
+    local callback_parent
+    local callback_review
+    local callback_calls = 0
+    local close_error
+
+    callback_parent = assert_ok(callback_client:new_smith_runtime({
+      workspace_directory = ".",
+      disable_default_session_store = true,
+      event_callback = function()
+        callback_calls = callback_calls + 1
+        local _, err = callback_review:close()
+        close_error = err
+      end,
+    }))
+    callback_review = assert_ok(callback_parent:start_review({
+      target = "uncommitted",
+    }))
+    assert_eq(callback_review:pump(100), "cancelled",
+      "Lua review callback-close pump reports cancellation")
+    assert_eq(callback_calls, 1,
+      "Lua review callback-close called exactly once")
+    assert_eq(close_error, nil,
+      "Lua review callback-close must target the review runtime")
+    assert_throws(function()
+      callback_review:state()
+    end, "Lua callback-close review runtime is closed after pump")
+    callback_parent:close()
+    callback_client:close()
+  end
+  do
     local goal_runtime = assert_ok(dummy_client:new_smith_runtime({
       workspace_directory = ".",
       disable_default_session_store = true,

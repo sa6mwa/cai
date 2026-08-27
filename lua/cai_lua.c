@@ -125,6 +125,8 @@ typedef struct cai_lua_agent_runtime {
   size_t review_child_count;
   size_t active_calls;
   size_t callback_calls;
+  /* Stable C callback context for the currently active review child. */
+  struct cai_lua_agent_runtime *review_event_receiver;
   int has_logger_ref;
   int close_requested;
 } cai_lua_agent_runtime;
@@ -3348,6 +3350,18 @@ static int cai_lua_agent_runtime_event(void *context,
   return CAI_OK;
 }
 
+static int cai_lua_agent_runtime_review_event(
+    void *context, const cai_agent_runtime_event *event, cai_error *error) {
+  cai_lua_agent_runtime **receiver;
+
+  receiver = (cai_lua_agent_runtime **)context;
+  if (receiver == NULL || *receiver == NULL) {
+    return cai_lua_set_error(error, CAI_ERR_INVALID,
+                             "Lua review callback has no child runtime");
+  }
+  return cai_lua_agent_runtime_event(*receiver, event, error);
+}
+
 static int cai_lua_client_new_smith_runtime_common(lua_State *L,
                                                    int review_mode,
                                                    int custom_preset) {
@@ -3578,8 +3592,8 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   if (runtime->callback_ref != LUA_NOREF) {
     config.event_callback = cai_lua_agent_runtime_event;
     config.event_context = runtime;
-    config.review_event_callback = cai_lua_agent_runtime_event;
-    config.review_event_context = runtime;
+    config.review_event_callback = cai_lua_agent_runtime_review_event;
+    config.review_event_context = &runtime->review_event_receiver;
   }
   if (config.workspace_directory == NULL ||
       config.workspace_directory[0] == '\0') {
@@ -4311,6 +4325,9 @@ static void cai_lua_agent_runtime_release(lua_State *L,
       if (parent->review_child_count > 0U) {
         parent->review_child_count--;
       }
+      if (parent->review_event_receiver == self) {
+        parent->review_event_receiver = NULL;
+      }
     }
     lua_pop(L, 1);
     luaL_unref(L, LUA_REGISTRYINDEX, self->review_parent_ref);
@@ -4344,9 +4361,26 @@ static int cai_lua_agent_runtime_gc(lua_State *L) {
   return 0;
 }
 
+static void cai_lua_agent_runtime_abandon_review(lua_State *L,
+                                                 cai_lua_agent_runtime *self) {
+  cai_lua_agent_runtime *parent;
+
+  if (self->review_parent_ref == LUA_NOREF || self->review_finished) {
+    return;
+  }
+  lua_rawgeti(L, LUA_REGISTRYINDEX, self->review_parent_ref);
+  parent =
+      (cai_lua_agent_runtime *)luaL_testudata(L, -1, CAI_LUA_AGENT_RUNTIME);
+  if (parent != NULL) {
+    parent->review_abandoned = 1;
+  }
+  lua_pop(L, 1);
+  self->review_abandoned = 1;
+  self->review_finished = 1;
+}
+
 static int cai_lua_agent_runtime_close(lua_State *L) {
   cai_lua_agent_runtime *self;
-  cai_lua_agent_runtime *parent;
   cai_error error;
 
   self = (cai_lua_agent_runtime *)luaL_checkudata(L, 1, CAI_LUA_AGENT_RUNTIME);
@@ -4361,13 +4395,17 @@ static int cai_lua_agent_runtime_close(lua_State *L) {
   if (self->active_calls != 0U) {
     if ((self->review_parent_ref != LUA_NOREF && !self->review_finished) ||
         self->review_child_count != 0U) {
-      cai_error_init(&error);
-      return cai_lua_fail(
-          L,
-          cai_lua_set_error(
-              &error, CAI_ERR_INVALID,
-              "finish the active review before closing either agent runtime"),
-          &error);
+      if (self->callback_calls != 0U && self->review_child_count == 0U) {
+        cai_lua_agent_runtime_abandon_review(L, self);
+      } else {
+        cai_error_init(&error);
+        return cai_lua_fail(
+            L,
+            cai_lua_set_error(
+                &error, CAI_ERR_INVALID,
+                "finish the active review before closing either agent runtime"),
+            &error);
+      }
     }
     if (!self->close_requested && self->ptr != NULL) {
       cai_agent_runtime_close(self->ptr);
@@ -4383,15 +4421,7 @@ static int cai_lua_agent_runtime_close(lua_State *L) {
      * Lua without leaving a parent that can still be used with a dangling C
      * child pointer.
      */
-    lua_rawgeti(L, LUA_REGISTRYINDEX, self->review_parent_ref);
-    parent =
-        (cai_lua_agent_runtime *)luaL_testudata(L, -1, CAI_LUA_AGENT_RUNTIME);
-    if (parent != NULL) {
-      parent->review_abandoned = 1;
-    }
-    lua_pop(L, 1);
-    self->review_abandoned = 1;
-    self->review_finished = 1;
+    cai_lua_agent_runtime_abandon_review(L, self);
     return cai_lua_agent_runtime_gc(L);
   }
   if ((self->review_parent_ref != LUA_NOREF && !self->review_finished) ||
@@ -4528,6 +4558,11 @@ static int cai_lua_agent_runtime_start_review(lua_State *L) {
   review->mcp_clients_ref = LUA_NOREF;
   review->review_parent_ref = cai_lua_ref_parent(L, 1);
   review->review_children_ref = LUA_NOREF;
+  if (parent->callback_ref != LUA_NOREF) {
+    lua_rawgeti(L, LUA_REGISTRYINDEX, parent->callback_ref);
+    review->callback_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    parent->review_event_receiver = review;
+  }
   if (parent->parent_ref != LUA_NOREF) {
     lua_rawgeti(L, LUA_REGISTRYINDEX, parent->parent_ref);
     review->parent_ref = luaL_ref(L, LUA_REGISTRYINDEX);
