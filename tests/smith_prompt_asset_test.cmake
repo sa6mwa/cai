@@ -50,3 +50,14 @@ file(TIMESTAMP "${_cai_generated_header}" _cai_header_after "%s.%f" UTC)
 if(NOT _cai_header_before STREQUAL _cai_header_after)
   message(FATAL_ERROR "Smith generated prompt header changed without content changes")
 endif()
+
+set(_cai_build_ninja "${CAI_BINARY_DIR}/build.ninja")
+if(EXISTS "${_cai_build_ninja}")
+  file(READ "${_cai_build_ninja}" _cai_build_graph)
+  string(FIND "${_cai_build_graph}" "${_cai_prompt}"
+         _cai_prompt_dependency_offset)
+  if(_cai_prompt_dependency_offset EQUAL -1)
+    message(FATAL_ERROR
+      "Smith prompt asset is not tracked as an incremental build dependency")
+  endif()
+endif()

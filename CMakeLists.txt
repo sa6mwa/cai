@@ -607,6 +607,8 @@ configure_file(
 # token and appends the narrow CAI capability overlay token.
 set(CAI_SMITH_GPT_5_6_PROMPT_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/prompts/smith/gpt-5.6-codex.md")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             "${CAI_SMITH_GPT_5_6_PROMPT_SOURCE}")
 set(CAI_SMITH_PRIVATE_INCLUDE_DIR
     "${CMAKE_CURRENT_BINARY_DIR}/generated/private")
 file(SHA256 "${CAI_SMITH_GPT_5_6_PROMPT_SOURCE}"
