@@ -979,6 +979,57 @@ end
 
 local dummy_client = assert_ok(cai.open({ api_key = "test-key", timeout_ms = 1 }))
 do
+  local function assert_runtime_argument_error_releases_activity(label, invoke)
+    local client = assert_ok(cai.open({
+      api_key = "test-key",
+      base_url = "http://127.0.0.1:1/v1",
+      timeout_ms = 1,
+    }))
+    local runtime = assert_ok(client:new_smith_runtime({
+      workspace_directory = ".",
+      disable_default_session_store = true,
+    }))
+    local call_ok = pcall(invoke, runtime)
+    local close_ok, close_value, close_error
+    local client_close_ok, client_close_value, client_close_error
+
+    assert(not call_ok, label .. " must reject an invalid Lua argument")
+    close_ok, close_value, close_error = pcall(function()
+      return runtime:close()
+    end)
+    assert(close_ok and close_error == nil,
+      label .. " must leave its runtime closable: " ..
+      tostring(close_error or close_value))
+    client_close_ok, client_close_value, client_close_error = pcall(function()
+      return client:close()
+    end)
+    assert(client_close_ok and client_close_error == nil,
+      label .. " must leave its parent client closable: " ..
+      tostring(client_close_error or client_close_value))
+  end
+
+  assert_runtime_argument_error_releases_activity("runtime submit", function(runtime)
+    runtime:submit({})
+  end)
+  assert_runtime_argument_error_releases_activity("runtime steering submission", function(runtime)
+    runtime:submit_steering({})
+  end)
+  assert_runtime_argument_error_releases_activity("runtime queued submission", function(runtime)
+    runtime:submit_queued({})
+  end)
+  assert_runtime_argument_error_releases_activity("runtime goal creation", function(runtime)
+    runtime:create_goal({ objective = {} })
+  end)
+  assert_runtime_argument_error_releases_activity("runtime goal objective", function(runtime)
+    runtime:set_goal_objective({})
+  end)
+  assert_runtime_argument_error_releases_activity("runtime goal budget", function(runtime)
+    runtime:set_goal_token_budget({})
+  end)
+  assert_runtime_argument_error_releases_activity("runtime pump", function(runtime)
+    runtime:pump({})
+  end)
+
   local runtime_meta = debug.getregistry()["cai.agent_runtime"]
   assert(type(runtime_meta) == "table", "missing agent runtime metatable")
   for _, method in ipairs({ "submit", "submit_review", "start_review", "finish_review", "submit_steering", "submit_queued", "goal", "create_goal", "pause_goal", "resume_goal", "set_goal_objective", "set_goal_token_budget", "clear_goal_token_budget", "clear_goal", "pump", "state",

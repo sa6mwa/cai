@@ -4440,12 +4440,14 @@ static int cai_lua_agent_runtime_close(lua_State *L) {
 static int cai_lua_agent_runtime_submit(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_error error;
+  const char *text;
   int rc;
 
   self = cai_lua_check_agent_runtime(L, 1);
+  text = luaL_checkstring(L, 2);
   cai_error_init(&error);
   cai_lua_agent_runtime_enter(self);
-  rc = cai_agent_runtime_submit(self->ptr, luaL_checkstring(L, 2), &error);
+  rc = cai_agent_runtime_submit(self->ptr, text, &error);
   cai_lua_agent_runtime_leave(self);
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -4646,13 +4648,14 @@ static int cai_lua_agent_runtime_finish_review(lua_State *L) {
 static int cai_lua_agent_runtime_submit_steering(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_error error;
+  const char *text;
   int rc;
 
   self = cai_lua_check_agent_runtime(L, 1);
+  text = luaL_checkstring(L, 2);
   cai_error_init(&error);
   cai_lua_agent_runtime_enter(self);
-  rc = cai_agent_runtime_submit_steering(self->ptr, luaL_checkstring(L, 2),
-                                         &error);
+  rc = cai_agent_runtime_submit_steering(self->ptr, text, &error);
   cai_lua_agent_runtime_leave(self);
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -4660,13 +4663,14 @@ static int cai_lua_agent_runtime_submit_steering(lua_State *L) {
 static int cai_lua_agent_runtime_submit_queued(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_error error;
+  const char *text;
   int rc;
 
   self = cai_lua_check_agent_runtime(L, 1);
+  text = luaL_checkstring(L, 2);
   cai_error_init(&error);
   cai_lua_agent_runtime_enter(self);
-  rc = cai_agent_runtime_submit_queued(self->ptr, luaL_checkstring(L, 2),
-                                       &error);
+  rc = cai_agent_runtime_submit_queued(self->ptr, text, &error);
   cai_lua_agent_runtime_leave(self);
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -4728,35 +4732,46 @@ static int cai_lua_agent_runtime_goal_control(lua_State *L, int kind) {
   cai_error error;
   int rc;
   cai_agent_goal_request request;
+  const char *objective;
+  long long token_budget;
 
-  cai_error_init(&error);
-  cai_lua_agent_runtime_enter(self);
+  objective = NULL;
+  token_budget = 0LL;
+  cai_agent_goal_request_init(&request);
   if (kind == CAI_LUA_GOAL_CREATE) {
-    cai_agent_goal_request_init(&request);
     if (lua_istable(L, 2)) {
       lua_getfield(L, 2, "objective");
-      request.objective = luaL_checkstring(L, -1);
+      objective = luaL_checkstring(L, -1);
       lua_pop(L, 1);
       lua_getfield(L, 2, "token_budget");
       if (!lua_isnil(L, -1)) {
         request.has_token_budget = 1;
-        request.token_budget = (long long)luaL_checkinteger(L, -1);
+        token_budget = (long long)luaL_checkinteger(L, -1);
       }
       lua_pop(L, 1);
     } else {
-      request.objective = luaL_checkstring(L, 2);
+      objective = luaL_checkstring(L, 2);
     }
+    request.objective = objective;
+    request.token_budget = token_budget;
+  } else if (kind == CAI_LUA_GOAL_SET_OBJECTIVE) {
+    objective = luaL_checkstring(L, 2);
+  } else if (kind == CAI_LUA_GOAL_SET_BUDGET) {
+    token_budget = (long long)luaL_checkinteger(L, 2);
+  }
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  if (kind == CAI_LUA_GOAL_CREATE) {
     rc = cai_agent_runtime_create_goal(self->ptr, &request, &error);
   } else if (kind == CAI_LUA_GOAL_PAUSE)
     rc = cai_agent_runtime_pause_goal(self->ptr, &error);
   else if (kind == CAI_LUA_GOAL_RESUME)
     rc = cai_agent_runtime_resume_goal(self->ptr, &error);
   else if (kind == CAI_LUA_GOAL_SET_OBJECTIVE)
-    rc = cai_agent_runtime_set_goal_objective(self->ptr, luaL_checkstring(L, 2),
-                                              &error);
+    rc = cai_agent_runtime_set_goal_objective(self->ptr, objective, &error);
   else if (kind == CAI_LUA_GOAL_SET_BUDGET)
-    rc = cai_agent_runtime_set_goal_token_budget(
-        self->ptr, (long long)luaL_checkinteger(L, 2), &error);
+    rc = cai_agent_runtime_set_goal_token_budget(self->ptr, token_budget,
+                                                 &error);
   else if (kind == CAI_LUA_GOAL_CLEAR_BUDGET)
     rc = cai_agent_runtime_clear_goal_token_budget(self->ptr, &error);
   else
@@ -4790,13 +4805,14 @@ static int cai_lua_agent_runtime_pump(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_agent_run_state state;
   cai_error error;
+  long timeout_ms;
   int rc;
 
   self = cai_lua_check_agent_runtime(L, 1);
+  timeout_ms = (long)luaL_optinteger(L, 2, 0);
   cai_error_init(&error);
   cai_lua_agent_runtime_enter(self);
-  rc =
-      cai_agent_runtime_pump(self->ptr, (long)luaL_optinteger(L, 2, 0), &error);
+  rc = cai_agent_runtime_pump(self->ptr, timeout_ms, &error);
   if (self->close_requested) {
     /* A Lua event callback may close its runtime. The C pump owns deferred
      * teardown and has destroyed ptr before returning to this frame. */
