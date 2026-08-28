@@ -63,6 +63,7 @@ void cai_mcp_test_set_sleep_ms_fn(void (*fn)(long ms));
 int cai_mcp_test_header_callback_unterminated(void);
 void cai_patch_test_pause_before_publish(int enabled);
 void cai_patch_test_fail_directory_sync(int enabled);
+int cai_patch_test_resolve_new_path(const char *root, const char *path);
 void cai_terminal_test_set_reader_create_failure(int enabled);
 void cai_terminal_test_set_child_pre_setsid_hold(int enabled);
 
@@ -29670,6 +29671,7 @@ static void test_patch_tool(test_state *state) {
   char update_race_external_path[PATH_MAX];
   char sync_failure_path[PATH_MAX];
   char restrictive_umask_path[PATH_MAX];
+  char root_probe_path[PATH_MAX];
   char *contents;
   char *too_many_patch;
   cai_patch_tool_config config;
@@ -29713,6 +29715,10 @@ static void test_patch_tool(test_state *state) {
   write_file_or_die(alpha_path, "one\ntwo\nthree\nfour\n");
   memset(&config, 0, sizeof(config));
   config.root_path = dir_template;
+  snprintf(root_probe_path, sizeof(root_probe_path),
+           "/.cai-patch-root-probe-%ld", (long)getpid());
+  expect_int(state, "patch_root_direct_child_resolves",
+             cai_patch_test_resolve_new_path("/", root_probe_path), CAI_OK);
   cai_error_init(&error);
   too_many_patch = (char *)malloc(65536U);
   if (too_many_patch == NULL) {

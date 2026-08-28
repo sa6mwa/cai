@@ -18,6 +18,7 @@
 #define RED "\033[31m"
 #define REASONING_PROBE_MAX 512U
 #define SUBAGENT_TASK_DISPLAY_MAX 240U
+#define SMITH_INPUT_MAX_BYTES (1024U * 1024U)
 
 typedef struct render_state {
   int terminal_lines;
@@ -752,6 +753,61 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
   return CAI_OK;
 }
 
+/* Read one complete physical input line. The terminal is normally in
+ * canonical mode, but preserving the whole line also matters when this
+ * example is driven by a pipe or a scripted test. */
+static int read_input_line(char **line, size_t *capacity) {
+  size_t length;
+  int ch;
+
+  if (line == NULL || capacity == NULL) {
+    return -1;
+  }
+  length = 0U;
+  for (;;) {
+    ch = fgetc(stdin);
+    if (ch == EOF) {
+      if (ferror(stdin)) {
+        return -1;
+      }
+      if (length == 0U) {
+        return 0;
+      }
+      break;
+    }
+    if (ch == '\n') {
+      break;
+    }
+    if (length == SMITH_INPUT_MAX_BYTES) {
+      do {
+        ch = fgetc(stdin);
+      } while (ch != '\n' && ch != EOF);
+      return -2;
+    }
+    if (length + 1U >= *capacity) {
+      char *expanded;
+      size_t expanded_capacity;
+
+      expanded_capacity = *capacity == 0U ? 256U : *capacity * 2U;
+      if (expanded_capacity > SMITH_INPUT_MAX_BYTES + 1U) {
+        expanded_capacity = SMITH_INPUT_MAX_BYTES + 1U;
+      }
+      expanded = (char *)realloc(*line, expanded_capacity);
+      if (expanded == NULL) {
+        return -1;
+      }
+      *line = expanded;
+      *capacity = expanded_capacity;
+    }
+    (*line)[length++] = (char)ch;
+  }
+  while (length > 0U && (*line)[length - 1U] == '\r') {
+    length--;
+  }
+  (*line)[length] = '\0';
+  return 1;
+}
+
 int main(int argc, char **argv) {
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
@@ -768,7 +824,7 @@ int main(int argc, char **argv) {
   render_state renderer;
   char *chatgpt_auth_path_display;
   char workspace[4096];
-  char line[4096];
+  char *line;
   char exported_path[8192];
   const char *auth_json;
   const char *model;
@@ -777,6 +833,7 @@ int main(int argc, char **argv) {
   int input_enabled;
   int prompt_shown;
   int wakeup_fd;
+  size_t line_capacity;
   int rc;
 
   cai_error_init(&error);
@@ -787,6 +844,8 @@ int main(int argc, char **argv) {
   logger = NULL;
   logger_root = NULL;
   chatgpt_auth_path_display = NULL;
+  line = NULL;
+  line_capacity = 0U;
   exit_requested = 0;
   prompt_shown = 0;
   wakeup_fd = -1;
@@ -928,11 +987,22 @@ int main(int argc, char **argv) {
         (poll_fds[0].revents & (POLLIN | POLLERR | POLLHUP)) == 0) {
       continue;
     }
-    if (fgets(line, sizeof(line), stdin) == NULL) {
+    rc = read_input_line(&line, &line_capacity);
+    if (rc == 0) {
       break;
     }
     prompt_shown = 0;
-    line[strcspn(line, "\r\n")] = '\0';
+    if (rc < 0) {
+      if (rc == -2) {
+        fprintf(stderr, "smith-terminal: input exceeds %u bytes\n",
+                (unsigned int)SMITH_INPUT_MAX_BYTES);
+        rc = CAI_OK;
+        continue;
+      }
+      fputs("smith-terminal: failed to read input\n", stderr);
+      rc = CAI_ERR_TRANSPORT;
+      break;
+    }
     if (strcmp(line, "/exit") == 0 || strcmp(line, "/quit") == 0) {
       exit_requested = 1;
       continue;
@@ -995,6 +1065,7 @@ int main(int argc, char **argv) {
   if (logger_root != NULL) {
     logger_root->destroy(logger_root);
   }
+  free(line);
   cai_string_destroy(chatgpt_auth_path_display);
   cai_error_cleanup(&error);
   return rc == CAI_OK ? 0 : 1;

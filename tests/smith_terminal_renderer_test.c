@@ -151,6 +151,64 @@ static char *capture_fixture(void) {
   return output;
 }
 
+static void test_long_input_line(void) {
+  FILE *input;
+  int saved_stdin;
+  char *line;
+  size_t capacity;
+  size_t i;
+  int rc;
+
+  input = tmpfile();
+  if (input == NULL) {
+    perror("tmpfile input");
+    failures++;
+    return;
+  }
+  for (i = 0U; i < 5000U; i++) {
+    if (fputc('x', input) == EOF) {
+      perror("write input");
+      fclose(input);
+      failures++;
+      return;
+    }
+  }
+  if (fputc('\n', input) == EOF || fflush(input) != 0 ||
+      fseek(input, 0L, SEEK_SET) != 0) {
+    perror("prepare input");
+    fclose(input);
+    failures++;
+    return;
+  }
+  saved_stdin = dup(STDIN_FILENO);
+  if (saved_stdin < 0 || dup2(fileno(input), STDIN_FILENO) < 0) {
+    perror("redirect stdin");
+    if (saved_stdin >= 0) {
+      close(saved_stdin);
+    }
+    fclose(input);
+    failures++;
+    return;
+  }
+  clearerr(stdin);
+  line = NULL;
+  capacity = 0U;
+  rc = read_input_line(&line, &capacity);
+  if (dup2(saved_stdin, STDIN_FILENO) < 0) {
+    perror("restore stdin");
+    failures++;
+  }
+  close(saved_stdin);
+  clearerr(stdin);
+  fclose(input);
+  if (rc != 1 || line == NULL || strlen(line) != 5000U ||
+      strspn(line, "x") != 5000U) {
+    fprintf(stderr, "long input line was not preserved\n");
+    failures++;
+  }
+  free(line);
+}
+
 int main(void) {
   char *output;
 
@@ -158,6 +216,7 @@ int main(void) {
   if (output == NULL) {
     return 1;
   }
+  test_long_input_line();
   expect_contains("heading", output, "Thinking: \033[0mPlanning files\n");
   expect_contains("reasoning body", output, "  Inspecting the workspace.");
   expect_not_contains("raw heading", output, "**Planning files**");

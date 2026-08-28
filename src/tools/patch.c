@@ -429,11 +429,15 @@ static int cai_patch_resolve_new(const cai_patch_context *ctx, const char *path,
     return cai_set_error(error, CAI_ERR_INVALID, "patch path is too long");
   }
   slash = strrchr(parent, '/');
-  if (slash == NULL || slash == parent) {
+  if (slash == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "patch target must have a workspace parent");
   }
-  *slash = '\0';
+  if (slash == parent) {
+    parent[1] = '\0';
+  } else {
+    *slash = '\0';
+  }
   if (realpath(parent, resolved_parent) == NULL ||
       !cai_patch_under_root(ctx->root_path, resolved_parent)) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -576,6 +580,7 @@ static void cai_patch_unlink_if_matches(int parent_fd, const char *name,
 #if defined(CAI_TESTING)
 void cai_patch_test_pause_before_publish(int enabled);
 void cai_patch_test_fail_directory_sync(int enabled);
+int cai_patch_test_resolve_new_path(const char *root, const char *path);
 
 static volatile sig_atomic_t cai_patch_test_pause_before_publish_enabled;
 static volatile sig_atomic_t cai_patch_test_fail_directory_sync_enabled;
@@ -2056,6 +2061,30 @@ static void cai_patch_context_cleanup(void *context) {
   cai_free_mem(NULL, ctx->root_path);
   cai_free_mem(NULL, ctx);
 }
+
+#if defined(CAI_TESTING)
+int cai_patch_test_resolve_new_path(const char *root, const char *path) {
+  cai_patch_context *ctx;
+  cai_patch_tool_config config;
+  cai_error error;
+  char *resolved;
+  int rc;
+
+  ctx = NULL;
+  resolved = NULL;
+  memset(&config, 0, sizeof(config));
+  config.root_path = root;
+  cai_error_init(&error);
+  rc = cai_patch_context_new(&config, &ctx, &error);
+  if (rc == CAI_OK) {
+    rc = cai_patch_resolve_new(ctx, path, &resolved, &error);
+  }
+  cai_free_mem(NULL, resolved);
+  cai_patch_context_cleanup(ctx);
+  cai_error_cleanup(&error);
+  return rc;
+}
+#endif
 
 static int cai_patch_apply_context(const cai_patch_context *ctx,
                                    const char *patch, cai_sink *result,
