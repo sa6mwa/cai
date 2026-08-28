@@ -48,11 +48,45 @@ extern char **environ;
 static cai_agent_runtime_test_export_cleanup_fn
     cai_runtime_test_export_cleanup_hook;
 static void *cai_runtime_test_export_cleanup_context;
+static int cai_runtime_test_fail_goal_status_replace_enabled;
+static unsigned int cai_runtime_test_goal_status_replace_failures;
+static pthread_mutex_t cai_runtime_test_goal_status_replace_lock =
+    PTHREAD_MUTEX_INITIALIZER;
 
 void cai_agent_runtime_test_set_export_cleanup_hook(
     cai_agent_runtime_test_export_cleanup_fn hook, void *context) {
   cai_runtime_test_export_cleanup_hook = hook;
   cai_runtime_test_export_cleanup_context = context;
+}
+
+void cai_agent_runtime_test_set_fail_goal_status_replace(int enabled) {
+  pthread_mutex_lock(&cai_runtime_test_goal_status_replace_lock);
+  cai_runtime_test_fail_goal_status_replace_enabled = enabled != 0 ? 1 : 0;
+  if (enabled != 0) {
+    cai_runtime_test_goal_status_replace_failures = 0U;
+  }
+  pthread_mutex_unlock(&cai_runtime_test_goal_status_replace_lock);
+}
+
+unsigned int cai_agent_runtime_test_goal_status_replace_failures(void) {
+  unsigned int failures;
+
+  pthread_mutex_lock(&cai_runtime_test_goal_status_replace_lock);
+  failures = cai_runtime_test_goal_status_replace_failures;
+  pthread_mutex_unlock(&cai_runtime_test_goal_status_replace_lock);
+  return failures;
+}
+
+static int cai_runtime_test_fail_goal_status_replace(void) {
+  int enabled;
+
+  pthread_mutex_lock(&cai_runtime_test_goal_status_replace_lock);
+  enabled = cai_runtime_test_fail_goal_status_replace_enabled;
+  if (enabled != 0) {
+    cai_runtime_test_goal_status_replace_failures++;
+  }
+  pthread_mutex_unlock(&cai_runtime_test_goal_status_replace_lock);
+  return enabled;
 }
 #endif
 
@@ -2427,6 +2461,12 @@ static int cai_runtime_goal_replace_status(cai_session *session,
   char *copy;
 
   impl = CAI_SESSION_IMPL(session);
+#if defined(CAI_TESTING)
+  if (cai_runtime_test_fail_goal_status_replace() != 0) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to preserve goal status");
+  }
+#endif
   copy = cai_strdup(&CAI_SESSION_CLIENT_IMPL(session)->allocator, value);
   if (copy == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
@@ -2564,11 +2604,12 @@ cai_runtime_apply_goal_control(cai_agent_runtime *runtime,
       return cai_set_error(error, CAI_ERR_NOMEM,
                            "failed to preserve goal objective");
     }
-    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
-                 goal->goal_objective);
-    goal->goal_objective = copy;
     rc = cai_runtime_goal_replace_status(runtime->session, "active", error);
     if (rc == CAI_OK) {
+      cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                   goal->goal_objective);
+      goal->goal_objective = copy;
+      copy = NULL;
       goal->goal_has_token_budget = control->has_token_budget;
       goal->goal_token_budget = control->token_budget;
       goal->goal_token_usage_baseline = goal->usage.usage.total_tokens;
@@ -2585,6 +2626,7 @@ cai_runtime_apply_goal_control(cai_agent_runtime *runtime,
       rc = cai_runtime_goal_add_context(runtime, "A host created a new goal.",
                                         error);
     }
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator, copy);
   } else if (goal->goal_status == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "no goal exists");
   } else if (control->kind == CAI_RUNTIME_GOAL_PAUSE) {
@@ -2592,9 +2634,9 @@ cai_runtime_apply_goal_control(cai_agent_runtime *runtime,
       return cai_set_error(error, CAI_ERR_INVALID,
                            "only an active goal can pause");
     }
-    cai_session_goal_stop_elapsed(runtime->session, now);
     rc = cai_runtime_goal_replace_status(runtime->session, "paused", error);
     if (rc == CAI_OK) {
+      cai_session_goal_stop_elapsed(runtime->session, now);
       goal->goal_updated_at = now;
       event_data = "paused";
       rc = cai_runtime_goal_add_context(runtime, "The host paused this goal.",

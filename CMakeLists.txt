@@ -1325,6 +1325,7 @@ if(CAI_BUILD_TESTS)
     agent_runtime_poll_only
     agent_runtime_host_goal_controls
     agent_runtime_goal_checkpoint_watermark
+    agent_runtime_goal_create_status_allocation_failure
     agent_runtime_goal_budget
     agent_local_session_store
     agent_local_session_store_scope_parent_sync

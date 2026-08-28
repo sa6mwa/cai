@@ -27062,6 +27062,7 @@ static void test_agent_runtime_host_goal_controls(test_state *state) {
   struct timespec delay;
   int i;
   int j;
+  long long elapsed_before_pause_failure;
   size_t objective_index;
 
   if (mkdtemp(workspace) == NULL) {
@@ -27103,6 +27104,35 @@ static void test_agent_runtime_host_goal_controls(test_state *state) {
     expect_str(state, "runtime_host_goal_status", goal.status, "active");
     expect_int(state, "runtime_host_goal_remaining", goal.remaining_tokens,
                20L);
+    cai_agent_runtime_test_set_fail_goal_status_replace(1);
+    expect_int(state, "runtime_host_goal_pause_status_alloc_failure",
+               cai_agent_runtime_pause_goal(runtime, &error), CAI_OK);
+    for (i = 0; i < 20; i++) {
+      (void)nanosleep(&delay, NULL);
+    }
+    expect_int(state, "runtime_host_goal_pause_failure_retarget",
+               cai_agent_runtime_set_goal_objective(
+                   runtime, "active after rejected pause", &error),
+               CAI_OK);
+    for (i = 0;
+         i < 20 && (goal.objective == NULL ||
+                    strcmp(goal.objective, "active after rejected pause") != 0);
+         i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "runtime_host_goal_pause_failure_get",
+                 cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    }
+    cai_agent_runtime_test_set_fail_goal_status_replace(0);
+    expect_str(state, "runtime_host_goal_pause_failure_status", goal.status,
+               "active");
+    elapsed_before_pause_failure = goal.elapsed_seconds;
+    sleep(1U);
+    expect_int(state, "runtime_host_goal_pause_failure_elapsed_get",
+               cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    if (goal.elapsed_seconds <= elapsed_before_pause_failure) {
+      test_fail(state, "runtime_host_goal_pause_failure_elapsed",
+                "rejected pause stopped active goal timing");
+    }
     request.objective = "must not replace active host goal";
     expect_int(state, "runtime_host_goal_duplicate_active",
                cai_agent_runtime_create_goal(runtime, &request, &error),
@@ -27114,7 +27144,7 @@ static void test_agent_runtime_host_goal_controls(test_state *state) {
     expect_int(state, "runtime_host_goal_duplicate_active_snapshot",
                cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
     expect_str(state, "runtime_host_goal_duplicate_active_objective",
-               goal.objective, "exercise host goal controls");
+               goal.objective, "active after rejected pause");
     for (objective_index = 0U;
          objective_index < sizeof(objectives) / sizeof(objectives[0]);
          objective_index++) {
@@ -27285,6 +27315,96 @@ static void test_agent_runtime_goal_checkpoint_watermark(test_state *state) {
   }
   pthread_cond_destroy(&race.condition);
   pthread_mutex_destroy(&race.lock);
+  cai_error_cleanup(&error);
+  rmdir(workspace);
+}
+
+static void
+test_agent_runtime_goal_create_status_allocation_failure(test_state *state) {
+  char workspace[] = "/tmp/cai-runtime-goal-create-status-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_runtime_config config;
+  cai_agent_goal_request request;
+  cai_agent_goal_snapshot goal;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_error error;
+  struct timespec delay;
+  int i;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "runtime_goal_create_status_workspace", "mkdtemp failed");
+    return;
+  }
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  memset(&goal, 0, sizeof(goal));
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json = "{\"version\":1,\"model\":\"gpt-5-nano\","
+                                "\"goal_objective\":\"completed objective\","
+                                "\"goal_status\":\"complete\",\"history\":[]}";
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.timeout_ms = 1L;
+  expect_int(state, "runtime_goal_create_status_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = workspace;
+  config.model = CAI_MODEL_GPT_5_NANO;
+  config.session_store = &store;
+  config.resume_latest = 1;
+  expect_int(state, "runtime_goal_create_status_open",
+             cai_agent_runtime_open(client, &config, &runtime, &error), CAI_OK);
+  delay.tv_sec = 0;
+  delay.tv_nsec = 10000000L;
+  if (runtime != NULL) {
+    expect_int(state, "runtime_goal_create_status_initial_get",
+               cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    expect_str(state, "runtime_goal_create_status_initial_status", goal.status,
+               "complete");
+    expect_str(state, "runtime_goal_create_status_initial_objective",
+               goal.objective, "completed objective");
+    cai_agent_goal_request_init(&request);
+    request.objective = "replacement objective";
+    cai_agent_runtime_test_set_fail_goal_status_replace(1);
+    expect_int(state, "runtime_goal_create_status_enqueue",
+               cai_agent_runtime_create_goal(runtime, &request, &error),
+               CAI_OK);
+    for (i = 0;
+         i < 20 && cai_agent_runtime_test_goal_status_replace_failures() == 0U;
+         i++) {
+      (void)nanosleep(&delay, NULL);
+    }
+    expect_int(state, "runtime_goal_create_status_failure_seen",
+               (long)cai_agent_runtime_test_goal_status_replace_failures(), 1L);
+    cai_agent_runtime_test_set_fail_goal_status_replace(0);
+    expect_int(state, "runtime_goal_create_status_refresh_enqueue",
+               cai_agent_runtime_clear_goal_token_budget(runtime, &error),
+               CAI_OK);
+    for (i = 0; i < 20 && goal.updated_at == 0LL; i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "runtime_goal_create_status_refresh_get",
+                 cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    }
+    expect_str(state, "runtime_goal_create_status_after_status", goal.status,
+               "complete");
+    expect_str(state, "runtime_goal_create_status_after_objective",
+               goal.objective, "completed objective");
+    cai_agent_runtime_close(runtime);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
   cai_error_cleanup(&error);
   rmdir(workspace);
 }
@@ -41131,6 +41251,8 @@ static const test_entry test_entries[] = {
     {"agent_runtime_host_goal_controls", test_agent_runtime_host_goal_controls},
     {"agent_runtime_goal_checkpoint_watermark",
      test_agent_runtime_goal_checkpoint_watermark},
+    {"agent_runtime_goal_create_status_allocation_failure",
+     test_agent_runtime_goal_create_status_allocation_failure},
     {"agent_runtime_goal_budget", test_agent_runtime_goal_budget},
     {"agent_local_session_store", test_agent_local_session_store},
     {"agent_local_session_store_scope_parent_sync",
