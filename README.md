@@ -79,20 +79,20 @@ runtime, review, storage, and presentation contracts.
 
 ## Release Scope
 
-The first release is focused on the C SDK and Lua 5.5 facade for Responses API
+The current release line is focused on the C SDK and Lua 5.5 facade for Responses API
 agents: Responses, Conversations, HTTP/SSE streaming, Responses WebSocket,
 ChatGPT subscription auth, agent/session DX, local tools, MCP tool serving and
 client connectivity, examples, LuaRock packaging, and release packaging.
 
-Realtime WebSocket is intentionally not part of the first release. OpenAI's
+Realtime WebSocket is intentionally not part of the current release line. OpenAI's
 Realtime WebSocket API is a separate low-latency text/audio surface from
 Responses WebSocket, and it is tracked separately in [ROADMAP.md](ROADMAP.md).
 
 ## Release Readiness
 
-cai is in first-release hardening. The public C and Lua API surfaces are meant
-to be close to initial release shape, but may still change before the first
-published tag when verification or DX finds a better interface.
+cai is pre-1.0 and continues to harden its public C and Lua API surfaces.
+Compatibility-sensitive changes are made deliberately and verified through the
+release SDK, Lua, and downstream-consumer gates.
 
 The verification tiers are split intentionally:
 
