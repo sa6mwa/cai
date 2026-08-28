@@ -1329,6 +1329,7 @@ if(CAI_BUILD_TESTS)
     agent_runtime_goal_checkpoint_watermark
     agent_runtime_goal_create_status_allocation_failure
     agent_runtime_goal_budget
+    agent_runtime_goal_usage_limit
     agent_local_session_store
     agent_local_session_store_scope_parent_sync
     agent_local_session_store_root_parent_sync

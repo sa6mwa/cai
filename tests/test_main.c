@@ -27565,6 +27565,160 @@ static void test_agent_runtime_goal_budget(test_state *state) {
   }
 }
 
+static void test_agent_runtime_goal_usage_limit(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  char workspace[] = "/tmp/cai-runtime-goal-usage-limit-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  runtime_event_state events;
+  cai_usage_limits limits;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  cai_agent_goal_snapshot goal;
+  struct pollfd poll_fd;
+  cai_error error;
+  int i;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "runtime_goal_usage_limit_workspace", "mkdtemp failed");
+    return;
+  }
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "runtime_goal_usage_limit_mock", "pipe failed");
+    rmdir(workspace);
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "runtime_goal_usage_limit_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    rmdir(workspace);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "runtime_goal_usage_limit_mock",
+              "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    rmdir(workspace);
+    return;
+  }
+
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  memset(&goal, 0, sizeof(goal));
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json = "{\"version\":1,\"model\":\"gpt-5-nano\","
+                                "\"goal_objective\":\"capped test goal\","
+                                "\"goal_status\":\"active\",\"history\":[]}";
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  cai_usage_limits_init(&client_config.usage_limits);
+  client_config.usage_limits.max_total_tokens = 1LL;
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  expect_int(state, "runtime_goal_usage_limit_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = workspace;
+  runtime_config.model = CAI_MODEL_GPT_5_NANO;
+  runtime_config.session_store = &store;
+  runtime_config.resume_latest = 1;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_goal_usage_limit_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    poll_fd.fd = -1;
+    poll_fd.events = POLLIN;
+    poll_fd.revents = 0;
+    expect_int(state, "runtime_goal_usage_limit_wakeup_fd",
+               cai_agent_runtime_wakeup_fd(runtime, &poll_fd.fd, &error),
+               CAI_OK);
+    expect_int(
+        state, "runtime_goal_usage_limit_submit",
+        cai_agent_runtime_submit(runtime, "usage-limited goal turn", &error),
+        CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 100 && events.failed_count == 0; i++) {
+      (void)poll(&poll_fd, 1U, 100);
+      expect_int(state, "runtime_goal_usage_limit_pump",
+                 cai_agent_runtime_pump(runtime, 0L, &error), CAI_OK);
+      expect_int(state, "runtime_goal_usage_limit_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_goal_usage_limit_failed_state", run_state,
+               CAI_AGENT_FAILED);
+    expect_str(state, "runtime_goal_usage_limit_failure",
+               events.failure_message,
+               "configured usage or spend limit exceeded");
+    expect_substr(state, "runtime_goal_usage_limit_checkpoint",
+                  store_state.saved_checkpoint,
+                  "\"goal_status\":\"usage_limited\"");
+    expect_int(state, "runtime_goal_usage_limit_snapshot",
+               cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    expect_str(state, "runtime_goal_usage_limit_snapshot_status", goal.status,
+               "usage_limited");
+
+    cai_usage_limits_init(&limits);
+    limits.max_total_tokens = 100LL;
+    expect_int(state, "runtime_goal_usage_limit_raise",
+               cai_client_set_usage_limits(client, &limits, &error), CAI_OK);
+    expect_int(state, "runtime_goal_usage_limit_resume",
+               cai_agent_runtime_resume_goal(runtime, &error), CAI_OK);
+    for (i = 0; i < 100; i++) {
+      (void)poll(&poll_fd, 1U, 100);
+      expect_int(state, "runtime_goal_usage_limit_resume_pump",
+                 cai_agent_runtime_pump(runtime, 0L, &error), CAI_OK);
+      expect_int(state, "runtime_goal_usage_limit_resume_snapshot",
+                 cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+      if (goal.status != NULL && strcmp(goal.status, "active") == 0) {
+        break;
+      }
+    }
+    expect_str(state, "runtime_goal_usage_limit_resumed_status", goal.status,
+               "active");
+    cai_agent_runtime_close(runtime);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+  rmdir(workspace);
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "runtime_goal_usage_limit_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "runtime_goal_usage_limit_mock", "mock child failed");
+  }
+}
+
 static void test_agent_local_session_store(test_state *state) {
   char template_directory[] = "/tmp/cai-session-store-XXXXXX";
   char session_id[CAI_AGENT_SESSION_ID_MAX];
@@ -41254,6 +41408,7 @@ static const test_entry test_entries[] = {
     {"agent_runtime_goal_create_status_allocation_failure",
      test_agent_runtime_goal_create_status_allocation_failure},
     {"agent_runtime_goal_budget", test_agent_runtime_goal_budget},
+    {"agent_runtime_goal_usage_limit", test_agent_runtime_goal_usage_limit},
     {"agent_local_session_store", test_agent_local_session_store},
     {"agent_local_session_store_scope_parent_sync",
      test_agent_local_session_store_scope_parent_sync},

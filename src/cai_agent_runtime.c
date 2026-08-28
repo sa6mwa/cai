@@ -2477,6 +2477,41 @@ static int cai_runtime_goal_replace_status(cai_session *session,
   return CAI_OK;
 }
 
+/* A session/client usage cap is independent from a goal token budget.  Keep
+ * the normal CAI_ERR_LIMIT result visible to the host, but record the goal's
+ * recoverable terminal state before that result is reported. */
+static int cai_runtime_record_usage_limited_goal(cai_agent_runtime *runtime,
+                                                 int *out_recorded,
+                                                 cai_error *error) {
+  cai_session_impl *session;
+  cai_client_impl *client;
+  long long now;
+  int rc;
+
+  if (out_recorded != NULL) {
+    *out_recorded = 0;
+  }
+  session = CAI_SESSION_IMPL(runtime->session);
+  client = CAI_SESSION_CLIENT_IMPL(runtime->session);
+  if (session->goal_status == NULL ||
+      strcmp(session->goal_status, "active") != 0 ||
+      (!session->usage.limit_exceeded && !client->usage.limit_exceeded)) {
+    return CAI_OK;
+  }
+  rc =
+      cai_runtime_goal_replace_status(runtime->session, "usage_limited", error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  now = (long long)time(NULL);
+  session->goal_updated_at = now;
+  cai_session_goal_stop_elapsed(runtime->session, now);
+  if (out_recorded != NULL) {
+    *out_recorded = 1;
+  }
+  return CAI_OK;
+}
+
 /* Called only by the worker, or during open before the worker starts.  The
  * runtime lock publishes a fully copied projection for owner-thread polling;
  * callers of get_goal never read the concurrently mutable session object. */
@@ -2645,6 +2680,7 @@ cai_runtime_apply_goal_control(cai_agent_runtime *runtime,
   } else if (control->kind == CAI_RUNTIME_GOAL_RESUME) {
     if (strcmp(goal->goal_status, "paused") != 0 &&
         strcmp(goal->goal_status, "budget_limited") != 0 &&
+        strcmp(goal->goal_status, "usage_limited") != 0 &&
         strcmp(goal->goal_status, "blocked") != 0) {
       return cai_set_error(error, CAI_ERR_INVALID, "goal is not resumable");
     }
@@ -4154,6 +4190,23 @@ static void *cai_runtime_worker(void *context) {
       cai_error_cleanup(&error);
       cai_error_init(&error);
       rc = cai_runtime_checkpoint(runtime, 1, &error);
+    } else if (rc == CAI_ERR_LIMIT) {
+      int usage_limited_goal = 0;
+      int persist_rc;
+
+      /* Preserve the limit error for the host while synchronously making a
+       * goal affected by a session/client cap resumable from its checkpoint. */
+      persist_rc = cai_runtime_record_usage_limited_goal(
+          runtime, &usage_limited_goal, &error);
+      if (persist_rc == CAI_OK && usage_limited_goal) {
+        persist_rc = cai_runtime_refresh_goal_projection(runtime, &error);
+      }
+      if (persist_rc == CAI_OK && usage_limited_goal) {
+        persist_rc = cai_runtime_checkpoint(runtime, 1, &error);
+      }
+      if (persist_rc != CAI_OK) {
+        rc = persist_rc;
+      }
     }
     if (rc == CAI_OK) {
       rc = cai_runtime_account_goal(runtime, &budget_limited, &error);

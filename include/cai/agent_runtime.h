@@ -675,7 +675,13 @@ int cai_agent_runtime_get_goal(cai_agent_runtime *runtime,
 int cai_agent_runtime_create_goal(cai_agent_runtime *runtime,
                                   const cai_agent_goal_request *request,
                                   cai_error *error);
+/** Pause an active durable goal. */
 int cai_agent_runtime_pause_goal(cai_agent_runtime *runtime, cai_error *error);
+/**
+ * Resume a paused, blocked, budget-limited, or usage-limited durable goal.
+ * Raise or clear the applicable usage limit before resuming a usage-limited
+ * goal, otherwise its next model request returns CAI_ERR_LIMIT again.
+ */
 int cai_agent_runtime_resume_goal(cai_agent_runtime *runtime, cai_error *error);
 int cai_agent_runtime_set_goal_objective(cai_agent_runtime *runtime,
                                          const char *objective,
