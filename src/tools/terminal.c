@@ -165,9 +165,7 @@ static int cai_terminal_linux_close_inherited_fds_proc(void) {
  * inheritable by the embedding process. This executes only after fork, so it
  * uses direct descriptor syscalls only. */
 static void cai_terminal_close_inherited_fds(int fd_limit) {
-#if !defined(__APPLE__) && !defined(__FreeBSD__)
   int fd;
-#endif
 #if defined(__linux__) && defined(SYS_close_range)
   if (syscall(SYS_close_range, 3U, UINT_MAX, 0U) == 0) {
     return;
@@ -178,15 +176,13 @@ static void cai_terminal_close_inherited_fds(int fd_limit) {
     return;
   }
 #endif
-#if defined(__APPLE__) || defined(__FreeBSD__)
-  closefrom(3);
-#else
-  /* Older Linux kernels lack close_range(). An open descriptor can never be
-   * trusted merely because it predates terminal setup. */
+  /* Darwin SDK availability for closefrom() is not uniform, and the child
+   * must support the configured deployment target rather than whichever BSD
+   * extension happens to exist on the build host. An open descriptor can
+   * never be trusted merely because it predates terminal setup. */
   for (fd = 3; fd < fd_limit; fd++) {
     (void)close(fd);
   }
-#endif
 }
 
 #if defined(CAI_TESTING)

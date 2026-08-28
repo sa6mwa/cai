@@ -26183,8 +26183,7 @@ static void test_agent_runtime_review_subagent(test_state *state) {
       "\"output_tokens\":2,\"total_tokens\":5}}}\n\n";
   static const char *parent_required[] = {
       "review this change", "\"name\":\"run_review\"", "`run_review`",
-      "for a user-requested code-repository review, call it "
-      "immediately",
+      "for a user-requested code-repository review, call it immediately",
       "Do not inspect the workspace or Git first"};
   static const char *parent_forbidden[] = {"\"name\":\"run_subagent\"",
                                            "\"model\":{\"type\":"};
