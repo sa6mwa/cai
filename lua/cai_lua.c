@@ -3416,34 +3416,19 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   lua_getfield(L, 2, "mcp_tool_config");
   cai_lua_mcp_registration_config(L, -1, &mcp_tool_config);
   lua_pop(L, 1);
+  lua_getfield(L, 2, "event_callback");
+  if (!lua_isnil(L, -1)) {
+    luaL_checktype(L, -1, LUA_TFUNCTION);
+  }
+  lua_pop(L, 1);
   mcp_clients = NULL;
   mcp_client_count = 0U;
   mcp_clients_ref = LUA_NOREF;
-  runtime = (cai_lua_agent_runtime *)lua_newuserdata(L, sizeof(*runtime));
-  memset(runtime, 0, sizeof(*runtime));
-  runtime->L = L;
-  runtime->parent_client = client;
-  runtime->parent_ref = cai_lua_ref_parent(L, 1);
-  runtime->callback_ref = LUA_NOREF;
-  runtime->session_store_ref = LUA_NOREF;
-  runtime->instruction_store_ref = LUA_NOREF;
-  runtime->skill_provider_ref = LUA_NOREF;
-  runtime->subagent_prepare_backends_ref = LUA_NOREF;
-  runtime->mcp_clients_ref = LUA_NOREF;
-  runtime->review_parent_ref = LUA_NOREF;
-  runtime->review_children_ref = LUA_NOREF;
   memset(&logger_ref, 0, sizeof(logger_ref));
   has_logger_ref = 0;
   logger = NULL;
   native_session_store = NULL;
   native_skill_store = NULL;
-  lua_getfield(L, 2, "event_callback");
-  if (!lua_isnil(L, -1)) {
-    luaL_checktype(L, -1, LUA_TFUNCTION);
-    runtime->callback_ref = luaL_ref(L, LUA_REGISTRYINDEX);
-  } else {
-    lua_pop(L, 1);
-  }
   cai_agent_runtime_config_init(&config);
   cai_skill_config_init(&skills);
   memset(&subagent_config, 0, sizeof(subagent_config));
@@ -3495,14 +3480,6 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
     if (native_skill_store == NULL || native_skill_store->adapter == NULL ||
         native_skill_store->adapter->kind != CAI_LUA_NATIVE_STORE_SKILLS) {
       lua_pop(L, 1);
-      if (runtime->callback_ref != LUA_NOREF) {
-        luaL_unref(L, LUA_REGISTRYINDEX, runtime->callback_ref);
-        runtime->callback_ref = LUA_NOREF;
-      }
-      if (runtime->parent_ref != LUA_NOREF) {
-        luaL_unref(L, LUA_REGISTRYINDEX, runtime->parent_ref);
-        runtime->parent_ref = LUA_NOREF;
-      }
       return luaL_error(L, "skill_provider must be a native skills store");
     }
     skills.skill_provider = &native_skill_store->adapter->callbacks.skills;
@@ -3522,14 +3499,6 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
     if (instruction_store == NULL || instruction_store->adapter == NULL ||
         instruction_store->adapter->kind != CAI_LUA_NATIVE_STORE_BLOB) {
       lua_pop(L, 1);
-      if (runtime->callback_ref != LUA_NOREF) {
-        luaL_unref(L, LUA_REGISTRYINDEX, runtime->callback_ref);
-        runtime->callback_ref = LUA_NOREF;
-      }
-      if (runtime->parent_ref != LUA_NOREF) {
-        luaL_unref(L, LUA_REGISTRYINDEX, runtime->parent_ref);
-        runtime->parent_ref = LUA_NOREF;
-      }
       return luaL_error(L,
                         "global_instruction_store must be a native blob store");
     }
@@ -3569,12 +3538,6 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
         native_session_store->adapter->kind !=
             CAI_LUA_NATIVE_STORE_AGENT_SESSION) {
       lua_pop(L, 1);
-      if (runtime->callback_ref != LUA_NOREF) {
-        luaL_unref(L, LUA_REGISTRYINDEX, runtime->callback_ref);
-      }
-      if (runtime->parent_ref != LUA_NOREF) {
-        luaL_unref(L, LUA_REGISTRYINDEX, runtime->parent_ref);
-      }
       return luaL_error(L,
                         "session_store must be a native agent_session store");
     }
@@ -3589,46 +3552,16 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   config.turn_queue_limit =
       cai_lua_opt_size_field(L, 2, "turn_queue_limit", 0U);
   config.logger_disabled = cai_lua_opt_bool_field(L, 2, "logger_disabled", 0);
-  if (runtime->callback_ref != LUA_NOREF) {
-    config.event_callback = cai_lua_agent_runtime_event;
-    config.event_context = runtime;
-    config.review_event_callback = cai_lua_agent_runtime_review_event;
-    config.review_event_context = &runtime->review_event_receiver;
-  }
   if (config.workspace_directory == NULL ||
       config.workspace_directory[0] == '\0') {
-    if (runtime->callback_ref != LUA_NOREF) {
-      luaL_unref(L, LUA_REGISTRYINDEX, runtime->callback_ref);
-    }
-    if (runtime->parent_ref != LUA_NOREF) {
-      luaL_unref(L, LUA_REGISTRYINDEX, runtime->parent_ref);
-    }
     return luaL_error(L, "%s requires workspace_directory",
                       custom_preset ? "new_agent_runtime"
                                     : (review_mode ? "new_smith_review_runtime"
                                                    : "new_smith_runtime"));
   }
-  (void)cai_lua_runtime_mcp_clients_prepare(
-      L, 2, &mcp_clients, &mcp_client_count, &mcp_clients_ref);
-  config.mcp_clients = mcp_clients;
-  config.mcp_client_count = mcp_client_count;
-  config.mcp_tool_config = mcp_client_count > 0U ? &mcp_tool_config : NULL;
   subagent_status = cai_lua_subagent_config_from_table(L, 2, &subagent_config);
   if (subagent_status != 1) {
-    free(mcp_clients);
     cai_lua_subagent_config_cleanup(&subagent_config);
-    if (mcp_clients_ref != LUA_NOREF) {
-      luaL_unref(L, LUA_REGISTRYINDEX, mcp_clients_ref);
-      mcp_clients_ref = LUA_NOREF;
-    }
-    if (runtime->callback_ref != LUA_NOREF) {
-      luaL_unref(L, LUA_REGISTRYINDEX, runtime->callback_ref);
-      runtime->callback_ref = LUA_NOREF;
-    }
-    if (runtime->parent_ref != LUA_NOREF) {
-      luaL_unref(L, LUA_REGISTRYINDEX, runtime->parent_ref);
-      runtime->parent_ref = LUA_NOREF;
-    }
     return luaL_error(L,
                       "%s subagents and override allowlists must be bounded "
                       "string arrays with preset tables",
@@ -3645,6 +3578,37 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
       subagent_config.review_summary_count;
   config.subagents = subagent_config.profiles;
   config.subagent_count = subagent_config.count;
+  runtime = (cai_lua_agent_runtime *)lua_newuserdata(L, sizeof(*runtime));
+  memset(runtime, 0, sizeof(*runtime));
+  runtime->L = L;
+  runtime->parent_ref = LUA_NOREF;
+  runtime->callback_ref = LUA_NOREF;
+  runtime->session_store_ref = LUA_NOREF;
+  runtime->instruction_store_ref = LUA_NOREF;
+  runtime->skill_provider_ref = LUA_NOREF;
+  runtime->subagent_prepare_backends_ref = LUA_NOREF;
+  runtime->mcp_clients_ref = LUA_NOREF;
+  runtime->review_parent_ref = LUA_NOREF;
+  runtime->review_children_ref = LUA_NOREF;
+  luaL_getmetatable(L, CAI_LUA_AGENT_RUNTIME);
+  lua_setmetatable(L, -2);
+  (void)cai_lua_runtime_mcp_clients_prepare(
+      L, 2, &mcp_clients, &mcp_client_count, &mcp_clients_ref);
+  runtime->mcp_clients_ref = mcp_clients_ref;
+  config.mcp_clients = mcp_clients;
+  config.mcp_client_count = mcp_client_count;
+  config.mcp_tool_config = mcp_client_count > 0U ? &mcp_tool_config : NULL;
+  runtime->parent_ref = cai_lua_ref_parent(L, 1);
+  lua_getfield(L, 2, "event_callback");
+  if (!lua_isnil(L, -1)) {
+    runtime->callback_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    config.event_callback = cai_lua_agent_runtime_event;
+    config.event_context = runtime;
+    config.review_event_callback = cai_lua_agent_runtime_review_event;
+    config.review_event_context = &runtime->review_event_receiver;
+  } else {
+    lua_pop(L, 1);
+  }
   cai_error_init(&error);
   rc =
       cai_lua_logger_field(L, 2, &logger_ref, &has_logger_ref, &logger, &error);
@@ -3693,6 +3657,7 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
     runtime->parent_ref = LUA_NOREF;
     if (mcp_clients_ref != LUA_NOREF) {
       luaL_unref(L, LUA_REGISTRYINDEX, mcp_clients_ref);
+      runtime->mcp_clients_ref = LUA_NOREF;
     }
     lua_pop(L, 1);
     return cai_lua_fail(L, rc, &error);
@@ -3701,6 +3666,7 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   runtime->has_logger_ref = has_logger_ref;
   memset(&logger_ref, 0, sizeof(logger_ref));
   has_logger_ref = 0;
+  runtime->parent_client = client;
   client->child_runtimes++;
   if (config.global_instruction_store != NULL) {
     lua_getfield(L, 2, "global_instruction_store");
@@ -3735,8 +3701,6 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
     }
     lua_pop(L, 1);
   }
-  luaL_getmetatable(L, CAI_LUA_AGENT_RUNTIME);
-  lua_setmetatable(L, -2);
   cai_lua_error_cleanup(&error);
   return 1;
 }

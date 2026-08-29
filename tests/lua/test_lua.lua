@@ -1065,6 +1065,34 @@ do
     assert(weak.callback == nil,
       "rejected Lua runtime must release callback registry references")
   end
+  do
+    local weak = setmetatable({}, { __mode = "v" })
+
+    do
+      local client = assert_ok(cai.open({
+        api_key = "test-key",
+        base_url = "http://127.0.0.1:1/v1",
+        timeout_ms = 1,
+      }))
+      local sentinel = {}
+      weak.client = client
+      weak.callback = sentinel
+      assert_throws(function()
+        client:new_smith_runtime({
+          workspace_directory = {},
+          event_callback = function()
+            return sentinel
+          end,
+        })
+      end, "Lua invalid runtime options must fail before retaining ownership")
+    end
+    collectgarbage("collect")
+    collectgarbage("collect")
+    assert(weak.client == nil,
+      "invalid runtime options must not retain the parent client")
+    assert(weak.callback == nil,
+      "invalid runtime options must not retain the event callback")
+  end
   native_store_test.reset_sessions()
   local prepare_backend = native_store_test.new_subagent_prepare_backend()
   local custom_runtime = assert_ok(dummy_client:new_agent_runtime({
