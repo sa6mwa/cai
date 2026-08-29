@@ -112,6 +112,14 @@ typedef struct read_state {
   int closed;
 } read_state;
 
+typedef struct opaque_skill_provider_state {
+  const char *skill_id;
+  read_state reader;
+  int list_calls;
+  int read_calls;
+  int saw_exact_id;
+} opaque_skill_provider_state;
+
 typedef struct blob_store_test_state {
   read_state reader;
   char loaded_key[64];
@@ -1862,6 +1870,51 @@ static void test_read_close(void *context) {
 
   state = (read_state *)context;
   state->closed = 1;
+}
+
+static int test_opaque_skill_provider_list(void *context,
+                                           cai_skill_provider_visit_fn visit,
+                                           void *visit_context,
+                                           cai_error *error) {
+  opaque_skill_provider_state *state;
+
+  state = (opaque_skill_provider_state *)context;
+  if (state == NULL || visit == NULL || state->skill_id == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "opaque skill provider list state is required");
+  }
+  state->list_calls++;
+  return visit(visit_context, state->skill_id, error);
+}
+
+static int test_opaque_skill_provider_read(void *context, const char *skill_id,
+                                           const char *resource,
+                                           cai_source **out, cai_error *error) {
+  opaque_skill_provider_state *state;
+  cai_source_callbacks callbacks;
+
+  state = (opaque_skill_provider_state *)context;
+  if (state == NULL || skill_id == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "opaque skill provider read state is required");
+  }
+  state->read_calls++;
+  state->saw_exact_id = strcmp(skill_id, state->skill_id) == 0;
+  if (resource != NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "unexpected opaque skill resource");
+  }
+  state->reader.text =
+      "---\nname: opaque-provider\ndescription: Read an opaque skill.\n---\n"
+      "Follow the opaque provider instructions.\n";
+  state->reader.offset = 0U;
+  state->reader.closed = 0;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.read = test_read;
+  callbacks.reset = test_reset;
+  callbacks.close = test_read_close;
+  callbacks.context = &state->reader;
+  return cai_source_from_callbacks(&callbacks, out, error);
 }
 
 static int mock_write_all(int fd, const char *data, size_t length);
@@ -24724,7 +24777,9 @@ static void test_global_skills_catalog(test_state *state) {
   char invalid_path[PATH_MAX];
   char file_path[PATH_MAX];
   cai_skill_config config;
+  cai_skill_provider provider;
   cai_skill_catalog *catalog;
+  opaque_skill_provider_state provider_state;
   char *prompt;
   cai_error error;
 
@@ -24768,6 +24823,37 @@ static void test_global_skills_catalog(test_state *state) {
                   "task clearly matches its description");
   } else {
     test_fail(state, "global_skills_prompt", "valid skill did not render");
+  }
+  cai_free_mem(NULL, prompt);
+  cai_skills_catalog_cleanup(catalog);
+  catalog = NULL;
+  prompt = NULL;
+  memset(&provider, 0, sizeof(provider));
+  memset(&provider_state, 0, sizeof(provider_state));
+  provider_state.skill_id =
+      "/opaque skill:id/segment.with+provider-specific-syntax";
+  provider.list = test_opaque_skill_provider_list;
+  provider.read = test_opaque_skill_provider_read;
+  provider.context = &provider_state;
+  cai_skill_config_init(&config);
+  config.skill_provider = &provider;
+  expect_int(state, "global_skills_opaque_prepare",
+             cai_skills_prepare(&config, NULL, &catalog, &prompt, &error),
+             CAI_OK);
+  expect_int(state, "global_skills_opaque_list_calls",
+             provider_state.list_calls, 1L);
+  expect_int(state, "global_skills_opaque_read_calls",
+             provider_state.read_calls, 1L);
+  expect_int(state, "global_skills_opaque_exact_id",
+             provider_state.saw_exact_id, 1L);
+  expect_int(state, "global_skills_opaque_has_entry",
+             cai_skills_catalog_has_entries(catalog), 1L);
+  if (prompt != NULL) {
+    expect_substr(state, "global_skills_opaque_prompt", prompt,
+                  "- opaque-provider: Read an opaque skill.");
+  } else {
+    test_fail(state, "global_skills_opaque_prompt",
+              "opaque provider skill did not render");
   }
   cai_free_mem(NULL, prompt);
   cai_skills_catalog_cleanup(catalog);
@@ -28421,6 +28507,106 @@ static void test_agent_local_session_store(test_state *state) {
   (void)snprintf(file_path, sizeof(file_path), "%s/%s", template_directory,
                  opaque_scope_path);
   rmdir(file_path);
+  rmdir(template_directory);
+  cai_error_cleanup(&error);
+}
+
+static void
+test_agent_runtime_explicit_local_store_opaque_id(test_state *state) {
+  char template_directory[] = "/tmp/cai-explicit-session-store-XXXXXX";
+  char scope_hash[65];
+  char scope_path[PATH_MAX];
+  char journal_path[PATH_MAX];
+  static const char hex[] = "0123456789abcdef";
+  static const char scope[] = "explicit-local-opaque-id";
+  unsigned char digest[SHA256_DIGEST_LENGTH];
+  cai_agent_local_session_store_config store_config;
+  cai_agent_session_store store;
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_source *loaded;
+  char loaded_session_id[CAI_AGENT_SESSION_ID_MAX];
+  unsigned long long loaded_sequence;
+  cai_error error;
+  size_t i;
+
+  cai_error_init(&error);
+  memset(&store, 0, sizeof(store));
+  client = NULL;
+  runtime = NULL;
+  loaded = NULL;
+  loaded_sequence = 0U;
+  if (mkdtemp(template_directory) == NULL) {
+    test_fail(state, "runtime_explicit_local_opaque_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_local_session_store_config_init(&store_config);
+  store_config.root_directory = template_directory;
+  expect_int(state, "runtime_explicit_local_opaque_store_open",
+             cai_agent_local_session_store_open(&store_config, &store, &error),
+             CAI_OK);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.timeout_ms = 100L;
+  client_config.http_2_disabled = 1;
+  expect_int(state, "runtime_explicit_local_opaque_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.session_store = &store;
+  runtime_config.session_scope = scope;
+  runtime_config.session_id = "release.1";
+  expect_int(state, "runtime_explicit_local_opaque_runtime_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_str(state, "runtime_explicit_local_opaque_runtime_id",
+               cai_agent_runtime_session_id(runtime), "release.1");
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  runtime_config.session_id = NULL;
+  runtime_config.resume_latest = 1;
+  expect_int(state, "runtime_explicit_local_opaque_resume_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_str(state, "runtime_explicit_local_opaque_resumed_id",
+               cai_agent_runtime_session_id(runtime), "release.1");
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  memset(loaded_session_id, 0, sizeof(loaded_session_id));
+  expect_int(state, "runtime_explicit_local_opaque_load",
+             store.load_latest(store.context, scope, loaded_session_id,
+                               sizeof(loaded_session_id), &loaded,
+                               &loaded_sequence, &error),
+             CAI_OK);
+  expect_str(state, "runtime_explicit_local_opaque_loaded_id",
+             loaded_session_id, "release.1");
+  expect_int(state, "runtime_explicit_local_opaque_loaded_source",
+             loaded != NULL, 1L);
+  cai_source_close(loaded);
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_agent_local_session_store_close(&store);
+  (void)SHA256((const unsigned char *)scope, strlen(scope), digest);
+  for (i = 0U; i < sizeof(digest); i++) {
+    scope_hash[i * 2U] = hex[digest[i] >> 4U];
+    scope_hash[i * 2U + 1U] = hex[digest[i] & 0x0fU];
+  }
+  scope_hash[64] = '\0';
+  (void)snprintf(scope_path, sizeof(scope_path), "%s/%s", template_directory,
+                 scope_hash);
+  (void)snprintf(journal_path, sizeof(journal_path), "%s/%s", scope_path,
+                 "~cmVsZWFzZS4x.jsonl");
+  unlink(journal_path);
+  rmdir(scope_path);
   rmdir(template_directory);
   cai_error_cleanup(&error);
 }
@@ -41572,6 +41758,8 @@ static const test_entry test_entries[] = {
     {"agent_runtime_goal_budget", test_agent_runtime_goal_budget},
     {"agent_runtime_goal_usage_limit", test_agent_runtime_goal_usage_limit},
     {"agent_local_session_store", test_agent_local_session_store},
+    {"agent_runtime_explicit_local_store_opaque_id",
+     test_agent_runtime_explicit_local_store_opaque_id},
     {"agent_local_session_store_scope_parent_sync",
      test_agent_local_session_store_scope_parent_sync},
     {"agent_local_session_store_root_parent_sync",

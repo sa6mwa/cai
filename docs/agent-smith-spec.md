@@ -1260,7 +1260,10 @@ or CAS remain backend policy.
 
 The local store root is `${XDG_STATE_HOME:-$HOME/.local/state}/cai/sessions`.
 Each session is one append-only JSONL file under
-`sessions/<scope-sha256>/<session-xid>.jsonl`. Generated session IDs are
+`sessions/<scope-sha256>/<session-file-key>.jsonl`. Filename-safe session IDs
+use their existing direct filename; other opaque IDs use a canonical `~`-
+prefixed base64url encoding that is reversed by `load_latest`. Generated
+session IDs are
 canonical [XID](https://github.com/rs/xid)-compatible 20-character,
 lowercase-base32 values (`[0-9a-v]{20}`): a sortable timestamp, machine
 component, process ID, and randomized-start counter. They are opaque storage

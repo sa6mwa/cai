@@ -130,6 +130,16 @@ static int cai_skill_id_valid(const char *id) {
   return cai_skill_relative_path_valid(id);
 }
 
+static int cai_skill_opaque_id_valid(const char *id) {
+  size_t length;
+
+  if (id == NULL || id[0] == '\0') {
+    return 0;
+  }
+  length = strnlen(id, CAI_SKILL_ID_MAX_BYTES + 1U);
+  return length <= CAI_SKILL_ID_MAX_BYTES;
+}
+
 static void cai_skill_local_cleanup(void *context) {
   cai_local_skill_provider *local = (cai_local_skill_provider *)context;
 
@@ -427,7 +437,8 @@ static int cai_skill_catalog_visit(void *context, const char *skill_id,
   int rc;
 
   (void)error;
-  if (!cai_skill_id_valid(skill_id) ||
+  if (!cai_skill_opaque_id_valid(skill_id) ||
+      (catalog->local != NULL && !cai_skill_id_valid(skill_id)) ||
       catalog->count >= CAI_SKILLS_MAX_PACKAGES) {
     cai_skills_warn(catalog, "skipping invalid or excess configured skill");
     return CAI_OK;

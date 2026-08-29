@@ -638,7 +638,7 @@ static int cai_runtime_refresh_goal_projection(cai_agent_runtime *runtime,
 static int cai_runtime_register_subagent_tool(cai_agent_runtime *runtime,
                                               cai_error *error);
 
-static int cai_runtime_local_session_id_valid(const char *session_id) {
+static int cai_runtime_export_session_id_valid(const char *session_id) {
   const unsigned char *cursor;
 
   if (session_id == NULL || session_id[0] == '\0' ||
@@ -5280,9 +5280,13 @@ int cai_agent_runtime_open(cai_client *client,
         error, CAI_ERR_INVALID,
         "agent runtime client and workspace directory are required");
   }
-  if (config->session_id != NULL && config->session_id[0] == '\0') {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "agent session identifier must not be empty");
+  if (config->session_id != NULL &&
+      (config->session_id[0] == '\0' ||
+       strnlen(config->session_id, CAI_AGENT_SESSION_ID_MAX) >=
+           CAI_AGENT_SESSION_ID_MAX)) {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "agent session identifier must contain 1 to 128 bytes");
   }
   cai_agent_preset_from_smith(&builtin_preset);
   preset = config->preset_descriptor != NULL ? config->preset_descriptor
@@ -5567,15 +5571,8 @@ int cai_agent_runtime_open(cai_client *client,
     }
     if (rc == CAI_OK && runtime->session_id == NULL) {
       if (config->session_id != NULL) {
-        if (runtime->owns_local_store &&
-            !cai_runtime_local_session_id_valid(config->session_id)) {
-          rc = cai_set_error(
-              error, CAI_ERR_INVALID,
-              "local session identifiers use only letters, digits, - and _");
-        } else {
-          rc = cai_runtime_copy_string(config->session_id, &runtime->session_id,
-                                       error);
-        }
+        rc = cai_runtime_copy_string(config->session_id, &runtime->session_id,
+                                     error);
       } else {
         rc = cai_runtime_generate_session_id(session_id, error);
         if (rc == CAI_OK) {
@@ -8804,7 +8801,7 @@ int cai_agent_runtime_export_markdown_file(cai_agent_runtime *runtime,
                runtime->session_id == NULL) {
       rc = cai_set_error(error, CAI_ERR_INVALID,
                          "agent runtime has no export workspace or session id");
-    } else if (!cai_runtime_local_session_id_valid(runtime->session_id)) {
+    } else if (!cai_runtime_export_session_id_valid(runtime->session_id)) {
       rc = cai_set_error(error, CAI_ERR_INVALID,
                          "agent runtime session id is unsafe for export path");
     } else {

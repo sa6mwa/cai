@@ -1332,6 +1332,7 @@ if(CAI_BUILD_TESTS)
     agent_runtime_goal_budget
     agent_runtime_goal_usage_limit
     agent_local_session_store
+    agent_runtime_explicit_local_store_opaque_id
     agent_local_session_store_scope_parent_sync
     agent_local_session_store_root_parent_sync
     agent_local_session_store_rejects_long_default_path

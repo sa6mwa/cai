@@ -19,6 +19,9 @@
 #define PATH_MAX 4096
 #endif
 
+#define CAI_STORE_SESSION_FILENAME_MAX                                         \
+  (1U + (((CAI_AGENT_SESSION_ID_MAX - 1U) + 2U) / 3U) * 4U + 6U + 1U)
+
 typedef struct cai_local_session_store {
   char *root_directory;
 } cai_local_session_store;
@@ -249,16 +252,21 @@ static int cai_store_scope_hash(const char *scope, char output[65],
 }
 
 static int cai_store_session_id_valid(const char *session_id) {
-  const unsigned char *cursor;
   size_t length;
 
   if (session_id == NULL || session_id[0] == '\0') {
     return 0;
   }
-  length = strlen(session_id);
-  if (length > 128U) {
+  length = strnlen(session_id, CAI_AGENT_SESSION_ID_MAX);
+  if (length >= CAI_AGENT_SESSION_ID_MAX) {
     return 0;
   }
+  return 1;
+}
+
+static int cai_store_session_id_filename_safe(const char *session_id) {
+  const unsigned char *cursor;
+
   for (cursor = (const unsigned char *)session_id; *cursor != '\0'; cursor++) {
     if (!((*cursor >= 'a' && *cursor <= 'z') ||
           (*cursor >= 'A' && *cursor <= 'Z') ||
@@ -270,10 +278,89 @@ static int cai_store_session_id_valid(const char *session_id) {
   return 1;
 }
 
-static int cai_store_session_filename_valid(const char *filename) {
-  const unsigned char *cursor;
+static int cai_store_session_filename_from_id(
+    const char *session_id, char filename[CAI_STORE_SESSION_FILENAME_MAX],
+    cai_error *error) {
+  static const char alphabet[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const unsigned char *input;
+  size_t input_length;
+  size_t input_offset;
+  size_t output_offset;
+
+  if (!cai_store_session_id_valid(session_id)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session identifier must contain 1 to 128 bytes");
+  }
+  if (cai_store_session_id_filename_safe(session_id)) {
+    (void)snprintf(filename, CAI_STORE_SESSION_FILENAME_MAX, "%s.jsonl",
+                   session_id);
+    return CAI_OK;
+  }
+  input = (const unsigned char *)session_id;
+  input_length = strlen(session_id);
+  input_offset = 0U;
+  output_offset = 0U;
+  filename[output_offset++] = '~';
+  while (input_offset + 3U <= input_length) {
+    unsigned int value;
+
+    value = ((unsigned int)input[input_offset] << 16U) |
+            ((unsigned int)input[input_offset + 1U] << 8U) |
+            (unsigned int)input[input_offset + 2U];
+    filename[output_offset++] = alphabet[(value >> 18U) & 0x3fU];
+    filename[output_offset++] = alphabet[(value >> 12U) & 0x3fU];
+    filename[output_offset++] = alphabet[(value >> 6U) & 0x3fU];
+    filename[output_offset++] = alphabet[value & 0x3fU];
+    input_offset += 3U;
+  }
+  if (input_offset < input_length) {
+    unsigned int value;
+    size_t remaining;
+
+    remaining = input_length - input_offset;
+    value = (unsigned int)input[input_offset] << 16U;
+    if (remaining == 2U) {
+      value |= (unsigned int)input[input_offset + 1U] << 8U;
+    }
+    filename[output_offset++] = alphabet[(value >> 18U) & 0x3fU];
+    filename[output_offset++] = alphabet[(value >> 12U) & 0x3fU];
+    if (remaining == 2U) {
+      filename[output_offset++] = alphabet[(value >> 6U) & 0x3fU];
+    }
+  }
+  memcpy(filename + output_offset, ".jsonl", 7U);
+  return CAI_OK;
+}
+
+static int cai_store_base64url_value(unsigned char character,
+                                     unsigned int *value) {
+  if (character >= 'A' && character <= 'Z') {
+    *value = (unsigned int)(character - 'A');
+  } else if (character >= 'a' && character <= 'z') {
+    *value = (unsigned int)(character - 'a') + 26U;
+  } else if (character >= '0' && character <= '9') {
+    *value = (unsigned int)(character - '0') + 52U;
+  } else if (character == '-') {
+    *value = 62U;
+  } else if (character == '_') {
+    *value = 63U;
+  } else {
+    return 0;
+  }
+  return 1;
+}
+
+static int
+cai_store_session_filename_decode(const char *filename,
+                                  char session_id[CAI_AGENT_SESSION_ID_MAX]) {
+  char canonical[CAI_STORE_SESSION_FILENAME_MAX];
   size_t length;
-  size_t session_id_length;
+  size_t payload_length;
+  size_t i;
+  size_t output_length;
+  unsigned int accumulator;
+  unsigned int bits;
 
   if (filename == NULL) {
     return 0;
@@ -282,22 +369,52 @@ static int cai_store_session_filename_valid(const char *filename) {
   if (length <= 6U || strcmp(filename + length - 6U, ".jsonl") != 0) {
     return 0;
   }
-  session_id_length = length - 6U;
-  if (session_id_length == 0U || session_id_length > 128U) {
+  payload_length = length - 6U;
+  if (payload_length == 0U) {
     return 0;
   }
-  cursor = (const unsigned char *)filename;
-  while ((size_t)(cursor - (const unsigned char *)filename) <
-         session_id_length) {
-    if (!((*cursor >= 'a' && *cursor <= 'z') ||
-          (*cursor >= 'A' && *cursor <= 'Z') ||
-          (*cursor >= '0' && *cursor <= '9') || *cursor == '-' ||
-          *cursor == '_')) {
+  if (filename[0] != '~') {
+    if (payload_length >= CAI_AGENT_SESSION_ID_MAX) {
       return 0;
     }
-    cursor++;
+    memcpy(session_id, filename, payload_length);
+    session_id[payload_length] = '\0';
+    return cai_store_session_id_filename_safe(session_id);
   }
-  return 1;
+  payload_length--;
+  if (payload_length == 0U || payload_length % 4U == 1U) {
+    return 0;
+  }
+  accumulator = 0U;
+  bits = 0U;
+  output_length = 0U;
+  for (i = 0U; i < payload_length; i++) {
+    unsigned int value;
+
+    if (!cai_store_base64url_value((unsigned char)filename[i + 1U], &value)) {
+      return 0;
+    }
+    accumulator = (accumulator << 6U) | value;
+    bits += 6U;
+    if (bits >= 8U) {
+      unsigned char byte;
+
+      bits -= 8U;
+      byte = (unsigned char)((accumulator >> bits) & 0xffU);
+      if (byte == 0U || output_length + 1U >= CAI_AGENT_SESSION_ID_MAX) {
+        return 0;
+      }
+      session_id[output_length++] = (char)byte;
+      accumulator &= bits == 0U ? 0U : (1U << bits) - 1U;
+    }
+  }
+  session_id[output_length] = '\0';
+  if (!cai_store_session_id_valid(session_id) ||
+      cai_store_session_filename_from_id(session_id, canonical, NULL) !=
+          CAI_OK) {
+    return 0;
+  }
+  return strcmp(filename, canonical) == 0;
 }
 
 static int cai_store_open_scope(cai_local_session_store *store,
@@ -632,7 +749,7 @@ static int cai_local_session_checkpoint(
     unsigned long long applied_event_sequence, cai_error *error) {
   cai_local_session_store *store;
   char hash[65];
-  char filename[160];
+  char filename[CAI_STORE_SESSION_FILENAME_MAX];
   char buffer[8192];
   char record_prefix[128];
   unsigned long long created_at_ns;
@@ -650,12 +767,9 @@ static int cai_local_session_checkpoint(
   scope_fd = -1;
   fd = -1;
   created_at_ns = 0U;
-  rc = cai_store_open_scope(store, scope, &scope_fd, hash, error);
-  if (rc == CAI_OK && snprintf(filename, sizeof(filename), "%s.jsonl",
-                               session_id) >= (int)sizeof(filename)) {
-    rc =
-        cai_set_error(error, CAI_ERR_INVALID, "session identifier is too long");
-  }
+  rc = cai_store_session_filename_from_id(session_id, filename, error);
+  if (rc == CAI_OK)
+    rc = cai_store_open_scope(store, scope, &scope_fd, hash, error);
   if (rc == CAI_OK) {
     fd = openat(scope_fd, filename,
                 O_RDWR | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
@@ -729,7 +843,7 @@ static int cai_local_session_append_event(void *context, const char *scope,
   cai_local_session_store *store;
   cai_buffer_builder builder;
   char hash[65];
-  char filename[160];
+  char filename[CAI_STORE_SESSION_FILENAME_MAX];
   int scope_fd;
   int fd;
   int rc;
@@ -773,12 +887,10 @@ static int cai_local_session_append_event(void *context, const char *scope,
     rc = cai_buffer_append_cstr(&builder, "}\n", error);
   }
   if (rc == CAI_OK) {
-    rc = cai_store_open_scope(store, scope, &scope_fd, hash, error);
+    rc = cai_store_session_filename_from_id(session_id, filename, error);
   }
-  if (rc == CAI_OK && snprintf(filename, sizeof(filename), "%s.jsonl",
-                               session_id) >= (int)sizeof(filename)) {
-    rc =
-        cai_set_error(error, CAI_ERR_INVALID, "session identifier is too long");
+  if (rc == CAI_OK) {
+    rc = cai_store_open_scope(store, scope, &scope_fd, hash, error);
   }
   if (rc == CAI_OK) {
     fd = openat(scope_fd, filename,
@@ -932,7 +1044,7 @@ static int cai_local_session_load_events_after(
   cai_local_session_store *store;
   cai_local_event_replay_context replay;
   char hash[65];
-  char filename[160];
+  char filename[CAI_STORE_SESSION_FILENAME_MAX];
   int scope_fd;
   int fd;
   int rc;
@@ -949,12 +1061,9 @@ static int cai_local_session_load_events_after(
   replay.callback_context = callback_context;
   scope_fd = -1;
   fd = -1;
-  rc = cai_store_open_scope(store, scope, &scope_fd, hash, error);
-  if (rc == CAI_OK && snprintf(filename, sizeof(filename), "%s.jsonl",
-                               session_id) >= (int)sizeof(filename)) {
-    rc =
-        cai_set_error(error, CAI_ERR_INVALID, "session identifier is too long");
-  }
+  rc = cai_store_session_filename_from_id(session_id, filename, error);
+  if (rc == CAI_OK)
+    rc = cai_store_open_scope(store, scope, &scope_fd, hash, error);
   if (rc == CAI_OK) {
     fd = openat(scope_fd, filename, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (fd < 0 && errno == ENOENT) {
@@ -1291,7 +1400,8 @@ static int cai_local_session_load_latest(
   DIR *directory;
   struct dirent *entry;
   unsigned long long candidate_created_at_ns;
-  char candidate[160];
+  char candidate[CAI_STORE_SESSION_FILENAME_MAX];
+  char candidate_session_id[CAI_AGENT_SESSION_ID_MAX];
   int scope_fd;
   int fd;
   int rc;
@@ -1310,6 +1420,7 @@ static int cai_local_session_load_latest(
   store = (cai_local_session_store *)context;
   scope_fd = -1;
   candidate[0] = '\0';
+  candidate_session_id[0] = '\0';
   candidate_created_at_ns = 0U;
   rc = cai_store_open_scope(store, scope, &scope_fd, hash, error);
   if (rc != CAI_OK) {
@@ -1332,9 +1443,10 @@ static int cai_local_session_load_latest(
     int found_checkpoint;
     int has_created_at_ns;
     size_t length;
+    char entry_session_id[CAI_AGENT_SESSION_ID_MAX];
 
     length = strlen(entry->d_name);
-    if (!cai_store_session_filename_valid(entry->d_name) ||
+    if (!cai_store_session_filename_decode(entry->d_name, entry_session_id) ||
         fstatat(scope_fd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0 ||
         !S_ISREG(st.st_mode) || st.st_nlink != 1 || st.st_uid != geteuid() ||
         (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
@@ -1375,9 +1487,12 @@ static int cai_local_session_load_latest(
     checkpoint_order =
         cai_store_checkpoint_order(created_at_ns, has_created_at_ns, &st);
     if (candidate[0] == '\0' ||
-        cai_store_candidate_is_newer(checkpoint_order, entry->d_name,
-                                     candidate_created_at_ns, candidate)) {
+        cai_store_candidate_is_newer(checkpoint_order, entry_session_id,
+                                     candidate_created_at_ns,
+                                     candidate_session_id)) {
       memcpy(candidate, entry->d_name, length + 1U);
+      memcpy(candidate_session_id, entry_session_id,
+             strlen(entry_session_id) + 1U);
       candidate_created_at_ns = checkpoint_order;
     }
   }
@@ -1391,18 +1506,12 @@ static int cai_local_session_load_latest(
     close(scope_fd);
     return CAI_OK;
   }
-  {
-    size_t length;
-
-    length = strlen(candidate) - 6U;
-    if (length + 1U > session_id_capacity) {
-      close(scope_fd);
-      return cai_set_error(error, CAI_ERR_INVALID,
-                           "latest session identifier is too long");
-    }
-    memcpy(session_id, candidate, length);
-    session_id[length] = '\0';
+  if (strlen(candidate_session_id) + 1U > session_id_capacity) {
+    close(scope_fd);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "latest session identifier is too long");
   }
+  memcpy(session_id, candidate_session_id, strlen(candidate_session_id) + 1U);
   fd = openat(scope_fd, candidate, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
   close(scope_fd);
   if (fd < 0) {

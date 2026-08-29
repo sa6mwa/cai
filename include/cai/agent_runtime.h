@@ -538,8 +538,9 @@ typedef struct cai_agent_runtime_config {
    */
   const char *session_scope;
   /**
-   * Optional new session identifier; NULL generates one. smith-review rejects
-   * this so every review run starts in a fresh, unaddressable session.
+   * Optional opaque new session identifier containing 1 to 128 bytes; NULL
+   * generates one. smith-review rejects this so every review run starts in a
+   * fresh, unaddressable session.
    */
   const char *session_id;
   /**

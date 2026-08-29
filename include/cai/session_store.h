@@ -96,8 +96,9 @@ void cai_agent_local_session_store_config_init(
 /**
  * Open CAI's local append-only JSONL store.
  *
- * Each non-empty scope key gets an opaque SHA-256 directory and each session
- * gets one private JSONL file. The local store does not interpret scope keys
+ * Each non-empty scope key gets an opaque SHA-256 directory and each opaque
+ * session identifier gets one private JSONL file through a reversible safe
+ * filename encoding. The local store does not interpret scope or session keys
  * as paths. The returned callback table owns private local-store state and is
  * valid until cai_agent_local_session_store_close.
  * Checkpoints are fsync'd before this function returns. Each checkpoint stores

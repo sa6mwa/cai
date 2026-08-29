@@ -13,7 +13,14 @@ extern "C" {
 /** Model-facing name of CAI's constrained skill resource reader. */
 #define CAI_SKILL_READ_TOOL_NAME "read_skill"
 
-/** Visit one opaque skill package identifier during provider enumeration. */
+/** Maximum bytes in an opaque provider skill identifier, excluding NUL. */
+#define CAI_SKILL_ID_MAX_BYTES 1024U
+
+/**
+ * Visit one opaque skill package identifier during provider enumeration.
+ * Identifiers must be non-empty and no longer than CAI_SKILL_ID_MAX_BYTES;
+ * CAI otherwise preserves their contents without path interpretation.
+ */
 typedef int (*cai_skill_provider_visit_fn)(void *visit_context,
                                            const char *skill_id,
                                            cai_error *error);
