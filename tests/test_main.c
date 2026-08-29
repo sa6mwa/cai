@@ -33102,6 +33102,30 @@ static int run_mock_revgeo_tool(test_state *state, const char *name, int mode,
   return rc;
 }
 
+static void test_terminal_output_limit_clamp(test_state *state) {
+  size_t target_size_max;
+
+  target_size_max = (size_t)UINT_MAX;
+  expect_int(state, "terminal_output_limit_absent",
+             cai_terminal_test_output_limit(4294967297LL, 0, target_size_max) ==
+                 0U,
+             1L);
+  expect_int(state, "terminal_output_limit_nonpositive",
+             cai_terminal_test_output_limit(-1LL, 1, target_size_max) == 0U,
+             1L);
+  expect_int(
+      state, "terminal_output_limit_in_range",
+      cai_terminal_test_output_limit(4096LL, 1, target_size_max) == 4096U, 1L);
+  expect_int(state, "terminal_output_limit_32_bit_clamped",
+             cai_terminal_test_output_limit(4294967297LL, 1, target_size_max) ==
+                 target_size_max,
+             1L);
+  expect_int(state, "terminal_output_limit_long_long_clamped",
+             cai_terminal_test_output_limit(LLONG_MAX, 1, target_size_max) ==
+                 target_size_max,
+             1L);
+}
+
 static void test_terminal_registration_rollback(test_state *state) {
   cai_terminal_tool_config config;
   cai_tool_registry *registry;
@@ -41797,6 +41821,7 @@ static const test_entry test_entries[] = {
     {"todo_callback_store", test_todo_callback_store},
     {"searxng_registry_tool", test_searxng_registry_tool},
     {"exec_tool", test_exec_tool},
+    {"terminal_output_limit_clamp", test_terminal_output_limit_clamp},
     {"terminal_registration_rollback", test_terminal_registration_rollback},
     {"terminal_tools", test_terminal_tools},
     {"terminal_capture_truncation", test_terminal_capture_truncation},

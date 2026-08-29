@@ -1359,6 +1359,7 @@ if(CAI_BUILD_TESTS)
     todo_tool
     todo_callback_store
     searxng_registry_tool
+    terminal_output_limit_clamp
     terminal_registration_rollback
     terminal_tools
     terminal_capture_truncation

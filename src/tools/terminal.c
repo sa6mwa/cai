@@ -399,6 +399,24 @@ static const char cai_terminal_write_description[] =
     "30000 ms, and empty polls a 5000-300000 ms wait. Termination uses the "
     "non-empty-write limits. The host may configure other limits.";
 
+static size_t cai_terminal_output_limit(long long value, int present,
+                                        size_t maximum) {
+  if (!present || value <= 0LL) {
+    return 0U;
+  }
+  if ((unsigned long long)value > (unsigned long long)maximum) {
+    return maximum;
+  }
+  return (size_t)value;
+}
+
+#if defined(CAI_TESTING)
+size_t cai_terminal_test_output_limit(long long value, int present,
+                                      size_t maximum) {
+  return cai_terminal_output_limit(value, present, maximum);
+}
+#endif
+
 static void cai_terminal_deadline(struct timespec *deadline, long wait_ms) {
   clock_gettime(CLOCK_REALTIME, deadline);
   deadline->tv_sec += wait_ms / 1000L;
@@ -1395,9 +1413,8 @@ static int cai_terminal_exec_callback(void *value, const void *params,
     wait_ms = cai_terminal_clamp_yield(
         args->yield_time_ms, args->has_yield_time_ms,
         binding->manager->default_yield_ms, binding->manager->max_yield_ms, 0L);
-    output_limit = args->has_max_output_tokens && args->max_output_tokens > 0LL
-                       ? (size_t)args->max_output_tokens
-                       : 0U;
+    output_limit = cai_terminal_output_limit(
+        args->max_output_tokens, args->has_max_output_tokens, SIZE_MAX);
     (void)cai_terminal_wait(binding->manager, 0U, wait_ms);
     rc =
         cai_terminal_fill_result(binding->manager, output_limit, result, error);
@@ -1510,10 +1527,8 @@ static int cai_terminal_write_callback(void *value, const void *params,
     completed = binding->manager->completed;
     pthread_mutex_unlock(&binding->manager->lock);
     if (completed) {
-      output_limit =
-          args->has_max_output_tokens && args->max_output_tokens > 0LL
-              ? (size_t)args->max_output_tokens
-              : 0U;
+      output_limit = cai_terminal_output_limit(
+          args->max_output_tokens, args->has_max_output_tokens, SIZE_MAX);
       rc = cai_terminal_fill_result(binding->manager, output_limit, result,
                                     error);
       if (rc == CAI_OK) {
@@ -1582,9 +1597,8 @@ static int cai_terminal_write_callback(void *value, const void *params,
       pthread_mutex_unlock(&binding->manager->lock);
     }
   }
-  output_limit = args->has_max_output_tokens && args->max_output_tokens > 0LL
-                     ? (size_t)args->max_output_tokens
-                     : 0U;
+  output_limit = cai_terminal_output_limit(
+      args->max_output_tokens, args->has_max_output_tokens, SIZE_MAX);
   rc = cai_terminal_fill_result(binding->manager, output_limit, result, error);
   if (rc == CAI_OK) {
     rc = result->completed ? cai_terminal_emit_completion_once(binding->manager,

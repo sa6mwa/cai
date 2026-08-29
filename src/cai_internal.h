@@ -271,6 +271,8 @@ typedef void (*cai_agent_runtime_test_export_cleanup_fn)(const char *path,
                                                          void *context);
 void cai_agent_runtime_test_set_export_cleanup_hook(
     cai_agent_runtime_test_export_cleanup_fn hook, void *context);
+size_t cai_terminal_test_output_limit(long long value, int present,
+                                      size_t maximum);
 #endif
 int cai_response_create_params_set_raw_input_json(
     cai_response_create_params *params, const char *raw_input_json,
