@@ -386,6 +386,11 @@ int cai_tool_registry_register_lonejson_schema_owned(
     const char *schema_json, int strict, const lonejson_map *params_map,
     const lonejson_map *result_map, cai_tool_fn callback, void *context,
     void (*context_cleanup)(void *context), cai_error *error);
+typedef void (*cai_tool_result_commit_fn)(void *context, const void *result);
+int cai_tool_registry_set_result_commit(cai_tool_registry *registry,
+                                        const char *name,
+                                        cai_tool_result_commit_fn callback,
+                                        cai_error *error);
 int cai_agent_register_lonejson_tool_schema_internal(
     cai_agent *agent, const char *name, const char *description,
     const char *schema_json, int strict, const lonejson_map *params_map,

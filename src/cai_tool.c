@@ -27,6 +27,7 @@ typedef struct cai_tool_entry {
   cai_tool_custom_fn custom_callback;
   cai_tool_custom_spooled_fn custom_spooled_callback;
   cai_tool_result_delivery_fn result_delivery;
+  cai_tool_result_commit_fn result_commit;
   void *context;
   void (*context_cleanup)(void *context);
 } cai_tool_entry;
@@ -1501,6 +1502,30 @@ int cai_tool_registry_register_lonejson_schema_owned(
       error);
 }
 
+int cai_tool_registry_set_result_commit(cai_tool_registry *registry,
+                                        const char *name,
+                                        cai_tool_result_commit_fn callback,
+                                        cai_error *error) {
+  cai_tool_entry *entry;
+
+  if (registry == NULL || name == NULL || name[0] == '\0' || callback == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool registry, name, and result commit callback "
+                         "are required");
+  }
+  entry = cai_tool_registry_find(registry, name);
+  if (entry == NULL || entry->kind != CAI_TOOL_LONEJSON) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "lonejson tool is not registered");
+  }
+  if (entry->result_commit != NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool result commit is already registered");
+  }
+  entry->result_commit = callback;
+  return CAI_OK;
+}
+
 int cai_tool_registry_register_raw(cai_tool_registry *registry,
                                    const char *name, const char *description,
                                    const char *schema_json, int strict,
@@ -1871,6 +1896,8 @@ int cai_tool_registry_run(cai_tool_registry *registry, const char *name,
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to serialize tool result",
                                 json_error.message);
+    } else if (entry->result_commit != NULL) {
+      entry->result_commit(entry->context, result);
     }
   }
   CAI_LJ->cleanup(CAI_LJ, entry->params_map, params);
@@ -2046,6 +2073,8 @@ int cai_tool_registry_run_spooled(cai_tool_registry *registry, const char *name,
       rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to serialize tool result",
                                 json_error.message);
+    } else if (entry->result_commit != NULL) {
+      entry->result_commit(entry->context, result);
     }
   }
   CAI_LJ->cleanup(CAI_LJ, entry->params_map, params);

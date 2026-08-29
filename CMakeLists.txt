@@ -1362,6 +1362,8 @@ if(CAI_BUILD_TESTS)
     terminal_output_limit_clamp
     terminal_registration_rollback
     terminal_tools
+    terminal_buffered_output_returns_immediately
+    terminal_sink_failure_preserves_output
     terminal_capture_truncation
     terminal_reader_start_failure
     terminal_external_child_reap

@@ -33513,6 +33513,168 @@ static void test_terminal_tools(test_state *state) {
   test_terminal_workdir_pinning(state);
 }
 
+static void
+test_terminal_buffered_output_returns_immediately(test_state *state) {
+  char dir_template[] = "/tmp/cai-terminal-buffered-XXXXXX";
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  struct timespec pause_time;
+  struct timespec started;
+  struct timespec finished;
+  long long elapsed_ms;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_buffered_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  config.default_poll_yield_time_ms = 1000L;
+  config.max_poll_yield_time_ms = 1000L;
+  registry = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  cai_error_init(&error);
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  expect_int(state, "terminal_buffered_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(
+        state, "terminal_buffered_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
+    expect_int(state, "terminal_buffered_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  }
+  if (sink != NULL) {
+    expect_int(
+        state, "terminal_buffered_exec",
+        cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                              "{\"cmd\":\"printf buffered-ready; sleep 2\","
+                              "\"yield_time_ms\":0}",
+                              sink, &error),
+        CAI_OK);
+    pause_time.tv_sec = 0;
+    pause_time.tv_nsec = 250000000L;
+    (void)nanosleep(&pause_time, NULL);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    (void)clock_gettime(CLOCK_MONOTONIC, &started);
+    expect_int(state, "terminal_buffered_poll",
+               cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                     "{\"session_id\":\"terminal-1\","
+                                     "\"yield_time_ms\":1000}",
+                                     sink, &error),
+               CAI_OK);
+    (void)clock_gettime(CLOCK_MONOTONIC, &finished);
+    elapsed_ms = (long long)(finished.tv_sec - started.tv_sec) * 1000LL +
+                 (long long)(finished.tv_nsec - started.tv_nsec) / 1000000LL;
+    expect_substr(state, "terminal_buffered_output", writer.buffer,
+                  "buffered-ready");
+    expect_int(state, "terminal_buffered_no_wait", elapsed_ms < 750LL, 1L);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_buffered_terminate",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                   "{\"session_id\":\"terminal-1\",\"terminate\":true,"
+                   "\"yield_time_ms\":10}",
+                   sink, &error),
+               CAI_OK);
+  }
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
+}
+
+static void test_terminal_sink_failure_preserves_output(test_state *state) {
+  char dir_template[] = "/tmp/cai-terminal-sink-retry-XXXXXX";
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink_callbacks failing_callbacks;
+  cai_sink *sink;
+  cai_sink *failing_sink;
+  write_state writer;
+  fail_write_state failing_writer;
+  cai_error error;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_sink_retry_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  registry = NULL;
+  sink = NULL;
+  failing_sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  memset(&failing_writer, 0, sizeof(failing_writer));
+  cai_error_init(&error);
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  failing_callbacks.write = test_fail_write;
+  failing_callbacks.close = test_fail_write_close;
+  failing_callbacks.context = &failing_writer;
+  expect_int(state, "terminal_sink_retry_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(
+        state, "terminal_sink_retry_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
+    expect_int(state, "terminal_sink_retry_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+    expect_int(
+        state, "terminal_sink_retry_failing_sink",
+        cai_sink_from_callbacks(&failing_callbacks, &failing_sink, &error),
+        CAI_OK);
+  }
+  if (sink != NULL && failing_sink != NULL) {
+    expect_int(
+        state, "terminal_sink_retry_rejected_delivery",
+        cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                              "{\"cmd\":\"printf retained-output; sleep 1\","
+                              "\"yield_time_ms\":100}",
+                              failing_sink, &error),
+        CAI_ERR_TRANSPORT);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "terminal_sink_retry_poll",
+               cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                     "{\"session_id\":\"terminal-1\","
+                                     "\"yield_time_ms\":100}",
+                                     sink, &error),
+               CAI_OK);
+    expect_substr(state, "terminal_sink_retry_output", writer.buffer,
+                  "retained-output");
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_sink_retry_terminate",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                   "{\"session_id\":\"terminal-1\",\"terminate\":true,"
+                   "\"yield_time_ms\":10}",
+                   sink, &error),
+               CAI_OK);
+  }
+  cai_sink_close(failing_sink);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
+}
+
 static void test_terminal_capture_truncation(test_state *state) {
   char dir_template[] = "/tmp/cai-terminal-truncation-XXXXXX";
   cai_terminal_tool_config config;
@@ -41824,6 +41986,10 @@ static const test_entry test_entries[] = {
     {"terminal_output_limit_clamp", test_terminal_output_limit_clamp},
     {"terminal_registration_rollback", test_terminal_registration_rollback},
     {"terminal_tools", test_terminal_tools},
+    {"terminal_buffered_output_returns_immediately",
+     test_terminal_buffered_output_returns_immediately},
+    {"terminal_sink_failure_preserves_output",
+     test_terminal_sink_failure_preserves_output},
     {"terminal_capture_truncation", test_terminal_capture_truncation},
     {"terminal_reader_start_failure", test_terminal_reader_start_failure},
     {"terminal_external_child_reap", test_terminal_external_child_reap},

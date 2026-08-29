@@ -312,6 +312,9 @@ typedef struct cai_terminal_result {
   int output_truncated;
   int detached_processes_possible;
   long long duration_ms;
+  unsigned long long delivery_command_id;
+  size_t delivery_offset;
+  size_t delivery_count;
 } cai_terminal_result;
 
 typedef struct cai_terminal_event_metadata {
@@ -1201,6 +1204,9 @@ static int cai_terminal_fill_result(cai_terminal_manager *manager,
                                     ? LLONG_MAX
                                     : (long long)manager->total_output_bytes;
   result->output_truncated = manager->output_truncated || count < available;
+  result->delivery_command_id = manager->command_id;
+  result->delivery_offset = manager->delivered_offset;
+  result->delivery_count = count;
   /* CAI supervises the shell process, not arbitrary descendants that may
    * have escaped its process group.  Never promise those descendants exited. */
   result->detached_processes_possible = manager->completed;
@@ -1222,11 +1228,6 @@ static int cai_terminal_fill_result(cai_terminal_manager *manager,
     result->signal = WTERMSIG(manager->child_status);
     result->has_signal = 1;
   }
-  /* Do not acknowledge output until the complete result is durable for the
-   * caller. A later poll must be able to retry after an allocation failure. */
-  if (result->session_id != NULL && result->output != NULL) {
-    manager->delivered_offset += count;
-  }
   pthread_mutex_unlock(&manager->lock);
   if (result->session_id == NULL || result->output == NULL) {
     cai_free_mem(NULL, result->session_id);
@@ -1236,6 +1237,28 @@ static int cai_terminal_fill_result(cai_terminal_manager *manager,
                          "failed to copy terminal command result");
   }
   return CAI_OK;
+}
+
+static void cai_terminal_commit_result(void *context, const void *value) {
+  cai_terminal_binding *binding;
+  const cai_terminal_result *result;
+  cai_terminal_manager *manager;
+
+  binding = (cai_terminal_binding *)context;
+  result = (const cai_terminal_result *)value;
+  if (binding == NULL || binding->manager == NULL || result == NULL) {
+    return;
+  }
+  manager = binding->manager;
+  pthread_mutex_lock(&manager->lock);
+  if (manager->command_id == result->delivery_command_id &&
+      manager->delivered_offset == result->delivery_offset &&
+      manager->delivered_offset <= manager->output_length &&
+      result->delivery_count <=
+          manager->output_length - manager->delivered_offset) {
+    manager->delivered_offset += result->delivery_count;
+  }
+  pthread_mutex_unlock(&manager->lock);
 }
 
 static int cai_terminal_emit(cai_terminal_manager *manager, int type,
@@ -1541,7 +1564,10 @@ static int cai_terminal_write_callback(void *value, const void *params,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "single terminal has no running command");
   }
-  initial = binding->manager->output_length;
+  /* Bytes received since the prior successful delivery are immediately
+   * useful progress. Do not wait for a second output burst before returning
+   * them to a polling caller. */
+  initial = binding->manager->delivered_offset;
   fd = fcntl(binding->manager->pty_fd, F_DUPFD_CLOEXEC, 3);
   if (fd < 0) {
     pthread_mutex_unlock(&binding->manager->lock);
@@ -1673,11 +1699,22 @@ int cai_tool_registry_register_terminal_tools(
           cai_terminal_binding_cleanup, error);
       if (rc == CAI_OK) {
         write_binding = NULL;
-      } else {
-        /* Terminal tools are a contract pair. Roll back exec_command so a
-         * caller can correct the conflicting write_stdin registration and
-         * retry without a stale half-registration. */
+        rc = cai_tool_registry_set_result_commit(
+            registry, CAI_TERMINAL_EXEC_TOOL_NAME, cai_terminal_commit_result,
+            error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_tool_registry_set_result_commit(
+            registry, CAI_TERMINAL_WRITE_TOOL_NAME, cai_terminal_commit_result,
+            error);
+      }
+      if (rc != CAI_OK) {
+        /* Terminal tools are a contract pair. Roll back both registrations so
+         * callers can correct the conflict and retry cleanly. */
         cai_tool_registry_truncate(registry, registry_count);
+        if (exec_binding == NULL && write_binding == NULL) {
+          manager = NULL;
+        }
       }
     }
   }
