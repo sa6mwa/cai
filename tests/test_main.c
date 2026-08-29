@@ -33420,7 +33420,10 @@ static void test_terminal_tools(test_state *state) {
                                      "\"max_output_tokens\":16}",
                                      sink, &error),
                CAI_OK);
-    for (i = 0; i < 10 && events.completed < 4; i++) {
+    /* Buffered output now returns immediately, so a fast caller can drain
+     * several small result windows before the reader observes child exit.
+     * Bound the total drain rather than assuming ten polls imply completion. */
+    for (i = 0; i < 1000 && events.completed < 4; i++) {
       writer.buffer[0] = '\0';
       writer.length = 0U;
       rc = cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
