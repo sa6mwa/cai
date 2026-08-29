@@ -1433,6 +1433,10 @@ if(CAI_BUILD_TESTS)
       LABELS "unit;local"
       TIMEOUT 3)
   endforeach()
+  # This test intentionally exercises two queued network-backed turns. Its
+  # internal HTTP and pump bounds exceed the default short unit-test timeout.
+  set_tests_properties(cai_tests.agent_runtime_queued_turns PROPERTIES
+    TIMEOUT 30)
   set_tests_properties(cai_tests.lonejson_selected_array_rewrite PROPERTIES
     LABELS "unit;local;memory-external-boundary"
     TIMEOUT 3)

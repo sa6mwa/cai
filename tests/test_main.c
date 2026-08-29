@@ -33442,10 +33442,24 @@ static void test_terminal_tools(test_state *state) {
     writer.length = 0U;
     expect_int(state, "terminal_exec_no_stdin_reader",
                cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
-                                     "{\"cmd\":\"stty -echo; sleep 5\","
-                                     "\"yield_time_ms\":10}",
+                                     "{\"cmd\":\"stty -echo && printf "
+                                     "stdin-ready; sleep 5\","
+                                     "\"yield_time_ms\":100}",
                                      sink, &error),
                CAI_OK);
+    for (i = 0; i < 10 && strstr(writer.buffer, "stdin-ready") == NULL; i++) {
+      writer.buffer[0] = '\0';
+      writer.length = 0U;
+      expect_int(state, "terminal_stdin_ready_poll",
+                 cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                       "{\"session_id\":\"terminal-1\","
+                                       "\"yield_time_ms\":100}",
+                                       sink, &error),
+                 CAI_OK);
+    }
+    expect_substr(state, "terminal_stdin_ready", writer.buffer, "stdin-ready");
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
     blocked_stdin_request_size =
         strlen("{\"session_id\":\"terminal-1\",\"chars\":\"") + 65536U +
         strlen("\",\"yield_time_ms\":10}") + 1U;
@@ -33469,6 +33483,8 @@ static void test_terminal_tools(test_state *state) {
       free(blocked_stdin_request);
       blocked_stdin_request = NULL;
     }
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
     cai_error_cleanup(&error);
     cai_error_init(&error);
     expect_int(state, "terminal_stdin_limit_terminate",
