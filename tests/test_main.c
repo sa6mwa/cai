@@ -26057,6 +26057,161 @@ static void test_agent_runtime_subagent(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_agent_runtime_failed_subagent_resume(test_state *state) {
+  static const char parent_tool_response[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"fc_failed_subagent\",\"type\":\"function_call\","
+      "\"call_id\":\"call_failed_subagent\",\"name\":\"run_worker\","
+      "\"arguments\":\"{\\\"format\\\":\\\"json\\\"}\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_parent_failed_subagent\",\"usage\":{\"input_tokens\":2,"
+      "\"output_tokens\":2,\"total_tokens\":4}}}\n\n";
+  static const char child_error_response[] =
+      "{\"error\":{\"message\":\"child unavailable\",\"type\":"
+      "\"server_error\"}}";
+  static const char parent_final_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"parent handled child failure\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_parent_failed_subagent_final\",\"usage\":{\"input_tokens\":3,"
+      "\"output_tokens\":2,\"total_tokens\":5}}}\n\n";
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, parent_tool_response},
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 500,
+       "Internal Server Error", "application/json", NULL, child_error_response},
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, parent_final_response}};
+  http_mock_client mock;
+  cai_agent_preset parent_preset;
+  cai_agent_preset child_preset;
+  cai_agent_subagent_profile profile;
+  cai_agent_subagent_parameter parameter;
+  static const char *const formats[] = {"json"};
+  cai_agent_runtime_config config;
+  cai_agent_session_store store;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  runtime_event_state events;
+  runtime_session_store_state store_state;
+  cai_error error;
+  int i;
+  int saw_handoff_marker;
+
+  if (http_mock_client_open_script(
+          state, "agent_runtime_failed_subagent_resume", script,
+          sizeof(script) / sizeof(script[0]), &mock) != 0) {
+    return;
+  }
+  memset(&parent_preset, 0, sizeof(parent_preset));
+  parent_preset.name = "failed-subagent-parent";
+  parent_preset.prompt_version = "failed-subagent-parent-1";
+  parent_preset.default_identity = "Parent";
+  parent_preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  parent_preset.default_reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  parent_preset.default_reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  parent_preset.developer_instructions = "You are Parent.";
+  parent_preset.tool_capabilities = CAI_AGENT_PRESET_TOOL_SUBAGENTS;
+  memset(&child_preset, 0, sizeof(child_preset));
+  child_preset.name = "failed-subagent-worker";
+  child_preset.prompt_version = "failed-subagent-worker-1";
+  child_preset.default_identity = "Worker";
+  child_preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  child_preset.default_reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  child_preset.default_reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  child_preset.developer_instructions = "You are Worker.";
+  memset(&parameter, 0, sizeof(parameter));
+  parameter.name = "format";
+  parameter.description = "Required delegated output format.";
+  parameter.type = CAI_AGENT_SUBAGENT_PARAMETER_ENUM;
+  parameter.required = 1;
+  parameter.enum_values = formats;
+  parameter.enum_value_count = sizeof(formats) / sizeof(formats[0]);
+  memset(&profile, 0, sizeof(profile));
+  profile.name = "worker";
+  profile.description = "Return delegated results.";
+  profile.preset = &child_preset;
+  profile.parameters = &parameter;
+  profile.parameter_count = 1U;
+  profile.instruction_template = "Return {{format}} for {{instructions}}.";
+  profile.expose_instructions = 1;
+  cai_error_init(&error);
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  events.owner = pthread_self();
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = "/tmp";
+  config.preset_descriptor = &parent_preset;
+  config.disable_default_session_store = 1;
+  config.session_store = &store;
+  config.session_scope = "failed-subagent-resume";
+  config.subagents = &profile;
+  config.subagent_count = 1U;
+  config.event_callback = test_runtime_event;
+  config.event_context = &events;
+  expect_int(state, "agent_runtime_failed_subagent_open",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    (void)snprintf(store_state.loaded_session_id,
+                   sizeof(store_state.loaded_session_id), "%s",
+                   cai_agent_runtime_session_id(runtime));
+    expect_int(state, "agent_runtime_failed_subagent_submit",
+               cai_agent_runtime_submit(runtime, "delegate this task", &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 30 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "agent_runtime_failed_subagent_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "agent_runtime_failed_subagent_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "agent_runtime_failed_subagent_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_int(state, "agent_runtime_failed_subagent_output_count",
+               (long)test_count_substrings(store_state.saved_checkpoint,
+                                           "\"type\":\"function_call_output\""),
+               1L);
+    saw_handoff_marker = 0;
+    for (i = 0; i < (int)store_state.replay_event_count; i++) {
+      if (strcmp(store_state.replay_event_types[i],
+                 "subagent_handoff_committed") == 0) {
+        saw_handoff_marker = 1;
+      }
+    }
+    expect_int(state, "agent_runtime_failed_subagent_marker",
+               saw_handoff_marker, 1L);
+    store_state.checkpoint_json = store_state.saved_checkpoint;
+    store_state.load_applied_event_sequence =
+        store_state.saved_applied_event_sequence;
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+    memset(&events, 0, sizeof(events));
+    events.owner = pthread_self();
+    config.resume_latest = 1;
+    config.event_context = &events;
+    expect_int(state, "agent_runtime_failed_subagent_resume_open",
+               cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+               CAI_OK);
+    expect_int(state, "agent_runtime_failed_subagent_resume_output_count",
+               (long)test_count_substrings(store_state.saved_checkpoint,
+                                           "\"type\":\"function_call_output\""),
+               1L);
+    cai_agent_runtime_close(runtime);
+  }
+  http_mock_client_close(state, "agent_runtime_failed_subagent_resume", &mock);
+  cai_error_cleanup(&error);
+}
+
 static void test_agent_runtime_poll_only_subagent(test_state *state) {
   static const char parent_tool_response[] =
       "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
@@ -41397,6 +41552,8 @@ static const test_entry test_entries[] = {
     {"smith_review_runtime", test_smith_review_runtime},
     {"smith_review_parent_handoff", test_smith_review_parent_handoff},
     {"agent_runtime_subagent", test_agent_runtime_subagent},
+    {"agent_runtime_failed_subagent_resume",
+     test_agent_runtime_failed_subagent_resume},
     {"agent_runtime_poll_only_subagent", test_agent_runtime_poll_only_subagent},
     {"agent_runtime_review_subagent", test_agent_runtime_review_subagent},
     {"smith_review_pause_checkpoint_failure",

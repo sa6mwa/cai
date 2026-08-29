@@ -355,6 +355,8 @@ static int cai_runtime_serialize_subagent_result_json(
     const char *handover_markdown, char **out, cai_error *error);
 static int cai_runtime_recover_interrupted_subagent(cai_agent_runtime *runtime,
                                                     cai_error *error);
+static int cai_runtime_wait_for_handoff_retry(cai_agent_runtime *parent,
+                                              cai_error *error);
 static void
 cai_runtime_subagent_result_cleanup(cai_runtime_subagent_result *result);
 
@@ -583,6 +585,9 @@ struct cai_agent_runtime {
   char **review_allowed_reasoning_summaries;
   size_t review_allowed_reasoning_summary_count;
   int subagent_active;
+  /* A subagent launch marker is durable, but its resolution must be recorded
+   * only with the parent tool round that persists the matching tool output. */
+  int subagent_handoff_resolution_pending;
   char *active_subagent_parent_tool_call_id;
   /* A checkpointed synchronous child cannot survive a process restart. Keep
    * its durable launch identity only until recovery has synthesized the failed
@@ -3508,13 +3513,43 @@ static int cai_runtime_checkpoint_durable_tool_round(void *context,
                                                      cai_session *session,
                                                      cai_error *error) {
   cai_agent_runtime *runtime;
+  unsigned long long handoff_marker_sequence;
+  int resolve_subagent;
+  int rc;
 
   runtime = (cai_agent_runtime *)context;
   if (runtime == NULL || session != runtime->session) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "invalid Smith durable tool-round boundary");
   }
-  return cai_runtime_checkpoint(runtime, 1, error);
+  handoff_marker_sequence = 0U;
+  resolve_subagent = 0;
+  pthread_mutex_lock(&runtime->lock);
+  if (runtime->subagent_handoff_resolution_pending) {
+    rc = cai_runtime_append_journal_event_locked(
+        runtime, "subagent_handoff_committed", "tool_round",
+        &handoff_marker_sequence, error);
+    if (rc == CAI_OK) {
+      cai_runtime_mark_checkpoint_event_locked(runtime,
+                                               handoff_marker_sequence);
+      runtime->subagent_handoff_resolution_pending = 0;
+      resolve_subagent = 1;
+    }
+  } else {
+    rc = CAI_OK;
+  }
+  pthread_mutex_unlock(&runtime->lock);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  rc = cai_runtime_checkpoint(runtime, 1, error);
+  while (rc == CAI_ERR_TRANSPORT && resolve_subagent) {
+    rc = cai_runtime_wait_for_handoff_retry(runtime, error);
+    if (rc == CAI_OK) {
+      rc = cai_runtime_checkpoint(runtime, 1, error);
+    }
+  }
+  return rc;
 }
 
 /* A response that finishes without another tool call still needs a durable
@@ -6995,40 +7030,13 @@ static int cai_runtime_subagent_handoff(cai_agent_runtime *parent,
                                         const char *profile_name,
                                         const char *child_session_id,
                                         const char *handover,
-                                        int *checkpoint_started,
                                         cai_error *error) {
-  unsigned long long handoff_marker_sequence;
-  int rc;
-
-  if (checkpoint_started != NULL) {
-    *checkpoint_started = 0;
-  }
-  handoff_marker_sequence = 0U;
-  rc = cai_runtime_add_subagent_handoff_context(
+  return cai_runtime_add_subagent_handoff_context(
       parent, profile_name, child_session_id, handover, error);
-  if (rc == CAI_OK) {
-    pthread_mutex_lock(&parent->lock);
-    rc = cai_runtime_append_journal_event_locked(
-        parent, "subagent_handoff_committed", child_session_id,
-        &handoff_marker_sequence, error);
-    if (rc == CAI_OK) {
-      cai_runtime_mark_checkpoint_event_locked(parent, handoff_marker_sequence);
-    }
-    pthread_mutex_unlock(&parent->lock);
-  }
-  if (rc == CAI_OK && checkpoint_started != NULL) {
-    *checkpoint_started = 1;
-  }
-  if (rc == CAI_OK)
-    rc = cai_runtime_checkpoint(parent, 0, error);
-  return rc;
 }
 
-/* A tool result must never release its child until the handoff checkpoint is
- * durable.  Store transports can fail transiently; keep the synchronous child
- * and the parent's pause intact while retrying that final publication step.
- * Closing the parent remains an escape hatch for a permanently unavailable
- * store. */
+/* A subagent handoff marker is published with the outer tool round, after its
+ * function-call output has entered parent history. */
 static int cai_runtime_wait_for_handoff_retry(cai_agent_runtime *parent,
                                               cai_error *error) {
   struct timespec delay;
@@ -7064,7 +7072,6 @@ static int cai_runtime_run_subagent(void *context, const void *params,
   int review;
   int rc;
   int terminal;
-  int handoff_checkpoint_started;
   int pending_length;
   unsigned long long pending_marker_sequence;
 
@@ -7127,6 +7134,7 @@ static int cai_runtime_run_subagent(void *context, const void *params,
                                                &pending_marker_sequence, error);
   if (rc == CAI_OK) {
     cai_runtime_mark_checkpoint_event_locked(parent, pending_marker_sequence);
+    parent->subagent_handoff_resolution_pending = 1;
   }
   pthread_mutex_unlock(&parent->lock);
   cai_free_mem(NULL, pending_data);
@@ -7198,7 +7206,6 @@ static int cai_runtime_run_subagent(void *context, const void *params,
   }
   handover = NULL;
   structured = NULL;
-  handoff_checkpoint_started = 0;
   if (child != NULL && (rc == CAI_OK || rc == CAI_ERR_CANCELLED)) {
     if (review) {
       if (child_state == CAI_AGENT_COMPLETED) {
@@ -7255,15 +7262,8 @@ static int cai_runtime_run_subagent(void *context, const void *params,
         rc = cai_set_error(error, CAI_ERR_NOMEM,
                            "failed to retain subagent handoff");
       if (rc == CAI_OK)
-        rc = cai_runtime_subagent_handoff(parent, args->profile,
-                                          execution.child_session_id, handover,
-                                          &handoff_checkpoint_started, error);
-      while (rc == CAI_ERR_TRANSPORT && handoff_checkpoint_started) {
-        if (cai_runtime_wait_for_handoff_retry(parent, error) != CAI_OK) {
-          break;
-        }
-        rc = cai_runtime_checkpoint(parent, 0, error);
-      }
+        rc = cai_runtime_subagent_handoff(
+            parent, args->profile, execution.child_session_id, handover, error);
     }
   }
   if (rc == CAI_OK && handover != NULL) {
