@@ -1,3 +1,4 @@
+#include <cai/agent_runtime.h>
 #include <cai/auth.h>
 #include <cai/cai.h>
 #include <cai/mcp.h>
@@ -9,6 +10,7 @@
 
 #include <lonejson.h>
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -16,6 +18,7 @@
 #include <string.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -23,14 +26,87 @@
 #define PATH_MAX 4096
 #endif
 
-#define CAI_INTEGRATION_E2E_DEFAULT_SPEND_LIMIT_USD 0.02
+#define CAI_INTEGRATION_CHATGPT_E2E_DEFAULT_SPEND_LIMIT_USD 0.02
 #define CAI_INTEGRATION_OPENROUTER_REQUEST_DEFAULT_DELAY_SEC 4U
-#define CAI_INTEGRATION_CHATGPT_DEFAULT_MODEL CAI_MODEL_GPT_5_4_MINI
+#define CAI_INTEGRATION_CHATGPT_DEFAULT_MODEL CAI_MODEL_GPT_5_6_LUNA
 #define CAI_INTEGRATION_CHATGPT_DEFAULT_REASONING CAI_REASONING_EFFORT_LOW
 #define CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TIMEOUT_MS 20000L
 #define CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TURNS 4
 #define CAI_INTEGRATION_PROVIDER_MAX_ATTEMPTS 3
 #define CAI_INTEGRATION_MCP_EVERYTHING_DEFAULT_URL "http://127.0.0.1:3001/mcp"
+
+static int integration_set_error(cai_error *error, int code,
+                                 const char *message);
+static int integration_open_default_chatgpt_auth(cai_chatgpt_auth **out,
+                                                 cai_error *error);
+
+/* All OpenAI-hosted live integration paths use the Codex/ChatGPT subscription
+ * transport. OpenRouter has its own explicit configuration and remains
+ * untouched. The caller owns out_auth and must close it after client teardown.
+ */
+static int
+integration_configure_chatgpt_subscription(cai_client_config *client_config,
+                                           cai_chatgpt_auth **out_auth,
+                                           cai_error *error) {
+  int rc;
+
+  if (client_config == NULL || out_auth == NULL) {
+    return integration_set_error(
+        error, CAI_ERR_INVALID,
+        "ChatGPT live client configuration is required");
+  }
+  *out_auth = NULL;
+  cai_client_config_init(client_config);
+  rc = integration_open_default_chatgpt_auth(out_auth, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  client_config->chatgpt_auth = *out_auth;
+  client_config->timeout_ms = CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TIMEOUT_MS;
+  return CAI_OK;
+}
+
+/* Each integration process selects exactly one live probe. Share the
+ * subscription handle across that selected probe and release it at process
+ * exit, so individual probe cleanup remains limited to its client/session. */
+static cai_chatgpt_auth *integration_shared_subscription_auth;
+static int integration_shared_subscription_auth_registered;
+
+static void integration_close_shared_subscription_auth(void) {
+  cai_chatgpt_auth_close(integration_shared_subscription_auth);
+  integration_shared_subscription_auth = NULL;
+}
+
+static int integration_open_subscription_client(cai_client_config *config,
+                                                cai_client **out,
+                                                cai_error *error) {
+  int rc;
+
+  if (config == NULL || out == NULL) {
+    return integration_set_error(error, CAI_ERR_INVALID,
+                                 "ChatGPT live client arguments are required");
+  }
+  if (integration_shared_subscription_auth == NULL) {
+    rc = integration_open_default_chatgpt_auth(
+        &integration_shared_subscription_auth, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    if (!integration_shared_subscription_auth_registered) {
+      if (atexit(integration_close_shared_subscription_auth) != 0) {
+        integration_close_shared_subscription_auth();
+        return integration_set_error(error, CAI_ERR_TRANSPORT,
+                                     "failed to register ChatGPT auth cleanup");
+      }
+      integration_shared_subscription_auth_registered = 1;
+    }
+  }
+  config->chatgpt_auth = integration_shared_subscription_auth;
+  if (config->timeout_ms <= 0L) {
+    config->timeout_ms = CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TIMEOUT_MS;
+  }
+  return cai_client_open(config, out, error);
+}
 
 static void print_error(const char *operation, int rc, const cai_error *error) {
   fprintf(stderr, "%s failed: %s\n", operation,
@@ -56,23 +132,15 @@ static int integration_set_error(cai_error *error, int code,
 }
 
 static const char *integration_model(void) {
-  const char *model;
-
-  model = getenv("CAI_TEST_MODEL");
-  if (model == NULL || model[0] == '\0') {
-    model = CAI_MODEL_GPT_5_NANO;
-  }
-  return model;
+  /* Generic subscription probes stay on the smallest supported model. Smith
+   * coverage is explicitly pinned to Luna below. */
+  return CAI_MODEL_GPT_5_NANO;
 }
 
 static const char *chatgpt_integration_model(void) {
-  const char *model;
-
-  model = getenv("CAI_CHATGPT_TEST_MODEL");
-  if (model == NULL || model[0] == '\0') {
-    model = CAI_INTEGRATION_CHATGPT_DEFAULT_MODEL;
-  }
-  return model;
+  /* Subscription integration coverage is deliberately capped at Luna. Do not
+   * let an inherited generic test-model environment select a costlier model. */
+  return CAI_INTEGRATION_CHATGPT_DEFAULT_MODEL;
 }
 
 static const char *openrouter_integration_model(void) {
@@ -394,6 +462,47 @@ typedef struct integration_exec_tool_event_state {
   integration_write_state output;
 } integration_exec_tool_event_state;
 
+typedef struct integration_smith_runtime_event_state {
+  integration_write_state answer;
+  integration_write_state terminal_output;
+  int read_completed;
+  int patch_completed;
+  int goal_created;
+  int goal_updated;
+  int execute_completed;
+  int write_stdin_completed;
+  int mcp_echo_completed;
+  int terminal_started;
+  int terminal_waiting;
+  int terminal_completed;
+  int terminal_exit_zero;
+  int response_completed;
+  int review_started;
+  int review_handed_off;
+  int review_report;
+  int subagent_started;
+  int subagent_handed_off;
+  int checker_handed_off;
+  int reviewer_handed_off;
+  int steering_requested;
+  int steering_submitted;
+  int steering_queued;
+  int steering_delivered;
+  int session_checkpointed;
+  int run_completed;
+  int run_failed;
+  unsigned long long first_read_completed_sequence;
+  unsigned long long first_patch_completed_sequence;
+  unsigned long long first_read_after_patch_sequence;
+  unsigned long long terminal_started_sequence;
+  char terminal_command[512];
+  char failure_message[512];
+  char review_report_json[4096];
+  char checker_handover[4096];
+  char reviewer_handover[4096];
+  char subagent_failure[512];
+} integration_smith_runtime_event_state;
+
 typedef struct integration_stream_debug_state {
   char deltas[4096];
   size_t deltas_length;
@@ -643,6 +752,136 @@ static int integration_exec_tool_event(void *context,
   return rc;
 }
 
+static void integration_runtime_copy_event_text(char *destination,
+                                                size_t destination_capacity,
+                                                const char *data,
+                                                size_t data_length) {
+  size_t count;
+
+  if (destination == NULL || destination_capacity == 0U) {
+    return;
+  }
+  count = data != NULL && data_length < destination_capacity - 1U ? data_length
+          : data != NULL ? destination_capacity - 1U
+                         : 0U;
+  if (count > 0U) {
+    memcpy(destination, data, count);
+  }
+  destination[count] = '\0';
+}
+
+static int integration_smith_runtime_event(void *context,
+                                           const cai_agent_runtime_event *event,
+                                           cai_error *error) {
+  integration_smith_runtime_event_state *state;
+
+  state = (integration_smith_runtime_event_state *)context;
+  if (state == NULL || event == NULL) {
+    return CAI_OK;
+  }
+  if (event->type == CAI_AGENT_EVENT_TEXT_DELTA) {
+    return integration_write(&state->answer, event->data, event->data_length,
+                             error);
+  }
+  if (event->type == CAI_AGENT_EVENT_TOOL_CALL_STARTED) {
+    state->steering_requested = 1;
+  } else if (event->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED &&
+             event->tool_action == CAI_AGENT_TOOL_ACTION_SUBAGENT) {
+    integration_runtime_copy_event_text(state->subagent_failure,
+                                        sizeof(state->subagent_failure),
+                                        event->data, event->data_length);
+  } else if (event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED) {
+    if (event->tool_name != NULL &&
+        strcmp(event->tool_name, "mcp_echo_message") == 0) {
+      state->mcp_echo_completed++;
+    } else if (event->tool_action == CAI_AGENT_TOOL_ACTION_READ) {
+      state->read_completed++;
+      if (state->first_read_completed_sequence == 0U) {
+        state->first_read_completed_sequence = event->sequence;
+      }
+      if (state->patch_completed > 0 &&
+          state->first_read_after_patch_sequence == 0U) {
+        state->first_read_after_patch_sequence = event->sequence;
+      }
+    } else if (event->tool_action == CAI_AGENT_TOOL_ACTION_PATCH) {
+      state->patch_completed++;
+      if (state->first_patch_completed_sequence == 0U) {
+        state->first_patch_completed_sequence = event->sequence;
+      }
+    } else if (event->tool_action == CAI_AGENT_TOOL_ACTION_CREATE_GOAL) {
+      state->goal_created++;
+    } else if (event->tool_action == CAI_AGENT_TOOL_ACTION_UPDATE_GOAL) {
+      state->goal_updated++;
+    } else if (event->tool_action == CAI_AGENT_TOOL_ACTION_EXECUTE) {
+      state->execute_completed++;
+    } else if (event->tool_action == CAI_AGENT_TOOL_ACTION_WRITE_STDIN) {
+      state->write_stdin_completed++;
+    }
+  } else if (event->type == CAI_AGENT_EVENT_STEERING_QUEUED) {
+    state->steering_queued++;
+  } else if (event->type == CAI_AGENT_EVENT_STEERING_DELIVERED) {
+    state->steering_delivered++;
+  } else if (event->type == CAI_AGENT_EVENT_SESSION_CHECKPOINTED) {
+    state->session_checkpointed++;
+  } else if (event->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED) {
+    state->terminal_started++;
+    if (state->terminal_started_sequence == 0U) {
+      state->terminal_started_sequence = event->sequence;
+      integration_runtime_copy_event_text(state->terminal_command,
+                                          sizeof(state->terminal_command),
+                                          event->data, event->data_length);
+    }
+  } else if (event->type == CAI_AGENT_EVENT_TERMINAL_OUTPUT) {
+    return integration_write(&state->terminal_output, event->data,
+                             event->data_length, error);
+  } else if (event->type == CAI_AGENT_EVENT_TERMINAL_WAITING) {
+    state->terminal_waiting++;
+  } else if (event->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED) {
+    state->terminal_completed++;
+    if (event->terminal_has_exit_code && event->terminal_exit_code == 0) {
+      state->terminal_exit_zero++;
+    }
+  } else if (event->type == CAI_AGENT_EVENT_REVIEW_STARTED) {
+    state->review_started++;
+  } else if (event->type == CAI_AGENT_EVENT_REVIEW_HANDED_OFF) {
+    state->review_handed_off++;
+  } else if (event->type == CAI_AGENT_EVENT_REVIEW_REPORT) {
+    state->review_report++;
+    integration_runtime_copy_event_text(state->review_report_json,
+                                        sizeof(state->review_report_json),
+                                        event->data, event->data_length);
+  } else if (event->type == CAI_AGENT_EVENT_SUBAGENT_STARTED) {
+    state->subagent_started++;
+  } else if (event->type == CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF) {
+    state->subagent_handed_off++;
+    if (event->subagent_name != NULL &&
+        strcmp(event->subagent_name, "checker") == 0) {
+      state->checker_handed_off++;
+      integration_runtime_copy_event_text(state->checker_handover,
+                                          sizeof(state->checker_handover),
+                                          event->data, event->data_length);
+    } else if (event->subagent_name != NULL &&
+               strcmp(event->subagent_name, "review") == 0) {
+      state->reviewer_handed_off++;
+      integration_runtime_copy_event_text(state->reviewer_handover,
+                                          sizeof(state->reviewer_handover),
+                                          event->data, event->data_length);
+    }
+  } else if (event->type == CAI_AGENT_EVENT_RESPONSE_COMPLETED) {
+    state->response_completed++;
+  } else if (event->type == CAI_AGENT_EVENT_RUN_COMPLETED &&
+             event->subagent_name == NULL) {
+    state->run_completed++;
+  } else if (event->type == CAI_AGENT_EVENT_RUN_FAILED &&
+             event->subagent_name == NULL) {
+    state->run_failed++;
+    integration_runtime_copy_event_text(state->failure_message,
+                                        sizeof(state->failure_message),
+                                        event->data, event->data_length);
+  }
+  return CAI_OK;
+}
+
 static int integration_stream_delta_debug(void *context, const char *item_id,
                                           int output_index,
                                           const lonejson_spooled *delta,
@@ -852,23 +1091,254 @@ static int integration_read_file(const char *path, char *buffer,
   return 1;
 }
 
+static int integration_file_equals(const char *path, const char *expected) {
+  FILE *fp;
+  char buffer[256];
+  size_t expected_length;
+  size_t offset;
+
+  if (path == NULL || expected == NULL) {
+    return 0;
+  }
+  fp = fopen(path, "rb");
+  if (fp == NULL) {
+    return 0;
+  }
+  expected_length = strlen(expected);
+  offset = 0U;
+  while (offset < expected_length) {
+    size_t remaining;
+    size_t chunk_size;
+    size_t nread;
+
+    remaining = expected_length - offset;
+    chunk_size = remaining < sizeof(buffer) ? remaining : sizeof(buffer);
+    nread = fread(buffer, 1U, chunk_size, fp);
+    if (nread != chunk_size || memcmp(buffer, expected + offset, nread) != 0) {
+      fclose(fp);
+      return 0;
+    }
+    offset += nread;
+  }
+  if (fgetc(fp) != EOF || ferror(fp)) {
+    fclose(fp);
+    return 0;
+  }
+  fclose(fp);
+  return 1;
+}
+
+static int integration_directory_contains_only(const char *path,
+                                               const char *allowed_name) {
+  DIR *directory;
+  struct dirent *entry;
+  int valid;
+
+  if (path == NULL || allowed_name == NULL) {
+    return 0;
+  }
+  directory = opendir(path);
+  if (directory == NULL) {
+    return 0;
+  }
+  valid = 1;
+  errno = 0;
+  while ((entry = readdir(directory)) != NULL) {
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+      continue;
+    }
+    if (strcmp(entry->d_name, allowed_name) != 0) {
+      valid = 0;
+      break;
+    }
+  }
+  if (errno != 0 || closedir(directory) != 0) {
+    valid = 0;
+  }
+  return valid;
+}
+
+static int integration_has_hello_source(const char *path) {
+  static const char *const extensions[] = {".c", ".py", ".lua", ".sh"};
+  DIR *directory;
+  struct dirent *entry;
+  char source_path[PATH_MAX];
+  char contents[4096];
+  size_t entry_length;
+  size_t extension_index;
+  size_t extension_length;
+  int found;
+
+  if (path == NULL) {
+    return 0;
+  }
+  directory = opendir(path);
+  if (directory == NULL) {
+    return 0;
+  }
+  found = 0;
+  errno = 0;
+  while ((entry = readdir(directory)) != NULL) {
+    if (entry->d_name[0] == '.') {
+      continue;
+    }
+    entry_length = strlen(entry->d_name);
+    for (extension_index = 0U;
+         extension_index < sizeof(extensions) / sizeof(extensions[0]);
+         ++extension_index) {
+      extension_length = strlen(extensions[extension_index]);
+      if (entry_length < extension_length ||
+          strcmp(entry->d_name + entry_length - extension_length,
+                 extensions[extension_index]) != 0) {
+        continue;
+      }
+      if (snprintf(source_path, sizeof(source_path), "%s/%s", path,
+                   entry->d_name) < (int)sizeof(source_path) &&
+          integration_read_file(source_path, contents, sizeof(contents)) &&
+          integration_text_contains(contents, "Hello, world!")) {
+        found = 1;
+      }
+      break;
+    }
+    if (found) {
+      break;
+    }
+  }
+  if (errno != 0 || closedir(directory) != 0) {
+    found = 0;
+  }
+  return found;
+}
+
+static int integration_remove_directory_tree(const char *path) {
+  DIR *directory;
+  struct dirent *entry;
+  struct stat st;
+  int valid;
+
+  if (path == NULL) {
+    return 0;
+  }
+  if (lstat(path, &st) != 0) {
+    return errno == ENOENT;
+  }
+  if (!S_ISDIR(st.st_mode)) {
+    return unlink(path) == 0 || errno == ENOENT;
+  }
+  directory = opendir(path);
+  if (directory == NULL) {
+    return 0;
+  }
+  valid = 1;
+  errno = 0;
+  while ((entry = readdir(directory)) != NULL) {
+    char child_path[PATH_MAX];
+
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+      continue;
+    }
+    if (snprintf(child_path, sizeof(child_path), "%s/%s", path,
+                 entry->d_name) >= (int)sizeof(child_path) ||
+        !integration_remove_directory_tree(child_path)) {
+      valid = 0;
+      break;
+    }
+  }
+  if (errno != 0 || closedir(directory) != 0) {
+    valid = 0;
+  }
+  if (valid && rmdir(path) != 0 && errno != ENOENT) {
+    valid = 0;
+  }
+  return valid;
+}
+
+static int integration_run_program(const char *const *arguments, char *output,
+                                   size_t output_capacity) {
+  char *program_arguments[32];
+  char buffer[1024];
+  pid_t child;
+  pid_t waited;
+  int pipe_fds[2];
+  int status;
+  ssize_t count;
+  size_t argument_count;
+  size_t output_length;
+
+  if (arguments == NULL || arguments[0] == NULL || output == NULL ||
+      output_capacity == 0U) {
+    return 0;
+  }
+  argument_count = 0U;
+  while (arguments[argument_count] != NULL &&
+         argument_count <
+             sizeof(program_arguments) / sizeof(program_arguments[0]) - 1U) {
+    argument_count++;
+  }
+  if (arguments[argument_count] != NULL || pipe(pipe_fds) != 0) {
+    return 0;
+  }
+  output[0] = '\0';
+  child = fork();
+  if (child < 0) {
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return 0;
+  }
+  if (child == 0) {
+    memcpy(program_arguments, arguments,
+           (argument_count + 1U) * sizeof(program_arguments[0]));
+    (void)close(pipe_fds[0]);
+    (void)dup2(pipe_fds[1], STDOUT_FILENO);
+    (void)dup2(pipe_fds[1], STDERR_FILENO);
+    (void)close(pipe_fds[1]);
+    execvp(program_arguments[0], program_arguments);
+    _exit(127);
+  }
+  (void)close(pipe_fds[1]);
+  output_length = 0U;
+  while ((count = read(pipe_fds[0], buffer, sizeof(buffer))) > 0) {
+    size_t copied;
+
+    copied = (size_t)count;
+    if (copied > output_capacity - output_length - 1U) {
+      copied = output_capacity - output_length - 1U;
+    }
+    if (copied > 0U) {
+      memcpy(output + output_length, buffer, copied);
+      output_length += copied;
+    }
+  }
+  output[output_length] = '\0';
+  (void)close(pipe_fds[0]);
+  do {
+    waited = waitpid(child, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+  return waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
 static int run_basic_response(void) {
   const char *model;
   cai_client_config client_config;
+  cai_chatgpt_auth *auth;
   cai_response_create_params *params;
   cai_response *response;
   cai_client *client;
   cai_error error;
   int rc;
 
-  model = integration_model();
+  model = chatgpt_integration_model();
   cai_error_init(&error);
-  cai_client_config_init(&client_config);
+  auth = NULL;
   client = NULL;
   params = NULL;
   response = NULL;
 
-  rc = cai_client_open(&client_config, &client, &error);
+  rc =
+      integration_configure_chatgpt_subscription(&client_config, &auth, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_open(&client_config, &client, &error);
+  }
   if (rc != CAI_OK) {
     print_error("client open", rc, &error);
     goto done;
@@ -899,6 +1369,7 @@ done:
   cai_response_destroy(response);
   cai_response_create_params_destroy(params);
   cai_client_close(client);
+  cai_chatgpt_auth_close(auth);
   cai_error_cleanup(&error);
   return rc == CAI_OK ? 0 : 1;
 }
@@ -906,6 +1377,7 @@ done:
 static int run_hosted_web_search_regression_once(int *out_retryable) {
   const char *model;
   cai_client_config client_config;
+  cai_chatgpt_auth *auth;
   cai_response_create_params *params;
   cai_response *response;
   cai_client *client;
@@ -914,9 +1386,9 @@ static int run_hosted_web_search_regression_once(int *out_retryable) {
   char *items_json;
   int rc;
 
-  model = integration_model();
+  model = chatgpt_integration_model();
   cai_error_init(&error);
-  cai_client_config_init(&client_config);
+  auth = NULL;
   client = NULL;
   params = NULL;
   response = NULL;
@@ -926,7 +1398,11 @@ static int run_hosted_web_search_regression_once(int *out_retryable) {
   }
 
   fprintf(stderr, "[integration-hosted-web-search] model=%s\n", model);
-  rc = cai_client_open(&client_config, &client, &error);
+  rc =
+      integration_configure_chatgpt_subscription(&client_config, &auth, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_open(&client_config, &client, &error);
+  }
   if (rc != CAI_OK) {
     print_error("client open", rc, &error);
     goto done;
@@ -1003,6 +1479,7 @@ done:
   cai_response_destroy(response);
   cai_response_create_params_destroy(params);
   cai_client_close(client);
+  cai_chatgpt_auth_close(auth);
   cai_error_cleanup(&error);
   return rc == CAI_OK ? 0 : 1;
 }
@@ -1574,6 +2051,7 @@ static int run_openrouter_tool_regression(void) {
   int rc;
 
   cai_error_init(&error);
+  rc = CAI_OK;
   cai_client_config_init(&client_config);
   cai_client_config_use_openrouter(&client_config);
   cai_agent_config_init(&agent_config);
@@ -2111,6 +2589,7 @@ static int run_tool_security_regression_with_provider(int use_openrouter) {
   cai_agent_config agent_config;
   cai_run_options run_options;
   cai_client_config client_config;
+  cai_chatgpt_auth *auth;
   cai_client *client;
   cai_agent *agent;
   cai_session *session;
@@ -2121,9 +2600,14 @@ static int run_tool_security_regression_with_provider(int use_openrouter) {
   int rc;
 
   cai_error_init(&error);
-  cai_client_config_init(&client_config);
+  rc = CAI_OK;
+  auth = NULL;
   if (use_openrouter != 0) {
+    cai_client_config_init(&client_config);
     cai_client_config_use_openrouter(&client_config);
+  } else {
+    rc = integration_configure_chatgpt_subscription(&client_config, &auth,
+                                                    &error);
   }
   cai_agent_config_init(&agent_config);
   cai_run_options_init(&run_options);
@@ -2135,7 +2619,7 @@ static int run_tool_security_regression_with_provider(int use_openrouter) {
   memset(&tool_state, 0, sizeof(tool_state));
 
   agent_config.model = use_openrouter != 0 ? openrouter_tool_integration_model()
-                                           : integration_model();
+                                           : chatgpt_integration_model();
   fprintf(stderr, "[integration-%stool-security] model=%s\n",
           use_openrouter != 0 ? "openrouter-" : "", agent_config.model);
   if (use_openrouter != 0) {
@@ -2169,7 +2653,9 @@ static int run_tool_security_regression_with_provider(int use_openrouter) {
   }
   run_options.max_tool_rounds = 2;
 
-  rc = cai_client_open(&client_config, &client, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_open(&client_config, &client, &error);
+  }
   if (rc == CAI_OK) {
     rc = cai_client_new_agent(client, &agent_config, &agent, &error);
   }
@@ -2235,6 +2721,7 @@ done:
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);
+  cai_chatgpt_auth_close(auth);
   cai_error_cleanup(&error);
   return rc == CAI_OK ? 0 : 1;
 }
@@ -2299,7 +2786,7 @@ static int run_searxng_tool_regression(void) {
   run_options.tool_event = integration_tool_event;
   run_options.tool_event_context = &event_state;
 
-  rc = cai_client_open(&client_config, &client, &error);
+  rc = integration_open_subscription_client(&client_config, &client, &error);
   if (rc == CAI_OK) {
     rc = cai_client_new_agent(client, &agent_config, &agent, &error);
   }
@@ -2410,7 +2897,7 @@ static int run_mcp_client_tool_live_regression(void) {
   run_options.tool_event = integration_tool_event;
   run_options.tool_event_context = &event_state;
 
-  rc = cai_client_open(&client_config, &client, &error);
+  rc = integration_open_subscription_client(&client_config, &client, &error);
   if (rc == CAI_OK) {
     rc = cai_client_new_agent(client, &agent_config, &agent, &error);
   }
@@ -2689,7 +3176,7 @@ static int run_searxng_stream_tool_regression(void) {
   }
   rc = cai_sink_file(fp, 0, &sink, &error);
   if (rc == CAI_OK) {
-    rc = cai_client_open(&client_config, &client, &error);
+    rc = integration_open_subscription_client(&client_config, &client, &error);
   }
   if (rc == CAI_OK) {
     rc = cai_client_new_agent(client, &agent_config, &agent, &error);
@@ -2871,7 +3358,7 @@ static int run_exec_tool_llm_regression(void) {
 
   rc = cai_sink_from_callbacks(&sink_callbacks, &sink, &error);
   if (rc == CAI_OK) {
-    rc = cai_client_open(&client_config, &client, &error);
+    rc = integration_open_subscription_client(&client_config, &client, &error);
   }
   if (rc == CAI_OK) {
     rc = cai_client_new_agent(client, &agent_config, &agent, &error);
@@ -3212,7 +3699,7 @@ static int run_read_tool_llm_regression(void) {
 
   rc = cai_sink_from_callbacks(&sink_callbacks, &sink, &error);
   if (rc == CAI_OK) {
-    rc = cai_client_open(&client_config, &client, &error);
+    rc = integration_open_subscription_client(&client_config, &client, &error);
   }
   if (rc == CAI_OK) {
     rc = cai_client_new_agent(client, &agent_config, &agent, &error);
@@ -3394,10 +3881,11 @@ static double integration_spend_limit_usd(void) {
 
   value = getenv("CAI_INTEGRATION_SPEND_LIMIT_USD");
   if (value == NULL || value[0] == '\0') {
-    return CAI_INTEGRATION_E2E_DEFAULT_SPEND_LIMIT_USD;
+    return CAI_INTEGRATION_CHATGPT_E2E_DEFAULT_SPEND_LIMIT_USD;
   }
   parsed = atof(value);
-  return parsed > 0.0 ? parsed : CAI_INTEGRATION_E2E_DEFAULT_SPEND_LIMIT_USD;
+  return parsed > 0.0 ? parsed
+                      : CAI_INTEGRATION_CHATGPT_E2E_DEFAULT_SPEND_LIMIT_USD;
 }
 
 static unsigned int openrouter_request_delay_sec(void) {
@@ -3776,6 +4264,7 @@ static int run_e2e_session_regression_with_provider(int use_openrouter) {
   static const char first_secret[] = "alpha-173";
   cai_agent_config agent_config;
   cai_client_config client_config;
+  cai_chatgpt_auth *auth;
   cai_client *client;
   cai_agent *agent;
   cai_session *session;
@@ -3800,19 +4289,24 @@ static int run_e2e_session_regression_with_provider(int use_openrouter) {
   int content_ok;
 
   cai_error_init(&error);
-  cai_client_config_init(&client_config);
+  auth = NULL;
+  rc = CAI_OK;
+  if (use_openrouter != 0) {
+    cai_client_config_init(&client_config);
+    cai_client_config_use_openrouter(&client_config);
+  } else {
+    rc = integration_configure_chatgpt_subscription(&client_config, &auth,
+                                                    &error);
+  }
   cai_agent_config_init(&agent_config);
   client = NULL;
   agent = NULL;
   session = NULL;
   response = NULL;
   model = use_openrouter != 0 ? openrouter_integration_model()
-                              : integration_model();
+                              : chatgpt_integration_model();
   spent_usd = 0.0;
   limit_usd = integration_spend_limit_usd();
-  if (use_openrouter != 0) {
-    cai_client_config_use_openrouter(&client_config);
-  }
   max_turns = use_openrouter != 0 ? 6 : 20;
 
   agent_config.model = model;
@@ -3833,7 +4327,9 @@ static int run_e2e_session_regression_with_provider(int use_openrouter) {
     agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
   }
 
-  rc = cai_client_open(&client_config, &client, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_open(&client_config, &client, &error);
+  }
   if (rc == CAI_OK) {
     rc = cai_client_new_agent(client, &agent_config, &agent, &error);
   }
@@ -3945,6 +4441,7 @@ static int run_e2e_session_regression_with_provider(int use_openrouter) {
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);
+  cai_chatgpt_auth_close(auth);
   cai_error_cleanup(&error);
   return rc == CAI_OK ? 0 : 1;
 }
@@ -3986,7 +4483,7 @@ static int run_usage_limit_regression(void) {
   agent_config.max_output_tokens = 64;
   agent_config.session_usage_limits = limits;
 
-  rc = cai_client_open(&client_config, &client, &error);
+  rc = integration_open_subscription_client(&client_config, &client, &error);
   if (rc == CAI_OK) {
     rc = cai_client_new_agent(client, &agent_config, &agent, &error);
   }
@@ -4058,6 +4555,7 @@ done:
 static int integration_open_default_chatgpt_auth(cai_chatgpt_auth **out,
                                                  cai_error *error) {
   cai_chatgpt_auth_config auth_config;
+  const char *configured_path;
   char *auth_path;
   int rc;
 
@@ -4066,21 +4564,31 @@ static int integration_open_default_chatgpt_auth(cai_chatgpt_auth **out,
                                  "ChatGPT auth output is required");
   }
   *out = NULL;
-  auth_path = NULL;
-  rc = cai_chatgpt_auth_default_path(&auth_path, error);
-  if (rc != CAI_OK) {
-    return rc;
+  configured_path = getenv("CAI_CHATGPT_AUTH_JSON");
+  if (configured_path != NULL && configured_path[0] != '\0') {
+    auth_path = strdup(configured_path);
+    if (auth_path == NULL) {
+      return integration_set_error(error, CAI_ERR_NOMEM,
+                                   "failed to copy ChatGPT auth path");
+    }
+  } else {
+    auth_path = NULL;
+    rc = cai_chatgpt_auth_default_path(&auth_path, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
   }
   if (access(auth_path, R_OK) != 0) {
     rc = integration_set_error(
         error, CAI_ERR_INVALID,
-        "ChatGPT subscription E2E requires a readable default auth.json");
+        "ChatGPT subscription E2E requires CAI auth; run `make chatgpt-login` "
+        "or set CAI_CHATGPT_AUTH_JSON to an explicit CAI auth file");
     if (error != NULL && error->message != NULL) {
       fprintf(stderr, "[integration-chatgpt-subscription] %s: %s\n",
               error->message, auth_path);
     }
     cai_string_destroy(auth_path);
-    return 77;
+    return rc;
   }
   fprintf(stderr, "[integration-chatgpt-subscription] auth_json=%s\n",
           auth_path);
@@ -4089,6 +4597,1086 @@ static int integration_open_default_chatgpt_auth(cai_chatgpt_auth **out,
   rc = cai_chatgpt_auth_open(&auth_config, out, error);
   cai_string_destroy(auth_path);
   return rc;
+}
+
+static int integration_smith_runtime_wait(
+    cai_agent_runtime *runtime, integration_smith_runtime_event_state *events,
+    int require_steering, int timeout_seconds, cai_error *error) {
+  static const char steering[] =
+      "After the next tool call, continue the requested verification exactly "
+      "as instructed. Do not widen scope or change any other file.";
+  time_t deadline;
+  int rc;
+
+  if (runtime == NULL || events == NULL || timeout_seconds <= 0) {
+    return integration_set_error(error, CAI_ERR_INVALID,
+                                 "Smith runtime wait arguments are invalid");
+  }
+  deadline = time(NULL) + (time_t)timeout_seconds;
+  do {
+    rc = cai_agent_runtime_pump(runtime, 250L, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+    if (require_steering && events->steering_requested &&
+        !events->steering_submitted) {
+      rc = cai_agent_runtime_submit_steering(runtime, steering, error);
+      if (rc != CAI_OK) {
+        return rc;
+      }
+      events->steering_submitted = 1;
+    }
+    if (events->run_failed > 0) {
+      fprintf(stderr, "Smith runtime reported a failed run: %s\n",
+              events->failure_message);
+      return integration_set_error(error, CAI_ERR_PROTOCOL,
+                                   "Smith runtime run failed");
+    }
+    if (events->run_completed > 0) {
+      return CAI_OK;
+    }
+  } while (time(NULL) <= deadline);
+  return integration_set_error(error, CAI_ERR_TRANSPORT,
+                               "Smith runtime live E2E timed out");
+}
+
+static int run_chatgpt_smith_goal_regression(void) {
+  static const char objective[] =
+      "create and run a Hello World program in the temporary Git repository";
+  static const char prompt_prefix[] =
+      "Create an unbudgeted goal with the exact objective `create and run a "
+      "Hello World program in the temporary Git repository`. You are in an "
+      "empty Git repository. Independently choose exactly one of C, Python, "
+      "Lua, or Bash, then write a small top-level Hello World program using "
+      "the conventional .c, .py, .lua, or .sh extension for that language. ";
+  static const char prompt_middle[] =
+      "Use the terminal to run the program and verify it prints exactly "
+      "`Hello, world!` followed by a newline. Use tools in any appropriate "
+      "order; no commit is needed. Only after the successful run is confirmed, "
+      "call update_goal with status complete. ";
+  static const char prompt_suffix[] =
+      "In the final response include exactly the marker "
+      "SMITH_GOAL_LIVE_CONFIRMED.";
+  cai_agent_runtime_config runtime_config;
+  cai_agent_goal_snapshot goal;
+  cai_client_config client_config;
+  cai_agent_runtime *runtime;
+  cai_client *client;
+  cai_error error;
+  integration_smith_runtime_event_state events;
+  const char *git_init[] = {"git", "init", NULL, NULL};
+  char command_output[1024];
+  char prompt[1024];
+  char workspace[] = "/tmp/cai-smith-goal-e2e-XXXXXX";
+  int prompt_length;
+  int rc;
+  int workspace_created;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  memset(&runtime_config, 0, sizeof(runtime_config));
+  memset(&goal, 0, sizeof(goal));
+  memset(&events, 0, sizeof(events));
+  client = NULL;
+  runtime = NULL;
+  workspace_created = 0;
+  prompt_length = snprintf(prompt, sizeof(prompt), "%s%s%s", prompt_prefix,
+                           prompt_middle, prompt_suffix);
+  if (prompt_length < 0 || prompt_length >= (int)sizeof(prompt)) {
+    rc = integration_set_error(&error, CAI_ERR_PROTOCOL,
+                               "Smith goal prompt did not fit its buffer");
+    goto done;
+  }
+  if (mkdtemp(workspace) == NULL) {
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to create Smith goal workspace");
+    goto done;
+  }
+  workspace_created = 1;
+  git_init[2] = workspace;
+  if (!integration_run_program(git_init, command_output,
+                               sizeof(command_output))) {
+    rc =
+        integration_set_error(&error, CAI_ERR_TRANSPORT,
+                              "failed to initialize Smith goal Git repository");
+    goto done;
+  }
+  client_config.timeout_ms = CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TIMEOUT_MS;
+  rc = integration_open_subscription_client(&client_config, &client, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith goal ChatGPT client open", rc, &error);
+    goto done;
+  }
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = workspace;
+  runtime_config.model = chatgpt_integration_model();
+  runtime_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  runtime_config.disable_default_session_store = 1;
+  runtime_config.event_callback = integration_smith_runtime_event;
+  runtime_config.event_context = &events;
+  rc = cai_agent_runtime_open(client, &runtime_config, &runtime, &error);
+  if (rc == CAI_OK) {
+    rc = cai_agent_runtime_submit(runtime, prompt, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = integration_smith_runtime_wait(runtime, &events, 0, 90, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_runtime_get_goal(runtime, &goal, &error);
+  }
+  if (rc == CAI_OK &&
+      (events.goal_created < 1 || events.goal_updated < 1 || !goal.has_goal ||
+       goal.objective == NULL || goal.status == NULL ||
+       strcmp(goal.objective, objective) != 0 ||
+       strcmp(goal.status, "complete") != 0 || events.terminal_started < 1 ||
+       events.terminal_completed < 1 || events.terminal_exit_zero < 1 ||
+       !integration_text_contains(events.terminal_output.buffer,
+                                  "Hello, world!") ||
+       !integration_has_hello_source(workspace) ||
+       !integration_text_contains(events.answer.buffer,
+                                  "SMITH_GOAL_LIVE_CONFIRMED"))) {
+    fprintf(stderr,
+            "Smith goal evidence failed (created=%d updated=%d has_goal=%d "
+            "objective=%s status=%s terminal_started=%d terminal_completed=%d "
+            "terminal_exit_zero=%d terminal_output=%s answer=%s)\n",
+            events.goal_created, events.goal_updated, goal.has_goal,
+            goal.objective != NULL ? goal.objective : "(null)",
+            goal.status != NULL ? goal.status : "(null)",
+            events.terminal_started, events.terminal_completed,
+            events.terminal_exit_zero, events.terminal_output.buffer,
+            events.answer.buffer);
+    rc = integration_set_error(&error, CAI_ERR_PROTOCOL,
+                               "Smith live goal contract was not satisfied");
+  }
+  if (rc != CAI_OK) {
+    print_error("Smith goal live E2E", rc, &error);
+  } else {
+    fprintf(stderr,
+            "[integration-chatgpt-smith-goal] model=%s created=%d updated=%d "
+            "status=%s terminal_runs=%d elapsed=%lld\n",
+            chatgpt_integration_model(), events.goal_created,
+            events.goal_updated, goal.status, events.terminal_completed,
+            goal.elapsed_seconds);
+  }
+
+done:
+  cai_agent_runtime_close(runtime);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  if (workspace_created && !integration_remove_directory_tree(workspace)) {
+    fprintf(stderr, "Smith goal live E2E failed to clean up temporary data\n");
+    return 1;
+  }
+  return rc == CAI_OK ? 0 : 1;
+}
+
+static int run_chatgpt_smith_runtime_regression(void) {
+  static const char pending_contents[] = "title: Smith live E2E\n"
+                                         "state: pending\n"
+                                         "verification: read-back-required\n";
+  static const char complete_contents[] = "title: Smith live E2E\n"
+                                          "state: complete\n"
+                                          "verification: read-back-required\n";
+  static const char full_prompt[] =
+      "Work only in task.txt. Use read_file first. Use apply_patch to change "
+      "the exact line `state: pending` to `state: complete`. Use read_file "
+      "to verify it. Run exec_command exactly "
+      "`grep -Fx 'state: complete' task.txt; sleep 1` with yield_time_ms 250. "
+      "If it is running, call write_stdin with empty chars and yield_time_ms "
+      "1000 until it succeeds. Do not create or modify other files. Final "
+      "marker: SMITH_RUNTIME_CODE_CONFIRMED.";
+  static const char resume_prompt[] =
+      "This is a resumed session. Use read_file to confirm task.txt still "
+      "contains `state: complete`. Do not modify files. In your final "
+      "response include the exact marker RUNTIME_RESUME_CONFIRMED.";
+  cai_agent_local_session_store_config store_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  cai_chatgpt_auth *auth;
+  cai_client *client;
+  cai_client_config client_config;
+  cai_agent_runtime *runtime;
+  cai_error error;
+  integration_smith_runtime_event_state events;
+  integration_smith_runtime_event_state resumed_events;
+  const char *fixture_contents;
+  const char *model;
+  const char *prompt;
+  FILE *fixture;
+  char fixture_path[PATH_MAX];
+  char session_id[CAI_AGENT_SESSION_ID_MAX];
+  char sessions_root[] = "/tmp/cai-smith-runtime-sessions-XXXXXX";
+  char workspace[] = "/tmp/cai-smith-runtime-e2e-XXXXXX";
+  int cleanup_failed;
+  int rc;
+  int store_open;
+  int sessions_root_created;
+  int workspace_created;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_agent_local_session_store_config_init(&store_config);
+  memset(&store, 0, sizeof(store));
+  memset(&events, 0, sizeof(events));
+  memset(&resumed_events, 0, sizeof(resumed_events));
+  auth = NULL;
+  client = NULL;
+  runtime = NULL;
+  fixture = NULL;
+  fixture_path[0] = '\0';
+  session_id[0] = '\0';
+  cleanup_failed = 0;
+  store_open = 0;
+  sessions_root_created = 0;
+  workspace_created = 0;
+  model = chatgpt_integration_model();
+  fixture_contents = pending_contents;
+  prompt = full_prompt;
+
+  if (mkdtemp(workspace) == NULL) {
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to create Smith runtime workspace");
+    goto done;
+  }
+  workspace_created = 1;
+  if (mkdtemp(sessions_root) == NULL) {
+    rc = integration_set_error(
+        &error, CAI_ERR_TRANSPORT,
+        "failed to create Smith runtime local-session-store root");
+    goto done;
+  }
+  sessions_root_created = 1;
+  if (snprintf(fixture_path, sizeof(fixture_path), "%s/task.txt", workspace) >=
+      (int)sizeof(fixture_path)) {
+    rc = integration_set_error(&error, CAI_ERR_INVALID,
+                               "Smith runtime fixture path is too long");
+    goto done;
+  }
+  fixture = fopen(fixture_path, "wb");
+  if (fixture == NULL) {
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to write Smith runtime fixture");
+    goto done;
+  }
+  if (fwrite(fixture_contents, 1U, strlen(fixture_contents), fixture) !=
+      strlen(fixture_contents)) {
+    fclose(fixture);
+    fixture = NULL;
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to write Smith runtime fixture");
+    goto done;
+  }
+  if (fclose(fixture) != 0) {
+    fixture = NULL;
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to close Smith runtime fixture");
+    goto done;
+  }
+  fixture = NULL;
+  store_config.root_directory = sessions_root;
+  rc = cai_agent_local_session_store_open(&store_config, &store, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith runtime session store open", rc, &error);
+    goto done;
+  }
+  store_open = 1;
+  rc = integration_open_default_chatgpt_auth(&auth, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith runtime ChatGPT auth open", rc, &error);
+    goto done;
+  }
+  client_config.chatgpt_auth = auth;
+  client_config.timeout_ms = CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TIMEOUT_MS;
+  rc = cai_client_open(&client_config, &client, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith runtime ChatGPT client open", rc, &error);
+    goto done;
+  }
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = workspace;
+  runtime_config.model = model;
+  runtime_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  runtime_config.session_store = &store;
+  runtime_config.session_scope = workspace;
+  runtime_config.event_callback = integration_smith_runtime_event;
+  runtime_config.event_context = &events;
+  rc = cai_agent_runtime_open(client, &runtime_config, &runtime, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith runtime open", rc, &error);
+    goto done;
+  }
+  rc = cai_agent_runtime_submit(runtime, prompt, &error);
+  if (rc == CAI_OK) {
+    rc = integration_smith_runtime_wait(runtime, &events, 1, 120, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("Smith runtime live turn", rc, &error);
+    goto done;
+  }
+  if (!integration_file_equals(fixture_path, complete_contents) ||
+      !integration_directory_contains_only(workspace, "task.txt")) {
+    fprintf(
+        stderr,
+        "Smith runtime workspace assertion failed (fixture=%d only_task=%d)\n",
+        integration_file_equals(fixture_path, complete_contents),
+        integration_directory_contains_only(workspace, "task.txt"));
+    rc = integration_set_error(
+        &error, CAI_ERR_PROTOCOL,
+        "Smith runtime live turn changed an unexpected workspace path");
+    goto done;
+  }
+  if (events.read_completed < 2 || events.execute_completed < 1 ||
+      events.write_stdin_completed < 1 || events.terminal_started != 1 ||
+      events.terminal_completed != 1 || events.terminal_exit_zero != 1 ||
+      events.session_checkpointed < 1 ||
+      !integration_text_contains(events.terminal_command,
+                                 "grep -Fx 'state: complete' task.txt") ||
+      !integration_text_contains(events.terminal_output.buffer,
+                                 "state: complete")) {
+    fprintf(stderr,
+            "Smith runtime terminal evidence failed (reads=%d execute=%d "
+            "write_stdin=%d started=%d waiting=%d completed=%d exit_zero=%d "
+            "checkpoints=%d command=%s output=%s)\n",
+            events.read_completed, events.execute_completed,
+            events.write_stdin_completed, events.terminal_started,
+            events.terminal_waiting, events.terminal_completed,
+            events.terminal_exit_zero, events.session_checkpointed,
+            events.terminal_command, events.terminal_output.buffer);
+    rc = integration_set_error(
+        &error, CAI_ERR_PROTOCOL,
+        "Smith runtime live turn missed required terminal lifecycle evidence");
+    goto done;
+  }
+  if (events.patch_completed < 1 || !events.steering_submitted ||
+      events.steering_queued < 1 || events.steering_delivered < 1 ||
+      events.first_read_completed_sequence == 0U ||
+      events.first_patch_completed_sequence == 0U ||
+      events.first_read_after_patch_sequence == 0U ||
+      events.first_read_completed_sequence >=
+          events.first_patch_completed_sequence ||
+      events.first_read_after_patch_sequence <=
+          events.first_patch_completed_sequence ||
+      events.terminal_started_sequence <=
+          events.first_read_after_patch_sequence ||
+      !integration_text_contains(events.answer.buffer,
+                                 "SMITH_RUNTIME_CODE_CONFIRMED")) {
+    fprintf(stderr,
+            "Smith runtime coding evidence failed (patches=%d steer_submit=%d "
+            "steer_queued=%d steer_delivered=%d read_before=%llu patch=%llu "
+            "read_after=%llu terminal=%llu answer=%s)\n",
+            events.patch_completed, events.steering_submitted,
+            events.steering_queued, events.steering_delivered,
+            events.first_read_completed_sequence,
+            events.first_patch_completed_sequence,
+            events.first_read_after_patch_sequence,
+            events.terminal_started_sequence, events.answer.buffer);
+    rc = integration_set_error(
+        &error, CAI_ERR_PROTOCOL,
+        "Smith runtime coding, steering, or read-back evidence is incomplete");
+    goto done;
+  }
+  {
+    if (snprintf(session_id, sizeof(session_id), "%s",
+                 cai_agent_runtime_session_id(runtime)) >=
+        (int)sizeof(session_id)) {
+      rc = integration_set_error(&error, CAI_ERR_INVALID,
+                                 "Smith runtime session identifier is invalid");
+      goto done;
+    }
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+    cai_agent_runtime_config_init(&runtime_config);
+    runtime_config.workspace_directory = workspace;
+    runtime_config.model = model;
+    runtime_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+    runtime_config.session_store = &store;
+    runtime_config.session_scope = workspace;
+    runtime_config.resume_latest = 1;
+    runtime_config.event_callback = integration_smith_runtime_event;
+    runtime_config.event_context = &resumed_events;
+    rc = cai_agent_runtime_open(client, &runtime_config, &runtime, &error);
+    if (rc != CAI_OK) {
+      print_error("Smith runtime resume open", rc, &error);
+      goto done;
+    }
+    if (strcmp(session_id, cai_agent_runtime_session_id(runtime)) != 0) {
+      rc = integration_set_error(&error, CAI_ERR_PROTOCOL,
+                                 "Smith runtime resumed a different session");
+      goto done;
+    }
+    rc = cai_agent_runtime_submit(runtime, resume_prompt, &error);
+    if (rc == CAI_OK) {
+      rc = integration_smith_runtime_wait(runtime, &resumed_events, 0, 90,
+                                          &error);
+    }
+    if (rc != CAI_OK) {
+      print_error("Smith runtime resumed turn", rc, &error);
+      goto done;
+    }
+    if (resumed_events.read_completed < 1 ||
+        !integration_text_contains(resumed_events.answer.buffer,
+                                   "RUNTIME_RESUME_CONFIRMED") ||
+        !integration_file_equals(fixture_path, complete_contents)) {
+      fprintf(stderr,
+              "Smith runtime resume evidence failed (reads=%d answer=%s "
+              "fixture=%d)\n",
+              resumed_events.read_completed, resumed_events.answer.buffer,
+              integration_file_equals(fixture_path, complete_contents));
+      rc = integration_set_error(&error, CAI_ERR_PROTOCOL,
+                                 "Smith runtime resume evidence is incomplete");
+      goto done;
+    }
+  }
+  fprintf(stderr,
+          "[integration-chatgpt-smith-runtime] model=%s mode=%s reads=%d "
+          "patches=%d terminal_waits=%d checkpoints=%d resume=%s\n",
+          model, "luna-acceptance", events.read_completed,
+          events.patch_completed, events.terminal_waiting,
+          events.session_checkpointed, "verified");
+  rc = CAI_OK;
+
+done:
+  if (fixture != NULL) {
+    fclose(fixture);
+  }
+  cai_agent_runtime_close(runtime);
+  cai_client_close(client);
+  cai_chatgpt_auth_close(auth);
+  if (store_open) {
+    cai_agent_local_session_store_close(&store);
+  }
+  cai_error_cleanup(&error);
+  if (workspace_created && !integration_remove_directory_tree(workspace)) {
+    cleanup_failed = 1;
+  }
+  if (sessions_root_created &&
+      !integration_remove_directory_tree(sessions_root)) {
+    cleanup_failed = 1;
+  }
+  if (cleanup_failed) {
+    fprintf(stderr,
+            "Smith runtime live E2E failed to clean up temporary data\n");
+    return 1;
+  }
+  return rc == CAI_OK ? 0 : 1;
+}
+
+static int run_chatgpt_smith_review_regression(int require_mcp) {
+  static const char build_prompt_1[] =
+      "You are in a newly initialized, otherwise empty Git repository. "
+      "Create a small Hello World project in C. It must include a CMake build "
+      "definition and a conventional Makefile; both `cmake -S . -B build && ";
+  static const char build_prompt_2[] =
+      "cmake --build build` and `make hello` must build a runnable program "
+      "named hello whose exact standard output is `Hello, world!` followed by "
+      "a newline. Use the terminal to build and run both paths, ";
+  static const char build_prompt_3[] =
+      "add appropriate "
+      "ignore rules for generated artifacts, and commit the completed work "
+      "with "
+      "the repository's configured local Git author. Do not ask questions. "
+      "In your final response include the exact marker "
+      "SMITH_REVIEW_PROJECT_COMMITTED.";
+  static const char mcp_instruction[] =
+      " Before committing, call mcp_echo_message exactly once with JSON "
+      "arguments {\"message\":\"cai-smith-mcp-review-e2e\"}. Use its actual "
+      "result in your final response and include the exact marker "
+      "SMITH_REVIEW_MCP_CONFIRMED.";
+  static const char follow_up_prompt_1[] =
+      "Read the developer review handoff now in your context. If it identifies "
+      "any actionable defect, fix every valid finding and do not make "
+      "unrelated "
+      "changes. If it identifies no actionable defect, leave the "
+      "implementation ";
+  static const char follow_up_prompt_2[] =
+      "alone. In either case, verify both the CMake and Makefile build paths "
+      "and "
+      "their hello output. Commit any changes you make with the configured "
+      "local "
+      "Git author, leaving the worktree clean. In your final response include "
+      "the exact marker SMITH_REVIEW_FOLLOWUP_CONFIRMED.";
+  const char *git_init[] = {"git", "init", NULL, NULL};
+  const char *git_config_name[] = {"git",       "-C",          NULL, "config",
+                                   "user.name", "Test Tester", NULL};
+  const char *git_config_email[] = {
+      "git", "-C", NULL, "config", "user.email", "info@c89.systems", NULL};
+  const char *git_identity[] = {
+      "git", "-C", NULL, "log", "-1", "--format=%an <%ae>", NULL};
+  const char *git_head[] = {"git",      "-C",   NULL, "rev-parse",
+                            "--verify", "HEAD", NULL};
+  const char *git_status[] = {"git", "-C", NULL, "status", "--porcelain", NULL};
+  const char *cmake_configure[] = {"cmake", "-S", NULL, "-B", NULL, NULL};
+  const char *cmake_build[] = {"cmake", "--build", NULL, NULL};
+  const char *cmake_hello[] = {NULL, NULL};
+  const char *make_hello[] = {"make", "-C", NULL, "hello", NULL};
+  const char *make_binary[] = {NULL, NULL};
+  cai_agent_local_session_store_config store_config;
+  cai_agent_review_request review_request;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  cai_chatgpt_auth *auth;
+  cai_client *client;
+  cai_client_config client_config;
+  cai_mcp_client *mcp_client;
+  cai_mcp_client *mcp_clients[1];
+  cai_mcp_streamable_http_client_config mcp_client_config;
+  cai_mcp_tool_registration_config mcp_tool_config;
+  cai_agent_runtime *review;
+  cai_agent_runtime *runtime;
+  cai_error error;
+  integration_smith_runtime_event_state events;
+  integration_smith_runtime_event_state review_events;
+  char build_directory[PATH_MAX];
+  char build_hello_path[PATH_MAX];
+  char build_prompt[1024];
+  char commit_sha[128];
+  char command_output[4096];
+  char follow_up_prompt[1024];
+  char make_hello_path[PATH_MAX];
+  char sessions_root[] = "/tmp/cai-smith-review-sessions-XXXXXX";
+  char workspace[] = "/tmp/cai-smith-review-e2e-XXXXXX";
+  const char *mcp_url;
+  int cleanup_failed;
+  int rc;
+  int sessions_root_created;
+  int store_open;
+  int workspace_created;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_agent_local_session_store_config_init(&store_config);
+  cai_mcp_streamable_http_client_config_init(&mcp_client_config);
+  memset(&mcp_tool_config, 0, sizeof(mcp_tool_config));
+  memset(&store, 0, sizeof(store));
+  memset(&events, 0, sizeof(events));
+  memset(&review_events, 0, sizeof(review_events));
+  auth = NULL;
+  client = NULL;
+  mcp_client = NULL;
+  mcp_clients[0] = NULL;
+  review = NULL;
+  runtime = NULL;
+  cleanup_failed = 0;
+  sessions_root_created = 0;
+  store_open = 0;
+  workspace_created = 0;
+  mcp_url = require_mcp ? getenv("CAI_SMITH_E2E_MCP_URL") : NULL;
+
+  if (require_mcp && (mcp_url == NULL || mcp_url[0] == '\0')) {
+    rc = integration_set_error(&error, CAI_ERR_INVALID,
+                               "Smith MCP review E2E requires an MCP URL");
+    goto done;
+  }
+
+  if (snprintf(build_prompt, sizeof(build_prompt), "%s%s%s%s", build_prompt_1,
+               build_prompt_2, build_prompt_3,
+               require_mcp ? mcp_instruction : "") >=
+          (int)sizeof(build_prompt) ||
+      snprintf(follow_up_prompt, sizeof(follow_up_prompt), "%s%s",
+               follow_up_prompt_1,
+               follow_up_prompt_2) >= (int)sizeof(follow_up_prompt)) {
+    rc = integration_set_error(&error, CAI_ERR_INVALID,
+                               "Smith review prompt is too long");
+    goto done;
+  }
+
+  if (mkdtemp(workspace) == NULL) {
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to create Smith review workspace");
+    goto done;
+  }
+  workspace_created = 1;
+  git_init[2] = workspace;
+  git_config_name[2] = workspace;
+  git_config_email[2] = workspace;
+  git_identity[2] = workspace;
+  git_head[2] = workspace;
+  git_status[2] = workspace;
+  cmake_configure[2] = workspace;
+  cmake_configure[4] = build_directory;
+  cmake_build[2] = build_directory;
+  cmake_hello[0] = build_hello_path;
+  make_hello[2] = workspace;
+  make_binary[0] = make_hello_path;
+  if (snprintf(build_directory, sizeof(build_directory), "%s/build",
+               workspace) >= (int)sizeof(build_directory) ||
+      snprintf(build_hello_path, sizeof(build_hello_path), "%s/hello",
+               build_directory) >= (int)sizeof(build_hello_path) ||
+      snprintf(make_hello_path, sizeof(make_hello_path), "%s/hello",
+               workspace) >= (int)sizeof(make_hello_path)) {
+    rc = integration_set_error(&error, CAI_ERR_INVALID,
+                               "Smith review fixture path is too long");
+    goto done;
+  }
+  if (!integration_run_program(git_init, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(git_config_name, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(git_config_email, command_output,
+                               sizeof(command_output))) {
+    fprintf(stderr, "Smith review Git fixture setup output: %s\n",
+            command_output);
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to initialize Smith review Git fixture");
+    goto done;
+  }
+  if (mkdtemp(sessions_root) == NULL) {
+    rc = integration_set_error(
+        &error, CAI_ERR_TRANSPORT,
+        "failed to create Smith review local-session-store root");
+    goto done;
+  }
+  sessions_root_created = 1;
+  store_config.root_directory = sessions_root;
+  rc = cai_agent_local_session_store_open(&store_config, &store, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith review session store open", rc, &error);
+    goto done;
+  }
+  store_open = 1;
+  rc = integration_open_default_chatgpt_auth(&auth, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith review ChatGPT auth open", rc, &error);
+    goto done;
+  }
+  client_config.chatgpt_auth = auth;
+  client_config.timeout_ms = CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TIMEOUT_MS;
+  rc = cai_client_open(&client_config, &client, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith review ChatGPT client open", rc, &error);
+    goto done;
+  }
+  if (require_mcp) {
+    mcp_client_config.url = mcp_url;
+    mcp_client_config.client_name = "cai-smith-review-live-e2e";
+    mcp_client_config.timeout_ms = 10000L;
+    rc = cai_mcp_streamable_http_client_open(&mcp_client_config, &mcp_client,
+                                             &error);
+    if (rc == CAI_OK) {
+      rc = cai_mcp_client_initialize(mcp_client, &error);
+    }
+    if (rc != CAI_OK) {
+      print_error("Smith review MCP client open", rc, &error);
+      goto done;
+    }
+    mcp_clients[0] = mcp_client;
+    mcp_tool_config.name_prefix = "mcp_";
+  }
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = workspace;
+  runtime_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  runtime_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  runtime_config.reasoning_summary = CAI_REASONING_SUMMARY_DETAILED;
+  runtime_config.review_model = CAI_MODEL_GPT_5_6_LUNA;
+  runtime_config.review_reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
+  runtime_config.review_reasoning_summary = CAI_REASONING_SUMMARY_DETAILED;
+  runtime_config.session_store = &store;
+  runtime_config.session_scope = workspace;
+  runtime_config.event_callback = integration_smith_runtime_event;
+  runtime_config.event_context = &events;
+  runtime_config.review_event_callback = integration_smith_runtime_event;
+  runtime_config.review_event_context = &review_events;
+  if (require_mcp) {
+    runtime_config.mcp_clients = mcp_clients;
+    runtime_config.mcp_client_count = 1U;
+    runtime_config.mcp_tool_config = &mcp_tool_config;
+  }
+  rc = cai_agent_runtime_open(client, &runtime_config, &runtime, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith review runtime open", rc, &error);
+    goto done;
+  }
+  rc = cai_agent_runtime_submit(runtime, build_prompt, &error);
+  if (rc == CAI_OK) {
+    rc = integration_smith_runtime_wait(runtime, &events, 0, 240, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("Smith review project turn", rc, &error);
+    goto done;
+  }
+  if (!integration_text_contains(events.answer.buffer,
+                                 "SMITH_REVIEW_PROJECT_COMMITTED") ||
+      (require_mcp &&
+       (!integration_text_contains(events.answer.buffer,
+                                   "SMITH_REVIEW_MCP_CONFIRMED") ||
+        events.mcp_echo_completed != 1)) ||
+      events.terminal_started < 1 || events.terminal_completed < 1 ||
+      events.response_completed < 2 ||
+      !integration_run_program(git_identity, command_output,
+                               sizeof(command_output)) ||
+      strcmp(command_output, "Test Tester <info@c89.systems>\n") != 0 ||
+      !integration_run_program(git_status, command_output,
+                               sizeof(command_output)) ||
+      command_output[0] != '\0') {
+    fprintf(stderr,
+            "Smith review project evidence failed (mcp_echo=%d terminal=%d/%d "
+            "responses=%d identity=%s status=%s answer=%s)\n",
+            events.mcp_echo_completed, events.terminal_started,
+            events.terminal_completed, events.response_completed,
+            command_output, command_output, events.answer.buffer);
+    rc = integration_set_error(
+        &error, CAI_ERR_PROTOCOL,
+        "Smith did not produce a clean, locally authored project commit");
+    goto done;
+  }
+  if (!integration_run_program(git_head, commit_sha, sizeof(commit_sha))) {
+    fprintf(stderr, "Smith review commit lookup output: %s\n", commit_sha);
+    rc = integration_set_error(&error, CAI_ERR_PROTOCOL,
+                               "Smith project commit has no resolvable SHA");
+    goto done;
+  }
+  commit_sha[strcspn(commit_sha, "\r\n")] = '\0';
+  cai_agent_review_request_init(&review_request);
+  review_request.target = CAI_AGENT_REVIEW_COMMIT;
+  review_request.commit = commit_sha;
+  rc =
+      cai_agent_runtime_start_review(runtime, &review_request, &review, &error);
+  if (rc == CAI_OK) {
+    rc = integration_smith_runtime_wait(review, &review_events, 0, 180, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("Smith interactive review", rc, &error);
+    goto done;
+  }
+  if (review_events.review_report != 1 ||
+      review_events.review_report_json[0] == '\0' ||
+      review_events.response_completed < 1) {
+    rc = integration_set_error(&error, CAI_ERR_PROTOCOL,
+                               "Smith interactive review did not report");
+    goto done;
+  }
+  rc = cai_agent_runtime_finish_review(runtime, review, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith review handoff", rc, &error);
+    goto done;
+  }
+  cai_agent_runtime_close(review);
+  review = NULL;
+  /* integration_smith_runtime_wait observes completion for one submitted turn;
+   * preserve accumulated event evidence but begin a fresh parent turn. */
+  events.run_completed = 0;
+  events.run_failed = 0;
+  events.failure_message[0] = '\0';
+  rc = cai_agent_runtime_submit(runtime, follow_up_prompt, &error);
+  if (rc == CAI_OK) {
+    rc = integration_smith_runtime_wait(runtime, &events, 0, 240, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("Smith review follow-up", rc, &error);
+    goto done;
+  }
+  if (!integration_text_contains(events.answer.buffer,
+                                 "SMITH_REVIEW_FOLLOWUP_CONFIRMED") ||
+      events.review_started != 1 || events.review_handed_off != 1 ||
+      !integration_run_program(git_status, command_output,
+                               sizeof(command_output)) ||
+      command_output[0] != '\0') {
+    fprintf(stderr,
+            "Smith review handoff evidence failed (started=%d handed_off=%d "
+            "status=%s answer=%s)\n",
+            events.review_started, events.review_handed_off, command_output,
+            events.answer.buffer);
+    rc = integration_set_error(&error, CAI_ERR_PROTOCOL,
+                               "Smith review handoff was not consumed cleanly");
+    goto done;
+  }
+  if (!integration_run_program(cmake_configure, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(cmake_build, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(cmake_hello, command_output,
+                               sizeof(command_output)) ||
+      strcmp(command_output, "Hello, world!\n") != 0 ||
+      !integration_run_program(make_hello, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(make_binary, command_output,
+                               sizeof(command_output)) ||
+      strcmp(command_output, "Hello, world!\n") != 0 ||
+      !integration_run_program(git_status, command_output,
+                               sizeof(command_output)) ||
+      command_output[0] != '\0') {
+    fprintf(stderr, "Smith review build verification output: %s\n",
+            command_output);
+    rc = integration_set_error(
+        &error, CAI_ERR_PROTOCOL,
+        "Smith review project did not retain clean CMake and Makefile builds");
+    goto done;
+  }
+  fprintf(stderr,
+          "[integration-chatgpt-smith-review] model=%s review_report=%s "
+          "terminal_commands=%d responses=%d\n",
+          CAI_MODEL_GPT_5_6_LUNA, review_events.review_report_json,
+          events.terminal_completed + review_events.terminal_completed,
+          events.response_completed + review_events.response_completed);
+  rc = CAI_OK;
+
+done:
+  cai_agent_runtime_close(review);
+  cai_agent_runtime_close(runtime);
+  cai_mcp_client_destroy(mcp_client);
+  cai_client_close(client);
+  cai_chatgpt_auth_close(auth);
+  if (store_open) {
+    cai_agent_local_session_store_close(&store);
+  }
+  cai_error_cleanup(&error);
+  if (workspace_created && !integration_remove_directory_tree(workspace)) {
+    cleanup_failed = 1;
+  }
+  if (sessions_root_created &&
+      !integration_remove_directory_tree(sessions_root)) {
+    cleanup_failed = 1;
+  }
+  if (cleanup_failed) {
+    fprintf(stderr,
+            "Smith review live E2E failed to clean up temporary data\n");
+    return 1;
+  }
+  return rc == CAI_OK ? 0 : 1;
+}
+
+static int run_chatgpt_smith_subagent_regression(void) {
+  static const char checker_instructions[] =
+      "You are CAI's checker subagent. Return exactly one compact JSON object "
+      "and no Markdown: {\"schema\":\"cai.checker.v1\",\"status\":"
+      "\"passed\",\"marker\":\"SUBAGENT_CHECKER_CONFIRMED\"}.";
+  static const char parent_prompt[] =
+      "Use run_checker exactly once, with no arguments, before answering. "
+      "Then call run_review exactly once with target uncommitted. Do not set "
+      "model, reasoning_effort, or reasoning_summary for either call. "
+      "After both handovers return, briefly state that they were received and "
+      "include exactly the marker SMITH_SUBAGENTS_LIVE_CONFIRMED.";
+  static const cai_agent_preset checker_preset = {
+      "checker",
+      "checker-1",
+      "CAI Checker",
+      CAI_MODEL_GPT_5_6_LUNA,
+      CAI_REASONING_EFFORT_LOW,
+      CAI_REASONING_SUMMARY_AUTO,
+      checker_instructions,
+      NULL,
+      CAI_AGENT_PRESET_TOOL_READ_FILE,
+      0UL,
+      0};
+  static const cai_agent_subagent_profile checker_profile = {
+      "checker",
+      "Return the requested compact checker JSON.",
+      &checker_preset,
+      NULL,
+      0U,
+      NULL,
+      0U,
+      NULL,
+      0U,
+      NULL,
+      0U,
+      NULL,
+      1,
+      NULL,
+      NULL};
+  const char *git_init[] = {"git", "init", NULL, NULL};
+  const char *git_config_name[] = {"git",       "-C",          NULL, "config",
+                                   "user.name", "Test Tester", NULL};
+  const char *git_config_email[] = {
+      "git", "-C", NULL, "config", "user.email", "info@c89.systems", NULL};
+  const char *git_add[] = {"git", "-C", NULL, "add", "README.md", NULL};
+  const char *git_commit[] = {"git", "-C",       NULL, "commit",
+                              "-m",  "baseline", NULL};
+  cai_agent_local_session_store_config store_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  cai_chatgpt_auth *auth;
+  cai_client *client;
+  cai_client_config client_config;
+  cai_agent_runtime *runtime;
+  cai_error error;
+  integration_smith_runtime_event_state events;
+  FILE *fixture;
+  char command_output[4096];
+  char fixture_path[PATH_MAX];
+  char sessions_root[] = "/tmp/cai-smith-subagents-sessions-XXXXXX";
+  char workspace[] = "/tmp/cai-smith-subagents-e2e-XXXXXX";
+  int cleanup_failed;
+  int rc;
+  int sessions_root_created;
+  int store_open;
+  int workspace_created;
+
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_agent_local_session_store_config_init(&store_config);
+  memset(&store, 0, sizeof(store));
+  memset(&events, 0, sizeof(events));
+  auth = NULL;
+  client = NULL;
+  runtime = NULL;
+  fixture = NULL;
+  cleanup_failed = 0;
+  sessions_root_created = 0;
+  store_open = 0;
+  workspace_created = 0;
+  if (mkdtemp(workspace) == NULL) {
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to create Smith subagent workspace");
+    goto done;
+  }
+  workspace_created = 1;
+  git_init[2] = workspace;
+  git_config_name[2] = workspace;
+  git_config_email[2] = workspace;
+  git_add[2] = workspace;
+  git_commit[2] = workspace;
+  if (snprintf(fixture_path, sizeof(fixture_path), "%s/README.md", workspace) >=
+      (int)sizeof(fixture_path)) {
+    rc = integration_set_error(&error, CAI_ERR_INVALID,
+                               "Smith subagent fixture path is too long");
+    goto done;
+  }
+  fixture = fopen(fixture_path, "wb");
+  if (fixture == NULL || fputs("baseline\n", fixture) == EOF) {
+    if (fixture != NULL) {
+      fclose(fixture);
+      fixture = NULL;
+    }
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to write Smith subagent baseline");
+    goto done;
+  }
+  if (fclose(fixture) != 0) {
+    fixture = NULL;
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to close Smith subagent baseline");
+    goto done;
+  }
+  fixture = NULL;
+  if (!integration_run_program(git_init, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(git_config_name, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(git_config_email, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(git_add, command_output,
+                               sizeof(command_output)) ||
+      !integration_run_program(git_commit, command_output,
+                               sizeof(command_output))) {
+    rc = integration_set_error(
+        &error, CAI_ERR_TRANSPORT,
+        "failed to initialize Smith subagent Git fixture");
+    goto done;
+  }
+  fixture = fopen(fixture_path, "wb");
+  if (fixture == NULL ||
+      fputs("baseline\nreview this uncommitted change\n", fixture) == EOF) {
+    if (fixture != NULL) {
+      fclose(fixture);
+      fixture = NULL;
+    }
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to write Smith subagent review change");
+    goto done;
+  }
+  if (fclose(fixture) != 0) {
+    fixture = NULL;
+    rc = integration_set_error(&error, CAI_ERR_TRANSPORT,
+                               "failed to close Smith subagent review change");
+    goto done;
+  }
+  fixture = NULL;
+  if (mkdtemp(sessions_root) == NULL) {
+    rc = integration_set_error(
+        &error, CAI_ERR_TRANSPORT,
+        "failed to create Smith subagent local-session-store root");
+    goto done;
+  }
+  sessions_root_created = 1;
+  store_config.root_directory = sessions_root;
+  rc = cai_agent_local_session_store_open(&store_config, &store, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith subagent session store open", rc, &error);
+    goto done;
+  }
+  store_open = 1;
+  rc = integration_open_default_chatgpt_auth(&auth, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith subagent ChatGPT auth open", rc, &error);
+    goto done;
+  }
+  client_config.chatgpt_auth = auth;
+  client_config.timeout_ms = CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_TIMEOUT_MS;
+  rc = cai_client_open(&client_config, &client, &error);
+  if (rc != CAI_OK) {
+    print_error("Smith subagent ChatGPT client open", rc, &error);
+    goto done;
+  }
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = workspace;
+  runtime_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  runtime_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  runtime_config.reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  runtime_config.session_store = &store;
+  runtime_config.session_scope = workspace;
+  runtime_config.subagents = &checker_profile;
+  runtime_config.subagent_count = 1U;
+  runtime_config.event_callback = integration_smith_runtime_event;
+  runtime_config.event_context = &events;
+  rc = cai_agent_runtime_open(client, &runtime_config, &runtime, &error);
+  if (rc == CAI_OK)
+    rc = cai_agent_runtime_submit(runtime, parent_prompt, &error);
+  if (rc == CAI_OK)
+    rc = integration_smith_runtime_wait(runtime, &events, 0, 240, &error);
+  if (rc == CAI_OK &&
+      (!integration_text_contains(events.answer.buffer,
+                                  "SMITH_SUBAGENTS_LIVE_CONFIRMED") ||
+       events.subagent_started != 2 || events.subagent_handed_off != 2 ||
+       events.checker_handed_off != 1 || events.reviewer_handed_off != 1 ||
+       events.review_report != 0 ||
+       !integration_text_contains(events.checker_handover, "cai.checker.v1") ||
+       !integration_text_contains(events.checker_handover,
+                                  "SUBAGENT_CHECKER_CONFIRMED") ||
+       !integration_text_contains(events.reviewer_handover,
+                                  "# Review handoff"))) {
+    fprintf(stderr,
+            "Smith subagent evidence failed (started=%d handed_off=%d "
+            "checker=%d reviewer=%d raw_reports=%d failure=%s answer=%s "
+            "checker_handover=%s review_handover=%s)\n",
+            events.subagent_started, events.subagent_handed_off,
+            events.checker_handed_off, events.reviewer_handed_off,
+            events.review_report, events.subagent_failure, events.answer.buffer,
+            events.checker_handover, events.reviewer_handover);
+    rc =
+        integration_set_error(&error, CAI_ERR_PROTOCOL,
+                              "Smith live subagent contract was not satisfied");
+  }
+  if (rc != CAI_OK) {
+    print_error("Smith subagent live E2E", rc, &error);
+  } else {
+    fprintf(stderr,
+            "[integration-chatgpt-smith-subagents] model=%s checker=%d "
+            "reviewer=%d\n",
+            CAI_MODEL_GPT_5_6_LUNA, events.checker_handed_off,
+            events.reviewer_handed_off);
+  }
+
+done:
+  if (fixture != NULL)
+    fclose(fixture);
+  cai_agent_runtime_close(runtime);
+  cai_client_close(client);
+  cai_chatgpt_auth_close(auth);
+  if (store_open)
+    cai_agent_local_session_store_close(&store);
+  cai_error_cleanup(&error);
+  if (workspace_created && !integration_remove_directory_tree(workspace))
+    cleanup_failed = 1;
+  if (sessions_root_created &&
+      !integration_remove_directory_tree(sessions_root))
+    cleanup_failed = 1;
+  if (cleanup_failed) {
+    fprintf(stderr,
+            "Smith subagent live E2E failed to clean up temporary data\n");
+    return 1;
+  }
+  return rc == CAI_OK ? 0 : 1;
 }
 
 static int run_chatgpt_subscription_session_regression(void) {
@@ -4133,10 +5721,6 @@ static int run_chatgpt_subscription_session_regression(void) {
   model = chatgpt_integration_model();
 
   rc = integration_open_default_chatgpt_auth(&auth, &error);
-  if (rc == 77) {
-    cai_error_cleanup(&error);
-    return 77;
-  }
   if (rc != CAI_OK) {
     print_error("chatgpt auth open", rc, &error);
     goto done;
@@ -4360,7 +5944,7 @@ static int run_responses_websocket_live_regression(void) {
 
   rc = cai_sink_from_callbacks(&sink_callbacks, &sink, &error);
   if (rc == CAI_OK) {
-    rc = cai_client_open(&client_config, &client, &error);
+    rc = integration_open_subscription_client(&client_config, &client, &error);
   }
   if (rc == CAI_OK) {
     rc = cai_client_new_agent(client, &agent_config, &agent, &error);
@@ -4538,7 +6122,7 @@ static int run_compaction_recall(void) {
   agent_config.max_output_tokens = 512;
   agent_config.compact_threshold_tokens = 1000LL;
 
-  rc = cai_client_open(&client_config, &client, &error);
+  rc = integration_open_subscription_client(&client_config, &client, &error);
   if (rc == CAI_OK) {
     rc = cai_client_new_agent(client, &agent_config, &agent, &error);
   }
@@ -4631,7 +6215,7 @@ static int run_state_restore_regression(void) {
   agent_config.max_output_tokens = 64;
   agent_config.enable_local_history = 1;
 
-  rc = cai_client_open(&client_config, &client, &error);
+  rc = integration_open_subscription_client(&client_config, &client, &error);
   if (rc == CAI_OK) {
     rc = cai_client_new_agent(client, &agent_config, &agent, &error);
   }
@@ -4712,6 +6296,11 @@ done:
 int main(void) {
   const char *compaction;
   const char *chatgpt_subscription;
+  const char *chatgpt_smith;
+  const char *chatgpt_smith_goal;
+  const char *chatgpt_smith_review;
+  const char *chatgpt_smith_subagents;
+  const char *chatgpt_smith_mcp_review;
   const char *chatgpt_defaults;
   const char *e2e;
   const char *exec_tool;
@@ -4751,6 +6340,30 @@ int main(void) {
     return run_provider_retry_classifier_regression();
   }
   chatgpt_subscription = getenv("CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E");
+  chatgpt_smith = getenv("CAI_INTEGRATION_CHATGPT_SMITH_E2E");
+  chatgpt_smith_goal = getenv("CAI_INTEGRATION_CHATGPT_SMITH_GOAL_E2E");
+  chatgpt_smith_review = getenv("CAI_INTEGRATION_CHATGPT_SMITH_REVIEW_E2E");
+  chatgpt_smith_subagents =
+      getenv("CAI_INTEGRATION_CHATGPT_SMITH_SUBAGENTS_E2E");
+  chatgpt_smith_mcp_review =
+      getenv("CAI_INTEGRATION_CHATGPT_SMITH_MCP_REVIEW_E2E");
+  /* The dedicated MCP acceptance selector wins over inherited live selectors.
+   */
+  if (integration_flag_enabled(chatgpt_smith_mcp_review)) {
+    return run_chatgpt_smith_review_regression(1);
+  }
+  if (integration_flag_enabled(chatgpt_smith_goal)) {
+    return run_chatgpt_smith_goal_regression();
+  }
+  if (integration_flag_enabled(chatgpt_smith)) {
+    return run_chatgpt_smith_runtime_regression();
+  }
+  if (integration_flag_enabled(chatgpt_smith_subagents)) {
+    return run_chatgpt_smith_subagent_regression();
+  }
+  if (integration_flag_enabled(chatgpt_smith_review)) {
+    return run_chatgpt_smith_review_regression(0);
+  }
   if (integration_flag_enabled(chatgpt_subscription)) {
     return run_chatgpt_subscription_session_regression();
   }
@@ -4761,11 +6374,8 @@ int main(void) {
     }
     return run_openrouter_e2e_session_regression();
   }
-  usage_limits = getenv("CAI_INTEGRATION_USAGE_LIMITS");
+  usage_limits = getenv("CAI_INTEGRATION_CHATGPT_USAGE_LIMITS");
   if (integration_flag_enabled(usage_limits)) {
-    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
-      return 1;
-    }
     return run_usage_limit_regression();
   }
   openrouter_session = getenv("CAI_INTEGRATION_OPENROUTER_SESSION");
@@ -4818,60 +6428,37 @@ int main(void) {
     }
     return run_openrouter_basic_response();
   }
-  hosted_web_search = getenv("CAI_INTEGRATION_HOSTED_WEB_SEARCH");
+  hosted_web_search = getenv("CAI_INTEGRATION_CHATGPT_HOSTED_WEB_SEARCH");
   if (integration_flag_enabled(hosted_web_search)) {
-    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
-      return 1;
-    }
     return run_hosted_web_search_regression();
   }
-  mcp_client_tool = getenv("CAI_INTEGRATION_MCP_CLIENT_TOOL");
+  mcp_client_tool = getenv("CAI_INTEGRATION_CHATGPT_MCP_CLIENT_TOOL");
   if (integration_flag_enabled(mcp_client_tool)) {
-    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
-      return 1;
-    }
     return run_mcp_client_tool_live_regression();
   }
-  responses_websocket = getenv("CAI_INTEGRATION_RESPONSES_WEBSOCKET_E2E");
+  responses_websocket =
+      getenv("CAI_INTEGRATION_CHATGPT_RESPONSES_WEBSOCKET_E2E");
   if (integration_flag_enabled(responses_websocket)) {
-    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
-      return 1;
-    }
     return run_responses_websocket_live_regression();
   }
-  tool_security = getenv("CAI_INTEGRATION_TOOL_SECURITY");
+  tool_security = getenv("CAI_INTEGRATION_CHATGPT_TOOL_SECURITY");
   if (integration_flag_enabled(tool_security)) {
-    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
-      return 1;
-    }
     return run_tool_security_regression();
   }
-  exec_tool = getenv("CAI_INTEGRATION_EXEC_TOOL");
+  exec_tool = getenv("CAI_INTEGRATION_CHATGPT_EXEC_TOOL");
   if (integration_flag_enabled(exec_tool)) {
-    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
-      return 1;
-    }
     return run_exec_tool_llm_regression();
   }
-  read_tool = getenv("CAI_INTEGRATION_READ_TOOL");
+  read_tool = getenv("CAI_INTEGRATION_CHATGPT_READ_TOOL");
   if (integration_flag_enabled(read_tool)) {
-    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
-      return 1;
-    }
     return run_read_tool_llm_regression();
   }
-  searxng_tool = getenv("CAI_INTEGRATION_SEARXNG_TOOL");
+  searxng_tool = getenv("CAI_INTEGRATION_CHATGPT_SEARXNG_TOOL");
   if (integration_flag_enabled(searxng_tool)) {
-    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
-      return 1;
-    }
     return run_searxng_tool_regression();
   }
-  searxng_stream_tool = getenv("CAI_INTEGRATION_SEARXNG_STREAM_TOOL");
+  searxng_stream_tool = getenv("CAI_INTEGRATION_CHATGPT_SEARXNG_STREAM_TOOL");
   if (integration_flag_enabled(searxng_stream_tool)) {
-    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
-      return 1;
-    }
     return run_searxng_stream_tool_regression();
   }
   revgeo_provider = getenv("CAI_INTEGRATION_REVGEO_PROVIDER");
@@ -4882,29 +6469,17 @@ int main(void) {
   if (integration_flag_enabled(todo_workflow)) {
     return run_todo_workflow_regression();
   }
-  e2e = getenv("CAI_INTEGRATION_E2E");
+  e2e = getenv("CAI_INTEGRATION_CHATGPT_E2E");
   if (integration_flag_enabled(e2e)) {
-    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
-      return 1;
-    }
     return run_e2e_session_regression();
   }
-  state_restore = getenv("CAI_INTEGRATION_STATE_RESTORE");
+  state_restore = getenv("CAI_INTEGRATION_CHATGPT_STATE_RESTORE");
   if (integration_flag_enabled(state_restore)) {
-    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
-      return 1;
-    }
     return run_state_restore_regression();
   }
-  compaction = getenv("CAI_INTEGRATION_COMPACTION");
+  compaction = getenv("CAI_INTEGRATION_CHATGPT_COMPACTION");
   if (integration_flag_enabled(compaction)) {
-    if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
-      return 1;
-    }
     return run_compaction_recall();
-  }
-  if (integration_apply_dotenv_api_key(CAI_OPENAI_API_KEY_ENV) != 0) {
-    return 1;
   }
   return run_basic_response();
 }

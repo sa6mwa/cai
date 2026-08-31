@@ -1,5 +1,6 @@
 local cai = require("cai")
 local pslog = require("pslog")
+local native_store_test = require("cai_native_todo_store_test")
 
 local function assert_eq(actual, expected, label)
   if actual ~= expected then
@@ -31,6 +32,21 @@ local function assert_throws(fn, label)
   end
   assert(err ~= nil, (label or "operation") .. ": expected Lua error detail")
   return err
+end
+
+local function registry_free_reference_count()
+  local registry = debug.getregistry()
+  local seen = {}
+  local count = 0
+  local reference = registry[1]
+
+  while type(reference) == "number" and reference ~= 0 do
+    assert(not seen[reference], "Lua registry reference free list contains a cycle")
+    seen[reference] = true
+    count = count + 1
+    reference = registry[reference]
+  end
+  return count
 end
 
 local function spool_text(text, chunk_size)
@@ -89,6 +105,8 @@ end
 
 assert(type(cai.open) == "function")
 assert(type(cai.tool_registry) == "function")
+assert(type(cai.native_store) == "function")
+assert(type(cai.native_backend) == "function")
 assert(type(cai.mcp_handler) == "function")
 assert(type(cai.mcp_client) == "function")
 assert(type(cai.chatgpt_auth) == "function")
@@ -111,6 +129,23 @@ assert(type(cai.MCP_CLIENT_TOOL_TASK_SUPPORT_REQUIRED) == "number")
 assert(type(cai.tool_schema) == "function")
 assert(type(cai.load_dotenv_api_key) == "function")
 assert_eq(cai.CONTINUITY_SERVER, 0, "server continuity")
+assert(type(cai.AGENT_EVENT_TEXT_DELTA) == "number", "agent text event")
+assert(type(cai.AGENT_EVENT_TERMINAL_COMMAND_STARTED) == "number",
+  "agent terminal start event")
+assert(type(cai.AGENT_EVENT_TERMINAL_OUTPUT) == "number", "agent terminal output event")
+assert(type(cai.AGENT_EVENT_TERMINAL_WAITING) == "number", "agent terminal wait event")
+assert(type(cai.AGENT_EVENT_TERMINAL_COMMAND_COMPLETED) == "number",
+  "agent terminal completion event")
+assert(type(cai.AGENT_EVENT_TERMINAL_COMMAND_CANCELLED) == "number",
+  "agent terminal cancellation event")
+assert(type(cai.AGENT_EVENT_TURN_QUEUED) == "number", "agent queued turn event")
+assert(type(cai.AGENT_EVENT_REVIEW_REPORT) == "number", "agent review report event")
+assert(type(cai.AGENT_EVENT_REVIEW_STARTED) == "number", "agent review started event")
+assert(type(cai.AGENT_EVENT_REVIEW_HANDED_OFF) == "number", "agent review handoff event")
+assert(type(cai.AGENT_EVENT_REASONING_SUMMARY) == "number", "agent reasoning summary event")
+assert(type(cai.AGENT_EVENT_RESPONSE_COMPLETED) == "number", "agent response completed event")
+assert(type(cai.AGENT_TOOL_ACTION_READ) == "number", "agent read action")
+assert(type(cai.AGENT_TOOL_ACTION_PATCH) == "number", "agent patch action")
 assert_eq(cai.DEFAULT_DOTENV_PATH, ".env", "default dotenv path")
 assert_eq(cai.CHATGPT_AUTH_DEFAULT_ISSUER, "https://auth.openai.com",
   "ChatGPT auth issuer")
@@ -219,6 +254,7 @@ assert_eq(cai.TOOL_CHOICE_REQUIRED, "required", "tool choice required")
 assert_eq(cai.REASONING_EFFORT_MINIMAL, "minimal", "reasoning effort minimal")
 assert_eq(cai.REASONING_EFFORT_MAX, "max", "reasoning effort max")
 assert_eq(cai.REASONING_SUMMARY_AUTO, "auto", "reasoning summary auto")
+assert_eq(cai.REASONING_SUMMARY_NONE, "none", "reasoning summary none")
 assert(type(cai.MODEL_GPT_5_NANO) == "string")
 assert_eq(cai.MODEL_DEFAULT_RESPONSES, cai.MODEL_GPT_5_NANO, "default model")
 
@@ -240,6 +276,18 @@ do
     "Lua client usage method missing")
   assert(type(client_methods.open_response_text_source) == "function",
     "Lua client open_response_text_source method missing")
+  assert(type(client_methods.new_smith_runtime) == "function",
+    "Lua client new_smith_runtime method missing")
+  assert(type(client_methods.new_agent_runtime) == "function",
+    "Lua client new_agent_runtime method missing")
+  assert(type(client_methods.new_smith_review_runtime) == "function",
+    "Lua client new_smith_review_runtime method missing")
+  assert(type(registry["cai.agent_runtime"].__index.submit_review) == "function",
+    "Lua agent runtime submit_review method missing")
+  assert(type(registry["cai.agent_runtime"].__index.start_review) == "function",
+    "Lua agent runtime start_review method missing")
+  assert(type(registry["cai.agent_runtime"].__index.finish_review) == "function",
+    "Lua agent runtime finish_review method missing")
   assert(type(agent_methods.set_session_usage_limits) == "function",
     "Lua agent set_session_usage_limits method missing")
   assert(type(agent_methods.usage) == "function",
@@ -293,7 +341,6 @@ assert_eq(cai.OPENROUTER_MODEL_DEFAULT_RESPONSES,
   "OpenRouter default model")
 assert_eq(cai.MODEL_GPT_5_4_PRO, "gpt-5.4-pro", "GPT-5.4 pro constant")
 assert_eq(cai.MODEL_GPT_5_6_SOL, "gpt-5.6-sol", "GPT-5.6 Sol constant")
-assert_eq(cai.MODEL_GPT_5_6_TERRA, "gpt-5.6-terra", "GPT-5.6 Terra constant")
 assert_eq(cai.MODEL_GPT_5_6_LUNA, "gpt-5.6-luna", "GPT-5.6 Luna constant")
 assert_eq(cai.MODEL_GPT_5_3_CODEX, "gpt-5.3-codex",
   "GPT-5.3-Codex constant")
@@ -845,7 +892,519 @@ do
   failed_client:close()
 end
 
+do
+  local review_client = assert_ok(cai.open({
+    api_key = "test-key",
+    base_url = "http://127.0.0.1:1/v1",
+    timeout_ms = 1,
+  }))
+  local parent = assert_ok(review_client:new_smith_runtime({
+    workspace_directory = ".",
+    review_model = cai.MODEL_GPT_5_6_LUNA,
+    review_reasoning_effort = cai.REASONING_EFFORT_MEDIUM,
+    disable_default_session_store = true,
+  }))
+  local review = assert_ok(parent:start_review({ target = "uncommitted" }))
+  assert_not_ok(parent:submit("must wait for review"),
+    "parent direct input must be paused during review")
+  local review_state = "sampling"
+  for _ = 1, 20 do
+    review_state = assert_ok(review:pump(50))
+    if review_state == "failed" or review_state == "cancelled" or review_state == "completed" then
+      break
+    end
+  end
+  assert(review_state == "failed" or review_state == "cancelled",
+    "offline review child must reach a terminal failure state")
+  assert_ok(parent:finish_review(review))
+  local second_review = assert_ok(parent:start_review({ target = "uncommitted" }))
+  review:close()
+  assert_not_ok(parent:close(),
+    "closing an earlier review must retain a later review callback receiver")
+  review_state = "sampling"
+  for _ = 1, 20 do
+    review_state = assert_ok(second_review:pump(50))
+    if review_state == "failed" or review_state == "cancelled" or review_state == "completed" then
+      break
+    end
+  end
+  assert(review_state == "failed" or review_state == "cancelled",
+    "second offline review child must reach a terminal failure state")
+  assert_ok(parent:finish_review(second_review))
+  second_review:close()
+  parent:close()
+  review_client:close()
+end
+
+do
+  local review_client = assert_ok(cai.open({
+    api_key = "test-key",
+    base_url = "http://127.0.0.1:1/v1",
+    timeout_ms = 1,
+  }))
+  local parent = assert_ok(review_client:new_smith_runtime({
+    workspace_directory = ".",
+    disable_default_session_store = true,
+  }))
+  local review = assert_ok(parent:start_review({ target = "uncommitted" }))
+  assert(native_store_test.make_free_registry_reference() > 0,
+    "native fixture must create a reusable Lua registry reference")
+  local free_before = registry_free_reference_count()
+  assert(free_before > 0, "closed runtime must return its Lua registry reference")
+  review:close()
+  assert_eq(registry_free_reference_count(), free_before + 2,
+    "closing review must preserve prior Lua registry reference slots")
+  parent:close()
+  review_client:close()
+end
+
+do
+  local review_client = assert_ok(cai.open({
+    api_key = "test-key",
+    base_url = "http://127.0.0.1:1/v1",
+    timeout_ms = 1,
+  }))
+  local parent = assert_ok(review_client:new_smith_runtime({
+    workspace_directory = ".",
+    disable_default_session_store = true,
+  }))
+  local review = assert_ok(parent:start_review({ target = "uncommitted" }))
+  review:close()
+  assert_throws(function()
+    parent:submit("abandoned reviews cannot resume the parent")
+  end, "abandoned review parent must reject further operations")
+  parent:close()
+  review_client:close()
+end
+
 local dummy_client = assert_ok(cai.open({ api_key = "test-key", timeout_ms = 1 }))
+do
+  local function assert_runtime_argument_error_releases_activity(label, invoke)
+    local client = assert_ok(cai.open({
+      api_key = "test-key",
+      base_url = "http://127.0.0.1:1/v1",
+      timeout_ms = 1,
+    }))
+    local runtime = assert_ok(client:new_smith_runtime({
+      workspace_directory = ".",
+      disable_default_session_store = true,
+    }))
+    local call_ok = pcall(invoke, runtime)
+    local close_ok, close_value, close_error
+    local client_close_ok, client_close_value, client_close_error
+
+    assert(not call_ok, label .. " must reject an invalid Lua argument")
+    close_ok, close_value, close_error = pcall(function()
+      return runtime:close()
+    end)
+    assert(close_ok and close_error == nil,
+      label .. " must leave its runtime closable: " ..
+      tostring(close_error or close_value))
+    client_close_ok, client_close_value, client_close_error = pcall(function()
+      return client:close()
+    end)
+    assert(client_close_ok and client_close_error == nil,
+      label .. " must leave its parent client closable: " ..
+      tostring(client_close_error or client_close_value))
+  end
+
+  assert_runtime_argument_error_releases_activity("runtime submit", function(runtime)
+    runtime:submit({})
+  end)
+  assert_runtime_argument_error_releases_activity("runtime steering submission", function(runtime)
+    runtime:submit_steering({})
+  end)
+  assert_runtime_argument_error_releases_activity("runtime queued submission", function(runtime)
+    runtime:submit_queued({})
+  end)
+  assert_runtime_argument_error_releases_activity("runtime goal creation", function(runtime)
+    runtime:create_goal({ objective = {} })
+  end)
+  assert_runtime_argument_error_releases_activity("runtime goal objective", function(runtime)
+    runtime:set_goal_objective({})
+  end)
+  assert_runtime_argument_error_releases_activity("runtime goal budget", function(runtime)
+    runtime:set_goal_token_budget({})
+  end)
+  assert_runtime_argument_error_releases_activity("runtime pump", function(runtime)
+    runtime:pump({})
+  end)
+
+  local runtime_meta = debug.getregistry()["cai.agent_runtime"]
+  assert(type(runtime_meta) == "table", "missing agent runtime metatable")
+  for _, method in ipairs({ "submit", "submit_review", "start_review", "finish_review", "submit_steering", "submit_queued", "goal", "create_goal", "pause_goal", "resume_goal", "set_goal_objective", "set_goal_token_budget", "clear_goal_token_budget", "clear_goal", "pump", "state",
+    "session_id", "export_markdown", "export_markdown_file", "wakeup_fd", "close" }) do
+    assert(type(runtime_meta.__index[method]) == "function",
+      "missing agent runtime method " .. method)
+  end
+  assert_throws(function()
+    dummy_client:new_agent_runtime({
+      workspace_directory = ".",
+      event_callback = function() end,
+    })
+  end, "Lua custom runtimes must require a preset table before retaining callbacks")
+  do
+    local weak = setmetatable({}, { __mode = "v" })
+
+    do
+      local sentinel = {}
+      weak.callback = sentinel
+      assert_throws(function()
+        dummy_client:new_smith_runtime({
+          workspace_directory = ".",
+          disable_default_session_store = true,
+          event_callback = function()
+            return sentinel
+          end,
+          subagents = { "not a profile" },
+        })
+      end, "Lua invalid subagent configuration must fail")
+    end
+    collectgarbage("collect")
+    collectgarbage("collect")
+    assert(weak.callback == nil,
+      "rejected Lua runtime must release callback registry references")
+  end
+  do
+    local weak = setmetatable({}, { __mode = "v" })
+
+    do
+      local client = assert_ok(cai.open({
+        api_key = "test-key",
+        base_url = "http://127.0.0.1:1/v1",
+        timeout_ms = 1,
+      }))
+      local sentinel = {}
+      weak.client = client
+      weak.callback = sentinel
+      assert_throws(function()
+        client:new_smith_runtime({
+          workspace_directory = {},
+          event_callback = function()
+            return sentinel
+          end,
+        })
+      end, "Lua invalid runtime options must fail before retaining ownership")
+    end
+    collectgarbage("collect")
+    collectgarbage("collect")
+    assert(weak.client == nil,
+      "invalid runtime options must not retain the parent client")
+    assert(weak.callback == nil,
+      "invalid runtime options must not retain the event callback")
+  end
+  native_store_test.reset_sessions()
+  local prepare_backend = native_store_test.new_subagent_prepare_backend()
+  local custom_runtime = assert_ok(dummy_client:new_agent_runtime({
+    workspace_directory = ".",
+    disable_default_session_store = true,
+    preset = {
+      name = "vectis-engineer",
+      prompt_version = "vectis-engineer-1",
+      default_identity = "Vectis Engineer",
+      default_model = cai.MODEL_GPT_5_6_LUNA,
+      default_reasoning_effort = cai.REASONING_EFFORT_LOW,
+      default_reasoning_summary = cai.REASONING_SUMMARY_CONCISE,
+      developer_instructions = "You are {{agent_identity}}, Vectis' coding agent.",
+      tool_capabilities = cai.AGENT_PRESET_TOOL_READ_FILE + cai.AGENT_PRESET_TOOL_SUBAGENTS,
+    },
+    review_allowed_models = { cai.MODEL_GPT_5_6_LUNA },
+    review_allowed_reasoning_efforts = { cai.REASONING_EFFORT_LOW },
+    review_allowed_reasoning_summaries = { cai.REASONING_SUMMARY_CONCISE },
+    subagents = {
+      {
+        name = "summarizer",
+        description = "Return a compact implementation handover.",
+        allowed_models = { cai.MODEL_GPT_5_6_LUNA },
+        allowed_reasoning_efforts = { cai.REASONING_EFFORT_LOW },
+        allowed_reasoning_summaries = { cai.REASONING_SUMMARY_CONCISE },
+        parameters = {
+          {
+            name = "format",
+            description = "Required output format.",
+            type = "enum",
+            required = true,
+            enum_values = { "json", "markdown" },
+          },
+          {
+            name = "max_items",
+            description = "Optional output limit.",
+            type = "integer",
+          },
+        },
+        instruction_template = "Return {{format}} for {{instructions}}.",
+        expose_instructions = true,
+        prepare_backend = prepare_backend,
+        preset = {
+          name = "vectis-summarizer",
+          prompt_version = "vectis-summarizer-1",
+          default_identity = "Vectis Summarizer",
+          default_model = cai.MODEL_GPT_5_6_LUNA,
+          default_reasoning_effort = cai.REASONING_EFFORT_LOW,
+          default_reasoning_summary = cai.REASONING_SUMMARY_CONCISE,
+          developer_instructions = "You are {{agent_identity}}.",
+          tool_capabilities = cai.AGENT_PRESET_TOOL_READ_FILE,
+        },
+      },
+    },
+  }))
+  assert_eq(custom_runtime:state(), "idle", "Lua custom preset initial state")
+  local custom_chunks = {}
+  assert_ok(custom_runtime:export_markdown(function(chunk)
+    custom_chunks[#custom_chunks + 1] = chunk
+    return true
+  end), nil, "Lua custom preset export")
+  assert(table.concat(custom_chunks):find("vectis-engineer", 1, true),
+    "Lua custom preset export metadata")
+  do
+    local ok, err = prepare_backend:close()
+    assert_not_ok(ok, err, "Lua prepare backend must remain retained by runtime")
+  end
+  custom_runtime:close()
+  assert(pcall(function()
+    prepare_backend:close()
+  end), "Lua prepare backend closes after runtime")
+  do
+    local poll_client = assert_ok(cai.open({
+      api_key = "test-key",
+      base_url = "http://127.0.0.1:1/v1",
+      timeout_ms = 1,
+    }))
+    local poll_runtime = assert_ok(poll_client:new_smith_runtime({
+      workspace_directory = ".",
+      disable_default_session_store = true,
+      event_queue_limit = 1,
+    }))
+    assert_ok(poll_runtime:submit("Lua poll-only initial turn"), nil,
+      "Lua poll-only runtime accepts an initial turn")
+    assert_ok(poll_runtime:submit_queued("Lua poll-only queued turn"), nil,
+      "Lua poll-only runtime does not queue undrainable events")
+    poll_runtime:close()
+    poll_client:close()
+  end
+  do
+    local callback_client = assert_ok(cai.open({
+      api_key = "test-key",
+      base_url = "http://127.0.0.1:1/v1",
+      timeout_ms = 1,
+    }))
+    local callback_runtime
+    local callback_calls = 0
+
+    callback_runtime = assert_ok(callback_client:new_smith_runtime({
+      workspace_directory = ".",
+      disable_default_session_store = true,
+      event_callback = function()
+        callback_calls = callback_calls + 1
+        callback_runtime:close()
+      end,
+    }))
+    assert_ok(callback_runtime:submit("close from Lua event callback"), nil,
+      "Lua callback-close runtime accepts its turn")
+    assert_eq(callback_runtime:pump(100), "cancelled",
+      "Lua callback-close pump reports cancellation")
+    assert_eq(callback_calls, 1, "Lua callback-close called exactly once")
+    assert_throws(function()
+      callback_runtime:state()
+    end, "Lua callback-close runtime is closed after pump")
+    callback_client:close()
+  end
+  do
+    local callback_client = assert_ok(cai.open({
+      api_key = "test-key",
+      base_url = "http://127.0.0.1:1/v1",
+      timeout_ms = 1,
+    }))
+    local callback_parent
+    local callback_review
+    local callback_calls = 0
+    local close_error
+
+    callback_parent = assert_ok(callback_client:new_smith_runtime({
+      workspace_directory = ".",
+      disable_default_session_store = true,
+      event_callback = function()
+        callback_calls = callback_calls + 1
+        local _, err = callback_review:close()
+        close_error = err
+      end,
+    }))
+    callback_review = assert_ok(callback_parent:start_review({
+      target = "uncommitted",
+    }))
+    assert_eq(callback_review:pump(100), "cancelled",
+      "Lua review callback-close pump reports cancellation")
+    assert_eq(callback_calls, 1,
+      "Lua review callback-close called exactly once")
+    assert_eq(close_error, nil,
+      "Lua review callback-close must target the review runtime")
+    assert_throws(function()
+      callback_review:state()
+    end, "Lua callback-close review runtime is closed after pump")
+    callback_parent:close()
+    callback_client:close()
+  end
+  do
+    local goal_runtime = assert_ok(dummy_client:new_smith_runtime({
+      workspace_directory = ".",
+      disable_default_session_store = true,
+    }))
+    assert_ok(goal_runtime:create_goal({ objective = "Exercise host goals", token_budget = 12 }))
+    local goal
+    for _ = 1, 10 do
+      goal_runtime:pump(10)
+      goal = goal_runtime:goal()
+      if goal.has_goal then break end
+    end
+    assert(goal and goal.status == "active", "Lua host goal creation")
+    assert(goal.remaining_tokens == 12, "Lua host goal remaining budget")
+    local duplicate_goal, duplicate_goal_error = goal_runtime:create_goal({
+      objective = "must not replace active Lua host goal",
+    })
+    local duplicate_goal_failure = assert_not_ok(duplicate_goal,
+      duplicate_goal_error, "Lua host goal duplicate create")
+    assert(tostring(duplicate_goal_failure.message or ""):find("unfinished or pending goal", 1,
+      true), "Lua host goal duplicate create reason")
+    assert(goal_runtime:goal().objective == "Exercise host goals",
+      "Lua host goal duplicate create preserves objective")
+    assert_ok(goal_runtime:pause_goal())
+    for _ = 1, 10 do
+      goal_runtime:pump(10)
+      goal = goal_runtime:goal()
+      if goal.status == "paused" then break end
+    end
+    assert(goal.status == "paused", "Lua host goal pause")
+    assert_ok(goal_runtime:resume_goal())
+    assert_ok(goal_runtime:set_goal_objective("Retargeted host goal"))
+    assert_ok(goal_runtime:clear_goal_token_budget())
+    for _ = 1, 10 do goal_runtime:pump(10) end
+    goal = goal_runtime:goal()
+    assert(goal.status == "active" and goal.objective == "Retargeted host goal",
+      "Lua host goal resume and retarget")
+    assert(not goal.has_token_budget, "Lua host goal budget removal")
+    assert_ok(goal_runtime:clear_goal())
+    for _ = 1, 10 do
+      goal_runtime:pump(10)
+      if not goal_runtime:goal().has_goal then break end
+    end
+    assert(not goal_runtime:goal().has_goal, "Lua host goal clear")
+    goal_runtime:close()
+  end
+  do
+    local rejected_mcp = assert_ok(cai.mcp_client({
+      url = "http://127.0.0.1:1/mcp",
+      timeout_ms = 1,
+    }))
+    local rejected_runtime, rejected_error = dummy_client:new_agent_runtime({
+      workspace_directory = ".",
+      disable_default_session_store = true,
+      preset = {
+        name = "read-only-engineer",
+        prompt_version = "read-only-engineer-1",
+        default_identity = "Read-only Engineer",
+        default_model = cai.MODEL_GPT_5_6_LUNA,
+        default_reasoning_effort = cai.REASONING_EFFORT_LOW,
+        developer_instructions = "You are {{agent_identity}}.",
+        tool_capabilities = cai.AGENT_PRESET_TOOL_READ_FILE,
+      },
+      mcp_clients = { rejected_mcp },
+    })
+    local rejection = assert_not_ok(rejected_runtime, rejected_error,
+      "custom preset without MCP capability")
+    assert(tostring(rejection.message or ""):find("does not enable MCP", 1,
+      true), "custom MCP capability rejection")
+    assert_ok(rejected_mcp:close(), nil,
+      "rejected runtime must release MCP client")
+  end
+  local native_session_store = assert(native_store_test.new_agent_session())
+  local wrong_session_store = assert(native_store_test.new_mcp_session())
+  local runtime_logger_chunks = {}
+  local runtime_logger = pslog.new_json({
+    output = function(chunk)
+      runtime_logger_chunks[#runtime_logger_chunks + 1] = chunk
+    end,
+    no_color = true,
+    disable_timestamp = true,
+  })
+  assert_not_ok(cai.native_store("agent_session", nil),
+    "native agent session stores must require a C callback table")
+  assert_throws(function()
+    dummy_client:new_smith_runtime({
+      workspace_directory = ".",
+      session_store = wrong_session_store,
+      disable_terminal = true,
+    })
+  end, "Smith runtime must reject an MCP session backend")
+  wrong_session_store:close()
+  local runtime = assert_ok(dummy_client:new_smith_runtime({
+    workspace_directory = ".",
+    session_store = native_session_store,
+    disable_terminal = true,
+    logger = runtime_logger,
+    event_callback = function() end,
+  }))
+  assert(table.concat(runtime_logger_chunks):find("cai.agent.runtime.opened", 1, true),
+    "Lua Smith runtime accepts and retains a native pslog logger")
+  assert_eq(runtime:state(), "idle", "Lua Smith runtime initial state")
+  assert(type(runtime:session_id()) == "string", "Lua Smith runtime session id")
+  assert(type(runtime:wakeup_fd()) == "number", "Lua Smith runtime wakeup fd")
+  do
+    local chunks = {}
+    assert_ok(runtime:export_markdown(function(chunk)
+      chunks[#chunks + 1] = chunk
+      return true
+    end), nil, "Lua Smith runtime streaming export")
+    local handover = table.concat(chunks)
+    assert(handover:find("# CAI agent handover", 1, true),
+      "Lua Smith runtime handover title")
+    assert(handover:find("cai-agent-handover/1", 1, true),
+      "Lua Smith runtime handover format")
+    assert(handover:find("non-resumable handover document", 1, true),
+      "Lua Smith runtime handover contract")
+    assert(handover:find("## Runtime", 1, true),
+      "Lua Smith runtime handover runtime metadata")
+    assert(handover:find("## Active developer instructions", 1, true),
+      "Lua Smith runtime handover developer instructions")
+    local export_path = os.tmpname()
+    os.remove(export_path)
+    assert_eq(assert_ok(runtime:export_markdown_file("cai", export_path), nil,
+      "Lua Smith runtime explicit export"), export_path,
+      "Lua Smith runtime export path")
+    local fp = assert(io.open(export_path, "rb"))
+    assert_eq(fp:read("*a"), handover,
+      "Lua Smith runtime export file content")
+    fp:close()
+    os.remove(export_path)
+    export_path = os.tmpname()
+    os.remove(export_path)
+    assert_eq(assert_ok(runtime:export_markdown_file(nil, export_path), nil,
+      "Lua Smith runtime explicit export without app name"), export_path,
+      "Lua Smith runtime export path without app name")
+    os.remove(export_path)
+  end
+  assert(native_store_test.checkpoint_count() > 0,
+    "native agent session store must receive runtime checkpoints")
+  assert_not_ok(native_session_store:close(),
+    "native session store must remain pinned by a live runtime")
+  do
+    local value, err = dummy_client:close()
+    assert_not_ok(value, err, "client close must reject a live Lua agent runtime")
+  end
+  runtime:close()
+  runtime_logger:close()
+  native_session_store:close()
+  local review_runtime = assert_ok(dummy_client:new_smith_review_runtime({
+    workspace_directory = ".",
+    disable_default_session_store = true,
+    event_callback = function() end,
+  }))
+  assert_eq(review_runtime:state(), "idle", "Lua Smith review runtime initial state")
+  assert_not_ok(review_runtime:submit_review({ target = "custom" }),
+    "Lua Smith review custom target requires instructions")
+  assert_ok(review_runtime:submit_review({ target = "base", base_branch = "HEAD~2" }),
+    nil, "Lua Smith review target accepts a safe revision expression")
+  review_runtime:close()
+end
 assert_ok(dummy_client:set_usage_limits({ max_total_tokens = 100 }))
 assert_not_ok(dummy_client:set_usage_limits({ max_total_tokens = -1 }),
   "negative Lua client usage limit must fail")
@@ -904,6 +1463,15 @@ assert_not_ok(dummy_agent:add_hosted_tool_json("[]"),
 assert_not_ok(dummy_agent:add_user_text_spooled({ read = "not callable" }),
   "agent spooled reader with non-callable read must fail")
 local dummy_session = assert_ok(dummy_agent:new_session())
+do
+  local value, err = dummy_session:run_auto({
+    max_tool_calls_per_round = -1,
+  })
+  local rejection = assert_not_ok(value, err,
+    "negative Lua per-round tool-call limit must fail")
+  assert_eq(rejection.status_string, "invalid",
+    "Lua per-round tool-call limit must reach native validation")
+end
 assert_ok(dummy_session:set_usage_limits({
   max_input_tokens = 10,
   max_input_cached_tokens = 10,
@@ -1034,6 +1602,63 @@ do
     chatgpt_auth_json = auth_path,
   })
   assert_not_ok(missing_client, missing_err, "Lua ChatGPT auth missing file")
+end
+
+do
+  native_store_test.reset_blob()
+  local auth_store = assert(native_store_test.new_blob())
+  local auth = assert_ok(cai.chatgpt_auth({ storage = auth_store }), nil,
+    "Lua ChatGPT auth accepts native blob storage")
+  assert_not_ok(auth_store:close(),
+    "native blob store must remain pinned by a live ChatGPT auth handle")
+  auth:close()
+  auth_store:close()
+
+  native_store_test.reset_blob()
+  local client_store = assert(native_store_test.new_blob())
+  local auth_client = assert_ok(cai.open({
+    chatgpt_auth_storage = client_store,
+    base_url = "http://127.0.0.1:1/v1",
+    timeout_ms = 1,
+  }), nil, "Lua client accepts native ChatGPT auth storage")
+  assert_not_ok(client_store:close(),
+    "native blob store must remain pinned by a live client auth handle")
+  auth_client:close()
+  client_store:close()
+
+  native_store_test.reset_blob()
+  local login_store = assert(native_store_test.new_blob())
+  local login, authorize_url_or_err = cai.chatgpt_login({
+    storage = login_store,
+    issuer = "https://auth.example.test/",
+    redirect_uri = "http://localhost:1455/auth/callback",
+    state = "native-store-pinning",
+    code_verifier = "test-verifier-abcdefghijklmnopqrstuvwxyz-0123456789",
+  })
+  assert_ok(login, authorize_url_or_err,
+    "Lua ChatGPT login accepts native blob storage")
+  assert_not_ok(login_store:close(),
+    "native blob store must remain pinned by a live ChatGPT login handle")
+  login:close()
+  login_store:close()
+
+  native_store_test.reset_blob()
+  local instruction_store = assert(native_store_test.new_blob())
+  local runtime_client = assert_ok(cai.open({
+    api_key = "test-key",
+    timeout_ms = 1,
+  }))
+  local runtime = assert_ok(runtime_client:new_smith_runtime({
+    workspace_directory = ".",
+    global_instruction_store = instruction_store,
+    disable_default_session_store = true,
+    disable_terminal = true,
+  }), nil, "Lua runtime accepts native global instruction storage")
+  assert_not_ok(instruction_store:close(),
+    "native blob store must remain pinned by a live runtime")
+  runtime:close()
+  runtime_client:close()
+  instruction_store:close()
 end
 
 do
@@ -1523,6 +2148,39 @@ assert_not_ok(registry:run("list_files", '{"path":"/etc"}', function()
   return true
 end), "list_files must reject absolute escapes")
 
+local native_todo = native_store_test
+assert_not_ok(cai.native_store("todo", nil),
+  "native todo stores must require a C callback table")
+native_todo.reset()
+local native_store = assert(native_todo.new())
+local native_registry = cai.tool_registry()
+assert_throws(function()
+  cai.mcp_handler({
+    name = "cai-lua-wrong-native-store",
+    tools = native_registry,
+    session = native_store,
+  })
+end, "MCP handler must reject a todo backend")
+assert_ok(native_registry:register_todo_tool({
+  store = native_store,
+  default_board = "native",
+}))
+assert_not_ok(native_registry:register_todo_tool({store = native_store}),
+  "a native todo store must only be registered once")
+assert_not_ok(native_registry:run("todo_kanban",
+  '{"operation":"list_boards"}', function()
+    return true
+  end), "native C callbacks must service todo operations")
+assert(native_todo.begin_count() == 1,
+  "native todo store must be called without a Lua callback")
+native_registry:close()
+assert(native_todo.destroy_count() == 1,
+  "native todo store context must be destroyed exactly once")
+native_store:close()
+collectgarbage("collect")
+assert(native_todo.destroy_count() == 1,
+  "closing or collecting consumed native store must not double destroy")
+
 os.remove("/tmp/cai-lua-test-todo.json")
 os.remove("/tmp/cai-lua-test-todo.lock")
 assert_ok(registry:register_todo_tool({
@@ -1636,6 +2294,79 @@ assert(body_index > 1, "request body should be consumed in chunks")
 
 mcp:close()
 
+native_store_test.reset_sessions()
+local native_mcp_store = assert(native_store_test.new_mcp_session())
+assert_throws(function()
+  cai.mcp_handler({
+    name = "cai-lua-native-mcp-store-invalid",
+    tools = {},
+    session = native_mcp_store,
+  })
+end, "invalid native MCP session configuration must preserve the backend")
+local native_mcp = assert_ok(cai.mcp_handler({
+  name = "cai-lua-native-mcp-store",
+  tools = registry,
+  session = native_mcp_store,
+}))
+local native_init_chunks = {}
+local native_init = assert_ok(native_mcp:handle_http({
+  method = "POST",
+  headers = {
+    ["content-type"] = "application/json",
+    ["mcp-protocol-version"] = cai.MCP_PROTOCOL_VERSION,
+  },
+  body = '{"jsonrpc":"2.0","id":"native-init","method":"initialize","params":{"protocolVersion":"' ..
+      cai.MCP_PROTOCOL_VERSION ..
+      '","clientInfo":{"name":"native-client","version":"1.0"}}}',
+  write = function(chunk)
+    native_init_chunks[#native_init_chunks + 1] = chunk
+    return true
+  end,
+}))
+assert_eq(native_init.status, 200, "native MCP initialize status")
+assert_eq(native_init.headers["mcp-session-id"], "native-session",
+  "native MCP session header")
+assert_eq(native_store_test.mcp_create_count(), 1,
+  "native MCP create callback count")
+local native_ping = assert_ok(native_mcp:handle_http({
+  method = "POST",
+  headers = {
+    ["content-type"] = "application/json",
+    ["mcp-protocol-version"] = cai.MCP_PROTOCOL_VERSION,
+    ["mcp-session-id"] = native_init.headers["mcp-session-id"],
+  },
+  body = '{"jsonrpc":"2.0","id":"native-ping","method":"ping"}',
+  write = function()
+    return true
+  end,
+}))
+assert_eq(native_ping.status, 200, "native MCP ping status")
+assert_eq(native_store_test.mcp_load_count(), 1,
+  "native MCP load callback count")
+assert_eq(native_store_test.mcp_save_count(), 1,
+  "native MCP save callback count")
+local native_delete = assert_ok(native_mcp:handle_http({
+  method = "DELETE",
+  headers = {
+    ["mcp-protocol-version"] = cai.MCP_PROTOCOL_VERSION,
+    ["mcp-session-id"] = native_init.headers["mcp-session-id"],
+  },
+  body = "{}",
+  write = function()
+    return true
+  end,
+}))
+assert_eq(native_delete.status, 202, "native MCP delete status")
+assert_eq(native_store_test.mcp_destroy_count(), 1,
+  "native MCP destroy callback count")
+native_mcp:close()
+assert_eq(native_store_test.cleanup_count(), 1,
+  "native MCP session cleanup must run exactly once")
+native_mcp_store:close()
+collectgarbage("collect")
+assert_eq(native_store_test.cleanup_count(), 1,
+  "consumed native MCP session store must not double cleanup")
+
 local sessions = {}
 local session_events = { creates = 0, loads = 0, saves = 0, destroys = 0 }
 local stateful_mcp = assert_ok(cai.mcp_handler({
@@ -1736,5 +2467,7 @@ stateful_mcp:close()
 registry:close()
 os.remove("/tmp/cai-lua-test-todo.json")
 os.remove("/tmp/cai-lua-test-todo.lock")
+
+dofile("tests/lua/smith_terminal_renderer_test.lua")
 
 print("cai lua tests passed")

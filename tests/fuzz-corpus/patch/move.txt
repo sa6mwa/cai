@@ -1,0 +1,8 @@
+*** Begin Patch
+*** Update File: alpha.txt
+*** Move to: renamed.txt
+@@
+ one
+ two
+ three
+*** End Patch

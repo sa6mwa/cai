@@ -20,7 +20,9 @@ if [[ -z "$afl_fuzz" || ! -x "$afl_fuzz" ]]; then
   exit 2
 fi
 
-for target in tool stream response mcp session todo; do
+mkdir -p "$repo_root/build/fuzz/afl"
+
+for target in tool stream response mcp session todo patch; do
   binary="$repo_root/build/fuzz/cai_${target}_fuzz"
   corpus="$repo_root/tests/fuzz-corpus/$target"
   output="$repo_root/build/fuzz/afl/$target-$mode"

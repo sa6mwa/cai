@@ -15,8 +15,9 @@ the returned key to `cai_client_config.api_key`, then release it with
 `cai.load_dotenv_api_key(path, env_name)` and pass the returned string as
 `api_key`.
 
-ChatGPT subscription login is also explicit. Run `run-chatgpt-login` to create
-a Codex-style auth file through the browser OAuth flow, then run chat examples
+ChatGPT subscription login is also explicit. Run `make chatgpt-login` (or
+`make -C examples run-chatgpt-login`) to create CAI's own auth file through the
+browser OAuth flow, then run chat examples
 with `CAI_CHATGPT_AUTH=1` to use cai's default auth path or
 `CAI_CHATGPT_AUTH_JSON=/path/auth.json` for an explicit path.
 
@@ -33,8 +34,9 @@ make -C examples help
 For automated verification, the repo exposes two narrower smoke paths:
 
 - `make example-smoke-local` covers deterministic local example checks.
-- `CAI_ENABLE_INTEGRATION_TESTS=1 make example-smoke-live` runs a curated
-  non-interactive live subset against the real API.
+- `CAI_ENABLE_INTEGRATION_TESTS=1 make test-integration` runs the opt-in live
+  ChatGPT-subscription and OpenRouter matrix. API-key example smoke is not a
+  routine test path.
 
 ## Basic Response
 
@@ -44,29 +46,28 @@ make -C examples run-basic-response
 
 ## ChatGPT Login
 
-Start a local callback listener, open the ChatGPT OAuth URL, and write a
-Codex-style auth file:
+Start a local callback listener, open the ChatGPT OAuth URL, and write CAI's
+own Codex-wire-compatible auth file:
 
 ```sh
-make -C examples run-chatgpt-login
-make -C examples run-chatgpt-login CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
+make chatgpt-login
+make chatgpt-login CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
 make -C examples run-lua-chatgpt-login
 make -C examples run-lua-chatgpt-login CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
 ```
 
 Without `CAI_CHATGPT_AUTH_JSON`, the login example writes cai's default
-ChatGPT auth path: `$XDG_CONFIG_HOME/cai/auth.json`, or
-`$HOME/.config/cai/auth.json`.
+ChatGPT auth state path: `$XDG_STATE_HOME/cai/auth.json`, or
+`$HOME/.local/state/cai/auth.json`. This never reads or modifies Codex's
+credential storage.
 
 Use `CAI_CHATGPT_LOGIN_PORT=1457` or another free local port if the default
-callback port is unavailable. Both login examples use cai's shared browser
-opener helper, which defaults to `open` on Darwin and `xdg-open` elsewhere, and
-can be overridden with `CAI_CHATGPT_BROWSER_COMMAND`. The helper passes the URL
-as one argv value and does not invoke a shell. The examples are intentionally
-interactive; local unit tests mock the callback and token exchange flow. The Lua
-login example uses cai's Lua OAuth binding for the auth flow and LuaSocket only
-for its tiny example HTTP listener; install LuaSocket separately if you want to
-run that example.
+callback port is unavailable. Both login examples print the authorization URL
+between blank lines for click/copy and never invoke a browser opener. The
+examples are intentionally interactive; local unit tests mock the callback and
+token exchange flow. The Lua login example uses cai's Lua OAuth binding for the
+auth flow and LuaSocket only for its tiny example HTTP listener; install
+LuaSocket separately if you want to run that example.
 
 ## OpenRouter Response
 
@@ -106,6 +107,110 @@ still being generated:
 ```sh
 make -C examples run-streaming-text
 ```
+
+## Smith Terminal
+
+The C and Lua Smith terminal examples are reference renderers for the generic
+agent-runtime event stream. They run the `smith` preset in the current
+directory, stream provider-issued reasoning summaries selected by the default
+`auto` mode as `Thinking:`
+(never hidden raw chain of thought), and stream model text as `Smith:`. They
+print each terminal command as `$ <command>`, show the first ten terminal
+output lines in dim gray, and report terminal completion from the runtime's
+structured lifecycle facts. Local tool outcomes arrive as semantic facts, so
+the examples can show receipts such as `Read src/main.c` and `Patched 2 files`
+without parsing raw tool output. They do not own a second agent loop or
+terminal implementation.
+
+Both the direct `cai_smith_config`/`client:new_smith_agent` profile and the
+runtime configuration accept `reasoning_summary`; `auto` is the default.
+Smith loads an optional global policy from `$XDG_CONFIG_HOME/cai/AGENTS.md`
+(or `~/.config/cai/AGENTS.md`), then only `AGENTS.md` in the selected
+workspace. Set `agent_config_directory`, `global_agents_md_path`, or a
+C-backed `global_instruction_store` to select another global source. CAI does
+not search workspace ancestors unless `codex_compat_agents_md` is explicitly
+enabled.
+
+```sh
+make -C examples run-smith-terminal
+make -C examples run-lua-smith-terminal
+make -C examples run-smith-terminal CAI_SMITH_ARGS=-v
+make -C examples run-lua-smith-terminal CAI_SMITH_ARGS=-vv
+```
+
+Both Smith examples use CAI's ChatGPT subscription auth by default and select
+`gpt-5.6-luna`; run `make chatgpt-login` first. Set
+`CAI_CHATGPT_AUTH_JSON=/path/auth.json` to select another CAI auth state or
+`CAI_SMITH_MODEL=<model>` to override the model. Exit either example with
+Ctrl-D or `/exit`. Set `CAI_SMITH_ARGS=-v` for debug lifecycle logging or
+`CAI_SMITH_ARGS=-vv` for trace logging; the variable passes supported CLI
+options to both Smith runners. Both examples intercept `/review`
+themselves: `/review` (or `/review uncommitted`) reviews workspace changes,
+`/review base <revision>` compares against a branch, tag, commit, or revision
+such as `HEAD~2`, `/review commit <sha>` reviews one hexadecimal commit, and
+`/review <message>` forwards the message verbatim as the reviewer’s custom
+scope. Thus `/review changes against trunk` has the same free-form intent as
+Codex review. Both examples render the reviewer's schema-validated report
+inline as soon as the isolated child completes; the durable parent-handoff
+payload is rendered as a fallback if that final child event has not yet been
+observed. The report is therefore operator-visible as well as available to
+Smith in the next parent turn. The C example pumps the
+isolated child alongside its parent; ordinary input entered while that review
+is active becomes a queued parent turn. The deliberately small blocking Lua
+example pumps the child to completion.
+The C example integrates stdin and
+CAI's wakeup descriptor in one poll loop, so its normal active-turn input uses
+the steering API path. `/queue <prompt>` is an examples-only convenience for
+the separate queued-normal-turn API. The small Lua example intentionally keeps
+blocking `io.read` input; a Lua TUI or GUI calls the same explicit methods from
+its own event loop. Both examples also intercept `/export` themselves and use
+the live runtime handover receiver to create
+`cai-session-<xid>.md` in the workspace. CAI itself does not parse slash
+commands: hosts select `submit_steering`, `submit_queued`, or
+`export_markdown` directly.
+
+Both render the concise task preview and exact final child instruction at every
+subagent launch. They accept `-v`/`--verbose` for debug lifecycle logs on
+stderr and `-vv` for trace logs. Logging is otherwise disabled by default.
+Standard `LOG_*` pslog configuration overrides the example defaults, so
+`LOG_LEVEL=info` enables runtime and client logs without changing command-line
+flags. The emitted example logger carries the compact `app=smith` field; CAI
+runtime messages themselves use only lifecycle facts and metrics.
+
+For an isolated review run, C hosts set
+`cai_agent_runtime_config.preset = CAI_SMITH_REVIEW_PRESET`; Lua hosts use
+`client:new_smith_review_runtime(config)`. Submit an explicit target with
+`cai_agent_runtime_submit_review` or `runtime:submit_review`, then render the
+final `CAI_AGENT_EVENT_REVIEW_REPORT` JSON event as an operator-facing report.
+An inline `run_review` review instead delivers one Markdown
+`CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF` result; render that event rather than raw
+review JSON. The review preset has a
+fresh session and no CAI patch, goal, MCP, or image-generation tools. It does
+retain the normal one-slot managed terminal for git inspection and checks, so
+the embedding host's terminal sandbox policy remains authoritative.
+
+For a Codex-like review launched from an existing Smith chat, call
+`cai_agent_runtime_start_review(parent, &request, &review, &error)` (Lua:
+`parent:start_review(request)`). Pump the returned child runtime in the same
+application event loop, then call `cai_agent_runtime_finish_review(parent,
+review, &error)` (Lua: `parent:finish_review(review)`) after it reaches a
+terminal state. The review report is an event payload and must be rendered to
+the operator; the two examples make the handoff payload a fallback so a final
+report can never be replaced by an opaque status receipt. Set `review_model`
+and `review_reasoning_effort` on the parent
+runtime configuration when the reviewer should use a different profile; set
+`reasoning_summary` and `review_reasoning_summary` the same way when hosts
+want to choose `none`, `auto`, `concise`, or `detailed` summary delivery.
+Omitted review values inherit their coding-runtime counterpart. The handoff is
+checkpointed into the parent before any normal turns queued during review
+resume. Close that child before the parent so its remaining events cannot
+outlive the callback receiver. CAI itself still leaves
+`/review` parsing to the example or downstream UI. If the durable parent-pause
+checkpoint fails after a review child was created, the C call returns an error
+and a populated child output; Lua mirrors this as `review, err` so the child
+remains available for a safe handoff or close. Closing an unfinished Lua child
+marks its parent abandoned; the host must then close and reopen that parent
+before starting a replacement review.
 
 ## History Export
 
@@ -203,17 +308,19 @@ not enabled by default. Pass `--exec-tool-dir <path>` to register
 that path. `list_files` reports `text_candidate`/`binary_candidate` hints for
 regular files, and `read_file` only returns UTF-8 text without unsafe control
 characters.
-With ChatGPT subscription auth, the example defaults to `gpt-5.4-mini` because
-`gpt-5-nano` is not accepted by the ChatGPT/Codex backend. Override either
-mode with `CAI_TERMINAL_CHAT_MODEL` or `--model`.
+The example uses CAI's ChatGPT subscription auth by default and selects
+`gpt-5.4-mini`; run `make chatgpt-login` first. `gpt-5-nano` is not accepted
+by the ChatGPT/Codex backend. Override the model with
+`CAI_TERMINAL_CHAT_MODEL` or `--model`. API-key mode remains available only
+through the explicit `CAI_TERMINAL_CHAT_API_KEY=1`/`--api-key` opt-in.
 
 ```sh
-OPENAI_API_KEY=... make -C examples run-lua-terminal-chat
-make -C examples run-lua-terminal-chat CAI_CHATGPT_AUTH=1
+make -C examples run-lua-terminal-chat
 make -C examples run-lua-terminal-chat CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
-make -C examples run-lua-terminal-chat CAI_CHATGPT_AUTH=1 CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini
-OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
-OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_READ_TOOL_DIR="$PWD"
+make -C examples run-lua-terminal-chat CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini
+make -C examples run-lua-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
+make -C examples run-lua-terminal-chat CAI_READ_TOOL_DIR="$PWD"
+OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_TERMINAL_CHAT_API_KEY=1
 ```
 
 Optional local todo isolation:
@@ -221,7 +328,7 @@ Optional local todo isolation:
 ```sh
 CAI_LUA_TODO_STORE=/tmp/cai-lua-todo.json \
 CAI_LUA_TODO_LOCK=/tmp/cai-lua-todo.lock \
-OPENAI_API_KEY=... make -C examples run-lua-terminal-chat
+OPENAI_API_KEY=... make -C examples run-lua-terminal-chat CAI_TERMINAL_CHAT_API_KEY=1
 ```
 
 ## Lua Conversation
@@ -263,17 +370,19 @@ inspection is also opt-in; pass `--read-tool-dir <path>` to register
 `list_files` and `read_file` rooted to that path. `list_files` reports
 `text_candidate`/`binary_candidate` hints for regular files, and `read_file`
 only returns UTF-8 text without unsafe control characters.
-With ChatGPT subscription auth, the example defaults to `gpt-5.4-mini` because
-`gpt-5-nano` is not accepted by the ChatGPT/Codex backend. Override either
-mode with `CAI_TERMINAL_CHAT_MODEL` or `--model`.
+The example uses CAI's ChatGPT subscription auth by default and selects
+`gpt-5.4-mini`; run `make chatgpt-login` first. `gpt-5-nano` is not accepted
+by the ChatGPT/Codex backend. Override the model with
+`CAI_TERMINAL_CHAT_MODEL` or `--model`. API-key mode remains available only
+through the explicit `CAI_TERMINAL_CHAT_API_KEY=1`/`--api-key` opt-in.
 
 ```sh
-OPENAI_API_KEY=... make -C examples run-terminal-chat
-make -C examples run-terminal-chat CAI_CHATGPT_AUTH=1
-make -C examples run-terminal-chat CAI_CHATGPT_AUTH=1 CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini
-OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
-OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_READ_TOOL_DIR="$PWD"
+make -C examples run-terminal-chat
+make -C examples run-terminal-chat CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini
+make -C examples run-terminal-chat CAI_EXEC_TOOL_DIR=/tmp/cai-exec-root
+make -C examples run-terminal-chat CAI_READ_TOOL_DIR="$PWD"
 make -C examples run-terminal-chat CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json
+OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_TERMINAL_CHAT_API_KEY=1
 ```
 
 Optional local todo isolation:
@@ -281,7 +390,7 @@ Optional local todo isolation:
 ```sh
 CAI_TODO_STORE=/tmp/cai-todo.json \
 CAI_TODO_LOCK=/tmp/cai-todo.lock \
-OPENAI_API_KEY=... make -C examples run-terminal-chat
+OPENAI_API_KEY=... make -C examples run-terminal-chat CAI_TERMINAL_CHAT_API_KEY=1
 ```
 
 ## Mike Mind

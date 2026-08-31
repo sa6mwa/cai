@@ -33,6 +33,7 @@
                 "] " CAI_ANSI_GRAY
 #define CAI_REASONING_SUFFIX CAI_ANSI_RESET "\n\n"
 #define CAI_TERMINAL_CHAT_DEFAULT_MAX_OUTPUT_TOKENS 1000000LL
+#define CAI_TERMINAL_CHAT_DEFAULT_TIMEOUT_MS 30000L
 
 static int print_error(const char *operation, int rc, const cai_error *error) {
   fprintf(stderr, "%s failed: %s\n", operation,
@@ -126,17 +127,23 @@ static const char *searxng_base_url(void) {
 static void print_help(const char *program) {
   fprintf(stderr,
           "usage: %s [--chatgpt-auth] [--chatgpt-auth-json <path>] "
+          "[--api-key] "
           "[--model <model>] [--exec-tool-dir <path>] "
           "[--read-tool-dir <path>] [usage-limit flags]\n\n"
-          "  --chatgpt-auth       Use ChatGPT subscription auth from cai's "
-          "default auth.json path.\n",
+          "  Uses CAI's ChatGPT subscription auth by default. Run make "
+          "chatgpt-login first.\n\n"
+          "  --chatgpt-auth       Compatibility alias for CAI's default "
+          "ChatGPT auth path.\n",
           program != NULL ? program : "cai_example_terminal_chat");
   fprintf(stderr,
           "  --chatgpt-auth-json <path>\n"
           "                          Use ChatGPT subscription auth from a "
-          "specific Codex-style auth.json file.\n"
+          "specific CAI auth.json file.\n"
+          "  --api-key                Explicitly use OPENAI_API_KEY or .env "
+          "instead of ChatGPT auth.\n"
           "  --model <model>         Override the model. Defaults to "
-          "gpt-5-nano with API keys and gpt-5.4-mini with ChatGPT auth.\n"
+          "gpt-5.4-mini with ChatGPT auth and gpt-5-nano with --api-key.\n");
+  fprintf(stderr,
           "  --exec-tool-dir <path>  Register exec_command rooted to <path>.\n"
           "  --read-tool-dir <path>  Register list_files/read_file rooted to "
           "<path>.\n"
@@ -215,12 +222,12 @@ static int parse_args(int argc, char **argv, const char **exec_tool_dir,
 
   *exec_tool_dir = NULL;
   *read_tool_dir = NULL;
-  *chatgpt_auth_json = NULL;
+  *chatgpt_auth_json = getenv("CAI_CHATGPT_AUTH_JSON");
   *model = getenv("CAI_TERMINAL_CHAT_MODEL");
   if (*model == NULL || (*model)[0] == '\0') {
     *model = getenv("CAI_EXAMPLE_MODEL");
   }
-  *chatgpt_auth = 0;
+  *chatgpt_auth = 1;
   cai_usage_limits_init(usage_limits);
   usage_limits->max_output_tokens = CAI_TERMINAL_CHAT_DEFAULT_MAX_OUTPUT_TOKENS;
   for (i = 1; i < argc; i++) {
@@ -235,6 +242,11 @@ static int parse_args(int argc, char **argv, const char **exec_tool_dir,
       }
       *chatgpt_auth_json = argv[++i];
       *chatgpt_auth = 1;
+      continue;
+    }
+    if (strcmp(argv[i], "--api-key") == 0) {
+      *chatgpt_auth = 0;
+      *chatgpt_auth_json = NULL;
       continue;
     }
     if (strcmp(argv[i], "--model") == 0) {
@@ -449,6 +461,7 @@ int main(int argc, char **argv) {
     model =
         chatgpt_auth_enabled ? CAI_MODEL_GPT_5_4_MINI : CAI_MODEL_GPT_5_NANO;
   }
+  client_config.timeout_ms = CAI_TERMINAL_CHAT_DEFAULT_TIMEOUT_MS;
   agent_config.model = model;
   agent_config.session_usage_limits = usage_limits;
   agent_config.reasoning_effort = chatgpt_auth_enabled
@@ -531,6 +544,9 @@ int main(int argc, char **argv) {
     rc = cai_chatgpt_auth_open(&chatgpt_auth_config, &chatgpt_auth, &error);
     if (rc != CAI_OK) {
       exit_code = print_error("cai_chatgpt_auth_open", rc, &error);
+      fprintf(stderr,
+              "Run `make chatgpt-login` or set CAI_CHATGPT_AUTH_JSON to a "
+              "CAI auth.json path.\n");
       goto done;
     }
     client_config.chatgpt_auth = chatgpt_auth;

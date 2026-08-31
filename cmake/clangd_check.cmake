@@ -36,7 +36,12 @@ foreach(_cai_entry RANGE 0 ${_cai_last_entry})
   list(APPEND _cai_checked_sources "${_cai_source_file}")
 
   execute_process(
-    COMMAND "${CAI_CLANGD_BIN}" "--compile-commands-dir=${CAI_BUILD_DIR}"
+    # clangd 22 runs optional developer tweaks in --check mode. Those rewrite
+    # experiments can fail internally on valid macro and POSIX expressions,
+    # converting a parse/editor gate into a false negative. Keep the actual
+    # compile-database parse check, but disable that unrelated tweak pass.
+    COMMAND "${CAI_CLANGD_BIN}" --tweaks=
+            "--compile-commands-dir=${CAI_BUILD_DIR}"
             "--check=${_cai_source_file}" --log=error
     WORKING_DIRECTORY "${CAI_SOURCE_DIR}"
     RESULT_VARIABLE _cai_clangd_result

@@ -46,7 +46,7 @@ require_script() {
 }
 
 for target in \
-  deps-debug deps-release deps-cross build-host cross-build test-host \
+  deps-debug deps-release deps-cross build-host cross-build chatgpt-login test-host \
   test-cross cross-test test-all test-e2e test-install-tree coverage test-coverage valgrind fuzz-long \
   verify-release-archives verify-release-privacy require-prerelease-live \
   require-clean-worktree lifecycle-version-contract release-pipeline dev-up dev-down dev-reset dev-ps dev-logs \
@@ -56,7 +56,7 @@ done
 
 for target in \
   deps-debug deps-release deps-cross build-debug build-host build-release \
-  cross-build cross-test integration-build test-debug test-host test-release \
+  cross-build cross-test integration-build chatgpt-login test-debug test-host test-release \
   test-all test-e2e test-cross test-integration test-install-tree asan \
   test-asan coverage test-coverage valgrind fuzz-long verify-release-archives \
   verify-release-privacy require-prerelease-live dev-up dev-down dev-reset \
@@ -141,7 +141,7 @@ if ! grep -F '"$repo_root/scripts/build.sh" package-source' \
   exit 1
 fi
 for live_target in \
-  test-integration example-smoke-live prerelease-live \
+  test-integration prerelease-live \
   prerelease-hardening mcp-everything-live-test mcp-inspector-e2e; do
   if ! grep -F "make $live_target" "$makefile" |
        grep -E 'CAI_ENABLE_INTEGRATION_TESTS=1|CAI_MCP_INSPECTOR_E2E=1' >/dev/null; then
@@ -322,6 +322,10 @@ if ! printf '%s\n' "$clangd_body" | grep -F 'build/debug' >/dev/null ||
   printf '%s\n' 'clangd-check must validate only the native debug compile database' >&2
   exit 1
 fi
+if ! grep -F -- '--tweaks=' "$repo_root/cmake/clangd_check.cmake" >/dev/null; then
+  printf '%s\n' 'clangd check must disable unsupported clangd developer tweaks' >&2
+  exit 1
+fi
 
 hardening_body=$(awk '
   /^prerelease-hardening:/ {
@@ -353,8 +357,7 @@ prerelease_live_body=$(awk '
   }
 ' "$makefile")
 if ! printf '%s\n' "$prerelease_live_body" | grep -F 'CAI_ENABLE_INTEGRATION_TESTS:-' >/dev/null ||
-   ! printf '%s\n' "$prerelease_live_body" | grep -F '$(MAKE) test-integration' >/dev/null ||
-   ! printf '%s\n' "$prerelease_live_body" | grep -F '$(MAKE) example-smoke-live' >/dev/null; then
+   ! printf '%s\n' "$prerelease_live_body" | grep -F '$(MAKE) test-integration' >/dev/null; then
   printf 'prerelease-live must require caller opt-in and run full live integration tests\n' >&2
   exit 1
 fi
@@ -430,8 +433,8 @@ if ! printf '%s\n' "$prerelease_live_body" | grep -F '$(MAKE) require-clean-work
   printf 'prerelease-live must require a clean worktree before stamping\n' >&2
   exit 1
 fi
-if ! printf '%s\n' "$prerelease_live_body" | grep -F '$(MAKE) example-smoke-live' >/dev/null; then
-  printf 'prerelease-live must run live example smoke tests\n' >&2
+if printf '%s\n' "$prerelease_live_body" | grep -F '$(MAKE) example-smoke-live' >/dev/null; then
+  printf 'prerelease-live must not run API-key live example smoke tests\n' >&2
   exit 1
 fi
 

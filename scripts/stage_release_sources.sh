@@ -12,7 +12,9 @@ release_version=${3:-}
 manifest_path="$repo_root/RELEASE_MANIFEST"
 tmp_manifest=""
 tmp_ignored=""
+tmp_deleted=""
 tmp_filtered=""
+tmp_selected=""
 
 die() {
   printf 'stage_release_sources.sh: %s\n' "$1" >&2
@@ -64,8 +66,14 @@ cleanup() {
   if [[ -n "$tmp_ignored" && -f "$tmp_ignored" ]]; then
     rm -f "$tmp_ignored"
   fi
+  if [[ -n "$tmp_deleted" && -f "$tmp_deleted" ]]; then
+    rm -f "$tmp_deleted"
+  fi
   if [[ -n "$tmp_filtered" && -f "$tmp_filtered" ]]; then
     rm -f "$tmp_filtered"
+  fi
+  if [[ -n "$tmp_selected" && -f "$tmp_selected" ]]; then
+    rm -f "$tmp_selected"
   fi
 }
 
@@ -77,17 +85,21 @@ mkdir -p "$stage_dir"
 if git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   tmp_manifest="$(mktemp)"
   tmp_ignored="$(mktemp)"
+  tmp_deleted="$(mktemp)"
   tmp_filtered="$(mktemp)"
+  tmp_selected="$(mktemp)"
   git -C "$repo_root" ls-files >"$tmp_manifest"
+  git -C "$repo_root" ls-files --deleted >"$tmp_deleted"
   git -C "$repo_root" check-ignore --no-index --stdin <"$tmp_manifest" \
     >"$tmp_ignored" 2>/dev/null || true
-  if [[ -s "$tmp_ignored" ]]; then
-    grep -F -x -v -f "$tmp_ignored" "$tmp_manifest" >"$tmp_filtered"
+  cat "$tmp_ignored" "$tmp_deleted" >"$tmp_filtered"
+  if [[ -s "$tmp_filtered" ]]; then
+    grep -F -x -v -f "$tmp_filtered" "$tmp_manifest" >"$tmp_selected" || true
   else
-    cp "$tmp_manifest" "$tmp_filtered"
+    cp "$tmp_manifest" "$tmp_selected"
   fi
-  cp "$tmp_filtered" "$stage_dir/RELEASE_MANIFEST"
-  tar -C "$repo_root" -cf - -T "$tmp_filtered" | tar -xf - -C "$stage_dir"
+  cp "$tmp_selected" "$stage_dir/RELEASE_MANIFEST"
+  tar -C "$repo_root" -cf - -T "$tmp_selected" | tar -xf - -C "$stage_dir"
 elif [[ -f "$manifest_path" ]]; then
   cp "$manifest_path" "$stage_dir/RELEASE_MANIFEST"
   tar -C "$repo_root" -cf - -T "$manifest_path" | tar -xf - -C "$stage_dir"

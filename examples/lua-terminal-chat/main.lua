@@ -84,8 +84,8 @@ local todo_store = os.getenv("CAI_LUA_TODO_STORE")
 local todo_lock = os.getenv("CAI_LUA_TODO_LOCK")
 local exec_tool_dir = nil
 local read_tool_dir = nil
-local chatgpt_auth_json = nil
-local chatgpt_auth = false
+local chatgpt_auth_json = os.getenv("CAI_CHATGPT_AUTH_JSON")
+local chatgpt_auth = true
 local usage_limits = {
   max_output_tokens = 1000000,
 }
@@ -135,6 +135,10 @@ while i <= #arg do
     chatgpt_auth_json = arg[i + 1]
     chatgpt_auth = true
     i = i + 2
+  elseif arg[i] == "--api-key" then
+    chatgpt_auth = false
+    chatgpt_auth_json = nil
+    i = i + 1
   elseif arg[i] == "--model" then
     if not arg[i + 1] or arg[i + 1] == "" then
       io.stderr:write("--model requires a model id\n")
@@ -167,7 +171,8 @@ while i <= #arg do
       parse_nonnegative_number("--max-spend-usd", arg[i + 1])
     i = i + 2
   elseif arg[i] == "--help" or arg[i] == "-h" then
-    io.stderr:write("usage: lua examples/lua-terminal-chat/main.lua [--chatgpt-auth] [--chatgpt-auth-json <path>] [--model <model>] [--exec-tool-dir <path>] [--read-tool-dir <path>] [usage-limit flags]\n")
+    io.stderr:write("usage: lua examples/lua-terminal-chat/main.lua [--chatgpt-auth] [--chatgpt-auth-json <path>] [--api-key] [--model <model>] [--exec-tool-dir <path>] [--read-tool-dir <path>] [usage-limit flags]\n")
+    io.stderr:write("Uses CAI's ChatGPT subscription auth by default. Run make chatgpt-login first. --api-key explicitly uses OPENAI_API_KEY or .env instead.\n")
     io.stderr:write("usage-limit flags: --max-input-tokens <n> --max-cached-input-tokens <n> --max-output-tokens <n> --max-reasoning-output-tokens <n> --max-total-tokens <n> --max-spend-usd <n>\n")
     os.exit(0)
   else
@@ -238,11 +243,23 @@ end
 
 local client_config
 if chatgpt_auth then
-  client_config = { chatgpt_auth = true, chatgpt_auth_json = chatgpt_auth_json }
+  client_config = {
+    chatgpt_auth = true,
+    chatgpt_auth_json = chatgpt_auth_json,
+    timeout_ms = 30000,
+    chatgpt_auth_http_timeout_ms = 30000,
+  }
 else
   client_config = common.client_config(cai)
+  client_config.timeout_ms = 30000
 end
-local client = ok(cai.open(client_config), nil, "cai.open")
+local client, client_err = cai.open(client_config)
+if not client then
+  if chatgpt_auth then
+    io.stderr:write("Run `make chatgpt-login` or set CAI_CHATGPT_AUTH_JSON to a CAI auth.json path.\n")
+  end
+  fail("cai.open", client_err)
+end
 local agent = ok(client:new_agent({
   model = model,
   instructions = instructions,

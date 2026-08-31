@@ -1,3 +1,6 @@
+/** @file cai/tools/read.h
+ *  Sandboxed UTF-8 file-reading and deterministic listing tool presets.
+ */
 #ifndef CAI_TOOLS_READ_H
 #define CAI_TOOLS_READ_H
 
@@ -33,19 +36,23 @@ typedef struct cai_read_tool_config {
   const char *content_spool_dir;
 } cai_read_tool_config;
 
-/** Register the UTF-8 text-only `read_file` preset on a registry. */
+/**
+ * Register the UTF-8 text-only read_file preset on a registry. CAI copies the
+ * path/limit configuration needed by the registered tool.
+ */
 int cai_tool_registry_register_read_tool(cai_tool_registry *registry,
                                          const cai_read_tool_config *config,
                                          cai_error *error);
-/** Register the UTF-8 text-only `read_file` preset on an agent. */
+/** Register the UTF-8 text-only read_file preset directly on an agent. */
 int cai_agent_register_read_tool(cai_agent *agent,
                                  const cai_read_tool_config *config,
                                  cai_error *error);
-/** Register the sandboxed `list_files` preset on a registry. */
+/** Register the sandboxed deterministic list_files preset on a registry. */
 int cai_tool_registry_register_list_files_tool(
     cai_tool_registry *registry, const cai_read_tool_config *config,
     cai_error *error);
-/** Register the sandboxed `list_files` preset on an agent. */
+/** Register the sandboxed deterministic list_files preset directly on an agent.
+ */
 int cai_agent_register_list_files_tool(cai_agent *agent,
                                        const cai_read_tool_config *config,
                                        cai_error *error);

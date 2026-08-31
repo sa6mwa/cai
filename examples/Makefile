@@ -1,7 +1,7 @@
 SHELL := bash
 .DEFAULT_GOAL := help
 MAKEFLAGS += --no-print-directory
-.PHONY: help lua-rock lua-env run-basic-response run-chatgpt-login run-openrouter-response run-conversation-handles run-streaming-text run-history-export run-session-state run-smhi-weather run-mcp-server run-searxng-search run-terminal-chat run-mike-mind run-lua-chatgpt-login run-lua-basic run-lua-terminal-chat run-lua-conversation run-lua-session-state
+.PHONY: help lua-rock lua-env run-basic-response run-chatgpt-login run-openrouter-response run-conversation-handles run-streaming-text run-history-export run-session-state run-smhi-weather run-mcp-server run-searxng-search run-terminal-chat run-smith-terminal run-mike-mind run-lua-chatgpt-login run-lua-basic run-lua-terminal-chat run-lua-smith-terminal run-lua-conversation run-lua-session-state
 
 ROOT := ..
 CMAKE ?= cmake
@@ -17,8 +17,10 @@ CAI_READ_TOOL_DIR ?= $(abspath $(ROOT))
 CAI_CHATGPT_AUTH ?=
 CAI_CHATGPT_AUTH_JSON ?=
 CAI_CHATGPT_LOGIN_PORT ?= 1455
-CAI_CHATGPT_BROWSER_COMMAND ?=
+CAI_TERMINAL_CHAT_API_KEY ?=
 CAI_TERMINAL_CHAT_MODEL ?=
+CAI_SMITH_MODEL ?=
+CAI_SMITH_ARGS ?=
 CAI_TERMINAL_CHAT_MAX_INPUT_TOKENS ?=
 CAI_TERMINAL_CHAT_MAX_CACHED_INPUT_TOKENS ?=
 CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS ?=
@@ -42,6 +44,11 @@ TERMINAL_MODEL_ARGS := --model "$(CAI_TERMINAL_CHAT_MODEL)"
 else
 TERMINAL_MODEL_ARGS :=
 endif
+ifneq ($(strip $(CAI_SMITH_MODEL)),)
+SMITH_MODEL_ARGS := --model "$(CAI_SMITH_MODEL)"
+else
+SMITH_MODEL_ARGS :=
+endif
 ifneq ($(strip $(CAI_CHATGPT_AUTH_JSON)),)
 CHATGPT_AUTH_ARGS := --chatgpt-auth-json "$(CAI_CHATGPT_AUTH_JSON)"
 CHATGPT_LOGIN_ARGS := --auth-json "$(CAI_CHATGPT_AUTH_JSON)" --port "$(CAI_CHATGPT_LOGIN_PORT)"
@@ -51,9 +58,6 @@ CHATGPT_LOGIN_ARGS := --port "$(CAI_CHATGPT_LOGIN_PORT)"
 else
 CHATGPT_AUTH_ARGS :=
 CHATGPT_LOGIN_ARGS := --port "$(CAI_CHATGPT_LOGIN_PORT)"
-endif
-ifneq ($(strip $(CAI_CHATGPT_BROWSER_COMMAND)),)
-CHATGPT_LOGIN_ARGS += --browser-command "$(CAI_CHATGPT_BROWSER_COMMAND)"
 endif
 ifneq ($(strip $(CAI_TERMINAL_CHAT_MAX_INPUT_TOKENS)),)
 TERMINAL_LIMIT_ARGS += --max-input-tokens "$(CAI_TERMINAL_CHAT_MAX_INPUT_TOKENS)"
@@ -73,7 +77,15 @@ endif
 ifneq ($(strip $(CAI_TERMINAL_CHAT_MAX_SPEND_USD)),)
 TERMINAL_LIMIT_ARGS += --max-spend-usd "$(CAI_TERMINAL_CHAT_MAX_SPEND_USD)"
 endif
-TERMINAL_CHAT_ARGS := $(CHATGPT_AUTH_ARGS) $(TERMINAL_MODEL_ARGS) $(TERMINAL_TOOL_ARGS) $(TERMINAL_LIMIT_ARGS)
+ifneq ($(strip $(CAI_TERMINAL_CHAT_API_KEY)),)
+TERMINAL_CHAT_AUTH_ARGS := --api-key
+else ifneq ($(strip $(CAI_CHATGPT_AUTH_JSON)),)
+TERMINAL_CHAT_AUTH_ARGS := --chatgpt-auth-json "$(CAI_CHATGPT_AUTH_JSON)"
+else
+TERMINAL_CHAT_AUTH_ARGS := --chatgpt-auth
+endif
+TERMINAL_CHAT_ARGS := $(TERMINAL_CHAT_AUTH_ARGS) $(TERMINAL_MODEL_ARGS) $(TERMINAL_TOOL_ARGS) $(TERMINAL_LIMIT_ARGS)
+SMITH_TERMINAL_ARGS := $(strip $(CHATGPT_AUTH_ARGS) $(SMITH_MODEL_ARGS) $(CAI_SMITH_ARGS))
 
 define run_c_example
 	cd "$(ROOT)" && \
@@ -93,7 +105,7 @@ help:
 	@printf '%s\n' \
 		'cai example runners:' \
 		'  make run-basic-response' \
-		'  make run-chatgpt-login [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_CHATGPT_BROWSER_COMMAND=xdg-open]' \
+		'  make run-chatgpt-login [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json]' \
 		'  make run-openrouter-response' \
 		'  make run-conversation-handles' \
 		'  make run-streaming-text' \
@@ -102,13 +114,17 @@ help:
 		'  make run-smhi-weather CAI_SMHI_LOCATION=Gothenburg' \
 		'  make run-mcp-server CAI_MCP_EXAMPLE_PORT=18766' \
 		'  make run-searxng-search CAI_SEARXNG_QUERY="OpenAI Responses API"' \
-		'  make run-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD] [CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS=1000000]' \
-		'    run-terminal-chat defaults CAI_EXEC_TOOL_DIR and CAI_READ_TOOL_DIR to the repo root; pass empty values to disable them.' \
+		'  make run-terminal-chat [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD] [CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS=1000000]' \
+		'    run-terminal-chat uses CAI ChatGPT auth by default; set CAI_TERMINAL_CHAT_API_KEY=1 only for explicit API-key use.' \
+		'    It defaults CAI_EXEC_TOOL_DIR and CAI_READ_TOOL_DIR to the repo root; pass empty values to disable them.' \
+		'  make run-smith-terminal [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_SMITH_MODEL=gpt-5.6-luna] [CAI_SMITH_ARGS=-v]' \
 		'  make run-mike-mind' \
-		'  make run-lua-chatgpt-login [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_CHATGPT_BROWSER_COMMAND=xdg-open]' \
+		'  make run-lua-chatgpt-login [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json]' \
 		'  make run-lua-basic' \
-		'  make run-lua-terminal-chat [CAI_CHATGPT_AUTH=1|CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD] [CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS=1000000]' \
-		'    run-lua-terminal-chat defaults CAI_EXEC_TOOL_DIR and CAI_READ_TOOL_DIR to the repo root; pass empty values to disable them.' \
+		'  make run-lua-terminal-chat [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_TERMINAL_CHAT_MODEL=gpt-5.4-mini] [CAI_EXEC_TOOL_DIR=/tmp/root] [CAI_READ_TOOL_DIR=$$PWD] [CAI_TERMINAL_CHAT_MAX_OUTPUT_TOKENS=1000000]' \
+		'    run-lua-terminal-chat uses CAI ChatGPT auth by default; set CAI_TERMINAL_CHAT_API_KEY=1 only for explicit API-key use.' \
+		'    It defaults CAI_EXEC_TOOL_DIR and CAI_READ_TOOL_DIR to the repo root; pass empty values to disable them.' \
+		'  make run-lua-smith-terminal [CAI_CHATGPT_AUTH_JSON=/tmp/cai-auth.json] [CAI_SMITH_MODEL=gpt-5.6-luna] [CAI_SMITH_ARGS=-v]' \
 		'  make run-lua-conversation' \
 		'  make run-lua-session-state CAI_LUA_SESSION_STATE_PATH=/tmp/cai-lua-state.json' \
 		'' \
@@ -154,6 +170,9 @@ run-searxng-search:
 run-terminal-chat:
 	$(call run_c_example,cai_example_terminal_chat,$(TERMINAL_CHAT_ARGS))
 
+run-smith-terminal:
+	$(call run_c_example,cai_example_smith_terminal,$(SMITH_TERMINAL_ARGS))
+
 run-mike-mind:
 	$(call run_c_example,cai_example_mike_mind,)
 
@@ -165,6 +184,9 @@ run-lua-basic:
 
 run-lua-terminal-chat:
 	$(call run_lua_example,examples/lua-terminal-chat/main.lua,$(TERMINAL_CHAT_ARGS))
+
+run-lua-smith-terminal:
+	$(call run_lua_example,examples/lua-smith-terminal/main.lua,$(SMITH_TERMINAL_ARGS))
 
 run-lua-conversation:
 	$(call run_lua_example,examples/lua-conversation/main.lua,)

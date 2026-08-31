@@ -1,6 +1,7 @@
 #ifndef CAI_AUTH_H
 #define CAI_AUTH_H
 
+#include <cai/blob_store.h>
 #include <cai/cai.h>
 #include <stddef.h>
 
@@ -29,13 +30,21 @@ extern "C" {
 /** Default timeout for ChatGPT OAuth token HTTP requests. */
 #define CAI_CHATGPT_AUTH_DEFAULT_HTTP_TIMEOUT_MS 30000L
 
-/** Codex-compatible ChatGPT auth session configuration. */
+/** CAI-owned, Codex-wire-compatible ChatGPT auth session configuration. */
 typedef struct cai_chatgpt_auth_config {
   /**
-   * Path to Codex-style auth.json storage. NULL/empty selects cai's default
-   * path: $XDG_CONFIG_HOME/cai/auth.json, or $HOME/.config/cai/auth.json.
+   * Path to CAI auth.json storage. NULL/empty selects cai's default state
+   * path: $XDG_STATE_HOME/cai/auth.json, or $HOME/.local/state/cai/auth.json.
    */
   const char *auth_json_path;
+  /**
+   * Optional callback-backed auth storage. When set, auth_json_path must be
+   * NULL/empty and CAI loads and replaces storage_key through this store.
+   * The store and its context remain borrowed until the auth handle closes.
+   */
+  const cai_blob_store *storage;
+  /** Optional opaque storage key; NULL selects "auth.json". */
+  const char *storage_key;
   /** OAuth issuer; NULL selects CAI_CHATGPT_AUTH_DEFAULT_ISSUER. */
   const char *issuer;
   /** OAuth client id; NULL selects CAI_CHATGPT_AUTH_DEFAULT_CLIENT_ID. */
@@ -95,11 +104,19 @@ typedef struct cai_chatgpt_login_response {
 /** Configuration for an interactive ChatGPT OAuth browser login flow. */
 typedef struct cai_chatgpt_login_config {
   /**
-   * Path where Codex-style auth.json should be persisted. NULL/empty selects
-   * cai's default path: $XDG_CONFIG_HOME/cai/auth.json, or
-   * $HOME/.config/cai/auth.json.
+   * Path where CAI auth.json should be persisted. NULL/empty selects cai's
+   * default state path: $XDG_STATE_HOME/cai/auth.json, or
+   * $HOME/.local/state/cai/auth.json.
    */
   const char *auth_json_path;
+  /**
+   * Optional callback-backed auth storage. When set, auth_json_path must be
+   * NULL/empty and CAI persists the completed login through this store. The
+   * store and its context remain borrowed until the login handle closes.
+   */
+  const cai_blob_store *storage;
+  /** Optional opaque storage key; NULL selects "auth.json". */
+  const char *storage_key;
   /** OAuth redirect URI served by the embedding HTTP server. Required. */
   const char *redirect_uri;
   /** Callback path extracted from redirect_uri; NULL selects default. */
@@ -164,7 +181,8 @@ void cai_chatgpt_auth_config_init(cai_chatgpt_auth_config *config);
 /** Return cai's default ChatGPT auth.json path. Free with cai_string_destroy.
  */
 int cai_chatgpt_auth_default_path(char **out, cai_error *error);
-/** Open a Codex-compatible ChatGPT auth session from auth.json storage. */
+/** Open a CAI-owned, Codex-wire-compatible ChatGPT auth session from storage.
+ */
 int cai_chatgpt_auth_open(const cai_chatgpt_auth_config *config,
                           cai_chatgpt_auth **out, cai_error *error);
 /** Return the current access token, refreshing first when it is near expiry. */

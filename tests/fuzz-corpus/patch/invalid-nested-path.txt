@@ -1,0 +1,4 @@
+*** Begin Patch
+*** Add File: ../../outside.txt
++nope
+*** End Patch

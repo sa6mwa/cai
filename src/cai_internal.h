@@ -2,6 +2,7 @@
 #define CAI_INTERNAL_H
 
 #include <cai/cai.h>
+#include <cai/skills.h>
 
 #include "cai_lj.h"
 
@@ -94,6 +95,32 @@ typedef struct cai_session_impl {
   cai_agent *agent;
   char *previous_response_id;
   char *conversation_id;
+  /** Model recorded in the imported/exported portable session state. */
+  char *state_model;
+  /** Preset identity recorded in the imported/exported portable session state.
+   */
+  char *state_preset_name;
+  /** Prompt revision recorded in the imported/exported portable session state.
+   */
+  char *state_preset_prompt_version;
+  char *goal_objective;
+  char *goal_status;
+  long long goal_token_budget;
+  int goal_has_token_budget;
+  /** Cumulative session usage at goal creation; not user-visible accounting. */
+  long long goal_token_usage_baseline;
+  long long goal_tokens_used;
+  /** Accumulated active wall time; excludes paused and terminal intervals. */
+  long long goal_elapsed_seconds;
+  /** Wall clock when the current active interval began, or zero. */
+  long long goal_active_started_at;
+  long long goal_created_at;
+  long long goal_updated_at;
+  /** Monotonic user-turn ordinal used to qualify blocked-goal updates. */
+  long long goal_turn_count;
+  /** Last turn that counted toward blocked-goal qualification, or -1. */
+  long long goal_blocked_last_turn;
+  int goal_blocked_attempts;
   cai_token_usage last_usage;
   int has_last_usage;
   cai_usage_limits usage_limits;
@@ -127,6 +154,11 @@ int cai_set_error_http(cai_error *error, int code, long http_status,
                        const char *message, const char *detail,
                        const char *server_code, const char *request_id);
 int cai_usage_limits_validate(const cai_usage_limits *limits, cai_error *error);
+
+long long cai_session_goal_elapsed_seconds(const cai_session *session,
+                                           long long now);
+void cai_session_goal_start_elapsed(cai_session *session, long long now);
+void cai_session_goal_stop_elapsed(cai_session *session, long long now);
 
 int cai_resolve_api_key(const cai_allocator *allocator,
                         const char *explicit_key, const char *env_name,
@@ -181,8 +213,12 @@ struct cai_function_tool {
   char *description;
   char *parameters_json;
   char *raw_json;
+  char *custom_format_type;
+  char *custom_format_syntax;
+  char *custom_format_definition;
   int strict;
   int is_raw;
+  int is_custom;
 };
 
 typedef struct cai_buffer_builder {
@@ -228,6 +264,15 @@ cai_response_request_upload_size(const cai_response_request_upload *upload);
 void cai_response_request_upload_close(cai_response_request_upload *upload);
 #ifdef CAI_TESTING
 int cai_test_response_request_upload_active(void);
+void cai_session_store_test_set_fail_scope_parent_sync(int enabled);
+void cai_agent_runtime_test_set_fail_goal_status_replace(int enabled);
+unsigned int cai_agent_runtime_test_goal_status_replace_failures(void);
+typedef void (*cai_agent_runtime_test_export_cleanup_fn)(const char *path,
+                                                         void *context);
+void cai_agent_runtime_test_set_export_cleanup_hook(
+    cai_agent_runtime_test_export_cleanup_fn hook, void *context);
+size_t cai_terminal_test_output_limit(long long value, int present,
+                                      size_t maximum);
 #endif
 int cai_response_create_params_set_raw_input_json(
     cai_response_create_params *params, const char *raw_input_json,
@@ -238,6 +283,9 @@ int cai_response_create_params_set_raw_input_spooled(
 void cai_response_create_params_clear_input(cai_response_create_params *params);
 void cai_response_create_params_clear_input(cai_response_create_params *params);
 int cai_response_create_params_add_function_call_output_spooled(
+    cai_response_create_params *params, const char *call_id,
+    lonejson_spooled *output, cai_error *error);
+int cai_response_create_params_add_custom_tool_call_output_spooled(
     cai_response_create_params *params, const char *call_id,
     lonejson_spooled *output, cai_error *error);
 int cai_response_params_input_items_json(
@@ -314,6 +362,10 @@ int cai_client_stream_response_with_id(cai_client *client,
                                        char **out_response_id,
                                        cai_token_usage *out_usage,
                                        cai_error *error);
+int cai_client_stream_response_internal_with_id(
+    cai_client *client, const cai_response_create_params *params,
+    const cai_stream_sinks *sinks, char **out_response_id,
+    cai_token_usage *out_usage, cai_error *error);
 void cai_client_close_responses_websocket(cai_client_impl *impl);
 #ifdef CAI_TESTING
 int cai_client_stream_response_websocket_test(
@@ -334,10 +386,57 @@ int cai_tool_registry_register_lonejson_schema_owned(
     const char *schema_json, int strict, const lonejson_map *params_map,
     const lonejson_map *result_map, cai_tool_fn callback, void *context,
     void (*context_cleanup)(void *context), cai_error *error);
+typedef void (*cai_tool_result_commit_fn)(void *context, const void *result);
+int cai_tool_registry_set_result_commit(cai_tool_registry *registry,
+                                        const char *name,
+                                        cai_tool_result_commit_fn callback,
+                                        cai_error *error);
+int cai_agent_register_lonejson_tool_schema_internal(
+    cai_agent *agent, const char *name, const char *description,
+    const char *schema_json, int strict, const lonejson_map *params_map,
+    const lonejson_map *result_map, cai_tool_fn callback, void *context,
+    cai_error *error);
 int cai_tool_registry_register_raw_spooled_owned(
     cai_tool_registry *registry, const char *name, const char *description,
     const char *schema_json, int strict, cai_tool_raw_spooled_fn callback,
     void *context, void (*context_cleanup)(void *context), cai_error *error);
+int cai_tool_registry_register_custom_owned(
+    cai_tool_registry *registry, const char *name, const char *description,
+    const cai_custom_tool_format *format, cai_tool_custom_fn callback,
+    void *context, void (*context_cleanup)(void *context), cai_error *error);
+int cai_tool_registry_register_custom_spooled_owned(
+    cai_tool_registry *registry, const char *name, const char *description,
+    const cai_custom_tool_format *format, cai_tool_custom_spooled_fn callback,
+    void *context, void (*context_cleanup)(void *context), cai_error *error);
+typedef struct cai_skill_catalog cai_skill_catalog;
+int cai_skills_prepare(const cai_skill_config *config,
+                       const char *agent_config_directory,
+                       cai_skill_catalog **out_catalog, char **out_prompt,
+                       cai_error *error);
+void cai_skills_catalog_cleanup(cai_skill_catalog *catalog);
+int cai_skills_catalog_has_entries(const cai_skill_catalog *catalog);
+int cai_agent_register_skill_tool_owned(cai_agent *agent,
+                                        cai_skill_catalog *catalog,
+                                        cai_error *error);
+/*
+ * A local tool may replace its ordinary JSON function-call output with typed
+ * response content.  This is intentionally internal until the public tool
+ * result ABI grows a stable typed-output representation.
+ */
+typedef int (*cai_tool_result_delivery_fn)(void *context, const char *call_id,
+                                           cai_response_create_params *params,
+                                           const lonejson_spooled *output_json,
+                                           int *out_delivered,
+                                           cai_error *error);
+int cai_tool_registry_set_result_delivery(cai_tool_registry *registry,
+                                          const char *name,
+                                          cai_tool_result_delivery_fn callback,
+                                          cai_error *error);
+int cai_tool_registry_deliver_result(cai_tool_registry *registry,
+                                     const char *name, const char *call_id,
+                                     cai_response_create_params *params,
+                                     const lonejson_spooled *output_json,
+                                     int *out_delivered, cai_error *error);
 int cai_tool_registry_run_spooled(cai_tool_registry *registry, const char *name,
                                   lonejson_spooled *arguments_json,
                                   cai_sink *output, cai_error *error);
@@ -355,5 +454,12 @@ void cai_configure_curl_tls(CURL *curl, int insecure_skip_verify,
                             const char *ca_bundle_path, const char *ca_path);
 int cai_conversation_parse_json(const char *json, cai_conversation **out,
                                 cai_error *error);
+int cai_session_commit_pending_inputs(cai_session *session, cai_error *error);
+/* Insert steering into the active model cycle without creating a user turn. */
+int cai_session_add_steering_text(cai_session *session, const char *text,
+                                  cai_error *error);
+/* Add CAI-generated trusted context without creating a user turn. */
+int cai_session_add_internal_context_text(cai_session *session,
+                                          const char *text, cai_error *error);
 
 #endif

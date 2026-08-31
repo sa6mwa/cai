@@ -1,11 +1,18 @@
+#include <cai/agent_runtime.h>
 #include <cai/auth.h>
 #include <cai/cai.h>
 #include <cai/mcp.h>
+#include <cai/session_store.h>
+#include <cai/smith.h>
 #include <cai/tools/exec.h>
+#include <cai/tools/goal.h>
+#include <cai/tools/patch.h>
 #include <cai/tools/read.h>
 #include <cai/tools/revgeo.h>
 #include <cai/tools/searxng.h>
+#include <cai/tools/terminal.h>
 #include <cai/tools/todo.h>
+#include <cai/tools/view_image.h>
 
 #include "../examples/mike-mind/mike_mind_prompt.h"
 #include "cai_internal.h"
@@ -18,12 +25,15 @@
 #include <netinet/in.h>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
+#include <poll.h>
 #include <pslog.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -51,6 +61,11 @@ static const char *g_current_test_name = NULL;
 
 void cai_mcp_test_set_sleep_ms_fn(void (*fn)(long ms));
 int cai_mcp_test_header_callback_unterminated(void);
+void cai_patch_test_pause_before_publish(int enabled);
+void cai_patch_test_fail_directory_sync(int enabled);
+int cai_patch_test_resolve_new_path(const char *root, const char *path);
+void cai_terminal_test_set_reader_create_failure(int enabled);
+void cai_terminal_test_set_child_pre_setsid_hold(int enabled);
 
 static long g_mcp_test_sleep_last_ms = 0L;
 static int g_mcp_test_sleep_count = 0;
@@ -71,11 +86,49 @@ static void test_mcp_sleep_start_capture(void) {
   cai_mcp_test_set_sleep_ms_fn(test_mcp_sleep_capture);
 }
 
+typedef struct runtime_export_cleanup_replace_state {
+  const char *moved_path;
+  const char *replacement_path;
+  int called;
+  int succeeded;
+} runtime_export_cleanup_replace_state;
+
+static void test_runtime_export_replace_before_cleanup(const char *path,
+                                                       void *context) {
+  runtime_export_cleanup_replace_state *state;
+
+  state = (runtime_export_cleanup_replace_state *)context;
+  if (state == NULL || path == NULL || rename(path, state->moved_path) != 0 ||
+      rename(state->replacement_path, path) != 0) {
+    return;
+  }
+  state->called = 1;
+  state->succeeded = 1;
+}
+
 typedef struct read_state {
   const char *text;
   size_t offset;
   int closed;
 } read_state;
+
+typedef struct opaque_skill_provider_state {
+  const char *skill_id;
+  read_state reader;
+  int list_calls;
+  int read_calls;
+  int saw_exact_id;
+} opaque_skill_provider_state;
+
+typedef struct blob_store_test_state {
+  read_state reader;
+  char loaded_key[64];
+  char saved_key[64];
+  char saved_value[4096];
+  size_t saved_length;
+  int loads;
+  int replaces;
+} blob_store_test_state;
 
 typedef struct fail_after_eof_read_state {
   const char *text;
@@ -111,6 +164,98 @@ typedef struct write_state {
   int closed;
 } write_state;
 
+typedef struct runtime_event_state {
+  pthread_t owner;
+  cai_agent_runtime *runtime;
+  int calls;
+  int saw_started;
+  int run_started_inactive_state;
+  int saw_turn_queued;
+  int saw_steering_queued;
+  int completed_count;
+  int completed_submit_attempts;
+  int completed_submit_result;
+  int saw_failed;
+  int failed_count;
+  int saw_list_tool;
+  int saw_review_report;
+  int saw_review_started;
+  int saw_review_handed_off;
+  int saw_subagent_started;
+  int saw_subagent_handed_off;
+  int subagent_text_delta_count;
+  int saw_reasoning_summary;
+  int response_completed_count;
+  int reasoning_summary_count;
+  int tool_action;
+  char tool_path[PATH_MAX];
+  char failure_message[256];
+  char review_report[1024];
+  char review_handoff[1024];
+  char subagent_display_summary[1024];
+  char subagent_instruction[1024];
+  char subagent_handoff[1024];
+  char subagent_metadata_json[1024];
+  char reasoning_summary[1024];
+  char subagent_session_id[CAI_AGENT_SESSION_ID_MAX];
+  int wrong_thread;
+} runtime_event_state;
+
+typedef struct runtime_close_callback_state {
+  cai_agent_runtime *runtime;
+  int calls;
+} runtime_close_callback_state;
+
+typedef struct runtime_close_steering_callback_state {
+  cai_agent_runtime *runtime;
+  int calls;
+  int steering_result;
+} runtime_close_steering_callback_state;
+
+typedef struct runtime_session_store_state {
+  const char *checkpoint_json;
+  read_state reader;
+  int loads;
+  int checkpoints;
+  int load_only_saved_scope;
+  int fail_checkpoint_once;
+  int fail_checkpoint_after;
+  int saw_goal_checkpoint_without_tool_output;
+  int saw_steering_checkpoint_before_watermark;
+  int appended_events;
+  unsigned long long load_applied_event_sequence;
+  unsigned long long saved_applied_event_sequence;
+  unsigned long long replay_event_sequence;
+  char replay_event_type[64];
+  char replay_event_data[256];
+  size_t replay_event_count;
+  unsigned long long replay_event_sequences[8];
+  char replay_event_types[8][64];
+  char replay_event_data_items[8][256];
+  char scope[128];
+  char session_id[CAI_AGENT_SESSION_ID_MAX];
+  char loaded_session_id[CAI_AGENT_SESSION_ID_MAX];
+  char fail_checkpoint_session_id[CAI_AGENT_SESSION_ID_MAX];
+  char saved_checkpoint[8192];
+} runtime_session_store_state;
+
+typedef struct runtime_goal_checkpoint_race_state {
+  runtime_session_store_state store;
+  pthread_mutex_t lock;
+  pthread_cond_t condition;
+  int block_checkpoint;
+  int checkpoint_waiting;
+  int checkpoint_released;
+  unsigned long long blocked_applied_event_sequence;
+} runtime_goal_checkpoint_race_state;
+
+typedef struct session_event_capture_state {
+  int count;
+  unsigned long long sequence;
+  char type[64];
+  char data[256];
+} session_event_capture_state;
+
 typedef struct fail_write_state {
   int writes;
   int closed;
@@ -132,7 +277,7 @@ typedef struct mcp_source_state {
 } mcp_source_state;
 
 typedef struct mcp_sink_state {
-  char buffer[16384];
+  char buffer[65536];
   size_t length;
   int write_count;
   int fail_after_writes;
@@ -233,6 +378,10 @@ typedef struct stream_output_state {
   int delta_count;
 } stream_output_state;
 
+typedef struct stream_response_completed_state {
+  int count;
+} stream_response_completed_state;
+
 typedef struct tool_weather_args {
   char *city;
   long long days;
@@ -316,15 +465,72 @@ typedef struct tool_event_state {
   int errors;
   int missing_methods;
   char name[32];
+  char call_id[64];
   char arguments[64];
   size_t arguments_spooled_size;
   char output[256];
   char error[128];
 } tool_event_state;
 
+typedef struct terminal_event_state {
+  int started;
+  int output;
+  int waiting;
+  int completed;
+  int cancelled;
+  unsigned long long total_output_bytes;
+  char terminal_id[48];
+  char command[256];
+  unsigned long long command_id;
+} terminal_event_state;
+
+typedef struct runtime_terminal_close_callback_state {
+  cai_agent_runtime *runtime;
+  int notify_fd;
+  int calls;
+} runtime_terminal_close_callback_state;
+
+typedef struct terminal_race_policy_state {
+  pthread_mutex_t lock;
+  pthread_cond_t changed;
+  int arrivals;
+  int released;
+} terminal_race_policy_state;
+
+typedef struct terminal_race_exec_state {
+  cai_tool_registry *registry;
+  int rc;
+  cai_error error;
+  write_state writer;
+} terminal_race_exec_state;
+
+typedef struct terminal_write_state {
+  cai_tool_registry *registry;
+  int rc;
+  cai_error error;
+  write_state writer;
+} terminal_write_state;
+
+typedef struct terminal_workdir_swap_state {
+  char root[PATH_MAX];
+  char moved_root[PATH_MAX];
+  char outside[PATH_MAX];
+  int swapped;
+} terminal_workdir_swap_state;
+
 typedef struct failing_callback_state {
   int calls;
 } failing_callback_state;
+
+typedef struct tool_round_inject_state {
+  const char *text;
+  int calls;
+} tool_round_inject_state;
+
+typedef struct tool_round_history_state {
+  int calls;
+  char history[4096];
+} tool_round_history_state;
 
 typedef struct counting_tool_state {
   int called;
@@ -589,13 +795,21 @@ static int g_test_tracef_count = 0;
 static int g_test_debugf_count = 0;
 static int g_test_warnf_count = 0;
 static int g_test_errorf_count = 0;
+static char g_test_subagent_started_kvfmt[256];
+static int g_test_agent_runtime_legacy_log_name_count = 0;
+
+static void test_pslog_runtime_log_name(const char *msg) {
+  if (msg != NULL && strncmp(msg, "agent ", sizeof("agent ") - 1U) == 0) {
+    g_test_agent_runtime_legacy_log_name_count++;
+  }
+}
 
 static void test_pslog_infof(pslog_logger *log, const char *msg,
                              const char *kvfmt, ...) {
   va_list args;
 
   (void)log;
-  (void)msg;
+  test_pslog_runtime_log_name(msg);
   va_start(args, kvfmt);
   va_end(args);
   if (kvfmt != NULL) {
@@ -608,7 +822,7 @@ static void test_pslog_tracef(pslog_logger *log, const char *msg,
   va_list args;
 
   (void)log;
-  (void)msg;
+  test_pslog_runtime_log_name(msg);
   va_start(args, kvfmt);
   va_end(args);
   if (kvfmt != NULL) {
@@ -621,11 +835,15 @@ static void test_pslog_debugf(pslog_logger *log, const char *msg,
   va_list args;
 
   (void)log;
-  (void)msg;
+  test_pslog_runtime_log_name(msg);
   va_start(args, kvfmt);
   va_end(args);
   if (kvfmt != NULL) {
     g_test_debugf_count++;
+    if (msg != NULL && strcmp(msg, "cai.agent.runtime.subagent.start") == 0) {
+      (void)snprintf(g_test_subagent_started_kvfmt,
+                     sizeof(g_test_subagent_started_kvfmt), "%s", kvfmt);
+    }
   }
 }
 
@@ -634,7 +852,7 @@ static void test_pslog_warnf(pslog_logger *log, const char *msg,
   va_list args;
 
   (void)log;
-  (void)msg;
+  test_pslog_runtime_log_name(msg);
   va_start(args, kvfmt);
   va_end(args);
   if (kvfmt != NULL) {
@@ -647,7 +865,7 @@ static void test_pslog_errorf(pslog_logger *log, const char *msg,
   va_list args;
 
   (void)log;
-  (void)msg;
+  test_pslog_runtime_log_name(msg);
   va_start(args, kvfmt);
   va_end(args);
   if (kvfmt != NULL) {
@@ -867,6 +1085,16 @@ static void test_model_capabilities(test_state *state) {
              cai_model_supports("future-model", CAI_MODEL_CAP_RESPONSES), 0L);
   expect_int(state, "model_context",
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_NANO), 400000L);
+  expect_str(state, "model_5_6_luna_compaction_hash",
+             cai_model_compaction_compatibility_hash(CAI_MODEL_GPT_5_6_LUNA),
+             "3000");
+  expect_str(state, "model_5_5_compaction_hash",
+             cai_model_compaction_compatibility_hash(CAI_MODEL_GPT_5_5),
+             "2911");
+  if (cai_model_compaction_compatibility_hash("future-model") != NULL) {
+    test_fail(state, "model_unknown_compaction_hash",
+              "unknown model unexpectedly has a compaction hash");
+  }
   expect_int(state, "model_metadata_verified",
              (long)(cai_model_metadata_flags(CAI_MODEL_GPT_5_NANO) &
                     CAI_MODEL_META_VERIFIED),
@@ -903,19 +1131,6 @@ static void test_model_capabilities(test_state *state) {
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_5), 1050000L);
   expect_int(state, "model_gpt_5_6_context",
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_6), 1050000L);
-  info = cai_model_info_by_id(CAI_MODEL_GPT_5_6_TERRA);
-  if (info == NULL) {
-    test_fail(state, "model_gpt_5_6_terra_metadata", "model missing");
-    return;
-  }
-  expect_int(state, "model_gpt_5_6_terra_short_input_cents",
-             (long)(info->input_usd_per_million * 100.0 + 0.5), 200L);
-  expect_int(state, "model_gpt_5_6_terra_long_output_cents",
-             (long)(info->long_output_usd_per_million * 100.0 + 0.5), 1800L);
-  expect_int(state, "model_gpt_5_6_terra_reasoning_mode",
-             cai_model_supports(CAI_MODEL_GPT_5_6_TERRA,
-                                CAI_MODEL_CAP_REASONING_PRO_MODE),
-             1L);
   info = cai_model_info_by_id(CAI_MODEL_GPT_5_6_LUNA);
   if (info == NULL) {
     test_fail(state, "model_gpt_5_6_luna_metadata", "model missing");
@@ -1341,6 +1556,58 @@ static size_t test_read(void *context, void *buffer, size_t count,
   return n;
 }
 
+static int test_blob_store_load(void *context, const char *key,
+                                cai_source **out, cai_error *error) {
+  blob_store_test_state *store;
+  cai_source_callbacks callbacks;
+
+  store = (blob_store_test_state *)context;
+  if (store == NULL || key == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "blob store load is invalid");
+  }
+  *out = NULL;
+  store->loads++;
+  (void)snprintf(store->loaded_key, sizeof(store->loaded_key), "%s", key);
+  if (store->reader.text == NULL) {
+    return CAI_OK;
+  }
+  store->reader.offset = 0U;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.read = test_read;
+  callbacks.context = &store->reader;
+  return cai_source_from_callbacks(&callbacks, out, error);
+}
+
+static int test_blob_store_replace(void *context, const char *key,
+                                   cai_source *value, cai_error *error) {
+  blob_store_test_state *store;
+  size_t nread;
+
+  store = (blob_store_test_state *)context;
+  if (store == NULL || key == NULL || value == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "blob store replace is invalid");
+  }
+  store->replaces++;
+  (void)snprintf(store->saved_key, sizeof(store->saved_key), "%s", key);
+  store->saved_length = 0U;
+  for (;;) {
+    if (store->saved_length + 1U >= sizeof(store->saved_value)) {
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "blob store value is too large");
+    }
+    nread = cai_source_read(
+        value, store->saved_value + store->saved_length,
+        sizeof(store->saved_value) - store->saved_length - 1U, error);
+    if (nread == 0U) {
+      break;
+    }
+    store->saved_length += nread;
+  }
+  store->saved_value[store->saved_length] = '\0';
+  return CAI_OK;
+}
+
 static size_t test_failing_zero_read(void *context, void *buffer, size_t count,
                                      cai_error *error) {
   (void)context;
@@ -1605,6 +1872,51 @@ static void test_read_close(void *context) {
   state->closed = 1;
 }
 
+static int test_opaque_skill_provider_list(void *context,
+                                           cai_skill_provider_visit_fn visit,
+                                           void *visit_context,
+                                           cai_error *error) {
+  opaque_skill_provider_state *state;
+
+  state = (opaque_skill_provider_state *)context;
+  if (state == NULL || visit == NULL || state->skill_id == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "opaque skill provider list state is required");
+  }
+  state->list_calls++;
+  return visit(visit_context, state->skill_id, error);
+}
+
+static int test_opaque_skill_provider_read(void *context, const char *skill_id,
+                                           const char *resource,
+                                           cai_source **out, cai_error *error) {
+  opaque_skill_provider_state *state;
+  cai_source_callbacks callbacks;
+
+  state = (opaque_skill_provider_state *)context;
+  if (state == NULL || skill_id == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "opaque skill provider read state is required");
+  }
+  state->read_calls++;
+  state->saw_exact_id = strcmp(skill_id, state->skill_id) == 0;
+  if (resource != NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "unexpected opaque skill resource");
+  }
+  state->reader.text =
+      "---\nname: opaque-provider\ndescription: Read an opaque skill.\n---\n"
+      "Follow the opaque provider instructions.\n";
+  state->reader.offset = 0U;
+  state->reader.closed = 0;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.read = test_read;
+  callbacks.reset = test_reset;
+  callbacks.close = test_read_close;
+  callbacks.context = &state->reader;
+  return cai_source_from_callbacks(&callbacks, out, error);
+}
+
 static int mock_write_all(int fd, const char *data, size_t length);
 
 static int test_write(void *context, const void *bytes, size_t count,
@@ -1627,6 +1939,471 @@ static void test_write_close(void *context) {
 
   state = (write_state *)context;
   state->closed = 1;
+}
+
+static int test_runtime_event(void *context,
+                              const cai_agent_runtime_event *event,
+                              cai_error *error) {
+  runtime_event_state *state;
+
+  (void)error;
+  state = (runtime_event_state *)context;
+  state->calls++;
+  if (!pthread_equal(state->owner, pthread_self())) {
+    state->wrong_thread = 1;
+  }
+  if (event->type == CAI_AGENT_EVENT_RUN_STARTED) {
+    state->saw_started = 1;
+    if (event->state != CAI_AGENT_SAMPLING) {
+      state->run_started_inactive_state = 1;
+    }
+  }
+  if (event->type == CAI_AGENT_EVENT_TURN_QUEUED) {
+    state->saw_turn_queued = 1;
+  }
+  if (event->type == CAI_AGENT_EVENT_STEERING_QUEUED) {
+    state->saw_steering_queued = 1;
+  }
+  if (event->type == CAI_AGENT_EVENT_RUN_COMPLETED) {
+    state->completed_count++;
+    if (state->runtime != NULL && state->completed_submit_attempts == 0) {
+      cai_error submit_error;
+
+      state->completed_submit_attempts++;
+      cai_error_init(&submit_error);
+      state->completed_submit_result = cai_agent_runtime_submit(
+          state->runtime, "competing immediate turn", &submit_error);
+      cai_error_cleanup(&submit_error);
+    }
+  }
+  if (event->type == CAI_AGENT_EVENT_RESPONSE_COMPLETED) {
+    state->response_completed_count++;
+  }
+  if (event->type == CAI_AGENT_EVENT_RUN_FAILED) {
+    state->saw_failed = 1;
+    state->failed_count++;
+    if (event->data != NULL) {
+      snprintf(state->failure_message, sizeof(state->failure_message), "%.*s",
+               (int)event->data_length, event->data);
+    }
+  }
+  if (event->type == CAI_AGENT_EVENT_REVIEW_REPORT) {
+    state->saw_review_report = 1;
+    if (event->data != NULL) {
+      snprintf(state->review_report, sizeof(state->review_report), "%.*s",
+               (int)event->data_length, event->data);
+    }
+  }
+  if (event->type == CAI_AGENT_EVENT_REASONING_SUMMARY) {
+    state->saw_reasoning_summary = 1;
+    state->reasoning_summary_count++;
+    if (event->data != NULL) {
+      snprintf(state->reasoning_summary, sizeof(state->reasoning_summary),
+               "%.*s", (int)event->data_length, event->data);
+    }
+  }
+  if (event->type == CAI_AGENT_EVENT_REVIEW_STARTED) {
+    state->saw_review_started = 1;
+  }
+  if (event->type == CAI_AGENT_EVENT_REVIEW_HANDED_OFF) {
+    state->saw_review_handed_off = 1;
+    if (event->data != NULL) {
+      snprintf(state->review_handoff, sizeof(state->review_handoff), "%.*s",
+               (int)event->data_length, event->data);
+    }
+  }
+  if (event->type == CAI_AGENT_EVENT_SUBAGENT_STARTED) {
+    state->saw_subagent_started = 1;
+    if (event->data != NULL) {
+      snprintf(state->subagent_display_summary,
+               sizeof(state->subagent_display_summary), "%.*s",
+               (int)event->data_length, event->data);
+    }
+    if (event->subagent_instruction != NULL) {
+      snprintf(state->subagent_instruction, sizeof(state->subagent_instruction),
+               "%s", event->subagent_instruction);
+    }
+    if (event->runtime_session_id != NULL) {
+      snprintf(state->subagent_session_id, sizeof(state->subagent_session_id),
+               "%s", event->runtime_session_id);
+    }
+    if (event->subagent_metadata_json != NULL) {
+      snprintf(state->subagent_metadata_json,
+               sizeof(state->subagent_metadata_json), "%s",
+               event->subagent_metadata_json);
+    }
+  }
+  if (event->type == CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF) {
+    state->saw_subagent_handed_off = 1;
+    if (event->data != NULL) {
+      snprintf(state->subagent_handoff, sizeof(state->subagent_handoff), "%.*s",
+               (int)event->data_length, event->data);
+    }
+  }
+  if (event->type == CAI_AGENT_EVENT_TEXT_DELTA &&
+      event->subagent_name != NULL) {
+    state->subagent_text_delta_count++;
+  }
+  if ((event->type == CAI_AGENT_EVENT_TOOL_CALL_STARTED ||
+       event->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED) &&
+      event->tool_action == CAI_AGENT_TOOL_ACTION_LIST) {
+    state->saw_list_tool = 1;
+    state->tool_action = event->tool_action;
+    if (event->tool_path != NULL) {
+      snprintf(state->tool_path, sizeof(state->tool_path), "%s",
+               event->tool_path);
+    }
+  }
+  return CAI_OK;
+}
+
+typedef struct test_subagent_prepare_state {
+  int calls;
+  int saw_valid_request;
+} test_subagent_prepare_state;
+
+static int test_subagent_prepare(
+    void *context, const cai_agent_subagent_prepare_request *request,
+    cai_agent_subagent_prepare_result *result, cai_error *error) {
+  test_subagent_prepare_state *state;
+
+  (void)error;
+  state = (test_subagent_prepare_state *)context;
+  if (state == NULL || request == NULL || result == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  state->calls++;
+  if (strcmp(request->profile_name, "worker") == 0 &&
+      strcmp(request->workspace_directory, "/tmp") == 0 &&
+      request->argument_count == 2U &&
+      strcmp(request->arguments[0].name, "format") == 0 &&
+      request->arguments[0].is_present &&
+      strcmp(request->arguments[0].string_value, "json") == 0 &&
+      strcmp(request->arguments[1].name, "instructions") == 0 &&
+      !request->arguments[1].is_present &&
+      strcmp(request->model, CAI_MODEL_GPT_5_6_LUNA) == 0 &&
+      strcmp(request->reasoning_effort, CAI_REASONING_EFFORT_LOW) == 0 &&
+      strcmp(request->reasoning_summary, CAI_REASONING_SUMMARY_AUTO) == 0) {
+    state->saw_valid_request = 1;
+  }
+  result->child_input = "Prepared JSON worker task.";
+  result->display_summary = "Preparing the JSON worker.";
+  result->metadata_json = "{\"kind\":\"worker\"}";
+  return CAI_OK;
+}
+
+static int test_xid_session_id_valid(const char *session_id, time_t earliest,
+                                     time_t latest) {
+  unsigned int values[7];
+  unsigned long timestamp;
+  size_t index;
+
+  if (session_id == NULL || strlen(session_id) != 20U || earliest < 1 ||
+      latest < earliest) {
+    return 0;
+  }
+  for (index = 0U; index < 20U; index++) {
+    unsigned char character;
+
+    character = (unsigned char)session_id[index];
+    if (character >= '0' && character <= '9') {
+      if (index < 7U) {
+        values[index] = (unsigned int)(character - '0');
+      }
+    } else if (character >= 'a' && character <= 'v') {
+      if (index < 7U) {
+        values[index] = (unsigned int)(character - 'a') + 10U;
+      }
+    } else {
+      return 0;
+    }
+  }
+  timestamp =
+      ((unsigned long)(values[0] << 3U | values[1] >> 2U) << 24U) |
+      ((unsigned long)(values[1] << 6U | values[2] << 1U | values[3] >> 4U)
+       << 16U) |
+      ((unsigned long)(values[3] << 4U | values[4] >> 1U) << 8U) |
+      (unsigned long)(values[4] << 7U | values[5] << 2U | values[6] >> 3U);
+  return timestamp >= (unsigned long)(earliest - 1) &&
+         timestamp <= (unsigned long)(latest + 1);
+}
+
+static int test_runtime_close_from_event(void *context,
+                                         const cai_agent_runtime_event *event,
+                                         cai_error *error) {
+  runtime_close_callback_state *state;
+
+  (void)event;
+  (void)error;
+  state = (runtime_close_callback_state *)context;
+  state->calls++;
+  if (state->runtime != NULL) {
+    cai_agent_runtime_close(state->runtime);
+    state->runtime = NULL;
+  }
+  return CAI_OK;
+}
+
+static int test_runtime_close_and_submit_steering(
+    void *context, const cai_agent_runtime_event *event, cai_error *error) {
+  runtime_close_steering_callback_state *state;
+  cai_error submit_error;
+
+  (void)event;
+  (void)error;
+  state = (runtime_close_steering_callback_state *)context;
+  state->calls++;
+  if (state->runtime != NULL) {
+    /* The owner callback defers destruction until pump unwinds, leaving a
+     * valid runtime on which to prove that shutdown rejects new steering. */
+    cai_agent_runtime_close(state->runtime);
+    cai_error_init(&submit_error);
+    state->steering_result = cai_agent_runtime_submit_steering_threadsafe(
+        state->runtime, "must not survive shutdown", &submit_error);
+    cai_error_cleanup(&submit_error);
+    state->runtime = NULL;
+  }
+  return CAI_OK;
+}
+
+static int test_runtime_close_from_terminal_event(
+    void *context, const cai_terminal_event *event, cai_error *error) {
+  runtime_terminal_close_callback_state *state;
+  char signal;
+
+  (void)error;
+  state = (runtime_terminal_close_callback_state *)context;
+  if (state == NULL || event == NULL ||
+      event->type != CAI_TERMINAL_EVENT_COMMAND_STARTED) {
+    return CAI_OK;
+  }
+  state->calls++;
+  if (state->runtime != NULL) {
+    cai_agent_runtime_close(state->runtime);
+    state->runtime = NULL;
+  }
+  signal = 'x';
+  if (state->notify_fd >= 0) {
+    (void)write(state->notify_fd, &signal, 1U);
+  }
+  return CAI_OK;
+}
+
+static int test_runtime_session_store_checkpoint(
+    void *context, const char *scope, const char *session_id, cai_source *state,
+    unsigned long long applied_event_sequence, cai_error *error) {
+  runtime_session_store_state *store;
+  size_t offset;
+
+  store = (runtime_session_store_state *)context;
+  if (store == NULL || state == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "runtime test checkpoint state is required");
+  }
+  if (store->fail_checkpoint_once > 0 &&
+      strcmp(session_id, store->fail_checkpoint_session_id) == 0) {
+    if (store->fail_checkpoint_after > 0) {
+      store->fail_checkpoint_after--;
+    } else {
+      store->fail_checkpoint_once--;
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "injected runtime checkpoint failure");
+    }
+  }
+  store->checkpoints++;
+  store->saved_applied_event_sequence = applied_event_sequence;
+  (void)snprintf(store->scope, sizeof(store->scope), "%s", scope);
+  (void)snprintf(store->session_id, sizeof(store->session_id), "%s",
+                 session_id);
+  offset = 0U;
+  while (offset + 1U < sizeof(store->saved_checkpoint)) {
+    size_t count;
+
+    count =
+        cai_source_read(state, store->saved_checkpoint + offset,
+                        sizeof(store->saved_checkpoint) - offset - 1U, error);
+    if (count == 0U) {
+      break;
+    }
+    offset += count;
+  }
+  if (offset + 1U == sizeof(store->saved_checkpoint)) {
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "runtime test checkpoint buffer is too small");
+  }
+  store->saved_checkpoint[offset] = '\0';
+  if (strstr(store->saved_checkpoint, "interleaved steering") != NULL &&
+      applied_event_sequence < 2U) {
+    store->saw_steering_checkpoint_before_watermark = 1;
+  }
+  if (strstr(store->saved_checkpoint, "\"goal_status\":\"budget_limited\"") !=
+          NULL &&
+      strstr(store->saved_checkpoint, "\"type\":\"function_call_output\"") ==
+          NULL) {
+    store->saw_goal_checkpoint_without_tool_output = 1;
+  }
+  return CAI_OK;
+}
+
+static int test_runtime_goal_race_checkpoint(
+    void *context, const char *scope, const char *session_id, cai_source *state,
+    unsigned long long applied_event_sequence, cai_error *error) {
+  runtime_goal_checkpoint_race_state *race;
+  int should_block;
+  int rc;
+
+  race = (runtime_goal_checkpoint_race_state *)context;
+  if (race == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "goal checkpoint race state is required");
+  }
+  rc = test_runtime_session_store_checkpoint(
+      &race->store, scope, session_id, state, applied_event_sequence, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  pthread_mutex_lock(&race->lock);
+  should_block = race->block_checkpoint && !race->checkpoint_waiting;
+  if (should_block) {
+    race->blocked_applied_event_sequence = applied_event_sequence;
+    race->checkpoint_waiting = 1;
+    pthread_cond_broadcast(&race->condition);
+    while (!race->checkpoint_released) {
+      pthread_cond_wait(&race->condition, &race->lock);
+    }
+  }
+  pthread_mutex_unlock(&race->lock);
+  return CAI_OK;
+}
+
+static int test_runtime_session_store_load(
+    void *context, const char *scope, char *session_id,
+    size_t session_id_capacity, cai_source **out,
+    unsigned long long *out_applied_event_sequence, cai_error *error) {
+  cai_source_callbacks callbacks;
+  runtime_session_store_state *store;
+
+  const char *loaded_session_id;
+
+  store = (runtime_session_store_state *)context;
+  loaded_session_id = store != NULL && store->loaded_session_id[0] != '\0'
+                          ? store->loaded_session_id
+                          : "resumed_session";
+  if (store == NULL || out == NULL || out_applied_event_sequence == NULL ||
+      session_id == NULL ||
+      session_id_capacity < strlen(loaded_session_id) + 1U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "invalid runtime test session store outputs");
+  }
+  *out_applied_event_sequence = store->load_applied_event_sequence;
+  store->loads++;
+  if (store->load_only_saved_scope && strcmp(scope, store->scope) != 0) {
+    *out = NULL;
+    *out_applied_event_sequence = 0U;
+    return CAI_OK;
+  }
+  (void)snprintf(store->scope, sizeof(store->scope), "%s", scope);
+  (void)snprintf(session_id, session_id_capacity, "%s", loaded_session_id);
+  store->reader.text = store->checkpoint_json;
+  store->reader.offset = 0U;
+  store->reader.closed = 0;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.read = test_read;
+  callbacks.reset = test_reset;
+  callbacks.close = test_read_close;
+  callbacks.context = &store->reader;
+  return cai_source_from_callbacks(&callbacks, out, error);
+}
+
+static int test_runtime_session_store_append_event(
+    void *context, const char *scope, const char *session_id,
+    const cai_agent_session_event *event, cai_error *error) {
+  runtime_session_store_state *store;
+
+  store = (runtime_session_store_state *)context;
+  if (store == NULL || event == NULL || event->type == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "runtime test event is required");
+  }
+  store->appended_events++;
+  store->replay_event_sequence = event->sequence;
+  (void)snprintf(store->replay_event_type, sizeof(store->replay_event_type),
+                 "%s", event->type);
+  (void)snprintf(store->replay_event_data, sizeof(store->replay_event_data),
+                 "%s", event->data != NULL ? event->data : "");
+  if (store->replay_event_count <
+      sizeof(store->replay_event_sequences) /
+          sizeof(store->replay_event_sequences[0])) {
+    size_t index;
+
+    index = store->replay_event_count++;
+    store->replay_event_sequences[index] = event->sequence;
+    (void)snprintf(store->replay_event_types[index],
+                   sizeof(store->replay_event_types[index]), "%s", event->type);
+    (void)snprintf(store->replay_event_data_items[index],
+                   sizeof(store->replay_event_data_items[index]), "%s",
+                   event->data != NULL ? event->data : "");
+  }
+  (void)scope;
+  (void)session_id;
+  return CAI_OK;
+}
+
+static int test_runtime_session_store_load_events_after(
+    void *context, const char *scope, const char *session_id,
+    unsigned long long after_sequence, cai_agent_session_event_fn callback,
+    void *callback_context, cai_error *error) {
+  runtime_session_store_state *store;
+  cai_agent_session_event event;
+  size_t index;
+  int rc;
+
+  store = (runtime_session_store_state *)context;
+  if (store == NULL || callback == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "runtime test replay callback is required");
+  }
+  if (store->replay_event_count > 0U) {
+    for (index = 0U; index < store->replay_event_count; index++) {
+      if (store->replay_event_sequences[index] <= after_sequence) {
+        continue;
+      }
+      event.sequence = store->replay_event_sequences[index];
+      event.type = store->replay_event_types[index];
+      event.data = store->replay_event_data_items[index];
+      rc = callback(callback_context, &event, error);
+      if (rc != CAI_OK) {
+        return rc;
+      }
+    }
+  } else if (store->replay_event_sequence > after_sequence) {
+    event.sequence = store->replay_event_sequence;
+    event.type = store->replay_event_type;
+    event.data = store->replay_event_data;
+    return callback(callback_context, &event, error);
+  }
+  (void)scope;
+  (void)session_id;
+  return CAI_OK;
+}
+
+static int test_session_event_capture(void *context,
+                                      const cai_agent_session_event *event,
+                                      cai_error *error) {
+  session_event_capture_state *state;
+
+  (void)error;
+  state = (session_event_capture_state *)context;
+  if (state == NULL || event == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  state->count++;
+  state->sequence = event->sequence;
+  (void)snprintf(state->type, sizeof(state->type), "%s",
+                 event->type != NULL ? event->type : "");
+  (void)snprintf(state->data, sizeof(state->data), "%s",
+                 event->data != NULL ? event->data : "");
+  return CAI_OK;
 }
 
 static int test_fail_write(void *context, const void *bytes, size_t count,
@@ -2479,6 +3256,15 @@ static int test_stream_output_delta(void *context, const char *item_id,
   return CAI_OK;
 }
 
+static int test_stream_response_completed(void *context, cai_error *error) {
+  stream_response_completed_state *state;
+
+  (void)error;
+  state = (stream_response_completed_state *)context;
+  state->count++;
+  return CAI_OK;
+}
+
 static int test_weather_tool(void *context, const void *params, void *result,
                              cai_error *error) {
   const tool_weather_args *args;
@@ -2670,6 +3456,8 @@ static int test_tool_event(void *context, const cai_tool_event *event,
     state->starts++;
     snprintf(state->name, sizeof(state->name), "%s",
              event->name != NULL ? event->name : "");
+    snprintf(state->call_id, sizeof(state->call_id), "%s",
+             event->call_id != NULL ? event->call_id : "");
     writer.buffer[0] = '\0';
     writer.length = 0U;
     writer.closed = 0;
@@ -2725,6 +3513,295 @@ static int test_tool_event(void *context, const cai_tool_event *event,
   return CAI_OK;
 }
 
+static int test_terminal_event(void *context, const cai_terminal_event *event,
+                               cai_error *error) {
+  terminal_event_state *state;
+
+  (void)error;
+  state = (terminal_event_state *)context;
+  if (state == NULL || event == NULL) {
+    return CAI_OK;
+  }
+  if (event->type == CAI_TERMINAL_EVENT_COMMAND_STARTED) {
+    state->started++;
+  } else if (event->type == CAI_TERMINAL_EVENT_OUTPUT) {
+    state->output++;
+  } else if (event->type == CAI_TERMINAL_EVENT_WAITING) {
+    state->waiting++;
+  } else if (event->type == CAI_TERMINAL_EVENT_COMMAND_COMPLETED) {
+    state->completed++;
+  } else if (event->type == CAI_TERMINAL_EVENT_COMMAND_CANCELLED) {
+    state->cancelled++;
+  }
+  if (event->type == CAI_TERMINAL_EVENT_COMMAND_COMPLETED ||
+      event->type == CAI_TERMINAL_EVENT_COMMAND_CANCELLED) {
+    state->total_output_bytes = event->total_output_bytes;
+  }
+  snprintf(state->terminal_id, sizeof(state->terminal_id), "%s",
+           event->terminal_id != NULL ? event->terminal_id : "");
+  snprintf(state->command, sizeof(state->command), "%s",
+           event->command != NULL ? event->command : "");
+  state->command_id = event->command_id;
+  return CAI_OK;
+}
+
+static int test_terminal_policy(void *context, const char *command,
+                                const char *workspace, const char *workdir,
+                                int tty, cai_error *error) {
+  int *calls;
+
+  (void)workspace;
+  (void)workdir;
+  (void)tty;
+  calls = (int *)context;
+  if (calls != NULL) {
+    (*calls)++;
+  }
+  if (strcmp(command, "forbidden") == 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "test terminal policy rejected command");
+  }
+  return CAI_OK;
+}
+
+static int test_terminal_race_policy(void *context, const char *command,
+                                     const char *workspace, const char *workdir,
+                                     int tty, cai_error *error) {
+  terminal_race_policy_state *state;
+
+  (void)command;
+  (void)workspace;
+  (void)workdir;
+  (void)tty;
+  (void)error;
+  state = (terminal_race_policy_state *)context;
+  if (state == NULL) {
+    return CAI_ERR_INVALID;
+  }
+  pthread_mutex_lock(&state->lock);
+  state->arrivals++;
+  if (state->arrivals >= 2) {
+    state->released = 1;
+    pthread_cond_broadcast(&state->changed);
+  }
+  while (!state->released) {
+    pthread_cond_wait(&state->changed, &state->lock);
+  }
+  pthread_mutex_unlock(&state->lock);
+  return CAI_OK;
+}
+
+/* The terminal has resolved and pinned workdir before invoking policy. Replace
+ * the pathname at that boundary; the child must fchdir to the pinned directory
+ * rather than follow the replacement symlink. */
+static int test_terminal_workdir_swap_policy(void *context, const char *command,
+                                             const char *workspace,
+                                             const char *workdir, int tty,
+                                             cai_error *error) {
+  terminal_workdir_swap_state *state;
+
+  (void)command;
+  (void)workspace;
+  (void)workdir;
+  (void)tty;
+  state = (terminal_workdir_swap_state *)context;
+  if (state == NULL || state->swapped ||
+      rename(state->root, state->moved_root) != 0 ||
+      symlink(state->outside, state->root) != 0) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "failed to replace terminal workspace path");
+  }
+  state->swapped = 1;
+  return CAI_OK;
+}
+
+static void test_terminal_workdir_pinning(test_state *state) {
+  char root_template[] = "/tmp/cai-terminal-pinned-root-XXXXXX";
+  char outside_template[] = "/tmp/cai-terminal-pinned-outside-XXXXXX";
+  char moved_root[PATH_MAX];
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  terminal_workdir_swap_state swap;
+  write_state writer;
+  cai_error error;
+  int rc;
+  int i;
+
+  if (mkdtemp(root_template) == NULL || mkdtemp(outside_template) == NULL) {
+    test_fail(state, "terminal_pinned_workdir_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  if (snprintf(moved_root, sizeof(moved_root), "%s-moved", root_template) >=
+      (int)sizeof(moved_root)) {
+    test_fail(state, "terminal_pinned_workdir_path", "path is too long");
+    rmdir(root_template);
+    rmdir(outside_template);
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  memset(&swap, 0, sizeof(swap));
+  memset(&writer, 0, sizeof(writer));
+  (void)snprintf(swap.root, sizeof(swap.root), "%s", root_template);
+  (void)snprintf(swap.moved_root, sizeof(swap.moved_root), "%s", moved_root);
+  (void)snprintf(swap.outside, sizeof(swap.outside), "%s", outside_template);
+  config.root_path = root_template;
+  config.default_workdir = root_template;
+  config.default_yield_time_ms = 100L;
+  config.max_yield_time_ms = 100L;
+  config.policy = test_terminal_workdir_swap_policy;
+  config.policy_context = &swap;
+  registry = NULL;
+  sink = NULL;
+  cai_error_init(&error);
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  rc = cai_tool_registry_new(&registry, &error);
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_register_terminal_tools(registry, &config, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                               "{\"cmd\":\"pwd\",\"yield_time_ms\":100}", sink,
+                               &error);
+  }
+  expect_int(state, "terminal_pinned_workdir_exec", rc, CAI_OK);
+  for (i = 0; rc == CAI_OK && i < 5 &&
+              strstr(writer.buffer, "\"completed\":true") == NULL;
+       i++) {
+    rc = cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                               "{\"session_id\":\"terminal-1\","
+                               "\"yield_time_ms\":100}",
+                               sink, &error);
+  }
+  expect_int(state, "terminal_pinned_workdir_poll", rc, CAI_OK);
+  expect_int(state, "terminal_pinned_workdir_swapped", swap.swapped, 1L);
+  expect_substr(state, "terminal_pinned_workdir_original", writer.buffer,
+                moved_root);
+  expect_int(state, "terminal_pinned_workdir_not_outside",
+             strstr(writer.buffer, outside_template) == NULL, 1L);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  if (swap.swapped) {
+    (void)unlink(root_template);
+    (void)rename(moved_root, root_template);
+  }
+  rmdir(root_template);
+  rmdir(outside_template);
+}
+
+static void *test_terminal_race_exec(void *value) {
+  terminal_race_exec_state *state;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+
+  state = (terminal_race_exec_state *)value;
+  sink = NULL;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &state->writer;
+  cai_error_init(&state->error);
+  state->rc = cai_sink_from_callbacks(&callbacks, &sink, &state->error);
+  if (state->rc == CAI_OK) {
+    state->rc = cai_tool_registry_run(
+        state->registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+        "{\"cmd\":\"sleep 5\",\"yield_time_ms\":0}", sink, &state->error);
+  }
+  cai_sink_close(sink);
+  return NULL;
+}
+
+static void *test_terminal_concurrent_write(void *value) {
+  terminal_write_state *state;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+
+  state = (terminal_write_state *)value;
+  sink = NULL;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &state->writer;
+  cai_error_init(&state->error);
+  state->rc = cai_sink_from_callbacks(&callbacks, &sink, &state->error);
+  if (state->rc == CAI_OK) {
+    state->rc = cai_tool_registry_run(
+        state->registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+        "{\"session_id\":\"terminal-1\",\"yield_time_ms\":1000}", sink,
+        &state->error);
+  }
+  cai_sink_close(sink);
+  return NULL;
+}
+
+static int test_tool_round_inject(void *context, cai_session *session,
+                                  cai_error *error) {
+  tool_round_inject_state *state;
+
+  state = (tool_round_inject_state *)context;
+  if (state == NULL || state->text == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "test tool-round injection state is required");
+  }
+  state->calls++;
+  return cai_session_add_user_text(session, state->text, error);
+}
+
+static int test_failing_tool_round(void *context, cai_session *session,
+                                   cai_error *error) {
+  failing_callback_state *state;
+
+  (void)session;
+  state = (failing_callback_state *)context;
+  if (state != NULL) {
+    state->calls++;
+  }
+  return cai_set_error(error, CAI_ERR_INVALID,
+                       "tool round callback failed deliberately");
+}
+
+static int test_tool_round_capture_history(void *context, cai_session *session,
+                                           cai_error *error) {
+  tool_round_history_state *state;
+  cai_source *source;
+  size_t offset;
+  int rc;
+
+  state = (tool_round_history_state *)context;
+  if (state == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "test tool-round history state is required");
+  }
+  state->calls++;
+  source = NULL;
+  offset = 0U;
+  rc = cai_session_export_history_source(session, &source, error);
+  while (rc == CAI_OK && offset + 1U < sizeof(state->history)) {
+    size_t count;
+
+    count = cai_source_read(source, state->history + offset,
+                            sizeof(state->history) - offset - 1U, error);
+    if (count == 0U) {
+      break;
+    }
+    offset += count;
+  }
+  if (rc == CAI_OK && offset + 1U == sizeof(state->history)) {
+    rc = cai_set_error(error, CAI_ERR_LIMIT,
+                       "test tool-round history buffer is too small");
+  }
+  state->history[offset] = '\0';
+  cai_source_close(source);
+  return rc;
+}
+
 static int test_failing_stream_tool_done(void *context, const char *item_id,
                                          int output_index, const char *call_id,
                                          const char *name,
@@ -2777,6 +3854,17 @@ static int test_failing_stream_output_item_done(
   }
   return cai_set_error(error, CAI_ERR_INVALID,
                        "output item done callback failed");
+}
+
+static int test_failing_response_completed(void *context, cai_error *error) {
+  failing_callback_state *state;
+
+  state = (failing_callback_state *)context;
+  if (state != NULL) {
+    state->calls++;
+  }
+  return cai_set_error(error, CAI_ERR_INVALID,
+                       "response completion callback failed");
 }
 
 static int test_large_raw_tool(void *context, const char *arguments_json,
@@ -7598,6 +8686,15 @@ static const char *mock_response_for_request(const char *request) {
       "{\"id\":\"resp_auto_tool_2\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"auto done\"}]}]}";
+  static const char view_image_tool_call_body[] =
+      "{\"id\":\"resp_view_image_tool_1\",\"status\":\"completed\","
+      "\"output\":[{\"id\":\"fc_view_image_1\",\"type\":\"function_call\","
+      "\"call_id\":\"call_view_image_1\",\"name\":\"view_image\","
+      "\"arguments\":\"{\\\"path\\\":\\\"pixel.png\\\"}\"}]}";
+  static const char view_image_tool_done_body[] =
+      "{\"id\":\"resp_view_image_tool_2\",\"status\":\"completed\","
+      "\"output\":[{\"type\":\"message\",\"content\":[{\"type\":"
+      "\"output_text\",\"text\":\"view image done\"}]}]}";
   static const char multi_tool_call_body[] =
       "{\"id\":\"resp_multi_tool_1\",\"status\":\"completed\",\"output\":[{"
       "\"id\":\"fc_multi_1\",\"type\":\"function_call\",\"call_id\":"
@@ -7643,6 +8740,20 @@ static const char *mock_response_for_request(const char *request) {
       "data: \"output_tokens_details\":{\"reasoning_tokens\":0},\r\n"
       "data: \"total_tokens\":3}}}\r\n"
       "\r\n";
+  static const char stream_missing_terminal_body[] =
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":"
+      "\"resp_stream_partial\"}}\n\n"
+      "data: {\"type\":\"response.output_text.delta\","
+      "\"delta\":\"partial\"}\n\n"
+      "data: [DONE]\n\n";
+  static const char stream_incomplete_terminal_body[] =
+      "data: {\"type\":\"response.output_text.delta\","
+      "\"delta\":\"partial\"}\n\n"
+      "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":"
+      "\"resp_stream_incomplete\",\"status\":\"incomplete\","
+      "\"incomplete_details\":{\"reason\":\"max_output_tokens\"},"
+      "\"usage\":{\"input_tokens\":3,\"output_tokens\":2,"
+      "\"total_tokens\":5}}}\n\n";
   static const char stream_session_first_body[] =
       "data: {\"type\":\"response.created\",\"response\":{\"id\":"
       "\"resp_stream_session_1\",\"usage\":null,\"instructions\":\"large "
@@ -7682,6 +8793,12 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"four\"}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_missing_retrieve\"}}\n\n";
+  static const char stream_session_completion_failure_body[] =
+      "data: {\"type\":\"response.created\",\"response\":{\"id\":"
+      "\"resp_stream_completion_failure\"}}\n\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_completion_failure\"}}\n\n";
   static const char stream_session_source_first_body[] =
       "data: {\"type\":\"response.output_text.delta\",\"delta\":\"src1\"}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
@@ -7810,6 +8927,20 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_tool_2\",\"usage\":{\"input_tokens\":19,"
       "\"output_tokens\":3,\"total_tokens\":22}}}\n\n";
+  static const char stream_custom_empty_tool_body[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"ctc_stream_empty_1\",\"type\":"
+      "\"custom_tool_call\",\"call_id\":\"call_stream_custom_empty_1\","
+      "\"name\":\"custom_echo\",\"input\":\"\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_custom_empty_1\",\"usage\":{\"input_tokens\":9,"
+      "\"output_tokens\":1,\"total_tokens\":10}}}\n\n";
+  static const char stream_custom_empty_tool_done_body[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"custom empty done\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_custom_empty_2\",\"usage\":{\"input_tokens\":19,"
+      "\"output_tokens\":3,\"total_tokens\":22}}}\n\n";
   static const char stream_history_first_retrieve_body[] =
       "{\n"
       "  \"id\": \"resp_stream_history_1\",\n"
@@ -7908,6 +9039,15 @@ static const char *mock_response_for_request(const char *request) {
       if (strstr(request, "session stream missing retrieve") != NULL) {
         return stream_session_missing_retrieve_body;
       }
+      if (strstr(request, "session stream completion failure") != NULL) {
+        return stream_session_completion_failure_body;
+      }
+      if (strstr(request, "stream missing terminal") != NULL) {
+        return stream_missing_terminal_body;
+      }
+      if (strstr(request, "stream incomplete terminal") != NULL) {
+        return stream_incomplete_terminal_body;
+      }
       if (strstr(request, "openrouter metadata stream") != NULL) {
         if (stream_openrouter_metadata_body[0] == '\0') {
           strcpy(stream_openrouter_metadata_body,
@@ -7939,9 +9079,19 @@ static const char *mock_response_for_request(const char *request) {
       if (strstr(request, "stream output segments") != NULL) {
         return stream_output_segments_body;
       }
+      if (strstr(request, "\"type\":\"custom_tool_call_output\"") != NULL &&
+          strstr(request, "\"call_id\":\"call_stream_custom_empty_1\"") !=
+              NULL) {
+        return stream_custom_empty_tool_done_body;
+      }
+      if (strstr(request, "custom stream empty tool turn") != NULL) {
+        return stream_custom_empty_tool_body;
+      }
       if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
           strstr(request, "\"call_id\":\"call_stream_malformed\"") != NULL &&
           strstr(request, "\\\"summary\\\":\\\"Gothenburg:0\\\"") != NULL &&
+          (strstr(request, "steering-boundary-marker") == NULL ||
+           strstr(request, "after-next-tool") != NULL) &&
           strstr(request, "\"tool_choice\"") == NULL) {
         return stream_tool_done_body;
       }
@@ -8125,6 +9275,9 @@ static const char *mock_response_for_request(const char *request) {
       if (strstr(request, "stream large tool turn") != NULL) {
         return stream_large_tool_body;
       }
+      if (strstr(request, "poll-only queued turn") != NULL) {
+        return stream_body;
+      }
       if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
           strstr(request, "\"call_id\":\"call_stream_large_1\"") != NULL &&
           strstr(request, "\\\"ok\\\":false") != NULL &&
@@ -8132,6 +9285,11 @@ static const char *mock_response_for_request(const char *request) {
           strstr(request, "\"previous_response_id\":"
                           "\"resp_stream_large_tool_1\"") != NULL) {
         return stream_large_tool_done_body;
+      }
+      if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+          strstr(request, "\"call_id\":\"call_stream_list_error_1\"") != NULL &&
+          strstr(request, "stream list error tool turn") != NULL) {
+        return stream_list_error_tool_done_body;
       }
       if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
           strstr(request, "\"call_id\":\"call_stream_list_error_1\"") != NULL &&
@@ -8174,6 +9332,19 @@ static const char *mock_response_for_request(const char *request) {
     if (strstr(request, "manual tool turn") != NULL &&
         strstr(request, "\"name\":\"raw_echo\"") != NULL) {
       return manual_tool_call_body;
+    }
+    if (strstr(request, "view image tool turn") != NULL &&
+        strstr(request, "\"name\":\"view_image\"") != NULL &&
+        strstr(request, "\"type\":\"function_call_output\"") == NULL) {
+      return view_image_tool_call_body;
+    }
+    if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+        strstr(request, "\"call_id\":\"call_view_image_1\"") != NULL &&
+        strstr(request, "\"type\":\"input_image\"") != NULL &&
+        strstr(request, "data:image/png;base64,iVBORw0KGgo") != NULL &&
+        strstr(request, "\"previous_response_id\"") == NULL &&
+        strstr(request, "view image tool turn") != NULL) {
+      return view_image_tool_done_body;
     }
     if (strstr(request, "\"type\":\"function_call_output\"") != NULL &&
         strstr(request, "\"call_id\":\"call_manual_1\"") != NULL &&
@@ -8579,6 +9750,78 @@ static void mock_openai_child(int pipe_fd, int request_count) {
       _exit(9);
     }
     if (mock_write_json_response(client_fd, body) != 0) {
+      _exit(10);
+    }
+    close(client_fd);
+  }
+  close(server_fd);
+  alarm(0U);
+  _exit(0);
+}
+
+/* Deliberately exceeds the former agent-runtime ceiling. This is kept apart
+ * from the request-content matcher because every continuation has a distinct
+ * response ID and function-call ID. */
+static void mock_unbounded_tool_rounds_child(int pipe_fd, int tool_rounds) {
+  char request[65536];
+  char body[512];
+  struct sockaddr_in addr;
+  socklen_t addr_len;
+  int server_fd;
+  int client_fd;
+  int port;
+  int i;
+
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(10U);
+  server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd < 0) {
+    _exit(2);
+  }
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    _exit(3);
+  }
+  if (listen(server_fd, 1) != 0 || mock_set_socket_deadline(server_fd) != 0) {
+    _exit(4);
+  }
+  addr_len = (socklen_t)sizeof(addr);
+  if (getsockname(server_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+    _exit(5);
+  }
+  port = (int)ntohs(addr.sin_port);
+  if (write(pipe_fd, &port, sizeof(port)) != (ssize_t)sizeof(port)) {
+    _exit(6);
+  }
+  close(pipe_fd);
+  for (i = 0; i <= tool_rounds; i++) {
+    client_fd = mock_accept_with_deadline(server_fd);
+    if (client_fd < 0 || mock_set_socket_deadline(client_fd) != 0) {
+      _exit(7);
+    }
+    if (mock_read_request(client_fd, request, sizeof(request)) != 0) {
+      close(client_fd);
+      _exit(8);
+    }
+    if (i < tool_rounds) {
+      (void)snprintf(body, sizeof(body),
+                     "{\"id\":\"resp_unbounded_%d\",\"status\":\"completed\","
+                     "\"output\":[{\"id\":\"fc_unbounded_%d\",\"type\":"
+                     "\"function_call\",\"call_id\":\"call_unbounded_%d\","
+                     "\"name\":\"raw_echo\",\"arguments\":\"{\\\"x\\\":1}\"}]}",
+                     i, i, i);
+    } else {
+      (void)snprintf(body, sizeof(body),
+                     "{\"id\":\"resp_unbounded_final\",\"status\":"
+                     "\"completed\",\"output\":[{\"type\":\"message\","
+                     "\"content\":[{\"type\":\"output_text\",\"text\":"
+                     "\"unbounded done\"}]}]}");
+    }
+    if (mock_write_json_response(client_fd, body) != 0) {
+      close(client_fd);
       _exit(10);
     }
     close(client_fd);
@@ -20751,7 +21994,7 @@ static void test_chatgpt_auth_default_path(test_state *state) {
   path = NULL;
   cai_error_init(&error);
   test_env_capture(&home_env, "HOME");
-  test_env_capture(&xdg_env, "XDG_CONFIG_HOME");
+  test_env_capture(&xdg_env, "XDG_STATE_HOME");
   xdg_dir[0] = '\0';
   if (mkdtemp(template_dir) == NULL) {
     test_fail(state, "chatgpt_auth_default_tmpdir", "mkdtemp failed");
@@ -20759,8 +22002,8 @@ static void test_chatgpt_auth_default_path(test_state *state) {
   }
 
   setenv("HOME", template_dir, 1);
-  unsetenv("XDG_CONFIG_HOME");
-  snprintf(expected, sizeof(expected), "%s/.config/cai/auth.json",
+  unsetenv("XDG_STATE_HOME");
+  snprintf(expected, sizeof(expected), "%s/.local/state/cai/auth.json",
            template_dir);
   expect_int(state, "chatgpt_auth_default_home",
              cai_chatgpt_auth_default_path(&path, &error), CAI_OK);
@@ -20769,7 +22012,7 @@ static void test_chatgpt_auth_default_path(test_state *state) {
   path = NULL;
 
   snprintf(xdg_dir, sizeof(xdg_dir), "%s/xdg", template_dir);
-  setenv("XDG_CONFIG_HOME", xdg_dir, 1);
+  setenv("XDG_STATE_HOME", xdg_dir, 1);
   snprintf(expected, sizeof(expected), "%s/xdg/cai/auth.json", template_dir);
   expect_int(state, "chatgpt_auth_default_xdg",
              cai_chatgpt_auth_default_path(&path, &error), CAI_OK);
@@ -20777,8 +22020,8 @@ static void test_chatgpt_auth_default_path(test_state *state) {
   cai_string_destroy(path);
   path = NULL;
 
-  setenv("XDG_CONFIG_HOME", "relative-xdg", 1);
-  snprintf(expected, sizeof(expected), "%s/.config/cai/auth.json",
+  setenv("XDG_STATE_HOME", "relative-xdg", 1);
+  snprintf(expected, sizeof(expected), "%s/.local/state/cai/auth.json",
            template_dir);
   expect_int(state, "chatgpt_auth_default_relative_xdg",
              cai_chatgpt_auth_default_path(&path, &error), CAI_OK);
@@ -20787,7 +22030,7 @@ static void test_chatgpt_auth_default_path(test_state *state) {
   path = NULL;
 
   setenv("HOME", "relative-home", 1);
-  unsetenv("XDG_CONFIG_HOME");
+  unsetenv("XDG_STATE_HOME");
   expect_int(state, "chatgpt_auth_default_missing_absolute_home",
              cai_chatgpt_auth_default_path(&path, &error), CAI_ERR_INVALID);
   expect_substr(state, "chatgpt_auth_default_error", error.message,
@@ -20801,6 +22044,74 @@ cleanup:
   test_env_restore(&home_env);
   cai_error_cleanup(&error);
   rmdir(template_dir);
+}
+
+static void test_chatgpt_auth_blob_store(test_state *state) {
+  static const char auth_json[] =
+      "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"access_token\":"
+      "\"eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.old\","
+      "\"refresh_token\":\"refresh-old\",\"account_id\":\"acct_blob\"},"
+      "\"last_refresh\":\"2026-01-01T00:00:00Z\"}";
+  static const char refresh_body[] =
+      "{\"access_token\":\"eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.new\","
+      "\"refresh_token\":\"refresh-new\"}";
+  static const char *required[] = {"POST /v1/oauth/token HTTP/",
+                                   "\"refresh_token\":\"refresh-old\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/oauth/token HTTP/", required,
+       sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, refresh_body}};
+  blob_store_test_state store;
+  cai_blob_store callbacks;
+  cai_chatgpt_auth_config config;
+  cai_chatgpt_auth *auth;
+  cai_error error;
+  http_mock_server server;
+  int server_opened;
+
+  memset(&store, 0, sizeof(store));
+  memset(&callbacks, 0, sizeof(callbacks));
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  auth = NULL;
+  server_opened = 0;
+  cai_error_init(&error);
+  store.reader.text = auth_json;
+  callbacks.load = test_blob_store_load;
+  callbacks.replace = test_blob_store_replace;
+  callbacks.context = &store;
+  if (http_mock_server_open_script(state, "chatgpt_auth_blob_store", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    goto cleanup;
+  }
+  server_opened = 1;
+  cai_chatgpt_auth_config_init(&config);
+  config.storage = &callbacks;
+  config.storage_key = "vectis-auth";
+  config.issuer = server.base_url;
+  expect_int(state, "chatgpt_auth_blob_open",
+             cai_chatgpt_auth_open(&config, &auth, &error), CAI_OK);
+  if (auth != NULL) {
+    expect_int(state, "chatgpt_auth_blob_refresh", auth->refresh(auth, &error),
+               CAI_OK);
+    expect_int(state, "chatgpt_auth_blob_load_count", store.loads, 2L);
+    expect_int(state, "chatgpt_auth_blob_replace_count", store.replaces, 1L);
+    expect_str(state, "chatgpt_auth_blob_load_key", store.loaded_key,
+               "vectis-auth");
+    expect_str(state, "chatgpt_auth_blob_replace_key", store.saved_key,
+               "vectis-auth");
+    expect_substr(state, "chatgpt_auth_blob_saved", store.saved_value,
+                  "refresh-new");
+  }
+
+cleanup:
+  test_chatgpt_auth_close(auth);
+  cai_error_cleanup(&error);
+  if (server_opened) {
+    expect_child_exit(state, "chatgpt_auth_blob_store", server.pid,
+                      &server.child_status);
+  }
 }
 
 static void test_chatgpt_auth_open_default_path(test_state *state) {
@@ -20822,7 +22133,7 @@ static void test_chatgpt_auth_open_default_path(test_state *state) {
   token = NULL;
   cai_error_init(&error);
   test_env_capture(&home_env, "HOME");
-  test_env_capture(&xdg_env, "XDG_CONFIG_HOME");
+  test_env_capture(&xdg_env, "XDG_STATE_HOME");
   xdg_dir[0] = '\0';
   cai_dir[0] = '\0';
   auth_path[0] = '\0';
@@ -20837,7 +22148,7 @@ static void test_chatgpt_auth_open_default_path(test_state *state) {
     test_fail(state, "chatgpt_auth_default_open_mkdir", "mkdir failed");
     goto cleanup;
   }
-  setenv("XDG_CONFIG_HOME", xdg_dir, 1);
+  setenv("XDG_STATE_HOME", xdg_dir, 1);
   snprintf(auth_json, sizeof(auth_json),
            "{\"auth_mode\":\"chatgpt\",\"tokens\":{\"id_token\":\"%s\","
            "\"access_token\":\"%s\",\"refresh_token\":\"refresh-default\","
@@ -21375,9 +22686,8 @@ static void test_chatgpt_login_callback_exchange(test_state *state) {
       {"POST /v1/oauth/token HTTP/", required,
        sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL, token_body}};
-  char template_dir[] = "/tmp/cai-login-test-XXXXXX";
-  char auth_path[PATH_MAX];
-  char *stored;
+  blob_store_test_state store;
+  cai_blob_store storage;
   http_mock_server server;
   cai_chatgpt_login_config config;
   cai_chatgpt_login_request request;
@@ -21387,27 +22697,25 @@ static void test_chatgpt_login_callback_exchange(test_state *state) {
   char *authorize_url;
   int server_opened;
 
-  stored = NULL;
   login = NULL;
   authorize_url = NULL;
   server_opened = 0;
+  memset(&store, 0, sizeof(store));
+  memset(&storage, 0, sizeof(storage));
   memset(&server, 0, sizeof(server));
   server.pid = -1;
   cai_error_init(&error);
-  if (mkdtemp(template_dir) == NULL) {
-    test_fail(state, "chatgpt_login_tmpdir", "mkdtemp failed");
-    cai_error_cleanup(&error);
-    return;
-  }
-  snprintf(auth_path, sizeof(auth_path), "%s/auth.json", template_dir);
   if (http_mock_server_open_script(state, "chatgpt_login_exchange_mock", script,
                                    sizeof(script) / sizeof(script[0]),
                                    &server) != 0) {
     goto cleanup;
   }
   server_opened = 1;
+  storage.replace = test_blob_store_replace;
+  storage.context = &store;
   cai_chatgpt_login_config_init(&config);
-  config.auth_json_path = auth_path;
+  config.storage = &storage;
+  config.storage_key = "vectis-login";
   config.redirect_uri = "http://127.0.0.1:1455/auth/callback";
   config.issuer = server.base_url;
   config.state = "state-fixed";
@@ -21429,29 +22737,28 @@ static void test_chatgpt_login_callback_exchange(test_state *state) {
              1L);
   expect_substr(state, "chatgpt_login_exchange_body", response.body,
                 "ChatGPT login complete");
-  stored = read_file_or_die(auth_path);
-  expect_substr(state, "chatgpt_login_persisted_mode", stored,
+  expect_int(state, "chatgpt_login_store_replace_count", store.replaces, 1L);
+  expect_str(state, "chatgpt_login_store_replace_key", store.saved_key,
+             "vectis-login");
+  expect_substr(state, "chatgpt_login_persisted_mode", store.saved_value,
                 "\"auth_mode\":\"chatgpt\"");
-  expect_substr(state, "chatgpt_login_persisted_access", stored,
+  expect_substr(state, "chatgpt_login_persisted_access", store.saved_value,
                 "\"access_token\":\"eyJhbGciOiJub25lIn0."
                 "eyJleHAiOjQxMDI0NDQ4MDB9.new\"");
-  expect_substr(state, "chatgpt_login_persisted_refresh", stored,
+  expect_substr(state, "chatgpt_login_persisted_refresh", store.saved_value,
                 "\"refresh_token\":\"refresh-new\"");
-  expect_substr(state, "chatgpt_login_persisted_account", stored,
+  expect_substr(state, "chatgpt_login_persisted_account", store.saved_value,
                 "\"account_id\":\"acct_login\"");
 
 cleanup:
   cai_chatgpt_login_response_cleanup(&response);
   cai_string_destroy(authorize_url);
   test_chatgpt_login_close(login);
-  free(stored);
   cai_error_cleanup(&error);
   if (server_opened) {
     expect_child_exit(state, "chatgpt_login_exchange_mock", server.pid,
                       &server.child_status);
   }
-  unlink(auth_path);
-  rmdir(template_dir);
 }
 
 static void test_chatgpt_login_exchange_http_timeout(test_state *state) {
@@ -21573,7 +22880,7 @@ static void test_chatgpt_login_default_path_write(test_state *state) {
   memset(&response, 0, sizeof(response));
   cai_error_init(&error);
   test_env_capture(&home_env, "HOME");
-  test_env_capture(&xdg_env, "XDG_CONFIG_HOME");
+  test_env_capture(&xdg_env, "XDG_STATE_HOME");
   if (mkdtemp(template_dir) == NULL) {
     test_fail(state, "chatgpt_login_default_tmpdir", "mkdtemp failed");
     goto cleanup;
@@ -21581,7 +22888,7 @@ static void test_chatgpt_login_default_path_write(test_state *state) {
   snprintf(xdg_dir, sizeof(xdg_dir), "%s/xdg", template_dir);
   snprintf(cai_dir, sizeof(cai_dir), "%s/xdg/cai", template_dir);
   snprintf(auth_path, sizeof(auth_path), "%s/xdg/cai/auth.json", template_dir);
-  setenv("XDG_CONFIG_HOME", xdg_dir, 1);
+  setenv("XDG_STATE_HOME", xdg_dir, 1);
   if (http_mock_server_open_script(state, "chatgpt_login_default_mock", script,
                                    sizeof(script) / sizeof(script[0]),
                                    &server) != 0) {
@@ -23463,6 +24770,5797 @@ static void test_agent_client_history_continuity(test_state *state) {
   }
 }
 
+static void test_global_skills_catalog(test_state *state) {
+  char root_template[] = "/tmp/cai-skills-XXXXXX";
+  char skills_path[PATH_MAX];
+  char valid_path[PATH_MAX];
+  char invalid_path[PATH_MAX];
+  char file_path[PATH_MAX];
+  cai_skill_config config;
+  cai_skill_provider provider;
+  cai_skill_catalog *catalog;
+  opaque_skill_provider_state provider_state;
+  char *prompt;
+  cai_error error;
+
+  cai_error_init(&error);
+  catalog = NULL;
+  prompt = NULL;
+  if (mkdtemp(root_template) == NULL) {
+    test_fail(state, "global_skills_catalog", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(skills_path, sizeof(skills_path), "%s/skills", root_template);
+  snprintf(valid_path, sizeof(valid_path), "%s/format", skills_path);
+  snprintf(invalid_path, sizeof(invalid_path), "%s/broken", skills_path);
+  if (mkdir(skills_path, 0700) != 0 || mkdir(valid_path, 0700) != 0 ||
+      mkdir(invalid_path, 0700) != 0) {
+    test_fail(state, "global_skills_catalog", "mkdir failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  snprintf(file_path, sizeof(file_path), "%s/SKILL.md", valid_path);
+  write_file_or_die(
+      file_path,
+      "---\r\nname: format\r\ndescription: Format a source tree.\r\n---\r\n"
+      "Run the formatter.\r\n");
+  snprintf(file_path, sizeof(file_path), "%s/SKILL.md", invalid_path);
+  write_file_or_die(file_path, "not frontmatter\n");
+  cai_skill_config_init(&config);
+  config.skills_directory = skills_path;
+  expect_int(state, "global_skills_prepare",
+             cai_skills_prepare(&config, NULL, &catalog, &prompt, &error),
+             CAI_OK);
+  if (catalog != NULL) {
+    expect_int(state, "global_skills_has_entry",
+               cai_skills_catalog_has_entries(catalog), 1);
+  }
+  if (prompt != NULL) {
+    expect_substr(state, "global_skills_prompt_name", prompt,
+                  "- format: Format a source tree.");
+    expect_substr(state, "global_skills_prompt_trigger", prompt,
+                  "task clearly matches its description");
+  } else {
+    test_fail(state, "global_skills_prompt", "valid skill did not render");
+  }
+  cai_free_mem(NULL, prompt);
+  cai_skills_catalog_cleanup(catalog);
+  catalog = NULL;
+  prompt = NULL;
+  memset(&provider, 0, sizeof(provider));
+  memset(&provider_state, 0, sizeof(provider_state));
+  provider_state.skill_id =
+      "/opaque skill:id/segment.with+provider-specific-syntax";
+  provider.list = test_opaque_skill_provider_list;
+  provider.read = test_opaque_skill_provider_read;
+  provider.context = &provider_state;
+  cai_skill_config_init(&config);
+  config.skill_provider = &provider;
+  expect_int(state, "global_skills_opaque_prepare",
+             cai_skills_prepare(&config, NULL, &catalog, &prompt, &error),
+             CAI_OK);
+  expect_int(state, "global_skills_opaque_list_calls",
+             provider_state.list_calls, 1L);
+  expect_int(state, "global_skills_opaque_read_calls",
+             provider_state.read_calls, 1L);
+  expect_int(state, "global_skills_opaque_exact_id",
+             provider_state.saw_exact_id, 1L);
+  expect_int(state, "global_skills_opaque_has_entry",
+             cai_skills_catalog_has_entries(catalog), 1L);
+  if (prompt != NULL) {
+    expect_substr(state, "global_skills_opaque_prompt", prompt,
+                  "- opaque-provider: Read an opaque skill.");
+  } else {
+    test_fail(state, "global_skills_opaque_prompt",
+              "opaque provider skill did not render");
+  }
+  cai_free_mem(NULL, prompt);
+  cai_skills_catalog_cleanup(catalog);
+  snprintf(file_path, sizeof(file_path), "%s/SKILL.md", invalid_path);
+  unlink(file_path);
+  snprintf(file_path, sizeof(file_path), "%s/SKILL.md", valid_path);
+  unlink(file_path);
+  rmdir(invalid_path);
+  rmdir(valid_path);
+  rmdir(skills_path);
+  rmdir(root_template);
+  cai_error_cleanup(&error);
+}
+
+static void test_smith_profile(test_state *state) {
+  static const char response_body[] =
+      "{\"id\":\"resp_smith\",\"status\":\"completed\",\"output\":[{\"type\":"
+      "\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"smith "
+      "ok\"}]}]}";
+  static const char *required[] = {
+      "POST /v1/responses HTTP/",
+      "\"model\":\"gpt-5.6-luna\"",
+      "You are Vectis Agent Smith",
+      "As Vectis Agent Smith",
+      "\"effort\":\"medium\"",
+      "\"summary\":\"auto\"",
+      "\"parallel_tool_calls\":false",
+      "\"name\":\"read_file\"",
+      "\"name\":\"list_files\"",
+      "\"name\":\"apply_patch\"",
+      "\"name\":\"exec_command\"",
+      "\"name\":\"write_stdin\"",
+      "Default configuration waits 10000 ms and caps the wait at 30000 ms; "
+      "the host may configure other limits.",
+      "Default configuration gives non-empty writes a 250 ms wait capped at "
+      "30000 ms, and empty polls a 5000-300000 ms wait. Termination uses the "
+      "non-empty-write limits. The host may configure other limits.",
+      "\"type\":\"custom\"",
+      "\"syntax\":\"lark\"",
+      "This is a FREEFORM tool, so do not wrap the patch in JSON.",
+      "Make workspace edits only with apply_patch.",
+      "# Personality",
+      "The preceding GPT-5.6 Codex instructions are the default contract.",
+      "Create a goal only when explicitly requested."};
+  static const char *forbidden[] = {"\"name\":\"shell_command\"", "As Codex,"};
+  static const char *none_required[] = {
+      "POST /v1/responses HTTP/", "\"model\":\"gpt-5.6-luna\"",
+      "You are Vectis Agent Smith", "\"effort\":\"medium\""};
+  static const char *none_forbidden[] = {"\"summary\":"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", required,
+       sizeof(required) / sizeof(required[0]), forbidden,
+       sizeof(forbidden) / sizeof(forbidden[0]), 200, "OK", "application/json",
+       NULL, response_body},
+      {"POST /v1/responses HTTP/", none_required,
+       sizeof(none_required) / sizeof(none_required[0]), none_forbidden,
+       sizeof(none_forbidden) / sizeof(none_forbidden[0]), 200, "OK",
+       "application/json", NULL, response_body}};
+  http_mock_client mock;
+  cai_smith_config config;
+  cai_terminal_tool_config terminal_config;
+  cai_agent_preset preset;
+  cai_agent_preset_config preset_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store runtime_store;
+  runtime_session_store_state runtime_store_state;
+  cai_agent_runtime *runtime;
+  cai_agent_runtime *review;
+  cai_agent_review_request review_request;
+  cai_agent *agent;
+  cai_response *response;
+  cai_error error;
+  char instructions_workspace[] = "/tmp/cai-smith-instructions-XXXXXX";
+  char external_instructions[] = "/tmp/cai-smith-external-XXXXXX";
+  char agents_path[PATH_MAX];
+  char review_workspace[] = "/tmp/cai-smith-review-instructions-XXXXXX";
+  char review_agents_path[PATH_MAX];
+  char policy_root[] = "/tmp/cai-smith-policy-XXXXXX";
+  char policy_dir[PATH_MAX];
+  char policy_global_path[PATH_MAX];
+  char policy_project[PATH_MAX];
+  char policy_workspace[PATH_MAX];
+  char policy_project_agents[PATH_MAX];
+  char policy_workspace_agents[PATH_MAX];
+  char policy_marker[PATH_MAX];
+  blob_store_test_state policy_store_state;
+  cai_blob_store policy_store;
+  test_env_snapshot xdg_config_env;
+  int external_fd;
+
+  cai_error_init(&error);
+  agent = NULL;
+  response = NULL;
+  runtime = NULL;
+  review = NULL;
+  memset(&runtime_store, 0, sizeof(runtime_store));
+  memset(&runtime_store_state, 0, sizeof(runtime_store_state));
+  memset(&policy_store_state, 0, sizeof(policy_store_state));
+  memset(&policy_store, 0, sizeof(policy_store));
+  test_env_capture(&xdg_config_env, "XDG_CONFIG_HOME");
+  cai_smith_config_init(&config);
+  expect_str(state, "smith_prompt_version", cai_smith_prompt_version(),
+             CAI_SMITH_PROMPT_VERSION);
+  expect_str(state, "reasoning_summary_none", CAI_REASONING_SUMMARY_NONE,
+             "none");
+  expect_int(state, "smith_reject_missing_client",
+             cai_client_new_smith_agent(NULL, &config, &agent, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  if (http_mock_client_open_script(state, "smith_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  external_fd = -1;
+  if (mkdtemp(policy_root) == NULL ||
+      snprintf(policy_dir, sizeof(policy_dir), "%s/cai", policy_root) >=
+          (int)sizeof(policy_dir) ||
+      snprintf(policy_global_path, sizeof(policy_global_path), "%s/AGENTS.md",
+               policy_dir) >= (int)sizeof(policy_global_path) ||
+      snprintf(policy_project, sizeof(policy_project), "%s/project",
+               policy_root) >= (int)sizeof(policy_project) ||
+      snprintf(policy_workspace, sizeof(policy_workspace), "%s/child",
+               policy_project) >= (int)sizeof(policy_workspace) ||
+      snprintf(policy_project_agents, sizeof(policy_project_agents),
+               "%s/AGENTS.md",
+               policy_project) >= (int)sizeof(policy_project_agents) ||
+      snprintf(policy_workspace_agents, sizeof(policy_workspace_agents),
+               "%s/AGENTS.md",
+               policy_workspace) >= (int)sizeof(policy_workspace_agents) ||
+      snprintf(policy_marker, sizeof(policy_marker), "%s/.git",
+               policy_project) >= (int)sizeof(policy_marker) ||
+      mkdir(policy_dir, 0700) != 0 || mkdir(policy_project, 0700) != 0 ||
+      mkdir(policy_workspace, 0700) != 0 || mkdir(policy_marker, 0700) != 0) {
+    test_fail(state, "smith_global_instructions_setup",
+              "failed to create global instruction fixtures");
+  } else {
+    write_file_or_die(policy_global_path, "Global policy.");
+    write_file_or_die(policy_project_agents, "Ancestor policy.");
+    write_file_or_die(policy_workspace_agents, "Workspace policy.");
+    config.workspace_directory = policy_workspace;
+    config.agent_config_directory = policy_dir;
+    expect_int(state, "smith_global_instructions_open",
+               cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+               CAI_OK);
+    if (agent != NULL) {
+      expect_substr(state, "smith_global_instructions_visible",
+                    CAI_AGENT_IMPL(agent)->developer_instructions,
+                    "Global policy.");
+      expect_substr(state, "smith_workspace_instructions_visible",
+                    CAI_AGENT_IMPL(agent)->developer_instructions,
+                    "Workspace policy.");
+      if (strstr(CAI_AGENT_IMPL(agent)->developer_instructions,
+                 "Ancestor policy.") != NULL) {
+        test_fail(state, "smith_no_default_ancestor_discovery",
+                  "default policy discovery traversed a workspace ancestor");
+      }
+      cai_agent_destroy(agent);
+      agent = NULL;
+    }
+    config.codex_compat_agents_md = 1;
+    expect_int(state, "smith_codex_compat_instructions_open",
+               cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+               CAI_OK);
+    if (agent != NULL) {
+      const char *global_policy = strstr(
+          CAI_AGENT_IMPL(agent)->developer_instructions, "Global policy.");
+      const char *ancestor_policy = strstr(
+          CAI_AGENT_IMPL(agent)->developer_instructions, "Ancestor policy.");
+      const char *workspace_policy = strstr(
+          CAI_AGENT_IMPL(agent)->developer_instructions, "Workspace policy.");
+
+      if (global_policy == NULL || ancestor_policy == NULL ||
+          workspace_policy == NULL || global_policy >= ancestor_policy ||
+          ancestor_policy >= workspace_policy) {
+        test_fail(state, "smith_codex_compat_instruction_order",
+                  "compatibility discovery did not preserve policy order");
+      }
+      cai_agent_destroy(agent);
+      agent = NULL;
+    }
+    if (rmdir(policy_marker) != 0) {
+      test_fail(state, "smith_codex_compat_no_repo_setup",
+                "failed to remove Git marker");
+    }
+    expect_int(state, "smith_codex_compat_no_repo_open",
+               cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+               CAI_OK);
+    if (agent != NULL) {
+      expect_substr(state, "smith_codex_compat_no_repo_global",
+                    CAI_AGENT_IMPL(agent)->developer_instructions,
+                    "Global policy.");
+      expect_substr(state, "smith_codex_compat_no_repo_workspace",
+                    CAI_AGENT_IMPL(agent)->developer_instructions,
+                    "Workspace policy.");
+      if (strstr(CAI_AGENT_IMPL(agent)->developer_instructions,
+                 "Ancestor policy.") != NULL) {
+        test_fail(state, "smith_codex_compat_no_repo_no_parent",
+                  "compatibility discovery escaped a markerless workspace");
+      }
+      cai_agent_destroy(agent);
+      agent = NULL;
+    }
+    policy_store_state.reader.text = "Stored global policy.";
+    policy_store.load = test_blob_store_load;
+    policy_store.context = &policy_store_state;
+    config.codex_compat_agents_md = 0;
+    config.agent_config_directory = NULL;
+    config.global_instruction_store = &policy_store;
+    expect_int(state, "smith_global_instruction_store_open",
+               cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+               CAI_OK);
+    if (agent != NULL) {
+      expect_str(state, "smith_global_instruction_store_key",
+                 policy_store_state.loaded_key, "AGENTS.md");
+      expect_substr(state, "smith_global_instruction_store_visible",
+                    CAI_AGENT_IMPL(agent)->developer_instructions,
+                    "Stored global policy.");
+      cai_agent_destroy(agent);
+      agent = NULL;
+    }
+    config.global_instruction_store = NULL;
+    config.agent_config_directory = NULL;
+    if (setenv("XDG_CONFIG_HOME", policy_root, 1) != 0) {
+      test_fail(state, "smith_default_global_instructions_setup",
+                "failed to configure XDG_CONFIG_HOME");
+    } else {
+      expect_int(
+          state, "smith_default_global_instructions_open",
+          cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+          CAI_OK);
+      if (agent != NULL) {
+        expect_substr(state, "smith_default_global_instructions_visible",
+                      CAI_AGENT_IMPL(agent)->developer_instructions,
+                      "Global policy.");
+        cai_agent_destroy(agent);
+        agent = NULL;
+      }
+    }
+    test_env_restore(&xdg_config_env);
+    unlink(policy_workspace_agents);
+    unlink(policy_project_agents);
+    unlink(policy_global_path);
+    rmdir(policy_marker);
+    rmdir(policy_workspace);
+    rmdir(policy_project);
+    rmdir(policy_dir);
+    rmdir(policy_root);
+  }
+  /* This remains deliberately relative. CTest runs from the build directory,
+   * which has no repository marker, so Codex-compatible discovery must
+   * canonicalize it before walking parents. */
+  config.workspace_directory = ".";
+  config.agent_config_directory = NULL;
+  config.global_instruction_store = NULL;
+  config.codex_compat_agents_md = 1;
+  expect_int(state, "smith_codex_compat_relative_workspace_open",
+             cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+             CAI_OK);
+  if (agent != NULL) {
+    cai_agent_destroy(agent);
+    agent = NULL;
+  }
+  config.codex_compat_agents_md = 0;
+  if (mkdtemp(instructions_workspace) == NULL ||
+      (external_fd = mkstemp(external_instructions)) < 0 ||
+      snprintf(agents_path, sizeof(agents_path), "%s/AGENTS.md",
+               instructions_workspace) >= (int)sizeof(agents_path)) {
+    test_fail(state, "smith_repository_instructions_setup",
+              "failed to create repository instruction fixture");
+    if (external_fd >= 0) {
+      close(external_fd);
+    }
+    unlink(external_instructions);
+    rmdir(instructions_workspace);
+  } else {
+    close(external_fd);
+    write_file_or_die(external_instructions, "outside instructions");
+    if (symlink(external_instructions, agents_path) != 0) {
+      test_fail(state, "smith_repository_instructions_symlink",
+                "failed to create repository instruction symlink");
+    } else {
+      config.workspace_directory = instructions_workspace;
+      config.agent_identity = "Vectis Agent Smith";
+      config.model = CAI_MODEL_GPT_5_6_LUNA;
+      expect_int(
+          state, "smith_reject_symlinked_repository_instructions",
+          cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+          CAI_ERR_INVALID);
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+      unlink(agents_path);
+    }
+    unlink(external_instructions);
+    rmdir(instructions_workspace);
+  }
+  config.workspace_directory = "/tmp";
+  config.agent_identity = "Vectis Agent Smith";
+  config.model = CAI_MODEL_GPT_5_6_LUNA;
+  expect_int(state, "smith_open",
+             cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+             CAI_OK);
+  if (agent != NULL) {
+    expect_int(state, "smith_client_history",
+               CAI_AGENT_IMPL(agent)->session_continuity,
+               CAI_SESSION_CONTINUITY_CLIENT_HISTORY);
+    expect_int(state, "smith_local_history",
+               CAI_AGENT_IMPL(agent)->local_history_enabled, 1L);
+    expect_int(state, "smith_serial_tools",
+               CAI_AGENT_IMPL(agent)->parallel_tool_calls, 0L);
+    expect_int(state, "smith_auto_compaction_disabled",
+               CAI_AGENT_IMPL(agent)->auto_compact, 0L);
+    expect_str(state, "smith_default_reasoning_summary",
+               CAI_AGENT_IMPL(agent)->reasoning_summary,
+               CAI_REASONING_SUMMARY_AUTO);
+    expect_int(state, "smith_tool_count",
+               (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 6L);
+    if (cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 5U) == NULL ||
+        strcmp(cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 5U),
+               CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME) != 0) {
+      test_fail(state, "smith_view_image_tool",
+                "Smith did not register the image viewer for an image model");
+    }
+    expect_int(state, "smith_send",
+               agent->send_text(agent, "inspect", &response, &error), CAI_OK);
+    if (response != NULL) {
+      expect_str(state, "smith_response", cai_response_output_text(response),
+                 "smith ok");
+      cai_response_destroy(response);
+      response = NULL;
+    }
+    cai_agent_destroy(agent);
+    agent = NULL;
+  }
+  config.reasoning_summary = CAI_REASONING_SUMMARY_DETAILED;
+  if (mkdtemp(review_workspace) == NULL ||
+      snprintf(review_agents_path, sizeof(review_agents_path), "%s/AGENTS.md",
+               review_workspace) >= (int)sizeof(review_agents_path)) {
+    test_fail(state, "smith_review_repository_instructions_setup",
+              "failed to create review instruction fixture");
+    rmdir(review_workspace);
+  } else {
+    write_file_or_die(review_agents_path, "Review workspace policy.");
+    config.workspace_directory = review_workspace;
+    config.developer_instructions_extension = "Review host extension.";
+    expect_int(
+        state, "smith_review_repository_instructions_open",
+        cai_client_new_smith_review_agent(mock.client, &config, &agent, &error),
+        CAI_OK);
+    if (agent != NULL) {
+      const char *repository_policy;
+      const char *host_extension;
+
+      repository_policy = strstr(CAI_AGENT_IMPL(agent)->developer_instructions,
+                                 "Review workspace policy.");
+      host_extension = strstr(CAI_AGENT_IMPL(agent)->developer_instructions,
+                              "Review host extension.");
+      if (repository_policy == NULL || host_extension == NULL ||
+          repository_policy >= host_extension) {
+        test_fail(state, "smith_review_repository_instructions_order",
+                  "review instructions did not place repository policy before "
+                  "the host extension");
+      }
+      cai_agent_destroy(agent);
+      agent = NULL;
+    }
+    unlink(review_agents_path);
+    rmdir(review_workspace);
+  }
+  config.workspace_directory = "/tmp";
+  config.developer_instructions_extension = NULL;
+  expect_int(
+      state, "smith_review_open",
+      cai_client_new_smith_review_agent(mock.client, &config, &agent, &error),
+      CAI_OK);
+  if (agent != NULL) {
+    expect_int(state, "smith_review_tool_count",
+               (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 5L);
+    expect_str(state, "smith_review_tool_read",
+               cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 0U),
+               CAI_READ_DEFAULT_TOOL_NAME);
+    expect_str(state, "smith_review_tool_list",
+               cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 1U),
+               CAI_LIST_FILES_DEFAULT_TOOL_NAME);
+    expect_str(state, "smith_review_tool_exec",
+               cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 2U),
+               CAI_TERMINAL_EXEC_TOOL_NAME);
+    expect_str(state, "smith_review_tool_stdin",
+               cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 3U),
+               CAI_TERMINAL_WRITE_TOOL_NAME);
+    expect_str(state, "smith_review_tool_image",
+               cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 4U),
+               CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME);
+    expect_substr(state, "smith_review_rubric",
+                  CAI_AGENT_IMPL(agent)->developer_instructions,
+                  "final response MUST be exactly one JSON object");
+    expect_str(state, "smith_review_reasoning_summary",
+               CAI_AGENT_IMPL(agent)->reasoning_summary,
+               CAI_REASONING_SUMMARY_DETAILED);
+    cai_agent_destroy(agent);
+  }
+  config.reasoning_summary = CAI_REASONING_SUMMARY_NONE;
+  agent = NULL;
+  expect_int(state, "smith_none_summary_open",
+             cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+             CAI_OK);
+  if (agent != NULL) {
+    expect_int(
+        state, "smith_none_summary_send",
+        agent->send_text(agent, "inspect without summary", &response, &error),
+        CAI_OK);
+    if (response != NULL) {
+      cai_response_destroy(response);
+      response = NULL;
+    }
+    cai_agent_destroy(agent);
+    agent = NULL;
+  }
+  memset(&terminal_config, 0, sizeof(terminal_config));
+  terminal_config.root_path = "/";
+  config.terminal_tool_config = &terminal_config;
+  agent = NULL;
+  expect_int(state, "smith_reject_terminal_root",
+             cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  if (agent != NULL) {
+    cai_agent_destroy(agent);
+  }
+  agent = NULL;
+  expect_int(
+      state, "smith_review_reject_terminal_root",
+      cai_client_new_smith_review_agent(mock.client, &config, &agent, &error),
+      CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  if (agent != NULL) {
+    cai_agent_destroy(agent);
+  }
+  memset(&preset, 0, sizeof(preset));
+  preset.name = "vectis-engineer";
+  preset.prompt_version = "vectis-engineer-1";
+  preset.default_identity = "Vectis Engineer";
+  preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  preset.default_reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  preset.default_reasoning_summary = CAI_REASONING_SUMMARY_CONCISE;
+  preset.developer_instructions =
+      "You are {{agent_identity}}, the Vectis coding agent.";
+  preset.tool_capabilities = CAI_AGENT_PRESET_TOOL_READ_FILE;
+  cai_agent_preset_config_init(&preset_config);
+  preset_config.workspace_directory = "/tmp";
+  preset_config.developer_instructions_extension = "Use Vectis conventions.";
+  expect_int(state, "custom_preset_open",
+             cai_client_new_preset_agent(mock.client, &preset, &preset_config,
+                                         &agent, &error),
+             CAI_OK);
+  if (agent != NULL) {
+    expect_substr(state, "custom_preset_identity",
+                  CAI_AGENT_IMPL(agent)->developer_instructions,
+                  "You are Vectis Engineer, the Vectis coding agent.");
+    expect_substr(state, "custom_preset_extension",
+                  CAI_AGENT_IMPL(agent)->developer_instructions,
+                  "Use Vectis conventions.");
+    expect_int(state, "custom_preset_tool_count",
+               (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 1L);
+    expect_str(state, "custom_preset_tool",
+               cai_tool_registry_name_at(CAI_AGENT_IMPL(agent)->tools, 0U),
+               CAI_READ_DEFAULT_TOOL_NAME);
+    cai_agent_destroy(agent);
+    agent = NULL;
+  }
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.preset_descriptor = &preset;
+  runtime_store.checkpoint = test_runtime_session_store_checkpoint;
+  runtime_store.load_latest = test_runtime_session_store_load;
+  runtime_store.append_event = test_runtime_session_store_append_event;
+  runtime_store.load_events_after =
+      test_runtime_session_store_load_events_after;
+  runtime_store.context = &runtime_store_state;
+  runtime_config.session_store = &runtime_store;
+  expect_int(
+      state, "custom_preset_runtime_open",
+      cai_agent_runtime_open(mock.client, &runtime_config, &runtime, &error),
+      CAI_OK);
+  if (runtime != NULL) {
+    expect_substr(state, "custom_preset_checkpoint_name",
+                  runtime_store_state.saved_checkpoint,
+                  "\"preset_name\":\"vectis-engineer\"");
+    expect_substr(state, "custom_preset_checkpoint_revision",
+                  runtime_store_state.saved_checkpoint,
+                  "\"preset_prompt_version\":\"vectis-engineer-1\"");
+    cai_agent_review_request_init(&review_request);
+    review_request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+    expect_int(state, "custom_preset_review_rejected",
+               cai_agent_runtime_start_review(runtime, &review_request, &review,
+                                              &error),
+               CAI_ERR_INVALID);
+    if (review != NULL) {
+      cai_agent_runtime_close(review);
+      review = NULL;
+    }
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  preset.supports_review = 1;
+  preset.review_tool_capabilities = CAI_AGENT_PRESET_TOOL_READ_FILE;
+  preset.review_developer_instructions =
+      "You are {{agent_identity}}, a Vectis reviewer. Return JSON only.";
+  expect_int(state, "custom_preset_review_open",
+             cai_client_new_preset_review_agent(mock.client, &preset,
+                                                &preset_config, &agent, &error),
+             CAI_OK);
+  if (agent != NULL) {
+    expect_substr(state, "custom_preset_review_identity",
+                  CAI_AGENT_IMPL(agent)->developer_instructions,
+                  "You are Vectis Engineer, a Vectis reviewer.");
+    expect_int(state, "custom_preset_review_tool_count",
+               (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 1L);
+    cai_agent_destroy(agent);
+    agent = NULL;
+  }
+  preset.review_tool_capabilities |= CAI_AGENT_PRESET_TOOL_APPLY_PATCH;
+  expect_int(state, "custom_preset_review_patch_rejected",
+             cai_client_new_preset_review_agent(mock.client, &preset,
+                                                &preset_config, &agent, &error),
+             CAI_ERR_INVALID);
+  preset.review_tool_capabilities &= ~CAI_AGENT_PRESET_TOOL_APPLY_PATCH;
+  cai_agent_preset_from_smith(&preset);
+  preset.name = "vectis-read-only";
+  preset.prompt_version = "vectis-read-only-1";
+  preset.default_identity = "Vectis Read Only";
+  preset.tool_capabilities = CAI_AGENT_PRESET_TOOL_READ_FILE;
+  expect_int(state, "custom_preset_builtin_prompt_open",
+             cai_client_new_preset_agent(mock.client, &preset, &preset_config,
+                                         &agent, &error),
+             CAI_OK);
+  if (agent != NULL) {
+    expect_substr(state, "custom_preset_builtin_prompt_read",
+                  CAI_AGENT_IMPL(agent)->developer_instructions, "read_file");
+    if (strstr(CAI_AGENT_IMPL(agent)->developer_instructions, "apply_patch") !=
+            NULL ||
+        strstr(CAI_AGENT_IMPL(agent)->developer_instructions, "exec_command") !=
+            NULL) {
+      test_fail(state, "custom_preset_builtin_prompt_capabilities",
+                "built-in prompt advertised a disabled tool");
+    }
+    cai_agent_destroy(agent);
+    agent = NULL;
+  }
+  preset.tool_capabilities =
+      CAI_AGENT_PRESET_TOOL_READ_FILE | CAI_AGENT_PRESET_TOOL_TERMINAL;
+  preset_config.disable_terminal = 1;
+  expect_int(state, "custom_preset_terminal_disabled_open",
+             cai_client_new_preset_agent(mock.client, &preset, &preset_config,
+                                         &agent, &error),
+             CAI_OK);
+  if (agent != NULL) {
+    expect_int(state, "custom_preset_terminal_disabled_tool_count",
+               (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 1L);
+    if (strstr(CAI_AGENT_IMPL(agent)->developer_instructions, "exec_command") !=
+            NULL ||
+        strstr(CAI_AGENT_IMPL(agent)->developer_instructions, "write_stdin") !=
+            NULL) {
+      test_fail(state, "custom_preset_terminal_disabled_prompt",
+                "built-in prompt advertised a host-disabled terminal");
+    }
+    cai_agent_destroy(agent);
+    agent = NULL;
+  }
+  preset.tool_capabilities =
+      CAI_AGENT_PRESET_TOOL_READ_FILE | CAI_AGENT_PRESET_TOOL_VIEW_IMAGE;
+  preset_config.disable_terminal = 0;
+  preset_config.model = CAI_MODEL_O3_MINI;
+  expect_int(state, "custom_preset_nonimage_model_open",
+             cai_client_new_preset_agent(mock.client, &preset, &preset_config,
+                                         &agent, &error),
+             CAI_OK);
+  if (agent != NULL) {
+    expect_int(state, "custom_preset_nonimage_model_tool_count",
+               (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools), 1L);
+    if (strstr(CAI_AGENT_IMPL(agent)->developer_instructions, "view_image") !=
+        NULL) {
+      test_fail(state, "custom_preset_nonimage_model_prompt",
+                "built-in prompt advertised an unavailable image viewer");
+    }
+    cai_agent_destroy(agent);
+    agent = NULL;
+  }
+  http_mock_client_close(state, "smith_mock", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_smith_review_runtime(test_state *state) {
+  static const char review_response[] =
+      "data: {\"type\":\"response.reasoning_text.delta\","
+      "\"delta\":\"hidden raw reasoning\"}\n\n"
+      "data: {\"type\":\"response.reasoning_summary_text.delta\","
+      "\"delta\":\"Checking the diff.\"}\n\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"{\\\"findings\\\":[],\\\"overall_correctness\\\":\\\"patch is "
+      "correct\\\",\\\"overall_explanation\\\":\\\"No qualifying "
+      "defects.\\\",\\\"overall_confidence_score\\\":0.9}\"}\n\n"
+      "data: "
+      "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_smith_"
+      "review\",\"usage\":{\"input_tokens\":3,\"output_tokens\":4,\"total_"
+      "tokens\":7}}}\n\n";
+  static const char empty_review_response[] =
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_smith_review_empty\",\"usage\":{\"input_tokens\":3,"
+      "\"output_tokens\":0,\"total_tokens\":3}}}\n\n";
+  static const char invalid_review_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"{\\\"findings\\\":[]}\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_smith_review_invalid\",\"usage\":{\"input_tokens\":3,"
+      "\"output_tokens\":3,\"total_tokens\":6}}}\n\n";
+  static const char *required[] = {
+      "POST /v1/responses HTTP/",
+      "\"stream\":true",
+      "Review the current code changes (staged, unstaged, and untracked files)",
+      "You are Cai Smith, a code reviewer",
+      "\"summary\":\"auto\"",
+      "\"name\":\"exec_command\"",
+      "\"name\":\"write_stdin\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", required,
+       sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, review_response}};
+  static const mock_http_expectation empty_script[] = {
+      {"POST /v1/responses HTTP/", required,
+       sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, empty_review_response}};
+  static const mock_http_expectation invalid_script[] = {
+      {"POST /v1/responses HTTP/", required,
+       sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, invalid_review_response}};
+  http_mock_client mock;
+  http_mock_client empty_mock;
+  http_mock_client invalid_mock;
+  cai_agent_runtime_config config;
+  cai_agent_runtime_config normal_config;
+  cai_agent_runtime_config revision_config;
+  cai_agent_review_request request;
+  cai_agent_runtime *runtime;
+  cai_agent_runtime *normal_runtime;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  cai_agent_run_state run_state;
+  runtime_event_state events;
+  cai_error error;
+  char review_session_id[CAI_AGENT_SESSION_ID_MAX];
+  char revision_workspace[] = "/tmp/cai-review-revision-XXXXXX";
+  char revision_path_root[] = "/tmp/cai-review-path-XXXXXX";
+  char revision_saved_cwd[PATH_MAX];
+  char revision_git_directory[PATH_MAX];
+  char revision_git_path[PATH_MAX];
+  char *revision_saved_path;
+  int i;
+
+  if (http_mock_client_open_script(state, "smith_review_runtime_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    return;
+  }
+  cai_error_init(&error);
+  runtime = NULL;
+  normal_runtime = NULL;
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  store_state.load_only_saved_scope = 1;
+  review_session_id[0] = '\0';
+  revision_saved_path = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  cai_agent_runtime_config_init(&config);
+  config.preset = CAI_SMITH_REVIEW_PRESET;
+  config.workspace_directory = "/tmp";
+  config.model = CAI_MODEL_GPT_5_6_LUNA;
+  config.disable_default_session_store = 1;
+  config.session_store = &store;
+  config.session_scope = "review-isolation";
+  config.event_callback = test_runtime_event;
+  config.event_context = &events;
+  config.resume_latest = 1;
+  expect_int(state, "smith_review_reject_resume_latest",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_ERR_INVALID);
+  config.resume_latest = 0;
+  config.session_id = "parent-session";
+  expect_int(state, "smith_review_reject_session_id",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_ERR_INVALID);
+  config.session_id = NULL;
+  expect_int(state, "smith_review_runtime_open",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    cai_agent_review_request_init(&request);
+    request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+    expect_int(state, "smith_review_runtime_submit",
+               cai_agent_runtime_submit_review(runtime, &request, &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 20 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "smith_review_runtime_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "smith_review_runtime_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "smith_review_runtime_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_int(state, "smith_review_runtime_report", events.saw_review_report,
+               1L);
+    expect_int(state, "smith_review_runtime_reasoning_summary",
+               events.saw_reasoning_summary, 1L);
+    expect_int(state, "smith_review_runtime_reasoning_summary_count",
+               events.reasoning_summary_count, 1L);
+    expect_str(state, "smith_review_runtime_reasoning_summary_value",
+               events.reasoning_summary, "Checking the diff.");
+    expect_str(state, "smith_review_runtime_report_value", events.review_report,
+               "{\"findings\":[],\"overall_correctness\":\"patch is "
+               "correct\",\"overall_explanation\":\"No qualifying "
+               "defects.\",\"overall_confidence_score\":0.9}");
+    (void)snprintf(review_session_id, sizeof(review_session_id), "%s",
+                   cai_agent_runtime_session_id(runtime));
+    cai_agent_review_request_init(&request);
+    request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+    expect_int(state, "smith_review_runtime_repeat",
+               cai_agent_runtime_submit_review(runtime, &request, &error),
+               CAI_ERR_INVALID);
+    expect_int(state, "smith_review_runtime_generic_submit",
+               cai_agent_runtime_submit(runtime, "not a review", &error),
+               CAI_ERR_INVALID);
+    expect_int(state, "smith_review_runtime_queued_submit",
+               cai_agent_runtime_submit_queued(runtime, "not a review", &error),
+               CAI_ERR_INVALID);
+    expect_int(
+        state, "smith_review_runtime_steering_submit",
+        cai_agent_runtime_submit_steering(runtime, "not a review", &error),
+        CAI_ERR_INVALID);
+    cai_agent_review_request_init(&request);
+    request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
+    request.base_branch = "main;not-a-ref";
+    expect_int(state, "smith_review_runtime_bad_base",
+               cai_agent_runtime_submit_review(runtime, &request, &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    cai_agent_runtime_close(runtime);
+  }
+  expect_str(state, "smith_review_storage_scope", store_state.scope,
+             "smith-review:review-isolation");
+  runtime = NULL;
+  if (mkdtemp(revision_workspace) == NULL ||
+      mkdtemp(revision_path_root) == NULL ||
+      getcwd(revision_saved_cwd, sizeof(revision_saved_cwd)) == NULL ||
+      snprintf(revision_git_directory, sizeof(revision_git_directory), "%s/bin",
+               revision_path_root) >= (int)sizeof(revision_git_directory) ||
+      mkdir(revision_git_directory, 0700) != 0 ||
+      snprintf(revision_git_path, sizeof(revision_git_path), "%s/git",
+               revision_git_directory) >= (int)sizeof(revision_git_path)) {
+    test_fail(state, "smith_review_revision_git_setup",
+              "failed to create fake git executable");
+  } else {
+    write_file_or_die(revision_git_path,
+                      "#!/bin/sh\nprintf '%s\\n' "
+                      "0123456789abcdef0123456789abcdef01234567\n");
+    if (chmod(revision_git_path, 0700) != 0) {
+      test_fail(state, "smith_review_revision_git_mode",
+                "failed to make fake git executable");
+    } else {
+      if (getenv("PATH") != NULL) {
+        revision_saved_path = cai_strdup(NULL, getenv("PATH"));
+      }
+      if (chdir(revision_path_root) != 0 || setenv("PATH", "bin", 1) != 0) {
+        test_fail(state, "smith_review_revision_git_path",
+                  "failed to set relative fake git PATH");
+      }
+      cai_agent_runtime_config_init(&revision_config);
+      revision_config.preset = CAI_SMITH_REVIEW_PRESET;
+      revision_config.workspace_directory = revision_workspace;
+      revision_config.model = CAI_MODEL_GPT_5_6_LUNA;
+      revision_config.disable_default_session_store = 1;
+      revision_config.session_store = &store;
+      revision_config.session_scope = "review-revision-expression";
+      expect_int(state, "smith_review_revision_runtime_open",
+                 cai_agent_runtime_open(mock.client, &revision_config, &runtime,
+                                        &error),
+                 CAI_OK);
+      if (runtime != NULL) {
+        cai_agent_review_request_init(&request);
+        request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
+        request.base_branch = "HEAD~2";
+        expect_int(state, "smith_review_revision_expression",
+                   cai_agent_runtime_submit_review(runtime, &request, &error),
+                   CAI_OK);
+        cai_agent_runtime_close(runtime);
+      }
+      if (revision_saved_path != NULL) {
+        (void)setenv("PATH", revision_saved_path, 1);
+      } else {
+        (void)unsetenv("PATH");
+      }
+      if (chdir(revision_saved_cwd) != 0) {
+        test_fail(state, "smith_review_revision_restore_cwd",
+                  "failed to restore current directory");
+      }
+      cai_free_mem(NULL, revision_saved_path);
+      revision_saved_path = NULL;
+    }
+    unlink(revision_git_path);
+    rmdir(revision_git_directory);
+    rmdir(revision_path_root);
+    rmdir(revision_workspace);
+  }
+  expect_str(state, "smith_review_revision_storage_scope", store_state.scope,
+             "smith-review:review-revision-expression");
+  cai_agent_runtime_config_init(&normal_config);
+  normal_config.workspace_directory = "/tmp";
+  normal_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  normal_config.session_store = &store;
+  normal_config.resume_latest = 1;
+  normal_config.session_scope = "smith-review:review-isolation";
+  expect_int(state, "smith_review_normal_reject_reserved_scope",
+             cai_agent_runtime_open(mock.client, &normal_config,
+                                    &normal_runtime, &error),
+             CAI_ERR_INVALID);
+  normal_config.session_scope = "review-isolation";
+  expect_int(state, "smith_review_normal_resume_open",
+             cai_agent_runtime_open(mock.client, &normal_config,
+                                    &normal_runtime, &error),
+             CAI_OK);
+  if (normal_runtime != NULL) {
+    if (review_session_id[0] != '\0' &&
+        strcmp(cai_agent_runtime_session_id(normal_runtime),
+               review_session_id) == 0) {
+      test_fail(state, "smith_review_normal_resume_isolated",
+                "normal Smith resumed the review session");
+    }
+    cai_agent_runtime_close(normal_runtime);
+  }
+  http_mock_client_close(state, "smith_review_runtime_mock", &mock);
+  cai_error_cleanup(&error);
+  if (http_mock_client_open_script(
+          state, "smith_review_empty_mock", empty_script,
+          sizeof(empty_script) / sizeof(empty_script[0]), &empty_mock) != 0) {
+    return;
+  }
+  cai_error_init(&error);
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  config.event_context = &events;
+  expect_int(
+      state, "smith_review_empty_open",
+      cai_agent_runtime_open(empty_mock.client, &config, &runtime, &error),
+      CAI_OK);
+  if (runtime != NULL) {
+    cai_agent_review_request_init(&request);
+    request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+    expect_int(state, "smith_review_empty_submit",
+               cai_agent_runtime_submit_review(runtime, &request, &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 20 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "smith_review_empty_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "smith_review_empty_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "smith_review_empty_failed", run_state, CAI_AGENT_FAILED);
+    expect_int(state, "smith_review_empty_no_report", events.saw_review_report,
+               0L);
+    expect_str(state, "smith_review_empty_failure", events.failure_message,
+               "Smith review completed without a final JSON report");
+    cai_agent_runtime_close(runtime);
+  }
+  http_mock_client_close(state, "smith_review_empty_mock", &empty_mock);
+  cai_error_cleanup(&error);
+  if (http_mock_client_open_script(
+          state, "smith_review_invalid_mock", invalid_script,
+          sizeof(invalid_script) / sizeof(invalid_script[0]),
+          &invalid_mock) != 0) {
+    return;
+  }
+  cai_error_init(&error);
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  config.event_context = &events;
+  expect_int(
+      state, "smith_review_invalid_open",
+      cai_agent_runtime_open(invalid_mock.client, &config, &runtime, &error),
+      CAI_OK);
+  if (runtime != NULL) {
+    cai_agent_review_request_init(&request);
+    request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+    expect_int(state, "smith_review_invalid_submit",
+               cai_agent_runtime_submit_review(runtime, &request, &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 20 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "smith_review_invalid_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "smith_review_invalid_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "smith_review_invalid_failed", run_state,
+               CAI_AGENT_FAILED);
+    expect_int(state, "smith_review_invalid_no_report",
+               events.saw_review_report, 0L);
+    expect_substr(state, "smith_review_invalid_failure", events.failure_message,
+                  "Smith review final output does not match the required JSON "
+                  "report schema");
+    cai_agent_runtime_close(runtime);
+  }
+  http_mock_client_close(state, "smith_review_invalid_mock", &invalid_mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_smith_review_parent_handoff(test_state *state) {
+  static const char review_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"{\\\"findings\\\":[],\\\"overall_correctness\\\":\\\"patch is "
+      "correct\\\",\\\"overall_explanation\\\":\\\"No qualifying "
+      "defects.\\\",\\\"overall_confidence_score\\\":0.9}\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_review_handoff\",\"usage\":{\"input_tokens\":3,"
+      "\"output_tokens\":4,\"total_tokens\":7}}}\n\n";
+  static const char parent_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"Review findings received.\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_parent_handoff\",\"usage\":{\"input_tokens\":5,"
+      "\"output_tokens\":4,\"total_tokens\":9}}}\n\n";
+  static const char *review_required[] = {
+      "POST /v1/responses HTTP/",
+      "Review the current code changes (staged, unstaged, and untracked files)",
+      "You are Cai Smith, a code reviewer",
+      "\"effort\":\"medium\"",
+      "\"summary\":\"detailed\"",
+      "\"name\":\"exec_command\"",
+      "\"name\":\"write_stdin\""};
+  static const char *parent_required[] = {
+      "POST /v1/responses HTTP/", "act on the review findings",
+      "<review_handoff",          "No qualifying defects.",
+      "\"role\":\"developer\"",   "\"effort\":\"low\"",
+      "\"summary\":\"concise\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", review_required,
+       sizeof(review_required) / sizeof(review_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, review_response},
+      {"POST /v1/responses HTTP/", parent_required,
+       sizeof(parent_required) / sizeof(parent_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, parent_response}};
+  http_mock_client mock;
+  cai_agent_runtime_config config;
+  cai_agent_preset preset;
+  cai_agent_review_request request;
+  cai_agent_runtime *parent;
+  cai_agent_runtime *review;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  runtime_event_state events;
+  cai_agent_run_state run_state;
+  cai_error error;
+  int i;
+
+  if (http_mock_client_open_script(state, "smith_review_parent_handoff", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    return;
+  }
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  memset(&events, 0, sizeof(events));
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  events.owner = pthread_self();
+  cai_error_init(&error);
+  parent = NULL;
+  review = NULL;
+  memset(&preset, 0, sizeof(preset));
+  preset.name = "review-terminal-only";
+  preset.prompt_version = "review-terminal-only-1";
+  preset.default_identity = "Cai Smith";
+  preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  preset.tool_capabilities = CAI_AGENT_PRESET_TOOL_READ_FILE;
+  preset.review_tool_capabilities =
+      CAI_AGENT_PRESET_TOOL_READ_FILE | CAI_AGENT_PRESET_TOOL_LIST_FILES |
+      CAI_AGENT_PRESET_TOOL_TERMINAL | CAI_AGENT_PRESET_TOOL_VIEW_IMAGE;
+  preset.supports_review = 1;
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = "/tmp";
+  config.preset_descriptor = &preset;
+  config.model = CAI_MODEL_GPT_5_6_LUNA;
+  config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  config.reasoning_summary = CAI_REASONING_SUMMARY_CONCISE;
+  config.review_model = CAI_MODEL_GPT_5_6_LUNA;
+  config.review_reasoning_effort = CAI_REASONING_EFFORT_MEDIUM;
+  config.review_reasoning_summary = CAI_REASONING_SUMMARY_DETAILED;
+  config.session_store = &store;
+  config.disable_default_session_store = 1;
+  config.session_scope = "review-parent-handoff";
+  config.event_callback = test_runtime_event;
+  config.event_context = &events;
+  /* The normal host receiver must also observe its isolated reviewer. */
+  expect_int(state, "smith_review_parent_open",
+             cai_agent_runtime_open(mock.client, &config, &parent, &error),
+             CAI_OK);
+  if (parent != NULL) {
+    cai_agent_review_request_init(&request);
+    request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+    expect_int(
+        state, "smith_review_parent_start",
+        cai_agent_runtime_start_review(parent, &request, &review, &error),
+        CAI_OK);
+    expect_int(
+        state, "smith_review_parent_submit_rejected",
+        cai_agent_runtime_submit(parent, "cannot interrupt review", &error),
+        CAI_ERR_INVALID);
+    expect_int(state, "smith_review_parent_queued",
+               cai_agent_runtime_submit_queued(
+                   parent, "act on the review findings", &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; review != NULL && i < 20 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "smith_review_parent_review_pump",
+                 cai_agent_runtime_pump(review, 100L, &error), CAI_OK);
+      expect_int(state, "smith_review_parent_review_state",
+                 cai_agent_runtime_state(review, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "smith_review_parent_review_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_int(state, "smith_review_parent_default_receiver_report",
+               events.saw_review_report, 1L);
+    expect_int(state, "smith_review_parent_finish",
+               cai_agent_runtime_finish_review(parent, review, &error), CAI_OK);
+    expect_substr(state, "smith_review_parent_checkpoint_handoff",
+                  store_state.saved_checkpoint, "<review_handoff");
+    expect_substr(state, "smith_review_parent_checkpoint_report",
+                  store_state.saved_checkpoint, "No qualifying defects.");
+    run_state = CAI_AGENT_IDLE;
+    for (i = 0; i < 20 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "smith_review_parent_pump",
+                 cai_agent_runtime_pump(parent, 100L, &error), CAI_OK);
+      expect_int(state, "smith_review_parent_state",
+                 cai_agent_runtime_state(parent, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "smith_review_parent_queued_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_int(state, "smith_review_parent_started_event",
+               events.saw_review_started, 1L);
+    expect_int(state, "smith_review_parent_handoff_event",
+               events.saw_review_handed_off, 1L);
+    expect_substr(state, "smith_review_parent_handoff_heading",
+                  events.review_handoff, "# Review handoff");
+    expect_substr(state, "smith_review_parent_handoff_explanation",
+                  events.review_handoff, "No qualifying defects.");
+    cai_agent_runtime_close(review);
+    cai_agent_runtime_close(parent);
+  }
+  http_mock_client_close(state, "smith_review_parent_handoff", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_runtime_subagent(test_state *state) {
+  static const char parent_tool_response[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"fc_subagent\",\"type\":\"function_call\","
+      "\"call_id\":\"call_subagent\",\"name\":\"run_worker\","
+      "\"arguments\":\"{\\\"format\\\":\\\"json\\\"}\"}}\n\n"
+      "data: "
+      "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_parent_"
+      "subagent\",\"usage\":{\"input_tokens\":2,\"output_tokens\":2,\"total_"
+      "tokens\":4}}}\n\n";
+  static const char child_response[] =
+      "data: "
+      "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_child_"
+      "subagent\",\"usage\":{\"input_tokens\":2,\"output_tokens\":2,\"total_"
+      "tokens\":4}}}\n\n";
+  static const char parent_final_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"parent "
+      "completed\"}\n\n"
+      "data: "
+      "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_parent_"
+      "subagent_final\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2,"
+      "\"total_tokens\":5}}}\n\n";
+  static const char *parent_required[] = {
+      "delegate this task", "\"name\":\"run_worker\"", "`run_worker`"};
+  static const char *parent_forbidden[] = {"\"name\":\"run_subagent\""};
+  static const char *child_required[] = {"Prepared JSON worker task.",
+                                         "You are Worker"};
+  static const char *final_required[] = {
+      "\"call_id\":\"call_subagent\"",
+      "The subagent completed without a text handover.", "<subagent_handoff"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", parent_required,
+       sizeof(parent_required) / sizeof(parent_required[0]), parent_forbidden,
+       sizeof(parent_forbidden) / sizeof(parent_forbidden[0]), 200, "OK",
+       "text/event-stream", NULL, parent_tool_response},
+      {"POST /v1/responses HTTP/", child_required,
+       sizeof(child_required) / sizeof(child_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, child_response},
+      {"POST /v1/responses HTTP/", final_required,
+       sizeof(final_required) / sizeof(final_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, parent_final_response}};
+  http_mock_client mock;
+  cai_agent_preset parent_preset;
+  cai_agent_preset child_preset;
+  cai_agent_subagent_profile profile;
+  cai_agent_subagent_parameter parameters[1];
+  static const char *const formats[] = {"json", "text"};
+  cai_agent_runtime_config config;
+  cai_agent_session_store store;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  runtime_event_state events;
+  runtime_session_store_state store_state;
+  test_subagent_prepare_state prepare_state;
+  cai_error error;
+  int i;
+
+  if (http_mock_client_open_script(state, "agent_runtime_subagent", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    return;
+  }
+  memset(&parent_preset, 0, sizeof(parent_preset));
+  parent_preset.name = "delegate-parent";
+  parent_preset.prompt_version = "delegate-parent-1";
+  parent_preset.default_identity = "Parent";
+  parent_preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  parent_preset.default_reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  parent_preset.default_reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  parent_preset.developer_instructions = "You are Parent.";
+  parent_preset.tool_capabilities = CAI_AGENT_PRESET_TOOL_SUBAGENTS;
+  memset(&child_preset, 0, sizeof(child_preset));
+  child_preset.name = "delegate-worker";
+  child_preset.prompt_version = "delegate-worker-1";
+  child_preset.default_identity = "Worker";
+  child_preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  child_preset.default_reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  child_preset.default_reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  child_preset.developer_instructions = "You are Worker.";
+  memset(&profile, 0, sizeof(profile));
+  memset(parameters, 0, sizeof(parameters));
+  parameters[0].name = "format";
+  parameters[0].description = "Required delegated output format.";
+  parameters[0].type = CAI_AGENT_SUBAGENT_PARAMETER_ENUM;
+  parameters[0].required = 1;
+  parameters[0].enum_values = formats;
+  parameters[0].enum_value_count = sizeof(formats) / sizeof(formats[0]);
+  profile.name = "worker";
+  profile.description = "Return a concise delegated result.";
+  profile.preset = &child_preset;
+  profile.parameters = parameters;
+  profile.parameter_count = sizeof(parameters) / sizeof(parameters[0]);
+  profile.instruction_template =
+      "Return {{format}} result for {{instructions}}";
+  profile.expose_instructions = 1;
+  profile.prepare = test_subagent_prepare;
+  profile.prepare_context = &prepare_state;
+  cai_error_init(&error);
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  memset(&prepare_state, 0, sizeof(prepare_state));
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  events.owner = pthread_self();
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = "/tmp";
+  config.preset_descriptor = &parent_preset;
+  config.disable_default_session_store = 1;
+  config.session_store = &store;
+  config.session_scope = "subagent-handoff-checkpoint-retry";
+  config.subagents = &profile;
+  config.subagent_count = 1U;
+  config.event_callback = test_runtime_event;
+  config.event_context = &events;
+  g_test_infof_count = 0;
+  g_test_debugf_count = 0;
+  g_test_subagent_started_kvfmt[0] = '\0';
+  g_test_agent_runtime_legacy_log_name_count = 0;
+  expect_int(state, "agent_runtime_subagent_open",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    (void)snprintf(store_state.fail_checkpoint_session_id,
+                   sizeof(store_state.fail_checkpoint_session_id), "%s",
+                   cai_agent_runtime_session_id(runtime));
+    store_state.fail_checkpoint_once = 1;
+    store_state.fail_checkpoint_after = 2;
+    expect_int(state, "agent_runtime_subagent_submit",
+               cai_agent_runtime_submit(runtime, "delegate this task", &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 30 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "agent_runtime_subagent_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "agent_runtime_subagent_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "agent_runtime_subagent_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_int(state, "agent_runtime_subagent_started_event",
+               events.saw_subagent_started, 1L);
+    expect_str(state, "agent_runtime_subagent_started_display_summary",
+               events.subagent_display_summary, "Preparing the JSON worker.");
+    expect_str(state, "agent_runtime_subagent_started_instruction",
+               events.subagent_instruction, "Prepared JSON worker task.");
+    expect_int(state, "agent_runtime_subagent_prepare_called",
+               prepare_state.calls, 1L);
+    expect_int(state, "agent_runtime_subagent_prepare_request",
+               prepare_state.saw_valid_request, 1L);
+    expect_str(state, "agent_runtime_subagent_prepare_metadata",
+               events.subagent_metadata_json, "{\"kind\":\"worker\"}");
+    expect_int(state, "agent_runtime_subagent_handoff_event",
+               events.saw_subagent_handed_off, 1L);
+    expect_int(state, "agent_runtime_subagent_event_source",
+               events.subagent_session_id[0] != '\0', 1L);
+    expect_int(state, "agent_runtime_subagent_event_owner", events.wrong_thread,
+               0L);
+    expect_int(state, "agent_runtime_subagent_runtime_open_logged",
+               g_test_infof_count > 0, 1L);
+    expect_int(state, "agent_runtime_subagent_lifecycle_logged",
+               g_test_debugf_count > 0, 1L);
+    expect_int(state, "agent_runtime_subagent_dotted_log_names",
+               g_test_agent_runtime_legacy_log_name_count, 0L);
+    expect_str(state, "agent_runtime_subagent_lifecycle_kvfmt",
+               g_test_subagent_started_kvfmt,
+               "session_id=%s profile=%s child_session_id=%s "
+               "instruction_bytes=%lu");
+    expect_int(state, "agent_runtime_subagent_handoff_checkpoint_retried",
+               store_state.fail_checkpoint_once, 0L);
+    cai_agent_runtime_close(runtime);
+  }
+  g_test_infof_count = 0;
+  g_test_debugf_count = 0;
+  config.logger_disabled = 1;
+  runtime = NULL;
+  expect_int(state, "agent_runtime_subagent_logger_disabled_open",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_OK);
+  cai_agent_runtime_close(runtime);
+  expect_int(state, "agent_runtime_subagent_logger_disabled_info",
+             g_test_infof_count, 0L);
+  expect_int(state, "agent_runtime_subagent_logger_disabled_debug",
+             g_test_debugf_count, 0L);
+  config.logger_disabled = 0;
+  profile.instruction_template = "{{unknown_field}}";
+  runtime = NULL;
+  expect_int(state, "agent_runtime_subagent_rejects_unknown_template_field",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_ERR_INVALID);
+  cai_agent_runtime_close(runtime);
+  http_mock_client_close(state, "agent_runtime_subagent", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_runtime_subagent_mcp_snapshot(test_state *state) {
+  static const char parent_tool_response[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"fc_mcp_child\",\"type\":\"function_call\","
+      "\"call_id\":\"call_mcp_child\",\"name\":\"run_worker\","
+      "\"arguments\":\"{}\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_mcp_parent\",\"usage\":{\"input_tokens\":2,"
+      "\"output_tokens\":2,\"total_tokens\":4}}}\n\n";
+  static const char child_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"worker handover\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_mcp_child\",\"usage\":{\"input_tokens\":2,"
+      "\"output_tokens\":2,\"total_tokens\":4}}}\n\n";
+  static const char parent_final_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"parent completed\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_mcp_parent_final\",\"usage\":{\"input_tokens\":3,"
+      "\"output_tokens\":2,\"total_tokens\":5}}}\n\n";
+  static const char *parent_required[] = {"\"name\":\"run_worker\""};
+  static const char *child_required[] = {"\"name\":\"child__echo\""};
+  static const char *child_forbidden[] = {"\"name\":\"mutated__echo\"",
+                                          "\"type\":\"image_generation\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", parent_required,
+       sizeof(parent_required) / sizeof(parent_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, parent_tool_response},
+      {"POST /v1/responses HTTP/", child_required,
+       sizeof(child_required) / sizeof(child_required[0]), child_forbidden,
+       sizeof(child_forbidden) / sizeof(child_forbidden[0]), 200, "OK",
+       "text/event-stream", NULL, child_response},
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, parent_final_response}};
+  http_mock_client mock;
+  cai_agent_preset parent_preset;
+  cai_agent_preset child_preset;
+  cai_agent_subagent_profile profile;
+  cai_mcp_tool_registration_config mcp_config;
+  test_mcp_client_impl mcp_fake;
+  cai_mcp_client *mcp_clients[1];
+  cai_agent_runtime_config config;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  cai_error error;
+  int i;
+
+  if (http_mock_client_open_script(state, "agent_runtime_subagent_mcp_snapshot",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    return;
+  }
+  memset(&parent_preset, 0, sizeof(parent_preset));
+  parent_preset.name = "mcp-parent";
+  parent_preset.prompt_version = "mcp-parent-1";
+  parent_preset.default_identity = "Parent";
+  parent_preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  parent_preset.default_reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  parent_preset.default_reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  parent_preset.developer_instructions = "You are Parent.";
+  parent_preset.tool_capabilities = CAI_AGENT_PRESET_TOOL_SUBAGENTS |
+                                    CAI_AGENT_PRESET_TOOL_MCP |
+                                    CAI_AGENT_PRESET_TOOL_IMAGE_GENERATION;
+  memset(&child_preset, 0, sizeof(child_preset));
+  child_preset.name = "mcp-worker";
+  child_preset.prompt_version = "mcp-worker-1";
+  child_preset.default_identity = "Worker";
+  child_preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  child_preset.default_reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  child_preset.default_reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  child_preset.developer_instructions = "You are Worker.";
+  child_preset.tool_capabilities = CAI_AGENT_PRESET_TOOL_MCP;
+  memset(&profile, 0, sizeof(profile));
+  profile.name = "worker";
+  profile.description = "Inspect delegated work.";
+  profile.preset = &child_preset;
+  profile.instruction_template = "Inspect {{instructions}}.";
+  profile.expose_instructions = 1;
+  memset(&mcp_config, 0, sizeof(mcp_config));
+  mcp_config.name_prefix = "child__";
+  mcp_config.strict = 1;
+  test_mcp_fake_client_init(&mcp_fake);
+  mcp_clients[0] = &mcp_fake.public_client;
+  cai_error_init(&error);
+  runtime = NULL;
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = "/tmp";
+  config.preset_descriptor = &parent_preset;
+  config.disable_default_session_store = 1;
+  config.disable_terminal = 1;
+  config.enable_image_generation = 1;
+  config.mcp_clients = mcp_clients;
+  config.mcp_client_count = 1U;
+  config.mcp_tool_config = &mcp_config;
+  config.subagents = &profile;
+  config.subagent_count = 1U;
+  expect_int(state, "agent_runtime_subagent_mcp_snapshot_open",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    /* Deferred children must use the runtime-owned snapshot, not these host
+     * containers after the parent has opened. */
+    mcp_clients[0] = NULL;
+    mcp_config.name_prefix = "mutated__";
+    mcp_config.strict = 0;
+    expect_int(
+        state, "agent_runtime_subagent_mcp_snapshot_submit",
+        cai_agent_runtime_submit(runtime, "inspect the workspace", &error),
+        CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 30 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "agent_runtime_subagent_mcp_snapshot_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "agent_runtime_subagent_mcp_snapshot_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "agent_runtime_subagent_mcp_snapshot_completed",
+               run_state, CAI_AGENT_COMPLETED);
+    expect_int(state, "agent_runtime_subagent_mcp_snapshot_child_refresh",
+               mcp_fake.refresh_count, 2L);
+    cai_agent_runtime_close(runtime);
+  }
+  http_mock_client_close(state, "agent_runtime_subagent_mcp_snapshot", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_runtime_failed_subagent_resume(test_state *state) {
+  static const char parent_tool_response[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"fc_failed_subagent\",\"type\":\"function_call\","
+      "\"call_id\":\"call_failed_subagent\",\"name\":\"run_worker\","
+      "\"arguments\":\"{\\\"format\\\":\\\"json\\\"}\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_parent_failed_subagent\",\"usage\":{\"input_tokens\":2,"
+      "\"output_tokens\":2,\"total_tokens\":4}}}\n\n";
+  static const char child_error_response[] =
+      "{\"error\":{\"message\":\"child unavailable\",\"type\":"
+      "\"server_error\"}}";
+  static const char parent_final_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"parent handled child failure\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_parent_failed_subagent_final\",\"usage\":{\"input_tokens\":3,"
+      "\"output_tokens\":2,\"total_tokens\":5}}}\n\n";
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, parent_tool_response},
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 500,
+       "Internal Server Error", "application/json", NULL, child_error_response},
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, parent_final_response}};
+  http_mock_client mock;
+  cai_agent_preset parent_preset;
+  cai_agent_preset child_preset;
+  cai_agent_subagent_profile profile;
+  cai_agent_subagent_parameter parameter;
+  static const char *const formats[] = {"json"};
+  cai_agent_runtime_config config;
+  cai_agent_session_store store;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  runtime_event_state events;
+  runtime_session_store_state store_state;
+  cai_error error;
+  int i;
+  int saw_handoff_marker;
+
+  if (http_mock_client_open_script(
+          state, "agent_runtime_failed_subagent_resume", script,
+          sizeof(script) / sizeof(script[0]), &mock) != 0) {
+    return;
+  }
+  memset(&parent_preset, 0, sizeof(parent_preset));
+  parent_preset.name = "failed-subagent-parent";
+  parent_preset.prompt_version = "failed-subagent-parent-1";
+  parent_preset.default_identity = "Parent";
+  parent_preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  parent_preset.default_reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  parent_preset.default_reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  parent_preset.developer_instructions = "You are Parent.";
+  parent_preset.tool_capabilities = CAI_AGENT_PRESET_TOOL_SUBAGENTS;
+  memset(&child_preset, 0, sizeof(child_preset));
+  child_preset.name = "failed-subagent-worker";
+  child_preset.prompt_version = "failed-subagent-worker-1";
+  child_preset.default_identity = "Worker";
+  child_preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  child_preset.default_reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  child_preset.default_reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  child_preset.developer_instructions = "You are Worker.";
+  memset(&parameter, 0, sizeof(parameter));
+  parameter.name = "format";
+  parameter.description = "Required delegated output format.";
+  parameter.type = CAI_AGENT_SUBAGENT_PARAMETER_ENUM;
+  parameter.required = 1;
+  parameter.enum_values = formats;
+  parameter.enum_value_count = sizeof(formats) / sizeof(formats[0]);
+  memset(&profile, 0, sizeof(profile));
+  profile.name = "worker";
+  profile.description = "Return delegated results.";
+  profile.preset = &child_preset;
+  profile.parameters = &parameter;
+  profile.parameter_count = 1U;
+  profile.instruction_template = "Return {{format}} for {{instructions}}.";
+  profile.expose_instructions = 1;
+  cai_error_init(&error);
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  events.owner = pthread_self();
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = "/tmp";
+  config.preset_descriptor = &parent_preset;
+  config.disable_default_session_store = 1;
+  config.session_store = &store;
+  config.session_scope = "failed-subagent-resume";
+  config.subagents = &profile;
+  config.subagent_count = 1U;
+  config.event_callback = test_runtime_event;
+  config.event_context = &events;
+  expect_int(state, "agent_runtime_failed_subagent_open",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    (void)snprintf(store_state.loaded_session_id,
+                   sizeof(store_state.loaded_session_id), "%s",
+                   cai_agent_runtime_session_id(runtime));
+    expect_int(state, "agent_runtime_failed_subagent_submit",
+               cai_agent_runtime_submit(runtime, "delegate this task", &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 30 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "agent_runtime_failed_subagent_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "agent_runtime_failed_subagent_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "agent_runtime_failed_subagent_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_int(state, "agent_runtime_failed_subagent_output_count",
+               (long)test_count_substrings(store_state.saved_checkpoint,
+                                           "\"type\":\"function_call_output\""),
+               1L);
+    saw_handoff_marker = 0;
+    for (i = 0; i < (int)store_state.replay_event_count; i++) {
+      if (strcmp(store_state.replay_event_types[i],
+                 "subagent_handoff_committed") == 0) {
+        saw_handoff_marker = 1;
+      }
+    }
+    expect_int(state, "agent_runtime_failed_subagent_marker",
+               saw_handoff_marker, 1L);
+    store_state.checkpoint_json = store_state.saved_checkpoint;
+    store_state.load_applied_event_sequence =
+        store_state.saved_applied_event_sequence;
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+    memset(&events, 0, sizeof(events));
+    events.owner = pthread_self();
+    config.resume_latest = 1;
+    config.event_context = &events;
+    expect_int(state, "agent_runtime_failed_subagent_resume_open",
+               cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+               CAI_OK);
+    expect_int(state, "agent_runtime_failed_subagent_resume_output_count",
+               (long)test_count_substrings(store_state.saved_checkpoint,
+                                           "\"type\":\"function_call_output\""),
+               1L);
+    cai_agent_runtime_close(runtime);
+  }
+  http_mock_client_close(state, "agent_runtime_failed_subagent_resume", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_runtime_poll_only_subagent(test_state *state) {
+  static const char parent_tool_response[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"fc_poll_subagent\",\"type\":\"function_call\","
+      "\"call_id\":\"call_poll_subagent\",\"name\":\"run_worker\","
+      "\"arguments\":\"{\\\"instructions\\\":\\\"inspect\\\"}\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_poll_parent\",\"usage\":{\"input_tokens\":1,"
+      "\"output_tokens\":1,\"total_tokens\":2}}}\n\n";
+  static const char child_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"one \"}\n\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"two \"}\n\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"three\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_poll_child\",\"usage\":{\"input_tokens\":1,"
+      "\"output_tokens\":3,\"total_tokens\":4}}}\n\n";
+  static const char parent_final_response[] =
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_poll_parent_final\",\"usage\":{\"input_tokens\":2,"
+      "\"output_tokens\":1,\"total_tokens\":3}}}\n\n";
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, parent_tool_response},
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, child_response},
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, parent_final_response}};
+  http_mock_client mock;
+  cai_agent_preset parent_preset;
+  cai_agent_preset child_preset;
+  cai_agent_subagent_profile profile;
+  cai_agent_runtime_config config;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  cai_error error;
+  struct timespec delay;
+  int i;
+
+  if (http_mock_client_open_script(state, "agent_runtime_poll_only_subagent",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    return;
+  }
+  memset(&parent_preset, 0, sizeof(parent_preset));
+  parent_preset.name = "poll-only-parent";
+  parent_preset.prompt_version = "poll-only-parent-1";
+  parent_preset.default_identity = "Parent";
+  parent_preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  parent_preset.default_reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  parent_preset.default_reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  parent_preset.developer_instructions = "You are Parent.";
+  parent_preset.tool_capabilities = CAI_AGENT_PRESET_TOOL_SUBAGENTS;
+  memset(&child_preset, 0, sizeof(child_preset));
+  child_preset.name = "poll-only-worker";
+  child_preset.prompt_version = "poll-only-worker-1";
+  child_preset.default_identity = "Worker";
+  child_preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
+  child_preset.default_reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  child_preset.default_reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
+  child_preset.developer_instructions = "You are Worker.";
+  memset(&profile, 0, sizeof(profile));
+  profile.name = "worker";
+  profile.description = "Return delegated results.";
+  profile.preset = &child_preset;
+  profile.instruction_template = "Perform {{instructions}}.";
+  profile.expose_instructions = 1;
+  cai_error_init(&error);
+  runtime = NULL;
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = "/tmp";
+  config.preset_descriptor = &parent_preset;
+  config.disable_default_session_store = 1;
+  config.event_queue_limit = 1U;
+  config.subagents = &profile;
+  config.subagent_count = 1U;
+  expect_int(state, "agent_runtime_poll_only_subagent_open",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_int(state, "agent_runtime_poll_only_subagent_submit",
+               cai_agent_runtime_submit(runtime, "delegate this task", &error),
+               CAI_OK);
+    delay.tv_sec = 0;
+    delay.tv_nsec = 10000000L;
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "agent_runtime_poll_only_subagent_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "agent_runtime_poll_only_subagent_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    cai_agent_runtime_close(runtime);
+  }
+  http_mock_client_close(state, "agent_runtime_poll_only_subagent", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_runtime_review_subagent(test_state *state) {
+  static const char parent_tool_response[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"fc_review\",\"type\":\"function_call\","
+      "\"call_id\":\"call_review\",\"name\":\"run_review\","
+      "\"arguments\":\"{\\\"target\\\":\\\"base\\\",\\\"base\\\":"
+      "\\\"trunk~2\\\"}\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_parent_review_tool\",\"usage\":{\"input_tokens\":2,"
+      "\"output_tokens\":2,\"total_tokens\":4}}}\n\n";
+  static const char review_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"{\\\"findings\\\":[],\\\"overall_correctness\\\":\\\"patch is "
+      "correct\\\",\\\"overall_explanation\\\":\\\"No qualifying "
+      "defects.\\\",\\\"overall_confidence_score\\\":0.9}\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_review_tool\",\"usage\":{\"input_tokens\":3,"
+      "\"output_tokens\":4,\"total_tokens\":7}}}\n\n";
+  static const char parent_final_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"review complete\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_parent_review_final\",\"usage\":{\"input_tokens\":3,"
+      "\"output_tokens\":2,\"total_tokens\":5}}}\n\n";
+  static const char *parent_required[] = {
+      "review this change", "\"name\":\"run_review\"", "`run_review`",
+      "for a user-requested code-repository review, call it immediately",
+      "Do not inspect the workspace or Git first"};
+  static const char *parent_forbidden[] = {"\"name\":\"run_subagent\"",
+                                           "\"model\":{\"type\":"};
+  static const char *review_required[] = {
+      "Review the code changes against the base branch 'trunk~2'. The merge "
+      "base "
+      "commit for this comparison is 0123456789abcdef0123456789abcdef01234567. "
+      "Run `git diff 0123456789abcdef0123456789abcdef01234567` to inspect "
+      "the changes relative to trunk~2. Provide prioritized, actionable "
+      "findings.",
+      "You are Cai Smith, a code reviewer", "\"name\":\"exec_command\"",
+      "\"name\":\"write_stdin\""};
+  static const char *final_required[] = {
+      "\"call_id\":\"call_review\"", "<review_handoff",
+      "No qualifying defects.", "structured_result_json"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", parent_required,
+       sizeof(parent_required) / sizeof(parent_required[0]), parent_forbidden,
+       sizeof(parent_forbidden) / sizeof(parent_forbidden[0]), 200, "OK",
+       "text/event-stream", NULL, parent_tool_response},
+      {"POST /v1/responses HTTP/", review_required,
+       sizeof(review_required) / sizeof(review_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, review_response},
+      {"POST /v1/responses HTTP/", final_required,
+       sizeof(final_required) / sizeof(final_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, parent_final_response}};
+  http_mock_client mock;
+  cai_agent_runtime_config config;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  runtime_event_state events;
+  cai_error error;
+  char workspace[] = "/tmp/cai-review-base-XXXXXX";
+  char git_directory[PATH_MAX];
+  char git_path[PATH_MAX];
+  char *saved_path;
+  char *saved_git_dir;
+  char *saved_git_work_tree;
+  int i;
+
+  if (http_mock_client_open_script(state, "agent_runtime_review_subagent",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    return;
+  }
+  cai_error_init(&error);
+  runtime = NULL;
+  saved_path = NULL;
+  saved_git_dir = NULL;
+  saved_git_work_tree = NULL;
+  if (mkdtemp(workspace) == NULL ||
+      snprintf(git_directory, sizeof(git_directory), "%s/bin", workspace) >=
+          (int)sizeof(git_directory) ||
+      mkdir(git_directory, 0700) != 0 ||
+      snprintf(git_path, sizeof(git_path), "%s/git", git_directory) >=
+          (int)sizeof(git_path)) {
+    test_fail(state, "agent_runtime_review_subagent_git_setup",
+              "failed to create fake git executable");
+    http_mock_client_close(state, "agent_runtime_review_subagent", &mock);
+    cai_error_cleanup(&error);
+    return;
+  }
+  write_file_or_die(
+      git_path, "#!/bin/sh\n"
+                "if [ -n \"$GIT_DIR\" ] || [ -n \"$GIT_WORK_TREE\" ]; then\n"
+                "  exit 2\n"
+                "fi\n"
+                "printf '%s\\n' 0123456789abcdef0123456789abcdef01234567\n");
+  if (chmod(git_path, 0700) != 0) {
+    test_fail(state, "agent_runtime_review_subagent_git_mode",
+              "failed to make fake git executable");
+    unlink(git_path);
+    rmdir(git_directory);
+    rmdir(workspace);
+    http_mock_client_close(state, "agent_runtime_review_subagent", &mock);
+    cai_error_cleanup(&error);
+    return;
+  }
+  if (getenv("PATH") != NULL) {
+    saved_path = cai_strdup(NULL, getenv("PATH"));
+  }
+  if (getenv("GIT_DIR") != NULL) {
+    saved_git_dir = cai_strdup(NULL, getenv("GIT_DIR"));
+  }
+  if (getenv("GIT_WORK_TREE") != NULL) {
+    saved_git_work_tree = cai_strdup(NULL, getenv("GIT_WORK_TREE"));
+  }
+  if (setenv("PATH", git_directory, 1) != 0) {
+    test_fail(state, "agent_runtime_review_subagent_git_path",
+              "failed to set fake git PATH");
+  }
+  if (setenv("GIT_DIR", "/tmp/cai-review-external-git-dir", 1) != 0 ||
+      setenv("GIT_WORK_TREE", "/tmp/cai-review-external-work-tree", 1) != 0) {
+    test_fail(state, "agent_runtime_review_subagent_git_override",
+              "failed to set external git overrides");
+  }
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = workspace;
+  config.preset = CAI_SMITH_PRESET;
+  config.disable_default_session_store = 1;
+  config.event_callback = test_runtime_event;
+  config.event_context = &events;
+  expect_int(state, "agent_runtime_review_subagent_open",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_int(state, "agent_runtime_review_subagent_submit",
+               cai_agent_runtime_submit(runtime, "review this change", &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 30 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "agent_runtime_review_subagent_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "agent_runtime_review_subagent_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "agent_runtime_review_subagent_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_int(state, "agent_runtime_review_subagent_started_event",
+               events.saw_subagent_started, 1L);
+    expect_str(state, "agent_runtime_review_subagent_started_display_summary",
+               events.subagent_display_summary,
+               "Reviewing changes against trunk~2.");
+    expect_str(state, "agent_runtime_review_subagent_started_metadata",
+               events.subagent_metadata_json,
+               "{\"target\":\"base\",\"base\":\"trunk~2\"}");
+    expect_substr(state, "agent_runtime_review_subagent_started_instruction",
+                  events.subagent_instruction,
+                  "Review the code changes against the base branch "
+                  "'trunk~2'.");
+    expect_int(state, "agent_runtime_review_subagent_handoff_event",
+               events.saw_subagent_handed_off, 1L);
+    expect_int(state, "agent_runtime_review_subagent_no_raw_report",
+               events.saw_review_report, 0L);
+    expect_int(state, "agent_runtime_review_subagent_no_raw_text",
+               events.subagent_text_delta_count, 0L);
+    expect_int(state, "agent_runtime_review_subagent_no_duplicate_handoff",
+               events.saw_review_handed_off, 0L);
+    expect_substr(state, "agent_runtime_review_subagent_markdown",
+                  events.subagent_handoff, "# Review handoff");
+    expect_substr(state, "agent_runtime_review_subagent_explanation",
+                  events.subagent_handoff, "No qualifying defects.");
+    cai_agent_runtime_close(runtime);
+  }
+  if (saved_path != NULL) {
+    (void)setenv("PATH", saved_path, 1);
+  } else {
+    (void)unsetenv("PATH");
+  }
+  if (saved_git_dir != NULL) {
+    (void)setenv("GIT_DIR", saved_git_dir, 1);
+  } else {
+    (void)unsetenv("GIT_DIR");
+  }
+  if (saved_git_work_tree != NULL) {
+    (void)setenv("GIT_WORK_TREE", saved_git_work_tree, 1);
+  } else {
+    (void)unsetenv("GIT_WORK_TREE");
+  }
+  cai_free_mem(NULL, saved_path);
+  cai_free_mem(NULL, saved_git_dir);
+  cai_free_mem(NULL, saved_git_work_tree);
+  unlink(git_path);
+  rmdir(git_directory);
+  rmdir(workspace);
+  http_mock_client_close(state, "agent_runtime_review_subagent", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_smith_review_pause_checkpoint_failure(test_state *state) {
+  cai_client_config client_config;
+  cai_agent_runtime_config config;
+  cai_agent_review_request request;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  cai_client *client;
+  cai_agent_runtime *parent;
+  cai_agent_runtime *review;
+  cai_agent_run_state run_state;
+  cai_error error;
+  int i;
+
+  cai_error_init(&error);
+  client = NULL;
+  parent = NULL;
+  review = NULL;
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.timeout_ms = 100L;
+  client_config.http_2_disabled = 1;
+  expect_int(state, "smith_review_pause_failure_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = "/tmp";
+  config.session_store = &store;
+  config.disable_default_session_store = 1;
+  config.session_scope = "review-pause-checkpoint-failure";
+  expect_int(state, "smith_review_pause_failure_parent_open",
+             cai_agent_runtime_open(client, &config, &parent, &error), CAI_OK);
+  if (parent != NULL) {
+    (void)snprintf(store_state.fail_checkpoint_session_id,
+                   sizeof(store_state.fail_checkpoint_session_id), "%s",
+                   cai_agent_runtime_session_id(parent));
+    store_state.fail_checkpoint_once = 1;
+    cai_agent_review_request_init(&request);
+    request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+    expect_int(
+        state, "smith_review_pause_failure_start",
+        cai_agent_runtime_start_review(parent, &request, &review, &error),
+        CAI_ERR_TRANSPORT);
+    expect_int(state, "smith_review_pause_failure_child_returned",
+               review != NULL, 1L);
+    expect_int(state, "smith_review_pause_failure_parent_held",
+               cai_agent_runtime_submit(parent, "must remain paused", &error),
+               CAI_ERR_INVALID);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0;
+         review != NULL && i < 20 && run_state != CAI_AGENT_COMPLETED &&
+         run_state != CAI_AGENT_FAILED && run_state != CAI_AGENT_CANCELLED;
+         i++) {
+      expect_int(state, "smith_review_pause_failure_child_pump",
+                 cai_agent_runtime_pump(review, 100L, &error), CAI_OK);
+      expect_int(state, "smith_review_pause_failure_child_state",
+                 cai_agent_runtime_state(review, &run_state, &error), CAI_OK);
+    }
+    if (review != NULL) {
+      expect_int(state, "smith_review_pause_failure_handoff",
+                 cai_agent_runtime_finish_review(parent, review, &error),
+                 CAI_OK);
+      expect_int(
+          state, "smith_review_pause_failure_parent_released",
+          cai_agent_runtime_submit(parent, "resume after handoff", &error),
+          CAI_OK);
+      cai_agent_runtime_close(review);
+    }
+    cai_agent_runtime_close(parent);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_runtime_lifecycle(test_state *state) {
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  struct pollfd poll_fd;
+  runtime_event_state events;
+  runtime_session_store_state store_state;
+  cai_agent_session_store store;
+  test_mcp_client_impl mcp_fake;
+  cai_mcp_client *mcp_clients[1];
+  cai_mcp_tool_registration_config mcp_config;
+  runtime_close_callback_state close_state;
+  runtime_close_steering_callback_state close_steering_state;
+  cai_error error;
+  struct timespec close_callback_delay;
+  const char *session_id;
+  time_t session_open_before;
+  time_t session_open_after;
+  int i;
+
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  memset(&close_state, 0, sizeof(close_state));
+  memset(&close_steering_state, 0, sizeof(close_steering_state));
+  memset(&store_state, 0, sizeof(store_state));
+  memset(&store, 0, sizeof(store));
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  memset(&mcp_config, 0, sizeof(mcp_config));
+  test_mcp_fake_client_init(&mcp_fake);
+  mcp_clients[0] = &mcp_fake.public_client;
+  mcp_config.name_prefix = "mcp__";
+  events.owner = pthread_self();
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.timeout_ms = 100L;
+  client_config.http_2_disabled = 1;
+  expect_int(state, "runtime_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.session_store = &store;
+  runtime_config.mcp_clients = mcp_clients;
+  runtime_config.mcp_client_count = 1U;
+  runtime_config.mcp_tool_config = &mcp_config;
+  runtime_config.enable_image_generation = 1;
+  runtime_config.event_queue_limit = 1U;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  runtime_config.session_id = "";
+  expect_int(state, "runtime_reject_empty_custom_session_id",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  runtime_config.session_id = NULL;
+  session_open_before = time(NULL);
+  expect_int(state, "runtime_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  session_open_after = time(NULL);
+  expect_int(state, "runtime_mcp_refresh", mcp_fake.refresh_count, 1L);
+  if (runtime != NULL) {
+    session_id = cai_agent_runtime_session_id(runtime);
+    expect_int(state, "runtime_session_id_xid",
+               test_xid_session_id_valid(session_id, session_open_before,
+                                         session_open_after),
+               1L);
+    expect_int(state, "runtime_idle_state",
+               cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    expect_int(state, "runtime_idle_value", run_state, CAI_AGENT_IDLE);
+    expect_int(state, "runtime_empty_session_anchor", store_state.checkpoints,
+               1L);
+    expect_int(state, "runtime_empty_session_anchor_watermark",
+               (long)store_state.saved_applied_event_sequence, 1L);
+    expect_str(state, "runtime_empty_session_journal_v2",
+               store_state.replay_event_type, "input_journal_v2");
+    poll_fd.fd = -1;
+    poll_fd.events = POLLIN;
+    poll_fd.revents = 0;
+    expect_int(state, "runtime_wakeup_fd",
+               cai_agent_runtime_wakeup_fd(runtime, &poll_fd.fd, &error),
+               CAI_OK);
+    expect_int(state, "runtime_wakeup_idle", poll(&poll_fd, 1U, 0), 0L);
+    expect_int(state, "runtime_reject_idle_steering",
+               cai_agent_runtime_submit_steering(runtime, "steer", &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "runtime_reject_invalid_queue",
+               cai_agent_runtime_submit_queued(runtime, "", &error),
+               CAI_ERR_INVALID);
+    expect_int(state, "runtime_invalid_queue_state",
+               cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    expect_int(state, "runtime_invalid_queue_returns_idle", run_state,
+               CAI_AGENT_IDLE);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "runtime_queue_idle",
+               cai_agent_runtime_submit_queued(runtime, "offline turn", &error),
+               CAI_OK);
+    expect_int(state, "runtime_wakeup_started", poll(&poll_fd, 1U, 0), 1L);
+    expect_int(state, "runtime_reject_full_queue_steering",
+               cai_agent_runtime_submit_steering(runtime, "steer", &error),
+               CAI_ERR_LIMIT);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "runtime_reject_second_turn",
+               cai_agent_runtime_submit(runtime, "second turn", &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    for (i = 0;
+         i < 10 && (store_state.checkpoints < 2 || events.saw_started == 0);
+         i++) {
+      expect_int(state, "runtime_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_event_started", events.saw_started, 1L);
+    expect_int(state, "runtime_event_turn_queued", events.saw_turn_queued, 1L);
+    expect_int(state, "runtime_events_owner_thread", events.wrong_thread, 0L);
+    expect_int(state, "runtime_input_checkpoint", store_state.checkpoints, 2L);
+    expect_str(state, "runtime_input_checkpoint_scope", store_state.scope,
+               "/tmp");
+    expect_substr(state, "runtime_input_checkpoint_turn",
+                  store_state.saved_checkpoint, "offline turn");
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.session_store = &store;
+  runtime_config.event_callback = test_runtime_close_from_event;
+  runtime_config.event_context = &close_state;
+  expect_int(state, "runtime_callback_close_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    close_state.runtime = runtime;
+    expect_int(state, "runtime_callback_close_submit",
+               cai_agent_runtime_submit(runtime, "close from event", &error),
+               CAI_OK);
+    /*
+     * Let the worker queue its checkpoint/state events behind RUN_STARTED.
+     * Closing from the first callback must discard those queued events rather
+     * than invoking a callback whose context may already be released.
+     */
+    close_callback_delay.tv_sec = 0;
+    close_callback_delay.tv_nsec = 100000000L;
+    (void)nanosleep(&close_callback_delay, NULL);
+    expect_int(state, "runtime_callback_close_pump",
+               cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+    expect_int(state, "runtime_callback_close_called_once", close_state.calls,
+               1L);
+    runtime = NULL;
+  }
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.session_store = &store;
+  runtime_config.event_callback = test_runtime_close_and_submit_steering;
+  runtime_config.event_context = &close_steering_state;
+  expect_int(state, "runtime_close_steering_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    close_steering_state.runtime = runtime;
+    expect_int(state, "runtime_close_steering_submit",
+               cai_agent_runtime_submit(runtime, "close then steer", &error),
+               CAI_OK);
+    expect_int(state, "runtime_close_steering_pump",
+               cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+    expect_int(state, "runtime_close_steering_callback_once",
+               close_steering_state.calls, 1L);
+    expect_int(state, "runtime_close_steering_rejected",
+               close_steering_state.steering_result, CAI_ERR_CANCELLED);
+    runtime = NULL;
+  }
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.preset = CAI_SMITH_REVIEW_PRESET;
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  runtime_config.disable_default_session_store = 1;
+  expect_int(state, "runtime_review_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_runtime_terminal_callback_close(test_state *state) {
+  static const char tool_response[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"fc_terminal_close\",\"type\":"
+      "\"function_call\",\"call_id\":\"call_terminal_close\","
+      "\"name\":\"exec_command\",\"arguments\":"
+      "\"{\\\"cmd\\\":\\\"printf terminal-close\\\","
+      "\\\"yield_time_ms\\\":1}\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_terminal_close_1\",\"usage\":{\"input_tokens\":1,"
+      "\"output_tokens\":1,\"total_tokens\":2}}}\n\n";
+  static const char final_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"terminal close complete\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_terminal_close_2\",\"usage\":{\"input_tokens\":2,"
+      "\"output_tokens\":1,\"total_tokens\":3}}}\n\n";
+  static const char *first_required[] = {
+      "\"stream\":true", "\"name\":\"exec_command\"",
+      "close from terminal lifecycle callback"};
+  static const char *second_required[] = {
+      "\"type\":\"function_call_output\"",
+      "\"call_id\":\"call_terminal_close\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", first_required,
+       sizeof(first_required) / sizeof(first_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, tool_response},
+      {"POST /v1/responses HTTP/", second_required,
+       sizeof(second_required) / sizeof(second_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, final_response}};
+  http_mock_client mock;
+  cai_agent_runtime_config config;
+  cai_terminal_tool_config terminal_config;
+  runtime_terminal_close_callback_state close_state;
+  cai_agent_runtime *runtime;
+  cai_error error;
+  struct pollfd close_poll;
+  int close_pipe[2];
+  char signal;
+
+  runtime = NULL;
+  close_pipe[0] = -1;
+  close_pipe[1] = -1;
+  memset(&mock, 0, sizeof(mock));
+  memset(&close_state, 0, sizeof(close_state));
+  memset(&terminal_config, 0, sizeof(terminal_config));
+  cai_error_init(&error);
+  if (pipe(close_pipe) != 0) {
+    test_fail(state, "runtime_terminal_callback_close_pipe", "pipe failed");
+    goto cleanup;
+  }
+  if (http_mock_client_open_script(state, "runtime_terminal_callback_close",
+                                   script, sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    goto cleanup;
+  }
+  close_state.notify_fd = close_pipe[1];
+  terminal_config.event_callback = test_runtime_close_from_terminal_event;
+  terminal_config.event_context = &close_state;
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = "/tmp";
+  config.model = CAI_MODEL_GPT_5_6_LUNA;
+  config.disable_default_session_store = 1;
+  config.terminal_tool_config = &terminal_config;
+  expect_int(state, "runtime_terminal_callback_close_open",
+             cai_agent_runtime_open(mock.client, &config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    close_state.runtime = runtime;
+    expect_int(state, "runtime_terminal_callback_close_submit",
+               cai_agent_runtime_submit(
+                   runtime, "close from terminal lifecycle callback", &error),
+               CAI_OK);
+    close_poll.fd = close_pipe[0];
+    close_poll.events = POLLIN;
+    close_poll.revents = 0;
+    expect_int(state, "runtime_terminal_callback_close_signal",
+               poll(&close_poll, 1U, 15000L), 1L);
+    if ((close_poll.revents & POLLIN) != 0) {
+      expect_int(state, "runtime_terminal_callback_close_read",
+                 read(close_pipe[0], &signal, 1U), 1L);
+      /* The worker callback has returned from close but is still using the
+       * runtime. Pump owns deferred destruction and joins only after it
+       * unwinds. */
+      expect_int(state, "runtime_terminal_callback_close_pump",
+                 cai_agent_runtime_pump(runtime, 0L, &error), CAI_OK);
+      expect_int(state, "runtime_terminal_callback_close_called",
+                 close_state.calls, 1L);
+      runtime = NULL;
+    }
+  }
+
+cleanup:
+  if (runtime != NULL) {
+    cai_agent_runtime_close(runtime);
+  }
+  if (close_pipe[0] >= 0) {
+    close(close_pipe[0]);
+  }
+  if (close_pipe[1] >= 0) {
+    close(close_pipe[1]);
+  }
+  http_mock_client_close(state, "runtime_terminal_callback_close", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_runtime_queued_turns(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  char workspace[] = "/tmp/cai-runtime-queued-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  runtime_event_state events;
+  cai_error error;
+  int i;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "runtime_queued_workspace", "mkdtemp failed");
+    return;
+  }
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "runtime_queued_mock", "pipe failed");
+    rmdir(workspace);
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "runtime_queued_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    rmdir(workspace);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 3);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "runtime_queued_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    rmdir(workspace);
+    return;
+  }
+
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  events.owner = pthread_self();
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  client_config.organization_id = "org_mock";
+  client_config.project_id = "proj_mock";
+  expect_int(state, "runtime_queued_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = workspace;
+  runtime_config.model = CAI_MODEL_GPT_5_NANO;
+  runtime_config.session_store = &store;
+  runtime_config.turn_queue_limit = 1U;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_queued_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    events.runtime = runtime;
+    expect_int(state, "runtime_queued_submit",
+               cai_agent_runtime_submit(runtime, "first queued turn", &error),
+               CAI_OK);
+    expect_int(
+        state, "runtime_queued_enqueue",
+        cai_agent_runtime_submit_queued(runtime, "second queued turn", &error),
+        CAI_OK);
+    expect_int(state, "runtime_queued_steering",
+               cai_agent_runtime_submit_steering(
+                   runtime, "interleaved steering", &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 100 && (run_state != CAI_AGENT_COMPLETED ||
+                            events.completed_count < 2);
+         i++) {
+      expect_int(state, "runtime_queued_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "runtime_queued_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_queued_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_int(state, "runtime_queued_completed_count", events.completed_count,
+               2L);
+    expect_int(state, "runtime_queued_completed_submit_attempts",
+               events.completed_submit_attempts, 1L);
+    expect_int(state, "runtime_queued_completed_submit_rejected",
+               events.completed_submit_result, CAI_ERR_INVALID);
+    expect_int(state, "runtime_queued_event", events.saw_turn_queued, 1L);
+    expect_int(state, "runtime_queued_started_active",
+               events.run_started_inactive_state, 0L);
+    expect_int(state, "runtime_queued_steering_event",
+               events.saw_steering_queued, 1L);
+    expect_int(state, "runtime_queued_journal_events",
+               (long)store_state.appended_events, 7L);
+    expect_str(state, "runtime_queued_journal_v2",
+               store_state.replay_event_types[0], "input_journal_v2");
+    expect_str(state, "runtime_queued_journal_submitted",
+               store_state.replay_event_types[1], "turn_submitted");
+    expect_str(state, "runtime_queued_journal_last",
+               store_state.replay_event_type, "input_consumed");
+    expect_int(state, "runtime_queued_journal_watermark",
+               (long)store_state.saved_applied_event_sequence, 7L);
+    expect_int(state, "runtime_queued_steering_checkpoint_durable",
+               store_state.saw_steering_checkpoint_before_watermark, 0L);
+    expect_substr(state, "runtime_queued_checkpoint_first",
+                  store_state.saved_checkpoint, "first queued turn");
+    expect_substr(state, "runtime_queued_checkpoint_second",
+                  store_state.saved_checkpoint, "second queued turn");
+    expect_substr(state, "runtime_queued_checkpoint_steering",
+                  store_state.saved_checkpoint, "interleaved steering");
+    cai_agent_runtime_close(runtime);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+  rmdir(workspace);
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "runtime_queued_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "runtime_queued_mock", "mock child failed");
+  }
+}
+
+static void test_agent_runtime_semantic_events_common(test_state *state,
+                                                      int poll_only) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  char workspace[] = "/tmp/cai-runtime-semantic-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  struct pollfd poll_fd;
+  runtime_event_state events;
+  cai_error error;
+  int i;
+  struct timespec poll_only_delay;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "runtime_semantic_workspace", "mkdtemp failed");
+    return;
+  }
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "runtime_semantic_mock", "pipe failed");
+    rmdir(workspace);
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "runtime_semantic_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    rmdir(workspace);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], poll_only ? 3 : 2);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "runtime_semantic_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    rmdir(workspace);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  client = NULL;
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  poll_only_delay.tv_sec = 0;
+  poll_only_delay.tv_nsec = 10000000L;
+  expect_int(state, "runtime_semantic_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = workspace;
+  runtime_config.model = CAI_MODEL_GPT_5_NANO;
+  runtime_config.disable_default_session_store = 1;
+  runtime_config.event_queue_limit = poll_only ? 1U : 0U;
+  if (!poll_only) {
+    runtime_config.event_callback = test_runtime_event;
+    runtime_config.event_context = &events;
+  }
+  expect_int(state, "runtime_semantic_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    if (!poll_only) {
+      poll_fd.fd = -1;
+      poll_fd.events = POLLIN;
+      poll_fd.revents = 0;
+      expect_int(state, "runtime_semantic_wakeup_fd",
+                 cai_agent_runtime_wakeup_fd(runtime, &poll_fd.fd, &error),
+                 CAI_OK);
+    }
+    expect_int(state, "runtime_semantic_submit",
+               cai_agent_runtime_submit(runtime, "stream list error tool turn",
+                                        &error),
+               CAI_OK);
+    if (poll_only) {
+      expect_int(state, "runtime_poll_only_queue",
+                 cai_agent_runtime_submit_queued(
+                     runtime, "poll-only queued turn", &error),
+                 CAI_OK);
+    }
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0;
+         i < 100 && run_state != CAI_AGENT_COMPLETED &&
+         run_state != CAI_AGENT_FAILED && run_state != CAI_AGENT_CANCELLED;
+         i++) {
+      if (poll_only) {
+        (void)nanosleep(&poll_only_delay, NULL);
+      } else {
+        (void)poll(&poll_fd, 1U, 100);
+        expect_int(state, "runtime_semantic_pump",
+                   cai_agent_runtime_pump(runtime, 0L, &error), CAI_OK);
+      }
+      expect_int(state, "runtime_semantic_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_semantic_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    if (poll_only) {
+      expect_int(state, "runtime_poll_only_no_event_callback",
+                 (long)events.calls, 0L);
+    } else {
+      expect_int(state, "runtime_semantic_response_completed",
+                 events.response_completed_count, 2L);
+      expect_str(state, "runtime_semantic_failure", events.failure_message, "");
+      expect_int(state, "runtime_semantic_list_seen", events.saw_list_tool, 1L);
+      expect_int(state, "runtime_semantic_action", events.tool_action,
+                 CAI_AGENT_TOOL_ACTION_LIST);
+      expect_str(state, "runtime_semantic_path", events.tool_path, "/tmp");
+      expect_int(state, "runtime_semantic_owner_thread", events.wrong_thread,
+                 0L);
+    }
+    cai_agent_runtime_close(runtime);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+  rmdir(workspace);
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "runtime_semantic_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "runtime_semantic_mock", "mock child failed");
+  }
+}
+
+static void test_agent_runtime_semantic_events(test_state *state) {
+  test_agent_runtime_semantic_events_common(state, 0);
+}
+
+static void test_agent_runtime_poll_only(test_state *state) {
+  test_agent_runtime_semantic_events_common(state, 1);
+}
+
+static void test_agent_runtime_host_goal_controls(test_state *state) {
+  static const char *const objectives[] = {
+      "polling objective alpha", "polling objective beta",
+      "polling objective gamma", "polling objective delta"};
+  char workspace[] = "/tmp/cai-runtime-host-goal-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_runtime_config config;
+  cai_agent_goal_request request;
+  cai_agent_goal_snapshot goal;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_error error;
+  struct timespec delay;
+  int i;
+  int j;
+  long long elapsed_before_pause_failure;
+  size_t objective_index;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "runtime_host_goal_workspace", "mkdtemp failed");
+    return;
+  }
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.timeout_ms = 1L;
+  expect_int(state, "runtime_host_goal_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = workspace;
+  config.model = CAI_MODEL_GPT_5_NANO;
+  config.disable_default_session_store = 1;
+  expect_int(state, "runtime_host_goal_open",
+             cai_agent_runtime_open(client, &config, &runtime, &error), CAI_OK);
+  delay.tv_sec = 0;
+  delay.tv_nsec = 10000000L;
+  if (runtime != NULL) {
+    cai_agent_goal_request_init(&request);
+    request.objective = "exercise host goal controls";
+    request.has_token_budget = 1;
+    request.token_budget = 20LL;
+    expect_int(state, "runtime_host_goal_create",
+               cai_agent_runtime_create_goal(runtime, &request, &error),
+               CAI_OK);
+    memset(&goal, 0, sizeof(goal));
+    for (i = 0; i < 20 && !goal.has_goal; i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "runtime_host_goal_get",
+                 cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_host_goal_active", goal.has_goal, 1L);
+    expect_str(state, "runtime_host_goal_status", goal.status, "active");
+    expect_int(state, "runtime_host_goal_remaining", goal.remaining_tokens,
+               20L);
+    cai_agent_runtime_test_set_fail_goal_status_replace(1);
+    expect_int(state, "runtime_host_goal_pause_status_alloc_failure",
+               cai_agent_runtime_pause_goal(runtime, &error), CAI_OK);
+    for (i = 0; i < 20; i++) {
+      (void)nanosleep(&delay, NULL);
+    }
+    expect_int(state, "runtime_host_goal_pause_failure_retarget",
+               cai_agent_runtime_set_goal_objective(
+                   runtime, "active after rejected pause", &error),
+               CAI_OK);
+    for (i = 0;
+         i < 20 && (goal.objective == NULL ||
+                    strcmp(goal.objective, "active after rejected pause") != 0);
+         i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "runtime_host_goal_pause_failure_get",
+                 cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    }
+    cai_agent_runtime_test_set_fail_goal_status_replace(0);
+    expect_str(state, "runtime_host_goal_pause_failure_status", goal.status,
+               "active");
+    elapsed_before_pause_failure = goal.elapsed_seconds;
+    sleep(1U);
+    expect_int(state, "runtime_host_goal_pause_failure_elapsed_get",
+               cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    if (goal.elapsed_seconds <= elapsed_before_pause_failure) {
+      test_fail(state, "runtime_host_goal_pause_failure_elapsed",
+                "rejected pause stopped active goal timing");
+    }
+    request.objective = "must not replace active host goal";
+    expect_int(state, "runtime_host_goal_duplicate_active",
+               cai_agent_runtime_create_goal(runtime, &request, &error),
+               CAI_ERR_INVALID);
+    expect_substr(state, "runtime_host_goal_duplicate_active_error",
+                  error.message, "unfinished or pending goal");
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "runtime_host_goal_duplicate_active_snapshot",
+               cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    expect_str(state, "runtime_host_goal_duplicate_active_objective",
+               goal.objective, "active after rejected pause");
+    for (objective_index = 0U;
+         objective_index < sizeof(objectives) / sizeof(objectives[0]);
+         objective_index++) {
+      expect_int(state, "runtime_host_goal_polling_retarget",
+                 cai_agent_runtime_set_goal_objective(
+                     runtime, objectives[objective_index], &error),
+                 CAI_OK);
+      for (i = 0;
+           i < 20 && (goal.objective == NULL ||
+                      strcmp(goal.objective, objectives[objective_index]) != 0);
+           i++) {
+        (void)nanosleep(&delay, NULL);
+        expect_int(state, "runtime_host_goal_polling_get",
+                   cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+      }
+      expect_str(state, "runtime_host_goal_polling_objective", goal.objective,
+                 objectives[objective_index]);
+      for (j = 0; j < 64; j++) {
+        expect_int(state, "runtime_host_goal_polling_stable_get",
+                   cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+        expect_int(state, "runtime_host_goal_polling_has_goal", goal.has_goal,
+                   1L);
+        expect_str(state, "runtime_host_goal_polling_stable_objective",
+                   goal.objective, objectives[objective_index]);
+        expect_str(state, "runtime_host_goal_polling_stable_status",
+                   goal.status, "active");
+      }
+    }
+    expect_int(state, "runtime_host_goal_pause",
+               cai_agent_runtime_pause_goal(runtime, &error), CAI_OK);
+    for (i = 0;
+         i < 20 && (goal.status == NULL || strcmp(goal.status, "paused") != 0);
+         i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "runtime_host_goal_paused_get",
+                 cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    }
+    expect_str(state, "runtime_host_goal_paused", goal.status, "paused");
+    request.objective = "must not replace paused host goal";
+    expect_int(state, "runtime_host_goal_duplicate_paused",
+               cai_agent_runtime_create_goal(runtime, &request, &error),
+               CAI_ERR_INVALID);
+    expect_substr(state, "runtime_host_goal_duplicate_paused_error",
+                  error.message, "unfinished or pending goal");
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "runtime_host_goal_resume",
+               cai_agent_runtime_resume_goal(runtime, &error), CAI_OK);
+    expect_int(
+        state, "runtime_host_goal_retarget",
+        cai_agent_runtime_set_goal_objective(runtime, "retargeted", &error),
+        CAI_OK);
+    expect_int(state, "runtime_host_goal_unbounded",
+               cai_agent_runtime_clear_goal_token_budget(runtime, &error),
+               CAI_OK);
+    for (i = 0; i < 20; i++)
+      (void)nanosleep(&delay, NULL);
+    expect_int(state, "runtime_host_goal_final_get",
+               cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    expect_str(state, "runtime_host_goal_resumed", goal.status, "active");
+    expect_str(state, "runtime_host_goal_objective", goal.objective,
+               "retargeted");
+    expect_int(state, "runtime_host_goal_budget_removed", goal.has_token_budget,
+               0L);
+    expect_int(state, "runtime_host_goal_clear",
+               cai_agent_runtime_clear_goal(runtime, &error), CAI_OK);
+    for (i = 0; i < 20 && goal.has_goal; i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "runtime_host_goal_clear_get",
+                 cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_host_goal_cleared", goal.has_goal, 0L);
+    cai_agent_runtime_close(runtime);
+  }
+  if (client != NULL)
+    cai_client_close(client);
+  cai_error_cleanup(&error);
+  rmdir(workspace);
+}
+
+static void test_agent_runtime_goal_checkpoint_watermark(test_state *state) {
+  char workspace[] = "/tmp/cai-runtime-goal-watermark-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_runtime_config config;
+  cai_agent_goal_request request;
+  cai_agent_runtime *runtime;
+  cai_agent_session_store store;
+  runtime_goal_checkpoint_race_state race;
+  cai_client *client;
+  cai_error error;
+  struct timespec delay;
+  int waiting;
+  int i;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "runtime_goal_watermark_workspace", "mkdtemp failed");
+    return;
+  }
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  memset(&race, 0, sizeof(race));
+  memset(&store, 0, sizeof(store));
+  if (pthread_mutex_init(&race.lock, NULL) != 0 ||
+      pthread_cond_init(&race.condition, NULL) != 0) {
+    test_fail(state, "runtime_goal_watermark_lock", "pthread init failed");
+    rmdir(workspace);
+    cai_error_cleanup(&error);
+    return;
+  }
+  store.checkpoint = test_runtime_goal_race_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &race;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.timeout_ms = 100L;
+  client_config.http_2_disabled = 1;
+  expect_int(state, "runtime_goal_watermark_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = workspace;
+  config.model = CAI_MODEL_GPT_5_NANO;
+  config.session_store = &store;
+  config.disable_default_session_store = 1;
+  expect_int(state, "runtime_goal_watermark_open",
+             cai_agent_runtime_open(client, &config, &runtime, &error), CAI_OK);
+  if (runtime != NULL) {
+    pthread_mutex_lock(&race.lock);
+    race.block_checkpoint = 1;
+    pthread_mutex_unlock(&race.lock);
+    expect_int(
+        state, "runtime_goal_watermark_submit",
+        cai_agent_runtime_submit(runtime, "checkpoint race turn", &error),
+        CAI_OK);
+    delay.tv_sec = 0;
+    delay.tv_nsec = 10000000L;
+    waiting = 0;
+    for (i = 0; i < 100 && !waiting; i++) {
+      pthread_mutex_lock(&race.lock);
+      waiting = race.checkpoint_waiting;
+      pthread_mutex_unlock(&race.lock);
+      if (!waiting) {
+        (void)nanosleep(&delay, NULL);
+      }
+    }
+    expect_int(state, "runtime_goal_watermark_checkpoint_waiting", waiting, 1L);
+    cai_agent_goal_request_init(&request);
+    request.objective = "must survive checkpoint race";
+    expect_int(state, "runtime_goal_watermark_create",
+               cai_agent_runtime_create_goal(runtime, &request, &error),
+               CAI_OK);
+    expect_int(state, "runtime_goal_watermark_goal_event_sequence",
+               (long)race.store.replay_event_sequence, 4L);
+    pthread_mutex_lock(&race.lock);
+    race.checkpoint_released = 1;
+    pthread_cond_broadcast(&race.condition);
+    pthread_mutex_unlock(&race.lock);
+    expect_int(state, "runtime_goal_watermark_snapshot_sequence",
+               (long)race.blocked_applied_event_sequence, 3L);
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  pthread_cond_destroy(&race.condition);
+  pthread_mutex_destroy(&race.lock);
+  cai_error_cleanup(&error);
+  rmdir(workspace);
+}
+
+static void
+test_agent_runtime_goal_create_status_allocation_failure(test_state *state) {
+  char workspace[] = "/tmp/cai-runtime-goal-create-status-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_runtime_config config;
+  cai_agent_goal_request request;
+  cai_agent_goal_snapshot goal;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_error error;
+  struct timespec delay;
+  int i;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "runtime_goal_create_status_workspace", "mkdtemp failed");
+    return;
+  }
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  memset(&goal, 0, sizeof(goal));
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json = "{\"version\":1,\"model\":\"gpt-5-nano\","
+                                "\"goal_objective\":\"completed objective\","
+                                "\"goal_status\":\"complete\",\"history\":[]}";
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.timeout_ms = 1L;
+  expect_int(state, "runtime_goal_create_status_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = workspace;
+  config.model = CAI_MODEL_GPT_5_NANO;
+  config.session_store = &store;
+  config.resume_latest = 1;
+  expect_int(state, "runtime_goal_create_status_open",
+             cai_agent_runtime_open(client, &config, &runtime, &error), CAI_OK);
+  delay.tv_sec = 0;
+  delay.tv_nsec = 10000000L;
+  if (runtime != NULL) {
+    expect_int(state, "runtime_goal_create_status_initial_get",
+               cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    expect_str(state, "runtime_goal_create_status_initial_status", goal.status,
+               "complete");
+    expect_str(state, "runtime_goal_create_status_initial_objective",
+               goal.objective, "completed objective");
+    cai_agent_goal_request_init(&request);
+    request.objective = "replacement objective";
+    cai_agent_runtime_test_set_fail_goal_status_replace(1);
+    expect_int(state, "runtime_goal_create_status_enqueue",
+               cai_agent_runtime_create_goal(runtime, &request, &error),
+               CAI_OK);
+    for (i = 0;
+         i < 20 && cai_agent_runtime_test_goal_status_replace_failures() == 0U;
+         i++) {
+      (void)nanosleep(&delay, NULL);
+    }
+    expect_int(state, "runtime_goal_create_status_failure_seen",
+               (long)cai_agent_runtime_test_goal_status_replace_failures(), 1L);
+    cai_agent_runtime_test_set_fail_goal_status_replace(0);
+    expect_int(state, "runtime_goal_create_status_refresh_enqueue",
+               cai_agent_runtime_clear_goal_token_budget(runtime, &error),
+               CAI_OK);
+    for (i = 0; i < 20 && goal.updated_at == 0LL; i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "runtime_goal_create_status_refresh_get",
+                 cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    }
+    expect_str(state, "runtime_goal_create_status_after_status", goal.status,
+               "complete");
+    expect_str(state, "runtime_goal_create_status_after_objective",
+               goal.objective, "completed objective");
+    cai_agent_runtime_close(runtime);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+  rmdir(workspace);
+}
+
+static void test_agent_runtime_goal_budget(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  char workspace[] = "/tmp/cai-runtime-goal-budget-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  runtime_event_state events;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  cai_agent_goal_snapshot goal;
+  struct pollfd poll_fd;
+  cai_error error;
+  int i;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "runtime_goal_budget_workspace", "mkdtemp failed");
+    return;
+  }
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "runtime_goal_budget_mock", "pipe failed");
+    rmdir(workspace);
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "runtime_goal_budget_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    rmdir(workspace);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "runtime_goal_budget_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    rmdir(workspace);
+    return;
+  }
+
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  memset(&goal, 0, sizeof(goal));
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json =
+      "{\"version\":1,\"model\":\"gpt-5-nano\","
+      "\"goal_objective\":\"bounded test goal\","
+      "\"goal_status\":\"active\",\"goal_token_budget\":1,"
+      "\"goal_token_usage_baseline\":0,\"goal_tokens_used\":0,"
+      "\"history\":[]}";
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  expect_int(state, "runtime_goal_budget_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = workspace;
+  runtime_config.model = CAI_MODEL_GPT_5_NANO;
+  runtime_config.session_store = &store;
+  runtime_config.resume_latest = 1;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_goal_budget_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    poll_fd.fd = -1;
+    poll_fd.events = POLLIN;
+    poll_fd.revents = 0;
+    expect_int(state, "runtime_goal_budget_wakeup_fd",
+               cai_agent_runtime_wakeup_fd(runtime, &poll_fd.fd, &error),
+               CAI_OK);
+    expect_int(
+        state, "runtime_goal_budget_submit",
+        cai_agent_runtime_submit(runtime, "goal budget no-tool turn", &error),
+        CAI_OK);
+    expect_int(state, "runtime_goal_budget_queue_normal",
+               cai_agent_runtime_submit_queued(
+                   runtime, "queued after goal budget exhaustion", &error),
+               CAI_OK);
+    expect_int(state, "runtime_goal_budget_steering",
+               cai_agent_runtime_submit_steering(
+                   runtime, "queued at budget boundary", &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 100 && events.failed_count == 0; i++) {
+      (void)poll(&poll_fd, 1U, 100);
+      expect_int(state, "runtime_goal_budget_pump",
+                 cai_agent_runtime_pump(runtime, 0L, &error), CAI_OK);
+      expect_int(state, "runtime_goal_budget_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_goal_budget_rejected_state", run_state,
+               CAI_AGENT_FAILED);
+    expect_str(
+        state, "runtime_goal_budget_rejection", events.failure_message,
+        "queued user turn rejected because the goal token budget is exhausted");
+    expect_substr(state, "runtime_goal_budget_status",
+                  store_state.saved_checkpoint,
+                  "\"goal_status\":\"budget_limited\"");
+    expect_substr(state, "runtime_goal_budget_usage",
+                  store_state.saved_checkpoint, "\"goal_tokens_used\":3");
+    expect_substr(state, "runtime_goal_budget_steering_checkpoint",
+                  store_state.saved_checkpoint, "queued at budget boundary");
+    expect_int(state, "runtime_goal_budget_rejected_checkpoint_watermark",
+               (long)store_state.saved_applied_event_sequence, 7L);
+    expect_int(state, "runtime_goal_budget_published_snapshot",
+               cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    expect_int(state, "runtime_goal_budget_published_snapshot_exists",
+               goal.has_goal, 1L);
+    expect_str(state, "runtime_goal_budget_published_snapshot_status",
+               goal.status, "budget_limited");
+    expect_int(
+        state, "runtime_goal_budget_reject_resubmit",
+        cai_agent_runtime_submit(runtime, "try after budget limit", &error),
+        CAI_ERR_LIMIT);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    cai_agent_runtime_close(runtime);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+  rmdir(workspace);
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "runtime_goal_budget_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "runtime_goal_budget_mock", "mock child failed");
+  }
+}
+
+static void test_agent_runtime_goal_usage_limit(test_state *state) {
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  char workspace[] = "/tmp/cai-runtime-goal-usage-limit-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  runtime_event_state events;
+  cai_usage_limits limits;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  cai_agent_goal_snapshot goal;
+  struct pollfd poll_fd;
+  cai_error error;
+  int i;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "runtime_goal_usage_limit_workspace", "mkdtemp failed");
+    return;
+  }
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "runtime_goal_usage_limit_mock", "pipe failed");
+    rmdir(workspace);
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "runtime_goal_usage_limit_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    rmdir(workspace);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "runtime_goal_usage_limit_mock",
+              "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    rmdir(workspace);
+    return;
+  }
+
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  memset(&goal, 0, sizeof(goal));
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json = "{\"version\":1,\"model\":\"gpt-5-nano\","
+                                "\"goal_objective\":\"capped test goal\","
+                                "\"goal_status\":\"active\",\"history\":[]}";
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  cai_usage_limits_init(&client_config.usage_limits);
+  client_config.usage_limits.max_total_tokens = 1LL;
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  expect_int(state, "runtime_goal_usage_limit_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = workspace;
+  runtime_config.model = CAI_MODEL_GPT_5_NANO;
+  runtime_config.session_store = &store;
+  runtime_config.resume_latest = 1;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_goal_usage_limit_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    poll_fd.fd = -1;
+    poll_fd.events = POLLIN;
+    poll_fd.revents = 0;
+    expect_int(state, "runtime_goal_usage_limit_wakeup_fd",
+               cai_agent_runtime_wakeup_fd(runtime, &poll_fd.fd, &error),
+               CAI_OK);
+    expect_int(
+        state, "runtime_goal_usage_limit_submit",
+        cai_agent_runtime_submit(runtime, "usage-limited goal turn", &error),
+        CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 100 && events.failed_count == 0; i++) {
+      (void)poll(&poll_fd, 1U, 100);
+      expect_int(state, "runtime_goal_usage_limit_pump",
+                 cai_agent_runtime_pump(runtime, 0L, &error), CAI_OK);
+      expect_int(state, "runtime_goal_usage_limit_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_goal_usage_limit_failed_state", run_state,
+               CAI_AGENT_FAILED);
+    expect_str(state, "runtime_goal_usage_limit_failure",
+               events.failure_message,
+               "configured usage or spend limit exceeded");
+    expect_substr(state, "runtime_goal_usage_limit_checkpoint",
+                  store_state.saved_checkpoint,
+                  "\"goal_status\":\"usage_limited\"");
+    expect_int(state, "runtime_goal_usage_limit_snapshot",
+               cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+    expect_str(state, "runtime_goal_usage_limit_snapshot_status", goal.status,
+               "usage_limited");
+
+    cai_usage_limits_init(&limits);
+    limits.max_total_tokens = 100LL;
+    expect_int(state, "runtime_goal_usage_limit_raise",
+               cai_client_set_usage_limits(client, &limits, &error), CAI_OK);
+    expect_int(state, "runtime_goal_usage_limit_resume",
+               cai_agent_runtime_resume_goal(runtime, &error), CAI_OK);
+    for (i = 0; i < 100; i++) {
+      (void)poll(&poll_fd, 1U, 100);
+      expect_int(state, "runtime_goal_usage_limit_resume_pump",
+                 cai_agent_runtime_pump(runtime, 0L, &error), CAI_OK);
+      expect_int(state, "runtime_goal_usage_limit_resume_snapshot",
+                 cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
+      if (goal.status != NULL && strcmp(goal.status, "active") == 0) {
+        break;
+      }
+    }
+    expect_str(state, "runtime_goal_usage_limit_resumed_status", goal.status,
+               "active");
+    cai_agent_runtime_close(runtime);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+  rmdir(workspace);
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "runtime_goal_usage_limit_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "runtime_goal_usage_limit_mock", "mock child failed");
+  }
+}
+
+static void test_agent_local_session_store(test_state *state) {
+  char template_directory[] = "/tmp/cai-session-store-XXXXXX";
+  char session_id[CAI_AGENT_SESSION_ID_MAX];
+  char buffer[128];
+  char scope_path[PATH_MAX];
+  char file_path[PATH_MAX];
+  char opaque_scope_path[PATH_MAX];
+  char opaque_alpha_path[PATH_MAX];
+  char opaque_omega_path[PATH_MAX];
+  char event_scope_path[PATH_MAX];
+  char event_file_path[PATH_MAX];
+  char multiline_event_file_path[PATH_MAX];
+  char newer_event_file_path[PATH_MAX];
+  char incomplete_file_path[PATH_MAX];
+  char invalid_session_file_path[PATH_MAX];
+  char linked_event_path[PATH_MAX];
+  char external_event_path[PATH_MAX];
+  char *linked_contents;
+  cai_agent_local_session_store_config config;
+  cai_agent_session_store store;
+  cai_source_callbacks callbacks;
+  cai_source *source;
+  cai_source *loaded;
+  read_state reader;
+  cai_agent_session_event event;
+  session_event_capture_state event_capture;
+  cai_error error;
+  unsigned char digest[SHA256_DIGEST_LENGTH];
+  static const char hex[] = "0123456789abcdef";
+  FILE *fp;
+  size_t i;
+  unsigned long long loaded_sequence;
+
+  cai_error_init(&error);
+  source = NULL;
+  loaded = NULL;
+  loaded_sequence = 0U;
+  linked_contents = NULL;
+  memset(&event_capture, 0, sizeof(event_capture));
+  memset(&store, 0, sizeof(store));
+  if (mkdtemp(template_directory) == NULL) {
+    test_fail(state, "local_session_store_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_local_session_store_config_init(&config);
+  config.root_directory = template_directory;
+  expect_int(state, "local_session_store_open",
+             cai_agent_local_session_store_open(&config, &store, &error),
+             CAI_OK);
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.read = test_read;
+  callbacks.reset = test_reset;
+  callbacks.close = test_read_close;
+  callbacks.context = &reader;
+  reader.text = "{\"version\":1}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_first_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_first_checkpoint",
+               store.checkpoint(store.context, "/tmp/cai-session-store-scope",
+                                "session_one", source, 0U, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  source = NULL;
+  reader.text = "{\"version\":2}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_second_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_second_checkpoint",
+               store.checkpoint(store.context, "/tmp/cai-session-store-scope",
+                                "session_one", source, 7U, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  source = NULL;
+  (void)SHA256((const unsigned char *)"/tmp/cai-session-store-scope",
+               strlen("/tmp/cai-session-store-scope"), digest);
+  for (i = 0U; i < sizeof(digest); i++) {
+    scope_path[i * 2U] = hex[digest[i] >> 4U];
+    scope_path[i * 2U + 1U] = hex[digest[i] & 0x0fU];
+  }
+  scope_path[64] = '\0';
+  (void)snprintf(file_path, sizeof(file_path), "%s/%s/session_one.jsonl",
+                 template_directory, scope_path);
+  fp = fopen(file_path, "ab");
+  if (fp == NULL || fwrite("{\"partial\"", 1U, strlen("{\"partial\""), fp) !=
+                        strlen("{\"partial\"")) {
+    test_fail(state, "local_session_store_partial_write",
+              "failed to append interrupted checkpoint");
+  }
+  if (fp != NULL) {
+    fclose(fp);
+  }
+  reader.text = "{\n  \"version\": 3,\n  \"nested\": {\"ok\": true}\n}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_repair_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_repair_checkpoint",
+               store.checkpoint(store.context, "/tmp/cai-session-store-scope",
+                                "session_one", source, 7U, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  source = NULL;
+  event.sequence = 8U;
+  event.type = "steering_queued";
+  event.data = "resume this steering input";
+  expect_int(state, "local_session_store_append_event",
+             store.append_event(store.context, "/tmp/cai-session-store-scope",
+                                "session_one", &event, &error),
+             CAI_OK);
+  (void)snprintf(external_event_path, sizeof(external_event_path), "%s/%s",
+                 template_directory, "external-event-source");
+  (void)snprintf(linked_event_path, sizeof(linked_event_path), "%s/%s/%s",
+                 template_directory, scope_path, "linked-event.jsonl");
+  write_file_or_die(external_event_path, "external event source\n");
+  if (link(external_event_path, linked_event_path) != 0) {
+    test_fail(state, "local_session_store_event_hardlink",
+              "failed to create linked event log");
+  } else {
+    event.sequence = 9U;
+    event.type = "steering_queued";
+    event.data = "must not write linked log";
+    expect_int(state, "local_session_store_event_hardlink_rejected",
+               store.append_event(store.context, "/tmp/cai-session-store-scope",
+                                  "linked-event", &event, &error),
+               CAI_ERR_TRANSPORT);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    linked_contents = read_file_or_die(external_event_path);
+    expect_str(state, "local_session_store_event_hardlink_preserved",
+               linked_contents, "external event source\n");
+    free(linked_contents);
+    linked_contents = NULL;
+  }
+  (void)snprintf(invalid_session_file_path, sizeof(invalid_session_file_path),
+                 "%s/%s/%s", template_directory, scope_path, "bad!.jsonl");
+  fp = fopen(invalid_session_file_path, "wb");
+  if (fp == NULL ||
+      fwrite("{\"record_type\":\"checkpoint\","
+             "\"applied_event_sequence\":0,\"state\":{\"bad\":true}}\n",
+             1U,
+             strlen("{\"record_type\":\"checkpoint\","
+                    "\"applied_event_sequence\":0,\"state\":{\"bad\":true}}\n"),
+             fp) !=
+          strlen("{\"record_type\":\"checkpoint\","
+                 "\"applied_event_sequence\":0,\"state\":{\"bad\":true}}\n")) {
+    test_fail(state, "local_session_store_invalid_id_write",
+              "failed to create invalid session journal");
+  }
+  if (fp != NULL) {
+    fclose(fp);
+    if (chmod(invalid_session_file_path, 0600) != 0) {
+      test_fail(state, "local_session_store_invalid_id_mode",
+                "failed to restrict invalid session journal");
+    }
+  }
+  memset(session_id, 0, sizeof(session_id));
+  expect_int(state, "local_session_store_load",
+             store.load_latest(store.context, "/tmp/cai-session-store-scope",
+                               session_id, sizeof(session_id), &loaded,
+                               &loaded_sequence, &error),
+             CAI_OK);
+  expect_str(state, "local_session_store_id", session_id, "session_one");
+  expect_int(state, "local_session_store_watermark", (long)loaded_sequence, 7L);
+  if (loaded == NULL) {
+    test_fail(state, "local_session_store_load", "latest checkpoint missing");
+  } else {
+    memset(buffer, 0, sizeof(buffer));
+    expect_int(
+        state, "local_session_store_read",
+        (long)cai_source_read(loaded, buffer, sizeof(buffer) - 1U, &error),
+        (long)strlen("{\n  \"version\": 3,\n  \"nested\": {\"ok\": true}\n}"));
+    expect_str(state, "local_session_store_latest_value", buffer,
+               "{\n  \"version\": 3,\n  \"nested\": {\"ok\": true}\n}");
+    expect_int(state, "local_session_store_reset",
+               cai_source_reset(loaded, &error), CAI_OK);
+  }
+  expect_int(state, "local_session_store_replay_events",
+             store.load_events_after(
+                 store.context, "/tmp/cai-session-store-scope", "session_one",
+                 loaded_sequence, test_session_event_capture, &event_capture,
+                 &error),
+             CAI_OK);
+  expect_int(state, "local_session_store_replay_count", event_capture.count,
+             1L);
+  expect_int(state, "local_session_store_replay_sequence",
+             (long)event_capture.sequence, 8L);
+  expect_str(state, "local_session_store_replay_type", event_capture.type,
+             "steering_queued");
+  expect_str(state, "local_session_store_replay_data", event_capture.data,
+             "resume this steering input");
+  cai_source_close(loaded);
+  loaded = NULL;
+  reader.text = "{\n"
+                "  \"entries\": [\n"
+                "{\"record_type\":\"event\",\"sequence\":999,"
+                "\"type\":\"embedded\",\"data\":\"not a journal record\"}\n"
+                "  ]\n"
+                "}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_multiline_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_multiline_checkpoint",
+               store.checkpoint(store.context, "/tmp/cai-session-store-scope",
+                                "multiline-events", source, 8U, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  source = NULL;
+  event.sequence = 9U;
+  event.type = "turn_queued";
+  event.data = "actual journal event";
+  expect_int(state, "local_session_store_multiline_append_event",
+             store.append_event(store.context, "/tmp/cai-session-store-scope",
+                                "multiline-events", &event, &error),
+             CAI_OK);
+  memset(&event_capture, 0, sizeof(event_capture));
+  expect_int(state, "local_session_store_multiline_replay",
+             store.load_events_after(
+                 store.context, "/tmp/cai-session-store-scope",
+                 "multiline-events", 8U, test_session_event_capture,
+                 &event_capture, &error),
+             CAI_OK);
+  expect_int(state, "local_session_store_multiline_replay_count",
+             event_capture.count, 1L);
+  expect_int(state, "local_session_store_multiline_replay_sequence",
+             (long)event_capture.sequence, 9L);
+  expect_str(state, "local_session_store_multiline_replay_type",
+             event_capture.type, "turn_queued");
+  (void)snprintf(multiline_event_file_path, sizeof(multiline_event_file_path),
+                 "%s/%s/%s", template_directory, scope_path,
+                 "multiline-events.jsonl");
+  fp = fopen(file_path, "ab");
+  if (fp == NULL ||
+      fwrite("{\"record_type\":\"event\",\"sequence\":8,"
+             "\"type\":\"steering_queued\",\"data\":\"duplicate\"}\n",
+             1U,
+             strlen("{\"record_type\":\"event\",\"sequence\":8,"
+                    "\"type\":\"steering_queued\",\"data\":\"duplicate\"}\n"),
+             fp) !=
+          strlen("{\"record_type\":\"event\",\"sequence\":8,"
+                 "\"type\":\"steering_queued\",\"data\":\"duplicate\"}\n")) {
+    test_fail(state, "local_session_store_duplicate_event_write",
+              "failed to append duplicate event record");
+  }
+  if (fp != NULL) {
+    fclose(fp);
+  }
+  memset(&event_capture, 0, sizeof(event_capture));
+  expect_int(state, "local_session_store_duplicate_event_rejected",
+             store.load_events_after(
+                 store.context, "/tmp/cai-session-store-scope", "session_one",
+                 loaded_sequence, test_session_event_capture, &event_capture,
+                 &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "local_session_store_duplicate_event_first_replayed",
+             event_capture.count, 1L);
+  expect_substr(state, "local_session_store_duplicate_event_error",
+                error.message, "strictly increasing");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  reader.text = "{\"checkpoint\":\"older\"}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_recency_older_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_recency_older_checkpoint",
+               store.checkpoint(store.context, "checkpoint-recency",
+                                "older-checkpoint", source, 0U, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  source = NULL;
+  {
+    struct timespec pause_time;
+
+    pause_time.tv_sec = 0;
+    pause_time.tv_nsec = 10000000L;
+    (void)nanosleep(&pause_time, NULL);
+  }
+  reader.text = "{\"checkpoint\":\"newer\"}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_recency_newer_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_recency_newer_checkpoint",
+               store.checkpoint(store.context, "checkpoint-recency",
+                                "newer-checkpoint", source, 0U, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  source = NULL;
+  event.sequence = 1U;
+  event.type = "turn_queued";
+  event.data = "later journal event";
+  expect_int(state, "local_session_store_recency_later_event",
+             store.append_event(store.context, "checkpoint-recency",
+                                "older-checkpoint", &event, &error),
+             CAI_OK);
+  memset(session_id, 0, sizeof(session_id));
+  expect_int(state, "local_session_store_recency_load",
+             store.load_latest(store.context, "checkpoint-recency", session_id,
+                               sizeof(session_id), &loaded, &loaded_sequence,
+                               &error),
+             CAI_OK);
+  expect_str(state, "local_session_store_recency_id", session_id,
+             "newer-checkpoint");
+  if (loaded == NULL) {
+    test_fail(state, "local_session_store_recency_load",
+              "newest checkpoint missing");
+  } else {
+    memset(buffer, 0, sizeof(buffer));
+    expect_int(
+        state, "local_session_store_recency_read",
+        (long)cai_source_read(loaded, buffer, sizeof(buffer) - 1U, &error),
+        (long)strlen("{\"checkpoint\":\"newer\"}"));
+    expect_str(state, "local_session_store_recency_value", buffer,
+               "{\"checkpoint\":\"newer\"}");
+  }
+  cai_source_close(loaded);
+  loaded = NULL;
+  reader.text = "{\"version\":4}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_opaque_alpha_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_opaque_alpha_checkpoint",
+               store.checkpoint(store.context, "team-alpha", "a-tied-session",
+                                source, 0U, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  source = NULL;
+  reader.text = "{\"version\":5}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_opaque_omega_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_opaque_omega_checkpoint",
+               store.checkpoint(store.context, "team-alpha", "z-tied-session",
+                                source, 0U, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  source = NULL;
+  (void)SHA256((const unsigned char *)"team-alpha", strlen("team-alpha"),
+               digest);
+  for (i = 0U; i < sizeof(digest); i++) {
+    opaque_scope_path[i * 2U] = hex[digest[i] >> 4U];
+    opaque_scope_path[i * 2U + 1U] = hex[digest[i] & 0x0fU];
+  }
+  opaque_scope_path[64] = '\0';
+  (void)snprintf(opaque_alpha_path, sizeof(opaque_alpha_path), "%s/%s/%s",
+                 template_directory, opaque_scope_path, "a-tied-session.jsonl");
+  (void)snprintf(opaque_omega_path, sizeof(opaque_omega_path), "%s/%s/%s",
+                 template_directory, opaque_scope_path, "z-tied-session.jsonl");
+  {
+    struct timespec tied_times[2];
+
+    memset(tied_times, 0, sizeof(tied_times));
+    tied_times[0].tv_sec = 1700000000L;
+    tied_times[1].tv_sec = 1700000000L;
+    if (utimensat(AT_FDCWD, opaque_alpha_path, tied_times, 0) != 0 ||
+        utimensat(AT_FDCWD, opaque_omega_path, tied_times, 0) != 0) {
+      test_fail(state, "local_session_store_tied_mtime", "utimensat failed");
+    }
+  }
+  memset(session_id, 0, sizeof(session_id));
+  expect_int(state, "local_session_store_opaque_load",
+             store.load_latest(store.context, "team-alpha", session_id,
+                               sizeof(session_id), &loaded, &loaded_sequence,
+                               &error),
+             CAI_OK);
+  expect_str(state, "local_session_store_opaque_id", session_id,
+             "z-tied-session");
+  expect_int(state, "local_session_store_opaque_source", loaded != NULL, 1L);
+  cai_source_close(loaded);
+  loaded = NULL;
+  {
+    struct timespec pause_time;
+
+    pause_time.tv_sec = 0;
+    pause_time.tv_nsec = 10000000L;
+    (void)nanosleep(&pause_time, NULL);
+  }
+  event.sequence = 1U;
+  event.type = "steering_queued";
+  event.data = "event in a newer journal";
+  expect_int(state, "local_session_store_newer_event_only_append",
+             store.append_event(store.context, "/tmp/cai-session-store-scope",
+                                "events_only", &event, &error),
+             CAI_OK);
+  (void)snprintf(newer_event_file_path, sizeof(newer_event_file_path),
+                 "%s/%s/%s", template_directory, scope_path,
+                 "events_only.jsonl");
+  (void)snprintf(incomplete_file_path, sizeof(incomplete_file_path), "%s/%s/%s",
+                 template_directory, scope_path, "incomplete.jsonl");
+  fp = fopen(incomplete_file_path, "wb");
+  if (fp == NULL || fwrite("{\"partial\"", 1U, strlen("{\"partial\""), fp) !=
+                        strlen("{\"partial\"")) {
+    test_fail(state, "local_session_store_orphan_partial_write",
+              "failed to create incomplete journal");
+  }
+  if (fp != NULL) {
+    fclose(fp);
+  }
+  memset(session_id, 0, sizeof(session_id));
+  expect_int(state, "local_session_store_skip_incomplete_journal",
+             store.load_latest(store.context, "/tmp/cai-session-store-scope",
+                               session_id, sizeof(session_id), &loaded,
+                               &loaded_sequence, &error),
+             CAI_OK);
+  expect_str(state, "local_session_store_skip_incomplete_journal_id",
+             session_id, "multiline-events");
+  expect_int(state, "local_session_store_skip_incomplete_journal_source",
+             loaded != NULL, 1L);
+  cai_source_close(loaded);
+  loaded = NULL;
+  event.sequence = 1U;
+  event.type = "steering_queued";
+  event.data = "event before first checkpoint";
+  expect_int(state, "local_session_store_event_only_append",
+             store.append_event(store.context, "/tmp/cai-session-event-only",
+                                "events_only", &event, &error),
+             CAI_OK);
+  (void)SHA256((const unsigned char *)"/tmp/cai-session-event-only",
+               strlen("/tmp/cai-session-event-only"), digest);
+  for (i = 0U; i < sizeof(digest); i++) {
+    event_scope_path[i * 2U] = hex[digest[i] >> 4U];
+    event_scope_path[i * 2U + 1U] = hex[digest[i] & 0x0fU];
+  }
+  event_scope_path[64] = '\0';
+  (void)snprintf(event_file_path, sizeof(event_file_path), "%s/%s/%s",
+                 template_directory, event_scope_path, "events_only.jsonl");
+  memset(session_id, 0, sizeof(session_id));
+  expect_int(state, "local_session_store_event_only_load",
+             store.load_latest(store.context, "/tmp/cai-session-event-only",
+                               session_id, sizeof(session_id), &loaded,
+                               &loaded_sequence, &error),
+             CAI_OK);
+  expect_int(state, "local_session_store_event_only_no_checkpoint",
+             loaded == NULL, 1L);
+  expect_str(state, "local_session_store_event_only_no_session", session_id,
+             "");
+  fp = fopen(file_path, "ab");
+  if (fp == NULL ||
+      fwrite(
+          "{\"record_type\":\"checkpoint\","
+          "\"applied_event_sequence\":9,\"state\":{\"version\":6}}\n",
+          1U,
+          strlen("{\"record_type\":\"checkpoint\","
+                 "\"applied_event_sequence\":9,\"state\":{\"version\":6}}\n"),
+          fp) !=
+          strlen("{\"record_type\":\"checkpoint\","
+                 "\"applied_event_sequence\":9,\"state\":{\"version\":6}}\n")) {
+    test_fail(state, "local_session_store_legacy_checkpoint_write",
+              "failed to append legacy checkpoint");
+  }
+  if (fp != NULL) {
+    fclose(fp);
+  }
+  memset(session_id, 0, sizeof(session_id));
+  expect_int(state, "local_session_store_legacy_checkpoint_load",
+             store.load_latest(store.context, "/tmp/cai-session-store-scope",
+                               session_id, sizeof(session_id), &loaded,
+                               &loaded_sequence, &error),
+             CAI_OK);
+  expect_str(state, "local_session_store_legacy_checkpoint_id", session_id,
+             "session_one");
+  expect_int(state, "local_session_store_legacy_checkpoint_watermark",
+             (long)loaded_sequence, 9L);
+  if (loaded == NULL) {
+    test_fail(state, "local_session_store_legacy_checkpoint_load",
+              "legacy checkpoint missing");
+  } else {
+    memset(buffer, 0, sizeof(buffer));
+    expect_int(
+        state, "local_session_store_legacy_checkpoint_read",
+        (long)cai_source_read(loaded, buffer, sizeof(buffer) - 1U, &error),
+        (long)strlen("{\"version\":6}"));
+    expect_str(state, "local_session_store_legacy_checkpoint_value", buffer,
+               "{\"version\":6}");
+  }
+  cai_source_close(loaded);
+  loaded = NULL;
+  fp = fopen(file_path, "ab");
+  if (fp == NULL ||
+      fwrite("{\"record_type\":\"checkpoint\","
+             "\"applied_event_sequence\":18446744073709551616,"
+             "\"state\":{}}\n",
+             1U,
+             strlen("{\"record_type\":\"checkpoint\","
+                    "\"applied_event_sequence\":18446744073709551616,"
+                    "\"state\":{}}\n"),
+             fp) != strlen("{\"record_type\":\"checkpoint\","
+                           "\"applied_event_sequence\":18446744073709551616,"
+                           "\"state\":{}}\n")) {
+    test_fail(state, "local_session_store_overflow_write",
+              "failed to append overflowing checkpoint");
+  }
+  if (fp != NULL) {
+    fclose(fp);
+  }
+  memset(session_id, 0, sizeof(session_id));
+  expect_int(state, "local_session_store_overflow_rejected",
+             store.load_latest(store.context, "/tmp/cai-session-store-scope",
+                               session_id, sizeof(session_id), &loaded,
+                               &loaded_sequence, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_source_close(loaded);
+  cai_agent_local_session_store_close(&store);
+  unlink(file_path);
+  unlink(opaque_alpha_path);
+  unlink(opaque_omega_path);
+  unlink(newer_event_file_path);
+  unlink(incomplete_file_path);
+  unlink(invalid_session_file_path);
+  unlink(linked_event_path);
+  unlink(external_event_path);
+  unlink(event_file_path);
+  unlink(multiline_event_file_path);
+  (void)snprintf(event_file_path, sizeof(event_file_path), "%s/%s",
+                 template_directory, event_scope_path);
+  rmdir(event_file_path);
+  (void)snprintf(file_path, sizeof(file_path), "%s/%s", template_directory,
+                 scope_path);
+  rmdir(file_path);
+  (void)snprintf(file_path, sizeof(file_path), "%s/%s", template_directory,
+                 opaque_scope_path);
+  rmdir(file_path);
+  rmdir(template_directory);
+  cai_error_cleanup(&error);
+}
+
+static void
+test_agent_runtime_explicit_local_store_opaque_id(test_state *state) {
+  char template_directory[] = "/tmp/cai-explicit-session-store-XXXXXX";
+  char scope_hash[65];
+  char scope_path[PATH_MAX];
+  char journal_path[PATH_MAX];
+  static const char hex[] = "0123456789abcdef";
+  static const char scope[] = "explicit-local-opaque-id";
+  unsigned char digest[SHA256_DIGEST_LENGTH];
+  cai_agent_local_session_store_config store_config;
+  cai_agent_session_store store;
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_source *loaded;
+  char loaded_session_id[CAI_AGENT_SESSION_ID_MAX];
+  unsigned long long loaded_sequence;
+  cai_error error;
+  size_t i;
+
+  cai_error_init(&error);
+  memset(&store, 0, sizeof(store));
+  client = NULL;
+  runtime = NULL;
+  loaded = NULL;
+  loaded_sequence = 0U;
+  if (mkdtemp(template_directory) == NULL) {
+    test_fail(state, "runtime_explicit_local_opaque_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_local_session_store_config_init(&store_config);
+  store_config.root_directory = template_directory;
+  expect_int(state, "runtime_explicit_local_opaque_store_open",
+             cai_agent_local_session_store_open(&store_config, &store, &error),
+             CAI_OK);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.timeout_ms = 100L;
+  client_config.http_2_disabled = 1;
+  expect_int(state, "runtime_explicit_local_opaque_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.session_store = &store;
+  runtime_config.session_scope = scope;
+  runtime_config.session_id = "release.1";
+  expect_int(state, "runtime_explicit_local_opaque_runtime_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_str(state, "runtime_explicit_local_opaque_runtime_id",
+               cai_agent_runtime_session_id(runtime), "release.1");
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  runtime_config.session_id = NULL;
+  runtime_config.resume_latest = 1;
+  expect_int(state, "runtime_explicit_local_opaque_resume_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_str(state, "runtime_explicit_local_opaque_resumed_id",
+               cai_agent_runtime_session_id(runtime), "release.1");
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  memset(loaded_session_id, 0, sizeof(loaded_session_id));
+  expect_int(state, "runtime_explicit_local_opaque_load",
+             store.load_latest(store.context, scope, loaded_session_id,
+                               sizeof(loaded_session_id), &loaded,
+                               &loaded_sequence, &error),
+             CAI_OK);
+  expect_str(state, "runtime_explicit_local_opaque_loaded_id",
+             loaded_session_id, "release.1");
+  expect_int(state, "runtime_explicit_local_opaque_loaded_source",
+             loaded != NULL, 1L);
+  cai_source_close(loaded);
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_agent_local_session_store_close(&store);
+  (void)SHA256((const unsigned char *)scope, strlen(scope), digest);
+  for (i = 0U; i < sizeof(digest); i++) {
+    scope_hash[i * 2U] = hex[digest[i] >> 4U];
+    scope_hash[i * 2U + 1U] = hex[digest[i] & 0x0fU];
+  }
+  scope_hash[64] = '\0';
+  (void)snprintf(scope_path, sizeof(scope_path), "%s/%s", template_directory,
+                 scope_hash);
+  (void)snprintf(journal_path, sizeof(journal_path), "%s/%s", scope_path,
+                 "~cmVsZWFzZS4x.jsonl");
+  unlink(journal_path);
+  rmdir(scope_path);
+  rmdir(template_directory);
+  cai_error_cleanup(&error);
+}
+
+static void
+test_agent_local_session_store_scope_parent_sync(test_state *state) {
+  char root_directory[] = "/tmp/cai-session-store-sync-XXXXXX";
+  char scope_path[PATH_MAX];
+  char journal_path[PATH_MAX];
+  char hash[65];
+  unsigned char digest[SHA256_DIGEST_LENGTH];
+  static const char hex[] = "0123456789abcdef";
+  cai_agent_local_session_store_config config;
+  cai_agent_session_store store;
+  cai_source_callbacks callbacks;
+  cai_source *source;
+  read_state reader;
+  cai_error error;
+  size_t i;
+
+  cai_error_init(&error);
+  source = NULL;
+  memset(&store, 0, sizeof(store));
+  if (mkdtemp(root_directory) == NULL) {
+    test_fail(state, "local_session_store_sync_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  (void)SHA256((const unsigned char *)"scope-parent-sync",
+               strlen("scope-parent-sync"), digest);
+  for (i = 0U; i < sizeof(digest); i++) {
+    hash[i * 2U] = hex[digest[i] >> 4U];
+    hash[i * 2U + 1U] = hex[digest[i] & 0x0fU];
+  }
+  hash[64] = '\0';
+  (void)snprintf(scope_path, sizeof(scope_path), "%s/%s", root_directory, hash);
+  (void)snprintf(journal_path, sizeof(journal_path), "%s/session.jsonl",
+                 scope_path);
+  cai_agent_local_session_store_config_init(&config);
+  config.root_directory = root_directory;
+  expect_int(state, "local_session_store_sync_open",
+             cai_agent_local_session_store_open(&config, &store, &error),
+             CAI_OK);
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.read = test_read;
+  callbacks.reset = test_reset;
+  callbacks.close = test_read_close;
+  callbacks.context = &reader;
+  reader.text = "{\"version\":1}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_sync_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  cai_session_store_test_set_fail_scope_parent_sync(1);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_sync_failure",
+               store.checkpoint(store.context, "scope-parent-sync", "session",
+                                source, 0U, &error),
+               CAI_ERR_TRANSPORT);
+  }
+  cai_session_store_test_set_fail_scope_parent_sync(0);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_sync_recovery",
+               store.checkpoint(store.context, "scope-parent-sync", "session",
+                                source, 0U, &error),
+               CAI_OK);
+  }
+  cai_source_close(source);
+  cai_agent_local_session_store_close(&store);
+  unlink(journal_path);
+  rmdir(scope_path);
+  rmdir(root_directory);
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_local_session_store_root_parent_sync(test_state *state) {
+  char root_directory[] = "/tmp/cai-session-store-root-sync-XXXXXX";
+  cai_agent_local_session_store_config config;
+  cai_agent_session_store store;
+  cai_error error;
+
+  cai_error_init(&error);
+  memset(&store, 0, sizeof(store));
+  if (mkdtemp(root_directory) == NULL) {
+    test_fail(state, "local_session_store_root_sync_tmpdir", "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  if (rmdir(root_directory) != 0) {
+    test_fail(state, "local_session_store_root_sync_remove", "rmdir failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_local_session_store_config_init(&config);
+  config.root_directory = root_directory;
+  cai_session_store_test_set_fail_scope_parent_sync(1);
+  expect_int(state, "local_session_store_root_sync_failure",
+             cai_agent_local_session_store_open(&config, &store, &error),
+             CAI_ERR_TRANSPORT);
+  cai_session_store_test_set_fail_scope_parent_sync(0);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_agent_local_session_store_close(&store);
+  if (rmdir(root_directory) != 0) {
+    test_fail(state, "local_session_store_root_sync_cleanup", "rmdir failed");
+  }
+  cai_error_cleanup(&error);
+}
+
+static void
+test_agent_local_session_store_rejects_long_default_path(test_state *state) {
+  char long_state[PATH_MAX];
+  char *saved_xdg_state;
+  cai_agent_session_store store;
+  cai_error error;
+
+  cai_error_init(&error);
+  memset(&store, 0, sizeof(store));
+  saved_xdg_state = getenv("XDG_STATE_HOME") != NULL
+                        ? cai_strdup(NULL, getenv("XDG_STATE_HOME"))
+                        : NULL;
+  long_state[0] = '/';
+  memset(long_state + 1U, 'a', sizeof(long_state) - 2U);
+  long_state[sizeof(long_state) - 1U] = '\0';
+  if (setenv("XDG_STATE_HOME", long_state, 1) != 0) {
+    test_fail(state, "local_session_store_long_default_path_setenv",
+              "failed to set oversized XDG_STATE_HOME");
+  } else {
+    expect_int(state, "local_session_store_long_default_path_rejected",
+               cai_agent_local_session_store_open(NULL, &store, &error),
+               CAI_ERR_INVALID);
+    cai_agent_local_session_store_close(&store);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+  }
+  if (saved_xdg_state != NULL) {
+    (void)setenv("XDG_STATE_HOME", saved_xdg_state, 1);
+  } else {
+    (void)unsetenv("XDG_STATE_HOME");
+  }
+  cai_free_mem(NULL, saved_xdg_state);
+  cai_error_cleanup(&error);
+}
+
+static void
+test_agent_local_session_store_rejects_file_root(test_state *state) {
+  char root_file[] = "/tmp/cai-session-store-file-root-XXXXXX";
+  cai_agent_local_session_store_config config;
+  cai_agent_session_store store;
+  cai_error error;
+  int fd;
+
+  cai_error_init(&error);
+  memset(&store, 0, sizeof(store));
+  fd = mkstemp(root_file);
+  if (fd < 0) {
+    test_fail(state, "local_session_store_file_root_setup", "mkstemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  close(fd);
+  cai_agent_local_session_store_config_init(&config);
+  config.root_directory = root_file;
+  expect_int(state, "local_session_store_file_root_rejected",
+             cai_agent_local_session_store_open(&config, &store, &error),
+             CAI_ERR_TRANSPORT);
+  cai_agent_local_session_store_close(&store);
+  unlink(root_file);
+  cai_error_cleanup(&error);
+}
+
+static void
+test_agent_local_session_store_rejects_insecure_root(test_state *state) {
+  char root_directory[] = "/tmp/cai-insecure-session-store-XXXXXX";
+  cai_agent_local_session_store_config config;
+  cai_agent_session_store store;
+  cai_error error;
+
+  cai_error_init(&error);
+  memset(&store, 0, sizeof(store));
+  if (mkdtemp(root_directory) == NULL) {
+    test_fail(state, "local_session_store_insecure_root_tmpdir",
+              "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  if (chmod(root_directory, 0755) != 0) {
+    test_fail(state, "local_session_store_insecure_root_chmod",
+              "failed to relax root permissions");
+    rmdir(root_directory);
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_local_session_store_config_init(&config);
+  config.root_directory = root_directory;
+  expect_int(state, "local_session_store_insecure_root_rejected",
+             cai_agent_local_session_store_open(&config, &store, &error),
+             CAI_ERR_TRANSPORT);
+  cai_agent_local_session_store_close(&store);
+  if (chmod(root_directory, 0700) != 0) {
+    test_fail(state, "local_session_store_insecure_root_restore",
+              "failed to restore root permissions");
+  }
+  rmdir(root_directory);
+  cai_error_cleanup(&error);
+}
+
+static void
+test_agent_local_session_store_rejects_unsafe_scope(test_state *state) {
+  char root_directory[] = "/tmp/cai-unsafe-session-store-XXXXXX";
+  char scope_path[PATH_MAX];
+  char hash[65];
+  unsigned char digest[SHA256_DIGEST_LENGTH];
+  static const char hex[] = "0123456789abcdef";
+  cai_agent_local_session_store_config config;
+  cai_agent_session_store store;
+  cai_source_callbacks callbacks;
+  cai_source *source;
+  read_state reader;
+  cai_error error;
+  size_t i;
+
+  cai_error_init(&error);
+  source = NULL;
+  memset(&store, 0, sizeof(store));
+  if (mkdtemp(root_directory) == NULL) {
+    test_fail(state, "local_session_store_unsafe_scope_tmpdir",
+              "mkdtemp failed");
+    cai_error_cleanup(&error);
+    return;
+  }
+  (void)SHA256((const unsigned char *)"unsafe-scope", strlen("unsafe-scope"),
+               digest);
+  for (i = 0U; i < sizeof(digest); i++) {
+    hash[i * 2U] = hex[digest[i] >> 4U];
+    hash[i * 2U + 1U] = hex[digest[i] & 0x0fU];
+  }
+  hash[64] = '\0';
+  (void)snprintf(scope_path, sizeof(scope_path), "%s/%s", root_directory, hash);
+  if (mkdir(scope_path, 0700) != 0 || chmod(scope_path, 0755) != 0) {
+    test_fail(state, "local_session_store_unsafe_scope_create",
+              "failed to create unsafe scoped directory");
+    rmdir(scope_path);
+    rmdir(root_directory);
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_local_session_store_config_init(&config);
+  config.root_directory = root_directory;
+  expect_int(state, "local_session_store_unsafe_scope_open",
+             cai_agent_local_session_store_open(&config, &store, &error),
+             CAI_OK);
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.read = test_read;
+  callbacks.reset = test_reset;
+  callbacks.close = test_read_close;
+  callbacks.context = &reader;
+  reader.text = "{}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "local_session_store_unsafe_scope_source",
+             cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
+  if (source != NULL) {
+    expect_int(state, "local_session_store_unsafe_scope_rejected",
+               store.checkpoint(store.context, "unsafe-scope", "session_one",
+                                source, 0U, &error),
+               CAI_ERR_TRANSPORT);
+  }
+  cai_source_close(source);
+  cai_agent_local_session_store_close(&store);
+  rmdir(scope_path);
+  rmdir(root_directory);
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_runtime_resume(test_state *state) {
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_agent_runtime *review;
+  cai_agent_review_request review_request;
+  cai_agent_run_state run_state;
+  runtime_event_state events;
+  cai_error error;
+  int i;
+
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  review = NULL;
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  store_state.checkpoint_json =
+      "{\"version\":1,\"model\":\"custom-resumed-model\","
+      "\"previous_response_id\":\"resp_saved\",\"history\":[]}";
+  store_state.load_applied_event_sequence = 8U;
+  store_state.replay_event_count = 4U;
+  store_state.replay_event_sequences[0] = 8U;
+  (void)snprintf(store_state.replay_event_types[0],
+                 sizeof(store_state.replay_event_types[0]), "%s",
+                 "input_journal_v2");
+  store_state.replay_event_sequences[1] = 9U;
+  (void)snprintf(store_state.replay_event_types[1],
+                 sizeof(store_state.replay_event_types[0]), "%s",
+                 "turn_submitted");
+  (void)snprintf(store_state.replay_event_data_items[1],
+                 sizeof(store_state.replay_event_data_items[1]), "%s",
+                 "resume queued normal turn");
+  store_state.replay_event_sequences[2] = 10U;
+  (void)snprintf(store_state.replay_event_types[2],
+                 sizeof(store_state.replay_event_types[2]), "%s",
+                 "steering_queued");
+  (void)snprintf(store_state.replay_event_data_items[2],
+                 sizeof(store_state.replay_event_data_items[2]), "%s",
+                 "resume priority steering");
+  store_state.replay_event_sequences[3] = 11U;
+  (void)snprintf(store_state.replay_event_types[3],
+                 sizeof(store_state.replay_event_types[3]), "%s",
+                 "input_consumed");
+  (void)snprintf(store_state.replay_event_data_items[3],
+                 sizeof(store_state.replay_event_data_items[3]), "%s", "9");
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.timeout_ms = 100L;
+  client_config.http_2_disabled = 1;
+  expect_int(state, "runtime_resume_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.model = "custom-resumed-model";
+  runtime_config.session_store = &store;
+  runtime_config.resume_latest = 1;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_resume_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  expect_int(state, "runtime_resume_load_count", store_state.loads, 1L);
+  expect_str(state, "runtime_resume_scope", store_state.scope, "/tmp");
+  if (runtime != NULL) {
+    expect_str(state, "runtime_resume_session_id",
+               cai_agent_runtime_session_id(runtime), "resumed_session");
+    run_state = CAI_AGENT_IDLE;
+    for (i = 0; i < 20 && events.failed_count < 2; i++) {
+      expect_int(state, "runtime_resume_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "runtime_resume_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_resume_replayed_failed", run_state,
+               CAI_AGENT_FAILED);
+    expect_int(state, "runtime_resume_replayed_event", events.saw_failed, 1L);
+    expect_int(state, "runtime_resume_replayed_failures", events.failed_count,
+               2L);
+    expect_int(state, "runtime_resume_replayed_checkpoint",
+               store_state.checkpoints > 0, 1L);
+    expect_int(state, "runtime_resume_replayed_watermark",
+               (long)store_state.saved_applied_event_sequence, 13L);
+    expect_substr(state, "runtime_resume_replayed_text",
+                  store_state.saved_checkpoint, "resume priority steering");
+    expect_substr(state, "runtime_resume_replayed_normal_after_ack",
+                  store_state.saved_checkpoint, "resume queued normal turn");
+    cai_agent_runtime_close(runtime);
+  }
+  /* A covered consumption marker means the checkpoint already contains the
+   * steering input. The earlier normal turn must still be reconstructed, but
+   * replay must not inject the steering text a second time. */
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  store_state.load_applied_event_sequence = 11U;
+  (void)snprintf(store_state.replay_event_data_items[3],
+                 sizeof(store_state.replay_event_data_items[3]), "%s", "10");
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_resume_covered_marker_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    run_state = CAI_AGENT_IDLE;
+    for (i = 0; i < 20 && events.failed_count == 0; i++) {
+      expect_int(state, "runtime_resume_covered_marker_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "runtime_resume_covered_marker_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_resume_covered_marker_failed", run_state,
+               CAI_AGENT_FAILED);
+    expect_int(state, "runtime_resume_covered_marker_failures",
+               events.failed_count, 1L);
+    expect_substr(state, "runtime_resume_covered_marker_normal_turn",
+                  store_state.saved_checkpoint, "resume queued normal turn");
+    if (strstr(store_state.saved_checkpoint, "resume priority steering") !=
+        NULL) {
+      test_fail(state, "runtime_resume_covered_marker_no_duplicate_steering",
+                "covered steering input was replayed into the checkpoint");
+    }
+    expect_int(state, "runtime_resume_covered_marker_watermark",
+               (long)store_state.saved_applied_event_sequence, 14L);
+    cai_agent_runtime_close(runtime);
+  }
+  /* A migrated v2 marker can acknowledge a legacy input. Once the legacy
+   * input is covered by the checkpoint it is intentionally absent on replay;
+   * reopening the upgraded session must ignore that marker instead of treating
+   * it as corrupt. */
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json =
+      "{\"version\":1,\"model\":\"custom-resumed-model\","
+      "\"previous_response_id\":\"resp_saved\",\"history\":[]}";
+  store_state.load_applied_event_sequence = 6U;
+  store_state.replay_event_count = 1U;
+  store_state.replay_event_sequences[0] = 7U;
+  (void)snprintf(store_state.replay_event_types[0],
+                 sizeof(store_state.replay_event_types[0]), "%s",
+                 "steering_queued");
+  (void)snprintf(store_state.replay_event_data_items[0],
+                 sizeof(store_state.replay_event_data_items[0]), "%s",
+                 "legacy steering before migration");
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_resume_legacy_migration_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    run_state = CAI_AGENT_IDLE;
+    for (i = 0; i < 20 && events.failed_count == 0; i++) {
+      expect_int(state, "runtime_resume_legacy_migration_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "runtime_resume_legacy_migration_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_resume_legacy_migration_failed", run_state,
+               CAI_AGENT_FAILED);
+    expect_int(state, "runtime_resume_legacy_migration_anchor",
+               (long)store_state.replay_event_sequences[1], 8L);
+    expect_str(state, "runtime_resume_legacy_migration_anchor_type",
+               store_state.replay_event_types[1], "input_journal_v2");
+    expect_int(state, "runtime_resume_legacy_migration_marker",
+               (long)store_state.replay_event_sequences[2], 9L);
+    expect_str(state, "runtime_resume_legacy_migration_marker_type",
+               store_state.replay_event_types[2], "input_consumed");
+    cai_agent_runtime_close(runtime);
+  }
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  store_state.load_applied_event_sequence = 9U;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_resume_legacy_reopen",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    cai_agent_runtime_close(runtime);
+  }
+  /* A synchronous child cannot survive a process restart. Its pending marker
+   * carries the parent tool-call ID so resume can durably close that tool round
+   * with a failed handover before the parent accepts more work. */
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json =
+      "{\"version\":1,\"model\":\"custom-resumed-model\","
+      "\"previous_response_id\":\"resp_saved\",\"history\":[]}";
+  store_state.load_applied_event_sequence = 2U;
+  store_state.replay_event_count = 2U;
+  store_state.replay_event_sequences[0] = 1U;
+  (void)snprintf(store_state.replay_event_types[0],
+                 sizeof(store_state.replay_event_types[0]), "%s",
+                 "input_journal_v2");
+  store_state.replay_event_sequences[1] = 2U;
+  (void)snprintf(store_state.replay_event_types[1],
+                 sizeof(store_state.replay_event_types[1]), "%s",
+                 "subagent_pending");
+  (void)snprintf(store_state.replay_event_data_items[1],
+                 sizeof(store_state.replay_event_data_items[1]), "%s",
+                 "worker\ncall_interrupted");
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_resume_subagent_recovery_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  expect_int(state, "runtime_resume_subagent_recovery_checkpoint",
+             store_state.checkpoints > 0, 1L);
+  expect_int(state, "runtime_resume_subagent_recovery_watermark",
+             (long)store_state.saved_applied_event_sequence, 3L);
+  expect_int(state, "runtime_resume_subagent_recovery_event_sequence",
+             (long)store_state.replay_event_sequences[2], 3L);
+  expect_str(state, "runtime_resume_subagent_recovery_event_type",
+             store_state.replay_event_types[2], "subagent_handoff_committed");
+  expect_substr(state, "runtime_resume_subagent_recovery_context",
+                store_state.saved_checkpoint,
+                "<subagent_handoff profile=\\\"worker\\\"");
+  expect_substr(state, "runtime_resume_subagent_recovery_tool_output",
+                store_state.saved_checkpoint,
+                "\"call_id\":\"call_interrupted\"");
+  expect_substr(state, "runtime_resume_subagent_recovery_failed_status",
+                store_state.saved_checkpoint, "\\\"status\\\":\\\"failed\\\"");
+  if (runtime != NULL) {
+    cai_agent_runtime_close(runtime);
+  }
+  /* A checkpointed review pause is recovered before replayed normal input can
+   * reach the worker.  Simulate the crash window after a parent accepted a
+   * queued follow-up and before its child was handed off. */
+  runtime = NULL;
+  review = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json =
+      "{\"version\":1,\"model\":\"custom-resumed-model\","
+      "\"previous_response_id\":\"resp_saved\",\"history\":[]}";
+  store_state.load_applied_event_sequence = 3U;
+  store_state.replay_event_count = 3U;
+  store_state.replay_event_sequences[0] = 1U;
+  (void)snprintf(store_state.replay_event_types[0],
+                 sizeof(store_state.replay_event_types[0]), "%s",
+                 "input_journal_v2");
+  store_state.replay_event_sequences[1] = 2U;
+  (void)snprintf(store_state.replay_event_types[1],
+                 sizeof(store_state.replay_event_types[1]), "%s",
+                 "review_pending");
+  (void)snprintf(store_state.replay_event_data_items[1],
+                 sizeof(store_state.replay_event_data_items[1]), "%s",
+                 "interrupted-review");
+  store_state.replay_event_sequences[2] = 3U;
+  (void)snprintf(store_state.replay_event_types[2],
+                 sizeof(store_state.replay_event_types[2]), "%s",
+                 "turn_queued");
+  (void)snprintf(store_state.replay_event_data_items[2],
+                 sizeof(store_state.replay_event_data_items[2]), "%s",
+                 "only after replacement review");
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_resume_review_pause_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0; i < 3; i++) {
+      expect_int(state, "runtime_resume_review_pause_pump",
+                 cai_agent_runtime_pump(runtime, 20L, &error), CAI_OK);
+      expect_int(state, "runtime_resume_review_pause_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_resume_review_pause_held", run_state,
+               CAI_AGENT_IDLE);
+    expect_int(state, "runtime_resume_review_pause_direct_rejected",
+               cai_agent_runtime_submit(runtime, "must stay paused", &error),
+               CAI_ERR_INVALID);
+    cai_agent_review_request_init(&review_request);
+    review_request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+    expect_int(state, "runtime_resume_review_pause_replacement_start",
+               cai_agent_runtime_start_review(runtime, &review_request, &review,
+                                              &error),
+               CAI_OK);
+    run_state = CAI_AGENT_SAMPLING;
+    for (i = 0;
+         review != NULL && i < 20 && run_state != CAI_AGENT_COMPLETED &&
+         run_state != CAI_AGENT_FAILED && run_state != CAI_AGENT_CANCELLED;
+         i++) {
+      expect_int(state, "runtime_resume_review_pause_review_pump",
+                 cai_agent_runtime_pump(review, 100L, &error), CAI_OK);
+      expect_int(state, "runtime_resume_review_pause_review_state",
+                 cai_agent_runtime_state(review, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_resume_review_pause_finish",
+               cai_agent_runtime_finish_review(runtime, review, &error),
+               CAI_OK);
+    run_state = CAI_AGENT_IDLE;
+    for (i = 0; i < 20 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      expect_int(state, "runtime_resume_review_pause_parent_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "runtime_resume_review_pause_parent_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_resume_review_pause_released", run_state,
+               CAI_AGENT_FAILED);
+    cai_agent_runtime_close(review);
+    cai_agent_runtime_close(runtime);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_runtime_markdown_export(test_state *state) {
+  char workspace[] = "/tmp/cai-runtime-export-XXXXXX";
+  char path[PATH_MAX];
+  char expected_path[PATH_MAX];
+  char failed_path[PATH_MAX];
+  char replaced_path[PATH_MAX];
+  char moved_path[PATH_MAX];
+  char replacement_source_path[PATH_MAX];
+  char file_text[65536];
+  char checkpoint_json[4096];
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  cai_sink_callbacks callbacks;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_sink *sink;
+  mcp_sink_state captured;
+  cai_error error;
+  FILE *fp;
+  size_t read_count;
+  struct rlimit original_limit;
+  struct rlimit limited_limit;
+  struct sigaction old_xfsz;
+  struct sigaction ignored_xfsz;
+  runtime_export_cleanup_replace_state replacement_state;
+  int size_limit_changed;
+  int signal_changed;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "runtime_export_workspace", "mkdtemp failed");
+    return;
+  }
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  sink = NULL;
+  fp = NULL;
+  size_limit_changed = 0;
+  signal_changed = 0;
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  memset(&captured, 0, sizeof(captured));
+  memset(&replacement_state, 0, sizeof(replacement_state));
+  (void)snprintf(checkpoint_json, sizeof(checkpoint_json), "%s%s%s%s",
+                 "{\"version\":1,\"model\":\"gpt-5-nano\","
+                 "\"goal_objective\":\"finish the handover\","
+                 "\"goal_status\":\"active\","
+                 "\"goal_token_budget\":20000000,\"goal_tokens_used\":42,"
+                 "\"history\":["
+                 "{\"type\":\"message\",\"content\":[{\"type\":\"input_text\","
+                 "\"text\":\"export user\\ntext\"}],\"role\":\"user\"},"
+                 "{\"type\":\"message\",\"role\":\"assistant\","
+                 "\"content\":[{\"type\":\"output_text\","
+                 "\"text\":\"export assistant\"}]},",
+                 "{\"type\":\"custom_tool_call\",\"input\":\"custom payload\","
+                 "\"name\":\"custom_lookup\"},",
+                 "{\"type\":\"function_call\",\"arguments\":"
+                 "\"{\\\"path\\\":\\\"README.md\\\"}\",\"name\":\"read_file\"},"
+                 "{\"type\":\"function_call_output\",\"call_id\":\"call_1\","
+                 "\"output\":\"file contents\"},",
+                 "{\"type\":\"function_call_output\",\"call_id\":\"call_2\","
+                 "\"output\":[{\"type\":\"input_text\","
+                 "\"text\":\"image analysis\"},{\"type\":\"input_text\","
+                 "\"text\":\"continued analysis\"},{\"type\":\"input_image\","
+                 "\"image_url\":\"data:image/png;base64,abc\"}]},"
+                 "{\"summary\":[{\"text\":\"reasoning summary\","
+                 "\"type\":\"summary_text\"}],\"type\":\"reasoning\"},"
+                 "{\"type\":\"message\",\"role\":\"user\",\"content\":[{"
+                 "\"type\":\"input_image\",\"image_url\":\"data:image/"
+                 "png;base64,abc\"}]}]}");
+  store_state.checkpoint_json = checkpoint_json;
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.http_2_disabled = 1;
+  expect_int(state, "runtime_export_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = workspace;
+  runtime_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  runtime_config.developer_instructions_extension =
+      "handover extension instructions";
+  runtime_config.session_store = &store;
+  runtime_config.resume_latest = 1;
+  expect_int(state, "runtime_export_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  callbacks.write = test_mcp_sink_write;
+  callbacks.close = test_mcp_sink_close;
+  callbacks.context = &captured;
+  if (runtime != NULL) {
+    expect_int(state, "runtime_export_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+    if (sink != NULL) {
+      expect_int(state, "runtime_export_stream",
+                 cai_agent_runtime_export_markdown(runtime, sink, &error),
+                 CAI_OK);
+      expect_int(state, "runtime_export_multiple_chunks",
+                 captured.write_count > 1, 1L);
+      expect_substr(state, "runtime_export_title", captured.buffer,
+                    "# CAI agent handover");
+      expect_substr(state, "runtime_export_format", captured.buffer,
+                    "cai-agent-handover/1");
+      expect_substr(state, "runtime_export_non_resumable", captured.buffer,
+                    "This is a non-resumable handover document");
+      expect_substr(state, "runtime_export_session_id", captured.buffer,
+                    "- Session ID:\n    resumed_session");
+      expect_substr(state, "runtime_export_workspace", captured.buffer,
+                    "- Workspace:\n    /tmp/cai-runtime-export-");
+      expect_substr(state, "runtime_export_active_model", captured.buffer,
+                    "- Active model:\n    gpt-5.6-luna");
+      expect_substr(state, "runtime_export_recorded_history_model",
+                    captured.buffer,
+                    "- Recorded history model:\n    gpt-5-nano");
+      expect_substr(state, "runtime_export_goal_status", captured.buffer,
+                    "- Status:\n    active");
+      expect_substr(state, "runtime_export_goal_budget", captured.buffer,
+                    "- Token budget:\n    20000000");
+      expect_substr(state, "runtime_export_goal_objective", captured.buffer,
+                    "### Objective\n\nfinish the handover");
+      expect_substr(state, "runtime_export_developer_instructions",
+                    captured.buffer, "handover extension instructions");
+      expect_substr(state, "runtime_export_limits", captured.buffer,
+                    "## Handover limits");
+      expect_substr(state, "runtime_export_user", captured.buffer,
+                    "## User\n\nexport user\ntext");
+      expect_substr(state, "runtime_export_assistant", captured.buffer,
+                    "## Assistant\n\nexport assistant");
+      expect_substr(state, "runtime_export_activity", captured.buffer,
+                    "### Tool call: read_file");
+      expect_substr(state, "runtime_export_custom_activity", captured.buffer,
+                    "### Tool call: custom_lookup\n\n    custom payload");
+      expect_substr(state, "runtime_export_arguments", captured.buffer,
+                    "    {\"path\":\"README.md\"}");
+      expect_substr(state, "runtime_export_output", captured.buffer,
+                    "### Tool output\n\n    file contents");
+      expect_substr(state, "runtime_export_output_attachment", captured.buffer,
+                    "    image analysis\n\n    continued analysis\n\n"
+                    "*[non-text attachment omitted]*");
+      expect_substr(state, "runtime_export_output_array_text", captured.buffer,
+                    "    image analysis");
+      expect_substr(state, "runtime_export_reasoning_summary", captured.buffer,
+                    "## Reasoning\n\nreasoning summary");
+      expect_substr(state, "runtime_export_attachment", captured.buffer,
+                    "*[non-text attachment omitted]*");
+      cai_sink_close(sink);
+      sink = NULL;
+    }
+    expect_int(state, "runtime_export_default_file",
+               cai_agent_runtime_export_markdown_file(
+                   runtime, "cai", NULL, path, sizeof(path), &error),
+               CAI_OK);
+    (void)snprintf(expected_path, sizeof(expected_path),
+                   "%s/cai-session-resumed_session.md", workspace);
+    expect_str(state, "runtime_export_default_file_path", path, expected_path);
+    fp = fopen(path, "rb");
+    if (fp == NULL) {
+      test_fail(state, "runtime_export_default_file_open", "fopen failed");
+    } else {
+      read_count = fread(file_text, 1U, sizeof(file_text) - 1U, fp);
+      file_text[read_count] = '\0';
+      fclose(fp);
+      fp = NULL;
+      expect_substr(state, "runtime_export_default_file_text", file_text,
+                    "export assistant");
+    }
+    expect_int(state, "runtime_export_no_overwrite",
+               cai_agent_runtime_export_markdown_file(
+                   runtime, "cai", NULL, path, sizeof(path), &error),
+               CAI_ERR_TRANSPORT);
+    (void)snprintf(failed_path, sizeof(failed_path), "%s/%s", workspace,
+                   "partial.md");
+    (void)snprintf(replaced_path, sizeof(replaced_path), "%s/%s", workspace,
+                   "partial-replaced.md");
+    (void)snprintf(moved_path, sizeof(moved_path), "%s/%s", workspace,
+                   "partial-moved.md");
+    (void)snprintf(replacement_source_path, sizeof(replacement_source_path),
+                   "%s/%s", workspace, "partial-replacement-source.md");
+    (void)unlink(failed_path);
+    (void)unlink(replaced_path);
+    (void)unlink(moved_path);
+    (void)unlink(replacement_source_path);
+    write_file_or_die(replacement_source_path, "concurrent replacement\n");
+    memset(&ignored_xfsz, 0, sizeof(ignored_xfsz));
+    ignored_xfsz.sa_handler = SIG_IGN;
+    sigemptyset(&ignored_xfsz.sa_mask);
+    if (getrlimit(RLIMIT_FSIZE, &original_limit) != 0 ||
+        sigaction(SIGXFSZ, &ignored_xfsz, &old_xfsz) != 0) {
+      test_fail(state, "runtime_export_partial_file_setup",
+                "failed to configure file-size failure");
+    } else {
+      signal_changed = 1;
+      limited_limit = original_limit;
+      limited_limit.rlim_cur = 1U;
+      if (setrlimit(RLIMIT_FSIZE, &limited_limit) != 0) {
+        test_fail(state, "runtime_export_partial_file_limit",
+                  "failed to limit export file size");
+      } else {
+        size_limit_changed = 1;
+        cai_error_cleanup(&error);
+        cai_error_init(&error);
+        expect_int(state, "runtime_export_partial_file_failure",
+                   cai_agent_runtime_export_markdown_file(
+                       runtime, "cai", failed_path, NULL, 0U, &error),
+                   CAI_ERR_TRANSPORT);
+        expect_int(state, "runtime_export_partial_file_removed",
+                   access(failed_path, F_OK) != 0, 1L);
+        replacement_state.moved_path = moved_path;
+        replacement_state.replacement_path = replacement_source_path;
+        cai_agent_runtime_test_set_export_cleanup_hook(
+            test_runtime_export_replace_before_cleanup, &replacement_state);
+        cai_error_cleanup(&error);
+        cai_error_init(&error);
+        expect_int(state, "runtime_export_replaced_file_failure",
+                   cai_agent_runtime_export_markdown_file(
+                       runtime, "cai", replaced_path, NULL, 0U, &error),
+                   CAI_ERR_TRANSPORT);
+        cai_agent_runtime_test_set_export_cleanup_hook(NULL, NULL);
+        expect_int(state, "runtime_export_replaced_file_hook",
+                   replacement_state.called && replacement_state.succeeded, 1L);
+        fp = fopen(replaced_path, "rb");
+        if (fp == NULL) {
+          test_fail(state, "runtime_export_replaced_file_survives",
+                    "replacement file was removed");
+        } else {
+          read_count = fread(file_text, 1U, sizeof(file_text) - 1U, fp);
+          file_text[read_count] = '\0';
+          fclose(fp);
+          fp = NULL;
+          expect_str(state, "runtime_export_replaced_file_contents", file_text,
+                     "concurrent replacement\n");
+        }
+      }
+    }
+    if (size_limit_changed) {
+      (void)setrlimit(RLIMIT_FSIZE, &original_limit);
+      size_limit_changed = 0;
+    }
+    if (signal_changed) {
+      (void)sigaction(SIGXFSZ, &old_xfsz, NULL);
+      signal_changed = 0;
+    }
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "runtime_export_invalid_app_name",
+               cai_agent_runtime_export_markdown_file(
+                   runtime, "../cai", NULL, path, sizeof(path), &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    unlink(path);
+    unlink(replaced_path);
+    unlink(moved_path);
+    unlink(replacement_source_path);
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+    (void)snprintf(store_state.loaded_session_id,
+                   sizeof(store_state.loaded_session_id), "%s",
+                   "unsafe/session");
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(
+        state, "runtime_export_unsafe_session_open",
+        cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+        CAI_OK);
+    if (runtime != NULL) {
+      expect_int(state, "runtime_export_unsafe_session_default_path",
+                 cai_agent_runtime_export_markdown_file(
+                     runtime, "cai", NULL, path, sizeof(path), &error),
+                 CAI_ERR_INVALID);
+      cai_agent_runtime_close(runtime);
+      runtime = NULL;
+    }
+  }
+  if (sink != NULL) {
+    cai_sink_close(sink);
+  }
+  if (fp != NULL) {
+    fclose(fp);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+  if (size_limit_changed) {
+    (void)setrlimit(RLIMIT_FSIZE, &original_limit);
+  }
+  if (signal_changed) {
+    (void)sigaction(SIGXFSZ, &old_xfsz, NULL);
+  }
+  cai_agent_runtime_test_set_export_cleanup_hook(NULL, NULL);
+  unlink(replaced_path);
+  unlink(moved_path);
+  unlink(replacement_source_path);
+  rmdir(workspace);
+}
+
+static void test_goal_tools(test_state *state) {
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_agent *resumed_agent;
+  cai_session *session;
+  cai_session *resumed_session;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  cai_source *state_source;
+  cai_source *resumed_state_source;
+  cai_source_callbacks source_callbacks;
+  lonejson_spooled file_data;
+  read_state state_reader;
+  raw_tool_state reserved_goal_tool;
+  write_state writer;
+  char state_json[2048];
+  size_t goal_registry_base;
+  cai_error error;
+
+  cai_error_init(&error);
+  client = NULL;
+  agent = NULL;
+  resumed_agent = NULL;
+  session = NULL;
+  resumed_session = NULL;
+  sink = NULL;
+  state_source = NULL;
+  resumed_state_source = NULL;
+  memset(&file_data, 0, sizeof(file_data));
+  memset(&reserved_goal_tool, 0, sizeof(reserved_goal_tool));
+  memset(&writer, 0, sizeof(writer));
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  agent_config.enable_local_history = 1;
+  expect_int(state, "goal_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "goal_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "goal_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  goal_registry_base = cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools);
+  expect_int(state, "goal_register_reserved_create",
+             cai_agent_register_raw_tool(
+                 agent, CAI_GOAL_CREATE_TOOL_NAME, "Reserved goal create", "{}",
+                 0, test_raw_tool, &reserved_goal_tool, &error),
+             CAI_OK);
+  expect_int(state, "goal_register_rolls_back_partial",
+             cai_agent_register_goal_tools(agent, session, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "goal_register_rollback_count",
+             (long)cai_tool_registry_count(CAI_AGENT_IMPL(agent)->tools),
+             (long)goal_registry_base + 1L);
+  cai_tool_registry_truncate(CAI_AGENT_IMPL(agent)->tools, goal_registry_base);
+  expect_int(state, "goal_register",
+             cai_agent_register_goal_tools(agent, session, &error), CAI_OK);
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  expect_int(state, "goal_sink",
+             cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "goal_create",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
+                 "{\"objective\":\" ship Smith \",\"token_budget\":1000}", sink,
+                 &error),
+             CAI_OK);
+  expect_substr(state, "goal_create_result", writer.buffer,
+                "\"objective\":\"ship Smith\"");
+  expect_substr(state, "goal_create_status", writer.buffer,
+                "\"status\":\"active\"");
+  expect_substr(state, "goal_create_remaining", writer.buffer,
+                "\"remaining_tokens\":1000");
+  expect_substr(state, "goal_create_elapsed", writer.buffer,
+                "\"elapsed_seconds\":");
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "goal_duplicate_create",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
+                 "{\"objective\":\"replace\"}", sink, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "goal_get",
+             CAI_AGENT_IMPL(agent)->tools->run(CAI_AGENT_IMPL(agent)->tools,
+                                               CAI_GOAL_GET_TOOL_NAME, "{}",
+                                               sink, &error),
+             CAI_OK);
+  expect_substr(state, "goal_get_status", writer.buffer,
+                "\"status\":\"active\"");
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "goal_complete",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                 "{\"status\":\"complete\"}", sink, &error),
+             CAI_OK);
+  expect_substr(state, "goal_complete_status", writer.buffer,
+                "\"status\":\"complete\"");
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "goal_complete_immutable",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                 "{\"status\":\"blocked\"}", sink, &error),
+             CAI_ERR_INVALID);
+  expect_str(state, "goal_complete_immutable_error", error.message,
+             "only an active goal may be updated");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "goal_blocked_create",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
+                 "{\"objective\":\"wait for external dependency\"}", sink,
+                 &error),
+             CAI_OK);
+  expect_int(state, "goal_blocked_first",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                 "{\"status\":\"blocked\"}", sink, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "goal_blocked_same_turn_rejected",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                 "{\"status\":\"blocked\"}", sink, &error),
+             CAI_ERR_INVALID);
+  expect_str(state, "goal_blocked_same_turn_error", error.message,
+             "blocked already assessed in this goal turn");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "goal_blocked_steering_not_turn",
+             cai_session_add_steering_text(
+                 session, "steering is not a normal turn", &error),
+             CAI_OK);
+  expect_int(state, "goal_blocked_steering_turn_unchanged",
+             CAI_SESSION_IMPL(session)->goal_turn_count, 0L);
+  expect_int(state, "goal_blocked_steering_attempts_unchanged",
+             CAI_SESSION_IMPL(session)->goal_blocked_attempts, 1L);
+  expect_int(state, "goal_blocked_image_turn_one",
+             cai_session_add_user_image_url(
+                 session, "https://example.invalid/external-blocker.png", NULL,
+                 &error),
+             CAI_OK);
+  expect_int(state, "goal_blocked_second",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                 "{\"status\":\"blocked\"}", sink, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  test_init_spooled_text(state, "goal_blocked_file_turn_data", &file_data,
+                         "the same external blocker remains\n");
+  expect_int(state, "goal_blocked_file_turn_two",
+             cai_session_add_user_file_data_spooled(
+                 session, "blocker.txt", &file_data, "text/plain", &error),
+             CAI_OK);
+  CAI_SESSION_IMPL(session)->goal_tokens_used = 19LL;
+  CAI_SESSION_IMPL(session)->goal_token_usage_baseline = 7LL;
+  expect_int(state, "goal_blocked_state_export",
+             cai_session_export_state_source(session, &state_source, &error),
+             CAI_OK);
+  if (read_source_text(state, "goal_blocked_state_read", state_source,
+                       state_json, sizeof(state_json), &error)) {
+    expect_substr(state, "goal_blocked_state_attempts", state_json,
+                  "\"goal_blocked_attempts\":2");
+    expect_substr(state, "goal_blocked_state_turn", state_json,
+                  "\"goal_turn_count\":2");
+    expect_substr(state, "goal_blocked_state_last_turn", state_json,
+                  "\"goal_blocked_last_turn\":1");
+    expect_substr(state, "goal_blocked_state_elapsed", state_json,
+                  "\"goal_elapsed_seconds\":");
+    memset(&source_callbacks, 0, sizeof(source_callbacks));
+    memset(&state_reader, 0, sizeof(state_reader));
+    state_reader.text = state_json;
+    source_callbacks.read = test_read;
+    source_callbacks.reset = test_reset;
+    source_callbacks.close = test_read_close;
+    source_callbacks.context = &state_reader;
+    expect_int(state, "goal_blocked_resume_source",
+               cai_source_from_callbacks(&source_callbacks,
+                                         &resumed_state_source, &error),
+               CAI_OK);
+    expect_int(
+        state, "goal_blocked_resume_agent",
+        cai_client_new_agent(client, &agent_config, &resumed_agent, &error),
+        CAI_OK);
+    if (resumed_agent != NULL) {
+      expect_int(state, "goal_blocked_resume_session",
+                 cai_agent_new_session(resumed_agent, &resumed_session, &error),
+                 CAI_OK);
+    }
+    if (resumed_session != NULL && resumed_state_source != NULL) {
+      expect_int(state, "goal_blocked_resume_import",
+                 cai_session_import_state_source(resumed_session,
+                                                 resumed_state_source, &error),
+                 CAI_OK);
+      expect_int(
+          state, "goal_blocked_resume_register",
+          cai_agent_register_goal_tools(resumed_agent, resumed_session, &error),
+          CAI_OK);
+      expect_int(state, "goal_blocked_resume_third",
+                 CAI_AGENT_IMPL(resumed_agent)
+                     ->tools->run(CAI_AGENT_IMPL(resumed_agent)->tools,
+                                  CAI_GOAL_UPDATE_TOOL_NAME,
+                                  "{\"status\":\"blocked\"}", sink, &error),
+                 CAI_OK);
+      expect_substr(state, "goal_blocked_resume_usage", writer.buffer,
+                    "\"tokens_used\":19");
+    }
+  }
+  cai_source_close(state_source);
+  state_source = NULL;
+  cai_source_close(resumed_state_source);
+  resumed_state_source = NULL;
+  expect_int(state, "goal_blocked_third",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                 "{\"status\":\"blocked\"}", sink, &error),
+             CAI_OK);
+  expect_int(state, "goal_blocked_immutable",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                 "{\"status\":\"complete\"}", sink, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "goal_create_after_blocked",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
+                 "{\"objective\":\"replacement after block\"}", sink, &error),
+             CAI_ERR_INVALID);
+  expect_substr(state, "goal_create_after_blocked_error", error.message,
+                "unfinished goal");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "goal_clear",
+             CAI_AGENT_IMPL(agent)->tools->run(CAI_AGENT_IMPL(agent)->tools,
+                                               CAI_GOAL_CLEAR_TOOL_NAME, "{}",
+                                               sink, &error),
+             CAI_OK);
+  if (strstr(writer.buffer, "\"status\"") != NULL) {
+    test_fail(state, "goal_clear_result", "cleared goal remains visible");
+  }
+  expect_substr(state, "goal_clear_confirmed", writer.buffer,
+                "\"cleared\":true");
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "goal_create_after_clear",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
+                 "{\"objective\":\"replacement after clear\"}", sink, &error),
+             CAI_OK);
+  expect_substr(state, "goal_create_after_clear_status", writer.buffer,
+                "\"status\":\"active\"");
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "goal_clear_after_recreate",
+             CAI_AGENT_IMPL(agent)->tools->run(CAI_AGENT_IMPL(agent)->tools,
+                                               CAI_GOAL_CLEAR_TOOL_NAME, "{}",
+                                               sink, &error),
+             CAI_OK);
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "goal_clear_idempotent",
+             CAI_AGENT_IMPL(agent)->tools->run(CAI_AGENT_IMPL(agent)->tools,
+                                               CAI_GOAL_CLEAR_TOOL_NAME, "{}",
+                                               sink, &error),
+             CAI_OK);
+  expect_substr(state, "goal_clear_idempotent_confirmed", writer.buffer,
+                "\"cleared\":true");
+  expect_int(state, "goal_state_export",
+             cai_session_export_state_source(session, &state_source, &error),
+             CAI_OK);
+  if (read_source_text(state, "goal_state_read", state_source, state_json,
+                       sizeof(state_json), &error)) {
+    if (strstr(state_json, "goal_objective") != NULL ||
+        strstr(state_json, "goal_status") != NULL) {
+      test_fail(state, "goal_state_cleared", "cleared goal was persisted");
+    }
+  }
+  cai_source_close(state_source);
+  cai_sink_close(sink);
+  cai_session_destroy(resumed_session);
+  cai_agent_destroy(resumed_agent);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+}
+
+static void test_goal_create_allocation_failure(test_state *state) {
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  fail_alloc_state allocation;
+  write_state writer;
+  cai_error error;
+  size_t offset;
+  int found;
+
+  memset(&allocation, 0, sizeof(allocation));
+  allocation.fail_after = (size_t)-1;
+  memset(&writer, 0, sizeof(writer));
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_agent_config_init(&agent_config);
+  client_config.api_key = "test-key";
+  client_config.allocator.context = &allocation;
+  client_config.allocator.malloc_fn = test_fail_allocator_malloc;
+  client_config.allocator.realloc_fn = test_fail_allocator_realloc;
+  client_config.allocator.free_fn = test_fail_allocator_free;
+  agent_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  client = NULL;
+  sink = NULL;
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  expect_int(state, "goal_alloc_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "goal_alloc_sink",
+             cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  found = 0;
+  for (offset = 0U; client != NULL && sink != NULL && offset < 64U && !found;
+       offset++) {
+    int rc;
+
+    agent = NULL;
+    session = NULL;
+    writer.length = 0U;
+    writer.buffer[0] = '\0';
+    writer.closed = 0;
+    allocation.fail_after = (size_t)-1;
+    expect_int(state, "goal_alloc_agent",
+               cai_client_new_agent(client, &agent_config, &agent, &error),
+               CAI_OK);
+    if (agent != NULL) {
+      expect_int(state, "goal_alloc_session",
+                 cai_agent_new_session(agent, &session, &error), CAI_OK);
+    }
+    if (session != NULL) {
+      expect_int(state, "goal_alloc_register",
+                 cai_agent_register_goal_tools(agent, session, &error), CAI_OK);
+      expect_int(state, "goal_alloc_base",
+                 CAI_AGENT_IMPL(agent)->tools->run(
+                     CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
+                     "{\"objective\":\"base\"}", sink, &error),
+                 CAI_OK);
+      expect_int(state, "goal_alloc_complete",
+                 CAI_AGENT_IMPL(agent)->tools->run(
+                     CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                     "{\"status\":\"complete\"}", sink, &error),
+                 CAI_OK);
+      allocation.fail_after = allocation.allocs + offset;
+      rc = CAI_AGENT_IMPL(agent)->tools->run(
+          CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
+          "{\"objective\":\"replacement\"}", sink, &error);
+      allocation.fail_after = (size_t)-1;
+      if (rc == CAI_ERR_NOMEM && error.message != NULL &&
+          strstr(error.message, "failed to store goal status") != NULL) {
+        found = 1;
+        expect_int(state, "goal_alloc_failure_objective_cleared",
+                   CAI_SESSION_IMPL(session)->goal_objective == NULL, 1L);
+        expect_int(state, "goal_alloc_failure_status_cleared",
+                   CAI_SESSION_IMPL(session)->goal_status == NULL, 1L);
+        cai_error_cleanup(&error);
+        cai_error_init(&error);
+        writer.length = 0U;
+        writer.buffer[0] = '\0';
+        expect_int(state, "goal_alloc_failure_get",
+                   CAI_AGENT_IMPL(agent)->tools->run(
+                       CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_GET_TOOL_NAME,
+                       "{}", sink, &error),
+                   CAI_OK);
+        expect_substr(state, "goal_alloc_failure_no_goal", writer.buffer,
+                      "\"has_goal\":false");
+      }
+    }
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    cai_session_destroy(session);
+    cai_agent_destroy(agent);
+  }
+  expect_int(state, "goal_alloc_status_failure_reached", found, 1L);
+  cai_sink_close(sink);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+}
+
+static void test_patch_tool(test_state *state) {
+  static const char update_and_add[] = "*** Begin Patch\n"
+                                       "*** Update File: alpha.txt\n"
+                                       "@@\n"
+                                       " one\n"
+                                       "-two\n"
+                                       "+second\n"
+                                       "@@\n"
+                                       " three\n"
+                                       "-four\n"
+                                       "+fourth\n"
+                                       "*** Add File: beta.txt\n"
+                                       "+beta\n"
+                                       "*** End Patch";
+  static const char failing_patch[] = "*** Begin Patch\n"
+                                      "*** Update File: alpha.txt\n"
+                                      "@@\n"
+                                      "-missing\n"
+                                      "+replacement\n"
+                                      "*** Delete File: beta.txt\n"
+                                      "*** End Patch";
+  static const char move_patch[] = "*** Begin Patch\n"
+                                   "*** Update File: alpha.txt\n"
+                                   "*** Move to: renamed.txt\n"
+                                   "@@\n"
+                                   " one\n"
+                                   " second\n"
+                                   " three\n"
+                                   " fourth\n"
+                                   "*** Delete File: beta.txt\n"
+                                   "*** End Patch";
+  static const char escape_patch[] = "*** Begin Patch\n"
+                                     "*** Add File: ../outside.txt\n"
+                                     "+outside\n"
+                                     "*** End Patch";
+  static const char collision_patch[] = "*** Begin Patch\n"
+                                        "*** Update File: alpha.txt\n"
+                                        "*** Move to: beta.txt\n"
+                                        "@@\n"
+                                        " one\n"
+                                        " second\n"
+                                        " three\n"
+                                        " fourth\n"
+                                        "*** Add File: beta.txt\n"
+                                        "+collision\n"
+                                        "*** End Patch";
+  static const char relative_alias_patch[] = "*** Begin Patch\n"
+                                             "*** Add File: alias.txt\n"
+                                             "+first\n"
+                                             "*** Add File: ./alias.txt\n"
+                                             "+second\n"
+                                             "*** End Patch";
+  static const char context_patch[] = "*** Begin Patch\n"
+                                      "*** Update File: sections.txt\n"
+                                      "@@   second   \n"
+                                      "-value: old\n"
+                                      "+value: new\n"
+                                      "*** End Patch";
+  static const char invalid_eof_patch[] = "*** Begin Patch\n"
+                                          "*** Update File: eof.txt\n"
+                                          "@@ target\n"
+                                          "-target\n"
+                                          "+updated\n"
+                                          "*** End of File\n"
+                                          "*** End Patch";
+  static const char ambiguous_patch[] = "*** Begin Patch\n"
+                                        "*** Update File: ambiguous.txt\n"
+                                        "@@\n"
+                                        "-same\n"
+                                        "+changed\n"
+                                        "*** End Patch";
+  static const char nul_stream_patch[] = "*** Begin Patch\n\0"
+                                         "*** Add File: hidden.txt\n"
+                                         "+hidden\n"
+                                         "*** End Patch";
+  static const char restrictive_umask_patch[] =
+      "*** Begin Patch\n"
+      "*** Add File: restrictive-umask.txt\n"
+      "+private\n"
+      "*** End Patch";
+  char dir_template[] = "/tmp/cai-patch-test-XXXXXX";
+  char alpha_path[PATH_MAX];
+  char beta_path[PATH_MAX];
+  char renamed_path[PATH_MAX];
+  char sections_path[PATH_MAX];
+  char eof_path[PATH_MAX];
+  char alias_path[PATH_MAX];
+  char ambiguous_path[PATH_MAX];
+  char race_path[PATH_MAX];
+  char race_alias_path[PATH_MAX];
+  char update_race_path[PATH_MAX];
+  char update_race_external_path[PATH_MAX];
+  char sync_failure_path[PATH_MAX];
+  char restrictive_umask_path[PATH_MAX];
+  char root_probe_path[PATH_MAX];
+  char *contents;
+  char *too_many_patch;
+  cai_patch_tool_config config;
+  cai_tool_registry *registry;
+  lonejson_spooled spooled_patch;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  size_t offset;
+  size_t i;
+  pid_t race_pid;
+  struct stat renamed_stat;
+  struct stat restrictive_umask_stat;
+  mode_t original_umask;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "patch_tempdir", "mkdtemp failed");
+    return;
+  }
+  snprintf(alpha_path, sizeof(alpha_path), "%s/alpha.txt", dir_template);
+  snprintf(beta_path, sizeof(beta_path), "%s/beta.txt", dir_template);
+  snprintf(renamed_path, sizeof(renamed_path), "%s/renamed.txt", dir_template);
+  snprintf(sections_path, sizeof(sections_path), "%s/sections.txt",
+           dir_template);
+  snprintf(eof_path, sizeof(eof_path), "%s/eof.txt", dir_template);
+  snprintf(alias_path, sizeof(alias_path), "%s/alias.txt", dir_template);
+  snprintf(ambiguous_path, sizeof(ambiguous_path), "%s/ambiguous.txt",
+           dir_template);
+  snprintf(race_path, sizeof(race_path), "%s/raced.txt", dir_template);
+  snprintf(race_alias_path, sizeof(race_alias_path), "%s/raced-alias.txt",
+           dir_template);
+  snprintf(update_race_path, sizeof(update_race_path), "%s/update-raced.txt",
+           dir_template);
+  snprintf(update_race_external_path, sizeof(update_race_external_path),
+           "%s/update-raced-external.txt", dir_template);
+  snprintf(sync_failure_path, sizeof(sync_failure_path), "%s/sync-failure.txt",
+           dir_template);
+  snprintf(restrictive_umask_path, sizeof(restrictive_umask_path),
+           "%s/restrictive-umask.txt", dir_template);
+  write_file_or_die(alpha_path, "one\ntwo\nthree\nfour\n");
+  memset(&config, 0, sizeof(config));
+  config.root_path = dir_template;
+  snprintf(root_probe_path, sizeof(root_probe_path),
+           "/.cai-patch-root-probe-%ld", (long)getpid());
+  expect_int(state, "patch_root_direct_child_resolves",
+             cai_patch_test_resolve_new_path("/", root_probe_path), CAI_OK);
+  cai_error_init(&error);
+  too_many_patch = (char *)malloc(65536U);
+  if (too_many_patch == NULL) {
+    test_fail(state, "patch_change_limit_allocate", "allocation failed");
+  } else {
+    offset = (size_t)snprintf(too_many_patch, 65536U, "*** Begin Patch\n");
+    for (i = 0U; i < 1025U && offset < 65536U; i++) {
+      int written;
+
+      written =
+          snprintf(too_many_patch + offset, 65536U - offset,
+                   "*** Add File: change-%lu.txt\n+x\n", (unsigned long)i);
+      if (written < 0 || (size_t)written >= 65536U - offset) {
+        test_fail(state, "patch_change_limit_build", "patch buffer overflow");
+        break;
+      }
+      offset += (size_t)written;
+    }
+    if (offset < 65536U) {
+      (void)snprintf(too_many_patch + offset, 65536U - offset, "*** End Patch");
+      expect_int(state, "patch_change_limit",
+                 cai_apply_patch(&config, too_many_patch, NULL, &error),
+                 CAI_ERR_LIMIT);
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+    }
+    free(too_many_patch);
+  }
+  memset(&writer, 0, sizeof(writer));
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  cai_error_init(&error);
+  sink = NULL;
+  registry = NULL;
+  memset(&spooled_patch, 0, sizeof(spooled_patch));
+  expect_int(state, "patch_sink",
+             cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "patch_update_add",
+             cai_apply_patch(&config, update_and_add, sink, &error), CAI_OK);
+  if (sink != NULL) {
+    cai_sink_close(sink);
+  }
+  expect_str(
+      state, "patch_result_summary", writer.buffer,
+      "Success. Updated the following files:\nA beta.txt\nM alpha.txt\n");
+  contents = read_file_or_die(alpha_path);
+  expect_str(state, "patch_updated_content", contents,
+             "one\nsecond\nthree\nfourth\n");
+  free(contents);
+  contents = read_file_or_die(beta_path);
+  expect_str(state, "patch_added_content", contents, "beta\n");
+  free(contents);
+  cai_patch_test_fail_directory_sync(1);
+  expect_int(state, "patch_sync_failure_rejected",
+             cai_apply_patch(&config,
+                             "*** Begin Patch\n"
+                             "*** Add File: sync-failure.txt\n"
+                             "+must not be reported as complete\n"
+                             "*** End Patch",
+                             NULL, &error),
+             CAI_ERR_INVALID);
+  cai_patch_test_fail_directory_sync(0);
+  expect_int(state, "patch_sync_failure_rollback",
+             access(sync_failure_path, F_OK) != 0, 1L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  {
+    static const char race_patch[] = "*** Begin Patch\n"
+                                     "*** Add File: raced.txt\n"
+                                     "+patched\n"
+                                     "*** End Patch";
+    int child_status;
+    int child_reaped;
+    int race_fd;
+
+    cai_patch_test_pause_before_publish(1);
+    race_pid = fork();
+    if (race_pid == 0) {
+      cai_error child_error;
+      int child_rc;
+
+      cai_error_init(&child_error);
+      child_rc = cai_apply_patch(&config, race_patch, NULL, &child_error);
+      cai_error_cleanup(&child_error);
+      _exit(child_rc == CAI_ERR_INVALID ? 0 : 1);
+    }
+    cai_patch_test_pause_before_publish(0);
+    if (race_pid < 0) {
+      test_fail(state, "patch_race_fork", "fork failed");
+    } else {
+      child_reaped = 0;
+      if (waitpid(race_pid, &child_status, WUNTRACED) != race_pid ||
+          !WIFSTOPPED(child_status)) {
+        test_fail(state, "patch_race_stop", "failed to stop patch writer");
+      } else {
+        race_fd = open(race_path, O_CREAT | O_EXCL | O_WRONLY, 0600);
+        if (race_fd < 0 || write(race_fd, "external\n", 9U) != 9 ||
+            close(race_fd) != 0) {
+          if (race_fd >= 0) {
+            close(race_fd);
+          }
+          test_fail(state, "patch_race_create",
+                    "failed to create raced target");
+        }
+      }
+      if (kill(race_pid, SIGCONT) != 0) {
+        test_fail(state, "patch_race_continue",
+                  "failed to continue patch writer");
+      }
+      if (!child_reaped && waitpid(race_pid, &child_status, 0) == race_pid) {
+        child_reaped = 1;
+      }
+      if (!child_reaped || !WIFEXITED(child_status) ||
+          WEXITSTATUS(child_status) != 0) {
+        test_fail(state, "patch_race_rejected",
+                  "patch writer did not reject race");
+      }
+      contents = read_file_or_die(race_path);
+      expect_str(state, "patch_race_preserves_external", contents,
+                 "external\n");
+      free(contents);
+    }
+  }
+  {
+    static const char hardlink_race_patch[] = "*** Begin Patch\n"
+                                              "*** Add File: raced.txt\n"
+                                              "+patched\n"
+                                              "*** End Patch";
+    char temporary_path[PATH_MAX];
+    int child_status;
+
+    if (unlink(race_path) != 0) {
+      test_fail(state, "patch_hardlink_race_reset",
+                "failed to clear raced target");
+    }
+    cai_patch_test_pause_before_publish(1);
+    race_pid = fork();
+    if (race_pid == 0) {
+      cai_error child_error;
+      int child_rc;
+
+      cai_error_init(&child_error);
+      child_rc =
+          cai_apply_patch(&config, hardlink_race_patch, NULL, &child_error);
+      cai_error_cleanup(&child_error);
+      _exit(child_rc == CAI_ERR_INVALID ? 0 : 1);
+    }
+    cai_patch_test_pause_before_publish(0);
+    if (race_pid < 0) {
+      test_fail(state, "patch_hardlink_race_fork", "fork failed");
+    } else if (waitpid(race_pid, &child_status, WUNTRACED) != race_pid ||
+               !WIFSTOPPED(child_status)) {
+      test_fail(state, "patch_hardlink_race_stop",
+                "failed to stop patch writer");
+    } else {
+      snprintf(temporary_path, sizeof(temporary_path), "%s/.cai-patch-%ld-0",
+               dir_template, (long)race_pid);
+      if (link(temporary_path, race_alias_path) != 0) {
+        test_fail(state, "patch_hardlink_race_link",
+                  "failed to link patch temporary");
+      }
+      if (kill(race_pid, SIGCONT) != 0 ||
+          waitpid(race_pid, &child_status, 0) != race_pid ||
+          !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+        test_fail(state, "patch_hardlink_race_rejected",
+                  "patch writer did not reject hard link");
+      }
+      expect_int(state, "patch_hardlink_race_rollback", access(race_path, F_OK),
+                 -1L);
+      contents = read_file_or_die(race_alias_path);
+      expect_str(state, "patch_hardlink_race_alias", contents, "patched\n");
+      free(contents);
+    }
+  }
+  {
+    static const char update_race_patch[] =
+        "*** Begin Patch\n"
+        "*** Update File: update-raced.txt\n"
+        "@@\n"
+        "-before\n"
+        "+after\n"
+        "*** End Patch";
+    int child_status;
+    int child_reaped;
+    int race_fd;
+
+    write_file_or_die(update_race_path, "before\n");
+    cai_patch_test_pause_before_publish(1);
+    race_pid = fork();
+    if (race_pid == 0) {
+      cai_error child_error;
+      int child_rc;
+
+      cai_error_init(&child_error);
+      child_rc =
+          cai_apply_patch(&config, update_race_patch, NULL, &child_error);
+      cai_error_cleanup(&child_error);
+      _exit(child_rc == CAI_ERR_INVALID ? 0 : 1);
+    }
+    cai_patch_test_pause_before_publish(0);
+    if (race_pid < 0) {
+      test_fail(state, "patch_update_race_fork", "fork failed");
+    } else {
+      child_reaped = 0;
+      if (waitpid(race_pid, &child_status, WUNTRACED) != race_pid ||
+          !WIFSTOPPED(child_status)) {
+        test_fail(state, "patch_update_race_stop",
+                  "failed to stop patch writer");
+      } else {
+        race_fd = open(update_race_external_path,
+                       O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+        if (race_fd < 0 || write(race_fd, "external\n", 9U) != 9 ||
+            close(race_fd) != 0 ||
+            rename(update_race_external_path, update_race_path) != 0) {
+          if (race_fd >= 0) {
+            close(race_fd);
+          }
+          test_fail(state, "patch_update_race_replace",
+                    "failed to atomically replace raced target");
+        }
+      }
+      if (kill(race_pid, SIGCONT) != 0) {
+        test_fail(state, "patch_update_race_continue",
+                  "failed to continue patch writer");
+      }
+      if (!child_reaped && waitpid(race_pid, &child_status, 0) == race_pid) {
+        child_reaped = 1;
+      }
+      if (!child_reaped || !WIFEXITED(child_status) ||
+          WEXITSTATUS(child_status) != 0) {
+        test_fail(state, "patch_update_race_rejected",
+                  "patch writer did not reject replacement");
+      }
+      contents = read_file_or_die(update_race_path);
+      expect_str(state, "patch_update_race_preserves_external", contents,
+                 "external\n");
+      free(contents);
+    }
+  }
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "patch_preflight_failure",
+             cai_apply_patch(&config, failing_patch, NULL, &error),
+             CAI_ERR_INVALID);
+  contents = read_file_or_die(alpha_path);
+  expect_str(state, "patch_preflight_preserves_update", contents,
+             "one\nsecond\nthree\nfourth\n");
+  free(contents);
+  expect_int(state, "patch_reject_collision",
+             cai_apply_patch(&config, collision_patch, NULL, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "patch_reject_relative_alias",
+             cai_apply_patch(&config, relative_alias_patch, NULL, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "patch_relative_alias_preserves_target",
+             access(alias_path, F_OK) != 0, 1L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  write_file_or_die(ambiguous_path, "same\nseparator\nsame\n");
+  expect_int(state, "patch_reject_ambiguous_hunk",
+             cai_apply_patch(&config, ambiguous_patch, NULL, &error),
+             CAI_ERR_INVALID);
+  contents = read_file_or_die(ambiguous_path);
+  expect_str(state, "patch_ambiguous_hunk_preserves_file", contents,
+             "same\nseparator\nsame\n");
+  free(contents);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  write_file_or_die(sections_path, "first\nvalue: old\n  second\nvalue: old\n");
+  expect_int(state, "patch_context_disambiguates",
+             cai_apply_patch(&config, context_patch, NULL, &error), CAI_OK);
+  contents = read_file_or_die(sections_path);
+  expect_str(state, "patch_context_result", contents,
+             "first\nvalue: old\n  second\nvalue: new\n");
+  free(contents);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  write_file_or_die(eof_path, "target\ntrailing\n");
+  expect_int(state, "patch_reject_stale_eof_marker",
+             cai_apply_patch(&config, invalid_eof_patch, NULL, &error),
+             CAI_ERR_INVALID);
+  contents = read_file_or_die(eof_path);
+  expect_str(state, "patch_stale_eof_preserves_file", contents,
+             "target\ntrailing\n");
+  free(contents);
+  expect_int(state, "patch_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  expect_int(state, "patch_registry_register_custom",
+             cai_tool_registry_register_patch_tool(registry, &config, &error),
+             CAI_OK);
+  expect_int(state, "patch_spooled_sink",
+             cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  test_init_spooled_text(state, "patch_spooled_input", &spooled_patch,
+                         invalid_eof_patch);
+  expect_int(state, "patch_spooled_reject_stale_eof_marker",
+             registry->run_spooled(registry, "apply_patch", &spooled_patch,
+                                   sink, &error),
+             CAI_ERR_INVALID);
+  spooled_patch.cleanup(&spooled_patch);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  CAI_LJ->spooled_init(CAI_LJ, &spooled_patch);
+  {
+    lonejson_error json_error;
+
+    lonejson_error_init(&json_error);
+    expect_int(state, "patch_spooled_nul_input",
+               spooled_patch.append(&spooled_patch, nul_stream_patch,
+                                    sizeof(nul_stream_patch) - 1U, &json_error),
+               LONEJSON_STATUS_OK);
+  }
+  expect_int(state, "patch_spooled_reject_nul",
+             registry->run_spooled(registry, "apply_patch", &spooled_patch,
+                                   sink, &error),
+             CAI_ERR_INVALID);
+  spooled_patch.cleanup(&spooled_patch);
+  cai_sink_close(sink);
+  sink = NULL;
+  cai_tool_registry_destroy(registry);
+  registry = NULL;
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  contents = read_file_or_die(beta_path);
+  expect_str(state, "patch_preflight_preserves_delete", contents, "beta\n");
+  free(contents);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  if (chmod(alpha_path, 0751) != 0) {
+    test_fail(state, "patch_move_executable_mode", "chmod failed");
+  }
+  expect_int(state, "patch_move_delete",
+             cai_apply_patch(&config, move_patch, NULL, &error), CAI_OK);
+  if (access(alpha_path, F_OK) == 0 || access(beta_path, F_OK) == 0) {
+    test_fail(state, "patch_move_delete_removed", "old patch files remain");
+  }
+  contents = read_file_or_die(renamed_path);
+  expect_str(state, "patch_move_content", contents,
+             "one\nsecond\nthree\nfourth\n");
+  free(contents);
+  expect_int(state, "patch_move_preserves_mode",
+             stat(renamed_path, &renamed_stat) == 0 &&
+                 (renamed_stat.st_mode & 0777) == 0751,
+             1L);
+  original_umask = umask(0077);
+  expect_int(state, "patch_add_respects_restrictive_umask",
+             cai_apply_patch(&config, restrictive_umask_patch, NULL, &error),
+             CAI_OK);
+  umask(original_umask);
+  expect_int(state, "patch_add_restrictive_umask_mode",
+             stat(restrictive_umask_path, &restrictive_umask_stat) == 0 &&
+                 (restrictive_umask_stat.st_mode & 0777) == 0600,
+             1L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(state, "patch_reject_escape",
+             cai_apply_patch(&config, escape_patch, NULL, &error),
+             CAI_ERR_INVALID);
+  unlink(eof_path);
+  unlink(sections_path);
+  unlink(renamed_path);
+  unlink(ambiguous_path);
+  unlink(race_path);
+  unlink(update_race_path);
+  unlink(update_race_external_path);
+  unlink(sync_failure_path);
+  unlink(restrictive_umask_path);
+  rmdir(dir_template);
+  cai_error_cleanup(&error);
+}
+
 static void test_agent_tool_declarations(test_state *state) {
   static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
   int pipe_fds[2];
@@ -23590,6 +30688,8 @@ static void test_agent_tool_auto_run(test_state *state) {
   cai_response *response;
   raw_tool_state raw_state;
   tool_event_state event_state;
+  tool_round_inject_state inject_state;
+  tool_round_history_state history_state;
   cai_error error;
 
   if (pipe(pipe_fds) != 0) {
@@ -23626,6 +30726,7 @@ static void test_agent_tool_auto_run(test_state *state) {
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
   agent_config.tool_choice = CAI_TOOL_CHOICE_REQUIRED;
+  agent_config.enable_local_history = 1;
   cai_run_options_init(&run_options);
   if (mkdtemp(spool_dir) == NULL) {
     test_fail(state, "agent_auto_spool", "mkdtemp failed");
@@ -23636,12 +30737,19 @@ static void test_agent_tool_auto_run(test_state *state) {
   run_options.tool_spool_dir = spool_dir;
   run_options.tool_event = test_tool_event;
   run_options.tool_event_context = &event_state;
+  run_options.tool_round_completed = test_tool_round_inject;
+  run_options.tool_round_completed_context = &inject_state;
+  run_options.tool_round_durable = test_tool_round_capture_history;
+  run_options.tool_round_durable_context = &history_state;
   client = NULL;
   agent = NULL;
   session = NULL;
   response = NULL;
   raw_state.seen[0] = '\0';
   memset(&event_state, 0, sizeof(event_state));
+  memset(&inject_state, 0, sizeof(inject_state));
+  memset(&history_state, 0, sizeof(history_state));
+  inject_state.text = "server-continuity-steering";
 
   expect_int(state, "agent_auto_client_open",
              cai_client_open(&client_config, &client, &error), CAI_OK);
@@ -23669,10 +30777,21 @@ static void test_agent_tool_auto_run(test_state *state) {
   expect_int(state, "agent_auto_tool_event_methods",
              event_state.missing_methods, 0L);
   expect_str(state, "agent_auto_tool_event_name", event_state.name, "raw_echo");
+  expect_str(state, "agent_auto_tool_event_call_id", event_state.call_id,
+             "call_auto_1");
   expect_str(state, "agent_auto_tool_event_arguments", event_state.arguments,
              "{\"x\":1}");
   expect_str(state, "agent_auto_tool_event_output", event_state.output,
              "{\"x\":1}");
+  expect_int(state, "agent_auto_callback_calls", inject_state.calls, 1L);
+  expect_int(state, "agent_auto_durable_callback_calls", history_state.calls,
+             1L);
+  expect_substr(state, "agent_auto_durable_tool_output", history_state.history,
+                "\"type\":\"function_call_output\"");
+  expect_substr(state, "agent_auto_durable_steering", history_state.history,
+                "server-continuity-steering");
+  expect_int(state, "agent_auto_callback_inputs_consumed",
+             (long)CAI_SESSION_IMPL(session)->input_count, 0L);
   cai_response_destroy(response);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
@@ -23687,6 +30806,177 @@ static void test_agent_tool_auto_run(test_state *state) {
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "agent_auto_mock", "mock child failed");
   }
+}
+
+static void test_agent_custom_tool_auto_run(test_state *state) {
+  static const cai_custom_tool_format format = {
+      "grammar", "lark", "start: \"raw freeform input\""};
+  static const char custom_response[] =
+      "{\"id\":\"resp_custom_1\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"custom_tool_call\",\"id\":\"ctc_1\",\"call_id\":"
+      "\"call_custom_1\",\"name\":\"custom_echo\",\"input\":"
+      "\"raw freeform input\"}]}";
+  static const char final_response[] =
+      "{\"id\":\"resp_custom_2\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\","
+      "\"text\":\"custom done\"}]}]}";
+  static const char *first_required[] = {
+      "\"type\":\"custom\"", "\"name\":\"custom_echo\"", "\"syntax\":\"lark\""};
+  static const char *second_required[] = {
+      "\"type\":\"custom_tool_call_output\"", "\"call_id\":\"call_custom_1\"",
+      "\"output\":\"raw freeform input\""};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", first_required,
+       sizeof(first_required) / sizeof(first_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, custom_response},
+      {"POST /v1/responses HTTP/", second_required,
+       sizeof(second_required) / sizeof(second_required[0]), NULL, 0U, 200,
+       "OK", "application/json", NULL, final_response}};
+  http_mock_client mock;
+  cai_agent_config agent_config;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_run_options run_options;
+  raw_tool_state raw_state;
+  cai_error error;
+
+  cai_error_init(&error);
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  raw_state.seen[0] = '\0';
+  if (http_mock_client_open_script(state, "agent_custom_tool", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  expect_int(state, "agent_custom_tool_new",
+             cai_client_new_agent(mock.client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_custom_tool_register",
+             cai_agent_register_custom_tool(agent, "custom_echo", "Custom echo",
+                                            &format, test_raw_tool, &raw_state,
+                                            &error),
+             CAI_OK);
+  expect_int(state, "agent_custom_tool_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "agent_custom_tool_input",
+             cai_session_add_user_text(session, "run custom tool", &error),
+             CAI_OK);
+  cai_run_options_init(&run_options);
+  expect_int(state, "agent_custom_tool_run",
+             cai_session_run_auto(session, &run_options, &response, &error),
+             CAI_OK);
+  expect_str(state, "agent_custom_tool_result",
+             cai_response_output_text(response), "custom done");
+  expect_str(state, "agent_custom_tool_input_seen", raw_state.seen,
+             "raw freeform input");
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  http_mock_client_close(state, "agent_custom_tool", &mock);
+  cai_error_cleanup(&error);
+}
+
+static void test_agent_custom_tool_client_history_auto_run(test_state *state) {
+  static const cai_custom_tool_format format = {
+      "grammar", "lark", "start: \"raw freeform input\""};
+  static const char custom_response[] =
+      "{\"id\":\"resp_custom_history_1\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"custom_tool_call\",\"id\":\"ctc_history_1\",\"call_id\":"
+      "\"call_custom_history_1\",\"name\":\"custom_echo\",\"input\":"
+      "\"\"}]}";
+  static const char final_response[] =
+      "{\"id\":\"resp_custom_history_2\",\"status\":\"completed\",\"output\":[{"
+      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\","
+      "\"text\":\"custom history done\"}]}]}";
+  static const char *first_required[] = {"\"type\":\"custom\"",
+                                         "\"name\":\"custom_echo\"",
+                                         "custom history tool turn"};
+  static const char *second_required[] = {
+      "\"type\":\"custom_tool_call\"",
+      "\"call_id\":\"call_custom_history_1\"",
+      "\"input\":\"\"",
+      "\"type\":\"custom_tool_call_output\"",
+      "\"output\":\"\"",
+      "custom history tool turn"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", first_required,
+       sizeof(first_required) / sizeof(first_required[0]), NULL, 0U, 200, "OK",
+       "application/json", NULL, custom_response},
+      {"POST /v1/responses HTTP/", second_required,
+       sizeof(second_required) / sizeof(second_required[0]), NULL, 0U, 200,
+       "OK", "application/json", NULL, final_response}};
+  http_mock_client mock;
+  cai_agent_config agent_config;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_run_options run_options;
+  cai_source *history_source;
+  raw_tool_state raw_state;
+  cai_error error;
+  char history_json[4096];
+
+  cai_error_init(&error);
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  history_source = NULL;
+  raw_state.seen[0] = '\0';
+  if (http_mock_client_open_script(state, "agent_custom_history", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  expect_int(state, "agent_custom_history_new",
+             cai_client_new_agent(mock.client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_custom_history_register",
+             cai_agent_register_custom_tool(agent, "custom_echo", "Custom echo",
+                                            &format, test_raw_tool, &raw_state,
+                                            &error),
+             CAI_OK);
+  expect_int(state, "agent_custom_history_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(
+      state, "agent_custom_history_input",
+      cai_session_add_user_text(session, "custom history tool turn", &error),
+      CAI_OK);
+  cai_run_options_init(&run_options);
+  expect_int(state, "agent_custom_history_run",
+             cai_session_run_auto(session, &run_options, &response, &error),
+             CAI_OK);
+  expect_str(state, "agent_custom_history_result",
+             cai_response_output_text(response), "custom history done");
+  expect_str(state, "agent_custom_history_input_seen", raw_state.seen, "");
+  expect_int(
+      state, "agent_custom_history_export",
+      cai_session_export_history_source(session, &history_source, &error),
+      CAI_OK);
+  if (read_source_text(state, "agent_custom_history_read", history_source,
+                       history_json, sizeof(history_json), &error)) {
+    expect_substr(state, "agent_custom_history_call", history_json,
+                  "\"type\":\"custom_tool_call\"");
+    expect_substr(state, "agent_custom_history_input", history_json,
+                  "\"input\":\"\"");
+    expect_substr(state, "agent_custom_history_output", history_json,
+                  "\"type\":\"custom_tool_call_output\"");
+  }
+  cai_source_close(history_source);
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  http_mock_client_close(state, "agent_custom_history", &mock);
+  cai_error_cleanup(&error);
 }
 
 static void test_agent_client_history_tool_auto_run(test_state *state) {
@@ -23808,6 +31098,255 @@ static void test_agent_client_history_tool_auto_run(test_state *state) {
     test_fail(state, "agent_client_history_tool_mock", "waitpid failed");
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "agent_client_history_tool_mock", "mock child failed");
+  }
+}
+
+static void
+test_agent_client_history_tool_callback_durability(test_state *state) {
+  static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  char history_json[4096];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_source *history_source;
+  raw_tool_state raw_state;
+  failing_callback_state callback_state;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "agent_client_history_callback_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "agent_client_history_callback_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 1);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "agent_client_history_callback_mock",
+              "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  cai_run_options_init(&run_options);
+  run_options.tool_round_completed = test_failing_tool_round;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  history_source = NULL;
+  memset(&raw_state, 0, sizeof(raw_state));
+  memset(&callback_state, 0, sizeof(callback_state));
+  run_options.tool_round_completed_context = &callback_state;
+
+  expect_int(state, "agent_client_history_callback_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "agent_client_history_callback_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_client_history_callback_register",
+             cai_agent_register_raw_tool(agent, "raw_echo", "Echo raw JSON",
+                                         schema, 0, test_raw_tool, &raw_state,
+                                         &error),
+             CAI_OK);
+  expect_int(state, "agent_client_history_callback_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "agent_client_history_callback_add",
+             cai_session_add_user_text(session, "auto client history tool turn",
+                                       &error),
+             CAI_OK);
+  expect_int(state, "agent_client_history_callback_run",
+             cai_session_run_auto(session, &run_options, &response, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "agent_client_history_callback_calls", callback_state.calls,
+             1L);
+  expect_str(state, "agent_client_history_callback_tool", raw_state.seen,
+             "{\"x\":1}");
+  expect_int(
+      state, "agent_client_history_callback_export",
+      cai_session_export_history_source(session, &history_source, &error),
+      CAI_OK);
+  if (read_source_text(state, "agent_client_history_callback_read",
+                       history_source, history_json, sizeof(history_json),
+                       &error)) {
+    expect_substr(state, "agent_client_history_callback_output", history_json,
+                  "\"type\":\"function_call_output\"");
+    expect_substr(state, "agent_client_history_callback_result", history_json,
+                  "\"output\":\"{\\\"x\\\":1}\"");
+  }
+
+  cai_source_close(history_source);
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "agent_client_history_callback_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "agent_client_history_callback_mock", "mock child failed");
+  }
+}
+
+static void test_agent_view_image_auto_run(test_state *state) {
+  static const unsigned char png_bytes[] = {
+      0x89U, 0x50U, 0x4eU, 0x47U, 0x0dU, 0x0aU, 0x1aU, 0x0aU, 0x00U, 0x00U,
+      0x00U, 0x0dU, 0x49U, 0x48U, 0x44U, 0x52U, 0x00U, 0x00U, 0x00U, 0x01U,
+      0x00U, 0x00U, 0x00U, 0x01U, 0x08U, 0x06U, 0x00U, 0x00U, 0x00U, 0x1fU,
+      0x15U, 0xc4U, 0x89U, 0x00U, 0x00U, 0x00U, 0x0dU, 0x49U, 0x44U, 0x41U,
+      0x54U, 0x08U, 0xd7U, 0x63U, 0xf8U, 0xcfU, 0xc0U, 0xf0U, 0x1fU, 0x00U,
+      0x05U, 0x00U, 0x01U, 0xffU, 0x89U, 0x99U, 0x07U, 0x00U, 0x00U, 0x00U,
+      0x00U, 0x49U, 0x45U, 0x4eU, 0x44U, 0xaeU, 0x42U, 0x60U, 0x82U};
+  char workspace[] = "/tmp/cai-agent-view-image-XXXXXX";
+  char image_path[PATH_MAX];
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  char history_json[4096];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_view_image_tool_config view_config;
+  cai_run_options run_options;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_source *history_source;
+  cai_error error;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "agent_view_image_workspace", "mkdtemp failed");
+    return;
+  }
+  snprintf(image_path, sizeof(image_path), "%s/pixel.png", workspace);
+  write_bytes_or_die(image_path, png_bytes, sizeof(png_bytes));
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "agent_view_image_mock", "pipe failed");
+    unlink(image_path);
+    rmdir(workspace);
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "agent_view_image_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    unlink(image_path);
+    rmdir(workspace);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 2);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "agent_view_image_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    unlink(image_path);
+    rmdir(workspace);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
+  cai_run_options_init(&run_options);
+  memset(&view_config, 0, sizeof(view_config));
+  view_config.root_path = workspace;
+  view_config.default_workdir = workspace;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  history_source = NULL;
+
+  expect_int(state, "agent_view_image_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "agent_view_image_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_view_image_register",
+             cai_agent_register_view_image_tool(agent, &view_config, &error),
+             CAI_OK);
+  expect_int(state, "agent_view_image_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "agent_view_image_add",
+             cai_session_add_user_text(session, "view image tool turn", &error),
+             CAI_OK);
+  expect_int(state, "agent_view_image_run",
+             cai_session_run_auto(session, &run_options, &response, &error),
+             CAI_OK);
+  expect_str(state, "agent_view_image_response",
+             cai_response_output_text(response), "view image done");
+  expect_int(
+      state, "agent_view_image_export",
+      cai_session_export_history_source(session, &history_source, &error),
+      CAI_OK);
+  if (read_source_text(state, "agent_view_image_history", history_source,
+                       history_json, sizeof(history_json), &error)) {
+    expect_substr(state, "agent_view_image_history_metadata", history_json,
+                  "mime_type");
+    if (strstr(history_json, "data:image/png;base64,") != NULL) {
+      test_fail(state, "agent_view_image_history_no_payload",
+                "client history retained the image data URL");
+    }
+  }
+
+  cai_source_close(history_source);
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  unlink(image_path);
+  rmdir(workspace);
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "agent_view_image_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "agent_view_image_mock", "mock child failed");
   }
 }
 
@@ -24725,6 +32264,188 @@ static void test_read_tool(test_state *state) {
   rmdir(dir_template);
 }
 
+static void test_view_image_tool(test_state *state) {
+  static const unsigned char png_bytes[] = {
+      0x89U, 0x50U, 0x4eU, 0x47U, 0x0dU, 0x0aU, 0x1aU, 0x0aU, 0x00U, 0x00U,
+      0x00U, 0x0dU, 0x49U, 0x48U, 0x44U, 0x52U, 0x00U, 0x00U, 0x00U, 0x01U,
+      0x00U, 0x00U, 0x00U, 0x01U, 0x08U, 0x06U, 0x00U, 0x00U, 0x00U, 0x1fU,
+      0x15U, 0xc4U, 0x89U, 0x00U, 0x00U, 0x00U, 0x0dU, 0x49U, 0x44U, 0x41U,
+      0x54U, 0x08U, 0xd7U, 0x63U, 0xf8U, 0xcfU, 0xc0U, 0xf0U, 0x1fU, 0x00U,
+      0x05U, 0x00U, 0x01U, 0xffU, 0x89U, 0x99U, 0x07U, 0x00U, 0x00U, 0x00U,
+      0x00U, 0x49U, 0x45U, 0x4eU, 0x44U, 0xaeU, 0x42U, 0x60U, 0x82U};
+  char dir_template[] = "/tmp/cai-view-image-test-XXXXXX";
+  char image_path[PATH_MAX];
+  char invalid_path[PATH_MAX];
+  char alias_path[PATH_MAX];
+  char *request_json;
+  cai_view_image_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  cai_response_create_params *params;
+  lonejson_spooled output_json;
+  lonejson_error json_error;
+  write_state writer;
+  cai_error error;
+  int delivered;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "view_image_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  snprintf(image_path, sizeof(image_path), "%s/pixel.png", dir_template);
+  snprintf(invalid_path, sizeof(invalid_path), "%s/not-image.bin",
+           dir_template);
+  snprintf(alias_path, sizeof(alias_path), "%s/pixel-alias.png", dir_template);
+  write_bytes_or_die(image_path, png_bytes, sizeof(png_bytes));
+  write_file_or_die(invalid_path, "not an image");
+
+  cai_error_init(&error);
+  lonejson_error_init(&json_error);
+  CAI_LJ->spooled_init(CAI_LJ, &output_json);
+  memset(&config, 0, sizeof(config));
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  registry = NULL;
+  sink = NULL;
+  params = NULL;
+  request_json = NULL;
+  memset(&writer, 0, sizeof(writer));
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+
+  expect_int(state, "view_image_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  config.root_path = invalid_path;
+  config.default_workdir = dir_template;
+  expect_int(
+      state, "view_image_reject_file_root",
+      cai_tool_registry_register_view_image_tool(registry, &config, &error),
+      CAI_ERR_INVALID);
+  expect_substr(state, "view_image_reject_file_root_message", error.message,
+                "sandbox root must be a directory");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  config.root_path = dir_template;
+  config.default_workdir = invalid_path;
+  expect_int(
+      state, "view_image_reject_file_workdir",
+      cai_tool_registry_register_view_image_tool(registry, &config, &error),
+      CAI_ERR_INVALID);
+  expect_substr(state, "view_image_reject_file_workdir_message", error.message,
+                "working directory must be a directory");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  config.default_workdir = dir_template;
+  expect_int(
+      state, "view_image_register",
+      cai_tool_registry_register_view_image_tool(registry, &config, &error),
+      CAI_OK);
+  expect_int(state, "view_image_sink",
+             cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "view_image_run",
+             cai_tool_registry_run(registry, CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME,
+                                   "{\"path\":\"pixel.png\","
+                                   "\"detail\":\"original\"}",
+                                   sink, &error),
+             CAI_OK);
+  expect_substr(state, "view_image_metadata_path", writer.buffer,
+                "\"path\":\"pixel.png\"");
+  expect_substr(state, "view_image_metadata_mime", writer.buffer,
+                "\"mime_type\":\"image/png\"");
+  expect_substr(state, "view_image_metadata_detail", writer.buffer,
+                "\"detail\":\"original\"");
+  expect_substr(state, "view_image_metadata_hash", writer.buffer,
+                "\"content_hash\":\"");
+  if (strstr(writer.buffer, "data:image") != NULL) {
+    test_fail(state, "view_image_metadata_no_payload",
+              "tool event exposed a base64 image payload");
+  }
+  expect_valid_json(state, "view_image_metadata_json", writer.buffer);
+  if (output_json.append(&output_json, writer.buffer, writer.length,
+                         &json_error) != LONEJSON_STATUS_OK) {
+    test_fail(state, "view_image_capture_output", "failed to spool metadata");
+  }
+  expect_int(state, "view_image_params",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  expect_int(state, "view_image_params_model",
+             params->set_model(params, CAI_MODEL_GPT_5_6_LUNA, &error), CAI_OK);
+  delivered = 0;
+  expect_int(state, "view_image_typed_delivery",
+             cai_tool_registry_deliver_result(
+                 registry, CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME, "call_view_1",
+                 params, &output_json, &delivered, &error),
+             CAI_OK);
+  expect_int(state, "view_image_typed_delivery_flag", delivered, 1L);
+  expect_int(state, "view_image_request_json",
+             cai_response_create_params_serialize_json(params, &request_json,
+                                                       NULL, &error),
+             CAI_OK);
+  if (request_json != NULL) {
+    expect_substr(state, "view_image_request_type", request_json,
+                  "\"type\":\"input_image\"");
+    expect_substr(state, "view_image_request_data_url", request_json,
+                  "data:image/png;base64,iVBORw0KGgo");
+    expect_substr(state, "view_image_request_detail", request_json,
+                  "\"detail\":\"original\"");
+    if (strstr(request_json, "resolved_path") != NULL) {
+      test_fail(state, "view_image_request_metadata_omitted",
+                "typed image output included JSON metadata content");
+    }
+  }
+  free(request_json);
+  request_json = NULL;
+  cai_response_create_params_destroy(params);
+  params = NULL;
+  output_json.cleanup(&output_json);
+  CAI_LJ->spooled_init(CAI_LJ, &output_json);
+
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "view_image_invalid_data",
+             cai_tool_registry_run(registry, CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME,
+                                   "{\"path\":\"not-image.bin\"}", sink,
+                                   &error),
+             CAI_ERR_INVALID);
+  expect_substr(state, "view_image_invalid_data_message", error.message,
+                "invalid or unsupported");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  expect_int(state, "view_image_escape",
+             cai_tool_registry_run(registry, CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME,
+                                   "{\"path\":\"/etc/passwd\"}", sink, &error),
+             CAI_ERR_INVALID);
+  expect_substr(state, "view_image_escape_message", error.message,
+                "escapes configured root");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  unlink(alias_path);
+  if (link(image_path, alias_path) != 0) {
+    test_fail(state, "view_image_hardlink_fixture", "link failed");
+  } else {
+    expect_int(state, "view_image_hardlink",
+               cai_tool_registry_run(registry, CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME,
+                                     "{\"path\":\"pixel.png\"}", sink, &error),
+               CAI_ERR_INVALID);
+    expect_substr(state, "view_image_hardlink_message", error.message,
+                  "private regular file");
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+  }
+
+  output_json.cleanup(&output_json);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  unlink(alias_path);
+  unlink(invalid_path);
+  unlink(image_path);
+  rmdir(dir_template);
+}
+
 static void test_exec_tool(test_state *state) {
   char dir_template[] = "/tmp/cai-exec-test-XXXXXX";
   char child_dir[PATH_MAX];
@@ -24847,7 +32568,7 @@ static void test_exec_tool(test_state *state) {
   config.timeout_ms = 1000L;
   config.max_timeout_ms = 1000L;
   config.output_memory_limit = 8U;
-  config.output_max_bytes = 4096U;
+  config.output_max_bytes = 32768U;
 
   if (run_exec_tool_case(state, "exec_success", &config,
                          "{\"cmd\":\"printf stdout; printf stderr >&2\"}",
@@ -25326,7 +33047,7 @@ static void test_exec_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
-  config.output_max_bytes = 4096U;
+  config.output_max_bytes = 32768U;
   if (run_exec_tool_case(state, "exec_per_call_output_cap", &config,
                          "{\"cmd\":\"printf 1234567890\","
                          "\"max_output_tokens\":4}",
@@ -25508,6 +33229,1136 @@ static int run_mock_revgeo_tool(test_state *state, const char *name, int mode,
     test_fail(state, name, "mock child failed");
   }
   return rc;
+}
+
+static void test_terminal_output_limit_clamp(test_state *state) {
+  size_t target_size_max;
+
+  target_size_max = (size_t)UINT_MAX;
+  expect_int(state, "terminal_output_limit_absent",
+             cai_terminal_test_output_limit(4294967297LL, 0, target_size_max) ==
+                 0U,
+             1L);
+  expect_int(state, "terminal_output_limit_nonpositive",
+             cai_terminal_test_output_limit(-1LL, 1, target_size_max) == 0U,
+             1L);
+  expect_int(
+      state, "terminal_output_limit_in_range",
+      cai_terminal_test_output_limit(4096LL, 1, target_size_max) == 4096U, 1L);
+  expect_int(state, "terminal_output_limit_32_bit_clamped",
+             cai_terminal_test_output_limit(4294967297LL, 1, target_size_max) ==
+                 target_size_max,
+             1L);
+  expect_int(state, "terminal_output_limit_long_long_clamped",
+             cai_terminal_test_output_limit(LLONG_MAX, 1, target_size_max) ==
+                 target_size_max,
+             1L);
+}
+
+static void test_terminal_registration_rollback(test_state *state) {
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_error error;
+
+  memset(&config, 0, sizeof(config));
+  config.root_path = "/tmp";
+  config.default_workdir = "/tmp";
+  registry = NULL;
+  cai_error_init(&error);
+  expect_int(state, "terminal_rollback_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(state, "terminal_rollback_preexisting_write",
+               cai_tool_registry_register_raw(
+                   registry, CAI_TERMINAL_WRITE_TOOL_NAME, "test conflict",
+                   "{\"type\":\"object\",\"properties\":{}}", 0,
+                   test_chunked_json_tool, NULL, &error),
+               CAI_OK);
+    expect_int(
+        state, "terminal_rollback_register_pair",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "terminal_rollback_keeps_only_conflict",
+               (long)cai_tool_registry_count(registry), 1L);
+    expect_int(state, "terminal_rollback_exec_reusable",
+               cai_tool_registry_register_raw(
+                   registry, CAI_TERMINAL_EXEC_TOOL_NAME, "test replacement",
+                   "{\"type\":\"object\",\"properties\":{}}", 0,
+                   test_chunked_json_tool, NULL, &error),
+               CAI_OK);
+    cai_tool_registry_destroy(registry);
+  }
+  cai_error_cleanup(&error);
+}
+
+static void test_terminal_tools(test_state *state) {
+  char dir_template[] = "/tmp/cai-terminal-test-XXXXXX";
+  static const cai_terminal_tool_config legacy_config = {
+      NULL, NULL, NULL, 20L, 300L, 32768U, NULL,
+      NULL, NULL, NULL, 0L,  0L,   0L,     0L};
+  terminal_event_state events;
+  int policy_calls;
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  int rc;
+  int i;
+  long long terminate_grace_elapsed_ms;
+  char *blocked_stdin_request;
+  size_t blocked_stdin_request_size;
+  struct timespec terminate_grace_finished;
+  struct timespec terminate_grace_started;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  memset(&events, 0, sizeof(events));
+  policy_calls = 0;
+  blocked_stdin_request = NULL;
+  /* Keep the pre-polling-field positional layout valid for source consumers. */
+  config = legacy_config;
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  config.policy = test_terminal_policy;
+  config.policy_context = &policy_calls;
+  config.event_callback = test_terminal_event;
+  config.event_context = &events;
+  config.default_write_yield_time_ms = 20L;
+  config.max_write_yield_time_ms = 250L;
+  config.default_poll_yield_time_ms = 5000L;
+  config.max_poll_yield_time_ms = 5000L;
+  registry = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  cai_error_init(&error);
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  expect_int(state, "terminal_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(
+        state, "terminal_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
+  }
+  if (registry != NULL) {
+    expect_int(state, "terminal_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  }
+  if (registry != NULL && sink != NULL) {
+    setenv("CAI_TEST_TERMINAL_SECRET", "must-not-reach-model", 1);
+    expect_int(
+        state, "terminal_sanitized_environment",
+        cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                              "{\"cmd\":\"printf '%s|%s|%s' "
+                              "\\\"$CAI_TEST_TERMINAL_SECRET\\\" \\\"$HOME\\\" "
+                              "\\\"$LESSHISTFILE\\\"\","
+                              "\"yield_time_ms\":100}",
+                              sink, &error),
+        CAI_OK);
+    expect_int(state, "terminal_sanitized_environment_secret",
+               strstr(writer.buffer, "must-not-reach-model") == NULL, 1L);
+    expect_substr(state, "terminal_sanitized_environment_home", writer.buffer,
+                  dir_template);
+    expect_substr(state, "terminal_sanitized_environment_less_history",
+                  writer.buffer, "/dev/null");
+    unsetenv("CAI_TEST_TERMINAL_SECRET");
+    /* Output arrival is intentionally allowed before shell exit.  Drain the
+     * fast command to a verified terminal result before starting the next
+     * command so this event assertion does not depend on scheduler timing. */
+    for (i = 0; i < 5 && strstr(writer.buffer, "\"completed\":true") == NULL;
+         i++) {
+      writer.buffer[0] = '\0';
+      writer.length = 0U;
+      expect_int(state, "terminal_sanitized_environment_finalize",
+                 cai_tool_registry_run(
+                     registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                     "{\"session_id\":\"terminal-1\",\"yield_time_ms\":100}",
+                     sink, &error),
+                 CAI_OK);
+    }
+    expect_substr(state, "terminal_sanitized_environment_finished",
+                  writer.buffer, "\"completed\":true");
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_policy_reject",
+               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                     "{\"cmd\":\"forbidden\"}", sink, &error),
+               CAI_ERR_INVALID);
+    expect_int(state, "terminal_policy_called", policy_calls, 2L);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    rc = cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                               "{\"cmd\":\"trap '' INT; sleep 0.15; "
+                               "printf poll-ready; while :; do sleep 1; done\","
+                               "\"yield_time_ms\":0}",
+                               sink, &error);
+    expect_int(state, "terminal_exec_background", rc, CAI_OK);
+    expect_substr(state, "terminal_exec_session", writer.buffer,
+                  "\"session_id\":\"terminal-1\"");
+    expect_substr(state, "terminal_exec_running", writer.buffer,
+                  "\"running\":true");
+    expect_int(state, "terminal_exec_zero_yield_returns_before_output",
+               strstr(writer.buffer, "poll-ready") == NULL, 1L);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_reject_parallel_exec",
+               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                     "{\"cmd\":\"true\"}", sink, &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "terminal_reject_wrong_id",
+               cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                     "{\"session_id\":\"wrong\"}", sink,
+                                     &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_poll",
+               cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                     "{\"session_id\":\"terminal-1\"}", sink,
+                                     &error),
+               CAI_OK);
+    expect_substr(state, "terminal_poll_output", writer.buffer, "poll-ready");
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_terminate",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                   "{\"session_id\":\"terminal-1\",\"terminate\":true}", sink,
+                   &error),
+               CAI_OK);
+    expect_substr(state, "terminal_terminate_finished", writer.buffer,
+                  "\"completed\":true");
+    expect_int(state, "terminal_event_cancelled", events.cancelled, 1L);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_terminate_grace_exec",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                   "{\"cmd\":\"trap '' INT; "
+                   "trap 'printf term-noted; while :; do :; done' TERM; "
+                   "printf ready; while :; do :; done\","
+                   "\"yield_time_ms\":100}",
+                   sink, &error),
+               CAI_OK);
+    expect_substr(state, "terminal_terminate_grace_ready", writer.buffer,
+                  "ready");
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    (void)clock_gettime(CLOCK_MONOTONIC, &terminate_grace_started);
+    expect_int(state, "terminal_terminate_grace",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                   "{\"session_id\":\"terminal-1\",\"terminate\":true,"
+                   "\"yield_time_ms\":100}",
+                   sink, &error),
+               CAI_OK);
+    (void)clock_gettime(CLOCK_MONOTONIC, &terminate_grace_finished);
+    terminate_grace_elapsed_ms = (long long)(terminate_grace_finished.tv_sec -
+                                             terminate_grace_started.tv_sec) *
+                                     1000LL +
+                                 (long long)(terminate_grace_finished.tv_nsec -
+                                             terminate_grace_started.tv_nsec) /
+                                     1000000LL;
+    expect_substr(state, "terminal_terminate_grace_signal", writer.buffer,
+                  "term-noted");
+    expect_substr(state, "terminal_terminate_grace_finished", writer.buffer,
+                  "\"completed\":true");
+    expect_int(state, "terminal_terminate_grace_elapsed",
+               terminate_grace_elapsed_ms >= 200LL, 1L);
+    expect_int(state, "terminal_terminate_grace_cancelled", events.cancelled,
+               2L);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_exec_interactive",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                   "{\"cmd\":\"stty -echo; IFS= read line; sleep 0.15; "
+                   "printf got:$line\","
+                   "\"yield_time_ms\":10}",
+                   sink, &error),
+               CAI_OK);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_write_interactive",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                   "{\"session_id\":\"terminal-1\",\"chars\":\"alpha\\n\"}",
+                   sink, &error),
+               CAI_OK);
+    expect_int(state, "terminal_write_interactive_short_default",
+               strstr(writer.buffer, "got:alpha") == NULL, 1L);
+    for (i = 0; i < 5 && strstr(writer.buffer, "got:alpha") == NULL; i++) {
+      writer.buffer[0] = '\0';
+      writer.length = 0U;
+      expect_int(state, "terminal_write_interactive_poll",
+                 cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                       "{\"session_id\":\"terminal-1\","
+                                       "\"yield_time_ms\":100}",
+                                       sink, &error),
+                 CAI_OK);
+    }
+    expect_substr(state, "terminal_write_interactive_output", writer.buffer,
+                  "got:alpha");
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_finalize_interactive",
+               cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                     "{\"session_id\":\"terminal-1\","
+                                     "\"yield_time_ms\":100}",
+                                     sink, &error),
+               CAI_OK);
+    expect_substr(state, "terminal_write_interactive_finished", writer.buffer,
+                  "\"completed\":true");
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(
+        state, "terminal_exec_detached_child",
+        cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                              "{\"cmd\":\"sleep 0.2 &\",\"yield_time_ms\":100}",
+                              sink, &error),
+        CAI_OK);
+    expect_substr(state, "terminal_detached_shell_completed", writer.buffer,
+                  "\"completed\":true");
+    expect_substr(state, "terminal_detached_truthful", writer.buffer,
+                  "\"detached_processes_possible\":true");
+    expect_substr(state, "terminal_detached_duration", writer.buffer,
+                  "\"duration_ms\":");
+    expect_int(state, "terminal_event_started", events.started, 5L);
+    expect_int(state, "terminal_event_completed", events.completed, 3L);
+    expect_str(state, "terminal_event_id", events.terminal_id, "terminal-1");
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_drain_fast_output",
+               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                     "{\"cmd\":\"seq 1 3000\","
+                                     "\"yield_time_ms\":100,"
+                                     "\"max_output_tokens\":16}",
+                                     sink, &error),
+               CAI_OK);
+    /* Buffered output now returns immediately, so a fast caller can drain
+     * several small result windows before the reader observes child exit.
+     * Bound the total drain rather than assuming ten polls imply completion. */
+    for (i = 0; i < 1000 && events.completed < 4; i++) {
+      writer.buffer[0] = '\0';
+      writer.length = 0U;
+      rc = cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                 "{\"session_id\":\"terminal-1\","
+                                 "\"yield_time_ms\":100,"
+                                 "\"max_output_tokens\":16}",
+                                 sink, &error);
+      if (rc != CAI_OK) {
+        expect_int(state, "terminal_drain_fast_output_poll", rc, CAI_OK);
+        break;
+      }
+    }
+    expect_int(state, "terminal_drain_fast_output_bytes",
+               events.total_output_bytes >= 10000U, 1L);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_exec_no_stdin_reader",
+               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                     "{\"cmd\":\"stty -echo && printf "
+                                     "stdin-ready; sleep 5\","
+                                     "\"yield_time_ms\":100}",
+                                     sink, &error),
+               CAI_OK);
+    for (i = 0; i < 10 && strstr(writer.buffer, "stdin-ready") == NULL; i++) {
+      writer.buffer[0] = '\0';
+      writer.length = 0U;
+      expect_int(state, "terminal_stdin_ready_poll",
+                 cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                       "{\"session_id\":\"terminal-1\","
+                                       "\"yield_time_ms\":100}",
+                                       sink, &error),
+                 CAI_OK);
+    }
+    expect_substr(state, "terminal_stdin_ready", writer.buffer, "stdin-ready");
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    blocked_stdin_request_size =
+        strlen("{\"session_id\":\"terminal-1\",\"chars\":\"") + 65536U +
+        strlen("\",\"yield_time_ms\":10}") + 1U;
+    blocked_stdin_request = (char *)malloc(blocked_stdin_request_size);
+    if (blocked_stdin_request == NULL) {
+      test_fail(state, "terminal_stdin_limit_allocate", "allocation failed");
+    } else {
+      size_t prefix_length;
+
+      prefix_length = strlen("{\"session_id\":\"terminal-1\",\"chars\":\"");
+      memcpy(blocked_stdin_request,
+             "{\"session_id\":\"terminal-1\",\"chars\":\"", prefix_length);
+      memset(blocked_stdin_request + prefix_length, 'x', 65536U);
+      memcpy(blocked_stdin_request + prefix_length + 65536U,
+             "\",\"yield_time_ms\":10}",
+             strlen("\",\"yield_time_ms\":10}") + 1U);
+      expect_int(state, "terminal_stdin_unread",
+                 cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                       blocked_stdin_request, sink, &error),
+                 CAI_OK);
+      free(blocked_stdin_request);
+      blocked_stdin_request = NULL;
+    }
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "terminal_stdin_limit_terminate",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                   "{\"session_id\":\"terminal-1\",\"terminate\":true,"
+                   "\"yield_time_ms\":10}",
+                   sink, &error),
+               CAI_OK);
+  }
+  free(blocked_stdin_request);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  registry = NULL;
+  sink = NULL;
+  config.root_path = "/";
+  config.default_workdir = dir_template;
+  memset(&writer, 0, sizeof(writer));
+  expect_int(state, "terminal_root_registry_new",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(
+        state, "terminal_root_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
+  }
+  if (registry != NULL) {
+    expect_int(state, "terminal_root_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  }
+  if (sink != NULL) {
+    expect_int(state, "terminal_root_workdir",
+               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                     "{\"cmd\":\"printf root-ok\","
+                                     "\"yield_time_ms\":100}",
+                                     sink, &error),
+               CAI_OK);
+    expect_substr(state, "terminal_root_workdir_output", writer.buffer,
+                  "root-ok");
+  }
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
+  test_terminal_workdir_pinning(state);
+}
+
+static void
+test_terminal_buffered_output_returns_immediately(test_state *state) {
+  char dir_template[] = "/tmp/cai-terminal-buffered-XXXXXX";
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  struct timespec pause_time;
+  struct timespec started;
+  struct timespec finished;
+  long long elapsed_ms;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_buffered_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  config.default_poll_yield_time_ms = 1000L;
+  config.max_poll_yield_time_ms = 1000L;
+  registry = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  cai_error_init(&error);
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  expect_int(state, "terminal_buffered_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(
+        state, "terminal_buffered_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
+    expect_int(state, "terminal_buffered_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  }
+  if (sink != NULL) {
+    expect_int(
+        state, "terminal_buffered_exec",
+        cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                              "{\"cmd\":\"printf buffered-ready; sleep 2\","
+                              "\"yield_time_ms\":0}",
+                              sink, &error),
+        CAI_OK);
+    pause_time.tv_sec = 0;
+    pause_time.tv_nsec = 250000000L;
+    (void)nanosleep(&pause_time, NULL);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    (void)clock_gettime(CLOCK_MONOTONIC, &started);
+    expect_int(state, "terminal_buffered_poll",
+               cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                     "{\"session_id\":\"terminal-1\","
+                                     "\"yield_time_ms\":1000}",
+                                     sink, &error),
+               CAI_OK);
+    (void)clock_gettime(CLOCK_MONOTONIC, &finished);
+    elapsed_ms = (long long)(finished.tv_sec - started.tv_sec) * 1000LL +
+                 (long long)(finished.tv_nsec - started.tv_nsec) / 1000000LL;
+    expect_substr(state, "terminal_buffered_output", writer.buffer,
+                  "buffered-ready");
+    expect_int(state, "terminal_buffered_no_wait", elapsed_ms < 750LL, 1L);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_buffered_terminate",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                   "{\"session_id\":\"terminal-1\",\"terminate\":true,"
+                   "\"yield_time_ms\":10}",
+                   sink, &error),
+               CAI_OK);
+  }
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
+}
+
+static void test_terminal_sink_failure_preserves_output(test_state *state) {
+  char dir_template[] = "/tmp/cai-terminal-sink-retry-XXXXXX";
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink_callbacks failing_callbacks;
+  cai_sink *sink;
+  cai_sink *failing_sink;
+  write_state writer;
+  fail_write_state failing_writer;
+  cai_error error;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_sink_retry_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  registry = NULL;
+  sink = NULL;
+  failing_sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  memset(&failing_writer, 0, sizeof(failing_writer));
+  cai_error_init(&error);
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  failing_callbacks.write = test_fail_write;
+  failing_callbacks.close = test_fail_write_close;
+  failing_callbacks.context = &failing_writer;
+  expect_int(state, "terminal_sink_retry_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(
+        state, "terminal_sink_retry_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
+    expect_int(state, "terminal_sink_retry_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+    expect_int(
+        state, "terminal_sink_retry_failing_sink",
+        cai_sink_from_callbacks(&failing_callbacks, &failing_sink, &error),
+        CAI_OK);
+  }
+  if (sink != NULL && failing_sink != NULL) {
+    expect_int(
+        state, "terminal_sink_retry_rejected_delivery",
+        cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                              "{\"cmd\":\"printf retained-output; sleep 1\","
+                              "\"yield_time_ms\":100}",
+                              failing_sink, &error),
+        CAI_ERR_TRANSPORT);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "terminal_sink_retry_poll",
+               cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                     "{\"session_id\":\"terminal-1\","
+                                     "\"yield_time_ms\":100}",
+                                     sink, &error),
+               CAI_OK);
+    expect_substr(state, "terminal_sink_retry_output", writer.buffer,
+                  "retained-output");
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_sink_retry_terminate",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                   "{\"session_id\":\"terminal-1\",\"terminate\":true,"
+                   "\"yield_time_ms\":10}",
+                   sink, &error),
+               CAI_OK);
+  }
+  cai_sink_close(failing_sink);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
+}
+
+static void test_terminal_capture_truncation(test_state *state) {
+  char dir_template[] = "/tmp/cai-terminal-truncation-XXXXXX";
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  int i;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_truncation_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  config.default_yield_time_ms = 100L;
+  config.max_yield_time_ms = 100L;
+  config.output_max_bytes = 8U;
+  registry = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  cai_error_init(&error);
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  expect_int(state, "terminal_truncation_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(
+        state, "terminal_truncation_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
+  }
+  if (registry != NULL) {
+    expect_int(state, "terminal_truncation_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  }
+  if (sink != NULL) {
+    expect_int(state, "terminal_truncation_exec",
+               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                     "{\"cmd\":\"printf 0123456789abcdef\","
+                                     "\"yield_time_ms\":100}",
+                                     sink, &error),
+               CAI_OK);
+    for (i = 0; i < 5 && strstr(writer.buffer, "\"completed\":true") == NULL;
+         i++) {
+      writer.buffer[0] = '\0';
+      writer.length = 0U;
+      expect_int(state, "terminal_truncation_poll",
+                 cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                       "{\"session_id\":\"terminal-1\","
+                                       "\"yield_time_ms\":100}",
+                                       sink, &error),
+                 CAI_OK);
+    }
+    expect_substr(state, "terminal_truncation_completed", writer.buffer,
+                  "\"completed\":true");
+    expect_substr(state, "terminal_truncation_marked", writer.buffer,
+                  "\"output_truncated\":true");
+  }
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
+}
+
+static void test_terminal_reader_start_failure(test_state *state) {
+  char dir_template[] = "/tmp/cai-terminal-reader-failure-XXXXXX";
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  double started;
+  double elapsed;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_reader_failure_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  config.default_yield_time_ms = 0L;
+  config.max_yield_time_ms = 100L;
+  registry = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  cai_error_init(&error);
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  expect_int(state, "terminal_reader_failure_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(
+        state, "terminal_reader_failure_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
+  }
+  if (registry != NULL) {
+    expect_int(state, "terminal_reader_failure_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  }
+  if (sink != NULL) {
+    cai_terminal_test_set_child_pre_setsid_hold(1);
+    cai_terminal_test_set_reader_create_failure(1);
+    started = test_now_seconds();
+    expect_int(state, "terminal_reader_failure_exec",
+               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                     "{\"cmd\":\"sleep 2\","
+                                     "\"yield_time_ms\":0}",
+                                     sink, &error),
+               CAI_ERR_TRANSPORT);
+    elapsed = test_now_seconds() - started;
+    cai_terminal_test_set_reader_create_failure(0);
+    cai_terminal_test_set_child_pre_setsid_hold(0);
+    expect_int(state, "terminal_reader_failure_prompt", elapsed < 1.0, 1L);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "terminal_reader_failure_reuse",
+               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                     "{\"cmd\":\"printf recovered\","
+                                     "\"yield_time_ms\":100}",
+                                     sink, &error),
+               CAI_OK);
+    expect_substr(state, "terminal_reader_failure_reuse_output", writer.buffer,
+                  "recovered");
+  }
+  cai_terminal_test_set_reader_create_failure(0);
+  cai_terminal_test_set_child_pre_setsid_hold(0);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
+}
+
+static void test_terminal_external_child_reap(test_state *state) {
+  char dir_template[] = "/tmp/cai-terminal-external-reap-XXXXXX";
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  struct sigaction ignored_action;
+  struct sigaction previous_action;
+  int sigchld_ignored;
+  int rc;
+  int i;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_external_reap_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  memset(&writer, 0, sizeof(writer));
+  memset(&ignored_action, 0, sizeof(ignored_action));
+  registry = NULL;
+  sink = NULL;
+  sigchld_ignored = 0;
+  rc = CAI_OK;
+  cai_error_init(&error);
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  config.default_yield_time_ms = 100L;
+  config.max_yield_time_ms = 100L;
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  expect_int(state, "terminal_external_reap_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(
+        state, "terminal_external_reap_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
+  }
+  if (registry != NULL) {
+    expect_int(state, "terminal_external_reap_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  }
+  if (sink != NULL) {
+    ignored_action.sa_handler = SIG_IGN;
+    if (sigemptyset(&ignored_action.sa_mask) != 0 ||
+        sigaction(SIGCHLD, &ignored_action, &previous_action) != 0) {
+      test_fail(state, "terminal_external_reap_ignore_sigchld",
+                "failed to ignore SIGCHLD");
+    } else {
+      sigchld_ignored = 1;
+      rc = cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                 "{\"cmd\":\"printf reaped\","
+                                 "\"yield_time_ms\":100}",
+                                 sink, &error);
+      expect_int(state, "terminal_external_reap_exec", rc, CAI_OK);
+      expect_substr(state, "terminal_external_reap_output", writer.buffer,
+                    "reaped");
+      /* Output may arrive before the reader's subsequent waitpid() observes
+       * ECHILD. Poll through the documented terminal continuation surface so
+       * this test validates eventual completion rather than one scheduling
+       * order between output and automatic child reaping. */
+      for (i = 0; rc == CAI_OK && i < 5 &&
+                  strstr(writer.buffer, "\"completed\":true") == NULL;
+           i++) {
+        writer.buffer[0] = '\0';
+        writer.length = 0U;
+        rc = cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                   "{\"session_id\":\"terminal-1\","
+                                   "\"yield_time_ms\":100}",
+                                   sink, &error);
+      }
+      expect_int(state, "terminal_external_reap_poll", rc, CAI_OK);
+      expect_substr(state, "terminal_external_reap_completed", writer.buffer,
+                    "\"completed\":true");
+      if (strstr(writer.buffer, "\"exit_code\"") != NULL ||
+          strstr(writer.buffer, "\"signal\"") != NULL) {
+        test_fail(state, "terminal_external_reap_status_unavailable",
+                  "externally reaped command reported an unavailable status");
+      }
+    }
+  }
+  if (sigchld_ignored) {
+    if (sigaction(SIGCHLD, &previous_action, NULL) != 0) {
+      test_fail(state, "terminal_external_reap_restore_sigchld",
+                "failed to restore SIGCHLD disposition");
+    }
+  }
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
+}
+
+static void test_terminal_closes_inherited_fds(test_state *state) {
+#if defined(__linux__)
+  char dir_template[] = "/tmp/cai-terminal-fd-isolation-XXXXXX";
+  char secret_template[] = "/tmp/cai-terminal-fd-secret-XXXXXX";
+  static const char secret[] = "model-must-not-read-this-host-secret";
+  char request[512];
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  write_state writer;
+  cai_error error;
+  int secret_fd;
+  int descriptor_flags;
+  int rc;
+  int i;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_fd_isolation_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  secret_fd = mkstemp(secret_template);
+  if (secret_fd < 0) {
+    test_fail(state, "terminal_fd_isolation_mkstemp", "mkstemp failed");
+    rmdir(dir_template);
+    return;
+  }
+  if (write(secret_fd, secret, sizeof(secret) - 1U) !=
+          (ssize_t)(sizeof(secret) - 1U) ||
+      lseek(secret_fd, 0, SEEK_SET) < 0) {
+    test_fail(state, "terminal_fd_isolation_write", "failed to seed secret");
+    close(secret_fd);
+    unlink(secret_template);
+    rmdir(dir_template);
+    return;
+  }
+  descriptor_flags = fcntl(secret_fd, F_GETFD);
+  if (descriptor_flags < 0 ||
+      fcntl(secret_fd, F_SETFD, descriptor_flags & ~FD_CLOEXEC) != 0) {
+    test_fail(state, "terminal_fd_isolation_inheritable",
+              "failed to make secret descriptor inheritable");
+    close(secret_fd);
+    unlink(secret_template);
+    rmdir(dir_template);
+    return;
+  }
+  if (snprintf(request, sizeof(request),
+               "{\"cmd\":\"if [ -e /proc/self/fd/%d ]; then cat "
+               "/proc/self/fd/%d; else printf sealed; fi\","
+               "\"yield_time_ms\":100}",
+               secret_fd, secret_fd) >= (int)sizeof(request)) {
+    test_fail(state, "terminal_fd_isolation_request", "request is too long");
+    close(secret_fd);
+    unlink(secret_template);
+    rmdir(dir_template);
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  memset(&writer, 0, sizeof(writer));
+  registry = NULL;
+  sink = NULL;
+  cai_error_init(&error);
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  config.default_yield_time_ms = 100L;
+  config.max_yield_time_ms = 100L;
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  rc = cai_tool_registry_new(&registry, &error);
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_register_terminal_tools(registry, &config, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME, request,
+                               sink, &error);
+  }
+  expect_int(state, "terminal_fd_isolation_exec", rc, CAI_OK);
+  for (i = 0; rc == CAI_OK && i < 5 && strstr(writer.buffer, "sealed") == NULL;
+       i++) {
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    rc = cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                               "{\"session_id\":\"terminal-1\","
+                               "\"yield_time_ms\":100}",
+                               sink, &error);
+  }
+  expect_int(state, "terminal_fd_isolation_poll", rc, CAI_OK);
+  expect_substr(state, "terminal_fd_isolation_sealed", writer.buffer, "sealed");
+  expect_int(state, "terminal_fd_isolation_secret_hidden",
+             strstr(writer.buffer, secret) == NULL, 1L);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  close(secret_fd);
+  unlink(secret_template);
+  rmdir(dir_template);
+#else
+  (void)state;
+#endif
+}
+
+static void test_terminal_concurrent_start(test_state *state) {
+  char dir_template[] = "/tmp/cai-terminal-race-XXXXXX";
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  terminal_race_policy_state policy;
+  terminal_race_exec_state first;
+  terminal_race_exec_state second;
+  pthread_t first_thread;
+  pthread_t second_thread;
+  write_state writer;
+  cai_error error;
+  int first_created;
+  int second_created;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_race_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  memset(&policy, 0, sizeof(policy));
+  memset(&first, 0, sizeof(first));
+  memset(&second, 0, sizeof(second));
+  memset(&writer, 0, sizeof(writer));
+  registry = NULL;
+  sink = NULL;
+  first_created = 0;
+  second_created = 0;
+  cai_error_init(&error);
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  config.default_yield_time_ms = 20L;
+  config.max_yield_time_ms = 100L;
+  config.policy = test_terminal_race_policy;
+  config.policy_context = &policy;
+  expect_int(state, "terminal_race_policy_lock",
+             pthread_mutex_init(&policy.lock, NULL), 0L);
+  expect_int(state, "terminal_race_policy_condition",
+             pthread_cond_init(&policy.changed, NULL), 0L);
+  expect_int(state, "terminal_race_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(
+        state, "terminal_race_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
+  }
+  if (registry != NULL) {
+    first.registry = registry;
+    second.registry = registry;
+    first_created = pthread_create(&first_thread, NULL, test_terminal_race_exec,
+                                   &first) == 0;
+    second_created = pthread_create(&second_thread, NULL,
+                                    test_terminal_race_exec, &second) == 0;
+    expect_int(state, "terminal_race_first_thread", first_created, 1L);
+    expect_int(state, "terminal_race_second_thread", second_created, 1L);
+    if (!first_created || !second_created) {
+      pthread_mutex_lock(&policy.lock);
+      policy.released = 1;
+      pthread_cond_broadcast(&policy.changed);
+      pthread_mutex_unlock(&policy.lock);
+    }
+    if (first_created) {
+      pthread_join(first_thread, NULL);
+    }
+    if (second_created) {
+      pthread_join(second_thread, NULL);
+    }
+    if (first_created && second_created) {
+      expect_int(state, "terminal_race_one_success",
+                 (first.rc == CAI_OK) + (second.rc == CAI_OK), 1L);
+      expect_int(state, "terminal_race_one_rejected",
+                 (first.rc == CAI_ERR_INVALID) + (second.rc == CAI_ERR_INVALID),
+                 1L);
+    }
+    cai_error_cleanup(&first.error);
+    cai_error_cleanup(&second.error);
+    callbacks.write = test_write;
+    callbacks.close = test_write_close;
+    callbacks.context = &writer;
+    expect_int(state, "terminal_race_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+    if (sink != NULL) {
+      expect_int(state, "terminal_race_terminate",
+                 cai_tool_registry_run(
+                     registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                     "{\"session_id\":\"terminal-1\",\"terminate\":true,"
+                     "\"yield_time_ms\":10}",
+                     sink, &error),
+                 CAI_OK);
+    }
+  }
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  pthread_cond_destroy(&policy.changed);
+  pthread_mutex_destroy(&policy.lock);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
+}
+
+static void test_terminal_concurrent_operation(test_state *state) {
+  char dir_template[] = "/tmp/cai-terminal-operation-XXXXXX";
+  cai_terminal_tool_config config;
+  cai_tool_registry *registry;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  terminal_event_state events;
+  terminal_write_state write;
+  pthread_t write_thread;
+  write_state writer;
+  cai_error error;
+  struct timespec pause_time;
+  int write_created;
+
+  if (mkdtemp(dir_template) == NULL) {
+    test_fail(state, "terminal_operation_mkdtemp", "mkdtemp failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  memset(&events, 0, sizeof(events));
+  memset(&write, 0, sizeof(write));
+  memset(&writer, 0, sizeof(writer));
+  registry = NULL;
+  sink = NULL;
+  write_created = 0;
+  cai_error_init(&error);
+  config.root_path = dir_template;
+  config.default_workdir = dir_template;
+  config.default_yield_time_ms = 0L;
+  config.max_yield_time_ms = 100L;
+  config.default_poll_yield_time_ms = 1000L;
+  config.max_poll_yield_time_ms = 1000L;
+  config.event_callback = test_terminal_event;
+  config.event_context = &events;
+  expect_int(state, "terminal_operation_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL) {
+    expect_int(
+        state, "terminal_operation_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
+  }
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  if (registry != NULL) {
+    expect_int(state, "terminal_operation_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  }
+  if (registry != NULL && sink != NULL) {
+    expect_int(state, "terminal_operation_start",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                   "{\"cmd\":\"sleep 1\",\"yield_time_ms\":0}", sink, &error),
+               CAI_OK);
+    write.registry = registry;
+    write_created = pthread_create(&write_thread, NULL,
+                                   test_terminal_concurrent_write, &write) == 0;
+    expect_int(state, "terminal_operation_thread", write_created, 1L);
+    if (write_created) {
+      pause_time.tv_sec = 0;
+      pause_time.tv_nsec = 100000000L;
+      (void)nanosleep(&pause_time, NULL);
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+      expect_int(state, "terminal_operation_reject_overlap",
+                 cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                       "{\"cmd\":\"printf wrong\","
+                                       "\"yield_time_ms\":0}",
+                                       sink, &error),
+                 CAI_ERR_INVALID);
+      pthread_join(write_thread, NULL);
+      expect_int(state, "terminal_operation_poll", write.rc, CAI_OK);
+      expect_str(state, "terminal_operation_completion_command", events.command,
+                 "sleep 1");
+      expect_int(state, "terminal_operation_completion_id",
+                 (long long)events.command_id, 1L);
+      cai_error_cleanup(&write.error);
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+      expect_int(state, "terminal_operation_next_command",
+                 cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                                       "{\"cmd\":\"printf next\","
+                                       "\"yield_time_ms\":100}",
+                                       sink, &error),
+                 CAI_OK);
+    }
+  }
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  rmdir(dir_template);
 }
 
 static void test_revgeo_tool_decimal_locale(test_state *state,
@@ -27065,6 +35916,98 @@ static void test_agent_tool_auto_round_limit(test_state *state) {
   }
 }
 
+static void test_agent_tool_auto_default_unbounded(test_state *state) {
+  static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  raw_tool_state raw_state;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "agent_unbounded_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "agent_unbounded_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_unbounded_tool_rounds_child(pipe_fds[1], 33);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "agent_unbounded_mock", "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  cai_run_options_init(&run_options);
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  raw_state.seen[0] = '\0';
+
+  expect_int(state, "agent_unbounded_client_open",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "agent_unbounded_new",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "agent_unbounded_register",
+             cai_agent_register_raw_tool(agent, "raw_echo", "Echo raw JSON",
+                                         schema, 0, test_raw_tool, &raw_state,
+                                         &error),
+             CAI_OK);
+  expect_int(state, "agent_unbounded_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "agent_unbounded_add",
+             cai_session_add_user_text(session, "unbounded tool turn", &error),
+             CAI_OK);
+  expect_int(state, "agent_unbounded_run",
+             cai_session_run_auto(session, &run_options, &response, &error),
+             CAI_OK);
+  expect_str(state, "agent_unbounded_response",
+             cai_response_output_text(response), "unbounded done");
+  expect_str(state, "agent_unbounded_seen", raw_state.seen, "{\"x\":1}");
+  cai_response_destroy(response);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "agent_unbounded_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "agent_unbounded_mock", "mock child failed");
+  }
+}
+
 static void test_agent_tool_error_output_continues(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -27596,9 +36539,12 @@ static void test_stream_response_text(test_state *state) {
   cai_client_config config;
   cai_agent_config agent_config;
   cai_response_create_params *params;
+  cai_response_create_params *custom_params;
   cai_client *client;
   cai_agent *agent;
   cai_session *session;
+  cai_session *callback_session;
+  cai_session *incomplete_session;
   cai_source *source;
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
@@ -27610,6 +36556,8 @@ static void test_stream_response_text(test_state *state) {
   stream_tool_state tool_stream;
   stream_output_item_state output_item_stream;
   stream_output_state output_stream;
+  stream_response_completed_state response_completed;
+  failing_callback_state response_completion_failure;
   cai_error error;
   pslog_logger fake_logger;
 
@@ -27626,7 +36574,7 @@ static void test_stream_response_text(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 13);
+    mock_openai_child(pipe_fds[1], 20);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -27661,7 +36609,10 @@ static void test_stream_response_text(test_state *state) {
   client = NULL;
   agent = NULL;
   session = NULL;
+  callback_session = NULL;
+  incomplete_session = NULL;
   params = NULL;
+  custom_params = NULL;
   sink = NULL;
   reasoning_sink = NULL;
   source = NULL;
@@ -27674,6 +36625,8 @@ static void test_stream_response_text(test_state *state) {
   memset(&tool_stream, 0, sizeof(tool_stream));
   memset(&output_item_stream, 0, sizeof(output_item_stream));
   memset(&output_stream, 0, sizeof(output_stream));
+  memset(&response_completed, 0, sizeof(response_completed));
+  memset(&response_completion_failure, 0, sizeof(response_completion_failure));
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
   sink_callbacks.context = &writer;
@@ -27727,6 +36680,119 @@ static void test_stream_response_text(test_state *state) {
   expect_int(state, "stream_output_delta_only_count", output_stream.delta_count,
              2L);
 
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.response_completed = test_stream_response_completed;
+  stream_sinks.response_completed_context = &response_completed;
+  expect_int(state, "stream_response_completed_only_run",
+             cai_client_stream_response_with_id(client, params, &stream_sinks,
+                                                NULL, &usage, &error),
+             CAI_OK);
+  expect_int(state, "stream_response_completed_only_count",
+             response_completed.count, 1L);
+
+  memset(&tool_stream, 0, sizeof(tool_stream));
+  expect_int(state, "stream_custom_only_params",
+             cai_response_create_params_new(&custom_params, &error), CAI_OK);
+  expect_int(
+      state, "stream_custom_only_model",
+      custom_params->set_model(custom_params, CAI_MODEL_GPT_5_NANO, &error),
+      CAI_OK);
+  expect_int(state, "stream_custom_only_text",
+             custom_params->add_text(custom_params, "user",
+                                     "custom stream empty tool turn", &error),
+             CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.custom_tool_call_input_done = test_stream_tool_done;
+  stream_sinks.custom_tool_call_context = &tool_stream;
+  expect_int(state, "stream_custom_only_callback_run",
+             cai_client_stream_response_with_id(
+                 client, custom_params, &stream_sinks, NULL, &usage, &error),
+             CAI_OK);
+  expect_int(state, "stream_custom_only_callback_count", tool_stream.done_count,
+             1L);
+  expect_str(state, "stream_custom_only_callback_name", tool_stream.name,
+             "custom_echo");
+  expect_str(state, "stream_custom_only_callback_input", tool_stream.arguments,
+             "");
+  cai_response_create_params_destroy(custom_params);
+  custom_params = NULL;
+
+  expect_int(state, "stream_missing_terminal_params",
+             cai_response_create_params_new(&custom_params, &error), CAI_OK);
+  expect_int(
+      state, "stream_missing_terminal_model",
+      custom_params->set_model(custom_params, CAI_MODEL_GPT_5_NANO, &error),
+      CAI_OK);
+  expect_int(state, "stream_missing_terminal_text",
+             custom_params->add_text(custom_params, "user",
+                                     "stream missing terminal", &error),
+             CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.response_completed = test_stream_response_completed;
+  stream_sinks.response_completed_context = &response_completed;
+  expect_int(state, "stream_missing_terminal_rejected",
+             cai_client_stream_response_with_id(
+                 client, custom_params, &stream_sinks, NULL, &usage, &error),
+             CAI_ERR_PROTOCOL);
+  expect_substr(state, "stream_missing_terminal_error", error.message,
+                "before response.completed");
+  expect_int(state, "stream_missing_terminal_not_completed",
+             response_completed.count, 1L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_response_create_params_destroy(custom_params);
+  custom_params = NULL;
+
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  expect_int(state, "stream_incomplete_terminal_params",
+             cai_response_create_params_new(&custom_params, &error), CAI_OK);
+  expect_int(
+      state, "stream_incomplete_terminal_model",
+      custom_params->set_model(custom_params, CAI_MODEL_GPT_5_NANO, &error),
+      CAI_OK);
+  expect_int(state, "stream_incomplete_terminal_text",
+             custom_params->add_text(custom_params, "user",
+                                     "stream incomplete terminal", &error),
+             CAI_OK);
+  expect_int(state, "stream_incomplete_terminal_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  stream_sinks.output_text_suffix.text = "\n";
+  stream_sinks.response_completed = test_stream_response_completed;
+  stream_sinks.response_completed_context = &response_completed;
+  {
+    char *response_id;
+
+    response_id = NULL;
+    expect_int(state, "stream_incomplete_terminal_result",
+               cai_client_stream_response_with_id(client, custom_params,
+                                                  &stream_sinks, &response_id,
+                                                  &usage, &error),
+               CAI_ERR_LIMIT);
+    expect_str(state, "stream_incomplete_terminal_text_value", writer.buffer,
+               "partial\n");
+    expect_str(state, "stream_incomplete_terminal_response_id", response_id,
+               "resp_stream_incomplete");
+    expect_int(state, "stream_incomplete_terminal_usage", usage.total_tokens,
+               5L);
+    expect_str(state, "stream_incomplete_terminal_error", error.message,
+               "response ended incomplete");
+    expect_str(state, "stream_incomplete_terminal_reason", error.detail,
+               "max_output_tokens");
+    expect_int(state, "stream_incomplete_terminal_not_completed",
+               response_completed.count, 1L);
+    cai_free_mem(NULL, response_id);
+  }
+  cai_sink_close(sink);
+  sink = NULL;
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_response_create_params_destroy(custom_params);
+  custom_params = NULL;
+
   expect_int(
       state, "stream_source_open",
       cai_client_open_response_text_source(client, params, &source, &error),
@@ -27765,9 +36831,15 @@ static void test_stream_response_text(test_state *state) {
              CAI_OK);
   expect_int(state, "stream_session_sink_create",
              cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  stream_sinks.response_completed = test_stream_response_completed;
+  stream_sinks.response_completed_context = &response_completed;
   expect_int(state, "stream_session_to_sink",
-             cai_session_stream_text(session, sink, &error), CAI_OK);
+             cai_session_stream(session, &stream_sinks, &error), CAI_OK);
   expect_str(state, "stream_session_sink_value", writer.buffer, "one");
+  expect_int(state, "stream_session_response_completed_count",
+             response_completed.count, 2L);
   expect_int(state, "stream_session_usage",
              cai_session_last_usage(session, &usage, &error), CAI_OK);
   expect_int(state, "stream_session_usage_cached", usage.input_cached_tokens,
@@ -27892,6 +36964,7 @@ static void test_stream_response_text(test_state *state) {
       state, "stream_session_tool_add",
       cai_session_add_user_text(session, "stream tool call turn", &error),
       CAI_OK);
+  memset(&tool_stream, 0, sizeof(tool_stream));
   cai_stream_sinks_init(&stream_sinks);
   stream_sinks.function_call_arguments_delta = test_stream_tool_delta;
   stream_sinks.function_call_arguments_done = test_stream_tool_done;
@@ -27948,14 +37021,55 @@ static void test_stream_response_text(test_state *state) {
   cai_sink_close(sink);
   sink = NULL;
 
+  expect_int(state, "stream_session_incomplete_new",
+             cai_agent_new_session(agent, &incomplete_session, &error), CAI_OK);
+  expect_int(state, "stream_session_incomplete_add",
+             cai_session_add_user_text(incomplete_session,
+                                       "stream incomplete terminal", &error),
+             CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text_delta = test_stream_output_delta;
+  stream_sinks.output_text_context = &output_stream;
+  expect_int(state, "stream_session_incomplete_result",
+             cai_session_stream(incomplete_session, &stream_sinks, &error),
+             CAI_ERR_LIMIT);
+  expect_str(state, "stream_session_incomplete_error", error.message,
+             "response ended incomplete");
+  expect_int(state, "stream_session_incomplete_inputs_cleared",
+             (long)CAI_SESSION_IMPL(incomplete_session)->input_count, 0L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
+  expect_int(state, "stream_session_completion_failure_new",
+             cai_agent_new_session(agent, &callback_session, &error), CAI_OK);
+  expect_int(state, "stream_session_completion_failure_add",
+             cai_session_add_user_text(
+                 callback_session, "session stream completion failure", &error),
+             CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.response_completed = test_failing_response_completed;
+  stream_sinks.response_completed_context = &response_completion_failure;
+  expect_int(state, "stream_session_completion_failure_run",
+             cai_session_stream(callback_session, &stream_sinks, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "stream_session_completion_failure_calls",
+             response_completion_failure.calls, 1L);
+  expect_int(state, "stream_session_completion_failure_inputs_cleared",
+             (long)CAI_SESSION_IMPL(callback_session)->input_count, 0L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+
   expect_int(state, "stream_log_client_open_info_count", g_test_infof_count,
              1L);
-  expect_int(state, "stream_log_trace_count", g_test_tracef_count, 14L);
-  expect_int(state, "stream_log_debug_count", g_test_debugf_count, 12L);
+  expect_int(state, "stream_log_trace_count", g_test_tracef_count, 21L);
+  expect_int(state, "stream_log_debug_count", g_test_debugf_count, 18L);
   expect_int(state, "stream_log_warn_count", g_test_warnf_count, 0L);
-  expect_int(state, "stream_log_error_count", g_test_errorf_count, 2L);
+  expect_int(state, "stream_log_error_count", g_test_errorf_count, 3L);
 
   cai_response_create_params_destroy(params);
+  cai_response_create_params_destroy(custom_params);
+  cai_session_destroy(incomplete_session);
+  cai_session_destroy(callback_session);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
   cai_client_close(client);
@@ -29721,9 +38835,11 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   cai_sink_callbacks sink_callbacks;
   cai_sink *sink;
   cai_stream_sinks stream_sinks;
+  cai_source *history_source;
   write_state writer;
   stream_tool_state tool_stream;
   tool_event_state event_state;
+  tool_round_inject_state inject_state;
   spooled_raw_tool_state spooled_tool_state;
   cai_token_usage usage;
   cai_error error;
@@ -29761,18 +38877,24 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   client_config.timeout_ms = 5000L;
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
+  agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
   agent_config.tool_choice = CAI_TOOL_CHOICE_REQUIRED;
   cai_run_options_init(&run_options);
   run_options.max_tool_rounds = 2;
   run_options.tool_event = test_tool_event;
   run_options.tool_event_context = &event_state;
+  run_options.tool_round_completed = test_tool_round_inject;
+  run_options.tool_round_completed_context = &inject_state;
   client = NULL;
   agent = NULL;
   session = NULL;
   sink = NULL;
+  history_source = NULL;
   memset(&writer, 0, sizeof(writer));
   memset(&tool_stream, 0, sizeof(tool_stream));
   memset(&event_state, 0, sizeof(event_state));
+  memset(&inject_state, 0, sizeof(inject_state));
+  inject_state.text = "after-next-tool";
   memset(&spooled_tool_state, 0, sizeof(spooled_tool_state));
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
@@ -29801,7 +38923,9 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   stream_sinks.function_call_context = &tool_stream;
   expect_int(state, "stream_auto_tool_add",
              cai_session_add_user_text(
-                 session, "stream malformed delta tool turn", &error),
+                 session,
+                 "stream malformed delta tool turn steering-boundary-marker",
+                 &error),
              CAI_OK);
   expect_int(
       state, "stream_auto_tool_run",
@@ -29831,7 +38955,31 @@ static void test_session_stream_auto_tool_run(test_state *state) {
              spooled_tool_state.chunks, 5L);
   expect_str(state, "stream_auto_tool_event_output", event_state.output,
              "{\"summary\":\"Gothenburg:0\"}");
+  expect_int(state, "stream_auto_tool_round_callback", inject_state.calls, 1L);
+  expect_int(
+      state, "stream_auto_tool_history_export",
+      cai_session_export_history_source(session, &history_source, &error),
+      CAI_OK);
+  if (history_source != NULL) {
+    char history_json[8192];
+    char *output_pos;
+    char *steering_pos;
 
+    if (read_source_text(state, "stream_auto_tool_history_read", history_source,
+                         history_json, sizeof(history_json), &error)) {
+      expect_substr(state, "stream_auto_tool_history_steering", history_json,
+                    "after-next-tool");
+      output_pos = strstr(history_json, "\"type\":\"function_call_output\"");
+      steering_pos = strstr(history_json, "after-next-tool");
+      if (output_pos == NULL || steering_pos == NULL ||
+          !(output_pos < steering_pos)) {
+        test_fail(state, "stream_auto_tool_history_steering_order",
+                  "steering did not follow the completed tool output");
+      }
+    }
+  }
+
+  cai_source_close(history_source);
   cai_sink_close(sink);
   cai_session_destroy(session);
   cai_agent_destroy(agent);
@@ -29842,6 +38990,129 @@ static void test_session_stream_auto_tool_run(test_state *state) {
     test_fail(state, "stream_auto_tool_mock", "waitpid failed");
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "stream_auto_tool_mock", "mock child failed");
+  }
+}
+
+static void test_session_stream_auto_custom_empty_tool_run(test_state *state) {
+  static const cai_custom_tool_format format = {"grammar", "lark",
+                                                "start: /(.|\\n)*/"};
+  int pipe_fds[2];
+  pid_t pid;
+  int port;
+  ssize_t nread;
+  int child_status;
+  char base_url[128];
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_run_options run_options;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink_callbacks sink_callbacks;
+  cai_sink *sink;
+  cai_stream_sinks stream_sinks;
+  write_state writer;
+  stream_tool_state tool_stream;
+  raw_tool_state raw_state;
+  cai_error error;
+
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "stream_auto_custom_empty_mock", "pipe failed");
+    return;
+  }
+  pid = fork();
+  if (pid < 0) {
+    test_fail(state, "stream_auto_custom_empty_mock", "fork failed");
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    close(pipe_fds[0]);
+    mock_openai_child(pipe_fds[1], 2);
+  }
+  close(pipe_fds[1]);
+  nread = read(pipe_fds[0], &port, sizeof(port));
+  close(pipe_fds[0]);
+  if (nread != (ssize_t)sizeof(port)) {
+    test_fail(state, "stream_auto_custom_empty_mock",
+              "failed to read mock port");
+    waitpid(pid, &child_status, 0);
+    return;
+  }
+
+  cai_error_init(&error);
+  snprintf(base_url, sizeof(base_url), "http://127.0.0.1:%d/v1", port);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = base_url;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  cai_run_options_init(&run_options);
+  run_options.max_tool_rounds = 2;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+  memset(&writer, 0, sizeof(writer));
+  memset(&tool_stream, 0, sizeof(tool_stream));
+  memset(&raw_state, 0, sizeof(raw_state));
+  sink_callbacks.write = test_write;
+  sink_callbacks.close = test_write_close;
+  sink_callbacks.context = &writer;
+
+  expect_int(state, "stream_auto_custom_empty_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "stream_auto_custom_empty_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "stream_auto_custom_empty_register",
+             cai_agent_register_custom_tool(agent, "custom_echo", "Custom echo",
+                                            &format, test_raw_tool, &raw_state,
+                                            &error),
+             CAI_OK);
+  expect_int(state, "stream_auto_custom_empty_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "stream_auto_custom_empty_sink",
+             cai_sink_from_callbacks(&sink_callbacks, &sink, &error), CAI_OK);
+  cai_stream_sinks_init(&stream_sinks);
+  stream_sinks.output_text = sink;
+  stream_sinks.custom_tool_call_input_delta = test_stream_tool_delta;
+  stream_sinks.custom_tool_call_input_done = test_stream_tool_done;
+  stream_sinks.custom_tool_call_context = &tool_stream;
+  expect_int(state, "stream_auto_custom_empty_add",
+             cai_session_add_user_text(session, "custom stream empty tool turn",
+                                       &error),
+             CAI_OK);
+  expect_int(
+      state, "stream_auto_custom_empty_run",
+      cai_session_stream_auto(session, &run_options, &stream_sinks, &error),
+      CAI_OK);
+  expect_str(state, "stream_auto_custom_empty_output", writer.buffer,
+             "custom empty done");
+  expect_str(state, "stream_auto_custom_empty_tool_input", raw_state.seen, "");
+  expect_int(state, "stream_auto_custom_empty_delta_count",
+             tool_stream.delta_count, 0L);
+  expect_int(state, "stream_auto_custom_empty_done_count",
+             tool_stream.done_count, 1L);
+  expect_str(state, "stream_auto_custom_empty_call", tool_stream.call_id,
+             "call_stream_custom_empty_1");
+  expect_str(state, "stream_auto_custom_empty_name", tool_stream.name,
+             "custom_echo");
+  expect_str(state, "stream_auto_custom_empty_arguments", tool_stream.arguments,
+             "");
+
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  if (waitpid(pid, &child_status, 0) != pid) {
+    test_fail(state, "stream_auto_custom_empty_mock", "waitpid failed");
+  } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
+    test_fail(state, "stream_auto_custom_empty_mock", "mock child failed");
   }
 }
 
@@ -31360,6 +40631,8 @@ static void test_stream_client_history_captures_output(test_state *state) {
 }
 
 static void test_stream_client_history_tool_order(test_state *state) {
+  static const cai_custom_tool_format custom_format = {"grammar", "lark",
+                                                       "start: /(.|\\n)*/"};
   int pipe_fds[2];
   pid_t pid;
   int port;
@@ -31378,8 +40651,10 @@ static void test_stream_client_history_tool_order(test_state *state) {
   cai_stream_sinks stream_sinks;
   write_state writer;
   tool_event_state event_state;
+  tool_round_history_state history_state;
+  raw_tool_state raw_state;
   cai_error error;
-  char history_json[4096];
+  char history_json[8192];
   char *user_pos;
   char *call_pos;
   char *output_pos;
@@ -31398,7 +40673,7 @@ static void test_stream_client_history_tool_order(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 2);
+    mock_openai_child(pipe_fds[1], 4);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -31431,6 +40706,8 @@ static void test_stream_client_history_tool_order(test_state *state) {
   history_source = NULL;
   memset(&writer, 0, sizeof(writer));
   memset(&event_state, 0, sizeof(event_state));
+  memset(&history_state, 0, sizeof(history_state));
+  memset(&raw_state, 0, sizeof(raw_state));
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
   sink_callbacks.context = &writer;
@@ -31445,6 +40722,11 @@ static void test_stream_client_history_tool_order(test_state *state) {
                  agent, "weather", "Get weather", &tool_weather_map,
                  &tool_weather_result_map, test_weather_tool, NULL, &error),
              CAI_OK);
+  expect_int(state, "stream_client_history_custom_register",
+             cai_agent_register_custom_tool(agent, "custom_echo", "Custom echo",
+                                            &custom_format, test_raw_tool,
+                                            &raw_state, &error),
+             CAI_OK);
   expect_int(state, "stream_client_history_tool_session_new",
              cai_agent_new_session(agent, &session, &error), CAI_OK);
   expect_int(state, "stream_client_history_tool_sink",
@@ -31455,6 +40737,8 @@ static void test_stream_client_history_tool_order(test_state *state) {
       CAI_OK);
   cai_stream_sinks_init(&stream_sinks);
   stream_sinks.output_text = sink;
+  run_options.tool_round_completed = test_tool_round_capture_history;
+  run_options.tool_round_completed_context = &history_state;
   expect_int(
       state, "stream_client_history_tool_run",
       cai_session_stream_auto(session, &run_options, &stream_sinks, &error),
@@ -31465,6 +40749,22 @@ static void test_stream_client_history_tool_order(test_state *state) {
              event_state.starts, 1L);
   expect_int(state, "stream_client_history_tool_event_outputs",
              event_state.outputs, 1L);
+  expect_int(state, "stream_client_history_tool_history_callback",
+             history_state.calls, 1L);
+  writer.length = 0U;
+  writer.closed = 0;
+  writer.buffer[0] = '\0';
+  expect_int(state, "stream_client_history_custom_add",
+             cai_session_add_user_text(session, "custom stream empty tool turn",
+                                       &error),
+             CAI_OK);
+  expect_int(
+      state, "stream_client_history_custom_run",
+      cai_session_stream_auto(session, &run_options, &stream_sinks, &error),
+      CAI_OK);
+  expect_str(state, "stream_client_history_custom_answer", writer.buffer,
+             "custom empty done");
+  expect_str(state, "stream_client_history_custom_input", raw_state.seen, "");
   expect_int(
       state, "stream_client_history_tool_export",
       cai_session_export_history_source(session, &history_source, &error),
@@ -31485,6 +40785,18 @@ static void test_stream_client_history_tool_order(test_state *state) {
         1U) {
       test_fail(state, "stream_client_history_tool_call_once",
                 "client history duplicated streamed function call output");
+    }
+    if (test_count_substrings(history_json,
+                              "\"type\":\"function_call_output\"") != 1U) {
+      test_fail(state, "stream_client_history_tool_output_once",
+                "client history duplicated streamed function call output");
+    }
+    if (test_count_substrings(history_json, "\"type\":\"custom_tool_call\"") !=
+            1U ||
+        test_count_substrings(history_json,
+                              "\"type\":\"custom_tool_call_output\"") != 1U) {
+      test_fail(state, "stream_client_history_custom_call_once",
+                "client history duplicated streamed custom tool output");
     }
   }
 
@@ -31903,6 +41215,21 @@ static void test_session_state_validation(test_state *state) {
   cai_source_close(source);
   source = NULL;
 
+  reader.text = "{\"version\":1,\"goal_objective\":\"wait\","
+                "\"goal_status\":\"unknown\"}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "state_validation_unknown_goal_status_source",
+             cai_source_from_callbacks(&source_callbacks, &source, &error),
+             CAI_OK);
+  expect_int(state, "state_validation_unknown_goal_status",
+             cai_session_import_state_source(restored, source, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_source_close(source);
+  source = NULL;
+
   reader.text = "{\"version\":2,\"previous_response_id\":\"resp_a\"}";
   reader.offset = 0U;
   reader.closed = 0;
@@ -31915,6 +41242,53 @@ static void test_session_state_validation(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
+  cai_source_close(source);
+  source = NULL;
+
+  reader.text = "{\"version\":1,\"goal_objective\":\"wait\","
+                "\"goal_status\":\"active\",\"goal_tokens_used\":-1}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "state_validation_negative_goal_usage_source",
+             cai_source_from_callbacks(&source_callbacks, &source, &error),
+             CAI_OK);
+  expect_int(state, "state_validation_negative_goal_usage",
+             cai_session_import_state_source(restored, source, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_source_close(source);
+  source = NULL;
+
+  reader.text = "{\"version\":1,\"goal_objective\":\"wait\","
+                "\"goal_status\":\"active\",\"goal_token_budget\":0}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "state_validation_nonpositive_goal_budget_source",
+             cai_source_from_callbacks(&source_callbacks, &source, &error),
+             CAI_OK);
+  expect_int(state, "state_validation_nonpositive_goal_budget",
+             cai_session_import_state_source(restored, source, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  cai_source_close(source);
+  source = NULL;
+
+  reader.text = "{\"version\":1,\"goal_objective\":\"wait\","
+                "\"goal_status\":\"active\",\"goal_blocked_attempts\":2,"
+                "\"goal_turn_count\":0,\"goal_blocked_last_turn\":-1}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  expect_int(state, "state_validation_goal_counter_source",
+             cai_source_from_callbacks(&source_callbacks, &source, &error),
+             CAI_OK);
+  expect_int(state, "state_validation_goal_counter_import",
+             cai_session_import_state_source(restored, source, &error), CAI_OK);
+  expect_int(state, "state_validation_goal_counter_reset",
+             CAI_SESSION_IMPL(restored)->goal_blocked_attempts, 0L);
+  expect_int(state, "state_validation_goal_counter_last_turn_reset",
+             CAI_SESSION_IMPL(restored)->goal_blocked_last_turn, -1L);
   cai_source_close(source);
   source = NULL;
 
@@ -32087,8 +41461,8 @@ static void test_stream_openrouter_metadata_events(test_state *state) {
                                                 NULL, &usage, &error),
              CAI_OK);
   expect_str(state, "stream_or_metadata_output", writer.buffer, "or text");
-  expect_str(state, "stream_or_metadata_reasoning", reasoning_writer.buffer,
-             "[r] or thought\n\n");
+  expect_str(state, "stream_or_metadata_raw_reasoning_not_exposed",
+             reasoning_writer.buffer, "");
   expect_int(state, "stream_or_metadata_usage_total", usage.total_tokens, 11L);
   expect_int(state, "stream_or_metadata_usage_cached",
              usage.input_cached_tokens, 2L);
@@ -32654,6 +42028,7 @@ static const test_entry test_entries[] = {
     {"chatgpt_auth_stream_refresh_retry",
      test_chatgpt_auth_stream_refresh_retry},
     {"chatgpt_auth_default_path", test_chatgpt_auth_default_path},
+    {"chatgpt_auth_blob_store", test_chatgpt_auth_blob_store},
     {"chatgpt_auth_open_default_path", test_chatgpt_auth_open_default_path},
     {"chatgpt_auth_client_defaults_to_codex_backend",
      test_chatgpt_auth_client_defaults_to_codex_backend},
@@ -32692,13 +42067,65 @@ static const test_entry test_entries[] = {
     {"session_spooled_input_failure_ownership",
      test_session_spooled_input_failure_ownership},
     {"agent_client_history_continuity", test_agent_client_history_continuity},
+    {"global_skills_catalog", test_global_skills_catalog},
+    {"smith_profile", test_smith_profile},
+    {"smith_review_runtime", test_smith_review_runtime},
+    {"smith_review_parent_handoff", test_smith_review_parent_handoff},
+    {"agent_runtime_subagent", test_agent_runtime_subagent},
+    {"agent_runtime_subagent_mcp_snapshot",
+     test_agent_runtime_subagent_mcp_snapshot},
+    {"agent_runtime_failed_subagent_resume",
+     test_agent_runtime_failed_subagent_resume},
+    {"agent_runtime_poll_only_subagent", test_agent_runtime_poll_only_subagent},
+    {"agent_runtime_review_subagent", test_agent_runtime_review_subagent},
+    {"smith_review_pause_checkpoint_failure",
+     test_smith_review_pause_checkpoint_failure},
+    {"agent_runtime_lifecycle", test_agent_runtime_lifecycle},
+    {"agent_runtime_terminal_callback_close",
+     test_agent_runtime_terminal_callback_close},
+    {"agent_runtime_queued_turns", test_agent_runtime_queued_turns},
+    {"agent_runtime_semantic_events", test_agent_runtime_semantic_events},
+    {"agent_runtime_poll_only", test_agent_runtime_poll_only},
+    {"agent_runtime_host_goal_controls", test_agent_runtime_host_goal_controls},
+    {"agent_runtime_goal_checkpoint_watermark",
+     test_agent_runtime_goal_checkpoint_watermark},
+    {"agent_runtime_goal_create_status_allocation_failure",
+     test_agent_runtime_goal_create_status_allocation_failure},
+    {"agent_runtime_goal_budget", test_agent_runtime_goal_budget},
+    {"agent_runtime_goal_usage_limit", test_agent_runtime_goal_usage_limit},
+    {"agent_local_session_store", test_agent_local_session_store},
+    {"agent_runtime_explicit_local_store_opaque_id",
+     test_agent_runtime_explicit_local_store_opaque_id},
+    {"agent_local_session_store_scope_parent_sync",
+     test_agent_local_session_store_scope_parent_sync},
+    {"agent_local_session_store_root_parent_sync",
+     test_agent_local_session_store_root_parent_sync},
+    {"agent_local_session_store_rejects_long_default_path",
+     test_agent_local_session_store_rejects_long_default_path},
+    {"agent_local_session_store_rejects_file_root",
+     test_agent_local_session_store_rejects_file_root},
+    {"agent_local_session_store_rejects_insecure_root",
+     test_agent_local_session_store_rejects_insecure_root},
+    {"agent_local_session_store_rejects_unsafe_scope",
+     test_agent_local_session_store_rejects_unsafe_scope},
+    {"agent_runtime_resume", test_agent_runtime_resume},
+    {"agent_runtime_markdown_export", test_agent_runtime_markdown_export},
+    {"goal_tools", test_goal_tools},
+    {"goal_create_allocation_failure", test_goal_create_allocation_failure},
+    {"patch_tool", test_patch_tool},
     {"agent_tool_declarations", test_agent_tool_declarations},
     {"agent_tool_manual_step", test_agent_tool_manual_step},
     {"agent_auto_compaction", test_agent_auto_compaction},
     {"http_response_limit", test_http_response_limit},
     {"agent_tool_auto_run", test_agent_tool_auto_run},
+    {"agent_custom_tool_auto_run", test_agent_custom_tool_auto_run},
+    {"agent_custom_tool_client_history_auto_run",
+     test_agent_custom_tool_client_history_auto_run},
     {"agent_client_history_tool_auto_run",
      test_agent_client_history_tool_auto_run},
+    {"agent_client_history_tool_callback_durability",
+     test_agent_client_history_tool_callback_durability},
+    {"agent_view_image_auto_run", test_agent_view_image_auto_run},
     {"revgeo_tool", test_revgeo_tool},
     {"todo_file_store_initializes_under_lock",
      test_todo_file_store_initializes_under_lock},
@@ -32706,10 +42133,26 @@ static const test_entry test_entries[] = {
     {"todo_callback_store", test_todo_callback_store},
     {"searxng_registry_tool", test_searxng_registry_tool},
     {"exec_tool", test_exec_tool},
+    {"terminal_output_limit_clamp", test_terminal_output_limit_clamp},
+    {"terminal_registration_rollback", test_terminal_registration_rollback},
+    {"terminal_tools", test_terminal_tools},
+    {"terminal_buffered_output_returns_immediately",
+     test_terminal_buffered_output_returns_immediately},
+    {"terminal_sink_failure_preserves_output",
+     test_terminal_sink_failure_preserves_output},
+    {"terminal_capture_truncation", test_terminal_capture_truncation},
+    {"terminal_reader_start_failure", test_terminal_reader_start_failure},
+    {"terminal_external_child_reap", test_terminal_external_child_reap},
+    {"terminal_closes_inherited_fds", test_terminal_closes_inherited_fds},
+    {"terminal_concurrent_start", test_terminal_concurrent_start},
+    {"terminal_concurrent_operation", test_terminal_concurrent_operation},
     {"read_tool", test_read_tool},
+    {"view_image_tool", test_view_image_tool},
     {"agent_searxng_tool_auto_run", test_agent_searxng_tool_auto_run},
     {"agent_multi_tool_auto_run", test_agent_multi_tool_auto_run},
     {"agent_tool_auto_round_limit", test_agent_tool_auto_round_limit},
+    {"agent_tool_auto_default_unbounded",
+     test_agent_tool_auto_default_unbounded},
     {"agent_tool_error_output_continues",
      test_agent_tool_error_output_continues},
     {"agent_tool_output_max_bytes", test_agent_tool_output_max_bytes},
@@ -32752,6 +42195,8 @@ static const test_entry test_entries[] = {
     {"stream_openrouter_metadata_events",
      test_stream_openrouter_metadata_events},
     {"session_stream_auto_tool_run", test_session_stream_auto_tool_run},
+    {"session_stream_auto_custom_empty_tool_run",
+     test_session_stream_auto_custom_empty_tool_run},
     {"session_stream_auto_tool_error_output_continues",
      test_session_stream_auto_tool_error_output_continues},
     {"session_stream_auto_source_tool_run",

@@ -78,7 +78,7 @@ typedef enum cai_status {
   CAI_ERR_SERVER = 5,
   /** Operation was cancelled. */
   CAI_ERR_CANCELLED = 6,
-  /** Configured usage or spend budget was exceeded. */
+  /** A configured local or provider usage/output limit was reached. */
   CAI_ERR_LIMIT = 7
 } cai_status;
 
@@ -330,6 +330,8 @@ typedef struct cai_agent_config {
 
 /** Let the API decide whether to stream reasoning summaries. */
 #define CAI_REASONING_SUMMARY_AUTO "auto"
+/** Do not request reasoning summaries. */
+#define CAI_REASONING_SUMMARY_NONE "none"
 /** Concise reasoning summary mode. */
 #define CAI_REASONING_SUMMARY_CONCISE "concise"
 /** Detailed reasoning summary mode. */
@@ -384,6 +386,8 @@ typedef struct cai_tool_event {
   int type;
   /** Tool name. */
   const char *name;
+  /** Provider-issued stable identifier for this invocation. */
+  const char *call_id;
   /** Tool arguments as JSON when available as a string. */
   const char *arguments_json;
   /** Tool arguments as a spooled JSON value when large. */
@@ -397,6 +401,13 @@ typedef struct cai_tool_event {
 /** Callback invoked for tool start/output/error events. */
 typedef int (*cai_tool_event_fn)(void *context, const cai_tool_event *event,
                                  cai_error *error);
+/**
+ * Callback invoked after a completed local tool round, before continuation.
+ * Client-history sessions have committed the safe tool result before this
+ * callback; the callback may queue additional session input for continuation.
+ */
+typedef int (*cai_tool_round_completed_fn)(void *context, cai_session *session,
+                                           cai_error *error);
 
 /** Common cursor pagination parameters. */
 typedef struct cai_list_params {
@@ -410,8 +421,15 @@ typedef struct cai_list_params {
 
 /** Options controlling local tool auto-run loops. */
 typedef struct cai_run_options {
-  /** Maximum auto-run tool rounds; zero uses default. */
+  /**
+   * Maximum auto-run tool rounds. Zero keeps running until the model stops,
+   * cancellation, or another execution policy ends the run. A positive value
+   * is an explicit caller-selected cap, primarily useful for bounded harnesses
+   * and tests.
+   */
   int max_tool_rounds;
+  /** Maximum calls in one tool round; zero leaves the count unrestricted. */
+  int max_tool_calls_per_round;
   /** Non-zero disables local tool auto-run. */
   int disable_tool_auto_run;
   /** In-memory tool output spool limit before spilling. */
@@ -424,6 +442,17 @@ typedef struct cai_run_options {
   cai_tool_event_fn tool_event;
   /** Context passed to tool_event. */
   void *tool_event_context;
+  /** Optional safe boundary after tools complete and before continuation. */
+  cai_tool_round_completed_fn tool_round_completed;
+  /** Context passed to tool_round_completed. */
+  void *tool_round_completed_context;
+  /**
+   * Optional boundary after safe local tool-result history and callback input
+   * are committed, before the continuation request can begin.
+   */
+  cai_tool_round_completed_fn tool_round_durable;
+  /** Context passed to tool_round_durable. */
+  void *tool_round_durable_context;
 } cai_run_options;
 
 /** Source read callback. Returns bytes read, 0 for EOF or error. */
@@ -497,6 +526,8 @@ typedef struct cai_response_tool_call {
   int output_index;
   struct lonejson_spooled arguments_spooled;
   int has_arguments_spooled;
+  /** Non-zero when this is a Responses `custom_tool_call`. */
+  int is_custom;
 } cai_response_tool_call;
 
 /** Private output item storage for cai_response. */
@@ -797,6 +828,13 @@ typedef int (*cai_stream_output_item_done_fn)(
 typedef int (*cai_stream_output_text_delta_fn)(
     void *context, const char *item_id, int output_index,
     const struct lonejson_spooled *delta, cai_error *error);
+/**
+ * Callback after one streamed model response completes successfully.
+ *
+ * Session streaming invokes this after CAI has durably recorded the response.
+ */
+typedef int (*cai_stream_response_completed_fn)(void *context,
+                                                cai_error *error);
 
 /** Static or dynamic prefix/suffix emitted around stream sections. */
 typedef struct cai_stream_affix {
@@ -828,6 +866,12 @@ typedef struct cai_stream_sinks {
   cai_stream_function_call_done_fn function_call_arguments_done;
   /** Context passed to function-call callbacks. */
   void *function_call_context;
+  /** Callback for streamed custom/freeform tool input. */
+  cai_stream_function_call_delta_fn custom_tool_call_input_delta;
+  /** Callback for completed custom/freeform tool input. */
+  cai_stream_function_call_done_fn custom_tool_call_input_done;
+  /** Context passed to custom/freeform tool callbacks. */
+  void *custom_tool_call_context;
   /** Callback for completed output items. */
   cai_stream_output_item_done_fn output_item_done;
   /** Context passed to output_item_done. */
@@ -836,6 +880,10 @@ typedef struct cai_stream_sinks {
   cai_stream_output_text_delta_fn output_text_delta;
   /** Context passed to output_text_delta. */
   void *output_text_context;
+  /** Callback after each streamed model response completes successfully. */
+  cai_stream_response_completed_fn response_completed;
+  /** Context passed to response_completed. */
+  void *response_completed_context;
 } cai_stream_sinks;
 
 /** Typed lonejson-backed tool callback. */
@@ -850,6 +898,23 @@ typedef int (*cai_tool_raw_fn)(void *context, const char *arguments_json,
 typedef int (*cai_tool_raw_spooled_fn)(void *context,
                                        struct lonejson_spooled *arguments_json,
                                        cai_sink *output, cai_error *error);
+/** Raw-input callback for a Responses custom/freeform tool. */
+typedef int (*cai_tool_custom_fn)(void *context, const char *input,
+                                  cai_sink *output, cai_error *error);
+/** Spooling custom/freeform callback for unbounded model-produced input. */
+typedef int (*cai_tool_custom_spooled_fn)(void *context,
+                                          struct lonejson_spooled *input,
+                                          cai_sink *output, cai_error *error);
+
+/** Grammar format for a Responses custom/freeform tool. */
+typedef struct cai_custom_tool_format {
+  /** Format type; currently Responses uses `grammar`. */
+  const char *type;
+  /** Grammar syntax; Codex `apply_patch` uses `lark`. */
+  const char *syntax;
+  /** Grammar definition sent verbatim to the Responses API. */
+  const char *definition;
+} cai_custom_tool_format;
 
 /** Duplicate a string using cai ownership for typed tool results. */
 char *cai_tool_result_strdup(const char *value, cai_error *error);
@@ -995,6 +1060,18 @@ struct cai_agent {
                                    const char *schema_json, int strict,
                                    cai_tool_raw_spooled_fn callback,
                                    void *context, cai_error *error);
+  /** Register a custom/freeform local tool. */
+  int (*register_custom_tool)(cai_agent *agent, const char *name,
+                              const char *description,
+                              const cai_custom_tool_format *format,
+                              cai_tool_custom_fn callback, void *context,
+                              cai_error *error);
+  /** Register a spooling custom/freeform local tool. */
+  int (*register_custom_spooled_tool)(cai_agent *agent, const char *name,
+                                      const char *description,
+                                      const cai_custom_tool_format *format,
+                                      cai_tool_custom_spooled_fn callback,
+                                      void *context, cai_error *error);
   /** Register all discovered tools from an MCP client. */
   int (*register_mcp_client_tools)(
       cai_agent *agent, cai_mcp_client *client,
@@ -1299,6 +1376,11 @@ struct cai_response_create_params {
   int (*add_function_tool)(cai_response_create_params *params, const char *name,
                            const char *description, const char *parameters_json,
                            int strict, cai_error *error);
+  /** Add a custom/freeform tool definition to a Responses request. */
+  int (*add_custom_tool)(cai_response_create_params *params, const char *name,
+                         const char *description,
+                         const cai_custom_tool_format *format,
+                         cai_error *error);
   /** Add a hosted tool described by raw JSON. */
   int (*add_hosted_tool_json)(cai_response_create_params *params,
                               const char *tool_json, cai_error *error);
@@ -1313,6 +1395,10 @@ struct cai_response_create_params {
   int (*add_function_call_output)(cai_response_create_params *params,
                                   const char *call_id, const char *output,
                                   cai_error *error);
+  /** Add plain-text output for a custom/freeform tool call. */
+  int (*add_custom_tool_call_output)(cai_response_create_params *params,
+                                     const char *call_id, const char *output,
+                                     cai_error *error);
   /** Add text function-call output. */
   int (*add_function_call_output_text)(cai_response_create_params *params,
                                        const char *call_id, const char *text,
@@ -1474,6 +1560,18 @@ int cai_agent_register_raw_spooled_tool(cai_agent *agent, const char *name,
                                         const char *schema_json, int strict,
                                         cai_tool_raw_spooled_fn callback,
                                         void *context, cai_error *error);
+/** Register a custom/freeform local tool on an agent. */
+int cai_agent_register_custom_tool(cai_agent *agent, const char *name,
+                                   const char *description,
+                                   const cai_custom_tool_format *format,
+                                   cai_tool_custom_fn callback, void *context,
+                                   cai_error *error);
+/** Register a spooling custom/freeform local tool on an agent. */
+int cai_agent_register_custom_spooled_tool(cai_agent *agent, const char *name,
+                                           const char *description,
+                                           const cai_custom_tool_format *format,
+                                           cai_tool_custom_spooled_fn callback,
+                                           void *context, cai_error *error);
 /** Register all discovered tools from an MCP client on an agent. */
 int cai_agent_register_mcp_client_tools(
     cai_agent *agent, cai_mcp_client *client,
@@ -1721,6 +1819,18 @@ struct cai_tool_registry {
                               const char *description, const char *schema_json,
                               int strict, cai_tool_raw_spooled_fn callback,
                               void *context, cai_error *error);
+  /** Register a custom/freeform local tool. */
+  int (*register_custom)(cai_tool_registry *registry, const char *name,
+                         const char *description,
+                         const cai_custom_tool_format *format,
+                         cai_tool_custom_fn callback, void *context,
+                         cai_error *error);
+  /** Register a spooling custom/freeform local tool. */
+  int (*register_custom_spooled)(cai_tool_registry *registry, const char *name,
+                                 const char *description,
+                                 const cai_custom_tool_format *format,
+                                 cai_tool_custom_spooled_fn callback,
+                                 void *context, cai_error *error);
   /** Add all registered tools to a Responses parameter builder. */
   int (*add_to_response_params)(const cai_tool_registry *registry,
                                 cai_response_create_params *params,
@@ -1758,6 +1868,17 @@ int cai_tool_registry_register_raw_spooled(cai_tool_registry *registry,
                                            const char *schema_json, int strict,
                                            cai_tool_raw_spooled_fn callback,
                                            void *context, cai_error *error);
+/** Register a custom/freeform local tool. */
+int cai_tool_registry_register_custom(cai_tool_registry *registry,
+                                      const char *name, const char *description,
+                                      const cai_custom_tool_format *format,
+                                      cai_tool_custom_fn callback,
+                                      void *context, cai_error *error);
+/** Register a spooling custom/freeform local tool. */
+int cai_tool_registry_register_custom_spooled(
+    cai_tool_registry *registry, const char *name, const char *description,
+    const cai_custom_tool_format *format, cai_tool_custom_spooled_fn callback,
+    void *context, cai_error *error);
 /** Add all registered tools to a Responses parameter builder. */
 int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,
                                              cai_response_create_params *params,
@@ -1942,6 +2063,11 @@ int cai_response_create_params_add_function_tool(
     cai_response_create_params *params, const char *name,
     const char *description, const char *parameters_json, int strict,
     cai_error *error);
+/** Add a custom/freeform tool definition to a Responses request. */
+int cai_response_create_params_add_custom_tool(
+    cai_response_create_params *params, const char *name,
+    const char *description, const cai_custom_tool_format *format,
+    cai_error *error);
 /** Add a hosted tool described by raw JSON. */
 int cai_response_create_params_add_hosted_tool_json(
     cai_response_create_params *params, const char *tool_json,
@@ -1957,6 +2083,10 @@ int cai_response_create_params_add_hosted_mcp_tool(
     const cai_hosted_mcp_tool_config *config, cai_error *error);
 /** Add raw JSON function-call output. */
 int cai_response_create_params_add_function_call_output(
+    cai_response_create_params *params, const char *call_id, const char *output,
+    cai_error *error);
+/** Add plain-text output for a custom/freeform tool call. */
+int cai_response_create_params_add_custom_tool_call_output(
     cai_response_create_params *params, const char *call_id, const char *output,
     cai_error *error);
 /** Add text function-call output. */
@@ -2068,6 +2198,9 @@ const char *cai_response_tool_call_name(const cai_response *response,
 /** Return tool call arguments JSON by index, or NULL. */
 const char *cai_response_tool_call_arguments(const cai_response *response,
                                              size_t index);
+/** Return non-zero when a tool call used the custom/freeform transport. */
+int cai_response_tool_call_is_custom(const cai_response *response,
+                                     size_t index);
 /** Return spooled tool call arguments JSON by index, or NULL. */
 const struct lonejson_spooled *
 cai_response_tool_call_arguments_spooled(const cai_response *response,

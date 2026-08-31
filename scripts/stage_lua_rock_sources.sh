@@ -61,13 +61,11 @@ files=(
   scripts/build_lua_rock.sh
   scripts/render_release_rockspec.sh
   lua/cai_lua.c
-  include/cai/cai.h
-  include/cai/mcp.h
-  include/cai/models.h
-  include/cai/tools/revgeo.h
-  include/cai/tools/searxng.h
-  include/cai/tools/todo.h
 )
+
+while IFS= read -r header; do
+  files+=("$header")
+done < <(cd "$repo_root" && find include/cai -type f -name '*.h' -print | sort)
 
 rm -rf "$stage_dir"
 mkdir -p "$stage_dir"

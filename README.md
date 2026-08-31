@@ -33,8 +33,8 @@ points for existing event loops, HTTP servers, loggers, and dependency stacks.
 - Streamable HTTP MCP handler for serving cai tools through an embedding-owned
   HTTP server, plus a Streamable HTTP MCP client for consuming remote tools,
   resources, prompts, and completions.
-- ChatGPT subscription authentication with Codex-compatible `auth.json`,
-  browser OAuth login helper, token persistence, and transparent one-shot
+- ChatGPT subscription authentication with CAI-owned, Codex-wire-compatible
+  `auth.json`, browser OAuth login helper, token persistence, and transparent one-shot
   refresh retry on 401/403.
 - Usage accounting with per-client and per-session limits for input tokens,
   output tokens, total tokens, requests, and estimated USD spend.
@@ -47,22 +47,52 @@ points for existing event loops, HTTP servers, loggers, and dependency stacks.
   deterministic examples, AFL++ fuzzing, ASan/UBSan and Valgrind memory
   checks, and release artifact validation.
 
+## Agent Runtimes and Smith
+
+`cai_agent_runtime` is CAI's host-neutral agent-mode loop: it owns the worker,
+serial tool dispatch, durable checkpoints, and an event queue, while the host
+owns input, rendering, and its application event loop. An event callback is
+delivered only when the owner thread calls `cai_agent_runtime_pump`; a
+poll-only runtime deliberately suppresses presentation events and exposes state
+only. Hosts can use the borrowed wakeup descriptor with `poll`/`select`, copy
+streamed text or provider-issued reasoning summaries into any renderer, and
+call the explicit threadsafe input methods from an input thread.
+
+The built-in `smith` preset is CAI's Codex-inspired coding-agent profile. It
+uses the native `apply_patch`, sandboxed file/image tools, optional MCP and
+image generation, durable goals, and one managed PTY terminal slot with only
+one active command. `submit_steering` queues interactive direction for the
+next safe model/tool boundary; `submit_queued` queues an ordinary FIFO turn
+for after the active turn completes. CAI deliberately does not parse slash
+commands or render a UI: downstream applications map their own controls to
+those APIs, review lifecycle calls, and runtime Markdown export.
+
+Smith defaults to `gpt-5.6-terra` with medium reasoning and provider-directed
+`auto` reasoning summaries. The C and Lua Smith terminal examples intentionally
+use `gpt-5.6-luna` and CAI-owned ChatGPT subscription authentication to keep
+interactive use and opt-in live acceptance economical. Run `make chatgpt-login`
+once; CAI reads its own XDG state file (or `CAI_CHATGPT_AUTH_JSON`) and never
+reads or refreshes Codex's auth state. See
+[the Smith specification](docs/agent-smith-spec.md) and
+[the examples guide](examples/README.md#smith-terminal) for the complete
+runtime, review, storage, and presentation contracts.
+
 ## Release Scope
 
-The first release is focused on the C SDK and Lua 5.5 facade for Responses API
+The current release line is focused on the C SDK and Lua 5.5 facade for Responses API
 agents: Responses, Conversations, HTTP/SSE streaming, Responses WebSocket,
 ChatGPT subscription auth, agent/session DX, local tools, MCP tool serving and
 client connectivity, examples, LuaRock packaging, and release packaging.
 
-Realtime WebSocket is intentionally not part of the first release. OpenAI's
+Realtime WebSocket is intentionally not part of the current release line. OpenAI's
 Realtime WebSocket API is a separate low-latency text/audio surface from
 Responses WebSocket, and it is tracked separately in [ROADMAP.md](ROADMAP.md).
 
 ## Release Readiness
 
-cai is in first-release hardening. The public C and Lua API surfaces are meant
-to be close to initial release shape, but may still change before the first
-published tag when verification or DX finds a better interface.
+cai is pre-1.0 and continues to harden its public C and Lua API surfaces.
+Compatibility-sensitive changes are made deliberately and verified through the
+release SDK, Lua, and downstream-consumer gates.
 
 The verification tiers are split intentionally:
 
@@ -131,11 +161,13 @@ The verification tiers are split intentionally:
   `getenv(config.api_key_env)`. If `api_key_env` is NULL, cai uses
   `OPENAI_API_KEY`. It does not implicitly load dotenv files.
 - ChatGPT subscription auth can be supplied explicitly through
-  `cai_chatgpt_auth` from `cai/auth.h`. Open a Codex-compatible `auth.json`
-  path with `cai_chatgpt_auth_open`, set `config.chatgpt_auth`, and keep the
-  auth handle alive for the client lifetime. If `auth_json_path` is NULL/empty,
-  the auth library uses `$XDG_CONFIG_HOME/cai/auth.json`, or
-  `$HOME/.config/cai/auth.json` when `XDG_CONFIG_HOME` is unset or relative.
+  `cai_chatgpt_auth` from `cai/auth.h`. Open a CAI-owned, Codex-wire-compatible
+  `auth.json` path with `cai_chatgpt_auth_open`, set `config.chatgpt_auth`, and
+  keep the auth handle alive for the client lifetime. If `auth_json_path` is
+  NULL/empty, the auth library uses `$XDG_STATE_HOME/cai/auth.json`, or
+  `$HOME/.local/state/cai/auth.json` when `XDG_STATE_HOME` is unset or
+  relative. CAI never reads, refreshes, or writes Codex's auth storage. Run
+  `make chatgpt-login` to create CAI's default auth file through browser OAuth.
   cai reads `id_token`, `access_token`, `refresh_token`, and `account_id` from
   the file, refreshes access tokens through the configured OAuth issuer before
   expiry, persists returned token fields, and retries one 401/403 response
@@ -234,8 +266,38 @@ or spooled reader to stream JSON output without building the full value first.
 
 The Lua facade intentionally does not expose C-only embedding surfaces such as
 custom allocators, `FILE *`, `lc_source` / `lc_sink`, raw `cai_source` /
-`cai_sink` constructors, lonejson C maps, or custom todo storage callbacks.
-Lua code uses Lua callbacks/readers/writers for those integration points.
+`cai_sink` constructors, or lonejson C maps. A Lua host written in C can expose
+any current CAI persistent backend through one constructor:
+
+```lua
+local backend = assert(cai.native_store(kind, callbacks, context))
+```
+
+`kind` is `"todo"` for a `cai_todo_store_callbacks` pointer plus its opaque
+context, `"mcp_session"` for a `cai_mcp_session_callbacks` pointer plus its
+opaque context, `"skills"` for a complete `cai_skill_provider` pointer, or
+`"agent_session"` for a complete
+`cai_agent_session_store` pointer (which already contains its context; pass no
+third argument). `"blob"` accepts a `cai_blob_store` pointer (which already
+contains its context; pass no third argument) and is used as `storage` for
+ChatGPT auth/login or as `global_instruction_store` for Smith. The embedding
+host supplies those pointers as lightuserdata;
+CAI copies the callback table before returning the Lua userdata. Pass a skills
+handle as `skill_provider` (or set `skills_directory`) on a Smith/custom agent
+configuration; it supplies the global catalog and constrained `read_skill`
+tool without exposing the host's config directory as a workspace file root.
+The host must keep the opaque context valid for the handle's documented
+lifetime; the lightuserdata itself is only an embedding boundary and must not
+be supplied by untrusted Lua code.
+
+Pass the handle as `store` to `register_todo_tool`, as `session` to
+`cai.mcp_handler`, or as `session_store` to `new_smith_runtime`. Handles are
+typed and cannot be used on the wrong surface. Todo and MCP handles transfer to
+their registered owner and call the native `destroy` / `cleanup` hook exactly
+once. Agent-session stores remain owned by the native host; CAI pins their Lua
+handle until the Smith runtime has closed. No native-store callback enters a
+`lua_State`. Pure Lua continues to use `store_path` / `lock_path` for todo and
+may use the existing Lua callback table for MCP sessions.
 
 The Lua examples include a basic streaming agent, a terminal chatbot with
 SearXNG and todo/kanban tools, streamed tool output, low-level conversation
@@ -338,19 +400,24 @@ that include lonejson-backed cai headers or use static linking still need the
 lonejson development package. The pkg-config file exposes lonejson as a public
 requirement and libcurl 7.86.0 or newer as a private link requirement.
 `pslog.h`/`libpslog` is only needed by source builds, logging integrations
-that construct pslog loggers directly, and the MCP server examples. cai
+that construct pslog loggers directly, and the logging-enabled MCP and Smith
+terminal examples. cai
 release archives do not compile in single-header dependency variants.
 
 ## Logging
 
-`cai_client_config.logger` accepts a borrowed `pslog_logger *`. cai never owns
-or destroys that logger; set `logger_disabled` to nonzero to suppress logging
-even when a logger is present.
+`cai_client_config.logger` and `cai_agent_runtime_config.logger` accept a
+borrowed `pslog_logger *`. CAI never owns or destroys either logger. A runtime
+inherits its client logger when no runtime logger is supplied; set the relevant
+`logger_disabled` field to nonzero to suppress logging.
 
-Current cai-owned log events cover client setup, OpenRouter server-continuity
+Current cai-owned log events cover client setup, runtime open/input/tool/
+subagent lifecycle, OpenRouter server-continuity
 warnings, HTTP request start/completion, API error status responses, transport
 failures, and configured HTTP response-size limit failures. API keys and
-request/response bodies are not logged. HTTP request starts are trace-level,
+request/response bodies are not logged; runtime logs likewise exclude user
+prompts, tool arguments, delegated instructions, and streamed model output.
+HTTP request starts are trace-level,
 successful completions are debug-level, 4xx API responses are warn-level, and
 5xx/transport failures are error-level.
 
@@ -714,12 +781,16 @@ Dedicated fuzzers cover the most exposed cai surfaces:
   to disk
 - `cai_todo_fuzz`: todo/kanban rewrite, persistence, and structured operation
   churn
+- `cai_patch_fuzz`: native `apply_patch` parsing and application through both
+  the direct API and the model-facing spooled custom-tool path, including
+  short raw-read boundaries and isolated workspace fixtures
 
 The fuzz build also registers corpus-replay smoke tests in CTest so every
 harness is built and executed in the standard gate for the `fuzz` preset.
 Checked-in corpora under `tests/fuzz-corpus/` seed the harnesses with realistic
 Responses SSE transcripts, response JSON, MCP JSON-RPC envelopes, session
-history/state documents, and todo tool operations. `make fuzz-long` runs a
+history/state documents, todo tool operations, and Codex-style patches.
+`make fuzz-long` runs a
 longer bounded AFL++ campaign, controlled by `CAI_FUZZ_LONG_SECONDS` per
 target (120 seconds by default).
 
@@ -755,8 +826,8 @@ large frames, pre-stream transient retry, midstream disconnect failure,
 multi-turn server-side continuation, stale keepalive reconnect, usage capture,
 and response id propagation. Live integration tests exercise the same public
 streaming APIs against OpenAI and ChatGPT subscription auth, including
-multi-turn sessions and streaming tool calls. The dedicated live OpenAI
-WebSocket selector is `CAI_INTEGRATION_RESPONSES_WEBSOCKET_E2E=1`; simulated
+multi-turn sessions and streaming tool calls. The dedicated live ChatGPT
+WebSocket selector is `CAI_INTEGRATION_CHATGPT_RESPONSES_WEBSOCKET_E2E=1`; simulated
 disconnect/reconnect fault injection is covered by the mock WebSocket server
 instead of trying to break the real OpenAI service connection.
 
@@ -1064,19 +1135,35 @@ tokens and must be run explicitly through the lifecycle opt-in gate:
 ```sh
 CAI_ENABLE_INTEGRATION_TESTS=1 make test-integration
 CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-live
+# Run the Lua-owned Smith coding/review scenario through the installed LuaRock.
+CAI_ENABLE_INTEGRATION_TESTS=1 make test-lua-smith-e2e
 ```
 
 Once integration tests are enabled, CTest enumerates the real API e2e cases.
 The environment variables below are internal selectors for running one
 scenario directly from an already-built integration preset, not opt-in gates
-for the integration suite.
+for the integration suite. ChatGPT subscription scenarios use
+`CAI_CHATGPT_AUTH_JSON` when set, otherwise CAI's normal
+`cai_chatgpt_auth_default_path`. If no CAI auth file is available, run
+`make chatgpt-login`.
 
 ```sh
 bash ./scripts/build.sh integration
 
 CAI_INTEGRATION_TODO_WORKFLOW=1 build/integration/cai_integration_tests
 build/integration/cai_integration_tests
+CAI_INTEGRATION_CHATGPT_E2E=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_CHATGPT_USAGE_LIMITS=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_CHATGPT_SMITH_E2E=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_CHATGPT_SMITH_REVIEW_E2E=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_CHATGPT_STATE_RESTORE=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_CHATGPT_COMPACTION=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_CHATGPT_TOOL_SECURITY=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_CHATGPT_HOSTED_WEB_SEARCH=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_CHATGPT_RESPONSES_WEBSOCKET_E2E=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_CHATGPT_EXEC_TOOL=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_CHATGPT_READ_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_DOTENV=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_SESSION=1 build/integration/cai_integration_tests
@@ -1086,18 +1173,9 @@ CAI_INTEGRATION_OPENROUTER_STREAM_HISTORY=1 build/integration/cai_integration_te
 CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_READ_TOOL=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_OPENROUTER_E2E=1 build/integration/cai_integration_tests
-CAI_INTEGRATION_HOSTED_WEB_SEARCH=1 build/integration/cai_integration_tests
-CAI_INTEGRATION_RESPONSES_WEBSOCKET_E2E=1 build/integration/cai_integration_tests
-CAI_INTEGRATION_SEARXNG_TOOL=1 build/integration/cai_integration_tests
-CAI_INTEGRATION_SEARXNG_STREAM_TOOL=1 build/integration/cai_integration_tests
-CAI_INTEGRATION_TOOL_SECURITY=1 build/integration/cai_integration_tests
-CAI_INTEGRATION_EXEC_TOOL=1 build/integration/cai_integration_tests
-CAI_INTEGRATION_READ_TOOL=1 build/integration/cai_integration_tests
-CAI_INTEGRATION_E2E=1 build/integration/cai_integration_tests
-CAI_INTEGRATION_STATE_RESTORE=1 build/integration/cai_integration_tests
-CAI_LUA_HOSTED_WEB_SEARCH_E2E=1 ctest --preset integration -R cai_lua_hosted_web_search_e2e --output-on-failure
-CAI_LUA_TOOL_STREAM_E2E=1 ctest --preset integration -R cai_lua_tool_stream_e2e --output-on-failure
-CAI_LUA_SESSION_E2E=1 ctest --preset integration -R cai_lua_session_continuity_e2e --output-on-failure
+ctest --preset integration -R cai_lua_chatgpt_hosted_web_search_e2e --output-on-failure
+ctest --preset integration -R cai_lua_chatgpt_tool_stream_e2e --output-on-failure
+ctest --preset integration -R cai_lua_chatgpt_session_continuity_e2e --output-on-failure
 ```
 
 `CAI_INTEGRATION_OPENROUTER_DOTENV=1` clears any inherited
@@ -1113,6 +1191,16 @@ and `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES` unless
 `CAI_INTEGRATION_OPENROUTER_SESSION=1` runs a two-turn OpenRouter session
 continuity check using cai's client-side history replay mode. It does not test
 OpenAI Conversations or server-side compaction on OpenRouter.
+
+Every OpenAI-hosted probe in the routine live integration matrix uses ChatGPT
+subscription authentication; it never resolves `OPENAI_API_KEY` or loads an
+OpenAI dotenv key. Subscription probes use only GPT-5.6 Luna or GPT-5 Nano.
+If the configured auth file cannot be read or refreshed, the selected test
+fails rather than falling back to an API key. The separate API-key example
+smoke remains available only through the explicit
+`CAI_REGISTER_API_KEY_EXAMPLE_SMOKE` CMake option and is excluded from normal
+and release live gates. OpenRouter tests retain their independent API-key
+configuration and remain part of the normal live matrix.
 
 `CAI_INTEGRATION_OPENROUTER_TOOL=1` runs a typed lonejson tool-calling
 regression against OpenRouter using client-side history replay and
@@ -1131,7 +1219,7 @@ streaming regression that verifies streamed assistant text is captured into
 cai's client-side history and can be recalled on the next non-streaming turn.
 
 `CAI_INTEGRATION_OPENROUTER_TOOL_SECURITY=1` runs the same hostile tool-output
-regression as `CAI_INTEGRATION_TOOL_SECURITY=1`, but against OpenRouter with
+regression as `CAI_INTEGRATION_CHATGPT_TOOL_SECURITY=1`, but against OpenRouter with
 client-side history replay and the known working free tool-call model.
 
 `CAI_INTEGRATION_OPENROUTER_READ_TOOL=1` runs `list_files`/`read_file` against
@@ -1144,30 +1232,31 @@ OpenRouter using
 `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES` and cai's client-side history replay
 mode. The test paces requests by `CAI_OPENROUTER_E2E_DELAY_SEC`, defaulting to
 4 seconds, because OpenRouter routes can have provider-specific rate limits.
-The OpenAI API-key E2E remains the longer 20-turn eval.
+The ChatGPT-subscription E2E remains the longer 20-turn eval.
 
-`CAI_INTEGRATION_SEARXNG_TOOL=1` runs a real OpenAI tool-calling regression
+`CAI_INTEGRATION_CHATGPT_SEARXNG_TOOL=1` runs a ChatGPT-subscription
+tool-calling regression
 against a local SearXNG endpoint, defaulting to `http://127.0.0.1:8888` and the
 explicit `wikipedia` engine. Start it with `make searxng-up` before running
 the test, or set `CAI_SEARXNG_BASE_URL` to another SearXNG instance.
 
-`CAI_INTEGRATION_SEARXNG_STREAM_TOOL=1` runs the same local SearXNG tool through
-the streaming auto-run path against the real OpenAI API. On OpenAI API-key
-clients this uses the Responses WebSocket transport.
+`CAI_INTEGRATION_CHATGPT_SEARXNG_STREAM_TOOL=1` runs the same local SearXNG
+tool through the streaming auto-run path against the ChatGPT subscription
+backend.
 
-`CAI_INTEGRATION_HOSTED_WEB_SEARCH=1` runs a real OpenAI-hosted `web_search`
+`CAI_INTEGRATION_CHATGPT_HOSTED_WEB_SEARCH=1` runs a ChatGPT-hosted `web_search`
 regression. It uses the generic hosted-tool JSON path, requires a hosted tool
 call, validates structured raw JSON `tool_choice`, verifies
 `max_tool_calls`, checks `/responses/input_tokens`, and fails unless the
 response output items include `web_search_call`.
 
-`CAI_INTEGRATION_RESPONSES_WEBSOCKET_E2E=1` forces the Responses WebSocket
-transport against the real OpenAI API. It runs a multi-turn streamed session,
+`CAI_INTEGRATION_CHATGPT_RESPONSES_WEBSOCKET_E2E=1` forces the Responses
+WebSocket transport against the ChatGPT subscription backend. It runs a multi-turn streamed session,
 alternates `stream`, `stream_text`, and `stream_auto`, forces a streamed local
 tool call, validates streamed tool events and arguments, checks state
 continuity, and verifies token usage on every turn.
 
-`CAI_LUA_HOSTED_WEB_SEARCH_E2E=1` runs the same hosted-tool path from Lua using
+`cai_lua_chatgpt_hosted_web_search_e2e` runs the same hosted-tool path from Lua using
 low-level `response_params` and fails unless the Lua response wrapper exposes a
 `web_search_call` output item, `/responses/input_tokens` returns a positive
 count, and token usage is present in the real API response.
@@ -1177,40 +1266,67 @@ against the default provider and asserts known Gothenburg coordinates resolve
 to Sweden/SE with a recognizable Gothenburg label or city. This does not spend
 OpenAI tokens, but it does call the public geocoding service.
 
-`CAI_INTEGRATION_TOOL_SECURITY=1` runs a real OpenAI tool-output injection
+`CAI_INTEGRATION_CHATGPT_TOOL_SECURITY=1` runs a ChatGPT-subscription
+tool-output injection
 regression. The registered tool returns text that looks like JSON role/system
 messages and direct instructions to override the developer prompt. The test
 passes only if the model treats that output as untrusted tool data and returns
 the expected safe marker.
 
-`CAI_INTEGRATION_EXEC_TOOL=1` runs a real OpenAI streaming tool regression for
+`CAI_INTEGRATION_CHATGPT_EXEC_TOOL=1` runs a ChatGPT-subscription streaming tool regression for
 the `exec_command` preset. The model must call the command tool against a
 temporary sandbox root, run `ls`, `uname`, `cat`, `grep`, and `tar`, and then
 attempt `cat /etc/passwd | head -n 1`. The test verifies tool events, final
 assistant markers, `sandbox="bwrap"`, successful normal command output, and
-that the host `/etc/passwd` escape is denied. On OpenAI API-key clients this
-uses the Responses WebSocket transport.
+that the host `/etc/passwd` escape is denied.
 
-`CAI_INTEGRATION_READ_TOOL=1` runs a real OpenAI streaming tool regression for
+`CAI_INTEGRATION_CHATGPT_READ_TOOL=1` runs a ChatGPT-subscription streaming tool regression for
 the `list_files` and `read_file` presets. The model must inspect a sandboxed
 test tree, read bounded UTF-8 text, avoid binary reads when list hints identify
 a binary candidate, and observe a forced denial when explicitly asked to read a
-binary file. On OpenAI API-key clients this uses the Responses WebSocket
-transport.
+binary file.
 
 `CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E=1` runs an 11-turn ChatGPT
-subscription-auth session against the ChatGPT Codex backend using the default
-auth file from `cai_chatgpt_auth_default_path`. It alternates stream APIs,
-forces tool calls on selected turns, verifies first/current/previous turn
-recall, and exercises transparent token refresh behavior through the same
-Responses WebSocket transport used by ChatGPT-auth streaming sessions.
+subscription-auth session against the ChatGPT Codex backend. It alternates
+stream APIs, forces tool calls on selected turns, verifies first/current/
+previous turn recall, and exercises transparent token refresh behavior through
+the same Responses WebSocket transport used by ChatGPT-auth streaming sessions.
 
-`CAI_INTEGRATION_E2E=1` runs a 20-turn session regression against the real Responses
-API using `gpt-5-nano` by default. It checks every turn for the current secret,
+`CAI_INTEGRATION_CHATGPT_SMITH_E2E=1` is the live Luna-low coding acceptance
+test for `cai_agent_runtime`, using a disposable workspace and local JSONL
+store.
+It proves Smith's runtime event loop, read/patch/read-back flow, one-slot PTY
+terminal start/wait/completion lifecycle, steering delivery after a tool round,
+durable checkpoints, and `resume_latest` continuation. All live Smith tests
+use ChatGPT subscription authentication and GPT-5.6 Luna; they never consume
+an OpenAI API-key budget.
+
+`CAI_INTEGRATION_CHATGPT_SMITH_REVIEW_E2E=1` is the live Luna Smith
+review-handoff regression: its coding turn uses low reasoning effort and its
+isolated reviewer uses medium effort. Its harness creates only an empty,
+locally authored Git fixture; Smith creates, builds, runs, and commits a small
+C/CMake/Makefile project. CAI then launches the isolated interactive review of
+that commit, hands its report to the original Smith runtime, and Smith fixes
+any actionable finding before both independent build paths and clean Git state
+are checked.
+It is registered with the integration label, so
+`CAI_ENABLE_INTEGRATION_TESTS=1 make test-integration` and
+`CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-live` include it.
+
+`CAI_INTEGRATION_CHATGPT_SMITH_SUBAGENTS_E2E=1` is the live Luna acceptance
+test for model-requested synchronous subagents. A parent uses a configured
+checker profile that returns a constrained JSON handover and the built-in
+reviewer against a disposable uncommitted Git fixture. It fails unless both
+handovers return, the reviewer is presented as Markdown, and raw reviewer JSON
+stays out of the parent event stream. The separate review E2E covers the
+configured medium-effort reviewer policy.
+
+`CAI_INTEGRATION_CHATGPT_E2E=1` runs a 20-turn session regression against the
+ChatGPT subscription backend using GPT-5 Nano. It checks every turn for the current secret,
 the first-turn secret, and the previous-turn secret so the test fails if
 session continuity breaks.
 
-`CAI_INTEGRATION_STATE_RESTORE=1` runs a shorter save/restore regression: it
+`CAI_INTEGRATION_CHATGPT_STATE_RESTORE=1` runs a shorter save/restore regression: it
 teaches one exact key, saves the session state to disk, creates a fresh
 session, loads that state, and verifies the next API turn can recall the key
 through the restored continuation handle.
@@ -1219,10 +1335,8 @@ The e2e path enforces a local estimated spend cap using actual token usage and
 compiled model pricing metadata. The default cap is `$0.02`; override it with:
 
 ```sh
-CAI_INTEGRATION_SPEND_LIMIT_USD=0.05 CAI_INTEGRATION_E2E=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_SPEND_LIMIT_USD=0.05 CAI_INTEGRATION_CHATGPT_E2E=1 build/integration/cai_integration_tests
 ```
 
-OpenAI exposes organization-level Usage and Costs APIs, but those are not a
-simple per-secret-key spend-limit API and may require admin-scoped credentials.
-For the integration regression gate, cai therefore treats local estimated spend as the
-hard stop and uses OpenAI billing/cost APIs only as future optional telemetry.
+The generic cost estimator remains useful for the separate OpenRouter matrix.
+Subscription probes report token usage but do not spend an OpenAI API-key budget.

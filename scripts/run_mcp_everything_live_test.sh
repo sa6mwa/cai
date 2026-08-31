@@ -79,7 +79,7 @@ while [[ "$attempt" -le 60 ]]; do
     -d "$init" "$CAI_MCP_EVERYTHING_BASE_URL" >/dev/null 2>&1 &&
     grep -q '"serverInfo"' "$tmpdir/body"; then
     printf 'MCP Everything is ready at %s\n' "$CAI_MCP_EVERYTHING_BASE_URL"
-    CAI_INTEGRATION_MCP_CLIENT_TOOL=1 \
+    CAI_INTEGRATION_CHATGPT_MCP_CLIENT_TOOL=1 \
       CAI_MCP_EVERYTHING_BASE_URL="$CAI_MCP_EVERYTHING_BASE_URL" \
       "$test_binary"
     exit $?

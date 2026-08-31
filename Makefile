@@ -46,10 +46,10 @@ RELEASE_LUA_PACK_SOURCE_TARBALL := $(RELEASE_LUA_PACK_DIR)/cai-lua-$(RELEASE_VER
 RELEASE_LUA_PACK_ROCKSPEC := $(RELEASE_LUA_PACK_DIR)/cai-$(RELEASE_VERSION)-1.rockspec
 RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
 RELEASE_LIVE_GATE_STAMP ?= .cache/release-gates/prerelease-live.stamp
-LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh scripts/build_lua_rock.sh scripts/render_release_rockspec.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE docs/model-metadata.md include/cai/cai.h include/cai/mcp.h include/cai/models.h include/cai/tools/revgeo.h include/cai/tools/searxng.h include/cai/tools/todo.h
+LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh scripts/build_lua_rock.sh scripts/render_release_rockspec.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE docs/model-metadata.md $(shell find include/cai -type f -name '*.h' | sort)
 LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
-.PHONY: help deps-debug deps-release deps-cross build build-debug build-host build-release cross-build integration-build test test-debug test-host test-release test-cross cross-test test-all test-e2e test-integration test-install-tree asan test-asan valgrind fuzz fuzz-smoke fuzz-long coverage test-coverage example-smoke-local example-smoke-live finalize-slice clangd-check prerelease release-pipeline prerelease-live require-prerelease-live require-clean-worktree prerelease-hardening lifecycle-version-contract lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify verify-release-archives verify-release-privacy release-matrix release compose-check dev-up dev-down dev-reset dev-ps dev-logs searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test mcp-inspector-e2e format clean clean-dist
+.PHONY: help deps-debug deps-release deps-cross build build-debug build-host build-release cross-build integration-build chatgpt-login test test-debug test-host test-release test-cross cross-test test-all test-e2e test-integration test-lua-smith-e2e test-smith-goal-e2e test-install-tree asan test-asan valgrind fuzz fuzz-smoke fuzz-long coverage test-coverage example-smoke-local example-smoke-live finalize-slice clangd-check prerelease release-pipeline prerelease-live require-prerelease-live require-clean-worktree prerelease-hardening lifecycle-version-contract lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify verify-release-archives verify-release-privacy release-matrix release compose-check dev-up dev-down dev-reset dev-ps dev-logs searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test mcp-inspector-e2e format clean clean-dist
 
 help:
 	@printf '%s\n' \
@@ -62,6 +62,7 @@ help:
 		'make build-release Configure and build the release target matrix.' \
 		'make cross-build  Run the standard release cross matrix build script.' \
 		'make integration-build  Configure and build the integration preset without running live tests.' \
+		'make chatgpt-login  Sign CAI into ChatGPT and persist CAI-owned XDG state auth.' \
 		'make test         Build and run the debug unit tests.' \
 		'make test-debug   Build and run the debug unit tests.' \
 		'make test-all     Run broad local confidence gates.' \
@@ -70,7 +71,9 @@ help:
 		'make test-release Build and run the release unit tests.' \
 		'make test-cross   Build cross targets; execution is target/tooling dependent.' \
 		'make cross-test   Run the standard release cross matrix test script.' \
-		'make test-integration  Run opt-in OpenAI API integration tests; requires CAI_ENABLE_INTEGRATION_TESTS=1.' \
+		'make test-integration  Run opt-in ChatGPT-subscription integration tests; requires CAI_ENABLE_INTEGRATION_TESTS=1.' \
+		'make test-lua-smith-e2e Run the opt-in Lua Smith coding/review e2e.' \
+		'make test-smith-goal-e2e Run the opt-in short Smith goal e2e.' \
 		'make test-install-tree Verify installed SDK metadata and downstream consumers.' \
 		'make asan         Build and run optional Bootlin ASan/UBSan unit tests.' \
 		'make test-asan    Alias for asan.' \
@@ -81,7 +84,7 @@ help:
 		'make coverage     Build the coverage preset.' \
 		'make test-coverage Run the coverage preset tests.' \
 		'make example-smoke-local  Run deterministic local example smoke checks.' \
-		'make example-smoke-live   Run curated live non-interactive example smoke checks; requires CAI_ENABLE_INTEGRATION_TESTS=1.' \
+		'make example-smoke-live   Removed: use subscription-backed Smith e2e instead.' \
 		'make finalize-slice Run format and debug tests before committing a slice.' \
 		'make clangd-check Run host clangd validation against the native debug compile database.' \
 		'make prerelease   Run the complete local release proof without cleaning first.' \
@@ -151,6 +154,9 @@ cross-build:
 integration-build: $(LUA_PSLOG_ROCK_STAMP)
 	bash ./scripts/build.sh integration
 
+chatgpt-login:
+	$(MAKE) -C examples run-chatgpt-login
+
 test:
 	@printf '%s\n' 'Reminder: run `make format` before committing each slice, or use `make finalize-slice`.'
 	$(MAKE) test-debug
@@ -185,8 +191,26 @@ test-integration:
 		printf '%s\n' 'Refusing to run integration tests without CAI_ENABLE_INTEGRATION_TESTS=1'; \
 		exit 2; \
 	fi
+	$(MAKE) lua-rock
 	$(MAKE) integration-build
-	bash ./scripts/test.sh integration $(CTEST_FLAGS)
+	bash ./scripts/test.sh integration $(CTEST_FLAGS) -R '^(cai_integration_chatgpt_.*|cai_integration_openrouter_.*|cai_lua_chatgpt_.*|cai_lua_smith_e2e|cai_lua_smith_mcp_e2e)$$'
+
+test-lua-smith-e2e:
+	@if [[ "$${CAI_ENABLE_INTEGRATION_TESTS:-}" != "1" ]]; then \
+		printf '%s\n' 'Refusing to run Lua Smith e2e without CAI_ENABLE_INTEGRATION_TESTS=1'; \
+		exit 2; \
+	fi
+	$(MAKE) lua-rock
+	$(MAKE) integration-build
+	$(CTEST) --preset integration --output-on-failure $(CTEST_FLAGS) -R '^cai_lua_smith_e2e$$'
+
+test-smith-goal-e2e:
+	@if [[ "$${CAI_ENABLE_INTEGRATION_TESTS:-}" != "1" ]]; then \
+		printf '%s\n' 'Refusing to run Smith goal e2e without CAI_ENABLE_INTEGRATION_TESTS=1'; \
+		exit 2; \
+	fi
+	$(MAKE) integration-build
+	$(CTEST) --preset integration --output-on-failure $(CTEST_FLAGS) -R '^cai_integration_chatgpt_smith_goal_e2e$$'
 
 test-install-tree: build-debug
 	$(CTEST) --preset debug --output-on-failure $(CTEST_FLAGS) -R '^cai_install_metadata_test$$'
@@ -223,12 +247,8 @@ example-smoke-local: build-debug
 	$(CTEST) --preset debug --output-on-failure $(CTEST_FLAGS) -L example-smoke
 
 example-smoke-live:
-	@if [[ "$${CAI_ENABLE_INTEGRATION_TESTS:-}" != "1" ]]; then \
-		printf '%s\n' 'Refusing to run live example smoke without CAI_ENABLE_INTEGRATION_TESTS=1'; \
-		exit 2; \
-	fi
-	$(MAKE) integration-build
-	$(CTEST) --preset integration --output-on-failure $(CTEST_FLAGS) -R '^cai_examples_live_smoke$$'
+	@printf '%s\n' 'Live example smoke is disabled: it uses API-key authentication. Use make test-integration for subscription-backed coverage.' >&2
+	@exit 2
 
 finalize-slice:
 	$(MAKE) format
@@ -259,7 +279,6 @@ prerelease-live:
 	$(MAKE) require-clean-worktree
 	rm -f "$(RELEASE_LIVE_GATE_STAMP)"
 	$(MAKE) test-integration
-	$(MAKE) example-smoke-live
 	$(MAKE) require-clean-worktree
 	@mkdir -p "$$(dirname "$(RELEASE_LIVE_GATE_STAMP)")"
 	@head="$$(git rev-parse HEAD 2>/dev/null || printf unknown)"; \
@@ -386,7 +405,10 @@ lua-env:
 		"$(CAI_PSLOG_PREFIX)/lib"
 
 lua-test: lua-rock
+	$(CMAKE) --preset debug-lua
+	$(CMAKE) --build --preset debug-lua --target cai_lua_native_todo_store_test
 	eval "$$(luarocks path --tree $(LUA_ROCK_TREE))" && \
+	LUA_CPATH="$(ROOT)/build/debug-lua/lua-test/?.so;$(ROOT)/build/debug-lua/lua-test/?.dylib;$${LUA_CPATH:-}" \
 	LD_LIBRARY_PATH="$(LUA_ROCK_PREFIX)/lib:$(CAI_LONEJSON_PREFIX)/lib:$(CAI_C_PKT_SYSTEMS_PREFIX)/lib:$(CAI_PSLOG_PREFIX)/lib:$${LD_LIBRARY_PATH:-}" \
 	lua tests/lua/test_lua.lua
 	$(CMAKE) --build build/debug --target cai_mcp_http_server
@@ -567,7 +589,7 @@ mcp-everything-live-test:
 		exit 2; \
 	fi
 	$(MAKE) integration-build
-	$(CTEST) --preset integration --output-on-failure $(CTEST_FLAGS) -R '^cai_integration_mcp_client_tool$$'
+	$(CTEST) --preset integration --output-on-failure $(CTEST_FLAGS) -R '^cai_integration_chatgpt_mcp_client_tool$$'
 
 mcp-inspector-e2e:
 	@if [[ "$${CAI_MCP_INSPECTOR_E2E:-}" != "1" ]]; then \

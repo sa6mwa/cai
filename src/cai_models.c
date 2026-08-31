@@ -400,6 +400,25 @@ long long cai_model_auto_compact_token_limit(const char *model_id) {
   return info != NULL ? info->auto_compact_token_limit : 0LL;
 }
 
+const char *cai_model_compaction_compatibility_hash(const char *model_id) {
+  if (model_id == NULL) {
+    return NULL;
+  }
+  if (strcmp(model_id, CAI_MODEL_GPT_5_6) == 0 ||
+      strcmp(model_id, CAI_MODEL_GPT_5_6_SOL) == 0 ||
+      strcmp(model_id, CAI_MODEL_GPT_5_6_TERRA) == 0 ||
+      strcmp(model_id, CAI_MODEL_GPT_5_6_LUNA) == 0) {
+    return "3000";
+  }
+  if (strcmp(model_id, CAI_MODEL_GPT_5_5) == 0 ||
+      strcmp(model_id, CAI_MODEL_GPT_5_5_2026_04_23) == 0 ||
+      strcmp(model_id, CAI_MODEL_GPT_5_5_PRO) == 0 ||
+      strcmp(model_id, CAI_MODEL_GPT_5_5_PRO_2026_04_23) == 0) {
+    return "2911";
+  }
+  return NULL;
+}
+
 int cai_model_can_estimate_usage_usd(const char *model_id) {
   const cai_model_info *info;
 

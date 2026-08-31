@@ -167,6 +167,7 @@ run_live_capture terminal "$tmpdir/terminal.out" env \
   CAI_TODO_STORE="$tmpdir/terminal-todo.json" \
   CAI_TODO_LOCK="$tmpdir/terminal-todo.lock" \
   "$terminal_chat_example" \
+  --api-key \
   <"$tmpdir/terminal.input"
 strip_ansi "$tmpdir/terminal.out" "$tmpdir/terminal.clean"
 grep -F 'hint: pass --exec-tool-dir <path> to enable exec_command rooted to that path' \
@@ -192,6 +193,7 @@ run_live_capture terminal-multiturn "$tmpdir/terminal-multiturn.out" env \
   CAI_TODO_STORE="$tmpdir/terminal-multiturn-todo.json" \
   CAI_TODO_LOCK="$tmpdir/terminal-multiturn-todo.lock" \
   "$terminal_chat_example" \
+  --api-key \
   --exec-tool-dir "$c_terminal_root" \
   --read-tool-dir "$c_terminal_root" \
   <"$tmpdir/terminal-multiturn.input"
@@ -205,6 +207,7 @@ run_live_capture lua-terminal "$tmpdir/lua-terminal.out" env \
   CAI_LUA_TODO_STORE="$tmpdir/lua-terminal-todo.json" \
   CAI_LUA_TODO_LOCK="$tmpdir/lua-terminal-todo.lock" \
   "$lua_executable" examples/lua-terminal-chat/main.lua \
+  --api-key \
   <"$tmpdir/lua-terminal.input"
 strip_ansi "$tmpdir/lua-terminal.out" "$tmpdir/lua-terminal.clean"
 grep -F 'hint: pass --exec-tool-dir <path> to enable exec_command rooted to that path' \
@@ -230,6 +233,7 @@ run_live_capture lua-terminal-multiturn "$tmpdir/lua-terminal-multiturn.out" env
   CAI_LUA_TODO_STORE="$tmpdir/lua-terminal-multiturn-todo.json" \
   CAI_LUA_TODO_LOCK="$tmpdir/lua-terminal-multiturn-todo.lock" \
   "$lua_executable" examples/lua-terminal-chat/main.lua \
+  --api-key \
   --exec-tool-dir "$lua_terminal_root" \
   --read-tool-dir "$lua_terminal_root" \
   <"$tmpdir/lua-terminal-multiturn.input"

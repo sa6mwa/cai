@@ -191,6 +191,12 @@ unsigned int cai_model_metadata_flags(const char *model_id);
 long long cai_model_context_window_tokens(const char *model_id);
 /** Return the default compaction threshold for a model id, or zero. */
 long long cai_model_auto_compact_token_limit(const char *model_id);
+/**
+ * Return the provider-declared compaction compatibility hash, or NULL when
+ * CAI has no authoritative value. Equal non-NULL hashes may continue without
+ * a compatibility-triggered compaction across a model switch.
+ */
+const char *cai_model_compaction_compatibility_hash(const char *model_id);
 /** Estimate USD cost from token usage using bundled model pricing. */
 double cai_model_estimate_usage_usd(const char *model_id,
                                     long long input_tokens,

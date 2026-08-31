@@ -234,9 +234,27 @@ assert_ok(collision_registry:register_raw_tool("collision_echo_message",
 local register_ok, register_err = client:register_tools(collision_registry,
   { name_prefix = "collision_" })
 assert_not_ok(register_ok, register_err, "colliding remote tool registration")
-close_ok, close_err = client:close()
-assert_ok(close_ok, close_err,
-  "failed remote registration must release client")
 collision_registry:close()
+
+local runtime_client = assert_ok(cai.open({
+  api_key = "test-key",
+  base_url = "http://127.0.0.1:1/v1",
+  timeout_ms = 1,
+}), nil, "runtime host client")
+local runtime = assert_ok(runtime_client:new_smith_runtime({
+  workspace_directory = ".",
+  disable_terminal = true,
+  disable_default_session_store = true,
+  mcp_clients = { client },
+  mcp_tool_config = { name_prefix = "runtime_" },
+}), nil, "runtime MCP attachment")
+close_ok, close_err = client:close()
+close_err = assert_not_ok(close_ok, close_err,
+  "runtime-attached MCP client close")
+contains("runtime-attached MCP client close error",
+  tostring(close_err.message or ""), "registered tools")
+runtime:close()
+assert_ok(client:close(), nil, "runtime MCP client release")
+runtime_client:close()
 
 print("Lua MCP client e2e passed at " .. url)
