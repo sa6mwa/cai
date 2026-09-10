@@ -17,7 +17,7 @@ transport-neutral MCP Streamable HTTP handler and client.
 }
 dependencies = {
   "lua >= 5.5, < 5.6",
-  "lonejson >= 0.42.0",
+  "lonejson >= 0.43.0",
   "lua-pslog >= 0.9.0",
 }
 build = {

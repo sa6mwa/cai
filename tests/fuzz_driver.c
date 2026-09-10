@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 
 int LLVMFuzzerTestOneInput(const unsigned char *data, size_t size);
 
@@ -105,6 +108,20 @@ static int cai_fuzz_driver_run_path(const char *path) {
 int main(int argc, char **argv) {
   int index;
   int status;
+
+#ifdef __linux__
+  /* RLIMIT_CORE alone cannot prevent a piped crash collector from running.
+   * Disable dumpability in each fuzz child before it processes any input. */
+  if (prctl(PR_SET_DUMPABLE, 0L, 0L, 0L, 0L) != 0 ||
+      prctl(PR_GET_DUMPABLE, 0L, 0L, 0L, 0L) != 0) {
+    fputs("fuzz driver: cannot disable core dumps\n", stderr);
+    return 1;
+  }
+  if (argc == 2 && strcmp(argv[1], "--check-fuzz-isolation") == 0) {
+    puts("cai-fuzz-no-core-v1");
+    return 0;
+  }
+#endif
 
   if (argc == 1) {
     return cai_fuzz_driver_run_stream(stdin);

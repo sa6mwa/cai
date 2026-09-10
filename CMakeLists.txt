@@ -123,8 +123,8 @@ else()
       "Shared library ABI/SOVERSION." FORCE)
 endif()
 set(CAI_MINIMUM_CURL_VERSION "7.86.0")
-set(CAI_LONEJSON_VERSION "0.42.0")
-set(CAI_LONEJSON_ABI_VERSION "25")
+set(CAI_LONEJSON_VERSION "0.43.0")
+set(CAI_LONEJSON_ABI_VERSION "26")
 set(CAI_PSLOG_VERSION "0.9.0")
 
 if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
@@ -201,19 +201,19 @@ endfunction()
 
 function(cai_lonejson_pkg_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "e04f80b907d92f7e38f825fbd339297e85372fc1ce110abb9a93715ee450ece3")
+    set(_sha256 "520e045c7bfe13396b9dd2ef664d2aaf723ff3173ac02e0f0fe08bcf96f14fa2")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "ca0811bd920f6cf59f82d45e04525b562bba238564e5c5b9a00aa18331b5a5ca")
+    set(_sha256 "f830d9e848663fb780bcabe58fcd0e61c93ff2725484d8133c3ab3318ebd8a59")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "d7f9c700be6f9af7e46b18d59a0be14a42bd19644a30684b5a1135f96ee2daed")
+    set(_sha256 "beacf0b574fc90478d37cd624c70edeac868a3d46241becbc82652ad430fd79e")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "813950b50620cfa48e01ae0c5b30ae338b79066e750c45cefeb9a86076466903")
+    set(_sha256 "5e57b91810389dc61111ce77ce4c17b6704884be1ee21c69d96e1e594cb9ce8b")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "3aeff1901078917a4430dc945c253cf4cec193311f35245b4ef1c62056d181c1")
+    set(_sha256 "95595747b861440c189fc473cdaefec2529df15bfd6772b627c637c93bacf3a9")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "37ba738c675b41c563b1b03ea322ad1e65dbe76749ebfd294809b50abafb2d32")
+    set(_sha256 "22a8507bd441e12c00e813a16c286478bd8c797a31028e406473e45de6712f5a")
   elseif(target_id STREQUAL "arm64-apple-darwin")
-    set(_sha256 "b351df4221e16d62b7b86940a6a6a6a4d38fffb850b2d118fca2f9f5a9bb5488")
+    set(_sha256 "2e5e349995e5bf6d84004ea0b829d51ae2c2ca90229a98104a640f155dd3c7ab")
   else()
     message(FATAL_ERROR
       "No pinned liblonejson package checksum for target ${target_id}")
@@ -1501,6 +1501,11 @@ if(CAI_BUILD_TESTS)
   set_tests_properties(cai_receiver_usage_test PROPERTIES
     LABELS "unit;local"
     TIMEOUT 3)
+  add_test(NAME cai_build_toolchain_change_test
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_toolchain_change_test.sh"
+      "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+  set_tests_properties(cai_build_toolchain_change_test PROPERTIES
+    LABELS "local;packaging" TIMEOUT 10)
   add_test(NAME cai_makefile_targets_test
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/makefile_targets_test.sh"
       "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -2207,6 +2212,13 @@ if(CAI_BUILD_FUZZERS)
   cai_add_fuzzer(cai_session_fuzz tests/session_fuzz.c session)
   cai_add_fuzzer(cai_todo_fuzz tests/todo_fuzz.c todo)
   cai_add_fuzzer(cai_patch_fuzz tests/patch_fuzz.c patch)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_test(NAME cai_fuzz_crash_handling
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz_crash_handling_test.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(cai_fuzz_crash_handling PROPERTIES
+      LABELS "fuzz;local" TIMEOUT 60)
+  endif()
 endif()
 
 find_program(CLANG_FORMAT_BIN NAMES clang-format)

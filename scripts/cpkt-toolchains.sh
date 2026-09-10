@@ -88,22 +88,22 @@ require_target() {
 bootlin_meta() {
   case "$1" in
     x86_64-linux-gnu)
-      printf '%s\n' 'x86-64|x86-64--glibc--stable-2025.08-1|760acd5c3159448b618e237b61935335baada74fe0cdc0d7611826cb49b41c8c|x86_64-linux|x86_64-buildroot-linux-gnu/sysroot'
+      printf '%s\n' 'x86-64|x86-64--glibc--stable-2026.08-1|cde893afab04ac7dcd15c46aac214ff550441b982536124c88a71146a0eeedd3|x86_64-linux|x86_64-buildroot-linux-gnu/sysroot'
       ;;
     x86_64-linux-musl)
-      printf '%s\n' 'x86-64|x86-64--musl--stable-2025.08-1|09fca3aa89540f1b01b5f4210d488cbeb00f522044c53e9989b1dd8a38076912|x86_64-linux|x86_64-buildroot-linux-musl/sysroot'
+      printf '%s\n' 'x86-64|x86-64--musl--stable-2026.08-1|78d3a4683d6ac47b5ee73bd5bce210b55eb93dff1b137c61298af97eb0d2b5a6|x86_64-linux|x86_64-buildroot-linux-musl/sysroot'
       ;;
     aarch64-linux-gnu)
-      printf '%s\n' 'aarch64|aarch64--glibc--stable-2025.08-1|dfb47eee874eef9e8a7fc042eee4e0a183f444b6bcde6a82fef8f009918389c9|aarch64-linux|aarch64-buildroot-linux-gnu/sysroot'
+      printf '%s\n' 'aarch64|aarch64--glibc--stable-2026.08-1|0213efac9b5577f20d58de9431960a191347ffc2257b27ffe7250522bf1f7867|aarch64-linux|aarch64-buildroot-linux-gnu/sysroot'
       ;;
     aarch64-linux-musl)
-      printf '%s\n' 'aarch64|aarch64--musl--stable-2025.08-1|defba831ffa1175236f137069333e21ed46d4d19feb5080a90cf248b6fc2cb08|aarch64-linux|aarch64-buildroot-linux-musl/sysroot'
+      printf '%s\n' 'aarch64|aarch64--musl--stable-2026.08-1|b388c480a48e8e9f9b99e3d14e69219c4d61e5a2424a82faecb88a015b781a60|aarch64-linux|aarch64-buildroot-linux-musl/sysroot'
       ;;
     armhf-linux-gnu)
-      printf '%s\n' 'armv7-eabihf|armv7-eabihf--glibc--stable-2025.08-1|97d6fbaf19832002f3d6aa8fd31b2d29c1dc7b0752f4ae8ed35860fd33c1f9b4|arm-linux|arm-buildroot-linux-gnueabihf/sysroot'
+      printf '%s\n' 'armv7-eabihf|armv7-eabihf--glibc--stable-2026.08-1|9b7e25a74e87dac1e05d399444295e254a3073a056101e3197a859490e5701cd|arm-linux|arm-buildroot-linux-gnueabihf/sysroot'
       ;;
     armhf-linux-musl)
-      printf '%s\n' 'armv7-eabihf|armv7-eabihf--musl--stable-2025.08-1|2f3a34458c3a8b961bd09f89669130fcdc4c1dbc6e31ada720527e4ad3741c11|arm-linux|arm-buildroot-linux-musleabihf/sysroot'
+      printf '%s\n' 'armv7-eabihf|armv7-eabihf--musl--stable-2026.08-1|9147bafae4aa272321a3c6440d04d83b7e23411b2d344f875541d84c4444ba9b|arm-linux|arm-buildroot-linux-musleabihf/sysroot'
       ;;
     *) die "unsupported Bootlin target: $1" ;;
   esac

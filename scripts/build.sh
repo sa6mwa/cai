@@ -55,9 +55,15 @@ configure_preset() {
     cached_target=$(cache_value "$cache" CPKT_TARGET_ID || true)
     cached_bootlin_root=$(cache_value "$cache" CPKT_BOOTLIN_ROOT || true)
     cached_compiler=$(cache_value "$cache" CMAKE_C_COMPILER || true)
+    local expected_bootlin_root=""
+    if [[ -n "$target_id" ]]; then
+      expected_bootlin_root=$("$repo_root/scripts/cpkt-toolchains.sh" discover "$target_id" | sed -n 's/^root=//p')
+    fi
     if [[ "$cached_toolchain" != "$expected_toolchain" ]]; then
       cmake_args=(--fresh "${cmake_args[@]}")
     elif [[ -n "$target_id" && "$cached_target" != "$target_id" ]]; then
+      cmake_args=(--fresh "${cmake_args[@]}")
+    elif [[ -n "$expected_bootlin_root" && "$cached_bootlin_root" != "$expected_bootlin_root" ]]; then
       cmake_args=(--fresh "${cmake_args[@]}")
     elif [[ "$require_bootlin_compiler" = 1 &&
             -n "$target_id" &&

@@ -31,7 +31,19 @@ for target in tool stream response mcp session todo patch; do
       "$target" "$binary" "$corpus" >&2
     exit 2
   fi
+  if ! isolation=$("$binary" --check-fuzz-isolation) || [[ "$isolation" != cai-fuzz-no-core-v1 ]]; then
+    printf 'Fuzz target does not disable core dumps: %s\n' "$binary" >&2
+    exit 1
+  fi
   rm -rf "$output"
-  AFL_SKIP_CPUFREQ=1 AFL_NO_AFFINITY=1 "$afl_fuzz" -V "$seconds" \
+  # Safe only after the driver's isolation check: input crashes cannot invoke
+  # Apport or another piped collector. Keep real signal/crash detection enabled.
+  AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 AFL_EXIT_ON_SEED_ISSUES=1 \
+    AFL_SKIP_CPUFREQ=1 AFL_NO_AFFINITY=1 "$afl_fuzz" -V "$seconds" \
     -i "$corpus" -o "$output" -- "$binary" @@
+  failure=$(find "$output" -type f \( -path '*/crashes/id:*' -o -path '*/hangs/id:*' \) -print -quit)
+  if [[ -n "$failure" ]]; then
+    printf 'Fuzz failure retained for reproduction: %s\n' "$failure" >&2
+    exit 1
+  fi
 done
