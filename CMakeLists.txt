@@ -107,7 +107,7 @@ set(CAI_DEPENDENCY_CACHE "${CPKT_DEPENDENCY_CACHE}" CACHE PATH
 set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
     "Dependency mode: cpkt, host, or auto.")
 set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
-set(CAI_C_PKT_SYSTEMS_VERSION "0.9.0" CACHE STRING
+set(CAI_C_PKT_SYSTEMS_VERSION "0.10.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
 # ABI 3 is the latest released ABI. Values 5 through 7 were only used by this
 # unreleased development branch and must not survive a reconfigure. Preserve
@@ -180,19 +180,19 @@ set(CAI_TARGET_ID "${CAI_TARGET_ID}" CACHE STRING "Release archive target id." F
 
 function(cai_c_pkt_systems_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "0bbb1cbaf60b0a94fb5a6b3756123088b45e2bef9e38079038f22e3c07febb2e")
+    set(_sha256 "fb64caa3cad66e01669705412cd88cb4267025ca0a083fa936fe25786011391d")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "e867e7d8649bba6d6c4bed254f3a666faa090f8ccb31a3eb10b1323b694f2f21")
+    set(_sha256 "668977f4a14875d4ee2acec6f3d630ce96b57786d3ab3242c6ee3d10b5e63c87")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "3fb1fdeb83bfd58da48a3319dfc2c6d35384265b2db2074b63216240bf0fe2ad")
+    set(_sha256 "111e8f5215728ae8c784c59de35fc33822a7f72bc1c48d807013b678077d6307")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "a915993c294e96c9a84b072bed45384c23f0058c9e18cd5caeba344aaa9b5d39")
+    set(_sha256 "39883280a4e37a03c7ba952421cfdd926e79b49b635200c1fcb783738200c541")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "18738e2d8e9661ebdcc0b54f4f292f0571d04218fceb1f281e051a50928d1694")
+    set(_sha256 "df5e953677217c87314dd01514227cbdbbd2fb72115083b5747606f37f00d060")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "7f5365014ef2222cb95c08525c0b123afb30b4f220f4edcd669f354a9af4ccab")
+    set(_sha256 "d78e8e3de15d497c9048cfd3e64db815ee7e7d707ec2ba66e094af13f979ebdc")
   elseif(target_id STREQUAL "arm64-apple-darwin")
-    set(_sha256 "8bc25d47d30cb40b24eb5d07c2aad7850150fdea680eccadd1c819ce945901af")
+    set(_sha256 "f63f0e6e847108b287726dbd8d2566ee9255d2c744d8cfcf3b192a4ca791de77")
   else()
     message(FATAL_ERROR "No pinned c.pkt.systems checksum for target ${target_id}")
   endif()
@@ -593,6 +593,9 @@ function(cai_configure_c_target target)
     if(NOT _cai_target_type STREQUAL "STATIC_LIBRARY")
       target_link_options(${target} PRIVATE --coverage)
     endif()
+  endif()
+  if(_cai_target_type STREQUAL "EXECUTABLE")
+    cai_configure_local_runtime(${target})
   endif()
 endfunction()
 
@@ -1684,6 +1687,20 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_rpath_token_test PROPERTIES
       LABELS "packaging;local"
       TIMEOUT 3)
+    if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux" AND
+       CAI_TARGET_ID STREQUAL "x86_64-linux-gnu")
+      add_test(NAME cai_local_bootlin_runtime_test
+        COMMAND "${CMAKE_COMMAND}"
+          "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+          "-DCAI_READELF=${CMAKE_READELF}"
+          "-DCAI_SYSROOT=${CMAKE_SYSROOT}"
+          "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
+          "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/local_bootlin_runtime_test.cmake")
+      set_tests_properties(cai_local_bootlin_runtime_test PROPERTIES
+        LABELS "packaging;local"
+        TIMEOUT 3)
+    endif()
     add_test(NAME cai_target_tool_discovery_test
       COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/target_tool_discovery_test.sh"
         "${CMAKE_CURRENT_SOURCE_DIR}")

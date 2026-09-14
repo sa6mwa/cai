@@ -96,6 +96,11 @@ release SDK, Lua, and downstream-consumer gates.
 
 Linux compiler collections are pinned to Bootlin stable 2026.08-1 (GCC 15.3.0)
 for all six Linux targets. The AFL++ GCC plugin uses that same collection.
+Local tests, examples, fuzzers, and e2e helpers use the selected x86_64 GNU
+collection's loader and runtime directly; no shell-level library-path override
+is needed. c.pkt.systems 0.10.0 shared dependencies require glibc 2.43 or
+newer on Linux. Deployments on older glibc must upgrade their runtime or use a
+fully static musl application and validate it.
 Fuzz harnesses disable their own core dumps so Apport and other host crash
 collectors cannot delay crash reporting; no host sysctl changes are required.
 The fuzz gate retains crashing or hanging inputs and fails when they are found.

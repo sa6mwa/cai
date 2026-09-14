@@ -20,7 +20,7 @@ ifeq ($(strip $(RELEASE_VERSION)),)
 $(error release version resolver returned empty; run ./scripts/release_version.sh "$(CURDIR)")
 endif
 CAI_CPKT_TARGET ?= x86_64-linux-gnu
-CAI_C_PKT_SYSTEMS_VERSION ?= 0.9.0
+CAI_C_PKT_SYSTEMS_VERSION ?= 0.10.0
 CAI_LONEJSON_VERSION ?= 0.43.0
 CAI_PSLOG_VERSION ?= 0.9.0
 LONEJSON_LUA_ROCK_URL ?= https://github.com/sa6mwa/lonejson/releases/download/v$(CAI_LONEJSON_VERSION)/lonejson-$(CAI_LONEJSON_VERSION)-1.src.rock

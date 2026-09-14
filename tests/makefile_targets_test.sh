@@ -85,8 +85,8 @@ for script in \
   require_script "$script"
 done
 
-if ! grep -F 'CAI_C_PKT_SYSTEMS_VERSION ?= 0.9.0' "$makefile" >/dev/null; then
-  printf 'Makefile must pin c.pkt.systems 0.9.0\n' >&2
+if ! grep -F 'CAI_C_PKT_SYSTEMS_VERSION ?= 0.10.0' "$makefile" >/dev/null; then
+  printf 'Makefile must pin c.pkt.systems 0.10.0\n' >&2
   exit 1
 fi
 if ! grep -F 'CAI_LONEJSON_VERSION ?= 0.43.0' "$makefile" >/dev/null; then
