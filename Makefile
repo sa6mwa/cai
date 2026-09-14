@@ -65,6 +65,7 @@ help:
 		'make chatgpt-login  Sign CAI into ChatGPT and persist CAI-owned XDG state auth.' \
 		'make test         Build and run the debug unit tests.' \
 		'make test-debug   Build and run the debug unit tests.' \
+		'cmake --preset debug-host-deps -DCMAKE_PREFIX_PATH=... Configure installed-dependency verification; see README.' \
 		'make test-all     Run broad local confidence gates.' \
 		'make test-e2e     Run deterministic compose-backed local e2e.' \
 		'make test-host    Build and run the pinned native release unit tests.' \

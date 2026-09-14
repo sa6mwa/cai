@@ -243,6 +243,10 @@ function(cai_pslog_pkg_sha256 target_id out_var)
   set(${out_var} "${_sha256}" PARENT_SCOPE)
 endfunction()
 
+if(NOT CAI_DEPENDENCY_MODE STREQUAL "cpkt")
+  # Explicit dependency prefixes may live outside the compiler sysroot.
+  list(APPEND CMAKE_FIND_ROOT_PATH ${CMAKE_PREFIX_PATH})
+endif()
 set(CAI_RESOLVED_DEPENDENCY_MODE "${CAI_DEPENDENCY_MODE}")
 if(CAI_DEPENDENCY_MODE STREQUAL "auto")
   find_path(_cai_auto_curl_include curl/curl.h)
@@ -1654,6 +1658,7 @@ if(CAI_BUILD_TESTS)
       "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
       "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
       "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
+      "-DCAI_C_PKT_SYSTEMS_VERSION=${CAI_C_PKT_SYSTEMS_VERSION}"
       "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
       "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
       "-DCAI_LONEJSON_INCLUDE_DIR=${CAI_LONEJSON_INCLUDE_DIR}"
@@ -1689,17 +1694,27 @@ if(CAI_BUILD_TESTS)
       TIMEOUT 3)
     if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux" AND
        CAI_TARGET_ID STREQUAL "x86_64-linux-gnu")
+      cai_local_dependency_runtime_dirs(_cai_test_runtime_dirs)
       add_test(NAME cai_local_bootlin_runtime_test
         COMMAND "${CMAKE_COMMAND}"
           "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
           "-DCAI_READELF=${CMAKE_READELF}"
           "-DCAI_SYSROOT=${CMAKE_SYSROOT}"
-          "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
-          "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
+          "-DCAI_DEPENDENCY_RUNTIME_DIRS=${_cai_test_runtime_dirs}"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/local_bootlin_runtime_test.cmake")
       set_tests_properties(cai_local_bootlin_runtime_test PROPERTIES
         LABELS "packaging;local"
         TIMEOUT 3)
+      if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
+        add_test(NAME cai_host_dependency_runtime_test
+          COMMAND "${CMAKE_COMMAND}"
+            "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+            "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+            "-DCAI_PREFIXES=${CAI_C_PKT_SYSTEMS_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_dependency_runtime_test.cmake")
+        set_tests_properties(cai_host_dependency_runtime_test PROPERTIES
+          LABELS "packaging;local" TIMEOUT 120)
+      endif()
     endif()
     add_test(NAME cai_target_tool_discovery_test
       COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/target_tool_discovery_test.sh"

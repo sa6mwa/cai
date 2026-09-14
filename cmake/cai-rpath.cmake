@@ -6,6 +6,22 @@ function(cai_install_rpath_token target_id out_var)
   endif()
 endfunction()
 
+function(cai_local_dependency_runtime_dirs out_var)
+  set(_dirs "")
+  foreach(_dependency IN ITEMS
+      "${CAI_LONEJSON_LINK}" "${CAI_PSLOG_LINK}"
+      "${CAI_CURL_SHARED_LINK}" "${CAI_OPENSSL_CRYPTO_SHARED_LINK}")
+    if(TARGET "${_dependency}")
+      list(APPEND _dirs "$<TARGET_FILE_DIR:${_dependency}>")
+    elseif(IS_ABSOLUTE "${_dependency}")
+      get_filename_component(_dir "${_dependency}" DIRECTORY)
+      list(APPEND _dirs "${_dir}")
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES _dirs)
+  set(${out_var} "${_dirs}" PARENT_SCOPE)
+endfunction()
+
 function(cai_configure_local_runtime target)
   if(NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux" OR
      NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
@@ -27,12 +43,9 @@ function(cai_configure_local_runtime target)
   set(_cai_runtime_dirs
     "${CMAKE_SYSROOT}/lib"
     "${CMAKE_SYSROOT}/usr/lib"
-    "${CPKT_BOOTLIN_ROOT}/lib"
-    "${CAI_C_PKT_SYSTEMS_PREFIX}/lib"
-    "${CAI_LONEJSON_PREFIX}/lib")
-  if(CAI_PSLOG_PREFIX)
-    list(APPEND _cai_runtime_dirs "${CAI_PSLOG_PREFIX}/lib")
-  endif()
+    "${CPKT_BOOTLIN_ROOT}/lib")
+  cai_local_dependency_runtime_dirs(_cai_dependency_dirs)
+  list(APPEND _cai_runtime_dirs ${_cai_dependency_dirs})
   list(JOIN _cai_runtime_dirs ":" _cai_runtime_path)
   target_link_options(${target} PRIVATE
     "-Wl,--dynamic-linker,${_cai_loader}"

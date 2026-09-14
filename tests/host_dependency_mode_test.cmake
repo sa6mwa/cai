@@ -128,7 +128,7 @@ endif()
 execute_process(
   COMMAND "${CMAKE_COMMAND}"
           "-DCAI_BINARY_DIR=${auto_dir}"
-          "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
+          "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_DEPS_DIR}/c.pkt.systems-${CAI_C_PKT_SYSTEMS_VERSION}-x86_64-linux-gnu"
           "-DCAI_TARGET_ID=x86_64-linux-gnu"
           -DCAI_BUILD_SHARED=ON
           -DCAI_BUILD_STATIC=OFF

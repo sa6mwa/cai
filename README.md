@@ -168,6 +168,16 @@ The verification tiers are split intentionally:
   `cpkt` mode records the official `c.pkt.systems` dependency URL and checksum;
   `host` mode records the resolved host include/library paths. `cai` archives
   do not vendor dependency headers.
+
+Use the `debug-host-deps` configure/build/test preset to verify compatible
+installed dependencies in a separate `build/debug-host-deps` directory. Configure
+with `cmake --preset debug-host-deps -DCMAKE_PREFIX_PATH="/prefix/one;/prefix/two"`,
+then run `cmake --build --preset debug-host-deps` and
+`ctest --preset debug-host-deps`. Linux still uses the pinned Bootlin compiler
+and libc; dependency locations do not select the toolchain. To test automatic
+dependency selection, configure the same preset in another build directory with
+`-B build/debug-auto-deps -DCAI_DEPENDENCY_MODE=auto`. Local runtime checks verify
+dependency resolution and Bootlin libc selection in either mode.
 - `cai_client_open` resolves API keys only from explicit `config.api_key` or
   `getenv(config.api_key_env)`. If `api_key_env` is NULL, cai uses
   `OPENAI_API_KEY`. It does not implicitly load dotenv files.

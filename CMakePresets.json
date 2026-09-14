@@ -59,6 +59,13 @@
       }
     },
     {
+      "name": "debug-host-deps",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CAI_DEPENDENCY_MODE": "host"
+      }
+    },
+    {
       "name": "debug-lua",
       "inherits": "debug",
       "cacheVariables": {
@@ -185,6 +192,10 @@
       "configurePreset": "debug"
     },
     {
+      "name": "debug-host-deps",
+      "configurePreset": "debug-host-deps"
+    },
+    {
       "name": "debug-lua",
       "configurePreset": "debug-lua"
     },
@@ -245,6 +256,16 @@
     {
       "name": "debug",
       "configurePreset": "debug",
+      "execution": {
+        "stopOnFailure": true
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "debug-host-deps",
+      "configurePreset": "debug-host-deps",
       "execution": {
         "stopOnFailure": true
       },
