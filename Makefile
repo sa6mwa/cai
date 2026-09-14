@@ -97,6 +97,7 @@ help:
 		'make lua-rock     Build and install the LuaRock into build/luarocks.' \
 		'make lua-env      Print shell exports for running local Lua examples.' \
 		'make lua-test     Build the LuaRock and run the Lua binding tests.' \
+		'make lua-runner   Build the local Lua 5.5.1 verification interpreter.' \
 		'make release-lua-artifacts Generate dist LuaRock source artifacts.' \
 		'make print-release-version Print the exact packaging/release version.' \
 		'make package      Build release and write dist/cai-*.tar.gz.' \
@@ -397,25 +398,23 @@ $(LUA_ROCK_STAMP): $(LUA_ROCKSPEC) $(LUA_LONEJSON_ROCK_STAMP) $(LUA_PSLOG_ROCK_S
 
 lua-rock: $(LUA_ROCK_STAMP)
 
+.PHONY: lua-runner
+lua-runner: lua-rock
+	$(CMAKE) --preset debug-lua
+	$(CMAKE) --build --preset debug-lua --target cai_lua_runner
+
 lua-env:
 	printf '%s\n' 'eval "$$(luarocks path --tree "$(ROOT)/$(LUA_ROCK_TREE)")"'; \
-	printf 'export LD_LIBRARY_PATH="%s:%s:%s:%s:$${LD_LIBRARY_PATH:-}"\n' \
-		"$(ROOT)/$(LUA_ROCK_PREFIX)/lib" \
-		"$(CAI_LONEJSON_PREFIX)/lib" \
-		"$(CAI_C_PKT_SYSTEMS_PREFIX)/lib" \
-		"$(CAI_PSLOG_PREFIX)/lib"
+	printf 'export CAI_LUA_EXECUTABLE="%s/build/debug-lua/cai_lua_runner"\n' "$(ROOT)"
 
-lua-test: lua-rock
-	$(CMAKE) --preset debug-lua
-	$(CMAKE) --build --preset debug-lua --target cai_lua_native_todo_store_test
+lua-test: lua-runner
+	$(CMAKE) --build --preset debug-lua --target cai_lua_native_todo_store_test cai_lua_runner
 	eval "$$(luarocks path --tree $(LUA_ROCK_TREE))" && \
 	LUA_CPATH="$(ROOT)/build/debug-lua/lua-test/?.so;$(ROOT)/build/debug-lua/lua-test/?.dylib;$${LUA_CPATH:-}" \
-	LD_LIBRARY_PATH="$(LUA_ROCK_PREFIX)/lib:$(CAI_LONEJSON_PREFIX)/lib:$(CAI_C_PKT_SYSTEMS_PREFIX)/lib:$(CAI_PSLOG_PREFIX)/lib:$${LD_LIBRARY_PATH:-}" \
-	lua tests/lua/test_lua.lua
+	build/debug-lua/cai_lua_runner tests/lua/test_lua.lua
 	$(CMAKE) --build build/debug --target cai_mcp_http_server
 	eval "$$(luarocks path --tree $(LUA_ROCK_TREE))" && \
-	LD_LIBRARY_PATH="$(LUA_ROCK_PREFIX)/lib:$(CAI_LONEJSON_PREFIX)/lib:$(CAI_C_PKT_SYSTEMS_PREFIX)/lib:$(CAI_PSLOG_PREFIX)/lib:$${LD_LIBRARY_PATH:-}" \
-	/bin/sh tests/lua_mcp_client_e2e.sh build/debug/cai_mcp_http_server lua tests/lua/e2e_mcp_client.lua
+	/bin/sh tests/lua_mcp_client_e2e.sh build/debug/cai_mcp_http_server build/debug-lua/cai_lua_runner tests/lua/e2e_mcp_client.lua
 
 $(RELEASE_LUA_SOURCE_TARBALL): $(LUA_ROCK_SOURCE_INPUTS)
 	rm -rf "$(RELEASE_LUA_ROCK_DIR)" "$(RELEASE_LUA_SOURCE_TARBALL)"

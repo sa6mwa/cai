@@ -169,6 +169,12 @@ The verification tiers are split intentionally:
   `host` mode records the resolved host include/library paths. `cai` archives
   do not vendor dependency headers.
 
+Lua verification uses the local `cai_lua_runner`, linked to Lua 5.5.1 and the
+selected Bootlin runtime on Linux. Build it with the `debug-lua` preset or
+`make lua-test`. After evaluating `make lua-env`, run Lua examples with
+`"$CAI_LUA_EXECUTABLE" example.lua`; dependency paths are private to the runner
+and are not exported to host subprocesses.
+
 Use the `debug-host-deps` configure/build/test preset to verify compatible
 installed dependencies in a separate `build/debug-host-deps` directory. Configure
 with `cmake --preset debug-host-deps -DCMAKE_PREFIX_PATH="/prefix/one;/prefix/two"`,

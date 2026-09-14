@@ -18,10 +18,4 @@ if [ ! -f "$rock_tree/lib/lua/5.5/cai.so" ] &&
 fi
 
 eval "$(luarocks path --tree "$rock_tree")"
-if [ -n "${CAI_LUA_LD_LIBRARY_PATH:-}" ]; then
-  LD_LIBRARY_PATH="$CAI_LUA_LD_LIBRARY_PATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-  DYLD_LIBRARY_PATH="$CAI_LUA_LD_LIBRARY_PATH${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
-  export LD_LIBRARY_PATH
-  export DYLD_LIBRARY_PATH
-fi
 exec "$lua_bin" "$script"

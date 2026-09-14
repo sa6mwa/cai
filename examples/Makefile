@@ -5,7 +5,6 @@ MAKEFLAGS += --no-print-directory
 
 ROOT := ..
 CMAKE ?= cmake
-LUA ?= lua
 
 CAI_SESSION_STATE_PATH ?= /tmp/cai-session-state.json
 CAI_LUA_SESSION_STATE_PATH ?= /tmp/cai-lua-state.json
@@ -96,9 +95,9 @@ endef
 
 define run_lua_example
 	cd "$(ROOT)" && \
-	$(MAKE) lua-rock && \
+	$(MAKE) lua-runner && \
 	eval "$$($(MAKE) -s lua-env)" && \
-	$(LUA) $(1) $(2)
+	"$$CAI_LUA_EXECUTABLE" $(1) $(2)
 endef
 
 help:

@@ -528,12 +528,10 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
 endif()
 
 if(CAI_BUILD_LUA)
-  find_program(CAI_LUA_EXECUTABLE NAMES lua5.5 lua REQUIRED)
-elseif(CAI_BUILD_INTEGRATION_TESTS)
-  find_program(CAI_LUA_EXECUTABLE NAMES lua5.5 lua)
-endif()
-
-if(CAI_BUILD_LUA)
+  if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
+    set(CAI_LUA_INCLUDE_DIR "${CAI_C_PKT_SYSTEMS_PREFIX}/include")
+    set(CAI_LUA_LIBRARY "${CAI_C_PKT_SYSTEMS_PREFIX}/lib/liblua.a")
+  endif()
   find_path(CAI_LUA_INCLUDE_DIR lua.h
     PATHS /usr/local/include /usr/include /opt/homebrew/include
     PATH_SUFFIXES lua5.5)
@@ -551,8 +549,7 @@ if(CAI_BUILD_LUA)
       "LUA_PATH=${CAI_LUA_ROCK_SHARE_DIR}/?.lua\;${CAI_LUA_ROCK_SHARE_DIR}/?/init.lua\;\;"
       "LUA_CPATH=${CMAKE_CURRENT_BINARY_DIR}/lua-test/?.so\;${CMAKE_CURRENT_BINARY_DIR}/lua-test/?.dylib\;${CMAKE_CURRENT_BINARY_DIR}/lua/?.so\;${CMAKE_CURRENT_BINARY_DIR}/lua/?.dylib\;${CAI_LUA_ROCK_LIB_DIR}/?.so\;\;")
   set(CAI_LUA_SMITH_E2E_ENV
-      "CAI_LUA_SMITH_E2E=1"
-      "CAI_LUA_LD_LIBRARY_PATH=${CMAKE_CURRENT_SOURCE_DIR}/build/luarocks/cai-prefix/lib:${CAI_LONEJSON_PREFIX}/lib:${CAI_C_PKT_SYSTEMS_PREFIX}/lib:${CAI_PSLOG_PREFIX}/lib")
+      "CAI_LUA_SMITH_E2E=1")
   if(CMAKE_C_FLAGS_DEBUG MATCHES "fsanitize=address" AND
      CMAKE_C_COMPILER_ID MATCHES "Clang|GNU" AND
      CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -921,6 +918,14 @@ if(CAI_BUILD_LUA)
       "or set CAI_PSLOG_LUA_INCLUDE_DIR.")
   endif()
   set(_cai_lua_link_target "${_cai_internal_link_target}")
+  add_executable(cai_lua_runner tests/lua/runner.c)
+  target_include_directories(cai_lua_runner PRIVATE "${CAI_LUA_INCLUDE_DIR}")
+  target_link_libraries(cai_lua_runner PRIVATE "${CAI_LUA_LIBRARY}" ${CMAKE_DL_LIBS} m)
+  set_target_properties(cai_lua_runner PROPERTIES ENABLE_EXPORTS ON)
+  cai_configure_c_target(cai_lua_runner)
+  set_property(TARGET cai_lua_runner APPEND PROPERTY BUILD_RPATH
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/luarocks/cai-prefix/lib")
+  set(CAI_LUA_EXECUTABLE "$<TARGET_FILE:cai_lua_runner>")
   if(TARGET cai_shared)
     set(_cai_lua_link_target cai_shared)
   endif()
@@ -1826,6 +1831,11 @@ if(CAI_BUILD_TESTS)
   endif()
 
   if(CAI_BUILD_LUA)
+    add_test(NAME cai_lua_runner_test
+      COMMAND "${CMAKE_COMMAND}"
+        "-DCAI_LUA_RUNNER=$<TARGET_FILE:cai_lua_runner>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/runner_test.cmake")
+    set_tests_properties(cai_lua_runner_test PROPERTIES LABELS "unit;local" TIMEOUT 3)
     add_test(NAME cai_lua_tests
       COMMAND "${CAI_LUA_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/test_lua.lua")

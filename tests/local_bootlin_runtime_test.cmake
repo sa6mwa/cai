@@ -12,6 +12,7 @@ if(NOT DEFINED CAI_DEPENDENCY_RUNTIME_DIRS)
 endif()
 
 file(GLOB _cai_runtime_targets
+  "${CAI_BINARY_DIR}/cai_lua_runner"
   "${CAI_BINARY_DIR}/cai_tests"
   "${CAI_BINARY_DIR}/cai_example_*"
   "${CAI_BINARY_DIR}/cai_mcp_*"
