@@ -1727,7 +1727,7 @@ if(CAI_BUILD_TESTS)
       TIMEOUT 3)
     add_test(NAME cai_release_toolchain_cache_guard_test
       COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_toolchain_cache_guard_test.sh"
-        "${CMAKE_CURRENT_SOURCE_DIR}")
+        "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(cai_release_toolchain_cache_guard_test PROPERTIES
       LABELS "packaging;local"
       TIMEOUT 3)

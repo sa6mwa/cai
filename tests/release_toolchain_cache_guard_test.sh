@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-  printf 'usage: %s <repo-root>\n' "$0" >&2
+if [[ $# -ne 2 || ! -d "$2" ]]; then
+  printf 'usage: %s <repo-root> <existing-build-dir>\n' "$0" >&2
   exit 2
 fi
 
 repo_root=$1
-test_root=$(mktemp -d "$repo_root/build/toolchain-cache-guard.XXXXXX")
+build_dir=$2
+test_root=$(mktemp -d "$build_dir/toolchain-cache-guard.XXXXXX")
 trap 'rm -rf "$test_root"' EXIT
 mkdir -p "$test_root/pkg"
 printf 'cache=/var/cache/c.pkt.systems/toolchains/roots/bootlin\n' \
