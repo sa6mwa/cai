@@ -33,6 +33,34 @@ fail() {
 }
 
 host_home=${HOME:-}
+if [[ -n "${CPKT_TOOLCHAIN_CACHE:-}" ]]; then
+  toolchain_cache=$CPKT_TOOLCHAIN_CACHE
+elif [[ -n "${XDG_CACHE_HOME:-}" ]]; then
+  toolchain_cache=$XDG_CACHE_HOME/c.pkt.systems/toolchains
+elif [[ -n "$host_home" ]]; then
+  toolchain_cache=$host_home/.cache/c.pkt.systems/toolchains
+else
+  toolchain_cache=
+fi
+
+verify_no_toolchain_cache_path() {
+  local text=$1
+  local context=$2
+  local matches
+
+  if [[ -n "$toolchain_cache" ]]; then
+    matches=$(grep -n -F "$toolchain_cache" <<<"$text" || true)
+    if [[ -n "$matches" ]]; then
+      printf '%s\n' "$matches" >&2
+      fail "$context contains a Bootlin toolchain cache path"
+    fi
+  fi
+  matches=$(grep -n -E '(^|/)c[.]pkt[.]systems/toolchains(/|$)' <<<"$text" || true)
+  if [[ -n "$matches" ]]; then
+    printf '%s\n' "$matches" >&2
+    fail "$context contains a Bootlin toolchain cache path"
+  fi
+}
 
 require_file() {
   local path=$1
@@ -86,26 +114,30 @@ verify_listing_has_no_host_paths() {
       fail "archive member list contains HOME path"
     fi
   fi
+  verify_no_toolchain_cache_path "$listing" "archive member list"
 }
 
 verify_no_private_bytes() {
   local root_dir=$1
   local file
+  local file_strings
   local matches
 
   while IFS= read -r file; do
+    file_strings=$(strings -a "$file" 2>/dev/null || true)
     if [[ -n "$host_home" ]]; then
-      matches=$(strings -a "$file" 2>/dev/null | grep -n -F "$host_home" || true)
+      matches=$(grep -n -F "$host_home" <<<"$file_strings" || true)
       if [[ -n "$matches" ]]; then
         printf '%s:%s\n' "$file" "$matches" >&2
         fail "artifact contains HOME path"
       fi
     fi
-    matches=$(strings -a "$file" 2>/dev/null | grep -n -F "$repo_root" || true)
+    matches=$(grep -n -F "$repo_root" <<<"$file_strings" || true)
     if [[ -n "$matches" ]]; then
       printf '%s:%s\n' "$file" "$matches" >&2
       fail "artifact contains repository path"
     fi
+    verify_no_toolchain_cache_path "$file_strings" "artifact file $file"
   done < <(find "$root_dir" -type f -print)
 }
 
@@ -165,6 +197,7 @@ verify_source_matches_git_manifest() {
 verify_no_private_text() {
   local root_dir=$1
   local matches
+  local toolchain_matches
 
   matches=$(grep -R -I -n -E '/home/|/Users/|/opt/|\.cache/deps|\.\./' \
     "$root_dir" 2>/dev/null || true)
@@ -172,6 +205,13 @@ verify_no_private_text() {
     printf '%s\n' "$matches" >&2
     fail "artifact contains host-specific or out-of-repository paths"
   fi
+  toolchain_matches=$(grep -R -I -n -E 'c[.]pkt[.]systems/toolchains' \
+    "$root_dir" 2>/dev/null || true)
+  if [[ -n "$toolchain_cache" ]]; then
+    toolchain_matches+=$(grep -R -I -n -F "$toolchain_cache" \
+      "$root_dir" 2>/dev/null || true)
+  fi
+  verify_no_toolchain_cache_path "$toolchain_matches" "artifact text"
 }
 
 verify_checksum_file() {
@@ -211,6 +251,7 @@ verify_no_private_manifest_paths() {
     printf '%s\n' "$matches" >&2
     fail "checksum manifest contains repository path"
   fi
+  verify_no_toolchain_cache_path "$(cat "$manifest")" "checksum manifest"
 }
 
 read_checksum_artifacts() {
@@ -378,6 +419,7 @@ verify_dependency_manifest() {
     printf '%s\n' "$manifest_text" >&2
     fail "dependency manifest contains local or non-relocatable paths"
   fi
+  verify_no_toolchain_cache_path "$manifest_text" "dependency manifest"
 }
 
 verify_linux_runpath() {
@@ -406,6 +448,7 @@ verify_linux_runpath() {
       printf '%s\n' "$dynamic" >&2
       fail "shared library has host-specific runpath: $so"
     fi
+    verify_no_toolchain_cache_path "$dynamic" "shared library loader metadata: $so"
     if grep -E 'NEEDED' <<<"$dynamic" | grep -E 'libasan|libubsan|libtsan|libmsan' \
       >/dev/null; then
       printf '%s\n' "$dynamic" >&2
@@ -996,6 +1039,7 @@ verify_rockspec_file() {
     printf '%s\n' "$matches" >&2
     fail "rockspec contains host-specific or out-of-repository paths: $rockspec"
   fi
+  verify_no_toolchain_cache_path "$(cat "$rockspec")" "rockspec $rockspec"
 }
 
 verify_src_rock() {

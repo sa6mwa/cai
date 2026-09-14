@@ -1725,6 +1725,12 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_release_manifest_gate_test PROPERTIES
       LABELS "packaging;local"
       TIMEOUT 3)
+    add_test(NAME cai_release_toolchain_cache_guard_test
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_toolchain_cache_guard_test.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cai_release_toolchain_cache_guard_test PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 3)
     add_test(NAME cai_release_staging_safety_test
       COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_staging_safety_test.sh"
         "${CMAKE_CURRENT_SOURCE_DIR}")
