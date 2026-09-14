@@ -949,6 +949,9 @@ verify_darwin_runpath() {
     fi
     load_commands=$("$otool" -l "$dylib" 2>/dev/null | sed '1d' || true)
     [[ -n "$load_commands" ]] || fail "could not inspect Darwin shared library: $dylib"
+    verify_no_toolchain_cache_path \
+      "$install_name"$'\n'"$dependencies"$'\n'"$load_commands" \
+      "Darwin shared library loader metadata: $dylib"
     if ! grep -A2 'LC_RPATH' <<<"$load_commands" | grep -F 'path @loader_path' >/dev/null; then
       printf '%s\n' "$load_commands" >&2
       fail "Darwin shared library does not use @loader_path rpath: $dylib"

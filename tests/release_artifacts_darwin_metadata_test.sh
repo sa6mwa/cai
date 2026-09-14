@@ -70,3 +70,12 @@ if CAI_REPO_ROOT=$repo_root CAI_OTOOL=$fake_otool CAI_FAKE_RPATH=/tmp/cai bash -
   printf 'expected local Darwin rpath to fail\n' >&2
   exit 1
 fi
+
+relocated_cache=$tmpdir/bootlin-cache
+if CAI_REPO_ROOT=$repo_root CAI_OTOOL=$fake_otool \
+  CAI_FAKE_RPATH=$relocated_cache CPKT_TOOLCHAIN_CACHE=$relocated_cache bash -c \
+  "source '$repo_root/scripts/verify_release_artifacts.sh' --self-test; verify_darwin_runpath '$tmpdir/pkg' arm64-apple-darwin" \
+  >/dev/null 2>&1; then
+  printf 'expected Bootlin cache path in Darwin loader metadata to fail\n' >&2
+  exit 1
+fi
