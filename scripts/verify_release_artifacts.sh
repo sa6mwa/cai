@@ -33,12 +33,14 @@ fail() {
 }
 
 host_home=${HOME:-}
+cpkt_cache_dir_name=c.pkt.systems
+cpkt_toolchain_dir_name=toolchains
 if [[ -n "${CPKT_TOOLCHAIN_CACHE:-}" ]]; then
   toolchain_cache=$CPKT_TOOLCHAIN_CACHE
 elif [[ -n "${XDG_CACHE_HOME:-}" ]]; then
-  toolchain_cache=$XDG_CACHE_HOME/c.pkt.systems/toolchains
+  toolchain_cache=$XDG_CACHE_HOME/$cpkt_cache_dir_name/$cpkt_toolchain_dir_name
 elif [[ -n "$host_home" ]]; then
-  toolchain_cache=$host_home/.cache/c.pkt.systems/toolchains
+  toolchain_cache=$host_home/.cache/$cpkt_cache_dir_name/$cpkt_toolchain_dir_name
 else
   toolchain_cache=
 fi

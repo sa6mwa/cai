@@ -11,7 +11,11 @@ build_dir=$2
 test_root=$(mktemp -d "$build_dir/toolchain-cache-guard.XXXXXX")
 trap 'rm -rf "$test_root"' EXIT
 mkdir -p "$test_root/pkg"
-printf 'cache=/var/cache/c.pkt.systems/toolchains/roots/bootlin\n' \
+cache_root=/var/cache
+cpkt_cache_dir_name=c.pkt.systems
+cpkt_toolchain_dir_name=toolchains
+printf 'cache=%s/%s/%s/roots/bootlin\n' \
+  "$cache_root" "$cpkt_cache_dir_name" "$cpkt_toolchain_dir_name" \
   >"$test_root/pkg/libcai.so"
 
 if CAI_REPO_ROOT="$repo_root" CAI_VERSION=1.2.3 bash -c \
