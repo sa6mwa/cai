@@ -334,10 +334,11 @@ descriptor, and never call the host event callback.
 `set_model` is owner-thread-only and requires the same stable boundary as
 conversation export: no active or queued turn, steering, goal control, or
 review/subagent pause. It updates the active parent model that future turns and
-inherited subagent defaults use. Equal known compatibility hashes retain
-context; differing or unknown profiles compact non-empty local history with
-the currently selected model before the model changes. The successful selection
-is checkpointed with the compacted history, if any.
+inherited subagent defaults use. For ChatGPT auth, CAI obtains model metadata
+from Codex's `/models` endpoint and uses its opaque compatibility hashes:
+different declared hashes compact non-empty local history, while equal or
+missing hashes retain it. The successful selection is checkpointed with the
+compacted history, if any.
 
 `export_markdown` is the live-runtime-only handover projection receiver. It
 writes incrementally to the caller's `cai_sink`; it neither reopens a session
@@ -1496,15 +1497,13 @@ Before every model request CAI evaluates:
 4. a model downshift where current retained history cannot fit the new usable
    context window.
 
-The per-model profile includes `context_window_tokens`, optional
-`auto_compact_threshold_tokens`, and `compaction_compatibility_hash`. A model
-switch with equal hashes does **not** compact solely because its name changed.
-A differing non-empty hash does. A switch to a smaller window compacts if
-active context would not fit. When either profile lacks compatibility metadata,
-Smith uses the conservative policy: compact before continuing across different
-model families/major versions, but it may retain history across explicitly
-declared compatible variants such as terra/luna. This policy and its reason are
-persisted in `compaction_started`.
+The ChatGPT Codex catalog supplies `context_window`, optional
+`auto_compact_token_limit`, and `comp_hash`. A model switch with equal hashes
+does **not** compact solely because its name changed. A differing non-empty hash
+does. A switch to a smaller window compacts after the new model's threshold is
+reached. When either model lacks a provider hash, Smith follows Codex and does
+not infer compatibility from a model name or a CAI-maintained table. This policy
+and its reason are persisted in `compaction_started`.
 
 Compaction is a client-side model call using the current session’s compact
 prompt asset. It produces a bounded, structured replacement history containing

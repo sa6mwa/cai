@@ -105,6 +105,7 @@ static void cai_client_destroy_fields(cai_client_impl *impl) {
   cai_free_mem(&impl->allocator, impl->project_id);
   cai_free_mem(&impl->allocator, impl->ca_bundle_path);
   cai_free_mem(&impl->allocator, impl->ca_path);
+  cai_model_catalog_close(impl->model_catalog);
 }
 
 int cai_client_open(const cai_client_config *config, cai_client **out,
@@ -169,6 +170,8 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   cai_usage_accounting_init(&impl->usage);
   impl->responses_ws_curl = NULL;
   impl->responses_ws_headers = NULL;
+  impl->model_catalog = NULL;
+  impl->model_catalog_fetched_at = 0;
 
   if (impl->json_response_limit_bytes == 0U) {
     impl->json_response_limit_bytes = CAI_DEFAULT_JSON_RESPONSE_LIMIT;

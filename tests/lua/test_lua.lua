@@ -292,6 +292,8 @@ do
     "Lua agent runtime set_model method missing")
   assert(type(registry["cai.agent_runtime"].__index.model) == "function",
     "Lua agent runtime model method missing")
+  assert(type(registry["cai.client"].__index.list_models) == "function",
+    "Lua client model catalog method missing")
   assert(type(agent_methods.set_session_usage_limits) == "function",
     "Lua agent set_session_usage_limits method missing")
   assert(type(agent_methods.usage) == "function",

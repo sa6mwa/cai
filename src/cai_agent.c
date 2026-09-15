@@ -85,6 +85,7 @@ typedef struct cai_json_root_array_check {
 typedef struct cai_session_state_doc {
   long long version;
   char *model;
+  char *model_compaction_hash;
   char *preset_name;
   char *preset_prompt_version;
   char *previous_response_id;
@@ -112,6 +113,8 @@ static const lonejson_field cai_session_state_fields[] = {
     LONEJSON_FIELD_I64_REQ(cai_session_state_doc, version, "version"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc, model,
                                           "model"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(
+        cai_session_state_doc, model_compaction_hash, "model_compaction_hash"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc, preset_name,
                                           "preset_name"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(
@@ -963,6 +966,7 @@ int cai_agent_new_session(cai_agent *agent, cai_session **out,
   impl->previous_response_id = NULL;
   impl->conversation_id = NULL;
   impl->state_model = NULL;
+  impl->state_model_compaction_hash = NULL;
   impl->state_preset_name = NULL;
   impl->state_preset_prompt_version = NULL;
   impl->goal_objective = NULL;
@@ -2430,6 +2434,7 @@ void cai_session_destroy(cai_session *session) {
   cai_free_mem(allocator, impl->previous_response_id);
   cai_free_mem(allocator, impl->conversation_id);
   cai_free_mem(allocator, impl->state_model);
+  cai_free_mem(allocator, impl->state_model_compaction_hash);
   cai_free_mem(allocator, impl->state_preset_name);
   cai_free_mem(allocator, impl->state_preset_prompt_version);
   cai_free_mem(allocator, impl->goal_objective);
@@ -5567,6 +5572,8 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
   doc.model = CAI_SESSION_IMPL(session)->state_model != NULL
                   ? CAI_SESSION_IMPL(session)->state_model
                   : CAI_SESSION_AGENT_IMPL(session)->model;
+  doc.model_compaction_hash =
+      CAI_SESSION_IMPL(session)->state_model_compaction_hash;
   doc.preset_name = CAI_SESSION_IMPL(session)->state_preset_name;
   doc.preset_prompt_version =
       CAI_SESSION_IMPL(session)->state_preset_prompt_version;
@@ -5667,6 +5674,7 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   int has_history_json;
   int has_next_history;
   char *next_state_model;
+  char *next_state_model_compaction_hash;
   char *next_state_preset_name;
   char *next_state_preset_prompt_version;
   char *next_goal_objective;
@@ -5683,6 +5691,7 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   has_history_json = 0;
   has_next_history = 0;
   next_state_model = NULL;
+  next_state_model_compaction_hash = NULL;
   next_state_preset_name = NULL;
   next_state_preset_prompt_version = NULL;
   next_goal_objective = NULL;
@@ -5729,6 +5738,17 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
     if (next_state_model == NULL) {
       rc = cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to preserve imported session model");
+      goto done;
+    }
+  }
+  if (doc.model_compaction_hash != NULL) {
+    next_state_model_compaction_hash =
+        cai_strdup(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+                   doc.model_compaction_hash);
+    if (next_state_model_compaction_hash == NULL) {
+      rc =
+          cai_set_error(error, CAI_ERR_NOMEM,
+                        "failed to preserve imported model compatibility hash");
       goto done;
     }
   }
@@ -5815,8 +5835,13 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   if (rc == CAI_OK) {
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
                  CAI_SESSION_IMPL(session)->state_model);
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+                 CAI_SESSION_IMPL(session)->state_model_compaction_hash);
     CAI_SESSION_IMPL(session)->state_model = next_state_model;
+    CAI_SESSION_IMPL(session)->state_model_compaction_hash =
+        next_state_model_compaction_hash;
     next_state_model = NULL;
+    next_state_model_compaction_hash = NULL;
   }
   if (rc == CAI_OK) {
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
@@ -5888,6 +5913,8 @@ done:
     next_history.cleanup(&next_history);
   }
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator, next_state_model);
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+               next_state_model_compaction_hash);
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
                next_state_preset_name);
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,

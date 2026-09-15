@@ -68,11 +68,13 @@ commands or render a UI: downstream applications map their own controls to
 those APIs, review lifecycle calls, and runtime Markdown export.
 
 At an idle runtime boundary, hosts can select the next-turn model with
-`cai_agent_runtime_set_model` (or Lua `runtime:set_model`). CAI preserves the
-continuation for models with the same known compaction compatibility hash,
-including the GPT-5.6 family and GPT-6 Astra. A switch to an incompatible or
-unknown model compacts retained local history with the current model before the
-selection changes, then checkpoints the selected model for durable resume.
+`cai_agent_runtime_set_model` (or Lua `runtime:set_model`). For ChatGPT
+subscription clients, `cai_client_list_models` retrieves Codex's authoritative
+account catalog, including the opaque compaction compatibility hash. CAI uses
+that metadata for switches: equal hashes preserve context, differing declared
+hashes compact retained local history before the selection changes, and missing
+metadata does not cause CAI to invent a compatibility decision. The selected
+model is checkpointed for durable resume.
 
 Smith defaults to `gpt-5.6-terra` with medium reasoning and provider-directed
 `auto` reasoning summaries. The C and Lua Smith terminal examples intentionally

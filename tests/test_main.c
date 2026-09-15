@@ -70,6 +70,21 @@ void cai_terminal_test_set_child_pre_setsid_hold(int enabled);
 static long g_mcp_test_sleep_last_ms = 0L;
 static int g_mcp_test_sleep_count = 0;
 
+static int test_chatgpt_auth_access_token(cai_chatgpt_auth *auth, char **out,
+                                          cai_error *error) {
+  (void)auth;
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "test access-token output is required");
+  }
+  *out = cai_strdup(NULL, "mock-chatgpt-token");
+  if (*out == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate test access token");
+  }
+  return CAI_OK;
+}
+
 static void test_mcp_sleep_capture(long ms) {
   g_mcp_test_sleep_last_ms = ms;
   g_mcp_test_sleep_count++;
@@ -1085,19 +1100,6 @@ static void test_model_capabilities(test_state *state) {
              cai_model_supports("future-model", CAI_MODEL_CAP_RESPONSES), 0L);
   expect_int(state, "model_context",
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_NANO), 400000L);
-  expect_str(state, "model_5_6_luna_compaction_hash",
-             cai_model_compaction_compatibility_hash(CAI_MODEL_GPT_5_6_LUNA),
-             "3000");
-  expect_str(state, "model_6_astra_compaction_hash",
-             cai_model_compaction_compatibility_hash(CAI_MODEL_GPT_6_ASTRA),
-             "3000");
-  expect_str(state, "model_5_5_compaction_hash",
-             cai_model_compaction_compatibility_hash(CAI_MODEL_GPT_5_5),
-             "2911");
-  if (cai_model_compaction_compatibility_hash("future-model") != NULL) {
-    test_fail(state, "model_unknown_compaction_hash",
-              "unknown model unexpectedly has a compaction hash");
-  }
   expect_int(state, "model_metadata_verified",
              (long)(cai_model_metadata_flags(CAI_MODEL_GPT_5_NANO) &
                     CAI_MODEL_META_VERIFIED),
@@ -27051,10 +27053,31 @@ static void test_agent_runtime_lifecycle(test_state *state) {
 }
 
 static void test_agent_runtime_model_switch(test_state *state) {
+  static const char *catalog_required[] = {
+      "GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/",
+      "Authorization: Bearer mock-chatgpt-token",
+      "originator: " CAI_CHATGPT_AUTH_DEFAULT_ORIGINATOR};
+  static const char catalog_body[] =
+      "{\"models\":[{\"slug\":\"gpt-5.6-luna\",\"display_name\":"
+      "\"Luna\",\"context_window\":1050000,\"auto_compact_token_limit\":"
+      "840000,\"comp_hash\":\"provider-3000\",\"supported_in_api\":true},"
+      "{\"slug\":\"gpt-6-astra\",\"display_name\":\"Astra\","
+      "\"context_window\":1050000,\"auto_compact_token_limit\":840000,"
+      "\"comp_hash\":\"provider-3000\",\"supported_in_api\":true},"
+      "{\"slug\":\"gpt-5.5\",\"display_name\":\"GPT-5.5\","
+      "\"context_window\":1050000,\"auto_compact_token_limit\":840000,"
+      "\"comp_hash\":\"provider-2911\",\"supported_in_api\":true}]}";
+  static const mock_http_expectation catalog_script[] = {
+      {"GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/",
+       catalog_required, sizeof(catalog_required) / sizeof(catalog_required[0]),
+       NULL, 0U, 200, "OK", "application/json", NULL, catalog_body}};
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
   cai_agent_session_store store;
   runtime_session_store_state store_state;
+  cai_chatgpt_auth auth;
+  cai_model_catalog *catalog;
+  http_mock_server server;
   cai_client *client;
   cai_agent_runtime *runtime;
   cai_error error;
@@ -27062,6 +27085,15 @@ static void test_agent_runtime_model_switch(test_state *state) {
   cai_error_init(&error);
   client = NULL;
   runtime = NULL;
+  catalog = NULL;
+  memset(&auth, 0, sizeof(auth));
+  auth.access_token = test_chatgpt_auth_access_token;
+  if (http_mock_server_open_script(
+          state, "runtime_model_switch_catalog", catalog_script,
+          sizeof(catalog_script) / sizeof(catalog_script[0]), &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
   store.checkpoint = test_runtime_session_store_checkpoint;
@@ -27070,12 +27102,34 @@ static void test_agent_runtime_model_switch(test_state *state) {
   store.load_events_after = test_runtime_session_store_load_events_after;
   store.context = &store_state;
   cai_client_config_init(&client_config);
-  client_config.api_key = "test-key";
-  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.chatgpt_auth = &auth;
+  client_config.base_url = server.base_url;
   client_config.timeout_ms = 100L;
   client_config.http_2_disabled = 1;
   expect_int(state, "runtime_model_switch_client",
              cai_client_open(&client_config, &client, &error), CAI_OK);
+  if (client != NULL) {
+    expect_int(state, "runtime_model_switch_catalog_fetch",
+               cai_client_list_models(
+                   client, CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED,
+                   &catalog, &error),
+               CAI_OK);
+    if (catalog != NULL) {
+      const cai_model_catalog_entry *astra;
+
+      expect_int(state, "runtime_model_switch_catalog_count",
+                 (long)catalog->count, 3L);
+      astra = cai_model_catalog_find(catalog, CAI_MODEL_GPT_6_ASTRA);
+      if (astra == NULL) {
+        test_fail(state, "runtime_model_switch_catalog_astra", "model missing");
+      } else {
+        expect_str(state, "runtime_model_switch_catalog_hash",
+                   astra->compaction_compatibility_hash, "provider-3000");
+      }
+      cai_model_catalog_close(catalog);
+      catalog = NULL;
+    }
+  }
   cai_agent_runtime_config_init(&runtime_config);
   runtime_config.workspace_directory = "/tmp";
   runtime_config.model = CAI_MODEL_GPT_5_6_LUNA;
@@ -27095,6 +27149,9 @@ static void test_agent_runtime_model_switch(test_state *state) {
                cai_agent_runtime_model(runtime), CAI_MODEL_GPT_6_ASTRA);
     expect_substr(state, "runtime_model_switch_compatible_checkpoint",
                   store_state.saved_checkpoint, CAI_MODEL_GPT_6_ASTRA);
+    expect_substr(state, "runtime_model_switch_compatible_checkpoint_hash",
+                  store_state.saved_checkpoint,
+                  "\"model_compaction_hash\":\"provider-3000\"");
     expect_int(state, "runtime_model_switch_empty_history",
                cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_5_5, &error),
                CAI_OK);
@@ -27119,7 +27176,7 @@ static void test_agent_runtime_model_switch(test_state *state) {
         CAI_OK);
   }
   if (runtime != NULL) {
-    expect_int(state, "runtime_model_switch_unknown_requires_compaction",
+    expect_int(state, "runtime_model_switch_provider_hash_requires_compaction",
                cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_5_5, &error),
                CAI_ERR_TRANSPORT);
     expect_str(state, "runtime_model_switch_failed_preserves_model",
@@ -27136,6 +27193,11 @@ static void test_agent_runtime_model_switch(test_state *state) {
   if (client != NULL) {
     cai_client_close(client);
   }
+  if (catalog != NULL) {
+    cai_model_catalog_close(catalog);
+  }
+  expect_child_exit(state, "runtime_model_switch_catalog", server.pid,
+                    &server.child_status);
   cai_error_cleanup(&error);
 }
 

@@ -10,6 +10,7 @@
 #include <lonejson.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <time.h>
 
 struct curl_slist;
 
@@ -39,6 +40,8 @@ typedef struct cai_client_impl {
   cai_usage_accounting usage;
   CURL *responses_ws_curl;
   struct curl_slist *responses_ws_headers;
+  cai_model_catalog *model_catalog;
+  time_t model_catalog_fetched_at;
 } cai_client_impl;
 
 typedef struct cai_response_request_upload cai_response_request_upload;
@@ -97,6 +100,8 @@ typedef struct cai_session_impl {
   char *conversation_id;
   /** Model recorded in the imported/exported portable session state. */
   char *state_model;
+  /** Provider compaction hash recorded with state_model, when available. */
+  char *state_model_compaction_hash;
   /** Preset identity recorded in the imported/exported portable session state.
    */
   char *state_preset_name;

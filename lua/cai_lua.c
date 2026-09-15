@@ -2836,6 +2836,70 @@ static int cai_lua_client_new_agent(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_client_list_models(lua_State *L) {
+  cai_lua_client *self;
+  cai_model_catalog_refresh_strategy strategy;
+  cai_model_catalog *catalog;
+  cai_error error;
+  size_t i;
+  int rc;
+
+  self = cai_lua_check_client(L, 1);
+  strategy = CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED;
+  if (!lua_isnoneornil(L, 2)) {
+    const char *refresh;
+
+    refresh = luaL_checkstring(L, 2);
+    if (strcmp(refresh, "online") == 0) {
+      strategy = CAI_MODEL_CATALOG_REFRESH_ONLINE;
+    } else if (strcmp(refresh, "offline") == 0) {
+      strategy = CAI_MODEL_CATALOG_REFRESH_OFFLINE;
+    } else if (strcmp(refresh, "online_if_uncached") != 0) {
+      return luaL_error(L, "list_models refresh must be online, offline, or "
+                           "online_if_uncached");
+    }
+  }
+  catalog = NULL;
+  cai_error_init(&error);
+  cai_lua_client_enter(self);
+  rc = cai_client_list_models(self->ptr, strategy, &catalog, &error);
+  cai_lua_client_leave(self);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  lua_createtable(L, (int)catalog->count, 0);
+  for (i = 0U; i < catalog->count; i++) {
+    const cai_model_catalog_entry *entry;
+
+    entry = catalog->entries + i;
+    lua_createtable(L, 0, 7);
+    lua_pushstring(L, entry->slug);
+    lua_setfield(L, -2, "slug");
+    if (entry->display_name != NULL) {
+      lua_pushstring(L, entry->display_name);
+      lua_setfield(L, -2, "display_name");
+    }
+    if (entry->description != NULL) {
+      lua_pushstring(L, entry->description);
+      lua_setfield(L, -2, "description");
+    }
+    lua_pushinteger(L, (lua_Integer)entry->context_window_tokens);
+    lua_setfield(L, -2, "context_window_tokens");
+    lua_pushinteger(L, (lua_Integer)entry->auto_compact_token_limit);
+    lua_setfield(L, -2, "auto_compact_token_limit");
+    if (entry->compaction_compatibility_hash != NULL) {
+      lua_pushstring(L, entry->compaction_compatibility_hash);
+      lua_setfield(L, -2, "compaction_compatibility_hash");
+    }
+    lua_pushboolean(L, entry->supported_in_api);
+    lua_setfield(L, -2, "supported_in_api");
+    lua_rawseti(L, -2, (lua_Integer)i + 1);
+  }
+  cai_model_catalog_close(catalog);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
 static int cai_lua_client_new_smith_agent(lua_State *L) {
   cai_lua_client *self;
   cai_smith_config config;
@@ -10819,6 +10883,7 @@ static int cai_lua_conversation_params_add_file_url(lua_State *L) {
 
 static const luaL_Reg cai_lua_client_methods[] = {
     {"new_agent", cai_lua_client_new_agent},
+    {"list_models", cai_lua_client_list_models},
     {"new_agent_runtime", cai_lua_client_new_agent_runtime},
     {"new_smith_agent", cai_lua_client_new_smith_agent},
     {"new_smith_runtime", cai_lua_client_new_smith_runtime},

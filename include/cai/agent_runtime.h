@@ -598,11 +598,11 @@ int cai_agent_runtime_open(cai_client *client,
  * Select the model for subsequent turns at a stable runtime boundary.
  *
  * This owner-thread-only operation rejects active, queued, or review-paused
- * runtimes. Equal known compaction compatibility hashes preserve the current
- * context. A different or unknown model profile compacts retained local
- * history with the current model before the selection changes. The selected
- * model is included in the next durable checkpoint. Provider authentication
- * and model availability remain the client's responsibility.
+ * runtimes. With ChatGPT authentication, CAI uses Codex's provider-declared
+ * model catalog and compacts retained local history only when both selections
+ * declare different compatibility hashes, or a context downshift has reached
+ * the new model's threshold. Missing metadata follows Codex's no-inference
+ * policy. The selected model is included in the next durable checkpoint.
  */
 int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
                                 cai_error *error);

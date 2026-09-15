@@ -211,6 +211,47 @@ typedef struct cai_client_config {
   cai_allocator allocator;
 } cai_client_config;
 
+/** Refresh policy for the ChatGPT Codex model catalog. */
+typedef enum cai_model_catalog_refresh_strategy {
+  /** Fetch the current catalog from the provider. */
+  CAI_MODEL_CATALOG_REFRESH_ONLINE = 0,
+  /** Return only a catalog already cached by this client. */
+  CAI_MODEL_CATALOG_REFRESH_OFFLINE = 1,
+  /** Use a fresh client cache, otherwise fetch the provider catalog. */
+  CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED = 2
+} cai_model_catalog_refresh_strategy;
+
+/** Provider-declared metadata for one model available to this ChatGPT account.
+ */
+typedef struct cai_model_catalog_entry {
+  /** Provider model slug. */
+  char *slug;
+  /** Provider display name, or NULL when omitted. */
+  char *display_name;
+  /** Provider description, or NULL when omitted. */
+  char *description;
+  /** Provider context window in tokens, or zero when omitted. */
+  long long context_window_tokens;
+  /** Provider automatic-compaction threshold, or zero when omitted. */
+  long long auto_compact_token_limit;
+  /** Opaque provider identifier for compaction-compatible configurations. */
+  char *compaction_compatibility_hash;
+  /** Non-zero when the provider advertises Responses API support. */
+  int supported_in_api;
+} cai_model_catalog_entry;
+
+/** Owned model catalog returned by cai_client_list_models. */
+typedef struct cai_model_catalog {
+  /** Number of provider-advertised entries. */
+  size_t count;
+  /** Borrowed until close; entries are ordered as supplied by the provider. */
+  const cai_model_catalog_entry *entries;
+  /** Release this catalog and all contained strings. */
+  void (*close)(struct cai_model_catalog *catalog);
+  /** Private implementation; do not access directly. */
+  void *impl;
+} cai_model_catalog;
+
 /**
  * Use previous_response_id/server-side state for session continuity on
  * providers that support it. OpenAI streaming uses the Responses WebSocket
@@ -1512,6 +1553,19 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
                     cai_error *error);
 /** Close and destroy a cai client. */
 void cai_client_close(cai_client *client);
+/**
+ * List models enabled for the current ChatGPT subscription through Codex's
+ * authoritative `/models` endpoint. This requires chatgpt_auth; API-key and
+ * third-party clients do not have an equivalent catalog contract.
+ */
+int cai_client_list_models(cai_client *client,
+                           cai_model_catalog_refresh_strategy strategy,
+                           cai_model_catalog **out, cai_error *error);
+/** Find one provider slug in a catalog, or return NULL. */
+const cai_model_catalog_entry *
+cai_model_catalog_find(const cai_model_catalog *catalog, const char *slug);
+/** Release a model catalog returned by cai_client_list_models. */
+void cai_model_catalog_close(cai_model_catalog *catalog);
 /** Replace cumulative usage and USD spend limits for a client. */
 int cai_client_set_usage_limits(cai_client *client,
                                 const cai_usage_limits *limits,
