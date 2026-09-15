@@ -36,7 +36,7 @@ if CAI_REPO_ROOT="$repo_root" CAI_VERSION=1.2.3 \
 fi
 
 listing=$test_root/archive-members.txt
-printf '%s\n' 'cai-1.2.3/var/cache/c.pkt.systems/toolchains/roots/leaked-file' \
+printf '%s\n' "cai-1.2.3${cache_root}/${cpkt_cache_dir_name}/${cpkt_toolchain_dir_name}/roots/leaked-file" \
   >"$listing"
 if CAI_REPO_ROOT="$repo_root" CAI_VERSION=1.2.3 bash -c \
   "source '$repo_root/scripts/verify_release_artifacts.sh' --self-test; verify_listing_has_no_host_paths '$listing'" \
