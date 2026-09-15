@@ -1350,6 +1350,7 @@ if(CAI_BUILD_TESTS)
     agent_runtime_review_subagent
     smith_review_pause_checkpoint_failure
     agent_runtime_lifecycle
+    agent_runtime_model_switch
     agent_runtime_terminal_callback_close
     agent_runtime_queued_turns
     agent_runtime_semantic_events

@@ -288,6 +288,9 @@ void cai_agent_runtime_config_init(cai_agent_runtime_config *config);
 int cai_agent_runtime_open(cai_client *client,
                            const cai_agent_runtime_config *config,
                            cai_agent_runtime **out, cai_error *error);
+int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
+                                cai_error *error);
+const char *cai_agent_runtime_model(const cai_agent_runtime *runtime);
 int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
                              cai_error *error);
 int cai_agent_runtime_start_review(cai_agent_runtime *parent,
@@ -327,6 +330,14 @@ only after the active turn becomes terminal (or begins immediately from an
 idle runtime). Both receivers have `_threadsafe` variants. They copy only the
 input under a short mutex, append durable journal events, signal the wakeup
 descriptor, and never call the host event callback.
+
+`set_model` is owner-thread-only and requires the same stable boundary as
+conversation export: no active or queued turn, steering, goal control, or
+review/subagent pause. It updates the active parent model that future turns and
+inherited subagent defaults use. Equal known compatibility hashes retain
+context; differing or unknown profiles compact non-empty local history with
+the currently selected model before the model changes. The successful selection
+is checkpointed with the compacted history, if any.
 
 `export_markdown` is the live-runtime-only handover projection receiver. It
 writes incrementally to the caller's `cai_sink`; it neither reopens a session

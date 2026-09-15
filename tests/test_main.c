@@ -1088,6 +1088,9 @@ static void test_model_capabilities(test_state *state) {
   expect_str(state, "model_5_6_luna_compaction_hash",
              cai_model_compaction_compatibility_hash(CAI_MODEL_GPT_5_6_LUNA),
              "3000");
+  expect_str(state, "model_6_astra_compaction_hash",
+             cai_model_compaction_compatibility_hash(CAI_MODEL_GPT_6_ASTRA),
+             "3000");
   expect_str(state, "model_5_5_compaction_hash",
              cai_model_compaction_compatibility_hash(CAI_MODEL_GPT_5_5),
              "2911");
@@ -27047,6 +27050,95 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_agent_runtime_model_switch(test_state *state) {
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_error error;
+
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.timeout_ms = 100L;
+  client_config.http_2_disabled = 1;
+  expect_int(state, "runtime_model_switch_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  runtime_config.disable_terminal = 1;
+  runtime_config.session_store = &store;
+  expect_int(state, "runtime_model_switch_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_str(state, "runtime_model_switch_initial",
+               cai_agent_runtime_model(runtime), CAI_MODEL_GPT_5_6_LUNA);
+    expect_int(
+        state, "runtime_model_switch_compatible",
+        cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_6_ASTRA, &error),
+        CAI_OK);
+    expect_str(state, "runtime_model_switch_compatible_model",
+               cai_agent_runtime_model(runtime), CAI_MODEL_GPT_6_ASTRA);
+    expect_substr(state, "runtime_model_switch_compatible_checkpoint",
+                  store_state.saved_checkpoint, CAI_MODEL_GPT_6_ASTRA);
+    expect_int(state, "runtime_model_switch_empty_history",
+               cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_5_5, &error),
+               CAI_OK);
+    expect_str(state, "runtime_model_switch_empty_history_model",
+               cai_agent_runtime_model(runtime), CAI_MODEL_GPT_5_5);
+    expect_int(
+        state, "runtime_model_switch_back_to_astra",
+        cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_6_ASTRA, &error),
+        CAI_OK);
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+    memset(&store_state, 0, sizeof(store_state));
+    store_state.checkpoint_json =
+        "{\"version\":1,\"model\":\"gpt-6-astra\",\"history\":[{\"type\":"
+        "\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\","
+        "\"text\":\"retained context\"}]}]}";
+    runtime_config.model = CAI_MODEL_GPT_6_ASTRA;
+    runtime_config.resume_latest = 1;
+    expect_int(
+        state, "runtime_model_switch_resume_history",
+        cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+        CAI_OK);
+  }
+  if (runtime != NULL) {
+    expect_int(state, "runtime_model_switch_unknown_requires_compaction",
+               cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_5_5, &error),
+               CAI_ERR_TRANSPORT);
+    expect_str(state, "runtime_model_switch_failed_preserves_model",
+               cai_agent_runtime_model(runtime), CAI_MODEL_GPT_6_ASTRA);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(
+        state, "runtime_model_switch_same_model",
+        cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_6_ASTRA, &error),
+        CAI_OK);
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  cai_error_cleanup(&error);
+}
+
 static void test_agent_runtime_terminal_callback_close(test_state *state) {
   static const char tool_response[] =
       "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
@@ -42116,6 +42208,7 @@ static const test_entry test_entries[] = {
     {"smith_review_pause_checkpoint_failure",
      test_smith_review_pause_checkpoint_failure},
     {"agent_runtime_lifecycle", test_agent_runtime_lifecycle},
+    {"agent_runtime_model_switch", test_agent_runtime_model_switch},
     {"agent_runtime_terminal_callback_close",
      test_agent_runtime_terminal_callback_close},
     {"agent_runtime_queued_turns", test_agent_runtime_queued_turns},

@@ -4460,6 +4460,21 @@ static int cai_lua_agent_runtime_submit(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_agent_runtime_set_model(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  cai_error error;
+  const char *model;
+  int rc;
+
+  self = cai_lua_check_agent_runtime(L, 1);
+  model = luaL_checkstring(L, 2);
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_set_model(self->ptr, model, &error);
+  cai_lua_agent_runtime_leave(self);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_agent_runtime_submit_review(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_agent_review_request request;
@@ -4872,6 +4887,20 @@ static int cai_lua_agent_runtime_session_id(lua_State *L) {
   session_id = cai_agent_runtime_session_id(self->ptr);
   if (session_id != NULL) {
     lua_pushstring(L, session_id);
+  } else {
+    lua_pushnil(L);
+  }
+  return 1;
+}
+
+static int cai_lua_agent_runtime_model(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  const char *model;
+
+  self = cai_lua_check_agent_runtime(L, 1);
+  model = cai_agent_runtime_model(self->ptr);
+  if (model != NULL) {
+    lua_pushstring(L, model);
   } else {
     lua_pushnil(L);
   }
@@ -10818,6 +10847,7 @@ static const luaL_Reg cai_lua_client_methods[] = {
 
 static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"submit", cai_lua_agent_runtime_submit},
+    {"set_model", cai_lua_agent_runtime_set_model},
     {"submit_review", cai_lua_agent_runtime_submit_review},
     {"start_review", cai_lua_agent_runtime_start_review},
     {"finish_review", cai_lua_agent_runtime_finish_review},
@@ -10834,6 +10864,7 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"pump", cai_lua_agent_runtime_pump},
     {"state", cai_lua_agent_runtime_state},
     {"session_id", cai_lua_agent_runtime_session_id},
+    {"model", cai_lua_agent_runtime_model},
     {"export_markdown", cai_lua_agent_runtime_export_markdown},
     {"export_markdown_file", cai_lua_agent_runtime_export_markdown_file},
     {"wakeup_fd", cai_lua_agent_runtime_wakeup_fd},

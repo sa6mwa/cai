@@ -595,6 +595,21 @@ int cai_agent_runtime_open(cai_client *client,
                            const cai_agent_runtime_config *config,
                            cai_agent_runtime **out, cai_error *error);
 /**
+ * Select the model for subsequent turns at a stable runtime boundary.
+ *
+ * This owner-thread-only operation rejects active, queued, or review-paused
+ * runtimes. Equal known compaction compatibility hashes preserve the current
+ * context. A different or unknown model profile compacts retained local
+ * history with the current model before the selection changes. The selected
+ * model is included in the next durable checkpoint. Provider authentication
+ * and model availability remain the client's responsibility.
+ */
+int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
+                                cai_error *error);
+/** Return the selected model, borrowed until the next successful set or close.
+ */
+const char *cai_agent_runtime_model(const cai_agent_runtime *runtime);
+/**
  * Submit an immediate user turn while an ordinary runtime is idle or
  * completed. With durable storage the accepted input is journaled before this
  * call succeeds. Owner-thread-only; use submit_queued_threadsafe for input

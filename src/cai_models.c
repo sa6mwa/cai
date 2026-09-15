@@ -407,7 +407,8 @@ const char *cai_model_compaction_compatibility_hash(const char *model_id) {
   if (model_id == NULL) {
     return NULL;
   }
-  if (strcmp(model_id, CAI_MODEL_GPT_5_6) == 0 ||
+  if (strcmp(model_id, CAI_MODEL_GPT_6_ASTRA) == 0 ||
+      strcmp(model_id, CAI_MODEL_GPT_5_6) == 0 ||
       strcmp(model_id, CAI_MODEL_GPT_5_6_SOL) == 0 ||
       strcmp(model_id, CAI_MODEL_GPT_5_6_TERRA) == 0 ||
       strcmp(model_id, CAI_MODEL_GPT_5_6_LUNA) == 0) {

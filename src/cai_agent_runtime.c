@@ -473,6 +473,7 @@ struct cai_agent_runtime {
   int wakeup_write_fd;
   int worker_started;
   int stopping;
+  int model_switching;
   int pumping;
   int close_deferred;
   int destroying;
@@ -5298,6 +5299,54 @@ static int cai_runtime_export_idle_locked(const cai_agent_runtime *runtime,
   return CAI_OK;
 }
 
+static int
+cai_runtime_model_switch_ready_locked(const cai_agent_runtime *runtime,
+                                      cai_error *error) {
+  int rc;
+
+  rc = cai_runtime_export_idle_locked(runtime, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (runtime->model_switching || runtime->goal_control_head != NULL ||
+      runtime->subagent_active || runtime->active_review != NULL ||
+      runtime->review_launching || runtime->review_pause_pending) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "model selection requires a stable runtime boundary");
+  }
+  return CAI_OK;
+}
+
+static int
+cai_runtime_model_switch_requires_compaction(const cai_agent_runtime *runtime,
+                                             const char *previous_model,
+                                             const char *next_model) {
+  const char *previous_hash;
+  const char *next_hash;
+  long long previous_window;
+  long long next_window;
+  size_t history_bytes;
+
+  if (previous_model != NULL && next_model != NULL &&
+      strcmp(previous_model, next_model) == 0) {
+    return 0;
+  }
+  previous_hash = cai_model_compaction_compatibility_hash(previous_model);
+  next_hash = cai_model_compaction_compatibility_hash(next_model);
+  previous_window = cai_model_context_window_tokens(previous_model);
+  next_window = cai_model_context_window_tokens(next_model);
+  if (previous_hash != NULL && next_hash != NULL &&
+      strcmp(previous_hash, next_hash) == 0 && previous_window > 0LL &&
+      (next_window >= previous_window ||
+       cai_runtime_history_fits_context_window(runtime, next_window))) {
+    return 0;
+  }
+  history_bytes =
+      CAI_SESSION_IMPL(runtime->session)
+          ->history.size_fn(&CAI_SESSION_IMPL(runtime->session)->history);
+  return history_bytes != 0U;
+}
+
 void cai_agent_runtime_config_init(cai_agent_runtime_config *config) {
   if (config != NULL) {
     memset(config, 0, sizeof(*config));
@@ -5773,6 +5822,12 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
     cai_runtime_input_node_free(node);
     return cai_set_error(error, CAI_ERR_CANCELLED, "agent runtime is closing");
   }
+  if (runtime->model_switching) {
+    pthread_mutex_unlock(&runtime->lock);
+    cai_runtime_input_node_free(node);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "agent runtime model switch is in progress");
+  }
   if (kind == CAI_RUNTIME_INPUT_TURN &&
       (runtime->subagent_active || runtime->active_review != NULL ||
        runtime->review_launching || runtime->review_pause_pending ||
@@ -5915,6 +5970,134 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
   pthread_mutex_unlock(&runtime->lock);
   cai_runtime_log_input_accepted(runtime, kind);
   return CAI_OK;
+}
+
+const char *cai_agent_runtime_model(const cai_agent_runtime *runtime) {
+  if (runtime == NULL || runtime->agent == NULL) {
+    return NULL;
+  }
+  return CAI_AGENT_IMPL(runtime->agent)->model;
+}
+
+int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
+                                cai_error *error) {
+  cai_agent_impl *agent;
+  cai_session_impl *session;
+  char *next_model;
+  char *next_smith_model;
+  char *saved_state_model;
+  char *old_model;
+  char *old_smith_model;
+  int requires_compaction;
+  int rc;
+
+  rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (model == NULL || model[0] == '\0') {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent model is required");
+  }
+  pthread_mutex_lock(&runtime->lock);
+  rc = cai_runtime_model_switch_ready_locked(runtime, error);
+  if (rc == CAI_OK &&
+      strcmp(CAI_AGENT_IMPL(runtime->agent)->model, model) == 0) {
+    pthread_mutex_unlock(&runtime->lock);
+    return CAI_OK;
+  }
+  if (rc == CAI_OK) {
+    runtime->model_switching = 1;
+  }
+  pthread_mutex_unlock(&runtime->lock);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+
+  next_model =
+      cai_strdup(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator, model);
+  next_smith_model = cai_strdup(NULL, model);
+  if (next_model == NULL || next_smith_model == NULL) {
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                 next_model);
+    cai_free_mem(NULL, next_smith_model);
+    pthread_mutex_lock(&runtime->lock);
+    runtime->model_switching = 0;
+    pthread_cond_broadcast(&runtime->condition);
+    pthread_mutex_unlock(&runtime->lock);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to copy selected agent model");
+  }
+
+  if (runtime->resume_compaction_pending) {
+    rc = cai_runtime_compact_resumed_history(runtime, error);
+  }
+  if (rc == CAI_OK) {
+    agent = CAI_AGENT_IMPL(runtime->agent);
+    requires_compaction = cai_runtime_model_switch_requires_compaction(
+        runtime, agent->model, model);
+    if (requires_compaction) {
+      rc = cai_session_compact_experimental(runtime->session, error);
+    }
+  }
+  if (rc != CAI_OK) {
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                 next_model);
+    cai_free_mem(NULL, next_smith_model);
+    pthread_mutex_lock(&runtime->lock);
+    runtime->model_switching = 0;
+    pthread_cond_broadcast(&runtime->condition);
+    pthread_mutex_unlock(&runtime->lock);
+    return rc;
+  }
+
+  agent = CAI_AGENT_IMPL(runtime->agent);
+  session = CAI_SESSION_IMPL(runtime->session);
+  saved_state_model = NULL;
+  if (runtime->session_store != NULL && session->state_model != NULL) {
+    saved_state_model =
+        cai_strdup(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                   session->state_model);
+    if (saved_state_model == NULL) {
+      cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                   next_model);
+      cai_free_mem(NULL, next_smith_model);
+      pthread_mutex_lock(&runtime->lock);
+      runtime->model_switching = 0;
+      pthread_cond_broadcast(&runtime->condition);
+      pthread_mutex_unlock(&runtime->lock);
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to preserve prior session model");
+    }
+  }
+  old_model = agent->model;
+  old_smith_model = runtime->smith_model;
+  agent->model = next_model;
+  runtime->smith_model = next_smith_model;
+  rc = cai_runtime_checkpoint(runtime, 1, error);
+  if (rc != CAI_OK) {
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                 agent->model);
+    cai_free_mem(NULL, runtime->smith_model);
+    agent->model = old_model;
+    runtime->smith_model = old_smith_model;
+    if (runtime->session_store != NULL) {
+      cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                   session->state_model);
+      session->state_model = saved_state_model;
+      saved_state_model = NULL;
+    }
+  } else {
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                 old_model);
+    cai_free_mem(NULL, old_smith_model);
+  }
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+               saved_state_model);
+  pthread_mutex_lock(&runtime->lock);
+  runtime->model_switching = 0;
+  pthread_cond_broadcast(&runtime->condition);
+  pthread_mutex_unlock(&runtime->lock);
+  return rc;
 }
 
 int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,

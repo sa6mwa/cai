@@ -288,6 +288,10 @@ do
     "Lua agent runtime start_review method missing")
   assert(type(registry["cai.agent_runtime"].__index.finish_review) == "function",
     "Lua agent runtime finish_review method missing")
+  assert(type(registry["cai.agent_runtime"].__index.set_model) == "function",
+    "Lua agent runtime set_model method missing")
+  assert(type(registry["cai.agent_runtime"].__index.model) == "function",
+    "Lua agent runtime model method missing")
   assert(type(agent_methods.set_session_usage_limits) == "function",
     "Lua agent set_session_usage_limits method missing")
   assert(type(agent_methods.usage) == "function",
@@ -1054,8 +1058,8 @@ do
 
   local runtime_meta = debug.getregistry()["cai.agent_runtime"]
   assert(type(runtime_meta) == "table", "missing agent runtime metatable")
-  for _, method in ipairs({ "submit", "submit_review", "start_review", "finish_review", "submit_steering", "submit_queued", "goal", "create_goal", "pause_goal", "resume_goal", "set_goal_objective", "set_goal_token_budget", "clear_goal_token_budget", "clear_goal", "pump", "state",
-    "session_id", "export_markdown", "export_markdown_file", "wakeup_fd", "close" }) do
+  for _, method in ipairs({ "submit", "set_model", "submit_review", "start_review", "finish_review", "submit_steering", "submit_queued", "goal", "create_goal", "pause_goal", "resume_goal", "set_goal_objective", "set_goal_token_budget", "clear_goal_token_budget", "clear_goal", "pump", "state",
+    "session_id", "model", "export_markdown", "export_markdown_file", "wakeup_fd", "close" }) do
     assert(type(runtime_meta.__index[method]) == "function",
       "missing agent runtime method " .. method)
   end
@@ -1368,6 +1372,12 @@ do
   assert(table.concat(runtime_logger_chunks):find("cai.agent.runtime.opened", 1, true),
     "Lua Smith runtime accepts and retains a native pslog logger")
   assert_eq(runtime:state(), "idle", "Lua Smith runtime initial state")
+  assert_eq(runtime:model(), cai.MODEL_GPT_5_6_TERRA,
+    "Lua Smith runtime initial model")
+  assert_ok(runtime:set_model(cai.MODEL_GPT_6_ASTRA), nil,
+    "Lua Smith runtime compatible model switch")
+  assert_eq(runtime:model(), cai.MODEL_GPT_6_ASTRA,
+    "Lua Smith runtime selected model")
   assert(type(runtime:session_id()) == "string", "Lua Smith runtime session id")
   assert(type(runtime:wakeup_fd()) == "number", "Lua Smith runtime wakeup fd")
   do
