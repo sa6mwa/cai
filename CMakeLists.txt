@@ -1902,6 +1902,14 @@ if(CAI_BUILD_TESTS)
       LABELS integration
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT ${CAI_INTEGRATION_TIMEOUT_LONG})
+    add_test(NAME cai_integration_chatgpt_astra_smoke
+      COMMAND "${CMAKE_COMMAND}" -E env
+        "CAI_INTEGRATION_CHATGPT_ASTRA_SMOKE=1"
+        $<TARGET_FILE:cai_integration_tests>)
+    set_tests_properties(cai_integration_chatgpt_astra_smoke PROPERTIES
+      LABELS integration
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+      TIMEOUT ${CAI_INTEGRATION_TIMEOUT_MEDIUM})
     add_test(NAME cai_integration_chatgpt_auth_rejection
       COMMAND /bin/sh
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/chatgpt_auth_failure_test.sh"

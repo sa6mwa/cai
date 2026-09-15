@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 /** OpenAI Responses model id constants. */
+#define CAI_MODEL_GPT_6_ASTRA "gpt-6-astra"
 #define CAI_MODEL_GPT_5_6 "gpt-5.6"
 #define CAI_MODEL_GPT_5_6_SOL "gpt-5.6-sol"
 #define CAI_MODEL_GPT_5_6_TERRA "gpt-5.6-terra"
@@ -145,7 +146,7 @@ extern "C" {
 #define CAI_MODEL_CAP_AUDIO_OUTPUT 0x0080u
 /** Model supports Responses reasoning controls. */
 #define CAI_MODEL_CAP_REASONING 0x0100u
-/** Model supports the GPT-5.6 Responses reasoning.mode="pro" setting. */
+/** Model supports the Responses reasoning.mode="pro" setting. */
 #define CAI_MODEL_CAP_REASONING_PRO_MODE 0x0200u
 /** Model metadata flags describing bundled model metadata confidence. */
 #define CAI_MODEL_META_VERIFIED 0x0001u

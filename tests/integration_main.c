@@ -1374,6 +1374,77 @@ done:
   return rc == CAI_OK ? 0 : 1;
 }
 
+static int run_chatgpt_astra_smoke(void) {
+  cai_agent_config agent_config;
+  cai_client_config client_config;
+  cai_sink_callbacks sink_callbacks;
+  cai_chatgpt_auth *auth;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_sink *sink;
+  cai_error error;
+  integration_write_state writer;
+  int rc;
+
+  cai_error_init(&error);
+  cai_agent_config_init(&agent_config);
+  memset(&writer, 0, sizeof(writer));
+  auth = NULL;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  sink = NULL;
+
+  fprintf(stderr, "[integration-chatgpt-astra-smoke] model=%s\n",
+          CAI_MODEL_GPT_6_ASTRA);
+  agent_config.model = CAI_MODEL_GPT_6_ASTRA;
+  agent_config.developer_instructions =
+      "You are a strict integration smoke test. Reply with exactly the "
+      "requested marker and no other text.";
+  agent_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  agent_config.max_output_tokens = 32;
+  sink_callbacks.write = integration_write;
+  sink_callbacks.close = NULL;
+  sink_callbacks.context = &writer;
+  rc =
+      integration_configure_chatgpt_subscription(&client_config, &auth, &error);
+  if (rc == CAI_OK) {
+    rc = cai_client_open(&client_config, &client, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_sink_from_callbacks(&sink_callbacks, &sink, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_agent_new_session(agent, &session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_add_user_text(session, "Reply with exactly: astra-smoke",
+                                   &error);
+  }
+  if (rc == CAI_OK) {
+    rc = integration_provider_stream_text(session, sink, 0, &error);
+  }
+  if (rc != CAI_OK) {
+    print_error("ChatGPT Astra smoke", rc, &error);
+  } else if (strstr(writer.buffer, "astra-smoke") == NULL) {
+    fprintf(stderr, "ChatGPT Astra smoke returned unexpected output:\n%s\n",
+            writer.buffer);
+    rc = CAI_ERR_PROTOCOL;
+  }
+
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_chatgpt_auth_close(auth);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 0 : 1;
+}
+
 static int run_hosted_web_search_regression_once(int *out_retryable) {
   const char *model;
   cai_client_config client_config;
@@ -6302,6 +6373,7 @@ int main(void) {
   const char *chatgpt_smith_subagents;
   const char *chatgpt_smith_mcp_review;
   const char *chatgpt_defaults;
+  const char *chatgpt_astra_smoke;
   const char *e2e;
   const char *exec_tool;
   const char *openrouter;
@@ -6333,6 +6405,10 @@ int main(void) {
   chatgpt_defaults = getenv("CAI_INTEGRATION_CHATGPT_DEFAULTS");
   if (integration_flag_enabled(chatgpt_defaults)) {
     return run_chatgpt_integration_defaults_check();
+  }
+  chatgpt_astra_smoke = getenv("CAI_INTEGRATION_CHATGPT_ASTRA_SMOKE");
+  if (integration_flag_enabled(chatgpt_astra_smoke)) {
+    return run_chatgpt_astra_smoke();
   }
   provider_retry_classifier =
       getenv("CAI_INTEGRATION_PROVIDER_RETRY_CLASSIFIER");

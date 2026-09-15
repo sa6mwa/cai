@@ -340,6 +340,7 @@ assert_eq(cai.OPENROUTER_MODEL_DEFAULT_RESPONSES,
   cai.OPENROUTER_MODEL_OPENAI_GPT_5_6_LUNA,
   "OpenRouter default model")
 assert_eq(cai.MODEL_GPT_5_4_PRO, "gpt-5.4-pro", "GPT-5.4 pro constant")
+assert_eq(cai.MODEL_GPT_6_ASTRA, "gpt-6-astra", "GPT-6 Astra constant")
 assert_eq(cai.MODEL_GPT_5_6_SOL, "gpt-5.6-sol", "GPT-5.6 Sol constant")
 assert_eq(cai.MODEL_GPT_5_6_LUNA, "gpt-5.6-luna", "GPT-5.6 Luna constant")
 assert_eq(cai.MODEL_GPT_5_3_CODEX, "gpt-5.3-codex",
@@ -366,6 +367,25 @@ assert_eq(gpt_5_6_luna.input_usd_per_million, 0.2,
 assert_eq(gpt_5_6_luna.long_output_usd_per_million, 1.8,
   "gpt-5.6 Luna long output price")
 assert((gpt_5_6_luna.capabilities & cai.MODEL_CAP_REASONING_PRO_MODE) ~= 0)
+local gpt_6_astra = cai.model_info(cai.MODEL_GPT_6_ASTRA)
+assert(type(gpt_6_astra) == "table")
+assert_eq(gpt_6_astra.context_window_tokens, 1050000,
+  "GPT-6 Astra context window")
+assert_eq(gpt_6_astra.input_usd_per_million, 10.0,
+  "GPT-6 Astra input price")
+assert_eq(gpt_6_astra.cached_input_usd_per_million, 1.0,
+  "GPT-6 Astra cached input price")
+assert_eq(gpt_6_astra.output_usd_per_million, 50.0,
+  "GPT-6 Astra output price")
+assert_eq(gpt_6_astra.long_context_threshold_tokens, 272000,
+  "GPT-6 Astra long context threshold")
+assert_eq(gpt_6_astra.long_input_usd_per_million, 20.0,
+  "GPT-6 Astra long input price")
+assert_eq(gpt_6_astra.long_cached_input_usd_per_million, 2.0,
+  "GPT-6 Astra long cached input price")
+assert_eq(gpt_6_astra.long_output_usd_per_million, 75.0,
+  "GPT-6 Astra long output price")
+assert((gpt_6_astra.capabilities & cai.MODEL_CAP_REASONING_PRO_MODE) ~= 0)
 local o1_mini = cai.model_info(cai.MODEL_O1_MINI)
 assert(type(o1_mini) == "table")
 assert((o1_mini.capabilities & cai.MODEL_CAP_REASONING) ~= 0)
@@ -384,6 +404,8 @@ assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_NANO), true,
   "priced model can enforce spend")
 assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_5), true,
   "latest model can enforce spend")
+assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_6_ASTRA), true,
+  "GPT-6 Astra can enforce spend")
 assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_5_PRO), true,
   "latest pro model can enforce spend")
 assert_eq(cai.model_can_estimate_usage_usd(cai.MODEL_GPT_5_4_NANO), true,

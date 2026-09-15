@@ -1131,6 +1131,32 @@ static void test_model_capabilities(test_state *state) {
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_5), 1050000L);
   expect_int(state, "model_gpt_5_6_context",
              cai_model_context_window_tokens(CAI_MODEL_GPT_5_6), 1050000L);
+  info = cai_model_info_by_id(CAI_MODEL_GPT_6_ASTRA);
+  if (info == NULL) {
+    test_fail(state, "model_gpt_6_astra_metadata", "model missing");
+    return;
+  }
+  expect_int(state, "model_gpt_6_astra_verified",
+             (long)(info->metadata_flags & CAI_MODEL_META_VERIFIED),
+             CAI_MODEL_META_VERIFIED);
+  expect_int(state, "model_gpt_6_astra_context", info->context_window_tokens,
+             1050000L);
+  expect_int(state, "model_gpt_6_astra_compact_limit",
+             info->auto_compact_token_limit, 840000L);
+  expect_int(state, "model_gpt_6_astra_long_threshold",
+             info->long_context_threshold_tokens, 272000L);
+  expect_int(state, "model_gpt_6_astra_input_cents",
+             (long)(info->input_usd_per_million * 100.0 + 0.5), 1000L);
+  expect_int(state, "model_gpt_6_astra_cached_input_cents",
+             (long)(info->cached_input_usd_per_million * 100.0 + 0.5), 100L);
+  expect_int(state, "model_gpt_6_astra_output_cents",
+             (long)(info->output_usd_per_million * 100.0 + 0.5), 5000L);
+  expect_int(state, "model_gpt_6_astra_long_output_cents",
+             (long)(info->long_output_usd_per_million * 100.0 + 0.5), 7500L);
+  expect_int(state, "model_gpt_6_astra_reasoning_pro",
+             cai_model_supports(CAI_MODEL_GPT_6_ASTRA,
+                                CAI_MODEL_CAP_REASONING_PRO_MODE),
+             1L);
   info = cai_model_info_by_id(CAI_MODEL_GPT_5_6_LUNA);
   if (info == NULL) {
     test_fail(state, "model_gpt_5_6_luna_metadata", "model missing");
@@ -1318,12 +1344,21 @@ static void test_model_capabilities(test_state *state) {
     test_fail(state, "model_gpt_5_6_luna_usage_usd_long",
               "unexpected gpt-5.6-luna long-context cost estimate");
   }
+  if (cai_model_estimate_usage_usd(CAI_MODEL_GPT_6_ASTRA, 300000LL, 100000LL,
+                                   100000LL) < 11.69 ||
+      cai_model_estimate_usage_usd(CAI_MODEL_GPT_6_ASTRA, 300000LL, 100000LL,
+                                   100000LL) > 11.71) {
+    test_fail(state, "model_gpt_6_astra_usage_usd_long",
+              "unexpected gpt-6-astra long-context cost estimate");
+  }
   expect_int(state, "model_usage_usd_priced",
              cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_NANO), 1L);
   expect_int(state, "model_usage_usd_latest_priced",
              cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_5), 1L);
   expect_int(state, "model_usage_usd_gpt_5_6_priced",
              cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_6_SOL), 1L);
+  expect_int(state, "model_usage_usd_gpt_6_astra_priced",
+             cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_6_ASTRA), 1L);
   expect_int(state, "model_usage_usd_latest_pro_priced",
              cai_model_can_estimate_usage_usd(CAI_MODEL_GPT_5_5_PRO), 1L);
   expect_int(state, "model_usage_usd_5_4_nano_priced",

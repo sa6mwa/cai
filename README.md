@@ -1180,6 +1180,7 @@ bash ./scripts/build.sh integration
 CAI_INTEGRATION_TODO_WORKFLOW=1 build/integration/cai_integration_tests
 build/integration/cai_integration_tests
 CAI_INTEGRATION_CHATGPT_E2E=1 build/integration/cai_integration_tests
+CAI_INTEGRATION_CHATGPT_ASTRA_SMOKE=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_CHATGPT_USAGE_LIMITS=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_CHATGPT_SUBSCRIPTION_E2E=1 build/integration/cai_integration_tests
 CAI_INTEGRATION_CHATGPT_SMITH_E2E=1 build/integration/cai_integration_tests
@@ -1352,6 +1353,12 @@ configured medium-effort reviewer policy.
 ChatGPT subscription backend using GPT-5 Nano. It checks every turn for the current secret,
 the first-turn secret, and the previous-turn secret so the test fails if
 session continuity breaks.
+
+`CAI_INTEGRATION_CHATGPT_ASTRA_SMOKE=1` sends one bounded, low-reasoning
+Responses request to GPT-6 Astra through the ChatGPT subscription backend. It
+proves that the model remains available through CAI's authenticated transport;
+the integration CTest is included only when the explicit integration gate is
+enabled.
 
 `CAI_INTEGRATION_CHATGPT_STATE_RESTORE=1` runs a shorter save/restore regression: it
 teaches one exact key, saves the session state to disk, creates a fresh
