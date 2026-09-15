@@ -116,7 +116,7 @@ verify_listing_has_no_host_paths() {
       fail "archive member list contains HOME path"
     fi
   fi
-  verify_no_toolchain_cache_path "$listing" "archive member list"
+  verify_no_toolchain_cache_path "$(cat "$listing")" "archive member list"
 }
 
 verify_no_private_bytes() {

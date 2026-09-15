@@ -527,7 +527,13 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
   endif()
 endif()
 
-if(CAI_BUILD_LUA)
+set(CAI_BUILD_LUA_RUNNER OFF)
+if(CAI_BUILD_LUA OR
+   (CAI_BUILD_INTEGRATION_TESTS AND CAI_REGISTER_API_KEY_EXAMPLE_SMOKE))
+  set(CAI_BUILD_LUA_RUNNER ON)
+endif()
+
+if(CAI_BUILD_LUA_RUNNER)
   if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
     set(CAI_LUA_INCLUDE_DIR "${CAI_C_PKT_SYSTEMS_PREFIX}/include")
     set(CAI_LUA_LIBRARY "${CAI_C_PKT_SYSTEMS_PREFIX}/lib/liblua.a")
@@ -539,9 +545,14 @@ if(CAI_BUILD_LUA)
     PATHS /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu
           /opt/homebrew/lib)
   if(NOT CAI_LUA_INCLUDE_DIR OR NOT CAI_LUA_LIBRARY)
+    if(CAI_BUILD_LUA)
+      message(FATAL_ERROR
+        "CAI_BUILD_LUA requires Lua 5.5 headers and library. Set "
+        "CAI_BUILD_LUA=OFF to skip the binding.")
+    endif()
     message(FATAL_ERROR
-      "CAI_BUILD_LUA requires Lua 5.5 headers and library. Set "
-      "CAI_BUILD_LUA=OFF to skip the binding.")
+      "CAI_REGISTER_API_KEY_EXAMPLE_SMOKE requires Lua 5.5 headers and "
+      "library to build its verification runner.")
   endif()
   set(CAI_LUA_ROCK_SHARE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/luarocks/share/lua/5.5")
   set(CAI_LUA_ROCK_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/luarocks/lib/lua/5.5")
@@ -887,6 +898,17 @@ if(CAI_BUILD_EXAMPLES)
   endforeach()
 endif()
 
+if(CAI_BUILD_LUA_RUNNER)
+  add_executable(cai_lua_runner tests/lua/runner.c)
+  target_include_directories(cai_lua_runner PRIVATE "${CAI_LUA_INCLUDE_DIR}")
+  target_link_libraries(cai_lua_runner PRIVATE "${CAI_LUA_LIBRARY}" ${CMAKE_DL_LIBS} m)
+  set_target_properties(cai_lua_runner PROPERTIES ENABLE_EXPORTS ON)
+  cai_configure_c_target(cai_lua_runner)
+  set_property(TARGET cai_lua_runner APPEND PROPERTY BUILD_RPATH
+    "${CMAKE_CURRENT_SOURCE_DIR}/build/luarocks/cai-prefix/lib")
+  set(CAI_LUA_EXECUTABLE "$<TARGET_FILE:cai_lua_runner>")
+endif()
+
 if(CAI_BUILD_LUA)
   set(_cai_pslog_lua_include_hints
     "${CMAKE_CURRENT_SOURCE_DIR}/build/luarocks/share/lua/5.5"
@@ -918,14 +940,6 @@ if(CAI_BUILD_LUA)
       "or set CAI_PSLOG_LUA_INCLUDE_DIR.")
   endif()
   set(_cai_lua_link_target "${_cai_internal_link_target}")
-  add_executable(cai_lua_runner tests/lua/runner.c)
-  target_include_directories(cai_lua_runner PRIVATE "${CAI_LUA_INCLUDE_DIR}")
-  target_link_libraries(cai_lua_runner PRIVATE "${CAI_LUA_LIBRARY}" ${CMAKE_DL_LIBS} m)
-  set_target_properties(cai_lua_runner PROPERTIES ENABLE_EXPORTS ON)
-  cai_configure_c_target(cai_lua_runner)
-  set_property(TARGET cai_lua_runner APPEND PROPERTY BUILD_RPATH
-    "${CMAKE_CURRENT_SOURCE_DIR}/build/luarocks/cai-prefix/lib")
-  set(CAI_LUA_EXECUTABLE "$<TARGET_FILE:cai_lua_runner>")
   if(TARGET cai_shared)
     set(_cai_lua_link_target cai_shared)
   endif()
@@ -1822,6 +1836,30 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_c_integration_config_without_lua PROPERTIES
       LABELS "packaging;local"
       TIMEOUT 10)
+    add_test(NAME cai_api_key_example_smoke_without_lua_config
+      COMMAND "${CMAKE_COMMAND}"
+        "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/api-key-example-smoke-without-lua"
+        "-DCAI_GENERATOR=${CMAKE_GENERATOR}"
+        "-DCAI_DEPENDENCY_MODE=${CAI_RESOLVED_DEPENDENCY_MODE}"
+        "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
+        "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
+        "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
+        "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
+        "-DCAI_LONEJSON_INCLUDE_DIR=${CAI_LONEJSON_INCLUDE_DIR}"
+        "-DCAI_LONEJSON_LIBRARY=${CAI_LONEJSON_LIBRARY}"
+        "-DCAI_PSLOG_INCLUDE_DIR=${CAI_PSLOG_INCLUDE_DIR}"
+        "-DCAI_PSLOG_LIBRARY=${CAI_PSLOG_LIBRARY}"
+        "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
+        "-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}"
+        "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
+        "-DCAI_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}"
+        "-DCPKT_TARGET_ID=${CPKT_TARGET_ID}"
+        "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/api_key_example_smoke_registration_test.cmake")
+    set_tests_properties(cai_api_key_example_smoke_without_lua_config PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 60)
     add_test(NAME cai_release_lua_version_test
       COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_lua_version_test.sh"
         "${CMAKE_CURRENT_SOURCE_DIR}")

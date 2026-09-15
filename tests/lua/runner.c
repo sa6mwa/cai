@@ -37,6 +37,11 @@ int main(int argc, char **argv) {
     fputs("could not create Lua state\n", stderr);
     return 1;
   }
+  if (!lua_checkstack(state, argc + 2)) {
+    fputs("could not reserve Lua stack space for arguments\n", stderr);
+    lua_close(state);
+    return 1;
+  }
   luaL_openlibs(state);
   lua_createtable(state, argc - script - 1, script + 1);
   for (index = 0; index < argc; ++index) {
