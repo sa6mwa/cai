@@ -3,7 +3,7 @@
 set -euo pipefail
 
 version=5.02c
-revision=1
+revision=2
 archive_name="AFLplusplus-${version}.tar.gz"
 archive_sha256=118415843e5d289d63bd6d8f2252c18212978f15ac9e86acbbc75766cd45acde
 skill_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
@@ -97,13 +97,13 @@ ensure_locked() {
   [[ -d "$src" ]] || die "unexpected archive layout: $archive_name"
   (
     cd "$src"; local helper="$r/lib/afl"
-    make -j1 NO_PYTHON=1 CC="$cc" CXX="$cxx" PREFIX="$tmp/root" HELPER_PATH="$helper" BIN_PATH="$tmp/root/bin" afl-fuzz afl-showmap afl-tmin afl-gotcpu afl-analyze afl-cmin
+    make -j1 NO_PYTHON=1 CC="$cc" CXX="$cxx" PREFIX="$tmp/root" HELPER_PATH="$helper" BIN_PATH="$tmp/root/bin" afl-fuzz afl-showmap
     "$cc" -O3 -funroll-loops -fPIC -Wall -g -Iinclude -Iinstrumentation "-DAFL_PATH=\"$helper\"" "-DBIN_PATH=\"$r/bin\"" '-DLLVM_BINDIR=""' "-DVERSION=\"++$version\"" '-DLLVM_LIBDIR=""' '-DLLVM_VERSION=""' '-DAFL_CLANG_FLTO=""' '-DAFL_REAL_LD=""' '-DAFL_CLANG_LDPATH=""' '-DAFL_CLANG_FUSELD=""' "-DCLANG_BIN=\"$cc\"" "-DCLANGPP_BIN=\"$cxx\"" -DUSE_BINDIR=1 -Wno-unused-function -Wno-deprecated -c src/afl-common.c -o instrumentation/afl-common.o
     "$cc" -O3 -funroll-loops -fPIC -Wall -g -Iinclude -Iinstrumentation "-DAFL_PATH=\"$helper\"" "-DBIN_PATH=\"$r/bin\"" '-DLLVM_BINDIR=""' "-DVERSION=\"++$version\"" '-DLLVM_LIBDIR=""' '-DLLVM_VERSION=""' '-DAFL_CLANG_FLTO=""' '-DAFL_REAL_LD=""' '-DAFL_CLANG_LDPATH=""' '-DAFL_CLANG_FUSELD=""' "-DCLANG_BIN=\"$cc\"" "-DCLANGPP_BIN=\"$cxx\"" -DUSE_BINDIR=1 -Wno-unused-function -Wno-deprecated "-DAFL_INCLUDE_PATH=\"$r/include/afl\"" src/afl-cc.c instrumentation/afl-common.o -o afl-cc -DLLVM_MINOR=0 -DLLVM_MAJOR=0 -DCFLAGS_OPT="" -lm
     ln -sf afl-cc afl-gcc-fast; ln -sf afl-cc afl-g++-fast
     printf -v include_flag '%q' "-I$br/include"; printf -v library_flag '%q' "-L$br/lib"; printf -v rpath_flag '%q' "-Wl,-rpath,$br/lib"
     make -j1 -f GNUmakefile.gcc_plugin CC="$cc" CXX="$cxx" PREFIX="$tmp/root" HELPER_PATH="$helper" BIN_PATH="$tmp/root/bin" CXXFLAGS="-O3 -g -funroll-loops $include_flag" LDFLAGS="$library_flag $rpath_flag"
-    install -m755 afl-fuzz afl-showmap afl-tmin afl-gotcpu afl-analyze afl-cmin afl-cc "$tmp/root/bin/"
+    install -m755 afl-fuzz afl-showmap afl-cc "$tmp/root/bin/"
     ln -sf afl-cc "$tmp/root/bin/afl-gcc-fast"; ln -sf afl-cc "$tmp/root/bin/afl-g++-fast"
     install -m755 afl-gcc-pass.so afl-gcc-cmplog-pass.so afl-gcc-cmptrs-pass.so "$tmp/root/lib/afl/"; install -m644 afl-compiler-rt.o dynamic_list.txt "$tmp/root/lib/afl/"
   )

@@ -85,6 +85,16 @@ for script in \
   require_script "$script"
 done
 
+aflpp_script=$repo_root/scripts/cpkt-aflpp.sh
+if ! grep -F 'afl-fuzz afl-showmap' "$aflpp_script" >/dev/null; then
+  printf 'AFL++ bootstrap must build the fuzzer and showmap required by CAI\n' >&2
+  exit 1
+fi
+if grep -E 'afl-(tmin|gotcpu|analyze|cmin)' "$aflpp_script" >/dev/null; then
+  printf 'AFL++ bootstrap must not request optional utilities with NO_PYTHON=1\n' >&2
+  exit 1
+fi
+
 if ! grep -F 'CAI_C_PKT_SYSTEMS_VERSION ?= 0.10.0' "$makefile" >/dev/null; then
   printf 'Makefile must pin c.pkt.systems 0.10.0\n' >&2
   exit 1
