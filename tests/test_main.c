@@ -27067,10 +27067,20 @@ static void test_agent_runtime_model_switch(test_state *state) {
       "{\"slug\":\"gpt-5.5\",\"display_name\":\"GPT-5.5\","
       "\"context_window\":1050000,\"auto_compact_token_limit\":840000,"
       "\"comp_hash\":\"provider-2911\",\"supported_in_api\":true}]}";
+  static const char captured_turn_body[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"metadata captured\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_model_metadata\",\"usage\":{\"input_tokens\":1,"
+      "\"output_tokens\":1,\"total_tokens\":2}}}\n\n";
+  static const char *captured_turn_required[] = {"capture model metadata"};
   static const mock_http_expectation catalog_script[] = {
       {"GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/",
        catalog_required, sizeof(catalog_required) / sizeof(catalog_required[0]),
-       NULL, 0U, 200, "OK", "application/json", NULL, catalog_body}};
+       NULL, 0U, 200, "OK", "application/json", NULL, catalog_body},
+      {"POST /v1/responses HTTP/", captured_turn_required,
+       sizeof(captured_turn_required) / sizeof(captured_turn_required[0]), NULL,
+       0U, 200, "OK", "text/event-stream", NULL, captured_turn_body}};
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
   cai_agent_session_store store;
@@ -27078,14 +27088,22 @@ static void test_agent_runtime_model_switch(test_state *state) {
   cai_chatgpt_auth auth;
   cai_model_catalog *catalog;
   http_mock_server server;
+  runtime_event_state events;
   cai_client *client;
   cai_agent_runtime *runtime;
   cai_error error;
+  cai_agent_run_state run_state;
+  struct timespec delay;
+  int i;
 
   cai_error_init(&error);
   client = NULL;
   runtime = NULL;
   catalog = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  delay.tv_sec = 0;
+  delay.tv_nsec = 10000000L;
   memset(&auth, 0, sizeof(auth));
   auth.access_token = test_chatgpt_auth_access_token;
   if (http_mock_server_open_script(
@@ -27142,6 +27160,23 @@ static void test_agent_runtime_model_switch(test_state *state) {
     expect_str(state, "runtime_model_switch_initial",
                cai_agent_runtime_model(runtime), CAI_MODEL_GPT_5_6_LUNA);
     expect_int(
+        state, "runtime_model_metadata_capture_submit",
+        cai_agent_runtime_submit(runtime, "capture model metadata", &error),
+        CAI_OK);
+    run_state = CAI_AGENT_IDLE;
+    for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "runtime_model_metadata_capture_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_model_metadata_capture_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_substr(state, "runtime_model_metadata_capture_checkpoint_hash",
+                  store_state.saved_checkpoint,
+                  "\"model_compaction_hash\":\"provider-3000\"");
+    expect_int(
         state, "runtime_model_switch_compatible",
         cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_6_ASTRA, &error),
         CAI_OK);
@@ -27152,20 +27187,12 @@ static void test_agent_runtime_model_switch(test_state *state) {
     expect_substr(state, "runtime_model_switch_compatible_checkpoint_hash",
                   store_state.saved_checkpoint,
                   "\"model_compaction_hash\":\"provider-3000\"");
-    expect_int(state, "runtime_model_switch_empty_history",
-               cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_5_5, &error),
-               CAI_OK);
-    expect_str(state, "runtime_model_switch_empty_history_model",
-               cai_agent_runtime_model(runtime), CAI_MODEL_GPT_5_5);
-    expect_int(
-        state, "runtime_model_switch_back_to_astra",
-        cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_6_ASTRA, &error),
-        CAI_OK);
     cai_agent_runtime_close(runtime);
     runtime = NULL;
     memset(&store_state, 0, sizeof(store_state));
     store_state.checkpoint_json =
-        "{\"version\":1,\"model\":\"gpt-6-astra\",\"history\":[{\"type\":"
+        "{\"version\":1,\"model\":\"gpt-5.5\","
+        "\"model_compaction_hash\":\"provider-2911\",\"history\":[{\"type\":"
         "\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\","
         "\"text\":\"retained context\"}]}]}";
     runtime_config.model = CAI_MODEL_GPT_6_ASTRA;
@@ -27176,10 +27203,11 @@ static void test_agent_runtime_model_switch(test_state *state) {
         CAI_OK);
   }
   if (runtime != NULL) {
-    expect_int(state, "runtime_model_switch_provider_hash_requires_compaction",
-               cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_5_5, &error),
-               CAI_ERR_TRANSPORT);
-    expect_str(state, "runtime_model_switch_failed_preserves_model",
+    expect_int(
+        state, "runtime_model_switch_resume_hash_requires_compaction",
+        cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_5_6_LUNA, &error),
+        CAI_ERR_TRANSPORT);
+    expect_str(state, "runtime_model_switch_resume_failed_preserves_model",
                cai_agent_runtime_model(runtime), CAI_MODEL_GPT_6_ASTRA);
     cai_error_cleanup(&error);
     cai_error_init(&error);
@@ -27187,6 +27215,31 @@ static void test_agent_runtime_model_switch(test_state *state) {
         state, "runtime_model_switch_same_model",
         cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_6_ASTRA, &error),
         CAI_OK);
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  memset(&store_state, 0, sizeof(store_state));
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  runtime_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  runtime_config.resume_latest = 0;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  runtime_config.event_queue_limit = 1U;
+  expect_int(state, "runtime_model_switch_event_capacity_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_int(
+        state, "runtime_model_switch_event_capacity_first",
+        cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_6_ASTRA, &error),
+        CAI_OK);
+    expect_int(
+        state, "runtime_model_switch_event_capacity_second",
+        cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_5_6_LUNA, &error),
+        CAI_ERR_LIMIT);
+    expect_str(state, "runtime_model_switch_event_capacity_preserves_model",
+               cai_agent_runtime_model(runtime), CAI_MODEL_GPT_6_ASTRA);
     cai_agent_runtime_close(runtime);
     runtime = NULL;
   }
@@ -27853,6 +27906,10 @@ static void test_agent_runtime_goal_checkpoint_watermark(test_state *state) {
       }
     }
     expect_int(state, "runtime_goal_watermark_checkpoint_waiting", waiting, 1L);
+    expect_int(
+        state, "runtime_goal_watermark_reject_switch_inflight_goal",
+        cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_6_ASTRA, &error),
+        CAI_ERR_INVALID);
     cai_agent_goal_request_init(&request);
     request.objective = "must survive checkpoint race";
     expect_int(state, "runtime_goal_watermark_create",
@@ -41334,6 +41391,7 @@ static void test_session_state_validation(test_state *state) {
   read_state reader;
   cai_source *source;
   cai_error error;
+  cai_token_usage usage;
   char state_json[512];
   char history_json[512];
 
@@ -41350,6 +41408,7 @@ static void test_session_state_validation(test_state *state) {
   restored = NULL;
   history_session = NULL;
   source = NULL;
+  memset(&usage, 0, sizeof(usage));
 
   expect_int(state, "state_validation_client_open",
              cai_client_open(&client_config, &client, &error), CAI_OK);
@@ -41382,6 +41441,39 @@ static void test_session_state_validation(test_state *state) {
              cai_session_import_state_source(restored, source, &error), CAI_OK);
   expect_str(state, "state_validation_restored_conversation",
              cai_session_conversation_id(restored), "conv_saved_state");
+  cai_source_close(source);
+  source = NULL;
+
+  reader.text = "{\"version\":1,\"last_usage_input_tokens\":800000,"
+                "\"last_usage_input_cached_tokens\":10,"
+                "\"last_usage_output_tokens\":20,"
+                "\"last_usage_output_reasoning_tokens\":5,"
+                "\"last_usage_total_tokens\":800020}";
+  reader.offset = 0U;
+  reader.closed = 0;
+  source_callbacks.read = test_read;
+  source_callbacks.reset = test_reset;
+  source_callbacks.close = test_read_close;
+  source_callbacks.context = &reader;
+  expect_int(state, "state_validation_last_usage_source",
+             cai_source_from_callbacks(&source_callbacks, &source, &error),
+             CAI_OK);
+  expect_int(state, "state_validation_last_usage_import",
+             cai_session_import_state_source(restored, source, &error), CAI_OK);
+  expect_int(state, "state_validation_last_usage_restored",
+             cai_session_last_usage(restored, &usage, &error), CAI_OK);
+  expect_int(state, "state_validation_last_usage_total", usage.total_tokens,
+             800020L);
+  cai_source_close(source);
+  source = NULL;
+  expect_int(state, "state_validation_last_usage_export",
+             cai_session_export_state_source(restored, &source, &error),
+             CAI_OK);
+  if (read_source_text(state, "state_validation_last_usage_export_read", source,
+                       state_json, sizeof(state_json), &error)) {
+    expect_substr(state, "state_validation_last_usage_export_total", state_json,
+                  "\"last_usage_total_tokens\":800020");
+  }
   cai_source_close(source);
   source = NULL;
 

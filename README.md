@@ -510,9 +510,10 @@ continuation id.
 
 For applications that want one file/object to persist, use
 `cai_session_export_state_source` and `cai_session_import_state_source`. The
-state envelope is versioned JSON and contains the active continuation handle
-plus local history when `enable_local_history` is on. Import restores the
-continuation handle in all sessions and restores local history only for
+state envelope is versioned JSON and contains the active continuation handle,
+the last completed response usage, plus local history when `enable_local_history`
+is on. Import restores the continuation handle and last usage in all sessions
+and restores local history only for
 local-history-enabled sessions. `cai_session_save_state_path` and
 `cai_session_load_state_path` are the file-backed convenience helpers around
 the same source/sink state envelope; the primary handle style is

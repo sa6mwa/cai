@@ -106,6 +106,16 @@ typedef struct cai_session_state_doc {
   int has_goal_blocked_last_turn;
   long long goal_created_at;
   long long goal_updated_at;
+  long long last_usage_input_tokens;
+  int has_last_usage_input_tokens;
+  long long last_usage_input_cached_tokens;
+  int has_last_usage_input_cached_tokens;
+  long long last_usage_output_tokens;
+  int has_last_usage_output_tokens;
+  long long last_usage_output_reasoning_tokens;
+  int has_last_usage_output_reasoning_tokens;
+  long long last_usage_total_tokens;
+  int has_last_usage_total_tokens;
   lonejson_json_value history;
 } cai_session_state_doc;
 
@@ -149,6 +159,22 @@ static const lonejson_field cai_session_state_fields[] = {
                        "goal_created_at"),
     LONEJSON_FIELD_I64(cai_session_state_doc, goal_updated_at,
                        "goal_updated_at"),
+    LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc, last_usage_input_tokens,
+                               has_last_usage_input_tokens,
+                               "last_usage_input_tokens"),
+    LONEJSON_FIELD_I64_PRESENT(
+        cai_session_state_doc, last_usage_input_cached_tokens,
+        has_last_usage_input_cached_tokens, "last_usage_input_cached_tokens"),
+    LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc, last_usage_output_tokens,
+                               has_last_usage_output_tokens,
+                               "last_usage_output_tokens"),
+    LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc,
+                               last_usage_output_reasoning_tokens,
+                               has_last_usage_output_reasoning_tokens,
+                               "last_usage_output_reasoning_tokens"),
+    LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc, last_usage_total_tokens,
+                               has_last_usage_total_tokens,
+                               "last_usage_total_tokens"),
     LONEJSON_FIELD_JSON_VALUE_OMIT_NULL(cai_session_state_doc, history,
                                         "history")};
 LONEJSON_MAP_DEFINE(cai_session_state_map, cai_session_state_doc,
@@ -5598,6 +5624,23 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
   doc.has_goal_blocked_last_turn = 1;
   doc.goal_created_at = CAI_SESSION_IMPL(session)->goal_created_at;
   doc.goal_updated_at = CAI_SESSION_IMPL(session)->goal_updated_at;
+  doc.last_usage_input_tokens =
+      CAI_SESSION_IMPL(session)->last_usage.input_tokens;
+  doc.has_last_usage_input_tokens = CAI_SESSION_IMPL(session)->has_last_usage;
+  doc.last_usage_input_cached_tokens =
+      CAI_SESSION_IMPL(session)->last_usage.input_cached_tokens;
+  doc.has_last_usage_input_cached_tokens =
+      CAI_SESSION_IMPL(session)->has_last_usage;
+  doc.last_usage_output_tokens =
+      CAI_SESSION_IMPL(session)->last_usage.output_tokens;
+  doc.has_last_usage_output_tokens = CAI_SESSION_IMPL(session)->has_last_usage;
+  doc.last_usage_output_reasoning_tokens =
+      CAI_SESSION_IMPL(session)->last_usage.output_reasoning_tokens;
+  doc.has_last_usage_output_reasoning_tokens =
+      CAI_SESSION_IMPL(session)->has_last_usage;
+  doc.last_usage_total_tokens =
+      CAI_SESSION_IMPL(session)->last_usage.total_tokens;
+  doc.has_last_usage_total_tokens = CAI_SESSION_IMPL(session)->has_last_usage;
   if (CAI_SESSION_IMPL(session)->conversation_id != NULL) {
     doc.conversation_id = CAI_SESSION_IMPL(session)->conversation_id;
   } else {
@@ -5806,6 +5849,22 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
       goto done;
     }
   }
+  if (doc.has_last_usage_input_tokens !=
+          doc.has_last_usage_input_cached_tokens ||
+      doc.has_last_usage_input_tokens != doc.has_last_usage_output_tokens ||
+      doc.has_last_usage_input_tokens !=
+          doc.has_last_usage_output_reasoning_tokens ||
+      doc.has_last_usage_input_tokens != doc.has_last_usage_total_tokens ||
+      (doc.has_last_usage_input_tokens &&
+       (doc.last_usage_input_tokens < 0LL ||
+        doc.last_usage_input_cached_tokens < 0LL ||
+        doc.last_usage_output_tokens < 0LL ||
+        doc.last_usage_output_reasoning_tokens < 0LL ||
+        doc.last_usage_total_tokens < 0LL))) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "session state has invalid last response usage");
+    goto done;
+  }
   if (CAI_SESSION_AGENT_IMPL(session)->local_history_enabled &&
       history_json.size_fn(&history_json) > 0U) {
     rc = cai_spooled_json_is_array(&history_json, error);
@@ -5902,6 +5961,19 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
     CAI_SESSION_IMPL(session)->goal_updated_at = doc.goal_updated_at;
     next_goal_objective = NULL;
     next_goal_status = NULL;
+  }
+  if (rc == CAI_OK) {
+    CAI_SESSION_IMPL(session)->last_usage.input_tokens =
+        doc.last_usage_input_tokens;
+    CAI_SESSION_IMPL(session)->last_usage.input_cached_tokens =
+        doc.last_usage_input_cached_tokens;
+    CAI_SESSION_IMPL(session)->last_usage.output_tokens =
+        doc.last_usage_output_tokens;
+    CAI_SESSION_IMPL(session)->last_usage.output_reasoning_tokens =
+        doc.last_usage_output_reasoning_tokens;
+    CAI_SESSION_IMPL(session)->last_usage.total_tokens =
+        doc.last_usage_total_tokens;
+    CAI_SESSION_IMPL(session)->has_last_usage = doc.has_last_usage_input_tokens;
   }
 
 done:

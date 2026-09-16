@@ -537,6 +537,8 @@ struct cai_agent_runtime {
   char *active_user_turn;
   size_t goal_control_limit;
   size_t goal_control_count;
+  /* A control remains in flight until its session mutation is checkpointed. */
+  size_t goal_control_inflight;
   cai_runtime_goal_control_node *goal_control_head;
   cai_runtime_goal_control_node *goal_control_tail;
   cai_agent_runtime_event_fn event_callback;
@@ -645,6 +647,8 @@ static int cai_runtime_refresh_goal_projection(cai_agent_runtime *runtime,
                                                cai_error *error);
 static int cai_runtime_register_subagent_tool(cai_agent_runtime *runtime,
                                               cai_error *error);
+static int cai_runtime_capture_active_model_metadata(cai_agent_runtime *runtime,
+                                                     cai_error *error);
 static int cai_runtime_compact_resumed_history(cai_agent_runtime *runtime,
                                                cai_error *error);
 
@@ -2441,9 +2445,15 @@ static int cai_runtime_checkpoint(cai_agent_runtime *runtime, int emit_event,
   }
   if (rc == CAI_OK && emit_event) {
     pthread_mutex_lock(&runtime->lock);
-    rc = cai_runtime_enqueue_locked(
-        runtime, CAI_AGENT_EVENT_SESSION_CHECKPOINTED, runtime->session_id,
-        strlen(runtime->session_id), NULL, NULL, runtime->state, error);
+    rc = pthread_equal(pthread_self(), runtime->owner_thread)
+             ? cai_runtime_enqueue_nonblocking_locked(
+                   runtime, CAI_AGENT_EVENT_SESSION_CHECKPOINTED,
+                   runtime->session_id, strlen(runtime->session_id), NULL, NULL,
+                   runtime->state, error)
+             : cai_runtime_enqueue_locked(
+                   runtime, CAI_AGENT_EVENT_SESSION_CHECKPOINTED,
+                   runtime->session_id, strlen(runtime->session_id), NULL, NULL,
+                   runtime->state, error);
     pthread_mutex_unlock(&runtime->lock);
   }
   return rc;
@@ -2883,17 +2893,21 @@ static int cai_runtime_apply_queued_goal_controls(cai_agent_runtime *runtime,
         runtime->goal_control_tail = NULL;
       }
       runtime->goal_control_count--;
+      runtime->goal_control_inflight++;
     }
     pthread_mutex_unlock(&runtime->lock);
     if (control == NULL) {
       return CAI_OK;
     }
     rc = cai_runtime_apply_goal_control(runtime, control, error);
-    cai_runtime_goal_control_node_free(control);
-    if (rc != CAI_OK) {
-      return rc;
+    if (rc == CAI_OK) {
+      rc = cai_runtime_checkpoint(runtime, 1, error);
     }
-    rc = cai_runtime_checkpoint(runtime, 1, error);
+    cai_runtime_goal_control_node_free(control);
+    pthread_mutex_lock(&runtime->lock);
+    runtime->goal_control_inflight--;
+    pthread_cond_broadcast(&runtime->condition);
+    pthread_mutex_unlock(&runtime->lock);
     if (rc != CAI_OK) {
       return rc;
     }
@@ -4191,7 +4205,12 @@ static void *cai_runtime_worker(void *context) {
       cai_error_cleanup(&error);
       continue;
     }
-    rc = cai_runtime_compact_resumed_history(runtime, &error);
+    rc = runtime->resume_compaction_pending
+             ? CAI_OK
+             : cai_runtime_capture_active_model_metadata(runtime, &error);
+    if (rc == CAI_OK) {
+      rc = cai_runtime_compact_resumed_history(runtime, &error);
+    }
     if (rc == CAI_OK) {
       rc = cai_session_add_user_text(runtime->session, input->text, &error);
     }
@@ -5281,9 +5300,10 @@ cai_runtime_model_switch_ready_locked(const cai_agent_runtime *runtime,
   if (rc != CAI_OK) {
     return rc;
   }
-  if (runtime->model_switching || runtime->goal_control_head != NULL ||
-      runtime->subagent_active || runtime->active_review != NULL ||
-      runtime->review_launching || runtime->review_pause_pending) {
+  if (runtime->model_switching || runtime->goal_control_count != 0U ||
+      runtime->goal_control_inflight != 0U || runtime->subagent_active ||
+      runtime->active_review != NULL || runtime->review_launching ||
+      runtime->review_pause_pending) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "model selection requires a stable runtime boundary");
   }
@@ -5319,6 +5339,57 @@ static int cai_runtime_model_switch_requires_compaction(
   return 0;
 }
 
+/* A fresh runtime must record the provider metadata that governed the history
+ * it is about to create.  A failed discovery is deliberately non-fatal: as in
+ * Codex, absent metadata is not evidence of incompatibility. */
+static int cai_runtime_capture_active_model_metadata(cai_agent_runtime *runtime,
+                                                     cai_error *error) {
+  cai_model_catalog *catalog;
+  const cai_model_catalog_entry *current;
+  char *hash;
+  int rc;
+
+  if (runtime->model_compaction_hash != NULL &&
+      runtime->model_context_window != 0LL) {
+    return CAI_OK;
+  }
+  if (CAI_CLIENT_IMPL(runtime->client)->chatgpt_auth == NULL) {
+    return CAI_OK;
+  }
+  catalog = NULL;
+  rc = cai_client_list_models(runtime->client,
+                              CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED,
+                              &catalog, error);
+  if (rc != CAI_OK) {
+    cai_error_cleanup(error);
+    cai_error_init(error);
+    return CAI_OK;
+  }
+  current = cai_model_catalog_find(
+      catalog, CAI_SESSION_AGENT_IMPL(runtime->session)->model);
+  hash = current != NULL
+             ? cai_strdup(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                          current->compaction_compatibility_hash)
+             : NULL;
+  if (current != NULL && current->compaction_compatibility_hash != NULL &&
+      hash == NULL) {
+    cai_model_catalog_close(catalog);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to retain active model metadata");
+  }
+  if (runtime->model_compaction_hash == NULL) {
+    runtime->model_compaction_hash = hash;
+    hash = NULL;
+  }
+  if (runtime->model_context_window == 0LL && current != NULL) {
+    runtime->model_context_window = current->context_window_tokens;
+    runtime->model_auto_compact_token_limit = current->auto_compact_token_limit;
+  }
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator, hash);
+  cai_model_catalog_close(catalog);
+  return CAI_OK;
+}
+
 static int cai_runtime_compact_resumed_history(cai_agent_runtime *runtime,
                                                cai_error *error) {
   cai_model_catalog *catalog;
@@ -5341,7 +5412,6 @@ static int cai_runtime_compact_resumed_history(cai_agent_runtime *runtime,
   if (rc != CAI_OK) {
     cai_error_cleanup(error);
     cai_error_init(error);
-    runtime->resume_compaction_pending = 0;
     return CAI_OK;
   }
   previous = cai_model_catalog_find(catalog, session->state_model);
@@ -5418,10 +5488,24 @@ static int cai_runtime_model_switch_metadata(cai_agent_runtime *runtime,
     return CAI_OK;
   }
   previous = cai_model_catalog_find(
-      catalog, CAI_SESSION_AGENT_IMPL(runtime->session)->model);
+      catalog, runtime->resume_compaction_pending &&
+                       CAI_SESSION_IMPL(runtime->session)->state_model != NULL
+                   ? CAI_SESSION_IMPL(runtime->session)->state_model
+                   : CAI_SESSION_AGENT_IMPL(runtime->session)->model);
   next = cai_model_catalog_find(catalog, next_model);
-  if (runtime->model_compaction_hash == NULL && previous != NULL &&
-      previous->compaction_compatibility_hash != NULL) {
+  if (runtime->model_compaction_hash == NULL &&
+      runtime->resume_compaction_pending &&
+      CAI_SESSION_IMPL(runtime->session)->state_model_compaction_hash != NULL) {
+    runtime->model_compaction_hash = cai_strdup(
+        &CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+        CAI_SESSION_IMPL(runtime->session)->state_model_compaction_hash);
+    if (runtime->model_compaction_hash == NULL) {
+      cai_model_catalog_close(catalog);
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to retain resumed model metadata");
+    }
+  } else if (runtime->model_compaction_hash == NULL && previous != NULL &&
+             previous->compaction_compatibility_hash != NULL) {
     runtime->model_compaction_hash =
         cai_strdup(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                    previous->compaction_compatibility_hash);
@@ -6121,6 +6205,12 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
     pthread_mutex_unlock(&runtime->lock);
     return CAI_OK;
   }
+  if (rc == CAI_OK && runtime->session_store != NULL &&
+      runtime->event_callback != NULL) {
+    /* The owner must never wait for an event it alone can pump.  Reserve the
+     * checkpoint notification slot before mutating the selected model. */
+    rc = cai_runtime_require_event_capacity_locked(runtime, error);
+  }
   if (rc == CAI_OK) {
     runtime->model_switching = 1;
   }
@@ -6147,9 +6237,6 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
                          "failed to copy selected agent model");
   }
 
-  if (runtime->resume_compaction_pending) {
-    runtime->resume_compaction_pending = 0;
-  }
   rc = cai_runtime_model_switch_metadata(runtime, model, &next_compaction_hash,
                                          &next_context_window,
                                          &next_compact_limit, error);
@@ -6257,6 +6344,7 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
     cai_free_mem(NULL, old_smith_model);
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                  old_compaction_hash);
+    runtime->resume_compaction_pending = 0;
   }
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                saved_state_model);
