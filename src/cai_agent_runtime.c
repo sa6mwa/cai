@@ -50,6 +50,7 @@ static cai_agent_runtime_test_export_cleanup_fn
     cai_runtime_test_export_cleanup_hook;
 static void *cai_runtime_test_export_cleanup_context;
 static int cai_runtime_test_fail_goal_status_replace_enabled;
+static int cai_runtime_test_fail_checkpoint_event_reservation_enabled;
 static unsigned int cai_runtime_test_goal_status_replace_failures;
 static pthread_mutex_t cai_runtime_test_goal_status_replace_lock =
     PTHREAD_MUTEX_INITIALIZER;
@@ -66,6 +67,13 @@ void cai_agent_runtime_test_set_fail_goal_status_replace(int enabled) {
   if (enabled != 0) {
     cai_runtime_test_goal_status_replace_failures = 0U;
   }
+  pthread_mutex_unlock(&cai_runtime_test_goal_status_replace_lock);
+}
+
+void cai_agent_runtime_test_set_fail_checkpoint_event_reservation(int enabled) {
+  pthread_mutex_lock(&cai_runtime_test_goal_status_replace_lock);
+  cai_runtime_test_fail_checkpoint_event_reservation_enabled =
+      enabled != 0 ? 1 : 0;
   pthread_mutex_unlock(&cai_runtime_test_goal_status_replace_lock);
 }
 
@@ -86,6 +94,16 @@ static int cai_runtime_test_fail_goal_status_replace(void) {
   if (enabled != 0) {
     cai_runtime_test_goal_status_replace_failures++;
   }
+  pthread_mutex_unlock(&cai_runtime_test_goal_status_replace_lock);
+  return enabled;
+}
+
+static int cai_runtime_test_take_fail_checkpoint_event_reservation(void) {
+  int enabled;
+
+  pthread_mutex_lock(&cai_runtime_test_goal_status_replace_lock);
+  enabled = cai_runtime_test_fail_checkpoint_event_reservation_enabled;
+  cai_runtime_test_fail_checkpoint_event_reservation_enabled = 0;
   pthread_mutex_unlock(&cai_runtime_test_goal_status_replace_lock);
   return enabled;
 }
@@ -524,6 +542,7 @@ struct cai_agent_runtime {
   unsigned long long next_sequence;
   size_t event_limit;
   size_t event_count;
+  size_t event_reservation_count;
   cai_runtime_event_node *event_head;
   cai_runtime_event_node *event_tail;
   size_t steering_limit;
@@ -847,7 +866,9 @@ cai_runtime_goal_control_node_free(cai_runtime_goal_control_node *node) {
 
 static int cai_runtime_wait_event_capacity_locked(cai_agent_runtime *runtime,
                                                   cai_error *error) {
-  while (!runtime->stopping && runtime->event_count >= runtime->event_limit) {
+  while (!runtime->stopping &&
+         runtime->event_count + runtime->event_reservation_count >=
+             runtime->event_limit) {
     pthread_cond_wait(&runtime->condition, &runtime->lock);
   }
   if (runtime->stopping) {
@@ -861,7 +882,8 @@ static int cai_runtime_require_event_capacity_locked(cai_agent_runtime *runtime,
   if (runtime->stopping) {
     return cai_set_error(error, CAI_ERR_CANCELLED, "agent runtime is closing");
   }
-  if (runtime->event_count >= runtime->event_limit) {
+  if (runtime->event_count + runtime->event_reservation_count >=
+      runtime->event_limit) {
     return cai_set_error(error, CAI_ERR_LIMIT,
                          "agent runtime event queue is full");
   }
@@ -972,6 +994,53 @@ static int cai_runtime_event_node_set_subagent(
 
 static void cai_runtime_append_event_node_locked(cai_agent_runtime *runtime,
                                                  cai_runtime_event_node *node);
+
+static int cai_runtime_reserve_event_locked(
+    cai_agent_runtime *runtime, int nonblocking, int type, const char *data,
+    size_t data_length, const char *tool_name, const char *tool_call_id,
+    cai_agent_run_state state, cai_runtime_event_node **out, cai_error *error) {
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "agent runtime event reservation output is required");
+  }
+  *out = NULL;
+  if (runtime->event_callback == NULL) {
+    return CAI_OK;
+  }
+  rc = nonblocking ? cai_runtime_require_event_capacity_locked(runtime, error)
+                   : cai_runtime_wait_event_capacity_locked(runtime, error);
+  if (rc == CAI_OK) {
+    rc = cai_runtime_event_node_new(type, data, data_length, tool_name,
+                                    tool_call_id, state, out, error);
+  }
+  if (rc == CAI_OK) {
+    runtime->event_reservation_count++;
+  }
+  return rc;
+}
+
+static void
+cai_runtime_cancel_event_reservation_locked(cai_agent_runtime *runtime,
+                                            cai_runtime_event_node *node) {
+  if (node == NULL) {
+    return;
+  }
+  runtime->event_reservation_count--;
+  cai_runtime_event_node_free(node);
+  pthread_cond_broadcast(&runtime->condition);
+}
+
+static void
+cai_runtime_append_reserved_event_node_locked(cai_agent_runtime *runtime,
+                                              cai_runtime_event_node *node) {
+  if (node == NULL) {
+    return;
+  }
+  runtime->event_reservation_count--;
+  cai_runtime_append_event_node_locked(runtime, node);
+}
 
 /* A child runtime is owned and pumped by the parent worker. This callback
  * never calls the host: it copies the child observation into the parent's
@@ -2393,6 +2462,7 @@ cai_runtime_generate_session_id(char output[CAI_AGENT_SESSION_ID_MAX],
 
 static int cai_runtime_checkpoint(cai_agent_runtime *runtime, int emit_event,
                                   cai_error *error) {
+  cai_runtime_event_node *checkpoint_event;
   cai_source *state;
   const char *checkpoint_model;
   const char *checkpoint_model_compaction_hash;
@@ -2405,9 +2475,31 @@ static int cai_runtime_checkpoint(cai_agent_runtime *runtime, int emit_event,
   if (runtime->session_store == NULL) {
     return CAI_OK;
   }
+  checkpoint_event = NULL;
   pthread_mutex_lock(&runtime->lock);
   applied_event_sequence = runtime->checkpoint_event_sequence;
+  if (emit_event) {
+#if defined(CAI_TESTING)
+    if (cai_runtime_test_take_fail_checkpoint_event_reservation() != 0) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate checkpoint notification");
+    } else {
+#endif
+      rc = cai_runtime_reserve_event_locked(
+          runtime, pthread_equal(pthread_self(), runtime->owner_thread),
+          CAI_AGENT_EVENT_SESSION_CHECKPOINTED, runtime->session_id,
+          strlen(runtime->session_id), NULL, NULL, runtime->state,
+          &checkpoint_event, error);
+#if defined(CAI_TESTING)
+    }
+#endif
+  } else {
+    rc = CAI_OK;
+  }
   pthread_mutex_unlock(&runtime->lock);
+  if (rc != CAI_OK) {
+    return rc;
+  }
   state = NULL;
   model_compaction_hash = NULL;
   preserve_imported_model_metadata =
@@ -2423,6 +2515,9 @@ static int cai_runtime_checkpoint(cai_agent_runtime *runtime, int emit_event,
   model = cai_strdup(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                      checkpoint_model);
   if (model == NULL) {
+    pthread_mutex_lock(&runtime->lock);
+    cai_runtime_cancel_event_reservation_locked(runtime, checkpoint_event);
+    pthread_mutex_unlock(&runtime->lock);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to preserve session model for checkpoint");
   }
@@ -2433,6 +2528,9 @@ static int cai_runtime_checkpoint(cai_agent_runtime *runtime, int emit_event,
     if (model_compaction_hash == NULL) {
       cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                    model);
+      pthread_mutex_lock(&runtime->lock);
+      cai_runtime_cancel_event_reservation_locked(runtime, checkpoint_event);
+      pthread_mutex_unlock(&runtime->lock);
       return cai_set_error(error, CAI_ERR_NOMEM,
                            "failed to preserve model compatibility hash");
     }
@@ -2454,19 +2552,11 @@ static int cai_runtime_checkpoint(cai_agent_runtime *runtime, int emit_event,
   if (rc == CAI_OK) {
     pthread_mutex_lock(&runtime->lock);
     runtime->applied_event_sequence = applied_event_sequence;
+    cai_runtime_append_reserved_event_node_locked(runtime, checkpoint_event);
     pthread_mutex_unlock(&runtime->lock);
-  }
-  if (rc == CAI_OK && emit_event) {
+  } else {
     pthread_mutex_lock(&runtime->lock);
-    rc = pthread_equal(pthread_self(), runtime->owner_thread)
-             ? cai_runtime_enqueue_nonblocking_locked(
-                   runtime, CAI_AGENT_EVENT_SESSION_CHECKPOINTED,
-                   runtime->session_id, strlen(runtime->session_id), NULL, NULL,
-                   runtime->state, error)
-             : cai_runtime_enqueue_locked(
-                   runtime, CAI_AGENT_EVENT_SESSION_CHECKPOINTED,
-                   runtime->session_id, strlen(runtime->session_id), NULL, NULL,
-                   runtime->state, error);
+    cai_runtime_cancel_event_reservation_locked(runtime, checkpoint_event);
     pthread_mutex_unlock(&runtime->lock);
   }
   return rc;
@@ -5480,12 +5570,10 @@ static int cai_runtime_compact_resumed_history(cai_agent_runtime *runtime,
   return rc;
 }
 
-static int cai_runtime_model_switch_metadata(cai_agent_runtime *runtime,
-                                             const char *next_model,
-                                             char **out_next_hash,
-                                             long long *out_next_context_window,
-                                             long long *out_next_compact_limit,
-                                             cai_error *error) {
+static int cai_runtime_model_switch_metadata(
+    cai_agent_runtime *runtime, const char *next_model, char **out_next_hash,
+    long long *out_next_context_window, long long *out_next_compact_limit,
+    int *out_catalog_available, cai_error *error) {
   cai_model_catalog *catalog;
   const cai_model_catalog_entry *previous;
   const cai_model_catalog_entry *next;
@@ -5494,6 +5582,7 @@ static int cai_runtime_model_switch_metadata(cai_agent_runtime *runtime,
   *out_next_hash = NULL;
   *out_next_context_window = 0LL;
   *out_next_compact_limit = 0LL;
+  *out_catalog_available = 0;
   catalog = NULL;
   rc = cai_client_list_models(runtime->client,
                               CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED,
@@ -5506,6 +5595,7 @@ static int cai_runtime_model_switch_metadata(cai_agent_runtime *runtime,
     cai_error_init(error);
     return CAI_OK;
   }
+  *out_catalog_available = 1;
   previous = cai_model_catalog_find(
       catalog, runtime->resume_compaction_pending &&
                        CAI_SESSION_IMPL(runtime->session)->state_model != NULL
@@ -6209,6 +6299,7 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
   long long old_context_window;
   long long old_compact_limit;
   int old_resume_compaction_pending;
+  int model_catalog_available;
   int rc;
 
   rc = cai_runtime_owner(runtime, error);
@@ -6245,6 +6336,7 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
   next_compaction_hash = NULL;
   next_context_window = 0LL;
   next_compact_limit = 0LL;
+  model_catalog_available = 0;
   if (next_model == NULL || next_smith_model == NULL) {
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                  next_model);
@@ -6257,9 +6349,9 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
                          "failed to copy selected agent model");
   }
 
-  rc = cai_runtime_model_switch_metadata(runtime, model, &next_compaction_hash,
-                                         &next_context_window,
-                                         &next_compact_limit, error);
+  rc = cai_runtime_model_switch_metadata(
+      runtime, model, &next_compaction_hash, &next_context_window,
+      &next_compact_limit, &model_catalog_available, error);
   if (rc == CAI_OK) {
     agent = CAI_AGENT_IMPL(runtime->agent);
     requires_compaction = cai_runtime_model_switch_requires_compaction(
@@ -6336,8 +6428,9 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
   runtime->model_context_window = next_context_window;
   runtime->model_auto_compact_token_limit = next_compact_limit;
   next_compaction_hash = NULL;
-  /* A successful compatibility check is durable with the new selection. */
-  runtime->resume_compaction_pending = 0;
+  /* An unavailable catalog cannot resolve imported compatibility metadata. */
+  runtime->resume_compaction_pending =
+      old_resume_compaction_pending && !model_catalog_available;
   rc = cai_runtime_checkpoint(runtime, 1, error);
   if (rc != CAI_OK) {
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,

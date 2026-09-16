@@ -272,6 +272,7 @@ int cai_test_response_request_upload_active(void);
 void cai_session_store_test_set_fail_scope_parent_sync(int enabled);
 void cai_agent_runtime_test_set_fail_goal_status_replace(int enabled);
 unsigned int cai_agent_runtime_test_goal_status_replace_failures(void);
+void cai_agent_runtime_test_set_fail_checkpoint_event_reservation(int enabled);
 typedef void (*cai_agent_runtime_test_export_cleanup_fn)(const char *path,
                                                          void *context);
 void cai_agent_runtime_test_set_export_cleanup_hook(
