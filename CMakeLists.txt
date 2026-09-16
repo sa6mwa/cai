@@ -109,13 +109,13 @@ set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
 set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
 set(CAI_C_PKT_SYSTEMS_VERSION "0.10.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
-# ABI 3 is the latest released ABI. Values 5 through 7 were only used by this
-# unreleased development branch and must not survive a reconfigure. Preserve
+# ABI 4 is the latest released ABI. Values 3, 6, and 7 were only used by
+# unreleased development branches and must not survive a reconfigure. Preserve
 # any other packager-selected ABI override.
 if(NOT DEFINED CAI_ABI_VERSION OR CAI_ABI_VERSION STREQUAL "" OR
-   CAI_ABI_VERSION STREQUAL "3" OR CAI_ABI_VERSION STREQUAL "5" OR
+   CAI_ABI_VERSION STREQUAL "3" OR CAI_ABI_VERSION STREQUAL "4" OR
    CAI_ABI_VERSION STREQUAL "6" OR CAI_ABI_VERSION STREQUAL "7")
-  set(CAI_ABI_VERSION "4" CACHE STRING "Shared library ABI/SOVERSION." FORCE)
+  set(CAI_ABI_VERSION "5" CACHE STRING "Shared library ABI/SOVERSION." FORCE)
 else()
   # Preserve an explicit packager value while giving its cache entry the
   # project-defined type and help text.
@@ -1669,6 +1669,7 @@ if(CAI_BUILD_TESTS)
         "-DCAI_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
         "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
         "-DCAI_INSTALL_RPATH_TOKEN=${CAI_INSTALL_RPATH_TOKEN}"
+        "-DCAI_ABI_VERSION=${CAI_ABI_VERSION}"
         "-DCAI_LONEJSON_ABI_VERSION=${CAI_LONEJSON_ABI_VERSION}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_metadata_test.cmake")
     set_tests_properties(cai_install_metadata_test PROPERTIES

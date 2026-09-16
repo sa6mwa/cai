@@ -27073,6 +27073,9 @@ static void test_agent_runtime_model_switch(test_state *state) {
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_model_metadata\",\"usage\":{\"input_tokens\":1,"
       "\"output_tokens\":1,\"total_tokens\":2}}}\n\n";
+  static const char compact_error_body[] =
+      "{\"error\":{\"message\":\"compaction failed\",\"type\":"
+      "\"server_error\"}}";
   static const char *captured_turn_required[] = {"capture model metadata"};
   static const mock_http_expectation catalog_script[] = {
       {"GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/",
@@ -27080,7 +27083,15 @@ static void test_agent_runtime_model_switch(test_state *state) {
        NULL, 0U, 200, "OK", "application/json", NULL, catalog_body},
       {"POST /v1/responses HTTP/", captured_turn_required,
        sizeof(captured_turn_required) / sizeof(captured_turn_required[0]), NULL,
-       0U, 200, "OK", "text/event-stream", NULL, captured_turn_body}};
+       0U, 200, "OK", "text/event-stream", NULL, captured_turn_body},
+      {"POST /v1/responses/compact HTTP/", NULL, 0U, NULL, 0U, 500,
+       "Internal Server Error", "application/json", NULL, compact_error_body},
+      {"POST /v1/responses/compact HTTP/", NULL, 0U, NULL, 0U, 500,
+       "Internal Server Error", "application/json", NULL, compact_error_body},
+      {"POST /v1/responses/compact HTTP/", NULL, 0U, NULL, 0U, 500,
+       "Internal Server Error", "application/json", NULL, compact_error_body},
+      {"POST /v1/responses/compact HTTP/", NULL, 0U, NULL, 0U, 500,
+       "Internal Server Error", "application/json", NULL, compact_error_body}};
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
   cai_agent_session_store store;
@@ -27093,6 +27104,7 @@ static void test_agent_runtime_model_switch(test_state *state) {
   cai_agent_runtime *runtime;
   cai_error error;
   cai_agent_run_state run_state;
+  cai_agent_goal_request goal_request;
   struct timespec delay;
   int i;
 
@@ -27206,7 +27218,7 @@ static void test_agent_runtime_model_switch(test_state *state) {
     expect_int(
         state, "runtime_model_switch_resume_hash_requires_compaction",
         cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_5_6_LUNA, &error),
-        CAI_ERR_TRANSPORT);
+        CAI_ERR_SERVER);
     expect_str(state, "runtime_model_switch_resume_failed_preserves_model",
                cai_agent_runtime_model(runtime), CAI_MODEL_GPT_6_ASTRA);
     cai_error_cleanup(&error);
@@ -27215,6 +27227,80 @@ static void test_agent_runtime_model_switch(test_state *state) {
         state, "runtime_model_switch_same_model",
         cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_6_ASTRA, &error),
         CAI_OK);
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json =
+      "{\"version\":1,\"model\":\"gpt-5.5\","
+      "\"model_compaction_hash\":\"provider-2911\",\"history\":[{\"type\":"
+      "\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\","
+      "\"text\":\"retained context\"}]}]}";
+  runtime_config.model = CAI_MODEL_GPT_6_ASTRA;
+  runtime_config.resume_latest = 1;
+  expect_int(state, "runtime_model_switch_resume_turn_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_int(state, "runtime_model_switch_resume_turn_submit",
+               cai_agent_runtime_submit(runtime, "resume compaction", &error),
+               CAI_OK);
+    run_state = CAI_AGENT_IDLE;
+    for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "runtime_model_switch_resume_turn_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_model_switch_resume_turn_failed", run_state,
+               CAI_AGENT_FAILED);
+    expect_int(
+        state, "runtime_model_switch_resume_turn_retry_compaction",
+        cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_5_6_LUNA, &error),
+        CAI_ERR_SERVER);
+    expect_str(state, "runtime_model_switch_resume_turn_preserves_model",
+               cai_agent_runtime_model(runtime), CAI_MODEL_GPT_6_ASTRA);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json =
+      "{\"version\":1,\"model\":\"gpt-5.5\","
+      "\"model_compaction_hash\":\"provider-2911\",\"history\":[{\"type\":"
+      "\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\","
+      "\"text\":\"retained context\"}]}]}";
+  runtime_config.model = CAI_MODEL_GPT_6_ASTRA;
+  runtime_config.resume_latest = 1;
+  expect_int(state, "runtime_model_switch_resume_goal_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    cai_agent_goal_request_init(&goal_request);
+    goal_request.objective = "checkpoint imported model metadata";
+    expect_int(state, "runtime_model_switch_resume_goal_create",
+               cai_agent_runtime_create_goal(runtime, &goal_request, &error),
+               CAI_OK);
+    for (i = 0; i < 100 && strstr(store_state.saved_checkpoint,
+                                  "checkpoint imported model metadata") == NULL;
+         i++) {
+      (void)nanosleep(&delay, NULL);
+    }
+    expect_substr(state, "runtime_model_switch_resume_goal_checkpoint_model",
+                  store_state.saved_checkpoint, "\"model\":\"gpt-5.5\"");
+    expect_substr(state, "runtime_model_switch_resume_goal_checkpoint_hash",
+                  store_state.saved_checkpoint,
+                  "\"model_compaction_hash\":\"provider-2911\"");
+    expect_int(
+        state, "runtime_model_switch_resume_goal_retry_compaction",
+        cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_5_6_LUNA, &error),
+        CAI_ERR_SERVER);
+    expect_str(state, "runtime_model_switch_resume_goal_preserves_model",
+               cai_agent_runtime_model(runtime), CAI_MODEL_GPT_6_ASTRA);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
     cai_agent_runtime_close(runtime);
     runtime = NULL;
   }
