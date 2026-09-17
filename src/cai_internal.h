@@ -139,6 +139,9 @@ typedef struct cai_session_impl {
   cai_session_input *inputs;
   size_t input_count;
   size_t input_capacity;
+  /* A tool result that only exists in the next request (for example an image
+   * data URL) must reach that request before local history can be compacted. */
+  int request_only_tool_output_pending;
 } cai_session_impl;
 
 #define CAI_CLIENT_IMPL(client) ((cai_client_impl *)((client)->impl))

@@ -3444,6 +3444,12 @@ static int cai_runtime_compact_before_request(cai_agent_runtime *runtime,
     return CAI_OK;
   }
   session = CAI_SESSION_IMPL(runtime->session);
+  if (session->request_only_tool_output_pending) {
+    /* Codex compacts from a history that retains image payloads. CAI keeps
+     * those payloads request-only, so the immediate continuation must deliver
+     * one before its safe history may be compacted. */
+    return CAI_OK;
+  }
   history_bytes = session->history.size_fn(&session->history);
   if (history_bytes == 0U) {
     return CAI_OK;

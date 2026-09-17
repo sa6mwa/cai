@@ -9872,6 +9872,12 @@ static void mock_openai_child(int pipe_fd, int request_count) {
             1U) {
       _exit(14);
     }
+    if ((strstr(request, "\"call_id\":\"call_view_image_1\"") != NULL ||
+         strstr(request, "\"call_id\":\"call_stream_view_image_1\"") !=
+             NULL) &&
+        strstr(request, "\"input\":[[") != NULL) {
+      _exit(16);
+    }
     if (strstr(request, "\"call_id\":\"call_stream_malformed\"") != NULL &&
         (mock_count_substring(request, "\"type\":\"function_call_output\"") !=
              1U ||
@@ -27844,6 +27850,14 @@ test_agent_runtime_model_switch_api_key_metadata_policy(test_state *state) {
 }
 
 static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
+  static const unsigned char image_bytes[] = {
+      0x89U, 0x50U, 0x4eU, 0x47U, 0x0dU, 0x0aU, 0x1aU, 0x0aU, 0x00U, 0x00U,
+      0x00U, 0x0dU, 0x49U, 0x48U, 0x44U, 0x52U, 0x00U, 0x00U, 0x00U, 0x01U,
+      0x00U, 0x00U, 0x00U, 0x01U, 0x08U, 0x06U, 0x00U, 0x00U, 0x00U, 0x1fU,
+      0x15U, 0xc4U, 0x89U, 0x00U, 0x00U, 0x00U, 0x0dU, 0x49U, 0x44U, 0x41U,
+      0x54U, 0x08U, 0xd7U, 0x63U, 0xf8U, 0xcfU, 0xc0U, 0xf0U, 0x1fU, 0x00U,
+      0x05U, 0x00U, 0x01U, 0xffU, 0x89U, 0x99U, 0x07U, 0x00U, 0x00U, 0x00U,
+      0x00U, 0x49U, 0x45U, 0x4eU, 0x44U, 0xaeU, 0x42U, 0x60U, 0x82U};
   static const char tool_response[] =
       "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
       "\"item\":{\"id\":\"fc_auto_compact\",\"type\":"
@@ -27873,6 +27887,12 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_auto_compact_final\",\"usage\":{\"input_tokens\":100,"
       "\"output_tokens\":10,\"total_tokens\":110}}}\n\n";
+  static const char image_final_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"image delivered before compaction\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_auto_compact_image_final\",\"usage\":{\"input_tokens\":100,"
+      "\"output_tokens\":10,\"total_tokens\":110}}}\n\n";
   static const char steering_response[] =
       "data: {\"type\":\"response.output_text.delta\",\"delta\":"
       "\"waiting for direction\"}\n\n"
@@ -27886,6 +27906,13 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
   static const char *compact_required[] = {"\"type\":\"compaction_trigger\""};
   static const char *final_required[] = {"opaque-summary"};
   static const char *final_forbidden[] = {"\"type\":\"compaction_trigger\""};
+  static const char *image_tool_required[] = {"image compaction source",
+                                               "\"name\":\"view_image\""};
+  static const char *image_continuation_required[] = {
+      "\"call_id\":\"call_auto_compact_image\"", "\"type\":\"input_image\"",
+      "data:image/png;base64,iVBORw0KGgo"};
+  static const char *image_continuation_forbidden[] = {
+      "\"type\":\"compaction_trigger\"", "\"input\":[["};
   static const char *steering_required[] = {"steering compaction source"};
   static const char *steering_final_required[] = {"opaque-summary",
                                                    "steering continuation"};
@@ -27936,11 +27963,15 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
   cai_agent_session_store store;
   runtime_session_store_state store_state;
   runtime_event_state events;
+  mock_http_expectation image_script[2];
   cai_client *client;
   cai_agent_runtime *runtime;
   cai_agent_run_state run_state;
   cai_error error;
   struct timespec delay;
+  char image_workspace[] = "/tmp/cai-runtime-auto-compact-image-XXXXXX";
+  char image_path[PATH_MAX];
+  char image_tool_response[1024];
   int i;
 
   cai_error_init(&error);
@@ -28002,6 +28033,99 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
     client = NULL;
   }
   http_mock_client_close(state, "runtime_auto_compact_tool", &mock);
+
+  if (mkdtemp(image_workspace) == NULL) {
+    test_fail(state, "runtime_auto_compact_image_workspace", "mkdtemp failed");
+  } else {
+    snprintf(image_path, sizeof(image_path), "%s/pixel.png", image_workspace);
+    write_bytes_or_die(image_path, image_bytes, sizeof(image_bytes));
+    snprintf(
+        image_tool_response, sizeof(image_tool_response),
+        "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+        "\"item\":{\"id\":\"fc_auto_compact_image\",\"type\":"
+        "\"function_call\",\"call_id\":\"call_auto_compact_image\","
+        "\"name\":\"view_image\",\"arguments\":\"{\\\"path\\\":\\\"%s\\\"}\"}}\n\n"
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+        "\"resp_auto_compact_image_tool\",\"usage\":{\"input_tokens\":330000,"
+        "\"output_tokens\":10,\"total_tokens\":330010}}}\n\n",
+        image_path);
+    memset(image_script, 0, sizeof(image_script));
+    image_script[0].request_prefix = "POST /v1/responses HTTP/";
+    image_script[0].required = image_tool_required;
+    image_script[0].required_count =
+        sizeof(image_tool_required) / sizeof(image_tool_required[0]);
+    image_script[0].status = 200;
+    image_script[0].status_text = "OK";
+    image_script[0].content_type = "text/event-stream";
+    image_script[0].body = image_tool_response;
+    image_script[1].request_prefix = "POST /v1/responses HTTP/";
+    image_script[1].required = image_continuation_required;
+    image_script[1].required_count = sizeof(image_continuation_required) /
+                                     sizeof(image_continuation_required[0]);
+    image_script[1].forbidden = image_continuation_forbidden;
+    image_script[1].forbidden_count = sizeof(image_continuation_forbidden) /
+                                      sizeof(image_continuation_forbidden[0]);
+    image_script[1].status = 200;
+    image_script[1].status_text = "OK";
+    image_script[1].content_type = "text/event-stream";
+    image_script[1].body = image_final_response;
+    if (http_mock_client_open_script(
+            state, "runtime_auto_compact_image", image_script,
+            sizeof(image_script) / sizeof(image_script[0]), &mock) == 0) {
+      cai_client_config_init(&client_config);
+      client_config.api_key = "test-key";
+      client_config.base_url = mock.base_url;
+      client_config.timeout_ms = 100L;
+      client_config.http_2_disabled = 1;
+      expect_int(state, "runtime_auto_compact_image_client",
+                 cai_client_open(&client_config, &client, &error), CAI_OK);
+      cai_agent_runtime_config_init(&runtime_config);
+      memset(&events, 0, sizeof(events));
+      events.owner = pthread_self();
+      runtime_config.workspace_directory = image_workspace;
+      runtime_config.model = CAI_MODEL_GPT_5_NANO;
+      runtime_config.disable_default_session_store = 1;
+      runtime_config.disable_terminal = 1;
+      runtime_config.event_callback = test_runtime_event;
+      runtime_config.event_context = &events;
+      expect_int(state, "runtime_auto_compact_image_open",
+                 cai_agent_runtime_open(client, &runtime_config, &runtime,
+                                        &error),
+                 CAI_OK);
+      if (runtime != NULL) {
+        expect_int(state, "runtime_auto_compact_image_submit",
+                   cai_agent_runtime_submit(runtime, "image compaction source",
+                                            &error),
+                   CAI_OK);
+        run_state = CAI_AGENT_IDLE;
+        for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
+                    run_state != CAI_AGENT_FAILED;
+             i++) {
+          (void)nanosleep(&delay, NULL);
+          expect_int(state, "runtime_auto_compact_image_pump",
+                     cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+          expect_int(state, "runtime_auto_compact_image_state",
+                     cai_agent_runtime_state(runtime, &run_state, &error),
+                     CAI_OK);
+        }
+        expect_int(state, "runtime_auto_compact_image_completed", run_state,
+                   CAI_AGENT_COMPLETED);
+        if (run_state == CAI_AGENT_FAILED && events.failure_message[0] != '\0') {
+          test_fail(state, "runtime_auto_compact_image_failure",
+                    events.failure_message);
+        }
+        cai_agent_runtime_close(runtime);
+        runtime = NULL;
+      }
+      if (client != NULL) {
+        cai_client_close(client);
+        client = NULL;
+      }
+      http_mock_client_close(state, "runtime_auto_compact_image", &mock);
+    }
+    unlink(image_path);
+    rmdir(image_workspace);
+  }
 
   if (http_mock_client_open_script(state, "runtime_auto_compact_steering",
                                    steering_script,

@@ -4133,8 +4133,9 @@ static int cai_session_refresh_history_input_preserving_transient(
       record_reader.remaining = item_length;
       record_reader.error = error;
       if (rc == CAI_OK) {
-        status = writer.json_value_reader(&writer, cai_history_record_json_read,
-                                          &record_reader, &json_error);
+        status = writer.array_items_reader(
+            &writer, "", cai_history_record_json_read, &record_reader,
+            &json_error);
       }
       if (status == LONEJSON_STATUS_OK && record_reader.remaining != 0UL) {
         status = LONEJSON_STATUS_CALLBACK_FAILED;
@@ -5406,6 +5407,9 @@ static int cai_session_run_tool_round(cai_session *session,
           cai_response_tool_call_name(response, i),
           cai_response_tool_call_id(response, i), params, &capture.output,
           &output_delivered, error);
+      if (rc == CAI_OK && output_delivered) {
+        CAI_SESSION_IMPL(session)->request_only_tool_output_pending = 1;
+      }
       if (rc == CAI_OK && !output_delivered) {
         rc =
             cai_response_tool_call_is_custom(response, i)
@@ -5486,6 +5490,7 @@ static int cai_session_run_tool_round(cai_session *session,
         "goal token budget exhausted before another model request");
   }
   if (rc == CAI_OK) {
+    CAI_SESSION_IMPL(session)->request_only_tool_output_pending = 0;
     rc = cai_session_create_response_from_params(
         session, params, &pending_items, has_pending_items, out, error);
   }
@@ -5498,6 +5503,7 @@ static int cai_session_run_tool_round(cai_session *session,
   }
   cai_response_create_params_destroy(params);
   cai_response_create_params_destroy(history_params);
+  CAI_SESSION_IMPL(session)->request_only_tool_output_pending = 0;
   cai_lonejson_runtime_close(&tool_output_runtime);
   if (has_pending_items) {
     pending_items.cleanup(&pending_items);
@@ -5816,6 +5822,9 @@ static int cai_session_add_stream_tool_outputs(
           CAI_SESSION_AGENT_IMPL(session)->tools, calls->items[i].name,
           calls->items[i].call_id, params, &capture.output, &output_delivered,
           error);
+      if (rc == CAI_OK && output_delivered) {
+        CAI_SESSION_IMPL(session)->request_only_tool_output_pending = 1;
+      }
       if (rc == CAI_OK && !output_delivered) {
         rc =
             calls->items[i].is_custom
@@ -5955,6 +5964,7 @@ static int cai_session_stream_tool_round(
     rc = cai_session_check_usage_available(session, error);
   }
   if (rc == CAI_OK) {
+    CAI_SESSION_IMPL(session)->request_only_tool_output_pending = 0;
     rc = cai_client_stream_response_internal_with_id(
         CAI_SESSION_AGENT_IMPL(session)->client, params, &effective_sinks,
         &response_id, &usage, error);
@@ -6001,6 +6011,7 @@ static int cai_session_stream_tool_round(
   }
   cai_response_create_params_destroy(params);
   cai_response_create_params_destroy(history_params);
+  CAI_SESSION_IMPL(session)->request_only_tool_output_pending = 0;
   cai_free_mem(NULL, response_id);
   if (has_pending_items) {
     pending_items.cleanup(&pending_items);
