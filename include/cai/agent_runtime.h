@@ -121,7 +121,13 @@ typedef enum cai_agent_runtime_event_type {
   /** A synchronous child agent started from a parent tool call. */
   CAI_AGENT_EVENT_SUBAGENT_STARTED = 24,
   /** A synchronous child agent handed durable context back to its parent. */
-  CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF = 25
+  CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF = 25,
+  /** CAI began making room in the active context. */
+  CAI_AGENT_EVENT_COMPACTION_STARTED = 26,
+  /** The provider is sampling the compaction summary. */
+  CAI_AGENT_EVENT_COMPACTION_PROGRESS = 27,
+  /** Compacted history and its checkpoint were committed. */
+  CAI_AGENT_EVENT_COMPACTION_COMPLETED = 28
 } cai_agent_runtime_event_type;
 
 /**

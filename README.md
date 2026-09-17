@@ -382,14 +382,15 @@ handling, and session state save/restore. See
   `--max-output-tokens`, `--max-reasoning-output-tokens`,
   `--max-total-tokens`, or `--max-spend-usd`; pass `0` to disable that lane.
 - Production SDK calls should choose a model explicitly.
-- Session auto-compaction is enabled by default and uses Responses
-  server-side compaction.
+- Ordinary sessions use Responses context management. The agent runtime keeps
+  local client history and, when its advertised context limit is reached,
+  compacts it through the Responses V2 `compaction_trigger` protocol.
 - Local spooled session history is opt-in with `enable_local_history`; default
   sessions rely on OpenAI server-side context through `previous_response_id` or
   Conversations. When enabled, `cai_session_export_history_source` streams the
-  captured history as a JSON array for manual compaction, export, or offline
-  inspection, and `cai_session_import_history_source` can load that JSON array
-  back into a local-history-enabled session.
+  captured history as a JSON array for `cai_session_compact`, export, or
+  offline inspection, and `cai_session_import_history_source` can load that
+  JSON array back into a local-history-enabled session.
 - Examples and integration development tests default to `gpt-5-nano`.
 - OpenRouter development can use
   `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES`, currently
@@ -504,9 +505,8 @@ inference against OpenAI-held Responses context, persist either
 and restore it into a new session with `session->set_previous_response_id` or
 `session->set_conversation_id`.
 That is the actual server-side continuation handle. Opt-in local history
-export/import is for offline inspection, experimental manual compaction, and
-host-owned replay state; by itself it is not a substitute for the OpenAI
-continuation id.
+export/import is for offline inspection, host-owned compaction, and replay
+state; by itself it is not a substitute for the OpenAI continuation id.
 
 For applications that want one file/object to persist, use
 `cai_session_export_state_source` and `cai_session_import_state_source`. The

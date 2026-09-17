@@ -231,7 +231,7 @@ explicit advanced UI mode without reconstructing it from tool arguments.
 ## 5. Public API shape
 
 Existing `cai_agent`, `cai_session`, `cai_stream_sinks`, local tool registry,
-MCP client, history export/import, and `cai_session_compact_experimental`
+MCP client, history export/import, and `cai_session_compact`
 remain supported. Smith is additive. New public declarations belong in
 `include/cai/agent_runtime.h`; common opaque declarations may be re-exported
 from `include/cai/cai.h` only when that reduces include friction.
@@ -1505,21 +1505,16 @@ reached. When either model lacks a provider hash, Smith follows Codex and does
 not infer compatibility from a model name or a CAI-maintained table. This policy
 and its reason are persisted in `compaction_started`.
 
-Compaction is a client-side model call using the current session’s compact
-prompt asset. It produces a bounded, structured replacement history containing
-task status, decisions, modified files, unresolved risks, tool outcomes, goals,
-and pending steering. CAI then atomically appends the compaction result and
-replaces only its *active model context*; the original JSONL event history is
-never discarded. If summarization fails, CAI preserves the original context,
-reports the error, and lets the host decide whether to retry, choose another
-model, or start a fresh session. It must never silently truncate arbitrary
-history as a substitute for compaction.
-
-The initial compaction implementation may call CAI’s existing
-`responses/compact` support when it returns a portable replacement history that
-can be persisted and replayed. If that endpoint does not meet the contract for
-the selected backend/model, CAI uses a normal Responses summarization call; it
-does not make session durability depend on an opaque server session.
+Compaction uses the Responses V2 protocol: CAI sends the complete local client
+history followed by `{"type":"compaction_trigger"}` in a normal streamed
+Responses request. The provider must return exactly one opaque `compaction`
+output item. CAI atomically replaces active context with that item plus bounded
+recent user inputs, then persists the replacement before reporting completion.
+The durable event history remains available to the host separately. If the
+request or checkpoint fails, CAI preserves the original context and reports the
+error; it never silently truncates arbitrary history as a substitute for
+compaction. `response.compaction.compacting` becomes a runtime progress event,
+whose default presentation is “Making room to continue”.
 
 ## 13. Error handling, cancellation, and limits
 

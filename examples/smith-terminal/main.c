@@ -693,6 +693,15 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
     /* A steering follow-up remains in the same run but starts a new model
      * response, so the next text/reasoning delta receives its own label. */
     render_close_message(state);
+  } else if (event->type == CAI_AGENT_EVENT_COMPACTION_STARTED ||
+             event->type == CAI_AGENT_EVENT_COMPACTION_PROGRESS) {
+    render_close_message(state);
+    fprintf(stdout, GRAY "%.*s" RESET "\n", (int)event->data_length,
+            event->data != NULL ? event->data : "Making room to continue");
+  } else if (event->type == CAI_AGENT_EVENT_COMPACTION_COMPLETED) {
+    render_close_message(state);
+    fprintf(stdout, GRAY "%.*s" RESET "\n", (int)event->data_length,
+            event->data != NULL ? event->data : "Made room to continue");
   } else if (event->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED) {
     render_close_message(state);
     state->terminal_lines = 0;

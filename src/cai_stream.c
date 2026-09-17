@@ -41,6 +41,7 @@ static const char *const cai_stream_json_event_names[] = {
     "response.reasoning_summary_text.done",
     "response.reasoning_summary.done",
     "response.reasoning_text.done",
+    "response.compaction.compacting",
     "response.function_call_arguments.delta",
     "response.function_call_arguments.done",
     "response.custom_tool_call_input.delta",
@@ -1554,6 +1555,14 @@ cai_sse_emit_output_text_delta(cai_sse_state *state,
   return rc;
 }
 
+static int cai_sse_emit_compaction_progress(cai_sse_state *state) {
+  if (state == NULL || state->sinks.compaction_progress == NULL) {
+    return CAI_OK;
+  }
+  return state->sinks.compaction_progress(
+      state->sinks.compaction_progress_context, state->error);
+}
+
 static int
 cai_sse_emit_function_call_delta(cai_sse_state *state,
                                  const cai_stream_delta_event_doc *doc,
@@ -1753,6 +1762,11 @@ static int cai_sse_emit_event(cai_sse_state *state,
   if (strcmp(event_name, "response.reasoning_summary_text.done") == 0 ||
       strcmp(event_name, "response.reasoning_summary.done") == 0) {
     rc = cai_sse_finish_reasoning(state);
+    goto done;
+  }
+
+  if (strcmp(event_name, "response.compaction.compacting") == 0) {
+    rc = cai_sse_emit_compaction_progress(state);
     goto done;
   }
 

@@ -109,13 +109,13 @@ set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
 set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
 set(CAI_C_PKT_SYSTEMS_VERSION "0.10.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
-# ABI 4 is the latest released ABI. Values 3, 6, and 7 were only used by
+# ABI 5 is the latest released ABI. Values 3, 4, and 7 were only used by
 # unreleased development branches and must not survive a reconfigure. Preserve
 # any other packager-selected ABI override.
 if(NOT DEFINED CAI_ABI_VERSION OR CAI_ABI_VERSION STREQUAL "" OR
    CAI_ABI_VERSION STREQUAL "3" OR CAI_ABI_VERSION STREQUAL "4" OR
-   CAI_ABI_VERSION STREQUAL "6" OR CAI_ABI_VERSION STREQUAL "7")
-  set(CAI_ABI_VERSION "5" CACHE STRING "Shared library ABI/SOVERSION." FORCE)
+   CAI_ABI_VERSION STREQUAL "5" OR CAI_ABI_VERSION STREQUAL "7")
+  set(CAI_ABI_VERSION "6" CACHE STRING "Shared library ABI/SOVERSION." FORCE)
 else()
   # Preserve an explicit packager value while giving its cache entry the
   # project-defined type and help text.

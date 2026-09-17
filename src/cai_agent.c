@@ -52,6 +52,27 @@ typedef struct cai_stream_tool_capture {
   size_t output_items_count;
 } cai_stream_tool_capture;
 
+typedef struct cai_compaction_capture {
+  cai_session *session;
+  lonejson_spooled item;
+  int has_item;
+  size_t item_count;
+  int completed;
+} cai_compaction_capture;
+
+typedef struct cai_compaction_retained_item_doc {
+  char *type;
+  char *role;
+} cai_compaction_retained_item_doc;
+
+typedef struct cai_compaction_retained_record_doc {
+  lonejson_object_array items;
+} cai_compaction_retained_record_doc;
+
+typedef struct cai_compaction_retained_record {
+  lonejson_spooled json;
+} cai_compaction_retained_record;
+
 typedef struct cai_spooled_record_reader {
   lonejson_spooled cursor;
   unsigned char buffer[4096];
@@ -81,6 +102,26 @@ typedef struct cai_json_root_array_check {
   int root_seen;
   int root_is_array;
 } cai_json_root_array_check;
+
+enum { CAI_COMPACTION_RETAINED_USER_BYTES = 80 * 1024 };
+
+static const lonejson_field cai_compaction_retained_item_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_compaction_retained_item_doc,
+                                          type, "type"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_compaction_retained_item_doc,
+                                          role, "role")};
+LONEJSON_MAP_DEFINE(cai_compaction_retained_item_map,
+                    cai_compaction_retained_item_doc,
+                    cai_compaction_retained_item_fields);
+
+static const lonejson_field cai_compaction_retained_record_fields[] = {
+    LONEJSON_FIELD_OBJECT_ARRAY(
+        cai_compaction_retained_record_doc, items, "items",
+        cai_compaction_retained_item_doc, &cai_compaction_retained_item_map,
+        LONEJSON_OVERFLOW_FAIL)};
+LONEJSON_MAP_DEFINE(cai_compaction_retained_record_map,
+                    cai_compaction_retained_record_doc,
+                    cai_compaction_retained_record_fields);
 
 typedef struct cai_session_state_doc {
   long long version;
@@ -306,6 +347,14 @@ static int cai_stream_tool_call_list_append(
 static void cai_stream_tool_call_list_cleanup(cai_stream_tool_call_list *list);
 static int cai_history_to_array_spool(cai_session *session,
                                       lonejson_spooled *out, cai_error *error);
+static int cai_session_compaction_input_spool(
+    cai_session *session, const lonejson_spooled *history,
+    lonejson_spooled *out, cai_error *error);
+static int cai_session_compaction_capture_item(
+    void *context, const char *item_id, int output_index, const char *type,
+    const lonejson_spooled *item_json, cai_error *error);
+static int cai_session_compaction_capture_completed(void *context,
+                                                    cai_error *error);
 static int cai_history_append_array_record_spooled(cai_session *session,
                                                    const lonejson_spooled *json,
                                                    cai_error *error);
@@ -3177,6 +3226,241 @@ static int cai_history_to_array_spool(cai_session *session,
   return CAI_OK;
 }
 
+static void cai_compaction_retained_record_docs_cleanup(
+    cai_compaction_retained_record_doc *doc) {
+  cai_compaction_retained_item_doc *items;
+  size_t i;
+
+  if (doc == NULL || doc->items.items == NULL) {
+    return;
+  }
+  items = (cai_compaction_retained_item_doc *)doc->items.items;
+  for (i = 0U; i < doc->items.count; i++) {
+    cai_free_mem(NULL, items[i].type);
+    cai_free_mem(NULL, items[i].role);
+  }
+  cai_free_mem(NULL, doc->items.items);
+  memset(&doc->items, 0, sizeof(doc->items));
+}
+
+static int cai_compaction_record_is_user_message(
+    cai_session *session, const lonejson_spooled *record, int *out_is_user,
+    cai_error *error) {
+  cai_compaction_retained_record_doc doc;
+  cai_compaction_retained_item_doc *items;
+  cai_spooled_reader_context reader_context;
+  lonejson_spooled wrapper;
+  cai_history_sink_context sink_context;
+  lonejson_error json_error;
+  lonejson_status status;
+  size_t i;
+
+  if (session == NULL || record == NULL || out_is_user == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "compaction record classification requires input");
+  }
+  *out_is_user = 0;
+  memset(&doc, 0, sizeof(doc));
+  memset(&wrapper, 0, sizeof(wrapper));
+  cai_history_init_spooled(session, &wrapper);
+  if (cai_history_append_bytes(&wrapper, "{\"items\":", 9U, error) != CAI_OK) {
+    wrapper.cleanup(&wrapper);
+    return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+  }
+  sink_context.spool = &wrapper;
+  lonejson_error_init(&json_error);
+  if (record->write_to_sink(record, cai_history_lonejson_sink, &sink_context,
+                            &json_error) != LONEJSON_STATUS_OK ||
+      cai_history_append_bytes(&wrapper, "}", 1U, error) != CAI_OK) {
+    wrapper.cleanup(&wrapper);
+    if (error != NULL && error->message != NULL) {
+      return error->code;
+    }
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to classify compaction history",
+                                json_error.message);
+  }
+  reader_context.cursor = wrapper;
+  lonejson_error_init(&json_error);
+  if (reader_context.cursor.rewind(&reader_context.cursor, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    wrapper.cleanup(&wrapper);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to rewind compaction history",
+                                json_error.message);
+  }
+  status = CAI_LJ->parse_reader(CAI_LJ, &cai_compaction_retained_record_map,
+                                 &doc, cai_history_spooled_reader,
+                                 &reader_context, &json_error);
+  wrapper.cleanup(&wrapper);
+  if (status != LONEJSON_STATUS_OK) {
+    cai_compaction_retained_record_docs_cleanup(&doc);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to parse compaction history",
+                                json_error.message);
+  }
+  items = (cai_compaction_retained_item_doc *)doc.items.items;
+  if (doc.items.count > 0U) {
+    *out_is_user = 1;
+    for (i = 0U; i < doc.items.count; i++) {
+      if (items[i].role == NULL || strcmp(items[i].role, "user") != 0) {
+        *out_is_user = 0;
+        break;
+      }
+    }
+  }
+  cai_compaction_retained_record_docs_cleanup(&doc);
+  return CAI_OK;
+}
+
+static int cai_compaction_copy_history_record(
+    cai_session *session, cai_spooled_record_reader *reader,
+    unsigned long length, lonejson_spooled *out, cai_error *error) {
+  unsigned char buffer[4096];
+  unsigned long remaining;
+  size_t count;
+  size_t i;
+  int rc;
+
+  cai_history_init_spooled(session, out);
+  remaining = length;
+  while (remaining > 0UL) {
+    count = remaining > sizeof(buffer) ? sizeof(buffer) : (size_t)remaining;
+    for (i = 0U; i < count; i++) {
+      rc = cai_spooled_record_reader_next(reader, &buffer[i], error);
+      if (rc <= 0) {
+        out->cleanup(out);
+        return rc < 0 ? (error != NULL ? error->code : CAI_ERR_TRANSPORT)
+                      : cai_set_error(error, CAI_ERR_PROTOCOL,
+                                      "truncated compaction history record");
+      }
+    }
+    rc = cai_history_append_bytes(out, buffer, count, error);
+    if (rc != CAI_OK) {
+      out->cleanup(out);
+      return rc;
+    }
+    remaining -= (unsigned long)count;
+  }
+  return CAI_OK;
+}
+
+static void cai_compaction_retained_records_cleanup(
+    cai_compaction_retained_record *records, size_t count) {
+  size_t i;
+
+  for (i = 0U; i < count; i++) {
+    records[i].json.cleanup(&records[i].json);
+  }
+  cai_free_mem(NULL, records);
+}
+
+static int cai_compaction_retained_records_append(
+    cai_compaction_retained_record **records, size_t *count, size_t *capacity,
+    size_t *bytes, lonejson_spooled *record, cai_error *error) {
+  cai_compaction_retained_record *grown;
+  size_t new_capacity;
+  size_t record_bytes;
+
+  if (records == NULL || count == NULL || capacity == NULL || bytes == NULL ||
+      record == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "compaction retained-history state is required");
+  }
+  record_bytes = record->size_fn(record);
+  if (*count == *capacity) {
+    new_capacity = *capacity == 0U ? 4U : *capacity * 2U;
+    grown = (cai_compaction_retained_record *)cai_realloc_mem(
+        NULL, *records, new_capacity * sizeof(**records));
+    if (grown == NULL) {
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to retain compacted user history");
+    }
+    *records = grown;
+    *capacity = new_capacity;
+  }
+  (*records)[*count].json = *record;
+  memset(record, 0, sizeof(*record));
+  (*count)++;
+  *bytes += record_bytes;
+  while (*count > 0U && *bytes > CAI_COMPACTION_RETAINED_USER_BYTES) {
+    record_bytes = (*records)[0].json.size_fn(&(*records)[0].json);
+    (*records)[0].json.cleanup(&(*records)[0].json);
+    if (*count > 1U) {
+      memmove(*records, *records + 1U,
+              (*count - 1U) * sizeof(**records));
+    }
+    (*count)--;
+    *bytes -= record_bytes;
+  }
+  return CAI_OK;
+}
+
+static int cai_compaction_collect_retained_user_records(
+    cai_session *session, cai_compaction_retained_record **out_records,
+    size_t *out_count, cai_error *error) {
+  cai_spooled_record_reader reader;
+  cai_compaction_retained_record *records;
+  lonejson_spooled record;
+  unsigned long length;
+  size_t count;
+  size_t capacity;
+  size_t bytes;
+  int have_record;
+  int is_user;
+  int rc;
+
+  if (out_records == NULL || out_count == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "compaction retained-history output is required");
+  }
+  *out_records = NULL;
+  *out_count = 0U;
+  memset(&reader, 0, sizeof(reader));
+  reader.cursor = CAI_SESSION_IMPL(session)->history;
+  records = NULL;
+  count = 0U;
+  capacity = 0U;
+  bytes = 0U;
+  {
+    lonejson_error json_error;
+    lonejson_error_init(&json_error);
+    if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to rewind compaction history",
+                                  json_error.message);
+    }
+  }
+  rc = CAI_OK;
+  while (rc == CAI_OK) {
+    rc = cai_history_read_record_length(&reader, &length, &have_record, error);
+    if (rc != CAI_OK || !have_record) {
+      break;
+    }
+    memset(&record, 0, sizeof(record));
+    rc = cai_compaction_copy_history_record(session, &reader, length, &record,
+                                            error);
+    if (rc == CAI_OK) {
+      rc = cai_compaction_record_is_user_message(session, &record, &is_user,
+                                                  error);
+    }
+    if (rc == CAI_OK && is_user) {
+      rc = cai_compaction_retained_records_append(&records, &count, &capacity,
+                                                   &bytes, &record, error);
+    }
+    if (record.cleanup != NULL) {
+      record.cleanup(&record);
+    }
+  }
+  if (rc != CAI_OK) {
+    cai_compaction_retained_records_cleanup(records, count);
+    return rc;
+  }
+  *out_records = records;
+  *out_count = count;
+  return CAI_OK;
+}
+
 static int cai_session_prepare_history_params(
     cai_session *session, cai_response_create_params *params,
     lonejson_spooled *out_pending_items, int *out_has_pending_items,
@@ -3629,34 +3913,139 @@ static int cai_token_usage_is_empty(const cai_token_usage *usage) {
          usage->total_tokens == 0LL;
 }
 
-int cai_session_compact_experimental(cai_session *session, cai_error *error) {
+static int cai_session_compaction_input_spool(
+    cai_session *session, const lonejson_spooled *history,
+    lonejson_spooled *out, cai_error *error) {
+  cai_history_sink_context sink_context;
+  lonejson_writer writer;
+  lonejson_error json_error;
+  lonejson_status status;
+
+  if (session == NULL || history == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "compaction input requires session, history, and output");
+  }
+  cai_history_init_spooled(session, out);
+  sink_context.spool = out;
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_history_lonejson_sink,
+                                    &sink_context, &json_error);
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.begin_array(&writer, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.array_items_spooled(&writer, "", history, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.begin_object(&writer, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.key(&writer, "type", 4U, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.string(&writer, "compaction_trigger", 18U, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.end_object(&writer, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.end_array(&writer, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.finish(&writer, &json_error);
+  }
+  writer.cleanup(&writer);
+  if (status != LONEJSON_STATUS_OK) {
+    out->cleanup(out);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to build compaction-trigger input",
+                                json_error.message);
+  }
+  return CAI_OK;
+}
+
+static int cai_session_compaction_capture_item(
+    void *context, const char *item_id, int output_index, const char *type,
+    const lonejson_spooled *item_json, cai_error *error) {
+  cai_compaction_capture *capture;
+  cai_history_sink_context sink_context;
+  lonejson_error json_error;
+
+  (void)item_id;
+  (void)output_index;
+  capture = (cai_compaction_capture *)context;
+  if (capture == NULL || type == NULL || strcmp(type, "compaction") != 0) {
+    return CAI_OK;
+  }
+  capture->item_count++;
+  if (capture->item_count != 1U || item_json == NULL) {
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "compaction response must contain exactly one item");
+  }
+  cai_history_init_spooled(capture->session, &capture->item);
+  capture->has_item = 1;
+  sink_context.spool = &capture->item;
+  lonejson_error_init(&json_error);
+  if (item_json->write_to_sink(item_json, cai_history_lonejson_sink,
+                               &sink_context, &json_error) !=
+      LONEJSON_STATUS_OK) {
+    capture->item.cleanup(&capture->item);
+    capture->has_item = 0;
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to retain streamed compaction item",
+                                json_error.message);
+  }
+  return CAI_OK;
+}
+
+static int cai_session_compaction_capture_completed(void *context,
+                                                    cai_error *error) {
+  cai_compaction_capture *capture;
+
+  (void)error;
+  capture = (cai_compaction_capture *)context;
+  if (capture != NULL) {
+    capture->completed = 1;
+  }
+  return CAI_OK;
+}
+
+int cai_session_compact_with_sinks(cai_session *session,
+                                   const cai_stream_sinks *caller_sinks,
+                                   cai_error *error) {
   cai_response_create_params *params;
-  cai_response *response;
   lonejson_spooled history_items;
+  lonejson_spooled request_input;
   lonejson_spooled next_history;
-  size_t history_len;
+  lonejson_spooled item_array;
+  cai_compaction_capture capture;
+  cai_compaction_retained_record *retained_records;
+  cai_stream_sinks sinks;
+  char *response_id;
+  cai_token_usage usage;
+  size_t retained_record_count;
+  size_t i;
   int has_history_items;
+  int has_request_input;
   int has_next_history;
-  lonejson_spooled output_items;
-  size_t output_items_len;
-  int has_output_items;
-  char *body;
-  char *request_id;
-  long http_status;
+  int has_item_array;
   int rc;
 
   params = NULL;
-  response = NULL;
   memset(&history_items, 0, sizeof(history_items));
+  memset(&request_input, 0, sizeof(request_input));
   memset(&next_history, 0, sizeof(next_history));
-  history_len = 0U;
+  memset(&item_array, 0, sizeof(item_array));
+  memset(&capture, 0, sizeof(capture));
+  retained_records = NULL;
+  cai_stream_sinks_init(&sinks);
+  response_id = NULL;
+  memset(&usage, 0, sizeof(usage));
   has_history_items = 0;
+  has_request_input = 0;
   has_next_history = 0;
-  memset(&output_items, 0, sizeof(output_items));
-  output_items_len = 0U;
-  has_output_items = 0;
-  body = NULL;
-  request_id = NULL;
+  has_item_array = 0;
+  retained_record_count = 0U;
   if (session == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "session is required");
   }
@@ -3664,68 +4053,106 @@ int cai_session_compact_experimental(cai_session *session, cai_error *error) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "local history capture is disabled");
   }
+  if (CAI_SESSION_IMPL(session)->input_count != 0U) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "commit pending inputs before compacting a session");
+  }
   rc = cai_history_to_array_spool(session, &history_items, error);
   if (rc == CAI_OK) {
     has_history_items = 1;
-    history_len = history_items.size_fn(&history_items);
   }
-  if (rc == CAI_OK && history_len == 0U) {
+  if (rc == CAI_OK &&
+      CAI_SESSION_IMPL(session)->history.size_fn(&CAI_SESSION_IMPL(session)->history) ==
+          0U) {
     rc = cai_set_error(error, CAI_ERR_INVALID,
                        "session has no local history to compact");
     goto done;
   }
   if (rc == CAI_OK) {
-    rc = cai_response_create_params_new(&params, error);
+    rc = cai_session_compaction_input_spool(session, &history_items,
+                                            &request_input, error);
+    if (rc == CAI_OK) {
+      has_request_input = 1;
+    }
   }
   if (rc == CAI_OK) {
-    rc = params->set_model(params, CAI_SESSION_AGENT_IMPL(session)->model,
-                           error);
+    rc = cai_session_init_response_params(session, &params, error);
   }
-  if (rc == CAI_OK &&
-      CAI_SESSION_AGENT_IMPL(session)->developer_instructions != NULL) {
-    rc = params->set_instructions(
-        params, CAI_SESSION_AGENT_IMPL(session)->developer_instructions, error);
+  if (rc == CAI_OK) {
+    rc = params->set_previous_response_id(params, NULL, error);
+  }
+  if (rc == CAI_OK) {
+    rc = params->set_conversation_id(params, NULL, error);
   }
   if (rc == CAI_OK) {
     rc = cai_response_create_params_set_raw_input_spooled(
-        params, &history_items, error);
+        params, &request_input, error);
     if (rc == CAI_OK) {
-      has_history_items = 0;
+      has_request_input = 0;
     }
   }
   if (rc == CAI_OK) {
     rc = cai_session_check_usage_available(session, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_http_response_params_request(
-        CAI_SESSION_AGENT_IMPL(session)->client, "responses/compact", params, 0,
-        &body, &http_status, &request_id, error);
-  }
-  if (rc == CAI_OK && (http_status < 200L || http_status >= 300L)) {
-    rc = cai_set_openai_error(error, http_status, body, request_id);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_response_parse_json_with_allocator(
-        &CAI_SESSION_CLIENT_IMPL(session)->allocator, body != NULL ? body : "",
-        &response, error);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_response_output_items_spool(response, &output_items,
-                                         &output_items_len, error);
-    if (rc == CAI_OK) {
-      has_output_items = 1;
+    capture.session = session;
+    sinks.output_item_done = cai_session_compaction_capture_item;
+    sinks.output_item_context = &capture;
+    if (caller_sinks != NULL) {
+      sinks.compaction_progress = caller_sinks->compaction_progress;
+      sinks.compaction_progress_context =
+          caller_sinks->compaction_progress_context;
     }
+    sinks.response_completed = cai_session_compaction_capture_completed;
+    sinks.response_completed_context = &capture;
+    rc = cai_client_stream_response_with_id(CAI_SESSION_AGENT_IMPL(session)->client,
+                                            params, &sinks, &response_id,
+                                            &usage, error);
+  }
+  if (rc == CAI_OK && (!capture.completed || !capture.has_item ||
+                       capture.item_count != 1U)) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "compaction stream did not complete with one item");
+  }
+  if (rc == CAI_OK) {
+    rc = cai_compaction_collect_retained_user_records(
+        session, &retained_records, &retained_record_count, error);
   }
   if (rc == CAI_OK) {
     cai_history_init_spooled(session, &next_history);
     has_next_history = 1;
-    if (output_items_len > 0U) {
-      rc = cai_history_append_array_record_to_spool(session, &next_history,
-                                                    &output_items, error);
+    for (i = 0U; rc == CAI_OK && i < retained_record_count; i++) {
+      rc = cai_history_append_array_record_to_spool(
+          session, &next_history, &retained_records[i].json, error);
     }
   }
   if (rc == CAI_OK) {
-    rc = cai_session_remember_response(session, response, error);
+    cai_history_init_spooled(session, &item_array);
+    has_item_array = 1;
+    rc = cai_history_append_bytes(&item_array, "[", 1U, error);
+    if (rc == CAI_OK) {
+      cai_history_sink_context sink_context;
+      lonejson_error json_error;
+      sink_context.spool = &item_array;
+      lonejson_error_init(&json_error);
+      if (capture.item.write_to_sink(&capture.item, cai_history_lonejson_sink,
+                                     &sink_context, &json_error) !=
+          LONEJSON_STATUS_OK) {
+        rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to build compacted history",
+                                  json_error.message);
+      }
+    }
+    if (rc == CAI_OK) {
+      rc = cai_history_append_bytes(&item_array, "]", 1U, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_history_append_array_record_to_spool(session, &next_history,
+                                                    &item_array, error);
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_remember_stream(session, response_id, &usage, error);
   }
   if (rc == CAI_OK) {
     cai_history_replace(session, &next_history);
@@ -3734,19 +4161,29 @@ int cai_session_compact_experimental(cai_session *session, cai_error *error) {
 
 done:
   cai_response_create_params_destroy(params);
-  cai_response_destroy(response);
   if (has_history_items) {
     history_items.cleanup(&history_items);
+  }
+  if (has_request_input) {
+    request_input.cleanup(&request_input);
   }
   if (has_next_history) {
     next_history.cleanup(&next_history);
   }
-  cai_free_mem(NULL, body);
-  cai_free_mem(NULL, request_id);
-  if (has_output_items) {
-    output_items.cleanup(&output_items);
+  if (has_item_array) {
+    item_array.cleanup(&item_array);
   }
+  if (capture.has_item) {
+    capture.item.cleanup(&capture.item);
+  }
+  cai_compaction_retained_records_cleanup(retained_records,
+                                           retained_record_count);
+  cai_free_mem(NULL, response_id);
   return rc;
+}
+
+int cai_session_compact(cai_session *session, cai_error *error) {
+  return cai_session_compact_with_sinks(session, NULL, error);
 }
 
 static int cai_session_after_response(cai_session *session,

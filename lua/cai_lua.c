@@ -7120,7 +7120,7 @@ static int cai_lua_session_open_text_source(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
-static int cai_lua_session_compact_experimental(lua_State *L) {
+static int cai_lua_session_compact(lua_State *L) {
   cai_lua_session *self;
   cai_error error;
   int rc;
@@ -7128,7 +7128,7 @@ static int cai_lua_session_compact_experimental(lua_State *L) {
   self = cai_lua_check_session(L, 1);
   cai_error_init(&error);
   cai_lua_session_enter(self);
-  rc = cai_session_compact_experimental(self->ptr, &error);
+  rc = cai_session_compact(self->ptr, &error);
   cai_lua_session_leave(self);
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -10995,7 +10995,7 @@ static const luaL_Reg cai_lua_session_methods[] = {
     {"stream", cai_lua_session_stream},
     {"stream_text", cai_lua_session_stream_text},
     {"open_text_source", cai_lua_session_open_text_source},
-    {"compact_experimental", cai_lua_session_compact_experimental},
+    {"compact", cai_lua_session_compact},
     {"last_usage", cai_lua_session_last_usage},
     {"set_usage_limits", cai_lua_session_set_usage_limits},
     {"usage", cai_lua_session_usage},
@@ -11356,6 +11356,12 @@ int luaopen_cai(lua_State *L) {
                       CAI_AGENT_EVENT_REASONING_SUMMARY);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_RESPONSE_COMPLETED",
                       CAI_AGENT_EVENT_RESPONSE_COMPLETED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_COMPACTION_STARTED",
+                      CAI_AGENT_EVENT_COMPACTION_STARTED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_COMPACTION_PROGRESS",
+                      CAI_AGENT_EVENT_COMPACTION_PROGRESS);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_COMPACTION_COMPLETED",
+                      CAI_AGENT_EVENT_COMPACTION_COMPLETED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_GOAL_CHANGED", CAI_AGENT_EVENT_GOAL_CHANGED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_SUBAGENT_STARTED",
                       CAI_AGENT_EVENT_SUBAGENT_STARTED);

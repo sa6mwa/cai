@@ -314,8 +314,8 @@ do
     "Lua session add_user_file_source method missing")
   assert(type(session_methods.open_text_source) == "function",
     "Lua session open_text_source method missing")
-  assert(type(session_methods.compact_experimental) == "function",
-    "Lua session compact_experimental method missing")
+  assert(type(session_methods.compact) == "function",
+    "Lua session compact method missing")
   for _, name in ipairs({
     "conversation_id",
     "created_at",
@@ -337,6 +337,9 @@ end
 assert_eq(cai.MODEL_GPT_4O, "gpt-4o", "model constant")
 assert(type(cai.MODEL_CAP_RESPONSES) == "number")
 assert(type(cai.MODEL_META_PROVIDER_OPENROUTER) == "number")
+assert(type(cai.AGENT_EVENT_COMPACTION_STARTED) == "number")
+assert(type(cai.AGENT_EVENT_COMPACTION_PROGRESS) == "number")
+assert(type(cai.AGENT_EVENT_COMPACTION_COMPLETED) == "number")
 assert(type(cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_XS_2_FREE) == "string")
 assert(type(cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_M_1_FREE) == "string")
 assert(type(cai.OPENROUTER_MODEL_POOLSIDE_LAGUNA_S_2_1_FREE) == "string")

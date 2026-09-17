@@ -865,6 +865,9 @@ typedef int (*cai_stream_function_call_done_fn)(
 typedef int (*cai_stream_output_item_done_fn)(
     void *context, const char *item_id, int output_index, const char *type,
     const struct lonejson_spooled *item_json, cai_error *error);
+/** Callback while the provider samples a compaction summary. */
+typedef int (*cai_stream_compaction_progress_fn)(void *context,
+                                                 cai_error *error);
 /** Callback for incremental output text deltas. */
 typedef int (*cai_stream_output_text_delta_fn)(
     void *context, const char *item_id, int output_index,
@@ -917,6 +920,10 @@ typedef struct cai_stream_sinks {
   cai_stream_output_item_done_fn output_item_done;
   /** Context passed to output_item_done. */
   void *output_item_context;
+  /** Callback while the provider compacts the active context. */
+  cai_stream_compaction_progress_fn compaction_progress;
+  /** Context passed to compaction_progress. */
+  void *compaction_progress_context;
   /** Callback for output text deltas in addition to output_text sink. */
   cai_stream_output_text_delta_fn output_text_delta;
   /** Context passed to output_text_delta. */
@@ -1729,8 +1736,8 @@ int cai_session_stream_text(cai_session *session, cai_sink *sink,
 /** Open output text as a streaming source. */
 int cai_session_open_text_source(cai_session *session, cai_source **out,
                                  cai_error *error);
-/** Run experimental client-side manual compaction. */
-int cai_session_compact_experimental(cai_session *session, cai_error *error);
+/** Compact local client history through the Responses compaction-trigger protocol. */
+int cai_session_compact(cai_session *session, cai_error *error);
 /** Add one user text message and run the session. */
 int cai_session_send_text(cai_session *session, const char *text,
                           cai_response **out, cai_error *error);

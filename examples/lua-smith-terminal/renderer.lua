@@ -236,6 +236,13 @@ function M.new(cai, output, colors)
       output.flush()
     elseif event.type == cai.AGENT_EVENT_RESPONSE_COMPLETED then
       close_message()
+    elseif event.type == cai.AGENT_EVENT_COMPACTION_STARTED or
+        event.type == cai.AGENT_EVENT_COMPACTION_PROGRESS then
+      close_message()
+      output.write(gray, event.data or "Making room to continue", "\n", reset)
+    elseif event.type == cai.AGENT_EVENT_COMPACTION_COMPLETED then
+      close_message()
+      output.write(gray, event.data or "Made room to continue", "\n", reset)
     elseif event.type == cai.AGENT_EVENT_TERMINAL_COMMAND_STARTED then
       close_message()
       render.lines = 0

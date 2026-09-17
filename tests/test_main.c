@@ -8422,6 +8422,28 @@ static int mock_write_oversized_sse_response(int fd) {
   return 0;
 }
 
+static int mock_write_compaction_sse_response(int fd) {
+  static const char header[] =
+      "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+      "Connection: close\r\n\r\n";
+  static const char body[] =
+      "event: response.compaction.compacting\n"
+      "data: {\"type\":\"response.compaction.compacting\"}\n\n"
+      "event: response.output_item.done\n"
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"cmp_1\",\"type\":\"compaction\","
+      "\"encrypted_content\":\"opaque-summary\"}}\n\n"
+      "event: response.completed\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_compact_summary\",\"usage\":{\"input_tokens\":100,"
+      "\"output_tokens\":20,\"total_tokens\":120}}}\n\n";
+
+  return mock_write_all(fd, header, sizeof(header) - 1U) == 0 &&
+                 mock_write_all(fd, body, sizeof(body) - 1U) == 0
+             ? 0
+             : -1;
+}
+
 static int mock_write_large_instructions_sse_response(int fd) {
   static const char header[] =
       "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
@@ -8678,11 +8700,6 @@ static const char *mock_response_for_request(const char *request) {
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"before compact\"}]}],\"usage\":{\"input_tokens\":320000,"
       "\"output_tokens\":1000,\"total_tokens\":321000}}";
-  static const char compact_body[] =
-      "{\"id\":\"resp_compact_summary\",\"status\":\"completed\",\"output\":[{"
-      "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
-      "\"compacted summary\"}]}],\"usage\":{\"input_tokens\":100,"
-      "\"output_tokens\":20,\"total_tokens\":120}}";
   static const char compact_second_body[] =
       "{\"id\":\"resp_compact_2\",\"status\":\"completed\",\"output\":[{"
       "\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":"
@@ -9003,13 +9020,6 @@ static const char *mock_response_for_request(const char *request) {
       "\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{"
       "\"type\":\"output_text\",\"text\":\"history stream second answer\"}]}]}";
 
-  if (strstr(request, "POST /v1/responses/compact HTTP/") != NULL) {
-    if (strstr(request, "compact first") != NULL &&
-        strstr(request, "before compact") != NULL) {
-      return compact_body;
-    }
-    return NULL;
-  }
   if (strncmp(request, "POST /v1/responses/input_tokens HTTP/", 37U) == 0) {
     if (strstr(request, "\"model\":\"gpt-5-nano\"") != NULL &&
         strstr(request, "\"input\"") != NULL &&
@@ -9598,7 +9608,8 @@ static const char *mock_response_for_request(const char *request) {
       return compact_first_body;
     }
     if (strstr(request, "compact second") != NULL &&
-        strstr(request, "\"previous_response_id\":\"resp_compact_1\"") !=
+        strstr(request,
+               "\"previous_response_id\":\"resp_compact_summary\"") !=
             NULL &&
         strstr(request, "\"context_management\":[{\"type\":\"compaction\","
                         "\"compact_threshold\":320000}]") != NULL) {
@@ -9780,6 +9791,17 @@ static void mock_openai_child(int pipe_fd, int request_count) {
     }
     if (strstr(request, "large content part done turn") != NULL) {
       if (mock_write_large_content_part_done_sse_response(client_fd) != 0) {
+        _exit(10);
+      }
+      close(client_fd);
+      continue;
+    }
+    if (strstr(request, "\"type\":\"compaction_trigger\"") != NULL) {
+      if (strstr(request, "\"previous_response_id\"") != NULL ||
+          strstr(request, "\"conversation\"") != NULL) {
+        _exit(13);
+      }
+      if (mock_write_compaction_sse_response(client_fd) != 0) {
         _exit(10);
       }
       close(client_fd);
@@ -27084,13 +27106,13 @@ static void test_agent_runtime_model_switch(test_state *state) {
       {"POST /v1/responses HTTP/", captured_turn_required,
        sizeof(captured_turn_required) / sizeof(captured_turn_required[0]), NULL,
        0U, 200, "OK", "text/event-stream", NULL, captured_turn_body},
-      {"POST /v1/responses/compact HTTP/", NULL, 0U, NULL, 0U, 500,
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 500,
        "Internal Server Error", "application/json", NULL, compact_error_body},
-      {"POST /v1/responses/compact HTTP/", NULL, 0U, NULL, 0U, 500,
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 500,
        "Internal Server Error", "application/json", NULL, compact_error_body},
-      {"POST /v1/responses/compact HTTP/", NULL, 0U, NULL, 0U, 500,
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 500,
        "Internal Server Error", "application/json", NULL, compact_error_body},
-      {"POST /v1/responses/compact HTTP/", NULL, 0U, NULL, 0U, 500,
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 500,
        "Internal Server Error", "application/json", NULL, compact_error_body}};
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
@@ -27377,7 +27399,7 @@ test_agent_runtime_model_switch_catalog_recovery(test_state *state) {
        error_body},
       {"GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/", NULL, 0U,
        NULL, 0U, 200, "OK", "application/json", NULL, catalog_body},
-      {"POST /v1/responses/compact HTTP/", NULL, 0U, NULL, 0U, 500,
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 500,
        "Internal Server Error", "application/json", NULL, error_body}};
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
@@ -27499,7 +27521,7 @@ test_agent_runtime_model_switch_live_catalog_outage(test_state *state) {
        error_body},
       {"GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/", NULL, 0U,
        NULL, 0U, 200, "OK", "application/json", NULL, catalog_body},
-      {"POST /v1/responses/compact HTTP/", NULL, 0U, NULL, 0U, 500,
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 500,
        "Internal Server Error", "application/json", NULL, error_body}};
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
@@ -37096,6 +37118,7 @@ static void test_agent_auto_compaction(test_state *state) {
   cai_source *history_source;
   cai_token_usage usage;
   cai_error error;
+  int compact_rc;
   char history_json[1024];
   double percent;
 
@@ -37112,7 +37135,7 @@ static void test_agent_auto_compaction(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 2);
+    mock_openai_child(pipe_fds[1], 3);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -37188,6 +37211,27 @@ static void test_agent_auto_compaction(test_state *state) {
   history_source = NULL;
   cai_response_destroy(response);
   response = NULL;
+  compact_rc = cai_session_compact(session, &error);
+  expect_int(state, "agent_compact_v2", compact_rc, CAI_OK);
+  if (compact_rc != CAI_OK) {
+    test_fail(state, "agent_compact_v2_detail",
+              error.message != NULL ? error.message : "missing error detail");
+  }
+  expect_int(
+      state, "agent_compact_v2_export_source",
+      cai_session_export_history_source(session, &history_source, &error),
+      CAI_OK);
+  if (read_source_text(state, "agent_compact_v2_export_read", history_source,
+                       history_json, sizeof(history_json), &error)) {
+    if (strstr(history_json, "compact first") == NULL ||
+        strstr(history_json, "opaque-summary") == NULL ||
+        strstr(history_json, "before compact") != NULL) {
+      test_fail(state, "agent_compact_v2_export_value",
+                "compacted history did not retain user context and summary");
+    }
+  }
+  cai_source_close(history_source);
+  history_source = NULL;
   expect_int(state, "agent_compact_add_second",
              cai_session_add_user_text(session, "compact second", &error),
              CAI_OK);
@@ -41525,7 +41569,7 @@ static void test_local_history_opt_in(test_state *state) {
   expect_int(state, "local_history_session_new",
              cai_agent_new_session(agent, &session, &error), CAI_OK);
   expect_int(state, "local_history_compact_disabled",
-             cai_session_compact_experimental(session, &error),
+             cai_session_compact(session, &error),
              CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);

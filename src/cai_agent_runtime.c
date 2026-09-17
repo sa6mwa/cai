@@ -3302,6 +3302,93 @@ static int cai_runtime_response_completed(void *context, cai_error *error) {
   return rc;
 }
 
+static void cai_runtime_emit_compaction_event(cai_agent_runtime *runtime,
+                                              int type, const char *message) {
+  cai_error ignored;
+
+  if (runtime == NULL || runtime->event_callback == NULL) {
+    return;
+  }
+  cai_error_init(&ignored);
+  pthread_mutex_lock(&runtime->lock);
+  (void)cai_runtime_enqueue_nonblocking_locked(
+      runtime, type, message, strlen(message), NULL, NULL, runtime->state,
+      &ignored);
+  pthread_mutex_unlock(&runtime->lock);
+  cai_error_cleanup(&ignored);
+}
+
+static int cai_runtime_compaction_progress(void *context, cai_error *error) {
+  (void)error;
+  cai_runtime_emit_compaction_event((cai_agent_runtime *)context,
+                                    CAI_AGENT_EVENT_COMPACTION_PROGRESS,
+                                    "Making room to continue");
+  return CAI_OK;
+}
+
+static int cai_runtime_compact(cai_agent_runtime *runtime, cai_error *error) {
+  cai_stream_sinks sinks;
+  int rc;
+
+  cai_stream_sinks_init(&sinks);
+  sinks.compaction_progress = cai_runtime_compaction_progress;
+  sinks.compaction_progress_context = runtime;
+  cai_runtime_emit_compaction_event(runtime, CAI_AGENT_EVENT_COMPACTION_STARTED,
+                                    "Making room to continue");
+  rc = cai_session_compact_with_sinks(runtime->session, &sinks, error);
+  if (rc == CAI_OK) {
+    rc = cai_runtime_checkpoint(runtime, 1, error);
+  }
+  if (rc == CAI_OK) {
+    cai_runtime_emit_compaction_event(runtime,
+                                      CAI_AGENT_EVENT_COMPACTION_COMPLETED,
+                                      "Made room to continue");
+  }
+  return rc;
+}
+
+static int cai_runtime_compact_before_turn(cai_agent_runtime *runtime,
+                                           cai_error *error) {
+  cai_token_usage usage;
+  long long limit;
+  long long context_window;
+  size_t history_bytes;
+  int rc;
+
+  if (runtime == NULL || runtime->session == NULL) {
+    return CAI_OK;
+  }
+  history_bytes = CAI_SESSION_IMPL(runtime->session)
+                      ->history.size_fn(&CAI_SESSION_IMPL(runtime->session)->history);
+  if (history_bytes == 0U) {
+    return CAI_OK;
+  }
+  rc = cai_session_last_usage(runtime->session, &usage, error);
+  if (rc == CAI_ERR_INVALID) {
+    cai_error_cleanup(error);
+    cai_error_init(error);
+    return CAI_OK;
+  }
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  limit = runtime->model_auto_compact_token_limit;
+  if (limit <= 0LL) {
+    limit = cai_model_auto_compact_token_limit(
+        CAI_AGENT_IMPL(runtime->agent)->model);
+  }
+  context_window = runtime->model_context_window;
+  if (context_window <= 0LL) {
+    context_window = cai_model_context_window_tokens(
+        CAI_AGENT_IMPL(runtime->agent)->model);
+  }
+  if ((limit > 0LL && usage.total_tokens >= limit) ||
+      (context_window > 0LL && usage.total_tokens >= context_window)) {
+    return cai_runtime_compact(runtime, error);
+  }
+  return CAI_OK;
+}
+
 static int cai_runtime_tool_action(const cai_agent_runtime *runtime,
                                    const char *name) {
   size_t i;
@@ -4313,6 +4400,9 @@ static void *cai_runtime_worker(void *context) {
              : cai_runtime_capture_active_model_metadata(runtime, &error);
     if (rc == CAI_OK) {
       rc = cai_runtime_compact_pending_history(runtime, &error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_runtime_compact_before_turn(runtime, &error);
     }
     if (rc == CAI_OK) {
       rc = cai_session_add_user_text(runtime->session, input->text, &error);
@@ -5566,7 +5656,7 @@ static int cai_runtime_compact_pending_history(cai_agent_runtime *runtime,
   }
   cai_model_catalog_close(catalog);
   rc = should_compact
-           ? cai_session_compact_experimental(runtime->session, error)
+           ? cai_runtime_compact(runtime, error)
            : CAI_OK;
   if (rc == CAI_OK) {
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
@@ -6382,7 +6472,7 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
     requires_compaction = cai_runtime_model_switch_requires_compaction(
         runtime, next_compaction_hash, next_context_window, next_compact_limit);
     if (requires_compaction) {
-      rc = cai_session_compact_experimental(runtime->session, error);
+      rc = cai_runtime_compact(runtime, error);
     }
   }
   if (rc != CAI_OK) {

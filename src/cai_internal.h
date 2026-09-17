@@ -386,7 +386,10 @@ int cai_tool_registry_register_lonejson_owned(
     cai_tool_registry *registry, const char *name, const char *description,
     const lonejson_map *params_map, const lonejson_map *result_map,
     cai_tool_fn callback, void *context, void (*context_cleanup)(void *context),
-    cai_error *error);
+                                       cai_error *error);
+int cai_session_compact_with_sinks(cai_session *session,
+                                   const cai_stream_sinks *sinks,
+                                   cai_error *error);
 int cai_tool_registry_register_lonejson_schema_owned(
     cai_tool_registry *registry, const char *name, const char *description,
     const char *schema_json, int strict, const lonejson_map *params_map,
