@@ -28232,6 +28232,11 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
     expect_int(state, "runtime_auto_compact_budget_submit",
                cai_agent_runtime_submit(runtime, "long tool continuation", &error),
                CAI_OK);
+    expect_int(state, "runtime_auto_compact_budget_steering",
+               cai_agent_runtime_submit_steering(
+                   runtime, "persist steering at the tool budget boundary",
+                   &error),
+               CAI_OK);
     run_state = CAI_AGENT_IDLE;
     for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
                 run_state != CAI_AGENT_FAILED;
@@ -28249,6 +28254,9 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
                   "\"goal_status\":\"budget_limited\"");
     expect_substr(state, "runtime_auto_compact_budget_usage",
                   store_state.saved_checkpoint, "\"goal_tokens_used\":330010");
+    expect_substr(state, "runtime_auto_compact_budget_steering_checkpoint",
+                  store_state.saved_checkpoint,
+                  "persist steering at the tool budget boundary");
     cai_agent_runtime_close(runtime);
     runtime = NULL;
   }

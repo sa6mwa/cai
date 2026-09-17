@@ -3836,6 +3836,12 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
     rc = cai_runtime_apply_queued_goal_controls(runtime, error);
   }
   if (rc == CAI_OK && budget_limited) {
+    /* Steering was accepted and removed from the runtime queue. Commit it
+     * before reporting the next-request boundary so resume cannot lose it. */
+    rc = cai_session_commit_pending_inputs(session, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
     return cai_set_error(error, CAI_ERR_LIMIT,
                          "goal token budget exhausted before another model request");
   }
