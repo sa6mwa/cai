@@ -3944,6 +3944,19 @@ static int test_huge_raw_tool(void *context, const char *arguments_json,
   return CAI_OK;
 }
 
+static int test_tool_round_noop(void *context, cai_session *session,
+                                cai_error *error) {
+  int *calls;
+
+  (void)session;
+  (void)error;
+  calls = (int *)context;
+  if (calls != NULL) {
+    (*calls)++;
+  }
+  return CAI_OK;
+}
+
 static int test_chunked_json_tool(void *context, const char *arguments_json,
                                   cai_sink *output, cai_error *error) {
   static const char *chunks[] = {"{\"value\":\"", "alpha", "-", "beta", "\"}"};
@@ -8998,6 +9011,20 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_custom_empty_2\",\"usage\":{\"input_tokens\":19,"
       "\"output_tokens\":3,\"total_tokens\":22}}}\n\n";
+  static const char stream_view_image_tool_body[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"fc_stream_view_image_1\",\"type\":"
+      "\"function_call\",\"call_id\":\"call_stream_view_image_1\","
+      "\"name\":\"view_image\",\"arguments\":\"{\\\"path\\\":\\\"pixel.png\\\"}\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_view_image_1\",\"usage\":{\"input_tokens\":9,"
+      "\"output_tokens\":1,\"total_tokens\":10}}}\n\n";
+  static const char stream_view_image_tool_done_body[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"view image done\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_stream_view_image_2\",\"usage\":{\"input_tokens\":19,"
+      "\"output_tokens\":3,\"total_tokens\":22}}}\n\n";
   static const char stream_history_first_retrieve_body[] =
       "{\n"
       "  \"id\": \"resp_stream_history_1\",\n"
@@ -9031,6 +9058,19 @@ static const char *mock_response_for_request(const char *request) {
   }
   if (strncmp(request, "POST /v1/responses HTTP/", 24U) == 0) {
     if (strstr(request, "\"stream\":true") != NULL) {
+      if (strstr(request, "view image stream tool turn") != NULL &&
+          strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+          strstr(request, "\"call_id\":\"call_stream_view_image_1\"") !=
+              NULL &&
+          strstr(request, "\"type\":\"input_image\"") != NULL &&
+          strstr(request, "data:image/png;base64,iVBORw0KGgo") != NULL) {
+        return stream_view_image_tool_done_body;
+      }
+      if (strstr(request, "view image stream tool turn") != NULL &&
+          strstr(request, "\"name\":\"view_image\"") != NULL &&
+          strstr(request, "\"type\":\"function_call_output\"") == NULL) {
+        return stream_view_image_tool_body;
+      }
       if (strstr(request, "session stream one") != NULL &&
           strstr(request, "previous_response_id") == NULL) {
         return stream_session_first_body;
@@ -27776,6 +27816,14 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_auto_compact_tool\",\"usage\":{\"input_tokens\":330000,"
       "\"output_tokens\":10,\"total_tokens\":330010}}}\n\n";
+  static const char budget_tool_response[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"fc_auto_compact_budget\",\"type\":"
+      "\"function_call\",\"call_id\":\"call_auto_compact_budget\","
+      "\"name\":\"list_files\",\"arguments\":\"{\\\"path\\\":\\\"/dev/null\\\"}\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_auto_compact_budget\",\"usage\":{\"input_tokens\":330000,"
+      "\"output_tokens\":10,\"total_tokens\":330010}}}\n\n";
   static const char compact_response[] =
       "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
       "\"item\":{\"id\":\"cmp_auto_compact\",\"type\":"
@@ -27797,6 +27845,8 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
       "\"output_tokens\":10,\"total_tokens\":330010}}}\n\n";
   static const char *tool_required[] = {"long tool continuation",
                                         "\"name\":\"list_files\""};
+  static const char *budget_tool_required[] = {"long tool continuation",
+                                               "\"name\":\"list_files\""};
   static const char *compact_required[] = {"\"type\":\"compaction_trigger\""};
   static const char *final_required[] = {"opaque-summary"};
   static const char *final_forbidden[] = {"\"type\":\"compaction_trigger\""};
@@ -27825,6 +27875,17 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
        sizeof(steering_final_required) / sizeof(steering_final_required[0]),
        final_forbidden, sizeof(final_forbidden) / sizeof(final_forbidden[0]),
        200, "OK", "text/event-stream", NULL, final_response}};
+  static const mock_http_expectation budget_script[] = {
+      {"POST /v1/responses HTTP/", budget_tool_required,
+       sizeof(budget_tool_required) / sizeof(budget_tool_required[0]), NULL,
+       0U, 200, "OK", "text/event-stream", NULL, budget_tool_response}};
+  static const mock_http_expectation budget_after_compact_script[] = {
+      {"POST /v1/responses HTTP/", budget_tool_required,
+       sizeof(budget_tool_required) / sizeof(budget_tool_required[0]), NULL,
+       0U, 200, "OK", "text/event-stream", NULL, budget_tool_response},
+      {"POST /v1/responses HTTP/", compact_required,
+       sizeof(compact_required) / sizeof(compact_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, compact_response}};
   static const mock_http_expectation resume_script[] = {
       {"POST /v1/responses HTTP/", compact_required,
        sizeof(compact_required) / sizeof(compact_required[0]), NULL, 0U, 200,
@@ -27966,6 +28027,153 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
     client = NULL;
   }
   http_mock_client_close(state, "runtime_auto_compact_steering", &mock);
+
+  if (http_mock_client_open_script(state, "runtime_auto_compact_budget",
+                                   budget_script,
+                                   sizeof(budget_script) / sizeof(budget_script[0]),
+                                   &mock) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json =
+      "{\"version\":1,\"model\":\"gpt-5-nano\","
+      "\"goal_objective\":\"bounded automatic compaction\","
+      "\"goal_status\":\"active\",\"goal_token_budget\":1,"
+      "\"goal_token_usage_baseline\":0,\"goal_tokens_used\":0,"
+      "\"history\":[]}";
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = mock.base_url;
+  client_config.timeout_ms = 100L;
+  client_config.http_2_disabled = 1;
+  expect_int(state, "runtime_auto_compact_budget_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.model = CAI_MODEL_GPT_5_NANO;
+  runtime_config.disable_terminal = 1;
+  runtime_config.resume_latest = 1;
+  runtime_config.session_store = &store;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_auto_compact_budget_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_int(state, "runtime_auto_compact_budget_submit",
+               cai_agent_runtime_submit(runtime, "long tool continuation", &error),
+               CAI_OK);
+    run_state = CAI_AGENT_IDLE;
+    for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "runtime_auto_compact_budget_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "runtime_auto_compact_budget_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_auto_compact_budget_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    expect_substr(state, "runtime_auto_compact_budget_status",
+                  store_state.saved_checkpoint,
+                  "\"goal_status\":\"budget_limited\"");
+    expect_substr(state, "runtime_auto_compact_budget_usage",
+                  store_state.saved_checkpoint, "\"goal_tokens_used\":330010");
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+    client = NULL;
+  }
+  http_mock_client_close(state, "runtime_auto_compact_budget", &mock);
+
+  if (http_mock_client_open_script(state,
+                                   "runtime_auto_compact_budget_after_compact",
+                                   budget_after_compact_script,
+                                   sizeof(budget_after_compact_script) /
+                                       sizeof(budget_after_compact_script[0]),
+                                   &mock) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json =
+      "{\"version\":1,\"model\":\"gpt-5-nano\","
+      "\"goal_objective\":\"charge automatic compaction\","
+      "\"goal_status\":\"active\",\"goal_token_budget\":330020,"
+      "\"goal_token_usage_baseline\":0,\"goal_tokens_used\":0,"
+      "\"history\":[]}";
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = mock.base_url;
+  client_config.timeout_ms = 100L;
+  client_config.http_2_disabled = 1;
+  expect_int(state, "runtime_auto_compact_budget_after_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.model = CAI_MODEL_GPT_5_NANO;
+  runtime_config.disable_terminal = 1;
+  runtime_config.resume_latest = 1;
+  runtime_config.session_store = &store;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_auto_compact_budget_after_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_int(state, "runtime_auto_compact_budget_after_submit",
+               cai_agent_runtime_submit(runtime, "long tool continuation", &error),
+               CAI_OK);
+    run_state = CAI_AGENT_IDLE;
+    for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "runtime_auto_compact_budget_after_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "runtime_auto_compact_budget_after_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_auto_compact_budget_after_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    if (run_state == CAI_AGENT_FAILED && events.failure_message[0] != '\0') {
+      test_fail(state, "runtime_auto_compact_budget_after_failure",
+                events.failure_message);
+    }
+    expect_substr(state, "runtime_auto_compact_budget_after_status",
+                  store_state.saved_checkpoint,
+                  "\"goal_status\":\"budget_limited\"");
+    expect_substr(state, "runtime_auto_compact_budget_after_usage",
+                  store_state.saved_checkpoint, "\"goal_tokens_used\":660040");
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+    client = NULL;
+  }
+  http_mock_client_close(state, "runtime_auto_compact_budget_after_compact",
+                         &mock);
 
   if (http_mock_client_open_script(state, "runtime_auto_compact_resume",
                                    resume_script,
@@ -32279,7 +32487,9 @@ static void test_agent_view_image_auto_run(test_state *state) {
   cai_session *session;
   cai_response *response;
   cai_source *history_source;
+  cai_stream_sinks stream_sinks;
   cai_error error;
+  int durable_calls;
 
   if (mkdtemp(workspace) == NULL) {
     test_fail(state, "agent_view_image_workspace", "mkdtemp failed");
@@ -32304,7 +32514,7 @@ static void test_agent_view_image_auto_run(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 2);
+    mock_openai_child(pipe_fds[1], 4);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -32336,6 +32546,7 @@ static void test_agent_view_image_auto_run(test_state *state) {
   session = NULL;
   response = NULL;
   history_source = NULL;
+  durable_calls = 0;
 
   expect_int(state, "agent_view_image_client",
              cai_client_open(&client_config, &client, &error), CAI_OK);
@@ -32350,9 +32561,12 @@ static void test_agent_view_image_auto_run(test_state *state) {
   expect_int(state, "agent_view_image_add",
              cai_session_add_user_text(session, "view image tool turn", &error),
              CAI_OK);
+  run_options.tool_round_durable = test_tool_round_noop;
+  run_options.tool_round_durable_context = &durable_calls;
   expect_int(state, "agent_view_image_run",
              cai_session_run_auto(session, &run_options, &response, &error),
              CAI_OK);
+  expect_int(state, "agent_view_image_durable_calls", durable_calls, 1L);
   expect_str(state, "agent_view_image_response",
              cai_response_output_text(response), "view image done");
   expect_int(
@@ -32367,6 +32581,39 @@ static void test_agent_view_image_auto_run(test_state *state) {
       test_fail(state, "agent_view_image_history_no_payload",
                 "client history retained the image data URL");
     }
+  }
+
+  cai_source_close(history_source);
+  history_source = NULL;
+  cai_response_destroy(response);
+  response = NULL;
+  cai_session_destroy(session);
+  session = NULL;
+
+  /* Streaming continuation construction must retain the same transient image
+   * delivery while its durable callback refreshes safe client history. */
+  durable_calls = 0;
+  cai_stream_sinks_init(&stream_sinks);
+  expect_int(state, "stream_view_image_session",
+             cai_agent_new_session(agent, &session, &error), CAI_OK);
+  expect_int(state, "stream_view_image_add",
+             cai_session_add_user_text(session, "view image stream tool turn",
+                                       &error),
+             CAI_OK);
+  expect_int(state, "stream_view_image_run",
+             cai_session_stream_auto(session, &run_options, &stream_sinks,
+                                     &error),
+             CAI_OK);
+  expect_int(state, "stream_view_image_durable_calls", durable_calls, 1L);
+  expect_int(
+      state, "stream_view_image_export",
+      cai_session_export_history_source(session, &history_source, &error),
+      CAI_OK);
+  if (read_source_text(state, "stream_view_image_history", history_source,
+                       history_json, sizeof(history_json), &error) &&
+      strstr(history_json, "data:image/png;base64,") != NULL) {
+    test_fail(state, "stream_view_image_history_no_payload",
+              "client history retained the image data URL");
   }
 
   cai_source_close(history_source);

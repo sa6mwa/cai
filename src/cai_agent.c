@@ -3783,6 +3783,43 @@ static int cai_session_replay_history_with_params_input(
   return rc;
 }
 
+/* A durable boundary may replace client history after a continuation has
+ * already attached request-only tool content. Keep that typed content (for
+ * example, a view_image data URL) in params and replace only the history
+ * portion of its input. The durable history intentionally keeps safe tool
+ * metadata rather than these transient payloads. */
+static int cai_session_refresh_history_input_preserving_transient(
+    cai_session *session, cai_response_create_params *params,
+    cai_error *error) {
+  lonejson_spooled history_items;
+  int has_history_items;
+  int rc;
+
+  if (session == NULL || params == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "history refresh requires a session and response params");
+  }
+  if (CAI_SESSION_AGENT_IMPL(session)->session_continuity !=
+      CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
+    return CAI_OK;
+  }
+  memset(&history_items, 0, sizeof(history_items));
+  has_history_items = 0;
+  rc = cai_history_to_array_spool(session, &history_items, error);
+  if (rc == CAI_OK) {
+    has_history_items = 1;
+    rc = cai_response_create_params_set_raw_input_spooled(
+        params, &history_items, error);
+    if (rc == CAI_OK) {
+      has_history_items = 0;
+    }
+  }
+  if (has_history_items) {
+    history_items.cleanup(&history_items);
+  }
+  return rc;
+}
+
 long long cai_session_goal_elapsed_seconds(const cai_session *session,
                                            long long now) {
   const cai_session_impl *impl;
@@ -5066,19 +5103,8 @@ static int cai_session_run_tool_round(cai_session *session,
       CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
           CAI_SESSION_CONTINUITY_CLIENT_HISTORY &&
       CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
-    /* A durable boundary may compact the client history. Rebuild the request
-     * only after that callback so the next continuation uses its replacement
-     * history, never the request snapshot assembled before compaction. */
-    cai_response_create_params_destroy(params);
-    params = NULL;
-    rc = cai_session_init_response_params(session, &params, error);
-    if (rc == CAI_OK) {
-      rc = cai_session_clear_tool_choice_for_tool_continuation(params, error);
-    }
-    if (rc == CAI_OK) {
-      rc = cai_session_replay_history_with_params_input(
-          session, params, &pending_items, &has_pending_items, error);
-    }
+    rc = cai_session_refresh_history_input_preserving_transient(session, params,
+                                                                 error);
   }
   if (rc == CAI_OK && cai_session_goal_budget_limited(session)) {
     rc = cai_set_error(
@@ -5543,18 +5569,8 @@ static int cai_session_stream_tool_round(
       CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
           CAI_SESSION_CONTINUITY_CLIENT_HISTORY &&
       CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
-    /* The durable callback may compact the committed history. Build the
-     * continuation after it returns so the request uses that replacement. */
-    cai_response_create_params_destroy(params);
-    params = NULL;
-    rc = cai_session_init_response_params(session, &params, error);
-    if (rc == CAI_OK) {
-      rc = cai_session_clear_tool_choice_for_tool_continuation(params, error);
-    }
-    if (rc == CAI_OK) {
-      rc = cai_session_replay_history_with_params_input(
-          session, params, &pending_items, &has_pending_items, error);
-    }
+    rc = cai_session_refresh_history_input_preserving_transient(session, params,
+                                                                 error);
   }
   if (rc == CAI_OK && cai_session_goal_budget_limited(session)) {
     rc = cai_set_error(

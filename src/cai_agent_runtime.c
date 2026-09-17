@@ -3434,9 +3434,11 @@ static int cai_runtime_compact(cai_agent_runtime *runtime, cai_error *error) {
 static int cai_runtime_compact_before_request(cai_agent_runtime *runtime,
                                               cai_error *error) {
   cai_session_impl *session;
+  int budget_limited;
   long long limit;
   long long context_window;
   size_t history_bytes;
+  int rc;
 
   if (runtime == NULL || runtime->session == NULL) {
     return CAI_OK;
@@ -3462,7 +3464,23 @@ static int cai_runtime_compact_before_request(cai_agent_runtime *runtime,
   if ((limit > 0LL && session->context_usage.total_tokens >= limit) ||
       (context_window > 0LL &&
        session->context_usage.total_tokens >= context_window)) {
-    return cai_runtime_compact(runtime, error);
+    if (cai_runtime_goal_budget_limited(runtime)) {
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "goal token budget exhausted before automatic compaction");
+    }
+    rc = cai_runtime_compact(runtime, error);
+    budget_limited = 0;
+    if (rc == CAI_OK) {
+      rc = cai_runtime_account_goal(runtime, &budget_limited, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_runtime_refresh_goal_projection(runtime, error);
+    }
+    if (rc == CAI_OK && budget_limited) {
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "goal token budget exhausted after automatic compaction");
+    }
+    return rc;
   }
   return CAI_OK;
 }
@@ -3811,13 +3829,16 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
   if (rc == CAI_OK) {
     rc = cai_runtime_apply_queued_goal_controls(runtime, error);
   }
+  if (rc == CAI_OK && budget_limited) {
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "goal token budget exhausted before another model request");
+  }
   if (rc == CAI_OK && cai_runtime_goal_paused(runtime)) {
     return cai_set_error(error, CAI_ERR_CANCELLED,
                          "goal paused at a safe model boundary");
   }
   /* The tool-loop durable boundary checkpoints only after it has committed
    * the safe tool result that accompanies this round. */
-  (void)budget_limited;
   return rc;
 }
 
