@@ -60,14 +60,20 @@ typedef struct cai_compaction_capture {
   int completed;
 } cai_compaction_capture;
 
-typedef struct cai_compaction_retained_item_doc {
-  char *type;
-  char *role;
-} cai_compaction_retained_item_doc;
-
-typedef struct cai_compaction_retained_record_doc {
-  lonejson_object_array items;
-} cai_compaction_retained_record_doc;
+typedef struct cai_compaction_user_record_classifier {
+  size_t depth;
+  size_t item_count;
+  size_t key_length;
+  size_t role_length;
+  int root_array_seen;
+  int direct_item_active;
+  int direct_item_role_seen;
+  int direct_item_is_user;
+  int direct_role_value;
+  int role_matches;
+  int invalid;
+  char key[8];
+} cai_compaction_user_record_classifier;
 
 typedef struct cai_compaction_retained_record {
   lonejson_spooled json;
@@ -105,24 +111,6 @@ typedef struct cai_json_root_array_check {
 
 enum { CAI_COMPACTION_RETAINED_USER_BYTES = 80 * 1024 };
 
-static const lonejson_field cai_compaction_retained_item_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_compaction_retained_item_doc,
-                                          type, "type"),
-    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_compaction_retained_item_doc,
-                                          role, "role")};
-LONEJSON_MAP_DEFINE(cai_compaction_retained_item_map,
-                    cai_compaction_retained_item_doc,
-                    cai_compaction_retained_item_fields);
-
-static const lonejson_field cai_compaction_retained_record_fields[] = {
-    LONEJSON_FIELD_OBJECT_ARRAY(
-        cai_compaction_retained_record_doc, items, "items",
-        cai_compaction_retained_item_doc, &cai_compaction_retained_item_map,
-        LONEJSON_OVERFLOW_FAIL)};
-LONEJSON_MAP_DEFINE(cai_compaction_retained_record_map,
-                    cai_compaction_retained_record_doc,
-                    cai_compaction_retained_record_fields);
-
 typedef struct cai_session_state_doc {
   long long version;
   char *model;
@@ -157,6 +145,16 @@ typedef struct cai_session_state_doc {
   int has_last_usage_output_reasoning_tokens;
   long long last_usage_total_tokens;
   int has_last_usage_total_tokens;
+  long long context_usage_input_tokens;
+  int has_context_usage_input_tokens;
+  long long context_usage_input_cached_tokens;
+  int has_context_usage_input_cached_tokens;
+  long long context_usage_output_tokens;
+  int has_context_usage_output_tokens;
+  long long context_usage_output_reasoning_tokens;
+  int has_context_usage_output_reasoning_tokens;
+  long long context_usage_total_tokens;
+  int has_context_usage_total_tokens;
   lonejson_json_value history;
 } cai_session_state_doc;
 
@@ -216,6 +214,22 @@ static const lonejson_field cai_session_state_fields[] = {
     LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc, last_usage_total_tokens,
                                has_last_usage_total_tokens,
                                "last_usage_total_tokens"),
+    LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc, context_usage_input_tokens,
+                               has_context_usage_input_tokens,
+                               "context_usage_input_tokens"),
+    LONEJSON_FIELD_I64_PRESENT(
+        cai_session_state_doc, context_usage_input_cached_tokens,
+        has_context_usage_input_cached_tokens, "context_usage_input_cached_tokens"),
+    LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc, context_usage_output_tokens,
+                               has_context_usage_output_tokens,
+                               "context_usage_output_tokens"),
+    LONEJSON_FIELD_I64_PRESENT(
+        cai_session_state_doc, context_usage_output_reasoning_tokens,
+        has_context_usage_output_reasoning_tokens,
+        "context_usage_output_reasoning_tokens"),
+    LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc, context_usage_total_tokens,
+                               has_context_usage_total_tokens,
+                               "context_usage_total_tokens"),
     LONEJSON_FIELD_JSON_VALUE_OMIT_NULL(cai_session_state_doc, history,
                                         "history")};
 LONEJSON_MAP_DEFINE(cai_session_state_map, cai_session_state_doc,
@@ -3226,90 +3240,258 @@ static int cai_history_to_array_spool(cai_session *session,
   return CAI_OK;
 }
 
-static void cai_compaction_retained_record_docs_cleanup(
-    cai_compaction_retained_record_doc *doc) {
-  cai_compaction_retained_item_doc *items;
-  size_t i;
-
-  if (doc == NULL || doc->items.items == NULL) {
+static void cai_compaction_classifier_finish_role(
+    cai_compaction_user_record_classifier *classifier) {
+  if (!classifier->direct_role_value) {
     return;
   }
-  items = (cai_compaction_retained_item_doc *)doc->items.items;
-  for (i = 0U; i < doc->items.count; i++) {
-    cai_free_mem(NULL, items[i].type);
-    cai_free_mem(NULL, items[i].role);
+  classifier->direct_item_role_seen = 1;
+  classifier->direct_item_is_user =
+      classifier->role_matches && classifier->role_length == 4U;
+  classifier->direct_role_value = 0;
+}
+
+static void cai_compaction_classifier_nonstring_role(
+    cai_compaction_user_record_classifier *classifier) {
+  if (classifier->direct_role_value) {
+    classifier->direct_item_role_seen = 1;
+    classifier->direct_item_is_user = 0;
+    classifier->direct_role_value = 0;
   }
-  cai_free_mem(NULL, doc->items.items);
-  memset(&doc->items, 0, sizeof(doc->items));
+}
+
+static lonejson_status cai_compaction_classifier_object_begin(
+    void *user, lonejson_error *error) {
+  cai_compaction_user_record_classifier *classifier;
+
+  (void)error;
+  classifier = (cai_compaction_user_record_classifier *)user;
+  cai_compaction_classifier_nonstring_role(classifier);
+  if (classifier->depth == 1U) {
+    classifier->item_count++;
+    classifier->direct_item_active = 1;
+    classifier->direct_item_role_seen = 0;
+    classifier->direct_item_is_user = 0;
+  } else if (classifier->depth == 0U) {
+    classifier->invalid = 1;
+  }
+  classifier->depth++;
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_compaction_classifier_object_end(
+    void *user, lonejson_error *error) {
+  cai_compaction_user_record_classifier *classifier;
+
+  (void)error;
+  classifier = (cai_compaction_user_record_classifier *)user;
+  if (classifier->depth == 0U) {
+    classifier->invalid = 1;
+    return LONEJSON_STATUS_OK;
+  }
+  if (classifier->depth == 2U && classifier->direct_item_active) {
+    cai_compaction_classifier_finish_role(classifier);
+    if (!classifier->direct_item_role_seen ||
+        !classifier->direct_item_is_user) {
+      classifier->invalid = 1;
+    }
+    classifier->direct_item_active = 0;
+  }
+  classifier->depth--;
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_compaction_classifier_array_begin(
+    void *user, lonejson_error *error) {
+  cai_compaction_user_record_classifier *classifier;
+
+  (void)error;
+  classifier = (cai_compaction_user_record_classifier *)user;
+  cai_compaction_classifier_nonstring_role(classifier);
+  if (classifier->depth == 0U) {
+    if (classifier->root_array_seen) {
+      classifier->invalid = 1;
+    }
+    classifier->root_array_seen = 1;
+  } else if (classifier->depth == 1U) {
+    classifier->invalid = 1;
+  }
+  classifier->depth++;
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_compaction_classifier_array_end(
+    void *user, lonejson_error *error) {
+  cai_compaction_user_record_classifier *classifier;
+
+  (void)error;
+  classifier = (cai_compaction_user_record_classifier *)user;
+  if (classifier->depth == 0U) {
+    classifier->invalid = 1;
+  } else {
+    classifier->depth--;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_compaction_classifier_key_begin(void *user,
+                                                            lonejson_error *error) {
+  cai_compaction_user_record_classifier *classifier;
+
+  (void)error;
+  classifier = (cai_compaction_user_record_classifier *)user;
+  if (classifier->depth == 2U && classifier->direct_item_active) {
+    classifier->key_length = 0U;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_compaction_classifier_key_chunk(
+    void *user, const char *data, size_t length, lonejson_error *error) {
+  cai_compaction_user_record_classifier *classifier;
+  size_t copy;
+
+  (void)error;
+  classifier = (cai_compaction_user_record_classifier *)user;
+  if (classifier->depth != 2U || !classifier->direct_item_active) {
+    return LONEJSON_STATUS_OK;
+  }
+  copy = length;
+  if (copy > sizeof(classifier->key) - 1U - classifier->key_length) {
+    copy = sizeof(classifier->key) - 1U - classifier->key_length;
+  }
+  memcpy(classifier->key + classifier->key_length, data, copy);
+  classifier->key_length += copy;
+  classifier->key[classifier->key_length] = '\0';
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_compaction_classifier_key_end(void *user,
+                                                          lonejson_error *error) {
+  cai_compaction_user_record_classifier *classifier;
+
+  (void)error;
+  classifier = (cai_compaction_user_record_classifier *)user;
+  if (classifier->depth == 2U && classifier->direct_item_active) {
+    classifier->direct_role_value =
+        classifier->key_length == 4U && strcmp(classifier->key, "role") == 0;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_compaction_classifier_string_begin(
+    void *user, lonejson_error *error) {
+  cai_compaction_user_record_classifier *classifier;
+
+  (void)error;
+  classifier = (cai_compaction_user_record_classifier *)user;
+  if (classifier->depth == 1U) {
+    classifier->invalid = 1;
+  }
+  if (classifier->depth == 2U && classifier->direct_role_value) {
+    classifier->role_length = 0U;
+    classifier->role_matches = 1;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_compaction_classifier_string_chunk(
+    void *user, const char *data, size_t length, lonejson_error *error) {
+  cai_compaction_user_record_classifier *classifier;
+  size_t i;
+
+  (void)error;
+  classifier = (cai_compaction_user_record_classifier *)user;
+  if (classifier->depth == 2U && classifier->direct_role_value) {
+    for (i = 0U; i < length; i++) {
+      if (classifier->role_length >= 4U ||
+          data[i] != "user"[classifier->role_length]) {
+        classifier->role_matches = 0;
+      }
+      classifier->role_length++;
+    }
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_compaction_classifier_string_end(
+    void *user, lonejson_error *error) {
+  cai_compaction_user_record_classifier *classifier;
+
+  (void)error;
+  classifier = (cai_compaction_user_record_classifier *)user;
+  cai_compaction_classifier_finish_role(classifier);
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_compaction_classifier_scalar(void *user,
+                                                         lonejson_error *error) {
+  cai_compaction_user_record_classifier *classifier;
+
+  (void)error;
+  classifier = (cai_compaction_user_record_classifier *)user;
+  if (classifier->depth == 1U) {
+    classifier->invalid = 1;
+  }
+  cai_compaction_classifier_nonstring_role(classifier);
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_compaction_classifier_boolean(void *user, int value,
+                                                          lonejson_error *error) {
+  (void)value;
+  return cai_compaction_classifier_scalar(user, error);
 }
 
 static int cai_compaction_record_is_user_message(
     cai_session *session, const lonejson_spooled *record, int *out_is_user,
     cai_error *error) {
-  cai_compaction_retained_record_doc doc;
-  cai_compaction_retained_item_doc *items;
+  cai_compaction_user_record_classifier classifier;
   cai_spooled_reader_context reader_context;
-  lonejson_spooled wrapper;
-  cai_history_sink_context sink_context;
+  lonejson_value_visitor visitor;
   lonejson_error json_error;
   lonejson_status status;
-  size_t i;
 
   if (session == NULL || record == NULL || out_is_user == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "compaction record classification requires input");
   }
   *out_is_user = 0;
-  memset(&doc, 0, sizeof(doc));
-  memset(&wrapper, 0, sizeof(wrapper));
-  cai_history_init_spooled(session, &wrapper);
-  if (cai_history_append_bytes(&wrapper, "{\"items\":", 9U, error) != CAI_OK) {
-    wrapper.cleanup(&wrapper);
-    return error != NULL ? error->code : CAI_ERR_TRANSPORT;
-  }
-  sink_context.spool = &wrapper;
-  lonejson_error_init(&json_error);
-  if (record->write_to_sink(record, cai_history_lonejson_sink, &sink_context,
-                            &json_error) != LONEJSON_STATUS_OK ||
-      cai_history_append_bytes(&wrapper, "}", 1U, error) != CAI_OK) {
-    wrapper.cleanup(&wrapper);
-    if (error != NULL && error->message != NULL) {
-      return error->code;
-    }
-    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                "failed to classify compaction history",
-                                json_error.message);
-  }
-  reader_context.cursor = wrapper;
+  memset(&classifier, 0, sizeof(classifier));
+  reader_context.cursor = *record;
   lonejson_error_init(&json_error);
   if (reader_context.cursor.rewind(&reader_context.cursor, &json_error) !=
       LONEJSON_STATUS_OK) {
-    wrapper.cleanup(&wrapper);
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to rewind compaction history",
                                 json_error.message);
   }
-  status = CAI_LJ->parse_reader(CAI_LJ, &cai_compaction_retained_record_map,
-                                 &doc, cai_history_spooled_reader,
-                                 &reader_context, &json_error);
-  wrapper.cleanup(&wrapper);
+  visitor = lonejson_default_value_visitor();
+  visitor.object_begin = cai_compaction_classifier_object_begin;
+  visitor.object_end = cai_compaction_classifier_object_end;
+  visitor.object_key_begin = cai_compaction_classifier_key_begin;
+  visitor.object_key_chunk = cai_compaction_classifier_key_chunk;
+  visitor.object_key_end = cai_compaction_classifier_key_end;
+  visitor.array_begin = cai_compaction_classifier_array_begin;
+  visitor.array_end = cai_compaction_classifier_array_end;
+  visitor.string_begin = cai_compaction_classifier_string_begin;
+  visitor.string_chunk = cai_compaction_classifier_string_chunk;
+  visitor.string_end = cai_compaction_classifier_string_end;
+  visitor.number_begin = cai_compaction_classifier_scalar;
+  visitor.number_chunk = NULL;
+  visitor.number_end = NULL;
+  visitor.boolean_value = cai_compaction_classifier_boolean;
+  visitor.null_value = cai_compaction_classifier_scalar;
+  status = cai_agent_history_runtime(session)->visit_value_reader(
+      cai_agent_history_runtime(session), cai_history_spooled_reader,
+      &reader_context, &visitor, &classifier, &json_error);
   if (status != LONEJSON_STATUS_OK) {
-    cai_compaction_retained_record_docs_cleanup(&doc);
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to parse compaction history",
                                 json_error.message);
   }
-  items = (cai_compaction_retained_item_doc *)doc.items.items;
-  if (doc.items.count > 0U) {
-    *out_is_user = 1;
-    for (i = 0U; i < doc.items.count; i++) {
-      if (items[i].role == NULL || strcmp(items[i].role, "user") != 0) {
-        *out_is_user = 0;
-        break;
-      }
-    }
-  }
-  cai_compaction_retained_record_docs_cleanup(&doc);
+  *out_is_user = classifier.root_array_seen && classifier.depth == 0U &&
+                 classifier.item_count > 0U && !classifier.invalid;
   return CAI_OK;
 }
 
@@ -3806,7 +3988,18 @@ static int cai_session_set_last_usage(cai_session *session,
   }
   CAI_SESSION_IMPL(session)->last_usage = *usage;
   CAI_SESSION_IMPL(session)->has_last_usage = 1;
+  CAI_SESSION_IMPL(session)->context_usage = *usage;
+  CAI_SESSION_IMPL(session)->has_context_usage = 1;
   return CAI_OK;
+}
+
+static void cai_session_forget_context_usage(cai_session *session) {
+  if (session == NULL) {
+    return;
+  }
+  memset(&CAI_SESSION_IMPL(session)->context_usage, 0,
+         sizeof(CAI_SESSION_IMPL(session)->context_usage));
+  CAI_SESSION_IMPL(session)->has_context_usage = 0;
 }
 
 static int cai_session_record_usage(cai_session *session,
@@ -4157,6 +4350,10 @@ int cai_session_compact_with_sinks(cai_session *session,
   if (rc == CAI_OK) {
     cai_history_replace(session, &next_history);
     has_next_history = 0;
+    /* The compaction response usage bills the complete history sent to make
+     * the summary. It is not a measurement of the smaller replacement
+     * context, which must be remeasured by the next ordinary response. */
+    cai_session_forget_context_usage(session);
   }
 
 done:
@@ -4865,6 +5062,24 @@ static int cai_session_run_tool_round(cai_session *session,
     rc = options->tool_round_durable(options->tool_round_durable_context,
                                      session, error);
   }
+  if (rc == CAI_OK && options->tool_round_durable != NULL &&
+      CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+          CAI_SESSION_CONTINUITY_CLIENT_HISTORY &&
+      CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
+    /* A durable boundary may compact the client history. Rebuild the request
+     * only after that callback so the next continuation uses its replacement
+     * history, never the request snapshot assembled before compaction. */
+    cai_response_create_params_destroy(params);
+    params = NULL;
+    rc = cai_session_init_response_params(session, &params, error);
+    if (rc == CAI_OK) {
+      rc = cai_session_clear_tool_choice_for_tool_continuation(params, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_session_replay_history_with_params_input(
+          session, params, &pending_items, &has_pending_items, error);
+    }
+  }
   if (rc == CAI_OK && cai_session_goal_budget_limited(session)) {
     rc = cai_set_error(
         error, CAI_ERR_LIMIT,
@@ -5323,6 +5538,23 @@ static int cai_session_stream_tool_round(
   if (rc == CAI_OK && options->tool_round_durable != NULL) {
     rc = options->tool_round_durable(options->tool_round_durable_context,
                                      session, error);
+  }
+  if (rc == CAI_OK && options->tool_round_durable != NULL &&
+      CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
+          CAI_SESSION_CONTINUITY_CLIENT_HISTORY &&
+      CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
+    /* The durable callback may compact the committed history. Build the
+     * continuation after it returns so the request uses that replacement. */
+    cai_response_create_params_destroy(params);
+    params = NULL;
+    rc = cai_session_init_response_params(session, &params, error);
+    if (rc == CAI_OK) {
+      rc = cai_session_clear_tool_choice_for_tool_continuation(params, error);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_session_replay_history_with_params_input(
+          session, params, &pending_items, &has_pending_items, error);
+    }
   }
   if (rc == CAI_OK && cai_session_goal_budget_limited(session)) {
     rc = cai_set_error(
@@ -6078,6 +6310,26 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
   doc.last_usage_total_tokens =
       CAI_SESSION_IMPL(session)->last_usage.total_tokens;
   doc.has_last_usage_total_tokens = CAI_SESSION_IMPL(session)->has_last_usage;
+  doc.context_usage_input_tokens =
+      CAI_SESSION_IMPL(session)->context_usage.input_tokens;
+  doc.has_context_usage_input_tokens =
+      CAI_SESSION_IMPL(session)->has_context_usage;
+  doc.context_usage_input_cached_tokens =
+      CAI_SESSION_IMPL(session)->context_usage.input_cached_tokens;
+  doc.has_context_usage_input_cached_tokens =
+      CAI_SESSION_IMPL(session)->has_context_usage;
+  doc.context_usage_output_tokens =
+      CAI_SESSION_IMPL(session)->context_usage.output_tokens;
+  doc.has_context_usage_output_tokens =
+      CAI_SESSION_IMPL(session)->has_context_usage;
+  doc.context_usage_output_reasoning_tokens =
+      CAI_SESSION_IMPL(session)->context_usage.output_reasoning_tokens;
+  doc.has_context_usage_output_reasoning_tokens =
+      CAI_SESSION_IMPL(session)->has_context_usage;
+  doc.context_usage_total_tokens =
+      CAI_SESSION_IMPL(session)->context_usage.total_tokens;
+  doc.has_context_usage_total_tokens =
+      CAI_SESSION_IMPL(session)->has_context_usage;
   if (CAI_SESSION_IMPL(session)->conversation_id != NULL) {
     doc.conversation_id = CAI_SESSION_IMPL(session)->conversation_id;
   } else {
@@ -6302,6 +6554,23 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
                        "session state has invalid last response usage");
     goto done;
   }
+  if (doc.has_context_usage_input_tokens !=
+          doc.has_context_usage_input_cached_tokens ||
+      doc.has_context_usage_input_tokens !=
+          doc.has_context_usage_output_tokens ||
+      doc.has_context_usage_input_tokens !=
+          doc.has_context_usage_output_reasoning_tokens ||
+      doc.has_context_usage_input_tokens != doc.has_context_usage_total_tokens ||
+      (doc.has_context_usage_input_tokens &&
+       (doc.context_usage_input_tokens < 0LL ||
+        doc.context_usage_input_cached_tokens < 0LL ||
+        doc.context_usage_output_tokens < 0LL ||
+        doc.context_usage_output_reasoning_tokens < 0LL ||
+        doc.context_usage_total_tokens < 0LL))) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "session state has invalid retained context usage");
+    goto done;
+  }
   if (CAI_SESSION_AGENT_IMPL(session)->local_history_enabled &&
       history_json.size_fn(&history_json) > 0U) {
     rc = cai_spooled_json_is_array(&history_json, error);
@@ -6411,6 +6680,18 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
     CAI_SESSION_IMPL(session)->last_usage.total_tokens =
         doc.last_usage_total_tokens;
     CAI_SESSION_IMPL(session)->has_last_usage = doc.has_last_usage_input_tokens;
+    CAI_SESSION_IMPL(session)->context_usage.input_tokens =
+        doc.context_usage_input_tokens;
+    CAI_SESSION_IMPL(session)->context_usage.input_cached_tokens =
+        doc.context_usage_input_cached_tokens;
+    CAI_SESSION_IMPL(session)->context_usage.output_tokens =
+        doc.context_usage_output_tokens;
+    CAI_SESSION_IMPL(session)->context_usage.output_reasoning_tokens =
+        doc.context_usage_output_reasoning_tokens;
+    CAI_SESSION_IMPL(session)->context_usage.total_tokens =
+        doc.context_usage_total_tokens;
+    CAI_SESSION_IMPL(session)->has_context_usage =
+        doc.has_context_usage_input_tokens;
   }
 
 done:

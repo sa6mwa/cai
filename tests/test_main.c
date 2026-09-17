@@ -27767,6 +27767,280 @@ test_agent_runtime_model_switch_api_key_metadata_policy(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
+  static const char tool_response[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"fc_auto_compact\",\"type\":"
+      "\"function_call\",\"call_id\":\"call_auto_compact\","
+      "\"name\":\"list_files\",\"arguments\":\"{\\\"path\\\":\\\".\\\"}\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_auto_compact_tool\",\"usage\":{\"input_tokens\":330000,"
+      "\"output_tokens\":10,\"total_tokens\":330010}}}\n\n";
+  static const char compact_response[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"cmp_auto_compact\",\"type\":"
+      "\"compaction\",\"encrypted_content\":\"opaque-summary\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_auto_compact_summary\",\"usage\":{\"input_tokens\":330010,"
+      "\"output_tokens\":20,\"total_tokens\":330030}}}\n\n";
+  static const char final_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"continued after compaction\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_auto_compact_final\",\"usage\":{\"input_tokens\":100,"
+      "\"output_tokens\":10,\"total_tokens\":110}}}\n\n";
+  static const char steering_response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"waiting for direction\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_auto_compact_steering\",\"usage\":{\"input_tokens\":330000,"
+      "\"output_tokens\":10,\"total_tokens\":330010}}}\n\n";
+  static const char *tool_required[] = {"long tool continuation",
+                                        "\"name\":\"list_files\""};
+  static const char *compact_required[] = {"\"type\":\"compaction_trigger\""};
+  static const char *final_required[] = {"opaque-summary"};
+  static const char *final_forbidden[] = {"\"type\":\"compaction_trigger\""};
+  static const char *steering_required[] = {"steering compaction source"};
+  static const char *steering_final_required[] = {"opaque-summary",
+                                                   "steering continuation"};
+  static const mock_http_expectation tool_script[] = {
+      {"POST /v1/responses HTTP/", tool_required,
+       sizeof(tool_required) / sizeof(tool_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, tool_response},
+      {"POST /v1/responses HTTP/", compact_required,
+       sizeof(compact_required) / sizeof(compact_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, compact_response},
+      {"POST /v1/responses HTTP/", final_required,
+       sizeof(final_required) / sizeof(final_required[0]), final_forbidden,
+       sizeof(final_forbidden) / sizeof(final_forbidden[0]), 200, "OK",
+       "text/event-stream", NULL, final_response}};
+  static const mock_http_expectation steering_script[] = {
+      {"POST /v1/responses HTTP/", steering_required,
+       sizeof(steering_required) / sizeof(steering_required[0]), NULL, 0U,
+       200, "OK", "text/event-stream", NULL, steering_response},
+      {"POST /v1/responses HTTP/", compact_required,
+       sizeof(compact_required) / sizeof(compact_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, compact_response},
+      {"POST /v1/responses HTTP/", steering_final_required,
+       sizeof(steering_final_required) / sizeof(steering_final_required[0]),
+       final_forbidden, sizeof(final_forbidden) / sizeof(final_forbidden[0]),
+       200, "OK", "text/event-stream", NULL, final_response}};
+  static const mock_http_expectation resume_script[] = {
+      {"POST /v1/responses HTTP/", compact_required,
+       sizeof(compact_required) / sizeof(compact_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, compact_response},
+      {"POST /v1/responses HTTP/", final_required,
+       sizeof(final_required) / sizeof(final_required[0]), final_forbidden,
+       sizeof(final_forbidden) / sizeof(final_forbidden[0]), 200, "OK",
+       "text/event-stream", NULL, final_response}};
+  http_mock_client mock;
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  runtime_event_state events;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_agent_run_state run_state;
+  cai_error error;
+  struct timespec delay;
+  int i;
+
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  delay.tv_sec = 0;
+  delay.tv_nsec = 10000000L;
+  if (http_mock_client_open_script(state, "runtime_auto_compact_tool",
+                                   tool_script,
+                                   sizeof(tool_script) / sizeof(tool_script[0]),
+                                   &mock) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = mock.base_url;
+  client_config.timeout_ms = 100L;
+  client_config.http_2_disabled = 1;
+  expect_int(state, "runtime_auto_compact_tool_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.model = CAI_MODEL_GPT_5_NANO;
+  runtime_config.disable_default_session_store = 1;
+  runtime_config.disable_terminal = 1;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_auto_compact_tool_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_int(state, "runtime_auto_compact_tool_submit",
+               cai_agent_runtime_submit(runtime, "long tool continuation", &error),
+               CAI_OK);
+    run_state = CAI_AGENT_IDLE;
+    for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "runtime_auto_compact_tool_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "runtime_auto_compact_tool_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_auto_compact_tool_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    if (run_state == CAI_AGENT_FAILED && events.failure_message[0] != '\0') {
+      test_fail(state, "runtime_auto_compact_tool_failure",
+                events.failure_message);
+    }
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+    client = NULL;
+  }
+  http_mock_client_close(state, "runtime_auto_compact_tool", &mock);
+
+  if (http_mock_client_open_script(state, "runtime_auto_compact_steering",
+                                   steering_script,
+                                   sizeof(steering_script) /
+                                       sizeof(steering_script[0]),
+                                   &mock) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = mock.base_url;
+  client_config.timeout_ms = 100L;
+  client_config.http_2_disabled = 1;
+  expect_int(state, "runtime_auto_compact_steering_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.model = CAI_MODEL_GPT_5_NANO;
+  runtime_config.disable_default_session_store = 1;
+  runtime_config.disable_terminal = 1;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_auto_compact_steering_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_int(state, "runtime_auto_compact_steering_submit",
+               cai_agent_runtime_submit(runtime, "steering compaction source",
+                                        &error),
+               CAI_OK);
+    expect_int(state, "runtime_auto_compact_steering_queue",
+               cai_agent_runtime_submit_steering(runtime, "steering continuation",
+                                                 &error),
+               CAI_OK);
+    run_state = CAI_AGENT_IDLE;
+    for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "runtime_auto_compact_steering_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "runtime_auto_compact_steering_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_auto_compact_steering_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    if (run_state == CAI_AGENT_FAILED && events.failure_message[0] != '\0') {
+      test_fail(state, "runtime_auto_compact_steering_failure",
+                events.failure_message);
+    }
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+    client = NULL;
+  }
+  http_mock_client_close(state, "runtime_auto_compact_steering", &mock);
+
+  if (http_mock_client_open_script(state, "runtime_auto_compact_resume",
+                                   resume_script,
+                                   sizeof(resume_script) /
+                                       sizeof(resume_script[0]),
+                                   &mock) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  store_state.checkpoint_json =
+      "{\"version\":1,\"history\":[{\"type\":\"message\",\"role\":"
+      "\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":"
+      "\"retained context\"}]}],\"last_usage_input_tokens\":330000,"
+      "\"last_usage_input_cached_tokens\":0,\"last_usage_output_tokens\":10,"
+      "\"last_usage_output_reasoning_tokens\":0,\"last_usage_total_tokens\":330010,"
+      "\"context_usage_input_tokens\":330000,\"context_usage_input_cached_tokens\":0,"
+      "\"context_usage_output_tokens\":10,\"context_usage_output_reasoning_tokens\":0,"
+      "\"context_usage_total_tokens\":330010}";
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = mock.base_url;
+  client_config.timeout_ms = 100L;
+  client_config.http_2_disabled = 1;
+  expect_int(state, "runtime_auto_compact_resume_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&runtime_config);
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.model = CAI_MODEL_GPT_5_NANO;
+  runtime_config.disable_terminal = 1;
+  runtime_config.resume_latest = 1;
+  runtime_config.session_store = &store;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_auto_compact_resume_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_int(state, "runtime_auto_compact_resume_submit",
+               cai_agent_runtime_submit(runtime, "resumed automatic compact", &error),
+               CAI_OK);
+    run_state = CAI_AGENT_IDLE;
+    for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
+                run_state != CAI_AGENT_FAILED;
+         i++) {
+      (void)nanosleep(&delay, NULL);
+      expect_int(state, "runtime_auto_compact_resume_pump",
+                 cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+      expect_int(state, "runtime_auto_compact_resume_state",
+                 cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
+    }
+    expect_int(state, "runtime_auto_compact_resume_completed", run_state,
+               CAI_AGENT_COMPLETED);
+    if (run_state == CAI_AGENT_FAILED && events.failure_message[0] != '\0') {
+      test_fail(state, "runtime_auto_compact_resume_failure",
+                events.failure_message);
+    }
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  http_mock_client_close(state, "runtime_auto_compact_resume", &mock);
+  cai_error_cleanup(&error);
+}
+
 static void test_agent_runtime_terminal_callback_close(test_state *state) {
   static const char tool_response[] =
       "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
@@ -42905,6 +43179,8 @@ static const test_entry test_entries[] = {
      test_agent_runtime_model_switch_live_catalog_outage},
     {"agent_runtime_model_switch_api_key_metadata_policy",
      test_agent_runtime_model_switch_api_key_metadata_policy},
+    {"agent_runtime_auto_compaction_boundaries",
+     test_agent_runtime_auto_compaction_boundaries},
     {"agent_runtime_terminal_callback_close",
      test_agent_runtime_terminal_callback_close},
     {"agent_runtime_queued_turns", test_agent_runtime_queued_turns},

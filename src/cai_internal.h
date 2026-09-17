@@ -128,6 +128,11 @@ typedef struct cai_session_impl {
   int goal_blocked_attempts;
   cai_token_usage last_usage;
   int has_last_usage;
+  /* Most recent measured size of the retained request context. This differs
+   * from last_usage after a compaction request, whose billed input describes
+   * the history that was replaced rather than the summary that remains. */
+  cai_token_usage context_usage;
+  int has_context_usage;
   cai_usage_limits usage_limits;
   cai_usage_accounting usage;
   lonejson_spooled history;
