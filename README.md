@@ -61,9 +61,10 @@ call the explicit threadsafe input methods from an input thread.
 The built-in `smith` preset is CAI's Codex-inspired coding-agent profile. It
 uses the native `apply_patch`, sandboxed file/image tools, optional MCP and
 image generation, durable goals, and one managed PTY terminal slot with only
-one active command. `submit_steering` queues interactive direction for the
-next safe model/tool boundary; `submit_queued` queues an ordinary FIFO turn
-for after the active turn completes. CAI deliberately does not parse slash
+one active command. `submit_interactive` follows Codex's StartOrSteer policy:
+it starts an idle turn or queues interactive direction for an active one at
+the next safe model/tool boundary. `submit_queued` queues an ordinary FIFO
+turn for after the active turn completes. CAI deliberately does not parse slash
 commands or render a UI: downstream applications map their own controls to
 those APIs, review lifecycle calls, and runtime Markdown export.
 

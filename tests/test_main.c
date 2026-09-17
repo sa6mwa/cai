@@ -27902,15 +27902,16 @@ static void test_agent_runtime_queued_turns(test_state *state) {
              CAI_OK);
   if (runtime != NULL) {
     events.runtime = runtime;
-    expect_int(state, "runtime_queued_submit",
-               cai_agent_runtime_submit(runtime, "first queued turn", &error),
+    expect_int(state, "runtime_queued_interactive_start",
+               cai_agent_runtime_submit_interactive(runtime,
+                                                    "first queued turn", &error),
                CAI_OK);
     expect_int(
         state, "runtime_queued_enqueue",
         cai_agent_runtime_submit_queued(runtime, "second queued turn", &error),
         CAI_OK);
-    expect_int(state, "runtime_queued_steering",
-               cai_agent_runtime_submit_steering(
+    expect_int(state, "runtime_queued_interactive_steer",
+               cai_agent_runtime_submit_interactive(
                    runtime, "interleaved steering", &error),
                CAI_OK);
     run_state = CAI_AGENT_SAMPLING;

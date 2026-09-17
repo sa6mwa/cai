@@ -293,6 +293,8 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
 const char *cai_agent_runtime_model(const cai_agent_runtime *runtime);
 int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
                              cai_error *error);
+int cai_agent_runtime_submit_interactive(cai_agent_runtime *runtime,
+                                         const char *text, cai_error *error);
 int cai_agent_runtime_start_review(cai_agent_runtime *parent,
                                    const cai_agent_review_request *request,
                                    cai_agent_runtime **out_review,
@@ -322,7 +324,10 @@ void cai_agent_runtime_close(cai_agent_runtime *runtime);
 
 `submit` is permitted only in `IDLE`, `COMPLETED`, or a terminal error state
 after that state has been observed, and only when no queued normal turn is
-already waiting. `submit_steering` is permitted during an active sampling or
+already waiting. `submit_interactive` is the normal Codex-compatible receiver:
+it atomically starts from one of those stable states or steers an active normal
+turn. It rejects isolated review and inline compaction, which Codex likewise
+does not steer. `submit_steering` is permitted during an active sampling or
 tool-dispatch state and is bounded, durable, FIFO, and
 non-blocking with respect to network/model progress. `submit_queued` is the
 separate normal-turn receiver: it queues a durable FIFO user turn that begins
@@ -1165,7 +1170,9 @@ not Vectis:
    continue in place, so restored steering is scheduled ahead of restored
    normal turns, while preserving FIFO order within each class.
 
-Steering requires an active turn; hosts start an idle turn with `submit`.
+Steering requires an active turn; hosts that want Codex's StartOrSteer behavior
+call `submit_interactive`, while hosts that need an explicit state contract use
+`submit` or `submit_steering`.
 Normal future work belongs on `submit_queued`, which persists `turn_queued`,
 emits `TURN_QUEUED`, and is consumed FIFO only after the current turn reaches
 `COMPLETED`, `FAILED`, or `CANCELLED`. Its accepted event remains pending across

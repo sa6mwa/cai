@@ -1055,7 +1055,7 @@ int main(int argc, char **argv) {
     if (line[0] == '\0') {
       continue;
     }
-    rc = cai_agent_runtime_submit(runtime, line, &error);
+    rc = cai_agent_runtime_submit_interactive(runtime, line, &error);
   }
   if (rc != CAI_OK && error.message != NULL) {
     fprintf(stderr, "smith-terminal: %s\n", error.message);

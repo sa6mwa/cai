@@ -1042,6 +1042,9 @@ do
   assert_runtime_argument_error_releases_activity("runtime submit", function(runtime)
     runtime:submit({})
   end)
+  assert_runtime_argument_error_releases_activity("runtime interactive submission", function(runtime)
+    runtime:submit_interactive({})
+  end)
   assert_runtime_argument_error_releases_activity("runtime steering submission", function(runtime)
     runtime:submit_steering({})
   end)
@@ -1063,7 +1066,7 @@ do
 
   local runtime_meta = debug.getregistry()["cai.agent_runtime"]
   assert(type(runtime_meta) == "table", "missing agent runtime metatable")
-  for _, method in ipairs({ "submit", "set_model", "submit_review", "start_review", "finish_review", "submit_steering", "submit_queued", "goal", "create_goal", "pause_goal", "resume_goal", "set_goal_objective", "set_goal_token_budget", "clear_goal_token_budget", "clear_goal", "pump", "state",
+  for _, method in ipairs({ "submit", "submit_interactive", "set_model", "submit_review", "start_review", "finish_review", "submit_steering", "submit_queued", "goal", "create_goal", "pause_goal", "resume_goal", "set_goal_objective", "set_goal_token_budget", "clear_goal_token_budget", "clear_goal", "pump", "state",
     "session_id", "model", "export_markdown", "export_markdown_file", "wakeup_fd", "close" }) do
     assert(type(runtime_meta.__index[method]) == "function",
       "missing agent runtime method " .. method)

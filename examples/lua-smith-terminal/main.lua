@@ -177,12 +177,7 @@ while true do
     if line:sub(1, 7) == "/queue " then
       ok(runtime:submit_queued(line:sub(8)), nil, "runtime:submit_queued")
     else
-      local state = ok(runtime:state(), nil, "runtime:state")
-      if state == "sampling" or state == "dispatching_tool" then
-        ok(runtime:submit_steering(line), nil, "runtime:submit_steering")
-      else
-        ok(runtime:submit(line), nil, "runtime:submit")
-      end
+      ok(runtime:submit_interactive(line), nil, "runtime:submit_interactive")
     end
     while true do
       local state, err = runtime:pump(100)

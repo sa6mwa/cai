@@ -624,6 +624,20 @@ const char *cai_agent_runtime_model(const cai_agent_runtime *runtime);
 int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
                              cai_error *error);
 /**
+ * Submit interactive user input using Codex's StartOrSteer policy. When the
+ * ordinary runtime is idle or terminal this starts a new turn; while it has
+ * an active steerable turn, it durably queues direction for the next safe
+ * model/tool boundary. Review and compaction work is not steerable. This is
+ * owner-thread-only; use submit_interactive_threadsafe for input arriving on
+ * another thread.
+ */
+int cai_agent_runtime_submit_interactive(cai_agent_runtime *runtime,
+                                         const char *text, cai_error *error);
+/** Thread-safe variant of cai_agent_runtime_submit_interactive. */
+int cai_agent_runtime_submit_interactive_threadsafe(cai_agent_runtime *runtime,
+                                                    const char *text,
+                                                    cai_error *error);
+/**
  * Submit an explicit Codex-style review target to an idle isolated review
  * runtime. The request is rendered as the review turn's user instruction.
  */
@@ -663,9 +677,10 @@ int cai_agent_runtime_finish_review(cai_agent_runtime *parent,
                                     cai_agent_runtime *review,
                                     cai_error *error);
 /**
- * Queue steering for injection at the next safe model/tool boundary. This is
- * the default interactive-input path while a turn is active; it is rejected
- * while idle, stopping, or paused for review. Owner-thread-only.
+ * Queue steering for injection at the next safe model/tool boundary. Use
+ * submit_interactive when the host wants CAI to choose between starting and
+ * steering. This explicit operation is rejected while idle, stopping,
+ * compacting, or paused for review. Owner-thread-only.
  */
 int cai_agent_runtime_submit_steering(cai_agent_runtime *runtime,
                                       const char *text, cai_error *error);

@@ -4751,6 +4751,21 @@ static int cai_lua_agent_runtime_submit_steering(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_agent_runtime_submit_interactive(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  cai_error error;
+  const char *text;
+  int rc;
+
+  self = cai_lua_check_agent_runtime(L, 1);
+  text = luaL_checkstring(L, 2);
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_submit_interactive(self->ptr, text, &error);
+  cai_lua_agent_runtime_leave(self);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_agent_runtime_submit_queued(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_error error;
@@ -10912,6 +10927,7 @@ static const luaL_Reg cai_lua_client_methods[] = {
 
 static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"submit", cai_lua_agent_runtime_submit},
+    {"submit_interactive", cai_lua_agent_runtime_submit_interactive},
     {"set_model", cai_lua_agent_runtime_set_model},
     {"submit_review", cai_lua_agent_runtime_submit_review},
     {"start_review", cai_lua_agent_runtime_start_review},

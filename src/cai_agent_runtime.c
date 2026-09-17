@@ -393,7 +393,8 @@ typedef struct cai_runtime_input_node {
 typedef enum cai_runtime_input_kind {
   CAI_RUNTIME_INPUT_TURN = 0,
   CAI_RUNTIME_INPUT_STEERING = 1,
-  CAI_RUNTIME_INPUT_QUEUED_TURN = 2
+  CAI_RUNTIME_INPUT_QUEUED_TURN = 2,
+  CAI_RUNTIME_INPUT_INTERACTIVE = 3
 } cai_runtime_input_kind;
 
 typedef enum cai_runtime_goal_control_kind {
@@ -533,6 +534,8 @@ struct cai_agent_runtime {
   unsigned long long next_event_sequence;
   unsigned long long journal_v2_start_sequence;
   int history_compaction_pending;
+  /* Inline compaction is a distinct non-steerable task, as in Codex. */
+  int compacting;
   int accepting_steering;
   cai_agent_run_state state;
   /* A terminal lifecycle event is queued but has not reached the host yet.
@@ -3330,6 +3333,9 @@ static int cai_runtime_compact(cai_agent_runtime *runtime, cai_error *error) {
   cai_stream_sinks sinks;
   int rc;
 
+  pthread_mutex_lock(&runtime->lock);
+  runtime->compacting = 1;
+  pthread_mutex_unlock(&runtime->lock);
   cai_stream_sinks_init(&sinks);
   sinks.compaction_progress = cai_runtime_compaction_progress;
   sinks.compaction_progress_context = runtime;
@@ -3339,6 +3345,10 @@ static int cai_runtime_compact(cai_agent_runtime *runtime, cai_error *error) {
   if (rc == CAI_OK) {
     rc = cai_runtime_checkpoint(runtime, 1, error);
   }
+  pthread_mutex_lock(&runtime->lock);
+  runtime->compacting = 0;
+  pthread_cond_broadcast(&runtime->condition);
+  pthread_mutex_unlock(&runtime->lock);
   if (rc == CAI_OK) {
     cai_runtime_emit_compaction_event(runtime,
                                       CAI_AGENT_EVENT_COMPACTION_COMPLETED,
@@ -6216,9 +6226,6 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
     cai_runtime_input_node_free(node);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to copy agent input");
   }
-  journal_type = kind == CAI_RUNTIME_INPUT_STEERING      ? "steering_queued"
-                 : kind == CAI_RUNTIME_INPUT_QUEUED_TURN ? "turn_queued"
-                                                         : "turn_submitted";
   activated = 0;
   pthread_mutex_lock(&runtime->lock);
   /* Once close has begun, no successful submission may be discarded by the
@@ -6234,6 +6241,27 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
     cai_runtime_input_node_free(node);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "agent runtime model switch is in progress");
+  }
+  /* Codex's normal interactive path starts from an idle boundary and steers
+   * an active regular turn. Resolve that choice under this lock so a terminal
+   * worker transition cannot turn a successfully accepted input into the
+   * wrong kind of work. */
+  if (kind == CAI_RUNTIME_INPUT_INTERACTIVE) {
+    if (runtime->compacting) {
+      pthread_mutex_unlock(&runtime->lock);
+      cai_runtime_input_node_free(node);
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "interactive input cannot steer compaction");
+    }
+    if ((runtime->state == CAI_AGENT_SAMPLING ||
+         runtime->state == CAI_AGENT_DISPATCHING_TOOL) &&
+        runtime->accepting_steering && !runtime->subagent_active &&
+        runtime->active_review == NULL && !runtime->review_launching &&
+        !runtime->review_pause_pending) {
+      kind = CAI_RUNTIME_INPUT_STEERING;
+    } else {
+      kind = CAI_RUNTIME_INPUT_TURN;
+    }
   }
   if (kind == CAI_RUNTIME_INPUT_TURN &&
       (runtime->subagent_active || runtime->active_review != NULL ||
@@ -6271,6 +6299,7 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
   if (kind == CAI_RUNTIME_INPUT_STEERING &&
       (runtime->subagent_active || runtime->active_review != NULL ||
        runtime->review_launching || runtime->review_pause_pending ||
+       runtime->compacting ||
        (runtime->state != CAI_AGENT_SAMPLING &&
         runtime->state != CAI_AGENT_DISPATCHING_TOOL) ||
        !runtime->accepting_steering)) {
@@ -6307,6 +6336,9 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
   if (kind == CAI_RUNTIME_INPUT_TURN && runtime->review_mode) {
     cai_runtime_clear_review_report_locked(runtime);
   }
+  journal_type = kind == CAI_RUNTIME_INPUT_STEERING      ? "steering_queued"
+                 : kind == CAI_RUNTIME_INPUT_QUEUED_TURN ? "turn_queued"
+                                                         : "turn_submitted";
   /* Allocate observational state before the durable append. A successful
    * submission must either have its journal record and lifecycle event ready
    * to publish, or fail without leaving replayable work behind. */
@@ -9038,6 +9070,31 @@ int cai_agent_runtime_submit_steering_threadsafe(cai_agent_runtime *runtime,
   }
   return cai_runtime_enqueue_input(runtime, text, CAI_RUNTIME_INPUT_STEERING,
                                    error);
+}
+
+int cai_agent_runtime_submit_interactive_threadsafe(
+    cai_agent_runtime *runtime, const char *text, cai_error *error) {
+  if (runtime == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID, "agent runtime is required");
+  }
+  if (runtime->review_mode) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "isolated review runtime accepts exactly one review "
+                         "request");
+  }
+  return cai_runtime_enqueue_input(runtime, text,
+                                   CAI_RUNTIME_INPUT_INTERACTIVE, error);
+}
+
+int cai_agent_runtime_submit_interactive(cai_agent_runtime *runtime,
+                                         const char *text, cai_error *error) {
+  int rc;
+
+  rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  return cai_agent_runtime_submit_interactive_threadsafe(runtime, text, error);
 }
 
 int cai_agent_runtime_submit_steering(cai_agent_runtime *runtime,
