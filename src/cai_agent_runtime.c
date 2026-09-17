@@ -532,7 +532,7 @@ struct cai_agent_runtime {
   unsigned long long applied_event_sequence;
   unsigned long long next_event_sequence;
   unsigned long long journal_v2_start_sequence;
-  int resume_compaction_pending;
+  int history_compaction_pending;
   int accepting_steering;
   cai_agent_run_state state;
   /* A terminal lifecycle event is queued but has not reached the host yet.
@@ -668,7 +668,7 @@ static int cai_runtime_register_subagent_tool(cai_agent_runtime *runtime,
                                               cai_error *error);
 static int cai_runtime_capture_active_model_metadata(cai_agent_runtime *runtime,
                                                      cai_error *error);
-static int cai_runtime_compact_resumed_history(cai_agent_runtime *runtime,
+static int cai_runtime_compact_pending_history(cai_agent_runtime *runtime,
                                                cai_error *error);
 
 static int cai_runtime_export_session_id_valid(const char *session_id) {
@@ -2469,7 +2469,7 @@ static int cai_runtime_checkpoint(cai_agent_runtime *runtime, int emit_event,
   char *model;
   char *model_compaction_hash;
   unsigned long long applied_event_sequence;
-  int preserve_imported_model_metadata;
+  int preserve_history_model_metadata;
   int rc;
 
   if (runtime->session_store == NULL) {
@@ -2502,14 +2502,14 @@ static int cai_runtime_checkpoint(cai_agent_runtime *runtime, int emit_event,
   }
   state = NULL;
   model_compaction_hash = NULL;
-  preserve_imported_model_metadata =
-      runtime->resume_compaction_pending &&
+  preserve_history_model_metadata =
+      runtime->history_compaction_pending &&
       CAI_SESSION_IMPL(runtime->session)->state_model != NULL;
-  checkpoint_model = preserve_imported_model_metadata
+  checkpoint_model = preserve_history_model_metadata
                          ? CAI_SESSION_IMPL(runtime->session)->state_model
                          : CAI_SESSION_AGENT_IMPL(runtime->session)->model;
   checkpoint_model_compaction_hash =
-      preserve_imported_model_metadata
+      preserve_history_model_metadata
           ? CAI_SESSION_IMPL(runtime->session)->state_model_compaction_hash
           : runtime->model_compaction_hash;
   model = cai_strdup(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
@@ -4308,11 +4308,11 @@ static void *cai_runtime_worker(void *context) {
       cai_error_cleanup(&error);
       continue;
     }
-    rc = runtime->resume_compaction_pending
+    rc = runtime->history_compaction_pending
              ? CAI_OK
              : cai_runtime_capture_active_model_metadata(runtime, &error);
     if (rc == CAI_OK) {
-      rc = cai_runtime_compact_resumed_history(runtime, &error);
+      rc = cai_runtime_compact_pending_history(runtime, &error);
     }
     if (rc == CAI_OK) {
       rc = cai_session_add_user_text(runtime->session, input->text, &error);
@@ -5493,12 +5493,14 @@ static int cai_runtime_capture_active_model_metadata(cai_agent_runtime *runtime,
   return CAI_OK;
 }
 
-static int cai_runtime_compact_resumed_history(cai_agent_runtime *runtime,
+static int cai_runtime_compact_pending_history(cai_agent_runtime *runtime,
                                                cai_error *error) {
   cai_model_catalog *catalog;
   const cai_model_catalog_entry *previous;
   const cai_model_catalog_entry *current;
   cai_session_impl *session;
+  const char *previous_hash;
+  long long previous_context_window;
   char *current_hash;
   long long current_context_window;
   long long current_auto_compact_token_limit;
@@ -5506,7 +5508,14 @@ static int cai_runtime_compact_resumed_history(cai_agent_runtime *runtime,
   int should_compact;
   int rc;
 
-  if (!runtime->resume_compaction_pending) {
+  if (!runtime->history_compaction_pending) {
+    return CAI_OK;
+  }
+  /* API-key clients have no Codex catalog.  Their documented no-metadata
+   * policy resolves the pending provenance rather than preserving it forever.
+   */
+  if (CAI_CLIENT_IMPL(runtime->client)->chatgpt_auth == NULL) {
+    runtime->history_compaction_pending = 0;
     return CAI_OK;
   }
   catalog = NULL;
@@ -5535,16 +5544,19 @@ static int cai_runtime_compact_resumed_history(cai_agent_runtime *runtime,
       current_hash == NULL) {
     cai_model_catalog_close(catalog);
     return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to retain resumed model metadata");
+                         "failed to retain pending history model metadata");
   }
   history_bytes = session->history.size_fn(&session->history);
-  should_compact =
-      history_bytes != 0U && session->state_model_compaction_hash != NULL &&
-      current_hash != NULL &&
-      strcmp(session->state_model_compaction_hash, current_hash) != 0;
-  if (!should_compact && history_bytes != 0U && previous != NULL &&
-      current != NULL &&
-      previous->context_window_tokens > current->context_window_tokens &&
+  previous_hash = session->state_model_compaction_hash != NULL
+                      ? session->state_model_compaction_hash
+                      : runtime->model_compaction_hash;
+  previous_context_window = previous != NULL ? previous->context_window_tokens
+                                             : runtime->model_context_window;
+  should_compact = history_bytes != 0U && previous_hash != NULL &&
+                   current_hash != NULL &&
+                   strcmp(previous_hash, current_hash) != 0;
+  if (!should_compact && history_bytes != 0U && current != NULL &&
+      previous_context_window > current->context_window_tokens &&
       current->context_window_tokens > 0LL && session->has_last_usage &&
       session->last_usage.total_tokens >=
           (current->auto_compact_token_limit > 0LL
@@ -5563,7 +5575,7 @@ static int cai_runtime_compact_resumed_history(cai_agent_runtime *runtime,
     current_hash = NULL;
     runtime->model_context_window = current_context_window;
     runtime->model_auto_compact_token_limit = current_auto_compact_token_limit;
-    runtime->resume_compaction_pending = 0;
+    runtime->history_compaction_pending = 0;
   }
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                current_hash);
@@ -5573,7 +5585,7 @@ static int cai_runtime_compact_resumed_history(cai_agent_runtime *runtime,
 static int cai_runtime_model_switch_metadata(
     cai_agent_runtime *runtime, const char *next_model, char **out_next_hash,
     long long *out_next_context_window, long long *out_next_compact_limit,
-    int *out_catalog_available, cai_error *error) {
+    int *out_catalog_unavailable, cai_error *error) {
   cai_model_catalog *catalog;
   const cai_model_catalog_entry *previous;
   const cai_model_catalog_entry *next;
@@ -5582,7 +5594,10 @@ static int cai_runtime_model_switch_metadata(
   *out_next_hash = NULL;
   *out_next_context_window = 0LL;
   *out_next_compact_limit = 0LL;
-  *out_catalog_available = 0;
+  *out_catalog_unavailable = 0;
+  if (CAI_CLIENT_IMPL(runtime->client)->chatgpt_auth == NULL) {
+    return CAI_OK;
+  }
   catalog = NULL;
   rc = cai_client_list_models(runtime->client,
                               CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED,
@@ -5591,19 +5606,19 @@ static int cai_runtime_model_switch_metadata(
     /* Codex permits a turn without remote metadata; an absent hash is not a
      * compatibility mismatch. The provider remains authoritative at request
      * time and a later successful refresh supplies metadata. */
+    *out_catalog_unavailable = 1;
     cai_error_cleanup(error);
     cai_error_init(error);
     return CAI_OK;
   }
-  *out_catalog_available = 1;
   previous = cai_model_catalog_find(
-      catalog, runtime->resume_compaction_pending &&
+      catalog, runtime->history_compaction_pending &&
                        CAI_SESSION_IMPL(runtime->session)->state_model != NULL
                    ? CAI_SESSION_IMPL(runtime->session)->state_model
                    : CAI_SESSION_AGENT_IMPL(runtime->session)->model);
   next = cai_model_catalog_find(catalog, next_model);
   if (runtime->model_compaction_hash == NULL &&
-      runtime->resume_compaction_pending &&
+      runtime->history_compaction_pending &&
       CAI_SESSION_IMPL(runtime->session)->state_model_compaction_hash != NULL) {
     runtime->model_compaction_hash = cai_strdup(
         &CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
@@ -5611,7 +5626,7 @@ static int cai_runtime_model_switch_metadata(
     if (runtime->model_compaction_hash == NULL) {
       cai_model_catalog_close(catalog);
       return cai_set_error(error, CAI_ERR_NOMEM,
-                           "failed to retain resumed model metadata");
+                           "failed to retain pending history model metadata");
     }
   } else if (runtime->model_compaction_hash == NULL && previous != NULL &&
              previous->compaction_compatibility_hash != NULL) {
@@ -5960,7 +5975,7 @@ int cai_agent_runtime_open(cai_client *client,
           }
           rc = cai_runtime_copy_string(session_id, &runtime->session_id, error);
           if (rc == CAI_OK) {
-            runtime->resume_compaction_pending = 1;
+            runtime->history_compaction_pending = 1;
             resumed_checkpoint = 1;
           }
         }
@@ -6298,8 +6313,10 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
   long long next_compact_limit;
   long long old_context_window;
   long long old_compact_limit;
-  int old_resume_compaction_pending;
-  int model_catalog_available;
+  int old_history_compaction_pending;
+  int catalog_unavailable;
+  int preserve_history_compatibility;
+  size_t history_bytes;
   int rc;
 
   rc = cai_runtime_owner(runtime, error);
@@ -6336,7 +6353,8 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
   next_compaction_hash = NULL;
   next_context_window = 0LL;
   next_compact_limit = 0LL;
-  model_catalog_available = 0;
+  catalog_unavailable = 0;
+  preserve_history_compatibility = 0;
   if (next_model == NULL || next_smith_model == NULL) {
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                  next_model);
@@ -6351,8 +6369,15 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
 
   rc = cai_runtime_model_switch_metadata(
       runtime, model, &next_compaction_hash, &next_context_window,
-      &next_compact_limit, &model_catalog_available, error);
+      &next_compact_limit, &catalog_unavailable, error);
   if (rc == CAI_OK) {
+    history_bytes =
+        CAI_SESSION_IMPL(runtime->session)
+            ->history.size_fn(&CAI_SESSION_IMPL(runtime->session)->history);
+    preserve_history_compatibility =
+        catalog_unavailable &&
+        (runtime->history_compaction_pending ||
+         (history_bytes != 0U && runtime->model_compaction_hash != NULL));
     agent = CAI_AGENT_IMPL(runtime->agent);
     requires_compaction = cai_runtime_model_switch_requires_compaction(
         runtime, next_compaction_hash, next_context_window, next_compact_limit);
@@ -6421,16 +6446,18 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
   old_compaction_hash = runtime->model_compaction_hash;
   old_context_window = runtime->model_context_window;
   old_compact_limit = runtime->model_auto_compact_token_limit;
-  old_resume_compaction_pending = runtime->resume_compaction_pending;
+  old_history_compaction_pending = runtime->history_compaction_pending;
   agent->model = next_model;
   runtime->smith_model = next_smith_model;
-  runtime->model_compaction_hash = next_compaction_hash;
-  runtime->model_context_window = next_context_window;
-  runtime->model_auto_compact_token_limit = next_compact_limit;
-  next_compaction_hash = NULL;
-  /* An unavailable catalog cannot resolve imported compatibility metadata. */
-  runtime->resume_compaction_pending =
-      old_resume_compaction_pending && !model_catalog_available;
+  if (!preserve_history_compatibility) {
+    runtime->model_compaction_hash = next_compaction_hash;
+    runtime->model_context_window = next_context_window;
+    runtime->model_auto_compact_token_limit = next_compact_limit;
+    next_compaction_hash = NULL;
+  }
+  /* Retain recorded history provenance until a later catalog refresh can
+   * compare it with the selected model. */
+  runtime->history_compaction_pending = preserve_history_compatibility;
   rc = cai_runtime_checkpoint(runtime, 1, error);
   if (rc != CAI_OK) {
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
@@ -6438,13 +6465,15 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
     cai_free_mem(NULL, runtime->smith_model);
     agent->model = old_model;
     runtime->smith_model = old_smith_model;
-    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
-                 runtime->model_compaction_hash);
-    runtime->model_compaction_hash = old_compaction_hash;
-    old_compaction_hash = NULL;
-    runtime->model_context_window = old_context_window;
-    runtime->model_auto_compact_token_limit = old_compact_limit;
-    runtime->resume_compaction_pending = old_resume_compaction_pending;
+    if (!preserve_history_compatibility) {
+      cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                   runtime->model_compaction_hash);
+      runtime->model_compaction_hash = old_compaction_hash;
+      old_compaction_hash = NULL;
+      runtime->model_context_window = old_context_window;
+      runtime->model_auto_compact_token_limit = old_compact_limit;
+    }
+    runtime->history_compaction_pending = old_history_compaction_pending;
     if (runtime->session_store != NULL) {
       cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                    session->state_model);
@@ -6459,8 +6488,10 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                  old_model);
     cai_free_mem(NULL, old_smith_model);
-    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
-                 old_compaction_hash);
+    if (!preserve_history_compatibility) {
+      cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
+                   old_compaction_hash);
+    }
   }
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                saved_state_model);

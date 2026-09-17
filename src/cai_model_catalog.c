@@ -35,7 +35,7 @@ static const lonejson_field cai_model_catalog_item_fields[] = {
                                           description, "description"),
     LONEJSON_FIELD_I64_PRESENT(cai_model_catalog_item_doc, context_window,
                                has_context_window, "context_window"),
-    LONEJSON_FIELD_I64_PRESENT(
+    LONEJSON_FIELD_I64_PRESENT_NULLABLE(
         cai_model_catalog_item_doc, auto_compact_token_limit,
         has_auto_compact_token_limit, "auto_compact_token_limit"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_model_catalog_item_doc, comp_hash,

@@ -1353,6 +1353,8 @@ if(CAI_BUILD_TESTS)
     agent_runtime_lifecycle
     agent_runtime_model_switch
     agent_runtime_model_switch_catalog_recovery
+    agent_runtime_model_switch_live_catalog_outage
+    agent_runtime_model_switch_api_key_metadata_policy
     agent_runtime_terminal_callback_close
     agent_runtime_queued_turns
     agent_runtime_semantic_events
