@@ -93,6 +93,19 @@ typedef struct cai_history_record_json_reader {
   cai_error *error;
 } cai_history_record_json_reader;
 
+typedef struct cai_history_item_identity {
+  char key[16];
+  size_t depth;
+  size_t key_length;
+  size_t value_length;
+  int capture;
+  int has_type;
+  int has_call_id;
+  int overflow;
+  char type[64];
+  char call_id[4096];
+} cai_history_item_identity;
+
 typedef struct cai_spooled_reader_context {
   lonejson_spooled cursor;
 } cai_spooled_reader_context;
@@ -3783,17 +3796,238 @@ static int cai_session_replay_history_with_params_input(
   return rc;
 }
 
-/* A durable boundary may replace client history after a continuation has
- * already attached request-only tool content. Keep that typed content (for
- * example, a view_image data URL) in params and replace only the history
- * portion of its input. The durable history intentionally keeps safe tool
- * metadata rather than these transient payloads. */
+static int cai_session_params_tool_output_index(
+    const cai_response_create_params *params, const char *type,
+    const char *call_id, size_t *out_index) {
+  const struct cai_input_message *messages;
+  size_t i;
+
+  if (params == NULL || type == NULL || call_id == NULL || out_index == NULL) {
+    return 0;
+  }
+  messages = (const struct cai_input_message *)params->input.items;
+  for (i = 0U; i < params->input.count; i++) {
+    const char *output_type;
+
+    output_type =
+        messages[i].kind == CAI_INPUT_CUSTOM_TOOL_CALL_OUTPUT
+            ? "custom_tool_call_output"
+            : messages[i].kind == CAI_INPUT_FUNCTION_CALL_OUTPUT
+                  ? "function_call_output"
+                  : NULL;
+    if (output_type != NULL && strcmp(output_type, type) == 0 &&
+        messages[i].call_id != NULL &&
+        strcmp(messages[i].call_id, call_id) == 0) {
+      *out_index = i;
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static lonejson_status
+cai_history_identity_object_begin(void *user, lonejson_error *error) {
+  cai_history_item_identity *identity;
+
+  (void)error;
+  identity = (cai_history_item_identity *)user;
+  identity->depth++;
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status
+cai_history_identity_object_end(void *user, lonejson_error *error) {
+  cai_history_item_identity *identity;
+
+  (void)error;
+  identity = (cai_history_item_identity *)user;
+  if (identity->depth == 0U) {
+    identity->overflow = 1;
+  } else {
+    identity->depth--;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status
+cai_history_identity_array_begin(void *user, lonejson_error *error) {
+  return cai_history_identity_object_begin(user, error);
+}
+
+static lonejson_status
+cai_history_identity_array_end(void *user, lonejson_error *error) {
+  return cai_history_identity_object_end(user, error);
+}
+
+static lonejson_status
+cai_history_identity_key_begin(void *user, lonejson_error *error) {
+  cai_history_item_identity *identity;
+
+  (void)error;
+  identity = (cai_history_item_identity *)user;
+  identity->key_length = 0U;
+  identity->key[0] = '\0';
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_history_identity_key_chunk(
+    void *user, const char *data, size_t length, lonejson_error *error) {
+  cai_history_item_identity *identity;
+  size_t copy;
+
+  (void)error;
+  identity = (cai_history_item_identity *)user;
+  if (identity->depth != 2U) {
+    return LONEJSON_STATUS_OK;
+  }
+  copy = length;
+  if (copy > sizeof(identity->key) - 1U - identity->key_length) {
+    copy = sizeof(identity->key) - 1U - identity->key_length;
+  }
+  memcpy(identity->key + identity->key_length, data, copy);
+  identity->key_length += copy;
+  identity->key[identity->key_length] = '\0';
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status
+cai_history_identity_key_end(void *user, lonejson_error *error) {
+  cai_history_item_identity *identity;
+
+  (void)error;
+  identity = (cai_history_item_identity *)user;
+  if (identity->depth == 2U) {
+    identity->capture =
+        strcmp(identity->key, "type") == 0
+            ? 1
+            : strcmp(identity->key, "call_id") == 0 ? 2 : 0;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status
+cai_history_identity_string_begin(void *user, lonejson_error *error) {
+  cai_history_item_identity *identity;
+
+  (void)error;
+  identity = (cai_history_item_identity *)user;
+  if (identity->depth == 2U && identity->capture != 0) {
+    identity->value_length = 0U;
+    if (identity->capture == 1) {
+      identity->type[0] = '\0';
+    } else {
+      identity->call_id[0] = '\0';
+    }
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_history_identity_string_chunk(
+    void *user, const char *data, size_t length, lonejson_error *error) {
+  cai_history_item_identity *identity;
+  char *destination;
+  size_t capacity;
+  size_t copy;
+
+  (void)error;
+  identity = (cai_history_item_identity *)user;
+  if (identity->depth != 2U || identity->capture == 0) {
+    return LONEJSON_STATUS_OK;
+  }
+  destination =
+      identity->capture == 1 ? identity->type : identity->call_id;
+  capacity = identity->capture == 1 ? sizeof(identity->type)
+                                    : sizeof(identity->call_id);
+  copy = length;
+  if (copy > capacity - 1U - identity->value_length) {
+    copy = capacity - 1U - identity->value_length;
+    identity->overflow = 1;
+  }
+  memcpy(destination + identity->value_length, data, copy);
+  identity->value_length += copy;
+  destination[identity->value_length] = '\0';
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status
+cai_history_identity_string_end(void *user, lonejson_error *error) {
+  cai_history_item_identity *identity;
+
+  (void)error;
+  identity = (cai_history_item_identity *)user;
+  if (identity->depth == 2U && identity->capture == 1) {
+    identity->has_type = 1;
+  } else if (identity->depth == 2U && identity->capture == 2) {
+    identity->has_call_id = 1;
+  }
+  identity->capture = 0;
+  return LONEJSON_STATUS_OK;
+}
+
+static int cai_session_history_record_identity(
+    cai_session *session, cai_spooled_record_reader *reader,
+    unsigned long length, cai_history_item_identity *out, cai_error *error) {
+  cai_history_record_json_reader record_reader;
+  lonejson_value_visitor visitor;
+  lonejson_error json_error;
+  lonejson_status status;
+
+  if (session == NULL || reader == NULL || out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "history record identity requires input");
+  }
+  memset(out, 0, sizeof(*out));
+  memset(&record_reader, 0, sizeof(record_reader));
+  record_reader.records = reader;
+  record_reader.remaining = length;
+  record_reader.error = error;
+  visitor = lonejson_default_value_visitor();
+  visitor.object_begin = cai_history_identity_object_begin;
+  visitor.object_end = cai_history_identity_object_end;
+  visitor.object_key_begin = cai_history_identity_key_begin;
+  visitor.object_key_chunk = cai_history_identity_key_chunk;
+  visitor.object_key_end = cai_history_identity_key_end;
+  visitor.array_begin = cai_history_identity_array_begin;
+  visitor.array_end = cai_history_identity_array_end;
+  visitor.string_begin = cai_history_identity_string_begin;
+  visitor.string_chunk = cai_history_identity_string_chunk;
+  visitor.string_end = cai_history_identity_string_end;
+  lonejson_error_init(&json_error);
+  status = cai_agent_history_runtime(session)->visit_value_reader(
+      cai_agent_history_runtime(session), cai_history_record_json_read,
+      &record_reader, &visitor, out, &json_error);
+  if (status != LONEJSON_STATUS_OK || record_reader.remaining != 0UL ||
+      out->overflow) {
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "failed to parse history item identity",
+                                json_error.message);
+  }
+  return CAI_OK;
+}
+
+/* A durable boundary commits safe tool output before a continuation is sent.
+ * Rebuild the request from that durable history, replacing each matching safe
+ * output with its request-only typed counterpart (such as view_image's data
+ * URL). This keeps one output per call in the provider input. */
 static int cai_session_refresh_history_input_preserving_transient(
     cai_session *session, cai_response_create_params *params,
     cai_error *error) {
-  lonejson_spooled history_items;
-  int has_history_items;
+  cai_spooled_record_reader reader;
+  cai_history_record_json_reader record_reader;
+  cai_history_item_identity identity;
+  cai_history_sink_context sink_context;
+  lonejson_spooled filtered_history;
+  lonejson_spooled item;
+  lonejson_writer writer;
+  lonejson_error json_error;
+  unsigned char *has_call;
+  unsigned long item_length;
+  size_t output_count;
+  size_t i;
+  int have_record;
+  int skip_item;
   int rc;
+  lonejson_status status;
 
   if (session == NULL || params == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -3803,19 +4037,159 @@ static int cai_session_refresh_history_input_preserving_transient(
       CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
     return CAI_OK;
   }
-  memset(&history_items, 0, sizeof(history_items));
-  has_history_items = 0;
-  rc = cai_history_to_array_spool(session, &history_items, error);
-  if (rc == CAI_OK) {
-    has_history_items = 1;
-    rc = cai_response_create_params_set_raw_input_spooled(
-        params, &history_items, error);
+  cai_response_create_params_retain_request_only_tool_outputs(params);
+  output_count = params->input.count;
+  if (output_count == 0U) {
+    cai_history_init_spooled(session, &filtered_history);
+    rc = cai_history_to_array_spool(session, &filtered_history, error);
     if (rc == CAI_OK) {
-      has_history_items = 0;
+      rc = cai_response_create_params_set_raw_input_spooled(
+          params, &filtered_history, error);
+    }
+    if (filtered_history.cleanup != NULL) {
+      filtered_history.cleanup(&filtered_history);
+    }
+    return rc;
+  }
+  has_call = (unsigned char *)cai_alloc(NULL, output_count);
+  if (has_call == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to reconcile continuation tool outputs");
+  }
+  memset(has_call, 0, output_count);
+  reader.cursor = CAI_SESSION_IMPL(session)->history;
+  reader.offset = 0U;
+  reader.length = 0U;
+  reader.eof = 0;
+  memset(&writer, 0, sizeof(writer));
+  memset(&json_error, 0, sizeof(json_error));
+  lonejson_error_init(&json_error);
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    cai_free_mem(NULL, has_call);
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to rewind continuation history",
+                                json_error.message);
+  }
+  cai_history_init_spooled(session, &filtered_history);
+  sink_context.spool = &filtered_history;
+  status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_history_lonejson_sink,
+                                    &sink_context, &json_error);
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.begin_array(&writer, &json_error);
+  }
+  rc = CAI_OK;
+  while (status == LONEJSON_STATUS_OK && rc == CAI_OK) {
+    cai_spooled_record_reader identity_reader;
+    size_t index;
+
+    rc = cai_history_read_record_length(&reader, &item_length, &have_record,
+                                        error);
+    if (rc != CAI_OK || !have_record) {
+      break;
+    }
+    memset(&item, 0, sizeof(item));
+    rc = cai_compaction_copy_history_record(session, &reader, item_length,
+                                            &item, error);
+    memset(&identity_reader, 0, sizeof(identity_reader));
+    identity_reader.cursor = item;
+    if (rc == CAI_OK &&
+        identity_reader.cursor.rewind(&identity_reader.cursor, &json_error) !=
+            LONEJSON_STATUS_OK) {
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to rewind continuation history item",
+                                json_error.message);
+    }
+    if (rc == CAI_OK) {
+      rc = cai_session_history_record_identity(session, &identity_reader,
+                                               item_length, &identity, error);
+    }
+    skip_item = 0;
+    if (rc == CAI_OK && identity.has_type && identity.has_call_id) {
+      if (cai_session_params_tool_output_index(params, identity.type,
+                                               identity.call_id, &index)) {
+        skip_item = 1;
+      } else if ((strcmp(identity.type, "function_call") == 0 &&
+                  cai_session_params_tool_output_index(
+                      params, "function_call_output", identity.call_id,
+                      &index)) ||
+                 (strcmp(identity.type, "custom_tool_call") == 0 &&
+                  cai_session_params_tool_output_index(
+                      params, "custom_tool_call_output", identity.call_id,
+                      &index))) {
+        has_call[index] = 1U;
+      }
+    }
+    if (rc == CAI_OK && !skip_item) {
+      memset(&identity_reader, 0, sizeof(identity_reader));
+      identity_reader.cursor = item;
+      if (identity_reader.cursor.rewind(&identity_reader.cursor, &json_error) !=
+          LONEJSON_STATUS_OK) {
+        rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                  "failed to rewind continuation history item",
+                                  json_error.message);
+      }
+      memset(&record_reader, 0, sizeof(record_reader));
+      record_reader.records = &identity_reader;
+      record_reader.remaining = item_length;
+      record_reader.error = error;
+      if (rc == CAI_OK) {
+        status = writer.json_value_reader(&writer, cai_history_record_json_read,
+                                          &record_reader, &json_error);
+      }
+      if (status == LONEJSON_STATUS_OK && record_reader.remaining != 0UL) {
+        status = LONEJSON_STATUS_CALLBACK_FAILED;
+      }
+    }
+    if (item.cleanup != NULL) {
+      item.cleanup(&item);
     }
   }
-  if (has_history_items) {
-    history_items.cleanup(&history_items);
+  if (status == LONEJSON_STATUS_OK && rc == CAI_OK) {
+    status = writer.end_array(&writer, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK && rc == CAI_OK) {
+    status = writer.finish(&writer, &json_error);
+  }
+  if (writer.cleanup != NULL) {
+    writer.cleanup(&writer);
+  }
+  if (rc != CAI_OK || status != LONEJSON_STATUS_OK) {
+    filtered_history.cleanup(&filtered_history);
+    cai_free_mem(NULL, has_call);
+    return rc != CAI_OK
+               ? rc
+               : cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                      "failed to rebuild continuation history",
+                                      json_error.message);
+  }
+  for (i = 0U; i < output_count; i++) {
+    const struct cai_input_message *messages;
+
+    messages = (const struct cai_input_message *)params->input.items;
+    if ((messages[i].kind == CAI_INPUT_FUNCTION_CALL_OUTPUT ||
+         messages[i].kind == CAI_INPUT_CUSTOM_TOOL_CALL_OUTPUT) &&
+        !has_call[i]) {
+      /* Compaction replaced the call and output as one history segment. The
+       * durable summary is the only valid continuation input in that case. */
+      filtered_history.cleanup(&filtered_history);
+      cai_free_mem(NULL, has_call);
+      rc = cai_history_to_array_spool(session, &filtered_history, error);
+      if (rc == CAI_OK) {
+        cai_response_create_params_clear_input(params);
+        rc = cai_response_create_params_set_raw_input_spooled(
+            params, &filtered_history, error);
+      }
+      if (filtered_history.cleanup != NULL) {
+        filtered_history.cleanup(&filtered_history);
+      }
+      return rc;
+    }
+  }
+  cai_free_mem(NULL, has_call);
+  rc = cai_response_create_params_set_raw_input_spooled(
+      params, &filtered_history, error);
+  if (rc != CAI_OK) {
+    filtered_history.cleanup(&filtered_history);
   }
   return rc;
 }

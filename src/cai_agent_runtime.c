@@ -3898,8 +3898,14 @@ cai_runtime_deliver_steering_after_response(cai_agent_runtime *runtime,
 
   rc = cai_runtime_deliver_steering_after_tool_round(runtime, runtime->session,
                                                      error);
-  if (rc == CAI_OK) {
-    rc = cai_session_commit_pending_inputs(runtime->session, error);
+  if (rc == CAI_OK ||
+      (rc == CAI_ERR_LIMIT && cai_runtime_goal_budget_limited(runtime))) {
+    int commit_rc;
+
+    commit_rc = cai_session_commit_pending_inputs(runtime->session, error);
+    if (commit_rc != CAI_OK) {
+      return commit_rc;
+    }
   }
   return rc;
 }
@@ -6534,6 +6540,7 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
   int old_history_compaction_pending;
   int catalog_unavailable;
   int preserve_history_compatibility;
+  int budget_limited;
   size_t history_bytes;
   int rc;
 
@@ -6573,6 +6580,7 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
   next_compact_limit = 0LL;
   catalog_unavailable = 0;
   preserve_history_compatibility = 0;
+  budget_limited = 0;
   if (next_model == NULL || next_smith_model == NULL) {
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                  next_model);
@@ -6600,7 +6608,27 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
     requires_compaction = cai_runtime_model_switch_requires_compaction(
         runtime, next_compaction_hash, next_context_window, next_compact_limit);
     if (requires_compaction) {
-      rc = cai_runtime_compact(runtime, error);
+      if (cai_runtime_goal_budget_limited(runtime)) {
+        rc = cai_set_error(
+            error, CAI_ERR_LIMIT,
+            "goal token budget exhausted before model-switch compaction");
+      } else {
+        rc = cai_runtime_compact(runtime, error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_runtime_account_goal(runtime, &budget_limited, error);
+      }
+      if (rc == CAI_OK) {
+        rc = cai_runtime_refresh_goal_projection(runtime, error);
+      }
+      if (rc == CAI_OK && budget_limited) {
+        rc = cai_runtime_checkpoint(runtime, 0, error);
+        if (rc == CAI_OK) {
+          rc = cai_set_error(
+              error, CAI_ERR_LIMIT,
+              "goal token budget exhausted after model-switch compaction");
+        }
+      }
     }
   }
   if (rc != CAI_OK) {

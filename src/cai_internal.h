@@ -218,6 +218,12 @@ struct cai_input_message {
   int has_output_spooled;
 };
 
+enum {
+  CAI_INPUT_MESSAGE = 0,
+  CAI_INPUT_FUNCTION_CALL_OUTPUT = 1,
+  CAI_INPUT_CUSTOM_TOOL_CALL_OUTPUT = 2
+};
+
 struct cai_function_tool {
   char *name;
   char *description;
@@ -243,6 +249,8 @@ typedef struct cai_buffer_builder {
 
 int cai_buffer_append_cstr(cai_buffer_builder *builder, const char *text,
                            cai_error *error);
+void cai_response_create_params_retain_request_only_tool_outputs(
+    cai_response_create_params *params);
 int cai_buffer_append(cai_buffer_builder *builder, const char *text,
                       size_t length, cai_error *error);
 int cai_buffer_append_json_string(cai_buffer_builder *builder,

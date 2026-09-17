@@ -9726,6 +9726,24 @@ static const char *mock_response_for_request(const char *request) {
   return NULL;
 }
 
+static size_t mock_count_substring(const char *text, const char *needle) {
+  const char *match;
+  size_t count;
+  size_t needle_length;
+
+  if (text == NULL || needle == NULL || needle[0] == '\0') {
+    return 0U;
+  }
+  count = 0U;
+  needle_length = strlen(needle);
+  match = text;
+  while ((match = strstr(match, needle)) != NULL) {
+    count++;
+    match += needle_length;
+  }
+  return count;
+}
+
 static void mock_openai_child(int pipe_fd, int request_count) {
   char request[65536];
   struct sockaddr_in addr;
@@ -9846,6 +9864,19 @@ static void mock_openai_child(int pipe_fd, int request_count) {
       }
       close(client_fd);
       continue;
+    }
+    if ((strstr(request, "\"call_id\":\"call_view_image_1\"") != NULL ||
+         strstr(request, "\"call_id\":\"call_stream_view_image_1\"") !=
+             NULL) &&
+        mock_count_substring(request, "\"type\":\"function_call_output\"") !=
+            1U) {
+      _exit(14);
+    }
+    if (strstr(request, "\"call_id\":\"call_stream_malformed\"") != NULL &&
+        (mock_count_substring(request, "\"type\":\"function_call_output\"") !=
+             1U ||
+         mock_count_substring(request, "after-next-tool") != 1U)) {
+      _exit(15);
     }
     body = mock_response_for_request(request);
     if (body == NULL) {
@@ -27431,7 +27462,10 @@ static void test_agent_runtime_model_switch(test_state *state) {
       "{\"version\":1,\"model\":\"gpt-5.5\","
       "\"model_compaction_hash\":\"provider-2911\",\"history\":[{"
       "\"type\":\"message\",\"role\":\"assistant\",\"content\":[{"
-      "\"type\":\"output_text\",\"text\":\"original assistant\"}]}]}";
+      "\"type\":\"output_text\",\"text\":\"original assistant\"}]}],"
+      "\"goal_objective\":\"account switch compaction\","
+      "\"goal_status\":\"active\",\"goal_token_budget\":100,"
+      "\"goal_token_usage_baseline\":0,\"goal_tokens_used\":0}";
   runtime_config.model = CAI_MODEL_GPT_6_ASTRA;
   runtime_config.resume_latest = 1;
   runtime_config.session_id = "compaction-checkpoint";
@@ -27460,6 +27494,8 @@ static void test_agent_runtime_model_switch(test_state *state) {
                CAI_OK);
     expect_str(state, "runtime_model_switch_compact_capacity_model",
                cai_agent_runtime_model(runtime), CAI_MODEL_GPT_5_6_LUNA);
+    expect_substr(state, "runtime_model_switch_compact_goal_usage",
+                  store_state.saved_checkpoint, "\"goal_tokens_used\":24");
     cai_agent_runtime_close(runtime);
     runtime = NULL;
   }
@@ -32461,7 +32497,8 @@ test_agent_client_history_tool_callback_durability(test_state *state) {
 }
 
 static void test_agent_view_image_auto_run(test_state *state) {
-  static const unsigned char png_bytes[] = {
+  /* Keep the request-only image output larger than the history reader buffer. */
+  static const unsigned char png_bytes[8192] = {
       0x89U, 0x50U, 0x4eU, 0x47U, 0x0dU, 0x0aU, 0x1aU, 0x0aU, 0x00U, 0x00U,
       0x00U, 0x0dU, 0x49U, 0x48U, 0x44U, 0x52U, 0x00U, 0x00U, 0x00U, 0x01U,
       0x00U, 0x00U, 0x00U, 0x01U, 0x08U, 0x06U, 0x00U, 0x00U, 0x00U, 0x1fU,
@@ -40144,6 +40181,7 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   tool_event_state event_state;
   tool_round_inject_state inject_state;
   spooled_raw_tool_state spooled_tool_state;
+  int durable_calls;
   cai_token_usage usage;
   cai_error error;
 
@@ -40188,6 +40226,8 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   run_options.tool_event_context = &event_state;
   run_options.tool_round_completed = test_tool_round_inject;
   run_options.tool_round_completed_context = &inject_state;
+  run_options.tool_round_durable = test_tool_round_noop;
+  run_options.tool_round_durable_context = &durable_calls;
   client = NULL;
   agent = NULL;
   session = NULL;
@@ -40198,6 +40238,7 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   memset(&event_state, 0, sizeof(event_state));
   memset(&inject_state, 0, sizeof(inject_state));
   inject_state.text = "after-next-tool";
+  durable_calls = 0;
   memset(&spooled_tool_state, 0, sizeof(spooled_tool_state));
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
@@ -40259,6 +40300,7 @@ static void test_session_stream_auto_tool_run(test_state *state) {
   expect_str(state, "stream_auto_tool_event_output", event_state.output,
              "{\"summary\":\"Gothenburg:0\"}");
   expect_int(state, "stream_auto_tool_round_callback", inject_state.calls, 1L);
+  expect_int(state, "stream_auto_tool_durable_callback", durable_calls, 1L);
   expect_int(
       state, "stream_auto_tool_history_export",
       cai_session_export_history_source(session, &history_source, &error),

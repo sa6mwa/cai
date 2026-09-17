@@ -6,12 +6,6 @@
 #include <string.h>
 
 enum { CAI_INLINE_TOOL_ARGUMENTS_LIMIT = 64 * 1024 };
-enum {
-  CAI_INPUT_MESSAGE = 0,
-  CAI_INPUT_FUNCTION_CALL_OUTPUT = 1,
-  CAI_INPUT_CUSTOM_TOOL_CALL_OUTPUT = 2
-};
-
 typedef struct cai_response_content_doc {
   char *type;
   lonejson_spooled text;
@@ -1528,6 +1522,44 @@ void cai_response_create_params_clear_input(
     cai_input_message_cleanup(&params->allocator, &messages[i]);
   }
   params->input.count = 0U;
+}
+
+void cai_response_create_params_retain_request_only_tool_outputs(
+    cai_response_create_params *params) {
+  struct cai_input_message *messages;
+  size_t i;
+  size_t kept;
+
+  if (params == NULL) {
+    return;
+  }
+  messages = (struct cai_input_message *)params->input.items;
+  kept = 0U;
+  for (i = 0U; i < params->input.count; i++) {
+    struct cai_content_part *parts;
+    size_t j;
+    int retain;
+
+    retain =
+        messages[i].kind == CAI_INPUT_FUNCTION_CALL_OUTPUT &&
+        messages[i].content.count > 0U;
+    parts = (struct cai_content_part *)messages[i].content.items;
+    for (j = 0U; retain && j < messages[i].content.count; j++) {
+      retain = parts[j].type != NULL &&
+               (strcmp(parts[j].type, "input_image") == 0 ||
+                strcmp(parts[j].type, "input_file") == 0);
+    }
+    if (!retain) {
+      cai_input_message_cleanup(&params->allocator, &messages[i]);
+    } else {
+      if (kept != i) {
+        messages[kept] = messages[i];
+        memset(&messages[i], 0, sizeof(messages[i]));
+      }
+      kept++;
+    }
+  }
+  params->input.count = kept;
 }
 
 int cai_response_create_params_set_model(cai_response_create_params *params,
