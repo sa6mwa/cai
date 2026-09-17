@@ -2463,9 +2463,39 @@ cai_runtime_generate_session_id(char output[CAI_AGENT_SESSION_ID_MAX],
   return rc;
 }
 
-static int cai_runtime_checkpoint(cai_agent_runtime *runtime, int emit_event,
-                                  cai_error *error) {
-  cai_runtime_event_node *checkpoint_event;
+static int cai_runtime_reserve_checkpoint_event(
+    cai_agent_runtime *runtime, cai_runtime_event_node **out, cai_error *error) {
+  int rc;
+
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "checkpoint event output is required");
+  }
+  *out = NULL;
+  if (runtime->session_store == NULL || runtime->event_callback == NULL) {
+    return CAI_OK;
+  }
+  pthread_mutex_lock(&runtime->lock);
+#if defined(CAI_TESTING)
+  if (cai_runtime_test_take_fail_checkpoint_event_reservation() != 0) {
+    rc = cai_set_error(error, CAI_ERR_NOMEM,
+                       "failed to allocate checkpoint notification");
+  } else {
+#endif
+    rc = cai_runtime_reserve_event_locked(
+        runtime, pthread_equal(pthread_self(), runtime->owner_thread),
+        CAI_AGENT_EVENT_SESSION_CHECKPOINTED, runtime->session_id,
+        strlen(runtime->session_id), NULL, NULL, runtime->state, out, error);
+#if defined(CAI_TESTING)
+  }
+#endif
+  pthread_mutex_unlock(&runtime->lock);
+  return rc;
+}
+
+static int cai_runtime_checkpoint_reserved(
+    cai_agent_runtime *runtime, int emit_event,
+    cai_runtime_event_node *checkpoint_event, cai_error *error) {
   cai_source *state;
   const char *checkpoint_model;
   const char *checkpoint_model_compaction_hash;
@@ -2478,31 +2508,16 @@ static int cai_runtime_checkpoint(cai_agent_runtime *runtime, int emit_event,
   if (runtime->session_store == NULL) {
     return CAI_OK;
   }
-  checkpoint_event = NULL;
+  if (checkpoint_event == NULL && emit_event) {
+    rc = cai_runtime_reserve_checkpoint_event(runtime, &checkpoint_event,
+                                              error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
+  }
   pthread_mutex_lock(&runtime->lock);
   applied_event_sequence = runtime->checkpoint_event_sequence;
-  if (emit_event) {
-#if defined(CAI_TESTING)
-    if (cai_runtime_test_take_fail_checkpoint_event_reservation() != 0) {
-      rc = cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to allocate checkpoint notification");
-    } else {
-#endif
-      rc = cai_runtime_reserve_event_locked(
-          runtime, pthread_equal(pthread_self(), runtime->owner_thread),
-          CAI_AGENT_EVENT_SESSION_CHECKPOINTED, runtime->session_id,
-          strlen(runtime->session_id), NULL, NULL, runtime->state,
-          &checkpoint_event, error);
-#if defined(CAI_TESTING)
-    }
-#endif
-  } else {
-    rc = CAI_OK;
-  }
   pthread_mutex_unlock(&runtime->lock);
-  if (rc != CAI_OK) {
-    return rc;
-  }
   state = NULL;
   model_compaction_hash = NULL;
   preserve_history_model_metadata =
@@ -2563,6 +2578,11 @@ static int cai_runtime_checkpoint(cai_agent_runtime *runtime, int emit_event,
     pthread_mutex_unlock(&runtime->lock);
   }
   return rc;
+}
+
+static int cai_runtime_checkpoint(cai_agent_runtime *runtime, int emit_event,
+                                  cai_error *error) {
+  return cai_runtime_checkpoint_reserved(runtime, emit_event, NULL, error);
 }
 
 static int cai_runtime_account_goal(cai_agent_runtime *runtime,
@@ -3331,8 +3351,32 @@ static int cai_runtime_compaction_progress(void *context, cai_error *error) {
 
 static int cai_runtime_compact(cai_agent_runtime *runtime, cai_error *error) {
   cai_stream_sinks sinks;
+  cai_runtime_event_node *checkpoint_event;
+  cai_source *snapshot;
+  cai_error rollback_error;
+  int compaction_committed;
   int rc;
 
+  checkpoint_event = NULL;
+  snapshot = NULL;
+  compaction_committed = 0;
+  if (runtime->session_store != NULL) {
+    /* Responses V2 replaces live history before the durable checkpoint. Keep
+     * a complete state snapshot until that checkpoint commits so a failed
+     * persistence operation cannot leave live and durable histories split. */
+    rc = cai_session_export_state_source(runtime->session, &snapshot, error);
+    if (rc == CAI_OK) {
+      /* The checkpoint notification is part of this state transition. Reserve
+       * it before optional progress events, because the owner cannot pump
+       * while a synchronous model selection is compacting. */
+      rc = cai_runtime_reserve_checkpoint_event(runtime, &checkpoint_event,
+                                                error);
+    }
+    if (rc != CAI_OK) {
+      cai_source_close(snapshot);
+      return rc;
+    }
+  }
   pthread_mutex_lock(&runtime->lock);
   runtime->compacting = 1;
   pthread_mutex_unlock(&runtime->lock);
@@ -3343,8 +3387,35 @@ static int cai_runtime_compact(cai_agent_runtime *runtime, cai_error *error) {
                                     "Making room to continue");
   rc = cai_session_compact_with_sinks(runtime->session, &sinks, error);
   if (rc == CAI_OK) {
-    rc = cai_runtime_checkpoint(runtime, 1, error);
+    compaction_committed = 1;
+    rc = cai_runtime_checkpoint_reserved(runtime, 1, checkpoint_event, error);
+    checkpoint_event = NULL;
   }
+  if (rc != CAI_OK && checkpoint_event != NULL) {
+    pthread_mutex_lock(&runtime->lock);
+    cai_runtime_cancel_event_reservation_locked(runtime, checkpoint_event);
+    pthread_mutex_unlock(&runtime->lock);
+    checkpoint_event = NULL;
+  }
+  if (rc != CAI_OK && compaction_committed && snapshot != NULL) {
+    int rollback_rc;
+
+    cai_error_init(&rollback_error);
+    rollback_rc = cai_source_reset(snapshot, &rollback_error);
+    if (rollback_rc == CAI_OK) {
+      rollback_rc = cai_session_import_state_source(runtime->session, snapshot,
+                                                     &rollback_error);
+    }
+    if (rollback_rc != CAI_OK) {
+      rc = cai_set_error_detail(
+          error, rollback_rc,
+          "compaction checkpoint failed and original state could not be restored",
+          rollback_error.message != NULL ? rollback_error.message
+                                         : "unknown rollback failure");
+    }
+    cai_error_cleanup(&rollback_error);
+  }
+  cai_source_close(snapshot);
   pthread_mutex_lock(&runtime->lock);
   runtime->compacting = 0;
   pthread_cond_broadcast(&runtime->condition);
@@ -6580,7 +6651,7 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
   /* Retain recorded history provenance until a later catalog refresh can
    * compare it with the selected model. */
   runtime->history_compaction_pending = preserve_history_compatibility;
-  rc = cai_runtime_checkpoint(runtime, 1, error);
+  rc = cai_runtime_checkpoint(runtime, requires_compaction ? 0 : 1, error);
   if (rc != CAI_OK) {
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                  agent->model);
