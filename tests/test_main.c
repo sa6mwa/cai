@@ -27172,7 +27172,8 @@ static void test_agent_runtime_model_switch(test_state *state) {
   static const char *catalog_required[] = {
       "GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/",
       "Authorization: Bearer mock-chatgpt-token",
-      "originator: " CAI_CHATGPT_AUTH_DEFAULT_ORIGINATOR};
+      ("originator: " CAI_CHATGPT_AUTH_DEFAULT_ORIGINATOR),
+  };
   static const char catalog_body[] =
       "{\"models\":[{\"slug\":\"gpt-5.6-luna\",\"display_name\":"
       "\"Luna\",\"context_window\":1050000,\"auto_compact_token_limit\":"
