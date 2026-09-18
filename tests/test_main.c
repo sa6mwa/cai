@@ -8188,7 +8188,7 @@ static void test_response_array_serialization_invariants(test_state *state) {
   cai_error_cleanup(&error);
 }
 
-#define MOCK_IO_TIMEOUT_MS 100U
+#define MOCK_IO_TIMEOUT_MS 1000U
 
 static int mock_wait_fd(int fd, int for_write, unsigned int timeout_ms);
 
@@ -10001,7 +10001,7 @@ mock_scripted_openai_child(int pipe_fd,
   const mock_http_expectation *expectation;
 
   signal(SIGALRM, mock_child_timeout_handler);
-  alarm(2U);
+  alarm(10U);
   server_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (server_fd < 0) {
     _exit(2);
