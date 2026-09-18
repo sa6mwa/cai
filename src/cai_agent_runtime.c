@@ -3349,17 +3349,23 @@ static int cai_runtime_compaction_progress(void *context, cai_error *error) {
   return CAI_OK;
 }
 
-static int cai_runtime_compact(cai_agent_runtime *runtime, cai_error *error) {
+static int cai_runtime_compact(cai_agent_runtime *runtime,
+                               int *out_budget_limited, cai_error *error) {
   cai_stream_sinks sinks;
   cai_runtime_event_node *checkpoint_event;
   cai_source *snapshot;
   cai_error rollback_error;
   int compaction_committed;
+  int budget_limited;
   int rc;
 
+  if (out_budget_limited != NULL) {
+    *out_budget_limited = 0;
+  }
   checkpoint_event = NULL;
   snapshot = NULL;
   compaction_committed = 0;
+  budget_limited = 0;
   if (runtime->session_store != NULL) {
     /* Responses V2 replaces live history before the durable checkpoint. Keep
      * a complete state snapshot until that checkpoint commits so a failed
@@ -3388,8 +3394,20 @@ static int cai_runtime_compact(cai_agent_runtime *runtime, cai_error *error) {
   rc = cai_session_compact_with_sinks(runtime->session, &sinks, error);
   if (rc == CAI_OK) {
     compaction_committed = 1;
+    /* Compaction replaces history and consumes usage as one durable state
+     * transition. Account for that usage before exporting its checkpoint so a
+     * resumed goal cannot lose the charge between two checkpoints. */
+    rc = cai_runtime_account_goal(runtime, &budget_limited, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_refresh_goal_projection(runtime, error);
+  }
+  if (rc == CAI_OK) {
     rc = cai_runtime_checkpoint_reserved(runtime, 1, checkpoint_event, error);
     checkpoint_event = NULL;
+    if (out_budget_limited != NULL) {
+      *out_budget_limited = budget_limited;
+    }
   }
   if (rc != CAI_OK && checkpoint_event != NULL) {
     pthread_mutex_lock(&runtime->lock);
@@ -3405,6 +3423,10 @@ static int cai_runtime_compact(cai_agent_runtime *runtime, cai_error *error) {
     if (rollback_rc == CAI_OK) {
       rollback_rc = cai_session_import_state_source(runtime->session, snapshot,
                                                      &rollback_error);
+    }
+    if (rollback_rc == CAI_OK) {
+      rollback_rc =
+          cai_runtime_refresh_goal_projection(runtime, &rollback_error);
     }
     if (rollback_rc != CAI_OK) {
       rc = cai_set_error_detail(
@@ -3474,14 +3496,8 @@ static int cai_runtime_compact_before_request(cai_agent_runtime *runtime,
       return cai_set_error(error, CAI_ERR_LIMIT,
                            "goal token budget exhausted before automatic compaction");
     }
-    rc = cai_runtime_compact(runtime, error);
     budget_limited = 0;
-    if (rc == CAI_OK) {
-      rc = cai_runtime_account_goal(runtime, &budget_limited, error);
-    }
-    if (rc == CAI_OK) {
-      rc = cai_runtime_refresh_goal_projection(runtime, error);
-    }
+    rc = cai_runtime_compact(runtime, &budget_limited, error);
     if (rc == CAI_OK && budget_limited) {
       return cai_set_error(error, CAI_ERR_LIMIT,
                            "goal token budget exhausted after automatic compaction");
@@ -5720,6 +5736,7 @@ static int cai_runtime_compact_pending_history(cai_agent_runtime *runtime,
   long long current_auto_compact_token_limit;
   size_t history_bytes;
   int should_compact;
+  int budget_limited;
   int rc;
 
   if (!runtime->history_compaction_pending) {
@@ -5779,8 +5796,9 @@ static int cai_runtime_compact_pending_history(cai_agent_runtime *runtime,
     should_compact = 1;
   }
   cai_model_catalog_close(catalog);
+  budget_limited = 0;
   rc = should_compact
-           ? cai_runtime_compact(runtime, error)
+           ? cai_runtime_compact(runtime, &budget_limited, error)
            : CAI_OK;
   if (rc == CAI_OK) {
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
@@ -5790,6 +5808,10 @@ static int cai_runtime_compact_pending_history(cai_agent_runtime *runtime,
     runtime->model_context_window = current_context_window;
     runtime->model_auto_compact_token_limit = current_auto_compact_token_limit;
     runtime->history_compaction_pending = 0;
+  }
+  if (rc == CAI_OK && budget_limited) {
+    rc = cai_set_error(error, CAI_ERR_LIMIT,
+                       "goal token budget exhausted after resume compaction");
   }
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                current_hash);
@@ -6625,21 +6647,12 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
             error, CAI_ERR_LIMIT,
             "goal token budget exhausted before model-switch compaction");
       } else {
-        rc = cai_runtime_compact(runtime, error);
-      }
-      if (rc == CAI_OK) {
-        rc = cai_runtime_account_goal(runtime, &budget_limited, error);
-      }
-      if (rc == CAI_OK) {
-        rc = cai_runtime_refresh_goal_projection(runtime, error);
+        rc = cai_runtime_compact(runtime, &budget_limited, error);
       }
       if (rc == CAI_OK && budget_limited) {
-        rc = cai_runtime_checkpoint(runtime, 0, error);
-        if (rc == CAI_OK) {
-          rc = cai_set_error(
-              error, CAI_ERR_LIMIT,
-              "goal token budget exhausted after model-switch compaction");
-        }
+        rc = cai_set_error(error, CAI_ERR_LIMIT,
+                           "goal token budget exhausted after model-switch "
+                           "compaction");
       }
     }
   }

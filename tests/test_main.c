@@ -237,6 +237,9 @@ typedef struct runtime_session_store_state {
   int fail_checkpoint_after;
   int saw_goal_checkpoint_without_tool_output;
   int saw_steering_checkpoint_before_watermark;
+  const char *first_compaction_checkpoint_required;
+  int saw_first_compaction_checkpoint;
+  int first_compaction_checkpoint_matches;
   int appended_events;
   unsigned long long load_applied_event_sequence;
   unsigned long long saved_applied_event_sequence;
@@ -2281,6 +2284,14 @@ static int test_runtime_session_store_checkpoint(
       strstr(store->saved_checkpoint, "\"type\":\"function_call_output\"") ==
           NULL) {
     store->saw_goal_checkpoint_without_tool_output = 1;
+  }
+  if (!store->saw_first_compaction_checkpoint &&
+      strstr(store->saved_checkpoint, "opaque-summary") != NULL) {
+    store->saw_first_compaction_checkpoint = 1;
+    store->first_compaction_checkpoint_matches =
+        store->first_compaction_checkpoint_required == NULL ||
+        strstr(store->saved_checkpoint,
+               store->first_compaction_checkpoint_required) != NULL;
   }
   return CAI_OK;
 }
@@ -28277,6 +28288,8 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
   }
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
+  store_state.first_compaction_checkpoint_required =
+      "\"goal_tokens_used\":660040";
   store_state.checkpoint_json =
       "{\"version\":1,\"model\":\"gpt-5-nano\","
       "\"goal_objective\":\"charge automatic compaction\","
@@ -28333,6 +28346,10 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
                   "\"goal_status\":\"budget_limited\"");
     expect_substr(state, "runtime_auto_compact_budget_after_usage",
                   store_state.saved_checkpoint, "\"goal_tokens_used\":660040");
+    expect_int(state, "runtime_auto_compact_budget_after_compaction_checkpoint",
+               store_state.saw_first_compaction_checkpoint, 1);
+    expect_int(state, "runtime_auto_compact_budget_after_atomic_charge",
+               store_state.first_compaction_checkpoint_matches, 1);
     cai_agent_runtime_close(runtime);
     runtime = NULL;
   }
