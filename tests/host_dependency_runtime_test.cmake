@@ -19,8 +19,8 @@ foreach(mode IN ITEMS host auto)
     message(FATAL_ERROR "${mode} did not resolve to host dependencies")
   endif()
   run("${CMAKE_COMMAND}" --build "${build_dir}"
-    --target cai_example_basic_response)
+    --target cai_example_chatgpt_login)
   run("${CMAKE_CTEST_COMMAND}" --test-dir "${build_dir}"
     -R "^cai_local_bootlin_runtime_test$" --output-on-failure)
-  run("${build_dir}/cai_example_basic_response" --help)
+  run("${build_dir}/cai_example_chatgpt_login" --help)
 endforeach()
