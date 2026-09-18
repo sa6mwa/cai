@@ -227,22 +227,23 @@ static const lonejson_field cai_session_state_fields[] = {
     LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc, last_usage_total_tokens,
                                has_last_usage_total_tokens,
                                "last_usage_total_tokens"),
-    LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc, context_usage_input_tokens,
-                               has_context_usage_input_tokens,
-                               "context_usage_input_tokens"),
     LONEJSON_FIELD_I64_PRESENT(
-        cai_session_state_doc, context_usage_input_cached_tokens,
-        has_context_usage_input_cached_tokens, "context_usage_input_cached_tokens"),
-    LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc, context_usage_output_tokens,
-                               has_context_usage_output_tokens,
-                               "context_usage_output_tokens"),
+        cai_session_state_doc, context_usage_input_tokens,
+        has_context_usage_input_tokens, "context_usage_input_tokens"),
+    LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc,
+                               context_usage_input_cached_tokens,
+                               has_context_usage_input_cached_tokens,
+                               "context_usage_input_cached_tokens"),
     LONEJSON_FIELD_I64_PRESENT(
-        cai_session_state_doc, context_usage_output_reasoning_tokens,
-        has_context_usage_output_reasoning_tokens,
-        "context_usage_output_reasoning_tokens"),
-    LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc, context_usage_total_tokens,
-                               has_context_usage_total_tokens,
-                               "context_usage_total_tokens"),
+        cai_session_state_doc, context_usage_output_tokens,
+        has_context_usage_output_tokens, "context_usage_output_tokens"),
+    LONEJSON_FIELD_I64_PRESENT(cai_session_state_doc,
+                               context_usage_output_reasoning_tokens,
+                               has_context_usage_output_reasoning_tokens,
+                               "context_usage_output_reasoning_tokens"),
+    LONEJSON_FIELD_I64_PRESENT(
+        cai_session_state_doc, context_usage_total_tokens,
+        has_context_usage_total_tokens, "context_usage_total_tokens"),
     LONEJSON_FIELD_JSON_VALUE_OMIT_NULL(cai_session_state_doc, history,
                                         "history")};
 LONEJSON_MAP_DEFINE(cai_session_state_map, cai_session_state_doc,
@@ -374,9 +375,10 @@ static int cai_stream_tool_call_list_append(
 static void cai_stream_tool_call_list_cleanup(cai_stream_tool_call_list *list);
 static int cai_history_to_array_spool(cai_session *session,
                                       lonejson_spooled *out, cai_error *error);
-static int cai_session_compaction_input_spool(
-    cai_session *session, const lonejson_spooled *history,
-    lonejson_spooled *out, cai_error *error);
+static int cai_session_compaction_input_spool(cai_session *session,
+                                              const lonejson_spooled *history,
+                                              lonejson_spooled *out,
+                                              cai_error *error);
 static int cai_session_compaction_capture_item(
     void *context, const char *item_id, int output_index, const char *type,
     const lonejson_spooled *item_json, cai_error *error);
@@ -3273,8 +3275,8 @@ static void cai_compaction_classifier_nonstring_role(
   }
 }
 
-static lonejson_status cai_compaction_classifier_object_begin(
-    void *user, lonejson_error *error) {
+static lonejson_status
+cai_compaction_classifier_object_begin(void *user, lonejson_error *error) {
   cai_compaction_user_record_classifier *classifier;
 
   (void)error;
@@ -3292,8 +3294,8 @@ static lonejson_status cai_compaction_classifier_object_begin(
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status cai_compaction_classifier_object_end(
-    void *user, lonejson_error *error) {
+static lonejson_status
+cai_compaction_classifier_object_end(void *user, lonejson_error *error) {
   cai_compaction_user_record_classifier *classifier;
 
   (void)error;
@@ -3314,8 +3316,8 @@ static lonejson_status cai_compaction_classifier_object_end(
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status cai_compaction_classifier_array_begin(
-    void *user, lonejson_error *error) {
+static lonejson_status
+cai_compaction_classifier_array_begin(void *user, lonejson_error *error) {
   cai_compaction_user_record_classifier *classifier;
 
   (void)error;
@@ -3333,8 +3335,8 @@ static lonejson_status cai_compaction_classifier_array_begin(
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status cai_compaction_classifier_array_end(
-    void *user, lonejson_error *error) {
+static lonejson_status
+cai_compaction_classifier_array_end(void *user, lonejson_error *error) {
   cai_compaction_user_record_classifier *classifier;
 
   (void)error;
@@ -3347,8 +3349,8 @@ static lonejson_status cai_compaction_classifier_array_end(
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status cai_compaction_classifier_key_begin(void *user,
-                                                            lonejson_error *error) {
+static lonejson_status
+cai_compaction_classifier_key_begin(void *user, lonejson_error *error) {
   cai_compaction_user_record_classifier *classifier;
 
   (void)error;
@@ -3359,8 +3361,9 @@ static lonejson_status cai_compaction_classifier_key_begin(void *user,
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status cai_compaction_classifier_key_chunk(
-    void *user, const char *data, size_t length, lonejson_error *error) {
+static lonejson_status
+cai_compaction_classifier_key_chunk(void *user, const char *data, size_t length,
+                                    lonejson_error *error) {
   cai_compaction_user_record_classifier *classifier;
   size_t copy;
 
@@ -3379,8 +3382,8 @@ static lonejson_status cai_compaction_classifier_key_chunk(
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status cai_compaction_classifier_key_end(void *user,
-                                                          lonejson_error *error) {
+static lonejson_status
+cai_compaction_classifier_key_end(void *user, lonejson_error *error) {
   cai_compaction_user_record_classifier *classifier;
 
   (void)error;
@@ -3392,8 +3395,8 @@ static lonejson_status cai_compaction_classifier_key_end(void *user,
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status cai_compaction_classifier_string_begin(
-    void *user, lonejson_error *error) {
+static lonejson_status
+cai_compaction_classifier_string_begin(void *user, lonejson_error *error) {
   cai_compaction_user_record_classifier *classifier;
 
   (void)error;
@@ -3408,8 +3411,9 @@ static lonejson_status cai_compaction_classifier_string_begin(
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status cai_compaction_classifier_string_chunk(
-    void *user, const char *data, size_t length, lonejson_error *error) {
+static lonejson_status
+cai_compaction_classifier_string_chunk(void *user, const char *data,
+                                       size_t length, lonejson_error *error) {
   cai_compaction_user_record_classifier *classifier;
   size_t i;
 
@@ -3427,8 +3431,8 @@ static lonejson_status cai_compaction_classifier_string_chunk(
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status cai_compaction_classifier_string_end(
-    void *user, lonejson_error *error) {
+static lonejson_status
+cai_compaction_classifier_string_end(void *user, lonejson_error *error) {
   cai_compaction_user_record_classifier *classifier;
 
   (void)error;
@@ -3438,7 +3442,7 @@ static lonejson_status cai_compaction_classifier_string_end(
 }
 
 static lonejson_status cai_compaction_classifier_scalar(void *user,
-                                                         lonejson_error *error) {
+                                                        lonejson_error *error) {
   cai_compaction_user_record_classifier *classifier;
 
   (void)error;
@@ -3450,15 +3454,17 @@ static lonejson_status cai_compaction_classifier_scalar(void *user,
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status cai_compaction_classifier_boolean(void *user, int value,
-                                                          lonejson_error *error) {
+static lonejson_status
+cai_compaction_classifier_boolean(void *user, int value,
+                                  lonejson_error *error) {
   (void)value;
   return cai_compaction_classifier_scalar(user, error);
 }
 
-static int cai_compaction_record_is_user_message(
-    cai_session *session, const lonejson_spooled *record, int *out_is_user,
-    cai_error *error) {
+static int cai_compaction_record_is_user_message(cai_session *session,
+                                                 const lonejson_spooled *record,
+                                                 int *out_is_user,
+                                                 cai_error *error) {
   cai_compaction_user_record_classifier classifier;
   cai_spooled_reader_context reader_context;
   lonejson_value_visitor visitor;
@@ -3508,9 +3514,11 @@ static int cai_compaction_record_is_user_message(
   return CAI_OK;
 }
 
-static int cai_compaction_copy_history_record(
-    cai_session *session, cai_spooled_record_reader *reader,
-    unsigned long length, lonejson_spooled *out, cai_error *error) {
+static int cai_compaction_copy_history_record(cai_session *session,
+                                              cai_spooled_record_reader *reader,
+                                              unsigned long length,
+                                              lonejson_spooled *out,
+                                              cai_error *error) {
   unsigned char buffer[4096];
   unsigned long remaining;
   size_t count;
@@ -3540,8 +3548,9 @@ static int cai_compaction_copy_history_record(
   return CAI_OK;
 }
 
-static void cai_compaction_retained_records_cleanup(
-    cai_compaction_retained_record *records, size_t count) {
+static void
+cai_compaction_retained_records_cleanup(cai_compaction_retained_record *records,
+                                        size_t count) {
   size_t i;
 
   for (i = 0U; i < count; i++) {
@@ -3582,8 +3591,7 @@ static int cai_compaction_retained_records_append(
     record_bytes = (*records)[0].json.size_fn(&(*records)[0].json);
     (*records)[0].json.cleanup(&(*records)[0].json);
     if (*count > 1U) {
-      memmove(*records, *records + 1U,
-              (*count - 1U) * sizeof(**records));
+      memmove(*records, *records + 1U, (*count - 1U) * sizeof(**records));
     }
     (*count)--;
     *bytes -= record_bytes;
@@ -3620,7 +3628,8 @@ static int cai_compaction_collect_retained_user_records(
   {
     lonejson_error json_error;
     lonejson_error_init(&json_error);
-    if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK) {
+    if (reader.cursor.rewind(&reader.cursor, &json_error) !=
+        LONEJSON_STATUS_OK) {
       return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                   "failed to rewind compaction history",
                                   json_error.message);
@@ -3637,11 +3646,11 @@ static int cai_compaction_collect_retained_user_records(
                                             error);
     if (rc == CAI_OK) {
       rc = cai_compaction_record_is_user_message(session, &record, &is_user,
-                                                  error);
+                                                 error);
     }
     if (rc == CAI_OK && is_user) {
       rc = cai_compaction_retained_records_append(&records, &count, &capacity,
-                                                   &bytes, &record, error);
+                                                  &bytes, &record, error);
     }
     if (record.cleanup != NULL) {
       record.cleanup(&record);
@@ -3796,9 +3805,10 @@ static int cai_session_replay_history_with_params_input(
   return rc;
 }
 
-static int cai_session_params_tool_output_index(
-    const cai_response_create_params *params, const char *type,
-    const char *call_id, size_t *out_index) {
+static int
+cai_session_params_tool_output_index(const cai_response_create_params *params,
+                                     const char *type, const char *call_id,
+                                     size_t *out_index) {
   const struct cai_input_message *messages;
   size_t i;
 
@@ -3809,12 +3819,11 @@ static int cai_session_params_tool_output_index(
   for (i = 0U; i < params->input.count; i++) {
     const char *output_type;
 
-    output_type =
-        messages[i].kind == CAI_INPUT_CUSTOM_TOOL_CALL_OUTPUT
-            ? "custom_tool_call_output"
-            : messages[i].kind == CAI_INPUT_FUNCTION_CALL_OUTPUT
-                  ? "function_call_output"
-                  : NULL;
+    output_type = messages[i].kind == CAI_INPUT_CUSTOM_TOOL_CALL_OUTPUT
+                      ? "custom_tool_call_output"
+                  : messages[i].kind == CAI_INPUT_FUNCTION_CALL_OUTPUT
+                      ? "function_call_output"
+                      : NULL;
     if (output_type != NULL && strcmp(output_type, type) == 0 &&
         messages[i].call_id != NULL &&
         strcmp(messages[i].call_id, call_id) == 0) {
@@ -3835,8 +3844,8 @@ cai_history_identity_object_begin(void *user, lonejson_error *error) {
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status
-cai_history_identity_object_end(void *user, lonejson_error *error) {
+static lonejson_status cai_history_identity_object_end(void *user,
+                                                       lonejson_error *error) {
   cai_history_item_identity *identity;
 
   (void)error;
@@ -3849,18 +3858,18 @@ cai_history_identity_object_end(void *user, lonejson_error *error) {
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status
-cai_history_identity_array_begin(void *user, lonejson_error *error) {
+static lonejson_status cai_history_identity_array_begin(void *user,
+                                                        lonejson_error *error) {
   return cai_history_identity_object_begin(user, error);
 }
 
-static lonejson_status
-cai_history_identity_array_end(void *user, lonejson_error *error) {
+static lonejson_status cai_history_identity_array_end(void *user,
+                                                      lonejson_error *error) {
   return cai_history_identity_object_end(user, error);
 }
 
-static lonejson_status
-cai_history_identity_key_begin(void *user, lonejson_error *error) {
+static lonejson_status cai_history_identity_key_begin(void *user,
+                                                      lonejson_error *error) {
   cai_history_item_identity *identity;
 
   (void)error;
@@ -3870,8 +3879,10 @@ cai_history_identity_key_begin(void *user, lonejson_error *error) {
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status cai_history_identity_key_chunk(
-    void *user, const char *data, size_t length, lonejson_error *error) {
+static lonejson_status cai_history_identity_key_chunk(void *user,
+                                                      const char *data,
+                                                      size_t length,
+                                                      lonejson_error *error) {
   cai_history_item_identity *identity;
   size_t copy;
 
@@ -3890,17 +3901,16 @@ static lonejson_status cai_history_identity_key_chunk(
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status
-cai_history_identity_key_end(void *user, lonejson_error *error) {
+static lonejson_status cai_history_identity_key_end(void *user,
+                                                    lonejson_error *error) {
   cai_history_item_identity *identity;
 
   (void)error;
   identity = (cai_history_item_identity *)user;
   if (identity->depth == 2U) {
-    identity->capture =
-        strcmp(identity->key, "type") == 0
-            ? 1
-            : strcmp(identity->key, "call_id") == 0 ? 2 : 0;
+    identity->capture = strcmp(identity->key, "type") == 0      ? 1
+                        : strcmp(identity->key, "call_id") == 0 ? 2
+                                                                : 0;
   }
   return LONEJSON_STATUS_OK;
 }
@@ -3922,8 +3932,9 @@ cai_history_identity_string_begin(void *user, lonejson_error *error) {
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status cai_history_identity_string_chunk(
-    void *user, const char *data, size_t length, lonejson_error *error) {
+static lonejson_status
+cai_history_identity_string_chunk(void *user, const char *data, size_t length,
+                                  lonejson_error *error) {
   cai_history_item_identity *identity;
   char *destination;
   size_t capacity;
@@ -3934,8 +3945,7 @@ static lonejson_status cai_history_identity_string_chunk(
   if (identity->depth != 2U || identity->capture == 0) {
     return LONEJSON_STATUS_OK;
   }
-  destination =
-      identity->capture == 1 ? identity->type : identity->call_id;
+  destination = identity->capture == 1 ? identity->type : identity->call_id;
   capacity = identity->capture == 1 ? sizeof(identity->type)
                                     : sizeof(identity->call_id);
   copy = length;
@@ -3949,8 +3959,8 @@ static lonejson_status cai_history_identity_string_chunk(
   return LONEJSON_STATUS_OK;
 }
 
-static lonejson_status
-cai_history_identity_string_end(void *user, lonejson_error *error) {
+static lonejson_status cai_history_identity_string_end(void *user,
+                                                       lonejson_error *error) {
   cai_history_item_identity *identity;
 
   (void)error;
@@ -4030,8 +4040,9 @@ static int cai_session_refresh_history_input_preserving_transient(
   lonejson_status status;
 
   if (session == NULL || params == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "history refresh requires a session and response params");
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "history refresh requires a session and response params");
   }
   if (CAI_SESSION_AGENT_IMPL(session)->session_continuity !=
       CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
@@ -4133,9 +4144,9 @@ static int cai_session_refresh_history_input_preserving_transient(
       record_reader.remaining = item_length;
       record_reader.error = error;
       if (rc == CAI_OK) {
-        status = writer.array_items_reader(
-            &writer, "", cai_history_record_json_read, &record_reader,
-            &json_error);
+        status =
+            writer.array_items_reader(&writer, "", cai_history_record_json_read,
+                                      &record_reader, &json_error);
       }
       if (status == LONEJSON_STATUS_OK && record_reader.remaining != 0UL) {
         status = LONEJSON_STATUS_CALLBACK_FAILED;
@@ -4518,17 +4529,19 @@ static int cai_token_usage_is_empty(const cai_token_usage *usage) {
          usage->total_tokens == 0LL;
 }
 
-static int cai_session_compaction_input_spool(
-    cai_session *session, const lonejson_spooled *history,
-    lonejson_spooled *out, cai_error *error) {
+static int cai_session_compaction_input_spool(cai_session *session,
+                                              const lonejson_spooled *history,
+                                              lonejson_spooled *out,
+                                              cai_error *error) {
   cai_history_sink_context sink_context;
   lonejson_writer writer;
   lonejson_error json_error;
   lonejson_status status;
 
   if (session == NULL || history == NULL || out == NULL) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "compaction input requires session, history, and output");
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "compaction input requires session, history, and output");
   }
   cai_history_init_spooled(session, out);
   sink_context.spool = out;
@@ -4592,8 +4605,8 @@ static int cai_session_compaction_capture_item(
   sink_context.spool = &capture->item;
   lonejson_error_init(&json_error);
   if (item_json->write_to_sink(item_json, cai_history_lonejson_sink,
-                               &sink_context, &json_error) !=
-      LONEJSON_STATUS_OK) {
+                               &sink_context,
+                               &json_error) != LONEJSON_STATUS_OK) {
     capture->item.cleanup(&capture->item);
     capture->has_item = 0;
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
@@ -4666,9 +4679,8 @@ int cai_session_compact_with_sinks(cai_session *session,
   if (rc == CAI_OK) {
     has_history_items = 1;
   }
-  if (rc == CAI_OK &&
-      CAI_SESSION_IMPL(session)->history.size_fn(&CAI_SESSION_IMPL(session)->history) ==
-          0U) {
+  if (rc == CAI_OK && CAI_SESSION_IMPL(session)->history.size_fn(
+                          &CAI_SESSION_IMPL(session)->history) == 0U) {
     rc = cai_set_error(error, CAI_ERR_INVALID,
                        "session has no local history to compact");
     goto done;
@@ -4710,12 +4722,12 @@ int cai_session_compact_with_sinks(cai_session *session,
     }
     sinks.response_completed = cai_session_compaction_capture_completed;
     sinks.response_completed_context = &capture;
-    rc = cai_client_stream_response_with_id(CAI_SESSION_AGENT_IMPL(session)->client,
-                                            params, &sinks, &response_id,
-                                            &usage, error);
+    rc = cai_client_stream_response_with_id(
+        CAI_SESSION_AGENT_IMPL(session)->client, params, &sinks, &response_id,
+        &usage, error);
   }
-  if (rc == CAI_OK && (!capture.completed || !capture.has_item ||
-                       capture.item_count != 1U)) {
+  if (rc == CAI_OK &&
+      (!capture.completed || !capture.has_item || capture.item_count != 1U)) {
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "compaction stream did not complete with one item");
   }
@@ -4741,8 +4753,8 @@ int cai_session_compact_with_sinks(cai_session *session,
       sink_context.spool = &item_array;
       lonejson_error_init(&json_error);
       if (capture.item.write_to_sink(&capture.item, cai_history_lonejson_sink,
-                                     &sink_context, &json_error) !=
-          LONEJSON_STATUS_OK) {
+                                     &sink_context,
+                                     &json_error) != LONEJSON_STATUS_OK) {
         rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                   "failed to build compacted history",
                                   json_error.message);
@@ -4786,7 +4798,7 @@ done:
     capture.item.cleanup(&capture.item);
   }
   cai_compaction_retained_records_cleanup(retained_records,
-                                           retained_record_count);
+                                          retained_record_count);
   cai_free_mem(NULL, response_id);
   return rc;
 }
@@ -5482,7 +5494,7 @@ static int cai_session_run_tool_round(cai_session *session,
           CAI_SESSION_CONTINUITY_CLIENT_HISTORY &&
       CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
     rc = cai_session_refresh_history_input_preserving_transient(session, params,
-                                                                 error);
+                                                                error);
   }
   if (rc == CAI_OK && cai_session_goal_budget_limited(session)) {
     rc = cai_set_error(
@@ -5954,7 +5966,7 @@ static int cai_session_stream_tool_round(
           CAI_SESSION_CONTINUITY_CLIENT_HISTORY &&
       CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
     rc = cai_session_refresh_history_input_preserving_transient(session, params,
-                                                                 error);
+                                                                error);
   }
   if (rc == CAI_OK && cai_session_goal_budget_limited(session)) {
     rc = cai_set_error(
@@ -6962,7 +6974,8 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
           doc.has_context_usage_output_tokens ||
       doc.has_context_usage_input_tokens !=
           doc.has_context_usage_output_reasoning_tokens ||
-      doc.has_context_usage_input_tokens != doc.has_context_usage_total_tokens ||
+      doc.has_context_usage_input_tokens !=
+          doc.has_context_usage_total_tokens ||
       (doc.has_context_usage_input_tokens &&
        (doc.context_usage_input_tokens < 0LL ||
         doc.context_usage_input_cached_tokens < 0LL ||

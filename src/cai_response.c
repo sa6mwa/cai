@@ -1540,14 +1540,13 @@ void cai_response_create_params_retain_request_only_tool_outputs(
     size_t j;
     int retain;
 
-    retain =
-        messages[i].kind == CAI_INPUT_FUNCTION_CALL_OUTPUT &&
-        messages[i].content.count > 0U;
+    retain = messages[i].kind == CAI_INPUT_FUNCTION_CALL_OUTPUT &&
+             messages[i].content.count > 0U;
     parts = (struct cai_content_part *)messages[i].content.items;
     for (j = 0U; retain && j < messages[i].content.count; j++) {
-      retain = parts[j].type != NULL &&
-               (strcmp(parts[j].type, "input_image") == 0 ||
-                strcmp(parts[j].type, "input_file") == 0);
+      retain =
+          parts[j].type != NULL && (strcmp(parts[j].type, "input_image") == 0 ||
+                                    strcmp(parts[j].type, "input_file") == 0);
     }
     if (!retain) {
       cai_input_message_cleanup(&params->allocator, &messages[i]);

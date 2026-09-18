@@ -9035,7 +9035,8 @@ static const char *mock_response_for_request(const char *request) {
       "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
       "\"item\":{\"id\":\"fc_stream_view_image_1\",\"type\":"
       "\"function_call\",\"call_id\":\"call_stream_view_image_1\","
-      "\"name\":\"view_image\",\"arguments\":\"{\\\"path\\\":\\\"pixel.png\\\"}\"}}\n\n"
+      "\"name\":\"view_image\",\"arguments\":\"{\\\"path\\\":\\\"pixel.png\\\"}"
+      "\"}}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_stream_view_image_1\",\"usage\":{\"input_tokens\":9,"
       "\"output_tokens\":1,\"total_tokens\":10}}}\n\n";
@@ -9080,8 +9081,7 @@ static const char *mock_response_for_request(const char *request) {
     if (strstr(request, "\"stream\":true") != NULL) {
       if (strstr(request, "view image stream tool turn") != NULL &&
           strstr(request, "\"type\":\"function_call_output\"") != NULL &&
-          strstr(request, "\"call_id\":\"call_stream_view_image_1\"") !=
-              NULL &&
+          strstr(request, "\"call_id\":\"call_stream_view_image_1\"") != NULL &&
           strstr(request, "\"type\":\"input_image\"") != NULL &&
           strstr(request, "data:image/png;base64,iVBORw0KGgo") != NULL) {
         return stream_view_image_tool_done_body;
@@ -9668,8 +9668,7 @@ static const char *mock_response_for_request(const char *request) {
       return compact_first_body;
     }
     if (strstr(request, "compact second") != NULL &&
-        strstr(request,
-               "\"previous_response_id\":\"resp_compact_summary\"") !=
+        strstr(request, "\"previous_response_id\":\"resp_compact_summary\"") !=
             NULL &&
         strstr(request, "\"context_management\":[{\"type\":\"compaction\","
                         "\"compact_threshold\":320000}]") != NULL) {
@@ -9886,15 +9885,13 @@ static void mock_openai_child(int pipe_fd, int request_count) {
       continue;
     }
     if ((strstr(request, "\"call_id\":\"call_view_image_1\"") != NULL ||
-         strstr(request, "\"call_id\":\"call_stream_view_image_1\"") !=
-             NULL) &&
+         strstr(request, "\"call_id\":\"call_stream_view_image_1\"") != NULL) &&
         mock_count_substring(request, "\"type\":\"function_call_output\"") !=
             1U) {
       _exit(14);
     }
     if ((strstr(request, "\"call_id\":\"call_view_image_1\"") != NULL ||
-         strstr(request, "\"call_id\":\"call_stream_view_image_1\"") !=
-             NULL) &&
+         strstr(request, "\"call_id\":\"call_stream_view_image_1\"") != NULL) &&
         strstr(request, "\"input\":[[") != NULL) {
       _exit(16);
     }
@@ -27224,9 +27221,9 @@ static void test_agent_runtime_model_switch(test_state *state) {
       {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
        "text/event-stream", NULL, compact_success_body},
       {"POST /v1/responses HTTP/", original_assistant_required,
-       sizeof(original_assistant_required) / sizeof(original_assistant_required[0]),
-       NULL, 0U, 200, "OK",
-       "text/event-stream", NULL, compact_success_body}};
+       sizeof(original_assistant_required) /
+           sizeof(original_assistant_required[0]),
+       NULL, 0U, 200, "OK", "text/event-stream", NULL, compact_success_body}};
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
   cai_agent_session_store store;
@@ -27506,18 +27503,18 @@ static void test_agent_runtime_model_switch(test_state *state) {
     (void)snprintf(store_state.fail_checkpoint_session_id,
                    sizeof(store_state.fail_checkpoint_session_id), "%s",
                    cai_agent_runtime_session_id(runtime));
-    expect_int(state, "runtime_model_switch_compact_checkpoint_failure",
-               cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_5_6_LUNA,
-                                           &error),
-               CAI_ERR_TRANSPORT);
+    expect_int(
+        state, "runtime_model_switch_compact_checkpoint_failure",
+        cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_5_6_LUNA, &error),
+        CAI_ERR_TRANSPORT);
     expect_str(state, "runtime_model_switch_compact_failure_model",
                cai_agent_runtime_model(runtime), CAI_MODEL_GPT_6_ASTRA);
     cai_error_cleanup(&error);
     cai_error_init(&error);
-    expect_int(state, "runtime_model_switch_compact_checkpoint_retry",
-               cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_5_6_LUNA,
-                                           &error),
-               CAI_OK);
+    expect_int(
+        state, "runtime_model_switch_compact_checkpoint_retry",
+        cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_5_6_LUNA, &error),
+        CAI_OK);
     expect_str(state, "runtime_model_switch_compact_capacity_model",
                cai_agent_runtime_model(runtime), CAI_MODEL_GPT_5_6_LUNA);
     expect_substr(state, "runtime_model_switch_compact_goal_usage",
@@ -27890,7 +27887,8 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
       "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
       "\"item\":{\"id\":\"fc_auto_compact_budget\",\"type\":"
       "\"function_call\",\"call_id\":\"call_auto_compact_budget\","
-      "\"name\":\"list_files\",\"arguments\":\"{\\\"path\\\":\\\"/dev/null\\\"}\"}}\n\n"
+      "\"name\":\"list_files\",\"arguments\":\"{\\\"path\\\":\\\"/dev/"
+      "null\\\"}\"}}\n\n"
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_auto_compact_budget\",\"usage\":{\"input_tokens\":330000,"
       "\"output_tokens\":10,\"total_tokens\":330010}}}\n\n";
@@ -27927,7 +27925,7 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
   static const char *final_required[] = {"opaque-summary"};
   static const char *final_forbidden[] = {"\"type\":\"compaction_trigger\""};
   static const char *image_tool_required[] = {"image compaction source",
-                                               "\"name\":\"view_image\""};
+                                              "\"name\":\"view_image\""};
   static const char *image_continuation_required[] = {
       "\"call_id\":\"call_auto_compact_image\"", "\"type\":\"input_image\"",
       "data:image/png;base64,iVBORw0KGgo"};
@@ -27935,7 +27933,7 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
       "\"type\":\"compaction_trigger\"", "\"input\":[["};
   static const char *steering_required[] = {"steering compaction source"};
   static const char *steering_final_required[] = {"opaque-summary",
-                                                   "steering continuation"};
+                                                  "steering continuation"};
   static const mock_http_expectation tool_script[] = {
       {"POST /v1/responses HTTP/", tool_required,
        sizeof(tool_required) / sizeof(tool_required[0]), NULL, 0U, 200, "OK",
@@ -27949,8 +27947,8 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
        "text/event-stream", NULL, final_response}};
   static const mock_http_expectation steering_script[] = {
       {"POST /v1/responses HTTP/", steering_required,
-       sizeof(steering_required) / sizeof(steering_required[0]), NULL, 0U,
-       200, "OK", "text/event-stream", NULL, steering_response},
+       sizeof(steering_required) / sizeof(steering_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, steering_response},
       {"POST /v1/responses HTTP/", compact_required,
        sizeof(compact_required) / sizeof(compact_required[0]), NULL, 0U, 200,
        "OK", "text/event-stream", NULL, compact_response},
@@ -27960,12 +27958,12 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
        200, "OK", "text/event-stream", NULL, final_response}};
   static const mock_http_expectation budget_script[] = {
       {"POST /v1/responses HTTP/", budget_tool_required,
-       sizeof(budget_tool_required) / sizeof(budget_tool_required[0]), NULL,
-       0U, 200, "OK", "text/event-stream", NULL, budget_tool_response}};
+       sizeof(budget_tool_required) / sizeof(budget_tool_required[0]), NULL, 0U,
+       200, "OK", "text/event-stream", NULL, budget_tool_response}};
   static const mock_http_expectation budget_after_compact_script[] = {
       {"POST /v1/responses HTTP/", budget_tool_required,
-       sizeof(budget_tool_required) / sizeof(budget_tool_required[0]), NULL,
-       0U, 200, "OK", "text/event-stream", NULL, budget_tool_response},
+       sizeof(budget_tool_required) / sizeof(budget_tool_required[0]), NULL, 0U,
+       200, "OK", "text/event-stream", NULL, budget_tool_response},
       {"POST /v1/responses HTTP/", compact_required,
        sizeof(compact_required) / sizeof(compact_required[0]), NULL, 0U, 200,
        "OK", "text/event-stream", NULL, compact_response}};
@@ -28001,10 +27999,9 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
   events.owner = pthread_self();
   delay.tv_sec = 0;
   delay.tv_nsec = 10000000L;
-  if (http_mock_client_open_script(state, "runtime_auto_compact_tool",
-                                   tool_script,
-                                   sizeof(tool_script) / sizeof(tool_script[0]),
-                                   &mock) != 0) {
+  if (http_mock_client_open_script(
+          state, "runtime_auto_compact_tool", tool_script,
+          sizeof(tool_script) / sizeof(tool_script[0]), &mock) != 0) {
     cai_error_cleanup(&error);
     return;
   }
@@ -28026,9 +28023,10 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
              CAI_OK);
   if (runtime != NULL) {
-    expect_int(state, "runtime_auto_compact_tool_submit",
-               cai_agent_runtime_submit(runtime, "long tool continuation", &error),
-               CAI_OK);
+    expect_int(
+        state, "runtime_auto_compact_tool_submit",
+        cai_agent_runtime_submit(runtime, "long tool continuation", &error),
+        CAI_OK);
     run_state = CAI_AGENT_IDLE;
     for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
                 run_state != CAI_AGENT_FAILED;
@@ -28064,7 +28062,8 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
         "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
         "\"item\":{\"id\":\"fc_auto_compact_image\",\"type\":"
         "\"function_call\",\"call_id\":\"call_auto_compact_image\","
-        "\"name\":\"view_image\",\"arguments\":\"{\\\"path\\\":\\\"%s\\\"}\"}}\n\n"
+        "\"name\":\"view_image\",\"arguments\":\"{\\\"path\\\":\\\"%s\\\"}\"}}"
+        "\n\n"
         "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
         "\"resp_auto_compact_image_tool\",\"usage\":{\"input_tokens\":330000,"
         "\"output_tokens\":10,\"total_tokens\":330010}}}\n\n",
@@ -28108,10 +28107,10 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
       runtime_config.disable_terminal = 1;
       runtime_config.event_callback = test_runtime_event;
       runtime_config.event_context = &events;
-      expect_int(state, "runtime_auto_compact_image_open",
-                 cai_agent_runtime_open(client, &runtime_config, &runtime,
-                                        &error),
-                 CAI_OK);
+      expect_int(
+          state, "runtime_auto_compact_image_open",
+          cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+          CAI_OK);
       if (runtime != NULL) {
         expect_int(state, "runtime_auto_compact_image_submit",
                    cai_agent_runtime_submit(runtime, "image compaction source",
@@ -28130,7 +28129,8 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
         }
         expect_int(state, "runtime_auto_compact_image_completed", run_state,
                    CAI_AGENT_COMPLETED);
-        if (run_state == CAI_AGENT_FAILED && events.failure_message[0] != '\0') {
+        if (run_state == CAI_AGENT_FAILED &&
+            events.failure_message[0] != '\0') {
           test_fail(state, "runtime_auto_compact_image_failure",
                     events.failure_message);
         }
@@ -28147,11 +28147,9 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
     rmdir(image_workspace);
   }
 
-  if (http_mock_client_open_script(state, "runtime_auto_compact_steering",
-                                   steering_script,
-                                   sizeof(steering_script) /
-                                       sizeof(steering_script[0]),
-                                   &mock) != 0) {
+  if (http_mock_client_open_script(
+          state, "runtime_auto_compact_steering", steering_script,
+          sizeof(steering_script) / sizeof(steering_script[0]), &mock) != 0) {
     cai_error_cleanup(&error);
     return;
   }
@@ -28175,13 +28173,13 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
              CAI_OK);
   if (runtime != NULL) {
-    expect_int(state, "runtime_auto_compact_steering_submit",
-               cai_agent_runtime_submit(runtime, "steering compaction source",
-                                        &error),
-               CAI_OK);
+    expect_int(
+        state, "runtime_auto_compact_steering_submit",
+        cai_agent_runtime_submit(runtime, "steering compaction source", &error),
+        CAI_OK);
     expect_int(state, "runtime_auto_compact_steering_queue",
-               cai_agent_runtime_submit_steering(runtime, "steering continuation",
-                                                 &error),
+               cai_agent_runtime_submit_steering(
+                   runtime, "steering continuation", &error),
                CAI_OK);
     run_state = CAI_AGENT_IDLE;
     for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
@@ -28208,10 +28206,9 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
   }
   http_mock_client_close(state, "runtime_auto_compact_steering", &mock);
 
-  if (http_mock_client_open_script(state, "runtime_auto_compact_budget",
-                                   budget_script,
-                                   sizeof(budget_script) / sizeof(budget_script[0]),
-                                   &mock) != 0) {
+  if (http_mock_client_open_script(
+          state, "runtime_auto_compact_budget", budget_script,
+          sizeof(budget_script) / sizeof(budget_script[0]), &mock) != 0) {
     cai_error_cleanup(&error);
     return;
   }
@@ -28249,14 +28246,15 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
              CAI_OK);
   if (runtime != NULL) {
-    expect_int(state, "runtime_auto_compact_budget_submit",
-               cai_agent_runtime_submit(runtime, "long tool continuation", &error),
-               CAI_OK);
-    expect_int(state, "runtime_auto_compact_budget_steering",
-               cai_agent_runtime_submit_steering(
-                   runtime, "persist steering at the tool budget boundary",
-                   &error),
-               CAI_OK);
+    expect_int(
+        state, "runtime_auto_compact_budget_submit",
+        cai_agent_runtime_submit(runtime, "long tool continuation", &error),
+        CAI_OK);
+    expect_int(
+        state, "runtime_auto_compact_budget_steering",
+        cai_agent_runtime_submit_steering(
+            runtime, "persist steering at the tool budget boundary", &error),
+        CAI_OK);
     run_state = CAI_AGENT_IDLE;
     for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
                 run_state != CAI_AGENT_FAILED;
@@ -28331,9 +28329,10 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
              CAI_OK);
   if (runtime != NULL) {
-    expect_int(state, "runtime_auto_compact_budget_after_submit",
-               cai_agent_runtime_submit(runtime, "long tool continuation", &error),
-               CAI_OK);
+    expect_int(
+        state, "runtime_auto_compact_budget_after_submit",
+        cai_agent_runtime_submit(runtime, "long tool continuation", &error),
+        CAI_OK);
     run_state = CAI_AGENT_IDLE;
     for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
                 run_state != CAI_AGENT_FAILED;
@@ -28369,11 +28368,9 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
   http_mock_client_close(state, "runtime_auto_compact_budget_after_compact",
                          &mock);
 
-  if (http_mock_client_open_script(state, "runtime_auto_compact_resume",
-                                   resume_script,
-                                   sizeof(resume_script) /
-                                       sizeof(resume_script[0]),
-                                   &mock) != 0) {
+  if (http_mock_client_open_script(
+          state, "runtime_auto_compact_resume", resume_script,
+          sizeof(resume_script) / sizeof(resume_script[0]), &mock) != 0) {
     cai_error_cleanup(&error);
     return;
   }
@@ -28384,9 +28381,12 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
       "\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"retained context\"}]}],\"last_usage_input_tokens\":330000,"
       "\"last_usage_input_cached_tokens\":0,\"last_usage_output_tokens\":10,"
-      "\"last_usage_output_reasoning_tokens\":0,\"last_usage_total_tokens\":330010,"
-      "\"context_usage_input_tokens\":330000,\"context_usage_input_cached_tokens\":0,"
-      "\"context_usage_output_tokens\":10,\"context_usage_output_reasoning_tokens\":0,"
+      "\"last_usage_output_reasoning_tokens\":0,\"last_usage_total_tokens\":"
+      "330010,"
+      "\"context_usage_input_tokens\":330000,\"context_usage_input_cached_"
+      "tokens\":0,"
+      "\"context_usage_output_tokens\":10,\"context_usage_output_reasoning_"
+      "tokens\":0,"
       "\"context_usage_total_tokens\":330010}";
   store.checkpoint = test_runtime_session_store_checkpoint;
   store.load_latest = test_runtime_session_store_load;
@@ -28414,9 +28414,10 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
              CAI_OK);
   if (runtime != NULL) {
-    expect_int(state, "runtime_auto_compact_resume_submit",
-               cai_agent_runtime_submit(runtime, "resumed automatic compact", &error),
-               CAI_OK);
+    expect_int(
+        state, "runtime_auto_compact_resume_submit",
+        cai_agent_runtime_submit(runtime, "resumed automatic compact", &error),
+        CAI_OK);
     run_state = CAI_AGENT_IDLE;
     for (i = 0; i < 100 && run_state != CAI_AGENT_COMPLETED &&
                 run_state != CAI_AGENT_FAILED;
@@ -28634,8 +28635,8 @@ static void test_agent_runtime_queued_turns(test_state *state) {
   if (runtime != NULL) {
     events.runtime = runtime;
     expect_int(state, "runtime_queued_interactive_start",
-               cai_agent_runtime_submit_interactive(runtime,
-                                                    "first queued turn", &error),
+               cai_agent_runtime_submit_interactive(
+                   runtime, "first queued turn", &error),
                CAI_OK);
     expect_int(
         state, "runtime_queued_enqueue",
@@ -32655,7 +32656,8 @@ test_agent_client_history_tool_callback_durability(test_state *state) {
 }
 
 static void test_agent_view_image_auto_run(test_state *state) {
-  /* Keep the request-only image output larger than the history reader buffer. */
+  /* Keep the request-only image output larger than the history reader buffer.
+   */
   static const unsigned char png_bytes[8192] = {
       0x89U, 0x50U, 0x4eU, 0x47U, 0x0dU, 0x0aU, 0x1aU, 0x0aU, 0x00U, 0x00U,
       0x00U, 0x0dU, 0x49U, 0x48U, 0x44U, 0x52U, 0x00U, 0x00U, 0x00U, 0x01U,
@@ -32791,14 +32793,14 @@ static void test_agent_view_image_auto_run(test_state *state) {
   cai_stream_sinks_init(&stream_sinks);
   expect_int(state, "stream_view_image_session",
              cai_agent_new_session(agent, &session, &error), CAI_OK);
-  expect_int(state, "stream_view_image_add",
-             cai_session_add_user_text(session, "view image stream tool turn",
-                                       &error),
-             CAI_OK);
-  expect_int(state, "stream_view_image_run",
-             cai_session_stream_auto(session, &run_options, &stream_sinks,
-                                     &error),
-             CAI_OK);
+  expect_int(
+      state, "stream_view_image_add",
+      cai_session_add_user_text(session, "view image stream tool turn", &error),
+      CAI_OK);
+  expect_int(
+      state, "stream_view_image_run",
+      cai_session_stream_auto(session, &run_options, &stream_sinks, &error),
+      CAI_OK);
   expect_int(state, "stream_view_image_durable_calls", durable_calls, 1L);
   expect_int(
       state, "stream_view_image_export",
@@ -38613,9 +38615,9 @@ static void test_stream_compaction_progress_callback(test_state *state) {
   agent = NULL;
   session = NULL;
   memset(&progress, 0, sizeof(progress));
-  if (http_mock_client_open_script(
-          state, "stream_compaction_progress", script,
-          sizeof(script) / sizeof(script[0]), &mock) != 0) {
+  if (http_mock_client_open_script(state, "stream_compaction_progress", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &mock) != 0) {
     return;
   }
   expect_int(state, "stream_compaction_progress_params",
@@ -38640,10 +38642,10 @@ static void test_stream_compaction_progress_callback(test_state *state) {
   }
   cai_agent_config_init(&agent_config);
   agent_config.model = CAI_MODEL_GPT_5_NANO;
-  expect_int(state, "stream_compaction_progress_agent",
-             cai_client_new_agent(mock.client, &agent_config, &agent,
-                                  &mock.error),
-             CAI_OK);
+  expect_int(
+      state, "stream_compaction_progress_agent",
+      cai_client_new_agent(mock.client, &agent_config, &agent, &mock.error),
+      CAI_OK);
   if (agent != NULL) {
     expect_int(state, "stream_compaction_progress_session",
                cai_agent_new_session(agent, &session, &mock.error), CAI_OK);
@@ -42433,8 +42435,7 @@ static void test_local_history_opt_in(test_state *state) {
   expect_int(state, "local_history_session_new",
              cai_agent_new_session(agent, &session, &error), CAI_OK);
   expect_int(state, "local_history_compact_disabled",
-             cai_session_compact(session, &error),
-             CAI_ERR_INVALID);
+             cai_session_compact(session, &error), CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   expect_int(

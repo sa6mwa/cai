@@ -2463,8 +2463,9 @@ cai_runtime_generate_session_id(char output[CAI_AGENT_SESSION_ID_MAX],
   return rc;
 }
 
-static int cai_runtime_reserve_checkpoint_event(
-    cai_agent_runtime *runtime, cai_runtime_event_node **out, cai_error *error) {
+static int cai_runtime_reserve_checkpoint_event(cai_agent_runtime *runtime,
+                                                cai_runtime_event_node **out,
+                                                cai_error *error) {
   int rc;
 
   if (out == NULL) {
@@ -2493,9 +2494,10 @@ static int cai_runtime_reserve_checkpoint_event(
   return rc;
 }
 
-static int cai_runtime_checkpoint_reserved(
-    cai_agent_runtime *runtime, int emit_event,
-    cai_runtime_event_node *checkpoint_event, cai_error *error) {
+static int
+cai_runtime_checkpoint_reserved(cai_agent_runtime *runtime, int emit_event,
+                                cai_runtime_event_node *checkpoint_event,
+                                cai_error *error) {
   cai_source *state;
   const char *checkpoint_model;
   const char *checkpoint_model_compaction_hash;
@@ -2509,8 +2511,8 @@ static int cai_runtime_checkpoint_reserved(
     return CAI_OK;
   }
   if (checkpoint_event == NULL && emit_event) {
-    rc = cai_runtime_reserve_checkpoint_event(runtime, &checkpoint_event,
-                                              error);
+    rc =
+        cai_runtime_reserve_checkpoint_event(runtime, &checkpoint_event, error);
     if (rc != CAI_OK) {
       return rc;
     }
@@ -3334,9 +3336,9 @@ static void cai_runtime_emit_compaction_event(cai_agent_runtime *runtime,
   }
   cai_error_init(&ignored);
   pthread_mutex_lock(&runtime->lock);
-  (void)cai_runtime_enqueue_nonblocking_locked(
-      runtime, type, message, strlen(message), NULL, NULL, runtime->state,
-      &ignored);
+  (void)cai_runtime_enqueue_nonblocking_locked(runtime, type, message,
+                                               strlen(message), NULL, NULL,
+                                               runtime->state, &ignored);
   pthread_mutex_unlock(&runtime->lock);
   cai_error_cleanup(&ignored);
 }
@@ -3422,18 +3424,19 @@ static int cai_runtime_compact(cai_agent_runtime *runtime,
     rollback_rc = cai_source_reset(snapshot, &rollback_error);
     if (rollback_rc == CAI_OK) {
       rollback_rc = cai_session_import_state_source(runtime->session, snapshot,
-                                                     &rollback_error);
+                                                    &rollback_error);
     }
     if (rollback_rc == CAI_OK) {
       rollback_rc =
           cai_runtime_refresh_goal_projection(runtime, &rollback_error);
     }
     if (rollback_rc != CAI_OK) {
-      rc = cai_set_error_detail(
-          error, rollback_rc,
-          "compaction checkpoint failed and original state could not be restored",
-          rollback_error.message != NULL ? rollback_error.message
-                                         : "unknown rollback failure");
+      rc = cai_set_error_detail(error, rollback_rc,
+                                "compaction checkpoint failed and original "
+                                "state could not be restored",
+                                rollback_error.message != NULL
+                                    ? rollback_error.message
+                                    : "unknown rollback failure");
     }
     cai_error_cleanup(&rollback_error);
   }
@@ -3443,9 +3446,8 @@ static int cai_runtime_compact(cai_agent_runtime *runtime,
   pthread_cond_broadcast(&runtime->condition);
   pthread_mutex_unlock(&runtime->lock);
   if (rc == CAI_OK) {
-    cai_runtime_emit_compaction_event(runtime,
-                                      CAI_AGENT_EVENT_COMPACTION_COMPLETED,
-                                      "Made room to continue");
+    cai_runtime_emit_compaction_event(
+        runtime, CAI_AGENT_EVENT_COMPACTION_COMPLETED, "Made room to continue");
   }
   return rc;
 }
@@ -3486,21 +3488,23 @@ static int cai_runtime_compact_before_request(cai_agent_runtime *runtime,
   }
   context_window = runtime->model_context_window;
   if (context_window <= 0LL) {
-    context_window = cai_model_context_window_tokens(
-        CAI_AGENT_IMPL(runtime->agent)->model);
+    context_window =
+        cai_model_context_window_tokens(CAI_AGENT_IMPL(runtime->agent)->model);
   }
   if ((limit > 0LL && session->context_usage.total_tokens >= limit) ||
       (context_window > 0LL &&
        session->context_usage.total_tokens >= context_window)) {
     if (cai_runtime_goal_budget_limited(runtime)) {
-      return cai_set_error(error, CAI_ERR_LIMIT,
-                           "goal token budget exhausted before automatic compaction");
+      return cai_set_error(
+          error, CAI_ERR_LIMIT,
+          "goal token budget exhausted before automatic compaction");
     }
     budget_limited = 0;
     rc = cai_runtime_compact(runtime, &budget_limited, error);
     if (rc == CAI_OK && budget_limited) {
-      return cai_set_error(error, CAI_ERR_LIMIT,
-                           "goal token budget exhausted after automatic compaction");
+      return cai_set_error(
+          error, CAI_ERR_LIMIT,
+          "goal token budget exhausted after automatic compaction");
     }
     return rc;
   }
@@ -3858,8 +3862,9 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
     if (rc != CAI_OK) {
       return rc;
     }
-    return cai_set_error(error, CAI_ERR_LIMIT,
-                         "goal token budget exhausted before another model request");
+    return cai_set_error(
+        error, CAI_ERR_LIMIT,
+        "goal token budget exhausted before another model request");
   }
   if (rc == CAI_OK && cai_runtime_goal_paused(runtime)) {
     return cai_set_error(error, CAI_ERR_CANCELLED,
@@ -4576,8 +4581,8 @@ static void *cai_runtime_worker(void *context) {
       cai_runtime_set_state(runtime, CAI_AGENT_SAMPLING);
       rc = cai_runtime_compact_before_request(runtime, &error);
       if (rc == CAI_OK) {
-        rc = cai_session_stream_auto(runtime->session, &options, &sinks,
-                                     &error);
+        rc =
+            cai_session_stream_auto(runtime->session, &options, &sinks, &error);
       }
       if (rc == CAI_OK) {
         rc = cai_runtime_refresh_goal_projection(runtime, &error);
@@ -5797,9 +5802,8 @@ static int cai_runtime_compact_pending_history(cai_agent_runtime *runtime,
   }
   cai_model_catalog_close(catalog);
   budget_limited = 0;
-  rc = should_compact
-           ? cai_runtime_compact(runtime, &budget_limited, error)
-           : CAI_OK;
+  rc = should_compact ? cai_runtime_compact(runtime, &budget_limited, error)
+                      : CAI_OK;
   if (rc == CAI_OK) {
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                  runtime->model_compaction_hash);
@@ -9221,8 +9225,9 @@ int cai_agent_runtime_submit_steering_threadsafe(cai_agent_runtime *runtime,
                                    error);
 }
 
-int cai_agent_runtime_submit_interactive_threadsafe(
-    cai_agent_runtime *runtime, const char *text, cai_error *error) {
+int cai_agent_runtime_submit_interactive_threadsafe(cai_agent_runtime *runtime,
+                                                    const char *text,
+                                                    cai_error *error) {
   if (runtime == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "agent runtime is required");
   }
@@ -9231,8 +9236,8 @@ int cai_agent_runtime_submit_interactive_threadsafe(
                          "isolated review runtime accepts exactly one review "
                          "request");
   }
-  return cai_runtime_enqueue_input(runtime, text,
-                                   CAI_RUNTIME_INPUT_INTERACTIVE, error);
+  return cai_runtime_enqueue_input(runtime, text, CAI_RUNTIME_INPUT_INTERACTIVE,
+                                   error);
 }
 
 int cai_agent_runtime_submit_interactive(cai_agent_runtime *runtime,
