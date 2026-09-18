@@ -242,7 +242,7 @@ int cai_client_list_models(cai_client *client,
                            cai_model_catalog_refresh_strategy strategy,
                            cai_model_catalog **out, cai_error *error) {
   cai_client_impl *impl;
-  cai_model_catalog *catalog;
+  cai_model_catalog *catalog = NULL;
   char *body;
   char *request_id;
   long http_status;
