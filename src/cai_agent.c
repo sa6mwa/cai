@@ -5609,7 +5609,8 @@ static int cai_session_stream_once(cai_session *session,
 
   if (session == NULL || sinks == NULL ||
       (sinks->output_text == NULL && sinks->reasoning_summary == NULL &&
-       sinks->output_item_done == NULL && sinks->output_text_delta == NULL &&
+       sinks->output_item_done == NULL && sinks->compaction_progress == NULL &&
+       sinks->output_text_delta == NULL &&
        sinks->function_call_arguments_delta == NULL &&
        sinks->function_call_arguments_done == NULL &&
        sinks->custom_tool_call_input_delta == NULL &&

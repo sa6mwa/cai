@@ -1416,6 +1416,7 @@ if(CAI_BUILD_TESTS)
     agent_tool_output_max_bytes
     conversations
     stream_response_text
+    stream_compaction_progress_callback
     stream_upload_setup_failure
     stream_responses_websocket
     stream_responses_websocket_large_frame

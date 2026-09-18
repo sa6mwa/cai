@@ -3316,6 +3316,15 @@ static int test_stream_response_completed(void *context, cai_error *error) {
   return CAI_OK;
 }
 
+static int test_stream_compaction_progress(void *context, cai_error *error) {
+  stream_response_completed_state *state;
+
+  (void)error;
+  state = (stream_response_completed_state *)context;
+  state->count++;
+  return CAI_OK;
+}
+
 static int test_weather_tool(void *context, const void *params, void *result,
                              cai_error *error) {
   const tool_weather_args *args;
@@ -38571,6 +38580,93 @@ static void test_stream_response_text(test_state *state) {
   }
 }
 
+static void test_stream_compaction_progress_callback(test_state *state) {
+  static const char body[] =
+      "event: response.compaction.compacting\n"
+      "data: {\"type\":\"response.compaction.compacting\"}\n\n"
+      "event: response.output_item.done\n"
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"cmp_progress\",\"type\":\"compaction\","
+      "\"encrypted_content\":\"opaque-progress-summary\"}}\n\n"
+      "event: response.completed\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_compaction_progress\",\"usage\":{\"input_tokens\":1,"
+      "\"output_tokens\":1,\"total_tokens\":2}}}\n\n";
+  static const char *direct_required[] = {"direct compaction progress"};
+  static const char *session_required[] = {"session compaction progress"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", direct_required,
+       sizeof(direct_required) / sizeof(direct_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, body},
+      {"POST /v1/responses HTTP/", session_required,
+       sizeof(session_required) / sizeof(session_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, body}};
+  cai_response_create_params *params;
+  cai_agent_config agent_config;
+  cai_agent *agent;
+  cai_session *session;
+  cai_stream_sinks sinks;
+  stream_response_completed_state progress;
+  http_mock_client mock;
+
+  params = NULL;
+  agent = NULL;
+  session = NULL;
+  memset(&progress, 0, sizeof(progress));
+  if (http_mock_client_open_script(
+          state, "stream_compaction_progress", script,
+          sizeof(script) / sizeof(script[0]), &mock) != 0) {
+    return;
+  }
+  expect_int(state, "stream_compaction_progress_params",
+             cai_response_create_params_new(&params, &mock.error), CAI_OK);
+  if (params != NULL) {
+    expect_int(state, "stream_compaction_progress_model",
+               params->set_model(params, CAI_MODEL_GPT_5_NANO, &mock.error),
+               CAI_OK);
+    expect_int(state, "stream_compaction_progress_text",
+               params->add_text(params, "user", "direct compaction progress",
+                                &mock.error),
+               CAI_OK);
+    cai_stream_sinks_init(&sinks);
+    sinks.compaction_progress = test_stream_compaction_progress;
+    sinks.compaction_progress_context = &progress;
+    expect_int(state, "stream_compaction_progress_client_only",
+               cai_client_stream_response_with_id(mock.client, params, &sinks,
+                                                  NULL, NULL, &mock.error),
+               CAI_OK);
+    expect_int(state, "stream_compaction_progress_client_count", progress.count,
+               1L);
+  }
+  cai_agent_config_init(&agent_config);
+  agent_config.model = CAI_MODEL_GPT_5_NANO;
+  expect_int(state, "stream_compaction_progress_agent",
+             cai_client_new_agent(mock.client, &agent_config, &agent,
+                                  &mock.error),
+             CAI_OK);
+  if (agent != NULL) {
+    expect_int(state, "stream_compaction_progress_session",
+               cai_agent_new_session(agent, &session, &mock.error), CAI_OK);
+  }
+  if (session != NULL) {
+    expect_int(state, "stream_compaction_progress_session_text",
+               cai_session_add_user_text(session, "session compaction progress",
+                                         &mock.error),
+               CAI_OK);
+    cai_stream_sinks_init(&sinks);
+    sinks.compaction_progress = test_stream_compaction_progress;
+    sinks.compaction_progress_context = &progress;
+    expect_int(state, "stream_compaction_progress_session_only",
+               cai_session_stream(session, &sinks, &mock.error), CAI_OK);
+    expect_int(state, "stream_compaction_progress_session_count",
+               progress.count, 2L);
+  }
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_response_create_params_destroy(params);
+  http_mock_client_close(state, "stream_compaction_progress", &mock);
+}
+
 static void test_stream_responses_websocket(test_state *state) {
   websocket_mock_server server;
   cai_client_config config;
@@ -43696,6 +43792,8 @@ static const test_entry test_entries[] = {
     {"agent_tool_output_max_bytes", test_agent_tool_output_max_bytes},
     {"conversations", test_conversations},
     {"stream_response_text", test_stream_response_text},
+    {"stream_compaction_progress_callback",
+     test_stream_compaction_progress_callback},
     {"stream_upload_setup_failure", test_stream_upload_setup_failure},
     {"stream_responses_websocket", test_stream_responses_websocket},
     {"stream_responses_websocket_large_frame",
