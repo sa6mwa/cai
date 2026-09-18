@@ -2,7 +2,7 @@ name: cai-e2e
 
 services:
   searxng:
-    image: "${CAI_SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.6.24-e3126b89e}"
+    image: "${CAI_SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.9.18-c0042add3}"
     restart: unless-stopped
     ports:
       - "${CAI_SEARXNG_PORT:-8888}:8080"
