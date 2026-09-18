@@ -103,8 +103,8 @@ if ! grep -F 'CAI_LONEJSON_VERSION ?= 0.44.0' "$makefile" >/dev/null; then
   printf 'Makefile must pin lonejson 0.44.0\n' >&2
   exit 1
 fi
-if ! grep -F 'CAI_PSLOG_VERSION ?= 0.9.0' "$makefile" >/dev/null; then
-  printf 'Makefile must pin libpslog 0.9.0\n' >&2
+if ! grep -F 'CAI_PSLOG_VERSION ?= 0.10.0' "$makefile" >/dev/null; then
+  printf 'Makefile must pin libpslog 0.10.0\n' >&2
   exit 1
 fi
 
