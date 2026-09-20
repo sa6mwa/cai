@@ -5,7 +5,6 @@
 #include <cai/tools/view_image.h>
 
 #include "cai_internal.h"
-#include "cai_smith_gpt_5_6_prompt.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -20,6 +19,10 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_SMITH_MAX_REPOSITORY_INSTRUCTIONS (128U * 1024U)
 #define CAI_AGENT_IDENTITY_TOKEN "{{agent_identity}}"
 #define CAI_AGENT_TOOLS_TOKEN "{{agent_tools}}"
+
+static const unsigned char cai_smith_gpt_5_6_prompt_template[] = {
+#include "cai_smith_gpt_5_6_prompt.inc"
+};
 
 void cai_smith_config_init(cai_smith_config *config) {
   cai_agent_preset_config_init(config);
@@ -331,41 +334,6 @@ static int cai_smith_build_tool_contract(const cai_allocator *allocator,
   return CAI_OK;
 }
 
-static int cai_smith_join_prompt_parts(const cai_allocator *allocator,
-                                       const char *const *parts, char **out,
-                                       cai_error *error) {
-  size_t length;
-  size_t offset;
-  size_t i;
-  size_t part_length;
-  char *joined;
-
-  *out = NULL;
-  length = 0U;
-  for (i = 0U; parts[i] != NULL; i++) {
-    part_length = strlen(parts[i]);
-    if (part_length > SIZE_MAX - length) {
-      return cai_set_error(error, CAI_ERR_INVALID,
-                           "agent prompt template is too large");
-    }
-    length += part_length;
-  }
-  joined = (char *)cai_alloc(allocator, length + 1U);
-  if (joined == NULL) {
-    return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to allocate agent prompt template");
-  }
-  offset = 0U;
-  for (i = 0U; parts[i] != NULL; i++) {
-    part_length = strlen(parts[i]);
-    memcpy(joined + offset, parts[i], part_length);
-    offset += part_length;
-  }
-  joined[offset] = '\0';
-  *out = joined;
-  return CAI_OK;
-}
-
 static int cai_smith_remove_prompt_fragment(char *prompt, const char *fragment,
                                             cai_error *error) {
   char *match;
@@ -389,7 +357,6 @@ static int cai_smith_render_instructions(const cai_allocator *allocator,
                                          const char *skill_catalog, char **out,
                                          cai_error *error) {
   char *tool_contract;
-  char *template_text;
   int rc;
 
   if (out == NULL) {
@@ -403,13 +370,18 @@ static int cai_smith_render_instructions(const cai_allocator *allocator,
                                       skill_catalog, NULL, out, error);
   }
   tool_contract = NULL;
-  template_text = NULL;
-  rc = cai_smith_join_prompt_parts(allocator, cai_smith_gpt_5_6_prompt_parts,
-                                   &template_text, error);
+  rc = cai_smith_build_tool_contract(allocator, tool_capabilities,
+                                     &tool_contract, error);
+  if (rc == CAI_OK) {
+    rc = cai_preset_render_template(
+        allocator, (const char *)cai_smith_gpt_5_6_prompt_template, preset,
+        config, repository_instructions, skill_catalog, tool_contract, out,
+        error);
+  }
   if (rc == CAI_OK &&
       (tool_capabilities & CAI_AGENT_PRESET_TOOL_APPLY_PATCH) == 0UL) {
     rc = cai_smith_remove_prompt_fragment(
-        template_text,
+        *out,
         "Use `apply_patch` for local file edits. Do not create or edit files "
         "with `cat` or other shell write tricks. Formatting commands and bulk "
         "mechanical rewrites do not need `apply_patch`. Do not use Python to "
@@ -420,24 +392,18 @@ static int cai_smith_render_instructions(const cai_allocator *allocator,
   if (rc == CAI_OK &&
       (tool_capabilities & CAI_AGENT_PRESET_TOOL_TERMINAL) == 0UL) {
     rc = cai_smith_remove_prompt_fragment(
-        template_text,
+        *out,
         "- Exercise caution when escaping text for exec_command calls - "
         "backticks and `$()` passed to the `cmd` argument will still execute. "
         "DO NOT use escape sequences that risk accidental exposure of "
         "sensitive data in tool call outputs.\n",
         error);
   }
-  if (rc == CAI_OK) {
-    rc = cai_smith_build_tool_contract(allocator, tool_capabilities,
-                                       &tool_contract, error);
-  }
-  if (rc == CAI_OK) {
-    rc = cai_preset_render_template(allocator, template_text, preset, config,
-                                    repository_instructions, skill_catalog,
-                                    tool_contract, out, error);
-  }
-  cai_free_mem(allocator, template_text);
   cai_free_mem(allocator, tool_contract);
+  if (rc != CAI_OK) {
+    cai_free_mem(allocator, *out);
+    *out = NULL;
+  }
   return rc;
 }
 

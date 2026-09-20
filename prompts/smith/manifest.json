@@ -3,6 +3,10 @@
   "preset": "smith",
   "rendered_asset_version": "smith-7",
   "identity_placeholder": "{{agent_identity}}",
+  "template": {
+    "asset": "prompts/smith/gpt-5.6-codex-smith-template.md",
+    "sha256": "a188f43d51e0a8b5a515f12d3e4e478bb88fa3ccd97ac1213fca6bf269841da9"
+  },
   "upstream": {
     "project": "openai/codex",
     "license": "Apache-2.0",
