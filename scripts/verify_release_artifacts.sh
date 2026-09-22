@@ -548,6 +548,21 @@ find_target_readelf() {
   return 1
 }
 
+find_target_nm() {
+  local target_id=$1
+  local assignments
+  local nm
+
+  assignments=$("$repo_root/scripts/discover_target_tools.sh" \
+    "$repo_root/build/$target_id-release" "$target_id")
+  nm=$(shell_value "$assignments" NM || true)
+  if [[ -n "$nm" && -x "$nm" ]]; then
+    printf '%s\n' "$nm"
+    return 0
+  fi
+  return 1
+}
+
 find_target_cc() {
   local target_id=$1
   local assignments
@@ -993,6 +1008,34 @@ verify_darwin_runpath() {
   done < <(find "$root_dir/lib" -maxdepth 1 -type f -name 'libcai*.dylib' -print)
 }
 
+verify_shared_exports() {
+  local root_dir=$1
+  local target_id=$2
+  local nm
+  local platform
+  local library
+
+  nm=$(find_target_nm "$target_id") || diagnostic_fail \
+    package-verify shared-export-table external-tool-unavailable \
+    "target-correct nm is required to verify dynamic exports" \
+    "$root_dir" \
+    "configure $target_id-release or set CAI_NM to a target-capable nm"
+  if [[ "$target_id" == *-linux-* ]]; then
+    platform=linux
+    library=$(find "$root_dir/lib" -maxdepth 1 -type f -name 'libcai.so.*' \
+      -print -quit)
+  elif [[ "$target_id" == *-apple-darwin ]]; then
+    platform=darwin
+    library=$(find "$root_dir/lib" -maxdepth 1 -type f -name 'libcai.*.dylib' \
+      -print -quit)
+  else
+    fail "unsupported release target for shared export verification: $target_id"
+  fi
+  [[ -n "$library" ]] || fail "missing shared library for export verification: $root_dir/lib"
+  "$repo_root/tests/shared_export_policy_test.sh" \
+    "$nm" "$library" "$repo_root/cmake/cai_shared.exports" "$platform"
+}
+
 verify_binary_archive() {
   local archive=$1
   local root=$2
@@ -1019,6 +1062,7 @@ verify_binary_archive() {
   verify_no_sanitizer_artifacts "$root_dir"
   verify_dependency_manifest "$root_dir" "${root#cai-$version-}"
   verify_extracted_sdk_smoke "$root_dir" "${root#cai-$version-}"
+  verify_shared_exports "$root_dir" "${root#cai-$version-}"
   if [[ "$root" == *-linux-* ]]; then
     verify_linux_runpath "$root_dir" "${root#cai-$version-}"
   elif [[ "$root" == *-apple-darwin ]]; then

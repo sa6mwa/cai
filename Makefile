@@ -46,7 +46,7 @@ RELEASE_LUA_PACK_SOURCE_TARBALL := $(RELEASE_LUA_PACK_DIR)/cai-lua-$(RELEASE_VER
 RELEASE_LUA_PACK_ROCKSPEC := $(RELEASE_LUA_PACK_DIR)/cai-$(RELEASE_VERSION)-1.rockspec
 RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
 RELEASE_LIVE_GATE_STAMP ?= .cache/release-gates/prerelease-live.stamp
-LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh scripts/build_lua_rock.sh scripts/render_release_rockspec.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE docs/model-metadata.md $(shell find include/cai -type f -name '*.h' | sort)
+LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh scripts/build_lua_rock.sh scripts/render_release_rockspec.sh lua/cai_lua.c lua/cai_lua.exports cai.rockspec.in README.md LICENSE docs/model-metadata.md $(shell find include/cai -type f -name '*.h' | sort)
 LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
 .PHONY: help deps-debug deps-release deps-cross build build-debug build-host build-release cross-build integration-build chatgpt-login test test-debug test-host test-release test-cross cross-test test-all test-e2e test-integration test-lua-smith-e2e test-smith-goal-e2e test-install-tree asan test-asan valgrind fuzz fuzz-smoke fuzz-long coverage test-coverage example-smoke-local example-smoke-live finalize-slice clangd-check prerelease release-pipeline prerelease-live require-prerelease-live require-clean-worktree prerelease-hardening lifecycle-version-contract lua-rock lua-env lua-test lua-runner release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify verify-release-archives verify-release-privacy release-matrix release compose-check dev-up dev-down dev-reset dev-ps dev-logs searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test mcp-inspector-e2e format clean clean-dist
@@ -409,7 +409,13 @@ lua-env:
 	printf 'export CAI_LUA_EXECUTABLE="%s/build/debug-lua/cai_lua_runner"\n' "$(ROOT)"
 
 lua-test: lua-runner
-	$(CMAKE) --build --preset debug-lua --target cai_lua_native_todo_store_test cai_lua_runner
+	$(CMAKE) --build --preset debug-lua --target cai_lua cai_lua_native_todo_store_test cai_lua_runner
+	$(CTEST) --test-dir build/debug-lua --output-on-failure $(CTEST_FLAGS) -R '^cai_(shared|lua)_export_policy_test$$'
+	platform=linux; if [ "$$(uname -s)" = Darwin ]; then platform=darwin; fi; \
+	nm_tool="$$(command -v llvm-nm || command -v nm)"; \
+	lua_module="$$(find "$(LUA_ROCK_TREE)/lib/lua" -type f \( -name 'cai.so' -o -name 'cai.dylib' \) -print -quit)"; \
+	[[ -n "$$lua_module" ]]; \
+	bash tests/shared_export_policy_test.sh "$$nm_tool" "$$lua_module" lua/cai_lua.exports "$$platform"
 	eval "$$(luarocks path --tree $(LUA_ROCK_TREE))" && \
 	LUA_CPATH="$(ROOT)/build/debug-lua/lua-test/?.so;$(ROOT)/build/debug-lua/lua-test/?.dylib;$${LUA_CPATH:-}" \
 	build/debug-lua/cai_lua_runner tests/lua/test_lua.lua

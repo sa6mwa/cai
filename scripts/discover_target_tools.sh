@@ -129,6 +129,7 @@ strip_tool=$(discover_tool STRIP CAI_STRIP "CMAKE_STRIP" "strip" "strip" || true
 install_name_tool=$(discover_tool INSTALL_NAME_TOOL CAI_INSTALL_NAME_TOOL "CMAKE_INSTALL_NAME_TOOL" "install_name_tool" "install_name_tool" || true)
 otool_tool=$(discover_tool OTOOL CAI_OTOOL "CPKT_OTOOL,CMAKE_OTOOL" "otool" "llvm-otool-20,llvm-otool,otool" || true)
 readelf_tool=$(discover_tool READELF CAI_READELF "CMAKE_READELF" "readelf" "readelf" || true)
+nm_tool=$(discover_tool NM CAI_NM "CMAKE_NM" "nm" "llvm-nm-20,llvm-nm,nm" || true)
 
 printf 'CC=%q\n' "$cc"
 printf 'TARGET_HOST=%q\n' "$cc_host"
@@ -137,3 +138,4 @@ printf 'STRIP=%q\n' "$strip_tool"
 printf 'INSTALL_NAME_TOOL=%q\n' "$install_name_tool"
 printf 'OTOOL=%q\n' "$otool_tool"
 printf 'READELF=%q\n' "$readelf_tool"
+printf 'NM=%q\n' "$nm_tool"

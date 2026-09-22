@@ -34,6 +34,7 @@ make_tool "$tool_dir/arm64-apple-darwin25-ld"
 make_tool "$tool_dir/arm64-apple-darwin25-strip"
 make_tool "$tool_dir/arm64-apple-darwin25-install_name_tool"
 make_tool "$tool_dir/arm64-apple-darwin25-otool"
+make_tool "$tool_dir/arm64-apple-darwin25-nm"
 
 cat >"$cache_dir/CMakeCache.txt" <<EOF_CACHE
 CMAKE_C_COMPILER:FILEPATH=$tool_dir/arm64-apple-darwin25-clang
@@ -56,6 +57,10 @@ if [[ "$(value_of "$assignments" LINKER)" != "$tool_dir/arm64-apple-darwin25-ld"
 fi
 if [[ "$(value_of "$assignments" INSTALL_NAME_TOOL)" != "$tool_dir/arm64-apple-darwin25-install_name_tool" ]]; then
   printf 'expected target-prefixed sibling install_name_tool, got:\n%s\n' "$assignments" >&2
+  exit 1
+fi
+if [[ "$(value_of "$assignments" NM)" != "$tool_dir/arm64-apple-darwin25-nm" ]]; then
+  printf 'expected target-prefixed sibling nm, got:\n%s\n' "$assignments" >&2
   exit 1
 fi
 
@@ -115,6 +120,10 @@ if grep -F 'command -v readelf' "$verify_script" >/dev/null; then
 fi
 if ! grep -F 'find_target_readelf "$target_id"' "$verify_script" >/dev/null; then
   printf 'release package verification must discover target-correct readelf\n' >&2
+  exit 1
+fi
+if ! grep -F 'find_target_nm "$target_id"' "$verify_script" >/dev/null; then
+  printf 'release package verification must discover target-correct nm\n' >&2
   exit 1
 fi
 if ! grep -F 'dynamic=$("$readelf" -d "$so"' "$verify_script" >/dev/null; then

@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.21)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CaiVersion)
 include(CaiLonejsonAbi)
+include(cai-export-policy)
 include(cai-rpath)
 
 cai_detect_version(CAI_RESOLVED_VERSION "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -762,6 +763,8 @@ if(CAI_BUILD_SHARED)
       INSTALL_NAME_DIR "@rpath"
       MACOSX_RPATH ON)
   endif()
+  cai_apply_export_policy(cai_shared
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cai_shared.exports")
 endif()
 
 foreach(_cai_target IN ITEMS cai_static cai_shared)
@@ -937,6 +940,8 @@ if(CAI_BUILD_LUA)
     target_link_libraries(cai_lua PRIVATE "${CAI_LUA_LIBRARY}")
   endif()
   cai_configure_c_target(cai_lua)
+  cai_apply_export_policy(cai_lua
+    "${CMAKE_CURRENT_SOURCE_DIR}/lua/cai_lua.exports")
   if(CAI_BUILD_TESTS)
     add_library(cai_lua_native_todo_store_test MODULE
       tests/lua/native_todo_store.c)
@@ -1555,6 +1560,25 @@ if(CAI_BUILD_TESTS)
   set_tests_properties(cai_byte_asset_generator_test PROPERTIES
     LABELS "unit;local"
     TIMEOUT 3)
+  if(CAI_BUILD_SHARED)
+    string(TOLOWER "${CMAKE_SYSTEM_NAME}" _cai_export_policy_platform)
+    set(_cai_shared_export_policy_test_args
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/shared_export_policy_test.sh"
+      "${CMAKE_NM}"
+      "$<TARGET_FILE:cai_shared>"
+      "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cai_shared.exports"
+      "${_cai_export_policy_platform}")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      list(APPEND _cai_shared_export_policy_test_args "${CMAKE_C_COMPILER}")
+    endif()
+    add_test(NAME cai_shared_export_policy_test
+      COMMAND ${_cai_shared_export_policy_test_args})
+    set_tests_properties(cai_shared_export_policy_test PROPERTIES
+      LABELS "unit;local;packaging"
+      TIMEOUT 5)
+    unset(_cai_shared_export_policy_test_args)
+    unset(_cai_export_policy_platform)
+  endif()
 
   add_executable(cai_mcp_http_server tests/mcp_http_server.c)
   target_include_directories(cai_mcp_http_server PRIVATE
@@ -1739,6 +1763,12 @@ if(CAI_BUILD_TESTS)
     set_tests_properties(cai_release_artifacts_darwin_metadata_test PROPERTIES
       LABELS "packaging;local"
       TIMEOUT 3)
+    add_test(NAME cai_release_export_policy_test
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_export_policy_test.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cai_release_export_policy_test PROPERTIES
+      LABELS "packaging;local"
+      TIMEOUT 3)
     add_test(NAME cai_release_manifest_gate_test
       COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_manifest_gate_test.sh"
         "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1855,6 +1885,17 @@ if(CAI_BUILD_TESTS)
   endif()
 
   if(CAI_BUILD_LUA)
+    string(TOLOWER "${CMAKE_SYSTEM_NAME}" _cai_lua_export_policy_platform)
+    add_test(NAME cai_lua_export_policy_test
+      COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/shared_export_policy_test.sh"
+        "${CMAKE_NM}"
+        "$<TARGET_FILE:cai_lua>"
+        "${CMAKE_CURRENT_SOURCE_DIR}/lua/cai_lua.exports"
+        "${_cai_lua_export_policy_platform}")
+    set_tests_properties(cai_lua_export_policy_test PROPERTIES
+      LABELS "unit;local;packaging"
+      TIMEOUT 5)
+    unset(_cai_lua_export_policy_platform)
     add_test(NAME cai_lua_runner_test
       COMMAND "${CMAKE_COMMAND}"
         "-DCAI_LUA_RUNNER=$<TARGET_FILE:cai_lua_runner>"

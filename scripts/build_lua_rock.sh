@@ -18,6 +18,7 @@ repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 build_root="${repo_root}/.luarocks-build"
 object_path="${build_root}/cai_lua.${obj_ext}"
 module_path="${build_root}/cai.${lib_ext}"
+allowlist_path="${repo_root}/lua/cai_lua.exports"
 
 if [ -z "${cc}" ]; then
   printf 'compiler command is empty\n' >&2
@@ -83,8 +84,31 @@ if [ -z "${pslog_lua_include_dir}" ] || \
 fi
 
 linkflags="${LDFLAGS:-}"
+if [ ! -s "${allowlist_path}" ]; then
+  printf 'Lua module export allowlist is missing or empty: %s\n' \
+    "${allowlist_path}" >&2
+  exit 1
+fi
+if ! LC_ALL=C sort -cu "${allowlist_path}" || \
+   grep -Ev '^[A-Za-z_][A-Za-z0-9_]*$' "${allowlist_path}" >/dev/null; then
+  printf 'Lua module export allowlist must be sorted, unique C symbols: %s\n' \
+    "${allowlist_path}" >&2
+  exit 1
+fi
+
 if [ "$(uname -s)" = "Linux" ]; then
+  export_map="${build_root}/cai_lua.export-map"
+  {
+    printf '{\n  global:\n'
+    sed 's/^/    /; s/$/;/' "${allowlist_path}"
+    printf '  local:\n    *;\n};\n'
+  } >"${export_map}"
+  linkflags="${linkflags} -Wl,--version-script=${export_map}"
   linkflags="${linkflags} -Wl,--allow-shlib-undefined -ldl"
+elif [ "$(uname -s)" = "Darwin" ]; then
+  exported_symbols="${build_root}/cai_lua.exported-symbols"
+  sed 's/^/_/' "${allowlist_path}" >"${exported_symbols}"
+  linkflags="${linkflags} -Wl,-exported_symbols_list,${exported_symbols}"
 fi
 
 common_cflags="${cflags} -I${lua_incdir} -I${pslog_lua_include_dir} ${cai_cflags} ${pslog_cflags}"

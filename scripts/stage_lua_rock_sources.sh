@@ -61,6 +61,7 @@ files=(
   scripts/build_lua_rock.sh
   scripts/render_release_rockspec.sh
   lua/cai_lua.c
+  lua/cai_lua.exports
 )
 
 while IFS= read -r header; do
