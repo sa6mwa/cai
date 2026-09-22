@@ -15,6 +15,7 @@ tmp_ignored=""
 tmp_deleted=""
 tmp_filtered=""
 tmp_selected=""
+workspace_dir=""
 
 die() {
   printf 'stage_release_sources.sh: %s\n' "$1" >&2
@@ -60,20 +61,8 @@ normalize_stage_dir() {
 stage_dir=$(normalize_stage_dir "$stage_dir")
 
 cleanup() {
-  if [[ -n "$tmp_manifest" && -f "$tmp_manifest" ]]; then
-    rm -f "$tmp_manifest"
-  fi
-  if [[ -n "$tmp_ignored" && -f "$tmp_ignored" ]]; then
-    rm -f "$tmp_ignored"
-  fi
-  if [[ -n "$tmp_deleted" && -f "$tmp_deleted" ]]; then
-    rm -f "$tmp_deleted"
-  fi
-  if [[ -n "$tmp_filtered" && -f "$tmp_filtered" ]]; then
-    rm -f "$tmp_filtered"
-  fi
-  if [[ -n "$tmp_selected" && -f "$tmp_selected" ]]; then
-    rm -f "$tmp_selected"
+  if [[ -n "$workspace_dir" && -d "$workspace_dir" ]]; then
+    rm -rf "$workspace_dir"
   fi
 }
 
@@ -83,11 +72,13 @@ rm -rf "$stage_dir"
 mkdir -p "$stage_dir"
 
 if git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  tmp_manifest="$(mktemp)"
-  tmp_ignored="$(mktemp)"
-  tmp_deleted="$(mktemp)"
-  tmp_filtered="$(mktemp)"
-  tmp_selected="$(mktemp)"
+  mkdir -p "$repo_root/build"
+  workspace_dir=$(mktemp -d "$repo_root/build/release-source-stage.XXXXXX")
+  tmp_manifest="$workspace_dir/manifest"
+  tmp_ignored="$workspace_dir/ignored"
+  tmp_deleted="$workspace_dir/deleted"
+  tmp_filtered="$workspace_dir/filtered"
+  tmp_selected="$workspace_dir/selected"
   git -C "$repo_root" ls-files >"$tmp_manifest"
   git -C "$repo_root" ls-files --deleted >"$tmp_deleted"
   git -C "$repo_root" check-ignore --no-index --stdin <"$tmp_manifest" \

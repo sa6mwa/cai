@@ -49,7 +49,7 @@ RELEASE_LIVE_GATE_STAMP ?= .cache/release-gates/prerelease-live.stamp
 LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh scripts/build_lua_rock.sh scripts/render_release_rockspec.sh lua/cai_lua.c cai.rockspec.in README.md LICENSE docs/model-metadata.md $(shell find include/cai -type f -name '*.h' | sort)
 LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
-.PHONY: help deps-debug deps-release deps-cross build build-debug build-host build-release cross-build integration-build chatgpt-login test test-debug test-host test-release test-cross cross-test test-all test-e2e test-integration test-lua-smith-e2e test-smith-goal-e2e test-install-tree asan test-asan valgrind fuzz fuzz-smoke fuzz-long coverage test-coverage example-smoke-local example-smoke-live finalize-slice clangd-check prerelease release-pipeline prerelease-live require-prerelease-live require-clean-worktree prerelease-hardening lifecycle-version-contract lua-rock lua-env lua-test release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify verify-release-archives verify-release-privacy release-matrix release compose-check dev-up dev-down dev-reset dev-ps dev-logs searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test mcp-inspector-e2e format clean clean-dist
+.PHONY: help deps-debug deps-release deps-cross build build-debug build-host build-release cross-build integration-build chatgpt-login test test-debug test-host test-release test-cross cross-test test-all test-e2e test-integration test-lua-smith-e2e test-smith-goal-e2e test-install-tree asan test-asan valgrind fuzz fuzz-smoke fuzz-long coverage test-coverage example-smoke-local example-smoke-live finalize-slice clangd-check prerelease release-pipeline prerelease-live require-prerelease-live require-clean-worktree prerelease-hardening lifecycle-version-contract lua-rock lua-env lua-test lua-runner release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify verify-release-archives verify-release-privacy release-matrix release compose-check dev-up dev-down dev-reset dev-ps dev-logs searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test mcp-inspector-e2e format clean clean-dist
 
 help:
 	@printf '%s\n' \
@@ -66,7 +66,7 @@ help:
 		'make test         Build and run the debug unit tests.' \
 		'make test-debug   Build and run the debug unit tests.' \
 		'cmake --preset debug-host-deps -DCMAKE_PREFIX_PATH=... Configure installed-dependency verification; see README.' \
-		'make test-all     Run broad local confidence gates.' \
+		'make test-all     Run broad local confidence gates, including Lua and examples.' \
 		'make test-e2e     Run deterministic compose-backed local e2e.' \
 		'make test-host    Build and run the pinned native release unit tests.' \
 		'make test-release Build and run the release unit tests.' \
@@ -100,15 +100,15 @@ help:
 		'make lua-runner   Build the local Lua 5.5.1 verification interpreter.' \
 		'make release-lua-artifacts Generate dist LuaRock source artifacts.' \
 		'make print-release-version Print the exact packaging/release version.' \
-		'make package      Build release and write dist/cai-*.tar.gz.' \
+		'make package      Build binary SDK release archives.' \
 		'make package-source Build the source-only release tarball.' \
 		'make package-source-smoke Verify the source tarball builds from unpacked source.' \
-		'make package-checksums Generate the checksum upload manifest.' \
+		'make package-checksums Generate the checksum manifest for current dist artifacts.' \
 		'make package-verify Verify release archive structure, privacy, and metadata.' \
 		'make verify-release-archives Alias for package-verify.' \
 		'make verify-release-privacy Alias for package-verify privacy/relocatability gate.' \
-		'make release-matrix Incrementally build, test, package, and checksum release artifacts.' \
-		'make release      Validate versioning, clean, and run the final local release proof.' \
+		'make release-matrix Incrementally build, test, package, checksum, and verify binary release artifacts.' \
+		'make release      Validate versioning, clean, then run the final release proof including source reconstruction.' \
 		'make dev-up       Start local compose-backed development services.' \
 		'make dev-down     Stop local compose-backed development services.' \
 		'make dev-reset    Stop services and remove generated local service state.' \
@@ -182,7 +182,9 @@ test-all:
 	$(MAKE) test-release
 	$(MAKE) valgrind
 	$(MAKE) fuzz-smoke
+	$(MAKE) lua-test
 	$(MAKE) test-e2e
+	$(MAKE) example-smoke-local
 	$(MAKE) package-verify
 
 test-e2e:
@@ -398,7 +400,6 @@ $(LUA_ROCK_STAMP): $(LUA_ROCKSPEC) $(LUA_LONEJSON_ROCK_STAMP) $(LUA_PSLOG_ROCK_S
 
 lua-rock: $(LUA_ROCK_STAMP)
 
-.PHONY: lua-runner
 lua-runner: lua-rock
 	$(CMAKE) --preset debug-lua
 	$(CMAKE) --build --preset debug-lua --target cai_lua_runner
@@ -441,7 +442,8 @@ $(RELEASE_LUA_SRC_ROCK): $(RELEASE_LUA_PACK_ROCKSPEC) $(RELEASE_LUA_ROCKSPEC)
 	rm -f "$(RELEASE_LUA_SRC_ROCK)"
 	cd "$(RELEASE_LUA_PACK_DIR)" && luarocks pack "$(notdir $(RELEASE_LUA_PACK_ROCKSPEC))"
 	mv "$(RELEASE_LUA_PACK_DIR)/$(notdir $(RELEASE_LUA_SRC_ROCK))" "$(RELEASE_LUA_SRC_ROCK)"
-	@tmp_dir="$$(mktemp -d)"; \
+	@mkdir -p "$(ROOT)/build"; \
+	tmp_dir="$$(mktemp -d "$(ROOT)/build/lua-rock-repack.XXXXXX")"; \
 	trap 'rm -rf "$$tmp_dir"' EXIT; \
 	lib_ext="$$(luarocks config variables.LIB_EXTENSION)"; \
 	./scripts/render_release_rockspec.sh "$(RELEASE_VERSION)" "$$tmp_dir/$(notdir $(RELEASE_LUA_PACK_ROCKSPEC))" "file://$(notdir $(RELEASE_LUA_SOURCE_TARBALL))" "" "$$lib_ext" "cai-$(RELEASE_VERSION)"; \
@@ -480,7 +482,6 @@ release-matrix:
 	$(MAKE) build-release
 	$(CTEST) --test-dir build/x86_64-linux-gnu-release --output-on-failure $(CTEST_FLAGS)
 	bash ./scripts/package.sh release-matrix
-	$(MAKE) package-source-smoke
 	$(MAKE) release-lua-artifacts
 	$(CMAKE) -DCAI_DIST_DIR="$(ROOT)/dist" -DCAI_VERSION="$(RELEASE_VERSION)" -P cmake/package_checksums.cmake
 	bash ./scripts/package-verify.sh "$(ROOT)" "$$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h)"
@@ -489,6 +490,9 @@ release:
 	$(MAKE) lifecycle-version-contract
 	$(MAKE) clean
 	$(MAKE) release-pipeline
+	$(MAKE) package-source-smoke
+	$(CMAKE) -DCAI_DIST_DIR="$(ROOT)/dist" -DCAI_VERSION="$(RELEASE_VERSION)" -P cmake/package_checksums.cmake
+	bash ./scripts/package-verify.sh "$(ROOT)" "$$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h)"
 
 compose-check:
 	@$(COMPOSE) version >/dev/null
@@ -552,7 +556,8 @@ mcp-everything-up: compose-check
 
 mcp-everything-wait:
 	@url="$${CAI_MCP_EVERYTHING_BASE_URL:-$(CAI_MCP_EVERYTHING_BASE_URL)}"; \
-	tmpdir="$$(mktemp -d)"; \
+	mkdir -p "$(ROOT)/build"; \
+	tmpdir="$$(mktemp -d "$(ROOT)/build/mcp-everything-wait.XXXXXX")"; \
 	trap 'rm -rf "$$tmpdir"' EXIT; \
 	init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"cai-compose-wait","version":"0.0.0"}}}'; \
 	attempt=1; \

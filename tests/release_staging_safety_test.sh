@@ -49,6 +49,29 @@ if [ ! -f "$test_root/source/cai-1.2.3/RELEASE_MANIFEST" ] ||
   exit 1
 fi
 
+if ! grep -F 'mktemp -d "$repo_root/build/release-source-stage.XXXXXX"' \
+  "$repo_root/scripts/stage_release_sources.sh" >/dev/null; then
+  printf '%s\n' 'stage_release_sources.sh must keep manifest scratch under build/' >&2
+  exit 1
+fi
+if find "$repo_root/build" -maxdepth 1 -type d -name 'release-source-stage.*' \
+  -print -quit | grep -q .; then
+  printf '%s\n' 'stage_release_sources.sh left a release staging workspace behind' >&2
+  exit 1
+fi
+
+if ! grep -F 'workspace_root="$repo_root/build/release-artifact-verify"' \
+  "$repo_root/scripts/verify_release_artifacts.sh" >/dev/null ||
+   ! grep -F 'workspace_path=$(mktemp -d "$workspace_root/$label.XXXXXX")' \
+    "$repo_root/scripts/verify_release_artifacts.sh" >/dev/null; then
+  printf '%s\n' 'release artifact verification must keep extraction and scan workspaces under build/' >&2
+  exit 1
+fi
+if grep -E 'mktemp( -d)?\)' "$repo_root/scripts/verify_release_artifacts.sh" >/dev/null; then
+  printf '%s\n' 'release artifact verification must not use an ambient temporary workspace' >&2
+  exit 1
+fi
+
 "$repo_root/scripts/stage_lua_rock_sources.sh" \
   "$repo_root" "$test_root/lua/cai-1.2.3" 1.2.3
 if [ ! -f "$test_root/lua/cai-1.2.3/RELEASE_MANIFEST" ] ||

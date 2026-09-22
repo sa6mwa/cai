@@ -11,12 +11,15 @@ test_binary=$1
 compose_project=${CAI_MCP_EVERYTHING_COMPOSE_PROJECT:-cai-mcp-live-$$}
 owns_mcp_everything=0
 use_external_mcp_everything=0
-tmpdir=$(mktemp -d)
+tmpdir=""
 
 if [[ ! -x "$test_binary" ]]; then
   printf 'MCP Everything live test binary is not executable: %s\n' "$test_binary" >&2
   exit 2
 fi
+
+mkdir -p "$repo_root/build"
+tmpdir=$(mktemp -d "$repo_root/build/mcp-everything-live.XXXXXX")
 
 port_is_open() {
   local port=$1

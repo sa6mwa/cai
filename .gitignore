@@ -2,7 +2,6 @@
 /VERSION
 /stash/
 /build/
-/build-review/
 /dist/
 /.cache/
 /devenv/volumes/

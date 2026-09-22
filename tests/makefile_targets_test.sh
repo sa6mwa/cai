@@ -36,6 +36,14 @@ require_help() {
   fi
 }
 
+require_phony() {
+  target=$1
+  if ! grep -E "^\\.PHONY:.*(^|[[:space:]])${target}([[:space:]]|$)" "$makefile" >/dev/null; then
+    printf 'human Make target must be phony: %s\n' "$target" >&2
+    exit 1
+  fi
+}
+
 require_script() {
   script=$1
   if [ ! -x "$repo_root/$script" ]; then
@@ -49,7 +57,7 @@ for target in \
   deps-debug deps-release deps-cross build-host cross-build chatgpt-login test-host \
   test-cross cross-test test-all test-e2e test-install-tree coverage test-coverage valgrind fuzz-long \
   verify-release-archives verify-release-privacy require-prerelease-live \
-  require-clean-worktree lifecycle-version-contract release-pipeline dev-up dev-down dev-reset dev-ps dev-logs \
+  require-clean-worktree lifecycle-version-contract release-pipeline lua-runner dev-up dev-down dev-reset dev-ps dev-logs \
   mcp-inspector-e2e clean-dist clangd-check; do
   require_target "$target"
 done
@@ -60,7 +68,7 @@ for target in \
   test-all test-e2e test-cross test-integration test-install-tree asan \
   test-asan coverage test-coverage valgrind fuzz-long verify-release-archives \
   verify-release-privacy require-prerelease-live dev-up dev-down dev-reset \
-  require-clean-worktree lifecycle-version-contract dev-ps dev-logs clean-dist \
+  require-clean-worktree lifecycle-version-contract lua-runner dev-ps dev-logs clean-dist \
   clangd-check searxng-pull searxng-up searxng-wait searxng-test \
   searxng-down searxng-logs mcp-everything-up mcp-everything-wait \
   mcp-everything-test mcp-everything-down mcp-everything-logs \
@@ -68,6 +76,7 @@ for target in \
   package-checksums package-verify release-matrix release format; do
   require_help "$target"
 done
+require_phony lua-runner
 
 for script in \
   scripts/deps.sh scripts/test.sh scripts/host_test.sh \
@@ -145,9 +154,8 @@ if ! grep -F 'bash ./scripts/clean.sh dist' "$makefile" >/dev/null; then
   printf 'Makefile clean-dist must route through scripts/clean.sh dist\n' >&2
   exit 1
 fi
-if ! grep -F '"$repo_root/scripts/build.sh" package-source' \
-  "$repo_root/scripts/package.sh" >/dev/null; then
-  printf 'package.sh must route source archive generation through guarded build.sh package-source\n' >&2
+if grep -F 'package-source' "$repo_root/scripts/package.sh" >/dev/null; then
+  printf 'package.sh must not reconstruct the C source archive during binary packaging\n' >&2
   exit 1
 fi
 for live_target in \
@@ -293,6 +301,12 @@ if ! printf '%s\n' "$test_all_body" | grep -F '$(MAKE) test-release' >/dev/null;
   printf 'test-all must include native release unit tests\n' >&2
   exit 1
 fi
+for command in '$(MAKE) lua-test' '$(MAKE) example-smoke-local'; do
+  if ! printf '%s\n' "$test_all_body" | grep -F "$command" >/dev/null; then
+    printf 'test-all must include deterministic confidence command: %s\n' "$command" >&2
+    exit 1
+  fi
+done
 test_install_tree_body=$(awk '
   /^test-install-tree:/ {
     in_target = 1
@@ -425,8 +439,8 @@ release_matrix_body=$(awk '
     print
   }
 ' "$makefile")
-if ! printf '%s\n' "$release_matrix_body" | grep -F '$(MAKE) package-source-smoke' >/dev/null; then
-  printf '%s\n' 'release-matrix must smoke-test the generated source archive' >&2
+if printf '%s\n' "$release_matrix_body" | grep -E 'package-source|package-source-smoke' >/dev/null; then
+  printf '%s\n' 'release-matrix must remain binary-only and not reconstruct the C source archive' >&2
   exit 1
 fi
 
@@ -566,6 +580,24 @@ release_third_command=$(printf '%s\n' "$release_body" | sed -n '/^[[:space:]]*[^
 if [ "$release_third_command" != '$(MAKE) release-pipeline' ]; then
   printf 'release must invoke the shared release-pipeline after clean: %s\n' \
     "$release_third_command" >&2
+  exit 1
+fi
+release_fourth_command=$(printf '%s\n' "$release_body" | sed -n '/^[[:space:]]*[^[:space:]#]/ { n; n; n; s/^[[:space:]]*//; p; q; }')
+release_fifth_command=$(printf '%s\n' "$release_body" | sed -n '/^[[:space:]]*[^[:space:]#]/ { n; n; n; n; s/^[[:space:]]*//; p; q; }')
+release_sixth_command=$(printf '%s\n' "$release_body" | sed -n '/^[[:space:]]*[^[:space:]#]/ { n; n; n; n; n; s/^[[:space:]]*//; p; q; }')
+if [ "$release_fourth_command" != '$(MAKE) package-source-smoke' ]; then
+  printf 'release must reconstruct and smoke-test the source archive after binary matrix: %s\n' \
+    "$release_fourth_command" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$release_fifth_command" | grep -F 'cmake/package_checksums.cmake' >/dev/null; then
+  printf 'release must refresh checksums after source reconstruction: %s\n' \
+    "$release_fifth_command" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$release_sixth_command" | grep -F 'scripts/package-verify.sh' >/dev/null; then
+  printf 'release must verify the complete artifact set after checksum refresh: %s\n' \
+    "$release_sixth_command" >&2
   exit 1
 fi
 

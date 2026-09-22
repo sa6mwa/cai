@@ -9,7 +9,7 @@ elif [[ $# -lt 1 || $# -gt 2 ]]; then
   printf 'usage: %s <repo-root> [version]\n' "$0" >&2
   exit 1
 else
-  repo_root=$1
+  repo_root=$(cd "$1" && pwd -P)
   version=${2:-}
   self_test=0
 fi
@@ -26,11 +26,32 @@ fi
 
 dist_dir="$repo_root/dist"
 checksums="$dist_dir/cai-$version-CHECKSUMS"
+workspace_root="$repo_root/build/release-artifact-verify"
+workspace_path=""
+declare -a workspaces=()
 
 fail() {
   printf 'verify_release_artifacts.sh: %s\n' "$*" >&2
   exit 1
 }
+
+cleanup_workspaces() {
+  local path
+
+  for path in "${workspaces[@]}"; do
+    rm -rf "$path"
+  done
+}
+
+new_workspace() {
+  local label=$1
+
+  mkdir -p "$workspace_root"
+  workspace_path=$(mktemp -d "$workspace_root/$label.XXXXXX")
+  workspaces+=("$workspace_path")
+}
+
+trap cleanup_workspaces EXIT INT TERM
 
 host_home=${HOME:-}
 cpkt_cache_dir_name=c.pkt.systems
@@ -146,9 +167,12 @@ verify_no_private_bytes() {
 release_expected_manifest() {
   local output=$1
   local ignored
+  local manifest_workspace
 
   git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
-  ignored=$(mktemp)
+  new_workspace manifest
+  manifest_workspace=$workspace_path
+  ignored="$manifest_workspace/ignored"
   git -C "$repo_root" ls-files >"$output"
   git -C "$repo_root" check-ignore --no-index --stdin <"$output" \
     >"$ignored" 2>/dev/null || true
@@ -156,7 +180,7 @@ release_expected_manifest() {
     grep -F -x -v -f "$ignored" "$output" >"${output}.filtered"
     mv "${output}.filtered" "$output"
   fi
-  rm -f "$ignored"
+  rm -rf "$manifest_workspace"
   printf '%s\n' VERSION RELEASE_MANIFEST >>"$output"
   sort -u -o "$output" "$output"
 }
@@ -167,14 +191,17 @@ verify_source_matches_git_manifest() {
   local actual
   local expected
   local ignored
+  local manifest_workspace
 
   git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-  actual=$(mktemp)
-  expected=$(mktemp)
-  ignored=$(mktemp)
+  new_workspace source-manifest
+  manifest_workspace=$workspace_path
+  actual="$manifest_workspace/actual"
+  expected="$manifest_workspace/expected"
+  ignored="$manifest_workspace/ignored"
   sed "s#^$root/##" "$listing" | grep -v -E '^$|/$' | sort -u >"$actual"
   release_expected_manifest "$expected" || {
-    rm -f "$actual" "$expected" "$ignored"
+    rm -rf "$manifest_workspace"
     return 0
   }
   if ! diff -u "$expected" "$actual" >&2; then
@@ -193,7 +220,7 @@ verify_source_matches_git_manifest() {
     rm -f "$actual" "$expected" "$ignored"
     fail "source archive contains git-ignored paths"
   fi
-  rm -f "$actual" "$expected" "$ignored"
+  rm -rf "$manifest_workspace"
 }
 
 verify_no_private_text() {
@@ -837,6 +864,7 @@ verify_extracted_sdk_smoke() {
   local source
   local cc_dir
   local tool_path
+  local smoke_workspace
 
   c_pkt_version=$(pc_value "$pc" c_pkt_systems_version)
   lonejson_version=$(pc_value "$pc" lonejson_version)
@@ -882,7 +910,9 @@ verify_extracted_sdk_smoke() {
     tool_path="$cc_dir:$PATH"
   fi
 
-  work_dir=$(mktemp -d)
+  new_workspace extracted-sdk-smoke
+  smoke_workspace=$workspace_path
+  work_dir="$smoke_workspace"
   source="$work_dir/main.c"
   write_extracted_sdk_smoke_source "$source"
 
@@ -915,7 +945,7 @@ verify_extracted_sdk_smoke() {
       "$pkg_config_path" "$source" "$work_dir/pkg-config-static" static
   fi
 
-  rm -rf "$work_dir"
+  rm -rf "$smoke_workspace"
 }
 
 verify_darwin_runpath() {
@@ -1055,12 +1085,14 @@ verify_src_rock() {
   local source_name="cai-lua-$version.tar.gz"
   local source_listing
   local source_extract_root
+  local rock_workspace
 
   command -v unzip >/dev/null 2>&1 || fail "unzip is required to verify source rock"
   require_file "$rock"
-  listing=$(mktemp)
-  extract_root=$(mktemp -d)
-  trap 'rm -f "$listing"; rm -rf "$extract_root"' RETURN
+  new_workspace source-rock
+  rock_workspace=$workspace_path
+  listing="$rock_workspace/listing"
+  extract_root="$rock_workspace/extract"
 
   unzip -Z1 "$rock" >"$listing"
   require_member "$listing" "$rockspec_name"
@@ -1068,18 +1100,14 @@ verify_src_rock() {
   unzip -q "$rock" -d "$extract_root"
   verify_rockspec_file "$extract_root/$rockspec_name"
 
-  source_listing=$(mktemp)
-  source_extract_root=$(mktemp -d)
+  source_listing="$rock_workspace/source-listing"
+  source_extract_root="$rock_workspace/source-extract"
+  mkdir -p "$extract_root" "$source_extract_root"
   tar -tzf "$extract_root/$source_name" >"$source_listing"
   verify_single_root "$extract_root/$source_name" "cai-$version" "$source_listing"
   tar -xzf "$extract_root/$source_name" -C "$source_extract_root"
   verify_lua_source_archive "cai-$version" "$source_listing" "$source_extract_root"
-  rm -f "$source_listing"
-  rm -rf "$source_extract_root"
-
-  rm -f "$listing"
-  rm -rf "$extract_root"
-  trap - RETURN
+  rm -rf "$rock_workspace"
 }
 
 verify_archive() {
@@ -1089,6 +1117,7 @@ verify_archive() {
   local expected_root
   local listing
   local extract_root
+  local archive_workspace
 
   name=$(basename "$archive")
   root=${name%.tar.gz}
@@ -1096,9 +1125,11 @@ verify_archive() {
   if [[ "$root" == "cai-lua-$version" ]]; then
     expected_root="cai-$version"
   fi
-  listing=$(mktemp)
-  extract_root=$(mktemp -d)
-  trap 'rm -f "$listing"; rm -rf "$extract_root"' RETURN
+  new_workspace archive
+  archive_workspace=$workspace_path
+  listing="$archive_workspace/listing"
+  extract_root="$archive_workspace/extract"
+  mkdir -p "$extract_root"
 
   tar -tzf "$archive" >"$listing"
   verify_listing_has_no_host_paths "$listing"
@@ -1114,9 +1145,7 @@ verify_archive() {
   fi
   verify_no_private_bytes "$extract_root"
 
-  rm -f "$listing"
-  rm -rf "$extract_root"
-  trap - RETURN
+  rm -rf "$archive_workspace"
 }
 
 if [[ "$self_test" == "1" ]]; then

@@ -24,7 +24,6 @@ case "$mode" in
     for preset in "${presets[@]}"; do
       cmake --build --preset "$preset" --target cai_package_archive
     done
-    "$repo_root/scripts/build.sh" package-source
     ;;
   *)
     printf 'usage: %s [release-matrix]\n' "$0" >&2
