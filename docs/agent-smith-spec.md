@@ -290,7 +290,16 @@ int cai_agent_runtime_open(cai_client *client,
                            cai_agent_runtime **out, cai_error *error);
 int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
                                 cai_error *error);
-const char *cai_agent_runtime_model(const cai_agent_runtime *runtime);
+const char *cai_agent_runtime_model(cai_agent_runtime *runtime);
+int cai_agent_runtime_get_settings(cai_agent_runtime *runtime,
+                                   cai_agent_runtime_settings *effective,
+                                   cai_agent_runtime_settings *pending,
+                                   cai_error *error);
+int cai_agent_runtime_update_settings(
+    cai_agent_runtime *runtime, const cai_agent_runtime_settings *requested,
+    cai_agent_runtime_control_result *result, cai_error *error);
+int cai_agent_runtime_cancel_turn(cai_agent_runtime *runtime,
+                                  cai_error *error);
 int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
                              cai_error *error);
 int cai_agent_runtime_submit_interactive(cai_agent_runtime *runtime,

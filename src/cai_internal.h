@@ -388,6 +388,14 @@ int cai_client_stream_response_internal_with_id(
     cai_client *client, const cai_response_create_params *params,
     const cai_stream_sinks *sinks, char **out_response_id,
     cai_token_usage *out_usage, cai_error *error);
+/** Worker-local cancellation for a runtime-owned streaming request. */
+typedef int (*cai_stream_cancel_check_fn)(void *context);
+typedef struct cai_stream_cancel_scope {
+  cai_stream_cancel_check_fn check;
+  void *context;
+} cai_stream_cancel_scope;
+int cai_stream_set_thread_cancel_scope(cai_stream_cancel_scope *scope);
+int cai_stream_thread_cancel_requested(void);
 void cai_client_close_responses_websocket(cai_client_impl *impl);
 #ifdef CAI_TESTING
 int cai_client_stream_response_websocket_test(

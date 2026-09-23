@@ -160,6 +160,14 @@ typedef struct cai_runtime_event_node {
   struct cai_runtime_event_node *next;
 } cai_runtime_event_node;
 
+typedef struct cai_runtime_settings_owned {
+  unsigned int present;
+  cai_allocator *allocator;
+  char *model;
+  char *reasoning_effort;
+  char *reasoning_summary;
+} cai_runtime_settings_owned;
+
 typedef struct cai_runtime_path_doc {
   char *path;
 } cai_runtime_path_doc;
@@ -492,7 +500,15 @@ struct cai_agent_runtime {
   int wakeup_write_fd;
   int worker_started;
   int stopping;
+  int turn_cancel_requested;
+  int turn_cancel_armed;
   int model_switching;
+  int settings_applying;
+  int pending_settings_failed;
+  int pending_after_active;
+  cai_runtime_settings_owned pending_settings;
+  cai_runtime_settings_owned settings_view_effective;
+  cai_runtime_settings_owned settings_view_pending;
   int pumping;
   int close_deferred;
   int destroying;
@@ -673,6 +689,8 @@ static int cai_runtime_capture_active_model_metadata(cai_agent_runtime *runtime,
                                                      cai_error *error);
 static int cai_runtime_compact_pending_history(cai_agent_runtime *runtime,
                                                cai_error *error);
+static int cai_runtime_apply_pending_settings(cai_agent_runtime *runtime,
+                                              cai_error *error);
 
 static int cai_runtime_export_session_id_valid(const char *session_id) {
   const unsigned char *cursor;
@@ -746,6 +764,108 @@ static int cai_runtime_owner(const cai_agent_runtime *runtime,
                          "agent runtime operation requires its owner thread");
   }
   return CAI_OK;
+}
+
+static int cai_runtime_cancel_requested(void *context) {
+  cai_agent_runtime *runtime = (cai_agent_runtime *)context;
+  int requested;
+
+  pthread_mutex_lock(&runtime->lock);
+  requested = runtime->turn_cancel_requested && runtime->turn_cancel_armed;
+  pthread_mutex_unlock(&runtime->lock);
+  return requested;
+}
+
+static void cai_runtime_settings_clear(cai_runtime_settings_owned *settings) {
+  cai_free_mem(settings->allocator, settings->model);
+  cai_free_mem(settings->allocator, settings->reasoning_effort);
+  cai_free_mem(settings->allocator, settings->reasoning_summary);
+  memset(settings, 0, sizeof(*settings));
+}
+
+static cai_agent_runtime_settings
+cai_runtime_settings_borrow(const cai_runtime_settings_owned *settings) {
+  cai_agent_runtime_settings view;
+
+  view.present = settings->present;
+  view.model = settings->model;
+  view.reasoning_effort = settings->reasoning_effort;
+  view.reasoning_summary = settings->reasoning_summary;
+  return view;
+}
+
+static cai_agent_runtime_settings
+cai_runtime_effective_settings(const cai_agent_runtime *runtime) {
+  cai_agent_runtime_settings view;
+  const cai_agent_impl *agent = CAI_AGENT_IMPL(runtime->agent);
+
+  view.present = CAI_AGENT_RUNTIME_SETTING_MODEL;
+  view.model = agent->model;
+  view.reasoning_effort = agent->reasoning_effort;
+  view.reasoning_summary = agent->reasoning_summary;
+  if (view.reasoning_effort != NULL) {
+    view.present |= CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT;
+  }
+  if (view.reasoning_summary != NULL) {
+    view.present |= CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY;
+  }
+  return view;
+}
+
+static int cai_runtime_settings_copy(cai_runtime_settings_owned *out,
+                                     const cai_agent_runtime_settings *input,
+                                     cai_allocator *allocator,
+                                     cai_error *error) {
+  memset(out, 0, sizeof(*out));
+  out->present = input->present;
+  out->allocator = allocator;
+  if (input->model != NULL) {
+    out->model = cai_strdup(allocator, input->model);
+  }
+  if (input->reasoning_effort != NULL) {
+    out->reasoning_effort = cai_strdup(allocator, input->reasoning_effort);
+  }
+  if (input->reasoning_summary != NULL) {
+    out->reasoning_summary = cai_strdup(allocator, input->reasoning_summary);
+  }
+  if ((input->model != NULL && out->model == NULL) ||
+      (input->reasoning_effort != NULL && out->reasoning_effort == NULL) ||
+      (input->reasoning_summary != NULL && out->reasoning_summary == NULL)) {
+    cai_runtime_settings_clear(out);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to copy runtime settings");
+  }
+  return CAI_OK;
+}
+
+static int
+cai_runtime_settings_stage_views(const cai_agent_runtime_settings *effective,
+                                 const cai_agent_runtime_settings *pending,
+                                 cai_runtime_settings_owned *effective_copy,
+                                 cai_runtime_settings_owned *pending_copy,
+                                 cai_allocator *allocator, cai_error *error) {
+  int rc;
+
+  rc = cai_runtime_settings_copy(effective_copy, effective, allocator, error);
+  if (rc == CAI_OK) {
+    rc = cai_runtime_settings_copy(pending_copy, pending, allocator, error);
+  }
+  if (rc != CAI_OK) {
+    cai_runtime_settings_clear(effective_copy);
+  }
+  return rc;
+}
+
+static void
+cai_runtime_settings_publish_views(cai_agent_runtime *runtime,
+                                   cai_runtime_settings_owned *effective_copy,
+                                   cai_runtime_settings_owned *pending_copy) {
+  cai_runtime_settings_clear(&runtime->settings_view_effective);
+  cai_runtime_settings_clear(&runtime->settings_view_pending);
+  runtime->settings_view_effective = *effective_copy;
+  runtime->settings_view_pending = *pending_copy;
+  memset(effective_copy, 0, sizeof(*effective_copy));
+  memset(pending_copy, 0, sizeof(*pending_copy));
 }
 
 static void cai_runtime_event_node_free(cai_runtime_event_node *node) {
@@ -3807,6 +3927,11 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "invalid Smith steering tool-round boundary");
   }
+  /* The tool result still reaches the durable callback, while undelivered
+   * steering remains queued for promotion after cancellation. */
+  if (cai_runtime_cancel_requested(runtime)) {
+    return CAI_OK;
+  }
   rc = CAI_OK;
   consumed_sequence = 0U;
   pthread_mutex_lock(&runtime->lock);
@@ -3914,6 +4039,9 @@ static int cai_runtime_checkpoint_durable_tool_round(void *context,
     if (rc == CAI_OK) {
       rc = cai_runtime_checkpoint(runtime, 1, error);
     }
+  }
+  if (rc == CAI_OK && cai_runtime_cancel_requested(runtime)) {
+    rc = cai_set_error(error, CAI_ERR_CANCELLED, "agent turn was cancelled");
   }
   if (rc == CAI_OK) {
     rc = cai_runtime_compact_before_request(runtime, error);
@@ -4397,10 +4525,15 @@ static void *cai_runtime_worker(void *context) {
   cai_sink_callbacks reasoning_callbacks;
   cai_sink *reasoning_sink;
   cai_run_options options;
+  cai_stream_cancel_scope cancel_scope;
   cai_runtime_input_node *input;
   cai_error error;
+  cai_error settings_error;
   unsigned long long consumed_sequence;
   int budget_limited;
+  int cancelled_turn;
+  int apply_pending_before_turn;
+  int settings_rc;
   int rc;
 
   runtime = (cai_agent_runtime *)context;
@@ -4411,6 +4544,13 @@ static void *cai_runtime_worker(void *context) {
   reasoning_sink = NULL;
   cai_error_init(&error);
   rc = cai_sink_from_callbacks(&reasoning_callbacks, &reasoning_sink, &error);
+  cancel_scope.check = cai_runtime_cancel_requested;
+  cancel_scope.context = runtime;
+  if (rc == CAI_OK &&
+      cai_stream_set_thread_cancel_scope(&cancel_scope) != CAI_OK) {
+    rc = cai_set_error(&error, CAI_ERR_TRANSPORT,
+                       "failed to initialize runtime cancellation");
+  }
   if (rc != CAI_OK) {
     pthread_mutex_lock(&runtime->lock);
     runtime->state = CAI_AGENT_FAILED;
@@ -4428,6 +4568,7 @@ static void *cai_runtime_worker(void *context) {
     }
     pthread_cond_broadcast(&runtime->condition);
     pthread_mutex_unlock(&runtime->lock);
+    cai_sink_close(reasoning_sink);
     cai_error_cleanup(&error);
     return NULL;
   }
@@ -4452,17 +4593,44 @@ static void *cai_runtime_worker(void *context) {
   for (;;) {
     cai_error_init(&error);
     pthread_mutex_lock(&runtime->lock);
-    while (!runtime->stopping && runtime->goal_control_head == NULL &&
-           (runtime->turn_head == NULL || cai_runtime_goal_paused(runtime) ||
-            runtime->subagent_active || runtime->active_review != NULL ||
-            runtime->review_launching || runtime->review_pause_pending)) {
+    while (!runtime->stopping &&
+           (runtime->pending_settings_failed || runtime->settings_applying ||
+            (runtime->goal_control_head == NULL &&
+             (runtime->turn_head == NULL || cai_runtime_goal_paused(runtime) ||
+              runtime->subagent_active || runtime->active_review != NULL ||
+              runtime->review_launching || runtime->review_pause_pending)))) {
       pthread_cond_wait(&runtime->condition, &runtime->lock);
     }
     if (runtime->stopping) {
       pthread_mutex_unlock(&runtime->lock);
       break;
     }
+    apply_pending_before_turn =
+        !(runtime->pending_after_active &&
+          (runtime->state == CAI_AGENT_SAMPLING ||
+           runtime->state == CAI_AGENT_DISPATCHING_TOOL));
     pthread_mutex_unlock(&runtime->lock);
+    rc = apply_pending_before_turn
+             ? cai_runtime_apply_pending_settings(runtime, &error)
+             : CAI_OK;
+    if (rc != CAI_OK) {
+      pthread_mutex_lock(&runtime->lock);
+      runtime->state = CAI_AGENT_FAILED;
+      if (runtime->event_callback != NULL &&
+          cai_runtime_enqueue_locked(
+              runtime, CAI_AGENT_EVENT_RUN_FAILED,
+              error.message != NULL ? error.message
+                                    : "pending settings could not be applied",
+              error.message != NULL
+                  ? strlen(error.message)
+                  : sizeof("pending settings could not be applied") - 1U,
+              NULL, NULL, runtime->state, &error) == CAI_OK) {
+        runtime->terminal_event_pending = 1;
+      }
+      pthread_mutex_unlock(&runtime->lock);
+      cai_error_cleanup(&error);
+      continue;
+    }
     rc = cai_runtime_apply_queued_goal_controls(runtime, &error);
     if (rc != CAI_OK) {
       cai_error_cleanup(&error);
@@ -4503,6 +4671,10 @@ static void *cai_runtime_worker(void *context) {
     }
     if (rc != CAI_OK) {
       cai_runtime_input_node_free(input);
+      pthread_mutex_lock(&runtime->lock);
+      runtime->turn_cancel_requested = 0;
+      runtime->turn_cancel_armed = 0;
+      pthread_mutex_unlock(&runtime->lock);
       cai_error_cleanup(&error);
       continue;
     }
@@ -4523,6 +4695,8 @@ static void *cai_runtime_worker(void *context) {
       }
       pthread_mutex_lock(&runtime->lock);
       runtime->accepting_steering = 0;
+      runtime->turn_cancel_requested = 0;
+      runtime->turn_cancel_armed = 0;
       runtime->state = CAI_AGENT_FAILED;
       if (runtime->event_callback != NULL &&
           cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_FAILED,
@@ -4577,8 +4751,18 @@ static void *cai_runtime_worker(void *context) {
     if (rc == CAI_OK) {
       rc = cai_runtime_checkpoint(runtime, 1, &error);
     }
+    if (rc == CAI_OK) {
+      pthread_mutex_lock(&runtime->lock);
+      runtime->turn_cancel_armed = 1;
+      pthread_mutex_unlock(&runtime->lock);
+    }
     while (rc == CAI_OK && !budget_limited) {
       cai_runtime_set_state(runtime, CAI_AGENT_SAMPLING);
+      if (cai_runtime_cancel_requested(runtime)) {
+        rc = cai_set_error(&error, CAI_ERR_CANCELLED,
+                           "agent turn was cancelled");
+        break;
+      }
       rc = cai_runtime_compact_before_request(runtime, &error);
       if (rc == CAI_OK) {
         rc =
@@ -4588,6 +4772,11 @@ static void *cai_runtime_worker(void *context) {
         rc = cai_runtime_refresh_goal_projection(runtime, &error);
       }
       if (rc != CAI_OK) {
+        break;
+      }
+      if (cai_runtime_cancel_requested(runtime)) {
+        rc = cai_set_error(&error, CAI_ERR_CANCELLED,
+                           "agent turn was cancelled");
         break;
       }
       pthread_mutex_lock(&runtime->lock);
@@ -4605,6 +4794,31 @@ static void *cai_runtime_worker(void *context) {
             &error, CAI_ERR_LIMIT,
             "goal token budget exhausted before another model request");
       }
+    }
+    cancelled_turn = 0;
+    pthread_mutex_lock(&runtime->lock);
+    if (runtime->turn_cancel_requested && rc == CAI_OK) {
+      rc = cai_set_error(&error, CAI_ERR_CANCELLED, "agent turn was cancelled");
+    }
+    if (runtime->turn_cancel_requested && rc == CAI_ERR_CANCELLED) {
+      cai_runtime_promote_resumed_steering(runtime);
+      cancelled_turn = 1;
+    }
+    runtime->turn_cancel_armed = 0;
+    pthread_mutex_unlock(&runtime->lock);
+    if (cancelled_turn) {
+      cai_error checkpoint_error;
+      int checkpoint_rc;
+
+      cai_error_init(&checkpoint_error);
+      checkpoint_rc = cai_runtime_checkpoint(runtime, 1, &checkpoint_error);
+      if (checkpoint_rc != CAI_OK) {
+        cai_error_cleanup(&error);
+        error = checkpoint_error;
+        cai_error_init(&checkpoint_error);
+        rc = checkpoint_rc;
+      }
+      cai_error_cleanup(&checkpoint_error);
     }
     if (rc == CAI_ERR_LIMIT && cai_runtime_goal_budget_limited(runtime)) {
       /* The completed tool round has committed client history; make that
@@ -4644,11 +4858,29 @@ static void *cai_runtime_worker(void *context) {
       rc = cai_runtime_validate_review_report(runtime->review_report, &error);
       pthread_mutex_unlock(&runtime->lock);
     }
+    cai_error_init(&settings_error);
+    settings_rc = cai_runtime_apply_pending_settings(runtime, &settings_error);
+    if (rc == CAI_OK && settings_rc != CAI_OK) {
+      cai_error_cleanup(&error);
+      error = settings_error;
+      cai_error_init(&settings_error);
+      rc = settings_rc;
+    }
+    cai_error_cleanup(&settings_error);
     pthread_mutex_lock(&runtime->lock);
     runtime->accepting_steering = 0;
-    if (rc == CAI_OK ||
-        (rc == CAI_ERR_LIMIT && cai_runtime_goal_budget_limited(runtime)) ||
-        (rc == CAI_ERR_CANCELLED && cai_runtime_goal_paused(runtime))) {
+    if (runtime->turn_cancel_requested && rc == CAI_ERR_CANCELLED) {
+      runtime->state = CAI_AGENT_CANCELLED;
+      if (runtime->event_callback != NULL &&
+          cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_CANCELLED,
+                                     NULL, 0U, NULL, NULL, runtime->state,
+                                     &error) == CAI_OK) {
+        runtime->terminal_event_pending = 1;
+      }
+    } else if (rc == CAI_OK ||
+               (rc == CAI_ERR_LIMIT &&
+                cai_runtime_goal_budget_limited(runtime)) ||
+               (rc == CAI_ERR_CANCELLED && cai_runtime_goal_paused(runtime))) {
       runtime->state = CAI_AGENT_COMPLETED;
       if (runtime->review_mode && runtime->review_report_length > 0U) {
         (void)cai_runtime_enqueue_locked(
@@ -4675,10 +4907,12 @@ static void *cai_runtime_worker(void *context) {
       }
     }
     pthread_cond_broadcast(&runtime->condition);
+    runtime->turn_cancel_requested = 0;
     pthread_mutex_unlock(&runtime->lock);
     cai_error_cleanup(&error);
   }
   cai_sink_close(reasoning_sink);
+  (void)cai_stream_set_thread_cancel_scope(NULL);
   return NULL;
 }
 
@@ -5641,7 +5875,8 @@ cai_runtime_model_switch_ready_locked(const cai_agent_runtime *runtime,
   if (runtime->model_switching || runtime->goal_control_count != 0U ||
       runtime->goal_control_inflight != 0U || runtime->subagent_active ||
       runtime->active_review != NULL || runtime->review_launching ||
-      runtime->review_pause_pending) {
+      runtime->review_pause_pending || runtime->settings_applying ||
+      runtime->pending_settings.present != 0U) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "model selection requires a stable runtime boundary");
   }
@@ -6376,7 +6611,7 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
     cai_runtime_input_node_free(node);
     return cai_set_error(error, CAI_ERR_CANCELLED, "agent runtime is closing");
   }
-  if (runtime->model_switching) {
+  if (runtime->model_switching || runtime->settings_applying) {
     pthread_mutex_unlock(&runtime->lock);
     cai_runtime_input_node_free(node);
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -6551,15 +6786,24 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
   return CAI_OK;
 }
 
-const char *cai_agent_runtime_model(const cai_agent_runtime *runtime) {
-  if (runtime == NULL || runtime->agent == NULL) {
+const char *cai_agent_runtime_model(cai_agent_runtime *runtime) {
+  cai_agent_runtime_settings effective;
+  cai_error error;
+  int rc;
+
+  if (runtime == NULL) {
     return NULL;
   }
-  return CAI_AGENT_IMPL(runtime->agent)->model;
+  cai_error_init(&error);
+  rc = cai_agent_runtime_get_settings(runtime, &effective, NULL, &error);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? effective.model : NULL;
 }
 
-int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
-                                cai_error *error) {
+static int cai_runtime_set_model_internal(cai_agent_runtime *runtime,
+                                          const char *model,
+                                          int worker_boundary,
+                                          cai_error *error) {
   cai_agent_impl *agent;
   cai_session_impl *session;
   char *next_model;
@@ -6582,15 +6826,18 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
   size_t history_bytes;
   int rc;
 
-  rc = cai_runtime_owner(runtime, error);
-  if (rc != CAI_OK) {
-    return rc;
+  if (!worker_boundary) {
+    rc = cai_runtime_owner(runtime, error);
+    if (rc != CAI_OK) {
+      return rc;
+    }
   }
   if (model == NULL || model[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID, "agent model is required");
   }
   pthread_mutex_lock(&runtime->lock);
-  rc = cai_runtime_model_switch_ready_locked(runtime, error);
+  rc = worker_boundary ? CAI_OK
+                       : cai_runtime_model_switch_ready_locked(runtime, error);
   if (rc == CAI_OK &&
       strcmp(CAI_AGENT_IMPL(runtime->agent)->model, model) == 0) {
     pthread_mutex_unlock(&runtime->lock);
@@ -6779,6 +7026,322 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
   pthread_cond_broadcast(&runtime->condition);
   pthread_mutex_unlock(&runtime->lock);
   return rc;
+}
+
+int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
+                                cai_error *error) {
+  return cai_runtime_set_model_internal(runtime, model, 0, error);
+}
+
+static int
+cai_runtime_apply_settings_now(cai_agent_runtime *runtime,
+                               const cai_agent_runtime_settings *settings,
+                               int worker_boundary, cai_error *error) {
+  cai_agent_impl *agent;
+  cai_allocator *allocator;
+  char *next_effort;
+  char *next_summary;
+  char *next_smith_effort;
+  char *next_smith_summary;
+  int rc;
+
+  agent = CAI_AGENT_IMPL(runtime->agent);
+  allocator = &CAI_CLIENT_IMPL(runtime->client)->allocator;
+  next_effort = NULL;
+  next_summary = NULL;
+  next_smith_effort = NULL;
+  next_smith_summary = NULL;
+  if ((settings->present & CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT) != 0U) {
+    next_effort = cai_strdup(allocator, settings->reasoning_effort);
+    next_smith_effort = cai_strdup(NULL, settings->reasoning_effort);
+  }
+  if ((settings->present & CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY) != 0U) {
+    next_summary = cai_strdup(allocator, settings->reasoning_summary);
+    next_smith_summary = cai_strdup(NULL, settings->reasoning_summary);
+  }
+  if (((settings->present & CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT) != 0U &&
+       (next_effort == NULL || next_smith_effort == NULL)) ||
+      ((settings->present & CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY) !=
+           0U &&
+       (next_summary == NULL || next_smith_summary == NULL))) {
+    rc = cai_set_error(error, CAI_ERR_NOMEM,
+                       "failed to copy selected reasoning settings");
+    goto done;
+  }
+  rc = CAI_OK;
+  if ((settings->present & CAI_AGENT_RUNTIME_SETTING_MODEL) != 0U) {
+    rc = cai_runtime_set_model_internal(runtime, settings->model,
+                                        worker_boundary, error);
+  }
+  if (rc == CAI_OK &&
+      (settings->present & CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT) != 0U) {
+    cai_free_mem(allocator, agent->reasoning_effort);
+    cai_free_mem(NULL, runtime->smith_reasoning_effort);
+    agent->reasoning_effort = next_effort;
+    runtime->smith_reasoning_effort = next_smith_effort;
+    next_effort = NULL;
+    next_smith_effort = NULL;
+  }
+  if (rc == CAI_OK &&
+      (settings->present & CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY) != 0U) {
+    cai_free_mem(allocator, agent->reasoning_summary);
+    cai_free_mem(NULL, runtime->smith_reasoning_summary);
+    agent->reasoning_summary = next_summary;
+    runtime->smith_reasoning_summary = next_smith_summary;
+    next_summary = NULL;
+    next_smith_summary = NULL;
+  }
+done:
+  cai_free_mem(allocator, next_effort);
+  cai_free_mem(allocator, next_summary);
+  cai_free_mem(NULL, next_smith_effort);
+  cai_free_mem(NULL, next_smith_summary);
+  return rc;
+}
+
+static int cai_runtime_apply_pending_settings(cai_agent_runtime *runtime,
+                                              cai_error *error) {
+  cai_agent_runtime_settings settings;
+  int rc;
+
+  pthread_mutex_lock(&runtime->lock);
+  if (runtime->pending_settings.present == 0U) {
+    pthread_mutex_unlock(&runtime->lock);
+    return CAI_OK;
+  }
+  runtime->settings_applying = 1;
+  settings = cai_runtime_settings_borrow(&runtime->pending_settings);
+  pthread_mutex_unlock(&runtime->lock);
+  rc = cai_runtime_apply_settings_now(runtime, &settings, 1, error);
+  pthread_mutex_lock(&runtime->lock);
+  runtime->settings_applying = 0;
+  runtime->pending_settings_failed = rc != CAI_OK;
+  if (rc == CAI_OK) {
+    cai_runtime_settings_clear(&runtime->pending_settings);
+    runtime->pending_after_active = 0;
+  }
+  pthread_cond_broadcast(&runtime->condition);
+  pthread_mutex_unlock(&runtime->lock);
+  return rc;
+}
+
+static int cai_runtime_settings_value_valid(unsigned int field,
+                                            const char *value) {
+  if (value == NULL || value[0] == '\0') {
+    return 0;
+  }
+  if (field == CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT) {
+    return strcmp(value, CAI_REASONING_EFFORT_NONE) == 0 ||
+           strcmp(value, CAI_REASONING_EFFORT_MINIMAL) == 0 ||
+           strcmp(value, CAI_REASONING_EFFORT_LOW) == 0 ||
+           strcmp(value, CAI_REASONING_EFFORT_MEDIUM) == 0 ||
+           strcmp(value, CAI_REASONING_EFFORT_HIGH) == 0 ||
+           strcmp(value, CAI_REASONING_EFFORT_XHIGH) == 0 ||
+           strcmp(value, CAI_REASONING_EFFORT_MAX) == 0;
+  }
+  if (field == CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY) {
+    return strcmp(value, CAI_REASONING_SUMMARY_NONE) == 0 ||
+           strcmp(value, CAI_REASONING_SUMMARY_AUTO) == 0 ||
+           strcmp(value, CAI_REASONING_SUMMARY_CONCISE) == 0 ||
+           strcmp(value, CAI_REASONING_SUMMARY_DETAILED) == 0;
+  }
+  return strpbrk(value, " \t\r\n") == NULL;
+}
+
+int cai_agent_runtime_get_settings(cai_agent_runtime *runtime,
+                                   cai_agent_runtime_settings *effective,
+                                   cai_agent_runtime_settings *pending,
+                                   cai_error *error) {
+  cai_runtime_settings_owned effective_copy;
+  cai_runtime_settings_owned pending_copy;
+  cai_agent_runtime_settings current;
+  cai_agent_runtime_settings queued;
+  int rc;
+
+  rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  pthread_mutex_lock(&runtime->lock);
+  if (runtime->settings_applying || runtime->model_switching) {
+    pthread_mutex_unlock(&runtime->lock);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "runtime settings are being applied");
+  }
+  current = cai_runtime_effective_settings(runtime);
+  queued = cai_runtime_settings_borrow(&runtime->pending_settings);
+  rc = cai_runtime_settings_stage_views(
+      &current, &queued, &effective_copy, &pending_copy,
+      &CAI_CLIENT_IMPL(runtime->client)->allocator, error);
+  if (rc == CAI_OK) {
+    cai_runtime_settings_publish_views(runtime, &effective_copy, &pending_copy);
+    if (effective != NULL) {
+      *effective =
+          cai_runtime_settings_borrow(&runtime->settings_view_effective);
+    }
+    if (pending != NULL) {
+      *pending = cai_runtime_settings_borrow(&runtime->settings_view_pending);
+    }
+  }
+  pthread_mutex_unlock(&runtime->lock);
+  return rc;
+}
+
+int cai_agent_runtime_update_settings(
+    cai_agent_runtime *runtime, const cai_agent_runtime_settings *requested,
+    cai_agent_runtime_control_result *result, cai_error *error) {
+  const unsigned int all_fields = CAI_AGENT_RUNTIME_SETTING_MODEL |
+                                  CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT |
+                                  CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY;
+  cai_runtime_settings_owned candidate;
+  cai_runtime_settings_owned effective_copy;
+  cai_runtime_settings_owned pending_copy;
+  cai_agent_runtime_settings current;
+  cai_agent_runtime_settings selected;
+  cai_agent_runtime_settings empty;
+  int active;
+  int rc;
+
+  rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  if (requested == NULL || requested->present == 0U ||
+      (requested->present & ~all_fields) != 0U ||
+      ((requested->present & CAI_AGENT_RUNTIME_SETTING_MODEL) != 0U &&
+       !cai_runtime_settings_value_valid(CAI_AGENT_RUNTIME_SETTING_MODEL,
+                                         requested->model)) ||
+      ((requested->present & CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT) !=
+           0U &&
+       !cai_runtime_settings_value_valid(
+           CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT,
+           requested->reasoning_effort)) ||
+      ((requested->present & CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY) !=
+           0U &&
+       !cai_runtime_settings_value_valid(
+           CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY,
+           requested->reasoning_summary))) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "runtime settings require selected valid values");
+  }
+  memset(&candidate, 0, sizeof(candidate));
+  memset(&effective_copy, 0, sizeof(effective_copy));
+  memset(&pending_copy, 0, sizeof(pending_copy));
+  memset(&empty, 0, sizeof(empty));
+  pthread_mutex_lock(&runtime->lock);
+  if (runtime->stopping || runtime->settings_applying ||
+      runtime->model_switching || runtime->active_review != NULL ||
+      runtime->review_launching || runtime->review_pause_pending) {
+    pthread_mutex_unlock(&runtime->lock);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "runtime settings cannot change at this boundary");
+  }
+  selected = cai_runtime_settings_borrow(&runtime->pending_settings);
+  selected.present |= requested->present;
+  if ((requested->present & CAI_AGENT_RUNTIME_SETTING_MODEL) != 0U) {
+    selected.model = requested->model;
+  }
+  if ((requested->present & CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT) != 0U) {
+    selected.reasoning_effort = requested->reasoning_effort;
+  }
+  if ((requested->present & CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY) !=
+      0U) {
+    selected.reasoning_summary = requested->reasoning_summary;
+  }
+  rc = cai_runtime_settings_copy(&candidate, &selected,
+                                 &CAI_CLIENT_IMPL(runtime->client)->allocator,
+                                 error);
+  current = cai_runtime_effective_settings(runtime);
+  active = runtime->state == CAI_AGENT_SAMPLING ||
+           runtime->state == CAI_AGENT_DISPATCHING_TOOL ||
+           runtime->turn_head != NULL || runtime->steering_head != NULL ||
+           runtime->goal_control_count != 0U ||
+           runtime->goal_control_inflight != 0U;
+  if (rc == CAI_OK && !active) {
+    if ((selected.present & CAI_AGENT_RUNTIME_SETTING_MODEL) != 0U) {
+      current.model = selected.model;
+      current.present |= CAI_AGENT_RUNTIME_SETTING_MODEL;
+    }
+    if ((selected.present & CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT) != 0U) {
+      current.reasoning_effort = selected.reasoning_effort;
+      current.present |= CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT;
+    }
+    if ((selected.present & CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY) !=
+        0U) {
+      current.reasoning_summary = selected.reasoning_summary;
+      current.present |= CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY;
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_settings_stage_views(
+        &current, active ? &selected : &empty, &effective_copy, &pending_copy,
+        &CAI_CLIENT_IMPL(runtime->client)->allocator, error);
+  }
+  if (rc != CAI_OK) {
+    pthread_mutex_unlock(&runtime->lock);
+    cai_runtime_settings_clear(&candidate);
+    return rc;
+  }
+  if (active) {
+    cai_runtime_settings_clear(&runtime->pending_settings);
+    runtime->pending_settings = candidate;
+    memset(&candidate, 0, sizeof(candidate));
+    runtime->pending_settings_failed = 0;
+    runtime->pending_after_active =
+        runtime->state == CAI_AGENT_SAMPLING ||
+        runtime->state == CAI_AGENT_DISPATCHING_TOOL;
+    cai_runtime_settings_publish_views(runtime, &effective_copy, &pending_copy);
+    pthread_cond_broadcast(&runtime->condition);
+    pthread_mutex_unlock(&runtime->lock);
+  } else {
+    runtime->settings_applying = 1;
+    pthread_mutex_unlock(&runtime->lock);
+    selected = cai_runtime_settings_borrow(&candidate);
+    rc = cai_runtime_apply_settings_now(runtime, &selected, 1, error);
+    pthread_mutex_lock(&runtime->lock);
+    runtime->settings_applying = 0;
+    if (rc == CAI_OK) {
+      cai_runtime_settings_clear(&runtime->pending_settings);
+      runtime->pending_settings_failed = 0;
+      runtime->pending_after_active = 0;
+      cai_runtime_settings_publish_views(runtime, &effective_copy,
+                                         &pending_copy);
+    }
+    pthread_cond_broadcast(&runtime->condition);
+    pthread_mutex_unlock(&runtime->lock);
+  }
+  cai_runtime_settings_clear(&candidate);
+  cai_runtime_settings_clear(&effective_copy);
+  cai_runtime_settings_clear(&pending_copy);
+  if (rc == CAI_OK && result != NULL) {
+    result->effective =
+        cai_runtime_settings_borrow(&runtime->settings_view_effective);
+    result->pending =
+        cai_runtime_settings_borrow(&runtime->settings_view_pending);
+    result->applied = !active;
+  }
+  return rc;
+}
+
+int cai_agent_runtime_cancel_turn(cai_agent_runtime *runtime,
+                                  cai_error *error) {
+  int rc;
+
+  rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  pthread_mutex_lock(&runtime->lock);
+  if (runtime->stopping || (runtime->state != CAI_AGENT_SAMPLING &&
+                            runtime->state != CAI_AGENT_DISPATCHING_TOOL)) {
+    pthread_mutex_unlock(&runtime->lock);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "cancel_turn requires an active agent turn");
+  }
+  runtime->turn_cancel_requested = 1;
+  pthread_cond_broadcast(&runtime->condition);
+  pthread_mutex_unlock(&runtime->lock);
+  return CAI_OK;
 }
 
 int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
@@ -9585,7 +10148,8 @@ int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
   }
   while ((node = runtime->event_head) != NULL) {
     terminal_event = node->event.type == CAI_AGENT_EVENT_RUN_COMPLETED ||
-                     node->event.type == CAI_AGENT_EVENT_RUN_FAILED;
+                     node->event.type == CAI_AGENT_EVENT_RUN_FAILED ||
+                     node->event.type == CAI_AGENT_EVENT_RUN_CANCELLED;
     runtime->event_head = node->next;
     if (runtime->event_head == NULL) {
       runtime->event_tail = NULL;
@@ -9896,6 +10460,9 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
     runtime->goal_control_head = control->next;
     cai_runtime_goal_control_node_free(control);
   }
+  cai_runtime_settings_clear(&runtime->pending_settings);
+  cai_runtime_settings_clear(&runtime->settings_view_effective);
+  cai_runtime_settings_clear(&runtime->settings_view_pending);
   if (runtime->session != NULL) {
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                  runtime->model_compaction_hash);

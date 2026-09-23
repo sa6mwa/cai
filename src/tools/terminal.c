@@ -943,14 +943,34 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
 static int cai_terminal_wait(cai_terminal_manager *manager, size_t initial,
                              long wait_ms) {
   struct timespec deadline;
+  struct timespec interval;
+  struct timespec now;
 
   cai_terminal_deadline(&deadline, wait_ms);
   pthread_mutex_lock(&manager->lock);
   while (manager->running && manager->output_length == initial) {
-    if (pthread_cond_timedwait(&manager->changed, &manager->lock, &deadline) !=
-        0) {
+    (void)clock_gettime(CLOCK_REALTIME, &now);
+    if (now.tv_sec > deadline.tv_sec ||
+        (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
       break;
     }
+    interval = now;
+    interval.tv_nsec += 100000000L;
+    if (interval.tv_nsec >= 1000000000L) {
+      interval.tv_sec++;
+      interval.tv_nsec -= 1000000000L;
+    }
+    if (interval.tv_sec > deadline.tv_sec ||
+        (interval.tv_sec == deadline.tv_sec &&
+         interval.tv_nsec > deadline.tv_nsec)) {
+      interval = deadline;
+    }
+    (void)pthread_cond_timedwait(&manager->changed, &manager->lock, &interval);
+    pthread_mutex_unlock(&manager->lock);
+    if (cai_stream_thread_cancel_requested()) {
+      return CAI_ERR_CANCELLED;
+    }
+    pthread_mutex_lock(&manager->lock);
   }
   pthread_mutex_unlock(&manager->lock);
   return CAI_OK;
@@ -1383,6 +1403,8 @@ static int cai_terminal_emit_completion_once(cai_terminal_manager *manager,
   return rc;
 }
 
+static void cai_terminal_cancel_active_command(cai_terminal_manager *manager);
+
 static int cai_terminal_exec_callback(void *value, const void *params,
                                       void *out, cai_error *error) {
   cai_terminal_binding *binding;
@@ -1438,7 +1460,10 @@ static int cai_terminal_exec_callback(void *value, const void *params,
         binding->manager->default_yield_ms, binding->manager->max_yield_ms, 0L);
     output_limit = cai_terminal_output_limit(
         args->max_output_tokens, args->has_max_output_tokens, SIZE_MAX);
-    (void)cai_terminal_wait(binding->manager, 0U, wait_ms);
+    rc = cai_terminal_wait(binding->manager, 0U, wait_ms);
+    if (rc == CAI_ERR_CANCELLED || cai_stream_thread_cancel_requested()) {
+      cai_terminal_cancel_active_command(binding->manager);
+    }
     rc =
         cai_terminal_fill_result(binding->manager, output_limit, result, error);
     if (rc == CAI_OK) {
@@ -1468,6 +1493,22 @@ static void cai_terminal_send_signal(cai_terminal_manager *manager,
     }
   }
   pthread_mutex_unlock(&manager->lock);
+}
+
+static void cai_terminal_cancel_active_command(cai_terminal_manager *manager) {
+  pthread_mutex_lock(&manager->lock);
+  if (!manager->running) {
+    pthread_mutex_unlock(&manager->lock);
+    return;
+  }
+  manager->termination_requested = 1;
+  pthread_mutex_unlock(&manager->lock);
+  cai_terminal_send_signal(manager, SIGINT);
+  (void)cai_terminal_wait_for_completion(manager, 250L);
+  cai_terminal_send_signal(manager, SIGTERM);
+  (void)cai_terminal_wait_for_completion(manager, 250L);
+  cai_terminal_send_signal(manager, SIGKILL);
+  (void)cai_terminal_wait_for_completion(manager, 250L);
 }
 
 static int cai_terminal_write_all(int fd, const char *data, cai_error *error) {
@@ -1604,7 +1645,10 @@ static int cai_terminal_write_callback(void *value, const void *params,
     pthread_mutex_unlock(&binding->manager->lock);
     cai_terminal_send_signal(binding->manager, SIGINT);
   }
-  (void)cai_terminal_wait(binding->manager, initial, wait_ms);
+  rc = cai_terminal_wait(binding->manager, initial, wait_ms);
+  if (rc == CAI_ERR_CANCELLED || cai_stream_thread_cancel_requested()) {
+    cai_terminal_cancel_active_command(binding->manager);
+  }
   if (args->has_terminate && args->terminate) {
     pthread_mutex_lock(&binding->manager->lock);
     if (binding->manager->running) {

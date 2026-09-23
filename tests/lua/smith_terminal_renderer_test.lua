@@ -31,6 +31,7 @@ local cai = {
   AGENT_EVENT_TOOL_CALL_COMPLETED = 5,
   AGENT_EVENT_RUN_FAILED = 10,
   AGENT_EVENT_RUN_COMPLETED = 9,
+  AGENT_EVENT_RUN_CANCELLED = 29,
   AGENT_TOOL_ACTION_READ = 1,
   AGENT_TOOL_ACTION_LIST = 2,
   AGENT_TOOL_ACTION_VIEW = 3,
@@ -72,6 +73,7 @@ render.event({ type = cai.AGENT_EVENT_SUBAGENT_STARTED, subagent_name = "review"
   subagent_instruction = "Review the exact delegated change set." })
 render.event({ type = cai.AGENT_EVENT_REVIEW_REPORT, data = report })
 render.event({ type = cai.AGENT_EVENT_REVIEW_HANDED_OFF, data = report })
+render.event({ type = cai.AGENT_EVENT_RUN_CANCELLED })
 
 local rendered = table.concat(chunks)
 assert_contains(rendered, "<magenta>Thinking: <reset>Planning files\n", "heading")
@@ -88,5 +90,6 @@ assert_contains(rendered, "One actionable issue.\n", "review explanation")
 assert_contains(rendered, "- Use stable state — /tmp/project/a.c:7-7\n", "review finding")
 assert_contains(rendered, "  Avoid raw JSON.\n", "review body")
 assert_not_contains(rendered, "\"overall_correctness\"", "review raw JSON")
+assert_contains(rendered, "Smith turn cancelled.\n", "run cancellation")
 
 print("lua Smith terminal renderer fixture passed")

@@ -16,6 +16,28 @@ extern "C" {
 
 typedef struct cai_agent_runtime cai_agent_runtime;
 
+/** Fields selected by a runtime settings update. */
+typedef enum cai_agent_runtime_setting {
+  CAI_AGENT_RUNTIME_SETTING_MODEL = 1U << 0,
+  CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT = 1U << 1,
+  CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY = 1U << 2
+} cai_agent_runtime_setting;
+
+/** Effective or pending runtime request settings. NULL fields are absent. */
+typedef struct cai_agent_runtime_settings {
+  unsigned int present;
+  const char *model;
+  const char *reasoning_effort;
+  const char *reasoning_summary;
+} cai_agent_runtime_settings;
+
+/** Borrowed settings views and whether an update applied immediately. */
+typedef struct cai_agent_runtime_control_result {
+  cai_agent_runtime_settings effective;
+  cai_agent_runtime_settings pending;
+  int applied;
+} cai_agent_runtime_control_result;
+
 /** Observable execution state of an agent runtime. */
 typedef enum cai_agent_run_state {
   /** Ready to accept an immediate turn. */
@@ -127,7 +149,9 @@ typedef enum cai_agent_runtime_event_type {
   /** The provider is sampling the compaction summary. */
   CAI_AGENT_EVENT_COMPACTION_PROGRESS = 27,
   /** Compacted history and its checkpoint were committed. */
-  CAI_AGENT_EVENT_COMPACTION_COMPLETED = 28
+  CAI_AGENT_EVENT_COMPACTION_COMPLETED = 28,
+  /** Active turn stopped and its durable state was settled. */
+  CAI_AGENT_EVENT_RUN_CANCELLED = 29
 } cai_agent_runtime_event_type;
 
 /**
@@ -612,9 +636,39 @@ int cai_agent_runtime_open(cai_client *client,
  */
 int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
                                 cai_error *error);
-/** Return the selected model, borrowed until the next successful set or close.
+/** Return an owner-thread snapshot of the selected model, borrowed until the
+ * next settings query/update or runtime close. NULL indicates that settings
+ * are being applied or a snapshot could not be allocated. */
+const char *cai_agent_runtime_model(cai_agent_runtime *runtime);
+/**
+ * Query effective request settings and changes waiting for a turn boundary.
+ * Owner-thread-only. Returned strings are borrowed snapshots valid until the
+ * next settings query/update or runtime close, even if a pending change applies
+ * on the worker in the meantime. Either output may be NULL.
  */
-const char *cai_agent_runtime_model(const cai_agent_runtime *runtime);
+int cai_agent_runtime_get_settings(cai_agent_runtime *runtime,
+                                   cai_agent_runtime_settings *effective,
+                                   cai_agent_runtime_settings *pending,
+                                   cai_error *error);
+/**
+ * Atomically accept selected nonempty settings. Owner-thread-only. At a
+ * stable boundary the update applies immediately; during a turn or with queued
+ * input it remains pending until before the next turn. A failed application
+ * leaves the pending request visible and blocks later turns until replaced.
+ * A pending request is discarded on close. Returned views have the same
+ * lifetime as get_settings. result may be NULL.
+ */
+int cai_agent_runtime_update_settings(
+    cai_agent_runtime *runtime, const cai_agent_runtime_settings *requested,
+    cai_agent_runtime_control_result *result, cai_error *error);
+/**
+ * Request cancellation of the active turn without closing the runtime.
+ * Owner-thread-only and idempotent while cancellation is pending. Returns an
+ * invalid-state error when no turn is active. Completion is signalled by one
+ * CAI_AGENT_EVENT_RUN_CANCELLED after durable state has been settled; accepted
+ * queued input runs afterward. A non-cooperative host tool may delay it.
+ */
+int cai_agent_runtime_cancel_turn(cai_agent_runtime *runtime, cai_error *error);
 /**
  * Submit an immediate user turn while an ordinary runtime is idle or
  * completed. With durable storage the accepted input is journaled before this

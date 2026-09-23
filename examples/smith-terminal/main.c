@@ -758,6 +758,9 @@ static int render_event(void *context, const cai_agent_runtime_event *event,
             event->data != NULL ? event->data : "agent run failed");
   } else if (event->type == CAI_AGENT_EVENT_RUN_COMPLETED) {
     render_close_message(state);
+  } else if (event->type == CAI_AGENT_EVENT_RUN_CANCELLED) {
+    render_close_message(state);
+    fputs("Smith turn cancelled.\n", stdout);
   }
   return CAI_OK;
 }

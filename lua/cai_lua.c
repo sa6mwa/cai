@@ -4539,6 +4539,108 @@ static int cai_lua_agent_runtime_set_model(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static void
+cai_lua_push_runtime_settings(lua_State *L,
+                              const cai_agent_runtime_settings *settings) {
+  lua_newtable(L);
+  if ((settings->present & CAI_AGENT_RUNTIME_SETTING_MODEL) != 0U) {
+    lua_pushstring(L, settings->model);
+    lua_setfield(L, -2, "model");
+  }
+  if ((settings->present & CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT) != 0U) {
+    lua_pushstring(L, settings->reasoning_effort);
+    lua_setfield(L, -2, "reasoning_effort");
+  }
+  if ((settings->present & CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY) != 0U) {
+    lua_pushstring(L, settings->reasoning_summary);
+    lua_setfield(L, -2, "reasoning_summary");
+  }
+}
+
+static int cai_lua_agent_runtime_settings(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  cai_agent_runtime_settings effective;
+  cai_agent_runtime_settings pending;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_agent_runtime(L, 1);
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_get_settings(self->ptr, &effective, &pending, &error);
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  lua_newtable(L);
+  cai_lua_push_runtime_settings(L, &effective);
+  lua_setfield(L, -2, "effective");
+  cai_lua_push_runtime_settings(L, &pending);
+  lua_setfield(L, -2, "pending");
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_agent_runtime_update_settings(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  cai_agent_runtime_settings requested;
+  cai_agent_runtime_control_result result;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_agent_runtime(L, 1);
+  luaL_checktype(L, 2, LUA_TTABLE);
+  memset(&requested, 0, sizeof(requested));
+  lua_getfield(L, 2, "model");
+  if (!lua_isnil(L, -1)) {
+    requested.present |= CAI_AGENT_RUNTIME_SETTING_MODEL;
+    requested.model = luaL_checkstring(L, -1);
+  }
+  lua_pop(L, 1);
+  lua_getfield(L, 2, "reasoning_effort");
+  if (!lua_isnil(L, -1)) {
+    requested.present |= CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT;
+    requested.reasoning_effort = luaL_checkstring(L, -1);
+  }
+  lua_pop(L, 1);
+  lua_getfield(L, 2, "reasoning_summary");
+  if (!lua_isnil(L, -1)) {
+    requested.present |= CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY;
+    requested.reasoning_summary = luaL_checkstring(L, -1);
+  }
+  lua_pop(L, 1);
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc =
+      cai_agent_runtime_update_settings(self->ptr, &requested, &result, &error);
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK) {
+    return cai_lua_fail(L, rc, &error);
+  }
+  lua_newtable(L);
+  lua_pushboolean(L, result.applied);
+  lua_setfield(L, -2, "applied");
+  cai_lua_push_runtime_settings(L, &result.effective);
+  lua_setfield(L, -2, "effective");
+  cai_lua_push_runtime_settings(L, &result.pending);
+  lua_setfield(L, -2, "pending");
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_agent_runtime_cancel_turn(lua_State *L) {
+  cai_lua_agent_runtime *self;
+  cai_error error;
+  int rc;
+
+  self = cai_lua_check_agent_runtime(L, 1);
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_cancel_turn(self->ptr, &error);
+  cai_lua_agent_runtime_leave(self);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_agent_runtime_submit_review(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_agent_review_request request;
@@ -10929,6 +11031,9 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"submit", cai_lua_agent_runtime_submit},
     {"submit_interactive", cai_lua_agent_runtime_submit_interactive},
     {"set_model", cai_lua_agent_runtime_set_model},
+    {"settings", cai_lua_agent_runtime_settings},
+    {"update_settings", cai_lua_agent_runtime_update_settings},
+    {"cancel_turn", cai_lua_agent_runtime_cancel_turn},
     {"submit_review", cai_lua_agent_runtime_submit_review},
     {"start_review", cai_lua_agent_runtime_start_review},
     {"finish_review", cai_lua_agent_runtime_finish_review},
@@ -11372,6 +11477,8 @@ int luaopen_cai(lua_State *L) {
                       CAI_AGENT_EVENT_REASONING_SUMMARY);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_RESPONSE_COMPLETED",
                       CAI_AGENT_EVENT_RESPONSE_COMPLETED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_RUN_CANCELLED",
+                      CAI_AGENT_EVENT_RUN_CANCELLED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_COMPACTION_STARTED",
                       CAI_AGENT_EVENT_COMPACTION_STARTED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_COMPACTION_PROGRESS",

@@ -184,10 +184,17 @@ typedef struct runtime_event_state {
   cai_agent_runtime *runtime;
   int calls;
   int saw_started;
+  int started_count;
+  unsigned long long cancel_sequence;
+  unsigned long long next_started_sequence;
   int run_started_inactive_state;
   int saw_turn_queued;
   int saw_steering_queued;
   int completed_count;
+  int cancelled_count;
+  int terminal_started_count;
+  int terminal_cancelled_count;
+  int text_delta_count;
   int completed_submit_attempts;
   int completed_submit_result;
   int saw_failed;
@@ -1997,6 +2004,11 @@ static int test_runtime_event(void *context,
   }
   if (event->type == CAI_AGENT_EVENT_RUN_STARTED) {
     state->saw_started = 1;
+    state->started_count++;
+    if (state->cancel_sequence != 0ULL &&
+        state->next_started_sequence == 0ULL) {
+      state->next_started_sequence = event->sequence;
+    }
     if (event->state != CAI_AGENT_SAMPLING) {
       state->run_started_inactive_state = 1;
     }
@@ -2021,6 +2033,19 @@ static int test_runtime_event(void *context,
   }
   if (event->type == CAI_AGENT_EVENT_RESPONSE_COMPLETED) {
     state->response_completed_count++;
+  }
+  if (event->type == CAI_AGENT_EVENT_RUN_CANCELLED) {
+    state->cancelled_count++;
+    state->cancel_sequence = event->sequence;
+  }
+  if (event->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED) {
+    state->terminal_started_count++;
+  }
+  if (event->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED) {
+    state->terminal_cancelled_count++;
+  }
+  if (event->type == CAI_AGENT_EVENT_TEXT_DELTA) {
+    state->text_delta_count++;
   }
   if (event->type == CAI_AGENT_EVENT_RUN_FAILED) {
     state->saw_failed = 1;
@@ -10119,6 +10144,143 @@ http_mock_server_open_script(test_state *state, const char *name,
   snprintf(server->base_url, sizeof(server->base_url), "http://127.0.0.1:%d/v1",
            port);
   return 0;
+}
+
+static void mock_runtime_control_child(int pipe_fd) {
+  static const char first_delta[] =
+      "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+      "Connection: close\r\n\r\n"
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"unfinished word\"}\n\n";
+  static const char completed[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
+      "\"done\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_control\",\"usage\":{\"input_tokens\":1,"
+      "\"output_tokens\":1,\"total_tokens\":2}}}\n\n";
+  struct sockaddr_in addr;
+  socklen_t addr_len;
+  char request[65536];
+  char drain[256];
+  int server_fd;
+  int client_fd;
+  int port;
+  int i;
+
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(15U);
+  server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd < 0) {
+    _exit(2);
+  }
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = 0;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+      listen(server_fd, 3) != 0) {
+    _exit(3);
+  }
+  addr_len = (socklen_t)sizeof(addr);
+  if (getsockname(server_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+    _exit(4);
+  }
+  port = (int)ntohs(addr.sin_port);
+  if (write(pipe_fd, &port, sizeof(port)) != (ssize_t)sizeof(port)) {
+    _exit(5);
+  }
+  close(pipe_fd);
+  for (i = 0; i < 3; i++) {
+    client_fd = mock_accept_with_deadline(server_fd);
+    if (client_fd < 0 || mock_set_socket_deadline(client_fd) != 0 ||
+        mock_read_request(client_fd, request, sizeof(request)) != 0) {
+      _exit(6);
+    }
+    if (i == 0) {
+      if (strstr(request, "turn A") == NULL ||
+          strstr(request, "\"model\":\"gpt-5.6-luna\"") == NULL ||
+          mock_write_all(client_fd, first_delta, sizeof(first_delta) - 1U) !=
+              0) {
+        _exit(7);
+      }
+      while (read(client_fd, drain, sizeof(drain)) > 0) {
+      }
+    } else {
+      if (strstr(request, i == 1 ? "steer after cancel" : "turn B") == NULL ||
+          strstr(request, "\"model\":\"gpt-6-astra\"") == NULL ||
+          strstr(request, "\"effort\":\"high\"") == NULL ||
+          mock_write_status_response(client_fd, 200, "OK", "text/event-stream",
+                                     NULL, completed) != 0) {
+        _exit(8);
+      }
+    }
+    close(client_fd);
+  }
+  close(server_fd);
+  alarm(0U);
+  _exit(0);
+}
+
+static int http_mock_server_open_runtime_control(test_state *state,
+                                                 http_mock_server *server) {
+  int pipe_fds[2];
+  int port;
+
+  memset(server, 0, sizeof(*server));
+  server->pid = -1;
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "runtime_control_mock", "pipe failed");
+    return -1;
+  }
+  server->pid = fork();
+  if (server->pid < 0) {
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    test_fail(state, "runtime_control_mock", "fork failed");
+    return -1;
+  }
+  if (server->pid == 0) {
+    close(pipe_fds[0]);
+    mock_runtime_control_child(pipe_fds[1]);
+  }
+  close(pipe_fds[1]);
+  if (mock_read_port(pipe_fds[0], &port) != 0) {
+    close(pipe_fds[0]);
+    test_fail(state, "runtime_control_mock", "failed to read mock port");
+    expect_child_exit(state, "runtime_control_mock", server->pid,
+                      &server->child_status);
+    server->pid = -1;
+    return -1;
+  }
+  close(pipe_fds[0]);
+  snprintf(server->base_url, sizeof(server->base_url), "http://127.0.0.1:%d/v1",
+           port);
+  return 0;
+}
+
+typedef struct runtime_control_wrong_thread {
+  cai_agent_runtime *runtime;
+  int query_rc;
+  int update_rc;
+  int cancel_rc;
+} runtime_control_wrong_thread;
+
+static void *test_runtime_control_wrong_thread(void *context) {
+  runtime_control_wrong_thread *probe;
+  cai_agent_runtime_settings settings;
+  cai_error error;
+
+  probe = (runtime_control_wrong_thread *)context;
+  cai_error_init(&error);
+  probe->query_rc =
+      cai_agent_runtime_get_settings(probe->runtime, &settings, NULL, &error);
+  settings.present = CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT;
+  settings.reasoning_effort = CAI_REASONING_EFFORT_HIGH;
+  probe->update_rc = cai_agent_runtime_update_settings(probe->runtime,
+                                                       &settings, NULL, &error);
+  probe->cancel_rc = cai_agent_runtime_cancel_turn(probe->runtime, &error);
+  cai_error_cleanup(&error);
+  return NULL;
 }
 
 typedef enum test_mcp_streaming_operation {
@@ -27168,6 +27330,426 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_agent_runtime_controls(test_state *state) {
+  http_mock_server server;
+  fail_alloc_state alloc_state;
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  runtime_event_state events;
+  cai_agent_runtime_settings requested;
+  cai_agent_runtime_settings effective;
+  cai_agent_runtime_settings pending;
+  cai_agent_runtime_control_result result;
+  cai_agent_goal_snapshot goal_snapshot;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_error error;
+  char session_id[CAI_AGENT_SESSION_ID_MAX];
+  runtime_control_wrong_thread wrong_thread;
+  pthread_t probe_thread;
+  int i;
+
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  memset(&alloc_state, 0, sizeof(alloc_state));
+  alloc_state.fail_after = (size_t)-1;
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  if (http_mock_server_open_runtime_control(state, &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = server.base_url;
+  client_config.timeout_ms = 5000L;
+  client_config.http_2_disabled = 1;
+  client_config.allocator.malloc_fn = test_fail_allocator_malloc;
+  client_config.allocator.realloc_fn = test_fail_allocator_realloc;
+  client_config.allocator.free_fn = test_fail_allocator_free;
+  client_config.allocator.context = &alloc_state;
+  expect_int(state, "runtime_control_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  if (client == NULL) {
+    goto done;
+  }
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  runtime_config.disable_terminal = 1;
+  runtime_config.session_store = &store;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_control_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime == NULL) {
+    goto done;
+  }
+  snprintf(session_id, sizeof(session_id), "%s",
+           cai_agent_runtime_session_id(runtime));
+  expect_int(
+      state, "runtime_control_initial_settings",
+      cai_agent_runtime_get_settings(runtime, &effective, &pending, &error),
+      CAI_OK);
+  expect_str(state, "runtime_control_initial_model", effective.model,
+             CAI_MODEL_GPT_5_6_LUNA);
+  expect_int(state, "runtime_control_initial_pending", pending.present, 0L);
+  memset(&requested, 0, sizeof(requested));
+  requested.present = CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT;
+  requested.reasoning_effort = CAI_REASONING_EFFORT_HIGH;
+  alloc_state.fail_after = alloc_state.allocs;
+  expect_int(
+      state, "runtime_control_allocation_failure_atomic",
+      cai_agent_runtime_update_settings(runtime, &requested, NULL, &error),
+      CAI_ERR_NOMEM);
+  alloc_state.fail_after = (size_t)-1;
+  expect_int(
+      state, "runtime_control_after_allocation_failure",
+      cai_agent_runtime_get_settings(runtime, &effective, &pending, &error),
+      CAI_OK);
+  expect_str(state, "runtime_control_allocation_keeps_model", effective.model,
+             CAI_MODEL_GPT_5_6_LUNA);
+  expect_int(state, "runtime_control_allocation_keeps_pending", pending.present,
+             0L);
+  memset(&wrong_thread, 0, sizeof(wrong_thread));
+  wrong_thread.runtime = runtime;
+  if (pthread_create(&probe_thread, NULL, test_runtime_control_wrong_thread,
+                     &wrong_thread) == 0) {
+    (void)pthread_join(probe_thread, NULL);
+    expect_int(state, "runtime_control_nonowner_query", wrong_thread.query_rc,
+               CAI_ERR_INVALID);
+    expect_int(state, "runtime_control_nonowner_update", wrong_thread.update_rc,
+               CAI_ERR_INVALID);
+    expect_int(state, "runtime_control_nonowner_cancel", wrong_thread.cancel_rc,
+               CAI_ERR_INVALID);
+  } else {
+    test_fail(state, "runtime_control_nonowner", "thread create failed");
+  }
+  expect_int(state, "runtime_control_idle_cancel_rejected",
+             cai_agent_runtime_cancel_turn(runtime, &error), CAI_ERR_INVALID);
+  expect_int(state, "runtime_control_submit_A",
+             cai_agent_runtime_submit(runtime, "turn A", &error), CAI_OK);
+  for (i = 0; i < 100 && events.text_delta_count == 0; i++) {
+    expect_int(state, "runtime_control_pump_A",
+               cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+  }
+  expect_int(state, "runtime_control_A_streamed", events.text_delta_count, 1L);
+  memset(&requested, 0, sizeof(requested));
+  requested.present = CAI_AGENT_RUNTIME_SETTING_MODEL;
+  requested.model = CAI_MODEL_GPT_5_6_TERRA;
+  expect_int(
+      state, "runtime_control_pending_terra",
+      cai_agent_runtime_update_settings(runtime, &requested, &result, &error),
+      CAI_OK);
+  expect_int(state, "runtime_control_not_applied", result.applied, 0L);
+  expect_str(state, "runtime_control_pending_terra_value", result.pending.model,
+             CAI_MODEL_GPT_5_6_TERRA);
+  requested.model = CAI_MODEL_GPT_6_ASTRA;
+  requested.present = CAI_AGENT_RUNTIME_SETTING_MODEL |
+                      CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT |
+                      CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY;
+  requested.reasoning_effort = CAI_REASONING_EFFORT_HIGH;
+  requested.reasoning_summary = CAI_REASONING_SUMMARY_CONCISE;
+  expect_int(
+      state, "runtime_control_pending_astra",
+      cai_agent_runtime_update_settings(runtime, &requested, &result, &error),
+      CAI_OK);
+  expect_str(state, "runtime_control_pending_astra_value", result.pending.model,
+             CAI_MODEL_GPT_6_ASTRA);
+  expect_str(state, "runtime_control_still_luna", result.effective.model,
+             CAI_MODEL_GPT_5_6_LUNA);
+  expect_int(state, "runtime_control_goal_query_with_pending",
+             cai_agent_runtime_get_goal(runtime, &goal_snapshot, &error),
+             CAI_OK);
+  expect_int(
+      state, "runtime_control_pending_after_goal_query",
+      cai_agent_runtime_get_settings(runtime, &effective, &pending, &error),
+      CAI_OK);
+  expect_str(state, "runtime_control_goal_query_preserves_pending",
+             pending.model, CAI_MODEL_GPT_6_ASTRA);
+  requested.present = CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT;
+  requested.reasoning_effort = "invalid";
+  expect_int(
+      state, "runtime_control_invalid_atomic",
+      cai_agent_runtime_update_settings(runtime, &requested, &result, &error),
+      CAI_ERR_INVALID);
+  expect_int(
+      state, "runtime_control_query_pending",
+      cai_agent_runtime_get_settings(runtime, &effective, &pending, &error),
+      CAI_OK);
+  expect_str(state, "runtime_control_invalid_preserves_pending", pending.model,
+             CAI_MODEL_GPT_6_ASTRA);
+  expect_int(state, "runtime_control_queue_B",
+             cai_agent_runtime_submit_queued(runtime, "turn B", &error),
+             CAI_OK);
+  expect_int(
+      state, "runtime_control_steer",
+      cai_agent_runtime_submit_steering(runtime, "steer after cancel", &error),
+      CAI_OK);
+  expect_int(state, "runtime_control_cancel",
+             cai_agent_runtime_cancel_turn(runtime, &error), CAI_OK);
+  expect_int(state, "runtime_control_cancel_idempotent",
+             cai_agent_runtime_cancel_turn(runtime, &error), CAI_OK);
+  for (i = 0;
+       i < 160 && (events.cancelled_count == 0 || events.completed_count < 2);
+       i++) {
+    expect_int(state, "runtime_control_pump_followups",
+               cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+  }
+  expect_int(state, "runtime_control_one_cancel_event", events.cancelled_count,
+             1L);
+  expect_int(state, "runtime_control_two_followups", events.completed_count,
+             2L);
+  expect_int(state, "runtime_control_cancel_before_next_start",
+             events.next_started_sequence > events.cancel_sequence, 1L);
+  expect_int(
+      state, "runtime_control_final_settings",
+      cai_agent_runtime_get_settings(runtime, &effective, &pending, &error),
+      CAI_OK);
+  expect_str(state, "runtime_control_final_model", effective.model,
+             CAI_MODEL_GPT_6_ASTRA);
+  expect_str(state, "runtime_control_final_effort", effective.reasoning_effort,
+             CAI_REASONING_EFFORT_HIGH);
+  expect_int(state, "runtime_control_pending_cleared", pending.present, 0L);
+  expect_str(state, "runtime_control_session_stable",
+             cai_agent_runtime_session_id(runtime), session_id);
+  expect_int(state, "runtime_control_durable_checkpoints",
+             store_state.checkpoints > 0, 1L);
+  store_state.checkpoint_json = store_state.saved_checkpoint;
+  store_state.load_applied_event_sequence =
+      store_state.saved_applied_event_sequence;
+  (void)snprintf(store_state.loaded_session_id,
+                 sizeof(store_state.loaded_session_id), "%s", session_id);
+  cai_agent_runtime_close(runtime);
+  runtime = NULL;
+  runtime_config.resume_latest = 1;
+  expect_int(state, "runtime_control_resume",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_str(state, "runtime_control_resume_session_id",
+               cai_agent_runtime_session_id(runtime), session_id);
+    expect_substr(state, "runtime_control_resume_history",
+                  store_state.saved_checkpoint, "turn B");
+  }
+done:
+  if (runtime != NULL) {
+    cai_agent_runtime_close(runtime);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  expect_child_exit(state, "runtime_control_mock", server.pid,
+                    &server.child_status);
+  cai_error_cleanup(&error);
+}
+
+static void mock_runtime_terminal_cancel_child(int pipe_fd) {
+  static const char tool_body[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"fc_cancel_terminal\",\"type\":\"function_call\","
+      "\"call_id\":\"call_cancel_terminal\",\"name\":\"exec_command\","
+      "\"arguments\":\"{\\\"cmd\\\":\\\"sleep "
+      "30\\\",\\\"yield_time_ms\\\":30000}\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_cancel_terminal\",\"usage\":{\"input_tokens\":1,"
+      "\"output_tokens\":1,\"total_tokens\":2}}}\n\n";
+  static const char done_body[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
+      "\"resp_after_cancel_terminal\",\"usage\":{\"input_tokens\":1,"
+      "\"output_tokens\":1,\"total_tokens\":2}}}\n\n";
+  struct sockaddr_in addr;
+  socklen_t addr_len;
+  char request[65536];
+  int server_fd;
+  int client_fd;
+  int port;
+  int i;
+
+  signal(SIGALRM, mock_child_timeout_handler);
+  alarm(15U);
+  server_fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (server_fd < 0) {
+    _exit(2);
+  }
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = 0;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+      listen(server_fd, 2) != 0) {
+    _exit(3);
+  }
+  addr_len = (socklen_t)sizeof(addr);
+  if (getsockname(server_fd, (struct sockaddr *)&addr, &addr_len) != 0) {
+    _exit(4);
+  }
+  port = (int)ntohs(addr.sin_port);
+  if (write(pipe_fd, &port, sizeof(port)) != (ssize_t)sizeof(port)) {
+    _exit(5);
+  }
+  close(pipe_fd);
+  for (i = 0; i < 2; i++) {
+    client_fd = mock_accept_with_deadline(server_fd);
+    if (client_fd < 0 || mock_set_socket_deadline(client_fd) != 0 ||
+        mock_read_request(client_fd, request, sizeof(request)) != 0) {
+      _exit(6);
+    }
+    if (i == 0) {
+      if (strstr(request, "cancel terminal turn") == NULL ||
+          mock_write_status_response(client_fd, 200, "OK", "text/event-stream",
+                                     NULL, tool_body) != 0) {
+        _exit(7);
+      }
+    } else if (strstr(request, "turn after terminal cancel") == NULL ||
+               strstr(request, "call_cancel_terminal") == NULL ||
+               mock_write_status_response(client_fd, 200, "OK",
+                                          "text/event-stream", NULL,
+                                          done_body) != 0) {
+      _exit(8);
+    }
+    close(client_fd);
+  }
+  close(server_fd);
+  alarm(0U);
+  _exit(0);
+}
+
+static void test_agent_runtime_cancel_terminal(test_state *state) {
+  http_mock_server server;
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_terminal_tool_config terminal_config;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  runtime_event_state events;
+  cai_client *client;
+  cai_agent_runtime *runtime;
+  cai_error error;
+  int pipe_fds[2];
+  int port;
+  int i;
+
+  cai_error_init(&error);
+  client = NULL;
+  runtime = NULL;
+  memset(&server, 0, sizeof(server));
+  server.pid = -1;
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  if (pipe(pipe_fds) != 0) {
+    test_fail(state, "runtime_terminal_cancel_mock", "pipe failed");
+    goto done;
+  }
+  server.pid = fork();
+  if (server.pid < 0) {
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    test_fail(state, "runtime_terminal_cancel_mock", "fork failed");
+    goto done;
+  }
+  if (server.pid == 0) {
+    close(pipe_fds[0]);
+    mock_runtime_terminal_cancel_child(pipe_fds[1]);
+  }
+  close(pipe_fds[1]);
+  if (mock_read_port(pipe_fds[0], &port) != 0) {
+    close(pipe_fds[0]);
+    test_fail(state, "runtime_terminal_cancel_mock", "port read failed");
+    goto done;
+  }
+  close(pipe_fds[0]);
+  snprintf(server.base_url, sizeof(server.base_url), "http://127.0.0.1:%d/v1",
+           port);
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  store.context = &store_state;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = server.base_url;
+  client_config.timeout_ms = 5000L;
+  client_config.http_2_disabled = 1;
+  expect_int(state, "runtime_terminal_cancel_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  if (client == NULL) {
+    goto done;
+  }
+  memset(&terminal_config, 0, sizeof(terminal_config));
+  terminal_config.root_path = "/tmp";
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.model = CAI_MODEL_GPT_5_6_LUNA;
+  runtime_config.terminal_tool_config = &terminal_config;
+  runtime_config.session_store = &store;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  expect_int(state, "runtime_terminal_cancel_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime == NULL) {
+    goto done;
+  }
+  expect_int(state, "runtime_terminal_cancel_submit",
+             cai_agent_runtime_submit(runtime, "cancel terminal turn", &error),
+             CAI_OK);
+  for (i = 0; i < 100 && events.terminal_started_count == 0; i++) {
+    expect_int(state, "runtime_terminal_cancel_pump_start",
+               cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+  }
+  expect_int(state, "runtime_terminal_cancel_started",
+             events.terminal_started_count, 1L);
+  expect_int(state, "runtime_terminal_cancel_queue_next",
+             cai_agent_runtime_submit_queued(
+                 runtime, "turn after terminal cancel", &error),
+             CAI_OK);
+  expect_int(state, "runtime_terminal_cancel_request",
+             cai_agent_runtime_cancel_turn(runtime, &error), CAI_OK);
+  for (i = 0;
+       i < 100 && (events.cancelled_count == 0 || events.completed_count == 0);
+       i++) {
+    expect_int(state, "runtime_terminal_cancel_pump_finish",
+               cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+  }
+  expect_int(state, "runtime_terminal_cancel_command_event",
+             events.terminal_cancelled_count, 1L);
+  expect_int(state, "runtime_terminal_cancel_run_event", events.cancelled_count,
+             1L);
+  expect_int(state, "runtime_terminal_cancel_next_start_order",
+             events.next_started_sequence > events.cancel_sequence, 1L);
+  expect_int(state, "runtime_terminal_cancel_next_completed",
+             events.completed_count, 1L);
+  expect_int(state, "runtime_terminal_cancel_checkpointed",
+             store_state.checkpoints > 0, 1L);
+done:
+  if (runtime != NULL) {
+    cai_agent_runtime_close(runtime);
+  }
+  if (client != NULL) {
+    cai_client_close(client);
+  }
+  if (server.pid > 0) {
+    expect_child_exit(state, "runtime_terminal_cancel_mock", server.pid,
+                      &server.child_status);
+  }
+  cai_error_cleanup(&error);
+}
+
 static void test_agent_runtime_model_switch(test_state *state) {
   static const char *catalog_required[] = {
       "GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/",
@@ -43709,6 +44291,8 @@ static const test_entry test_entries[] = {
      test_smith_review_pause_checkpoint_failure},
     {"agent_runtime_lifecycle", test_agent_runtime_lifecycle},
     {"agent_runtime_model_switch", test_agent_runtime_model_switch},
+    {"agent_runtime_controls", test_agent_runtime_controls},
+    {"agent_runtime_cancel_terminal", test_agent_runtime_cancel_terminal},
     {"agent_runtime_model_switch_catalog_recovery",
      test_agent_runtime_model_switch_catalog_recovery},
     {"agent_runtime_model_switch_live_catalog_outage",

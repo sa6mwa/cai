@@ -290,6 +290,12 @@ do
     "Lua agent runtime finish_review method missing")
   assert(type(registry["cai.agent_runtime"].__index.set_model) == "function",
     "Lua agent runtime set_model method missing")
+  assert(type(registry["cai.agent_runtime"].__index.settings) == "function",
+    "Lua agent runtime settings method missing")
+  assert(type(registry["cai.agent_runtime"].__index.update_settings) == "function",
+    "Lua agent runtime update_settings method missing")
+  assert(type(registry["cai.agent_runtime"].__index.cancel_turn) == "function",
+    "Lua agent runtime cancel_turn method missing")
   assert(type(registry["cai.agent_runtime"].__index.model) == "function",
     "Lua agent runtime model method missing")
   assert(type(registry["cai.client"].__index.list_models) == "function",
@@ -1386,6 +1392,23 @@ do
     "Lua Smith runtime compatible model switch")
   assert_eq(runtime:model(), cai.MODEL_GPT_6_ASTRA,
     "Lua Smith runtime selected model")
+  local before = assert_ok(runtime:settings())
+  assert_eq(before.effective.model, cai.MODEL_GPT_6_ASTRA,
+    "Lua Smith runtime effective model")
+  assert(next(before.pending) == nil, "Lua Smith runtime has no pending update")
+  local updated = assert_ok(runtime:update_settings({
+    reasoning_effort = "high", reasoning_summary = "concise",
+  }))
+  assert(updated.applied, "Lua Smith runtime applies idle update")
+  assert_eq(updated.effective.reasoning_effort, "high",
+    "Lua Smith runtime effective reasoning effort")
+  assert_eq(updated.effective.reasoning_summary, "concise",
+    "Lua Smith runtime effective reasoning summary")
+  assert_not_ok(runtime:update_settings({reasoning_effort = "invalid"}),
+    "Lua Smith runtime rejects invalid reasoning effort")
+  assert_eq(assert_ok(runtime:settings()).effective.reasoning_effort, "high",
+    "Lua Smith runtime preserves valid setting")
+  assert_not_ok(runtime:cancel_turn(), "Lua Smith runtime rejects idle cancel")
   assert(type(runtime:session_id()) == "string", "Lua Smith runtime session id")
   assert(type(runtime:wakeup_fd()) == "number", "Lua Smith runtime wakeup fd")
   do

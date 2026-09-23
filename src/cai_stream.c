@@ -14,6 +14,48 @@
 #define CAI_RESPONSES_WEBSOCKET_BETA "responses_websockets=2026-02-06"
 #define CAI_WEBSOCKET_FRAME_BUFFER_SIZE 16384U
 
+static pthread_key_t cai_stream_cancel_key;
+static pthread_once_t cai_stream_cancel_once = PTHREAD_ONCE_INIT;
+static int cai_stream_cancel_key_ready;
+
+static void cai_stream_cancel_key_init(void) {
+  cai_stream_cancel_key_ready =
+      pthread_key_create(&cai_stream_cancel_key, NULL) == 0;
+}
+
+int cai_stream_set_thread_cancel_scope(cai_stream_cancel_scope *scope) {
+  if (pthread_once(&cai_stream_cancel_once, cai_stream_cancel_key_init) != 0 ||
+      !cai_stream_cancel_key_ready) {
+    return CAI_ERR_TRANSPORT;
+  }
+  return pthread_setspecific(cai_stream_cancel_key, scope) == 0
+             ? CAI_OK
+             : CAI_ERR_TRANSPORT;
+}
+
+int cai_stream_thread_cancel_requested(void) {
+  cai_stream_cancel_scope *scope;
+
+  if (pthread_once(&cai_stream_cancel_once, cai_stream_cancel_key_init) != 0 ||
+      !cai_stream_cancel_key_ready) {
+    return 0;
+  }
+  scope = (cai_stream_cancel_scope *)pthread_getspecific(cai_stream_cancel_key);
+  return scope != NULL && scope->check != NULL && scope->check(scope->context);
+}
+
+static int cai_stream_curl_cancel_progress(void *context, curl_off_t down_total,
+                                           curl_off_t down_now,
+                                           curl_off_t up_total,
+                                           curl_off_t up_now) {
+  (void)context;
+  (void)down_total;
+  (void)down_now;
+  (void)up_total;
+  (void)up_now;
+  return cai_stream_thread_cancel_requested();
+}
+
 void cai_client_close_responses_websocket(cai_client_impl *impl) {
   if (impl == NULL) {
     return;
@@ -2348,34 +2390,45 @@ static int cai_ws_wait(CURL *curl, int want_write, long timeout_ms,
   fd_set readfds;
   fd_set writefds;
   int ready;
+  long remaining;
 
   if (curl_easy_getinfo(curl, CURLINFO_ACTIVESOCKET, &sockfd) != CURLE_OK ||
       sockfd == CURL_SOCKET_BAD) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to get websocket socket");
   }
-  FD_ZERO(&readfds);
-  FD_ZERO(&writefds);
-  if (want_write) {
-    FD_SET(sockfd, &writefds);
-  } else {
-    FD_SET(sockfd, &readfds);
-  }
-  tv.tv_sec = timeout_ms > 0L ? timeout_ms / 1000L : 60L;
-  tv.tv_usec = timeout_ms > 0L ? (timeout_ms % 1000L) * 1000L : 0L;
-  ready = select((int)sockfd + 1, want_write ? NULL : &readfds,
-                 want_write ? &writefds : NULL, NULL, &tv);
-  if (ready > 0) {
-    return CAI_OK;
-  }
-  if (ready == 0) {
-    return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         want_write ? "timeout sending websocket frame"
-                                    : "timeout waiting for websocket frame");
+  remaining = timeout_ms > 0L ? timeout_ms : 60000L;
+  while (remaining > 0L) {
+    long slice = remaining > 100L ? 100L : remaining;
+
+    if (cai_stream_thread_cancel_requested()) {
+      return cai_set_error(error, CAI_ERR_CANCELLED,
+                           "agent turn was cancelled");
+    }
+    FD_ZERO(&readfds);
+    FD_ZERO(&writefds);
+    if (want_write) {
+      FD_SET(sockfd, &writefds);
+    } else {
+      FD_SET(sockfd, &readfds);
+    }
+    tv.tv_sec = 0L;
+    tv.tv_usec = slice * 1000L;
+    ready = select((int)sockfd + 1, want_write ? NULL : &readfds,
+                   want_write ? &writefds : NULL, NULL, &tv);
+    if (ready > 0) {
+      return CAI_OK;
+    }
+    if (ready < 0 && errno != EINTR) {
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           want_write ? "failed waiting to send websocket frame"
+                                      : "failed waiting for websocket frame");
+    }
+    remaining -= slice;
   }
   return cai_set_error(error, CAI_ERR_TRANSPORT,
-                       want_write ? "failed waiting to send websocket frame"
-                                  : "failed waiting for websocket frame");
+                       want_write ? "timeout sending websocket frame"
+                                  : "timeout waiting for websocket frame");
 }
 
 static int cai_ws_send_all(CURL *curl, const unsigned char *buffer,
@@ -2388,6 +2441,10 @@ static int cai_ws_send_all(CURL *curl, const unsigned char *buffer,
 
   offset = 0U;
   while (offset < length) {
+    if (cai_stream_thread_cancel_requested()) {
+      return cai_set_error(error, CAI_ERR_CANCELLED,
+                           "agent turn was cancelled");
+    }
     sent = 0U;
     send_flags = flags;
     if (offset > 0U) {
@@ -2632,6 +2689,10 @@ static int cai_ws_receive_events(CURL *curl, cai_sse_state *state,
 
   receiving_text = 0;
   while (!state->done_seen && !state->failed) {
+    if (cai_stream_thread_cancel_requested()) {
+      return cai_set_error(error, CAI_ERR_CANCELLED,
+                           "agent turn was cancelled");
+    }
     received = 0U;
     meta = NULL;
     curl_rc = curl_ws_recv(curl, buffer, sizeof(buffer), &received, &meta);
@@ -2815,6 +2876,9 @@ retry_request:
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_CONNECT_ONLY, 2L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
+                     cai_stream_curl_cancel_progress);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, (long)CURL_HTTP_VERSION_1_1);
     if (impl->timeout_ms > 0L) {
       curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, impl->timeout_ms);
@@ -2849,7 +2913,8 @@ retry_request:
     retried_auth = 1;
     goto retry_request;
   }
-  if ((cai_ws_http_status_is_transient(http_status) ||
+  if (!cai_stream_thread_cancel_requested() &&
+      (cai_ws_http_status_is_transient(http_status) ||
        (curl_rc != CURLE_OK && cai_ws_curl_error_is_transient(curl_rc))) &&
       !retried_transient) {
     if (keep_alive && curl == impl->responses_ws_curl) {
@@ -2866,9 +2931,13 @@ retry_request:
     goto retry_request;
   }
   if (curl_rc != CURLE_OK) {
-    rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                              "websocket upgrade failed",
-                              curl_easy_strerror(curl_rc));
+    rc = curl_rc == CURLE_ABORTED_BY_CALLBACK &&
+                 cai_stream_thread_cancel_requested()
+             ? cai_set_error(error, CAI_ERR_CANCELLED,
+                             "agent turn was cancelled")
+             : cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                    "websocket upgrade failed",
+                                    curl_easy_strerror(curl_rc));
   } else if (http_status != 101L &&
              (http_status < 200L || http_status >= 300L)) {
     rc = cai_set_openai_error(error, http_status, "", NULL);
@@ -2890,8 +2959,8 @@ retry_request:
                                     : NULL);
     }
   }
-  if (keep_alive && rc != CAI_OK && reused_keep_alive && !state.event_seen &&
-      !retried_transient) {
+  if (keep_alive && rc != CAI_OK && !cai_stream_thread_cancel_requested() &&
+      reused_keep_alive && !state.event_seen && !retried_transient) {
     cai_client_close_responses_websocket(impl);
     curl_slist_free_all(headers);
     cai_free_mem(&impl->allocator, http_url);
@@ -3165,6 +3234,9 @@ retry_request:
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_sse_write);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
+                     cai_stream_curl_cancel_progress);
     if (CAI_CLIENT_IMPL(client)->timeout_ms > 0L) {
       curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS,
                        CAI_CLIENT_IMPL(client)->timeout_ms);
@@ -3240,6 +3312,12 @@ retry_request:
     goto retry_request;
   }
   if (curl_rc != CURLE_OK) {
+    if (curl_rc == CURLE_ABORTED_BY_CALLBACK &&
+        cai_stream_thread_cancel_requested()) {
+      cai_free_mem(NULL, state.body);
+      return cai_set_error(error, CAI_ERR_CANCELLED,
+                           "agent turn was cancelled");
+    }
     if (http_status > 0L && (http_status < 200L || http_status >= 300L)) {
       rc = cai_set_openai_error(error, http_status,
                                 state.body != NULL ? state.body : "", NULL);

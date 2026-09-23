@@ -333,6 +333,9 @@ function M.new(cai, output, colors)
       output.write(red, "Smith failed: ", event.data or "agent run failed", "\n", reset)
     elseif event.type == cai.AGENT_EVENT_RUN_COMPLETED then
       close_message()
+    elseif event.type == cai.AGENT_EVENT_RUN_CANCELLED then
+      close_message()
+      output.write("Smith turn cancelled.\n")
     end
   end
 
