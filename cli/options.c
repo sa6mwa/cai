@@ -18,6 +18,9 @@ void cai_cli_options_init(cai_cli_options *options) {
 }
 
 static void cai_cli_help(void) {
+  fputs("cai and libcai Copyright (C) 2026 C89 Systems AB "
+        "https://c89.systems\n\n",
+        stdout);
   fputs(
       "Usage: cai [options]\n\n"
       "Start Cai Smith in the workspace directory. The newest session resumes\n"
@@ -50,17 +53,15 @@ static void cai_cli_help(void) {
         "      --identity TEXT         Visible agent identity\n"
         "      --instructions TEXT     Append developer instructions\n",
         stdout);
-  fputs(
-      "      --codex-agents-md       Discover ancestor AGENTS.md files\n"
-      "      --no-image-generation   Disable hosted image generation\n"
-      "      --no-terminal           Disable terminal tools\n"
-      "      --no-review-subagent    Disable the built-in reviewer\n"
-      "  -v, --verbose                Print runtime events (repeat for "
-      "sequences)\n"
-      "  -h, --help                   Show this help\n"
-      "      --version                Show version\n\n"
-      "cai and libcai Copyright (C) 2026 C89 Systems AB https://c89.systems\n",
-      stdout);
+  fputs("      --codex-agents-md       Discover ancestor AGENTS.md files\n"
+        "      --no-image-generation   Disable hosted image generation\n"
+        "      --no-terminal           Disable terminal tools\n"
+        "      --no-review-subagent    Disable the built-in reviewer\n"
+        "  -v, --verbose                Print runtime events (repeat for "
+        "sequences)\n"
+        "  -h, --help                   Show this help\n"
+        "      --version                Show version\n",
+        stdout);
 }
 
 static int cai_cli_one_of(const char *value, const char *const *values) {

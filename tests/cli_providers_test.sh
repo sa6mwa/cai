@@ -49,4 +49,6 @@ if printf '/quit\n' | "$cli" -C "$fixture/work" >"$fixture/out" 2>"$fixture/err"
   exit 1
 fi
 grep -q 'run cai --login (-l)' "$fixture/err"
-"$cli" --help | grep -q 'cai and libcai Copyright (C) 2026 C89 Systems AB https://c89.systems'
+help=$("$cli" --help)
+[[ "$help" == $'cai and libcai Copyright (C) 2026 C89 Systems AB https://c89.systems\n\nUsage: cai '* ]]
+[[ "$("$cli" -h)" == "$help" ]]
