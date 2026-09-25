@@ -33,6 +33,7 @@ option(CAI_REGISTER_API_KEY_EXAMPLE_SMOKE
        "Register opt-in API-key example smoke coverage (may spend provider credits)."
        OFF)
 option(CAI_BUILD_EXAMPLES "Build cai examples." ON)
+option(CAI_BUILD_CLI "Build the standalone cai terminal agent." OFF)
 option(CAI_BUILD_LUA "Build the Lua 5.5 binding and Lua tests." OFF)
 option(CAI_BUILD_FUZZERS "Build fuzz harnesses." OFF)
 option(CAI_ENABLE_COVERAGE "Build tests with coverage instrumentation." OFF)
@@ -128,6 +129,17 @@ set(CAI_MINIMUM_CURL_VERSION "7.86.0")
 set(CAI_LONEJSON_VERSION "0.44.0")
 set(CAI_LONEJSON_ABI_VERSION "26")
 set(CAI_PSLOG_VERSION "0.10.0")
+set(CAI_SOFTLINE_VERSION "0.7.0")
+set(CAI_LIBMDF_VERSION "0.12.0")
+
+if(CAI_BUILD_CLI AND (NOT CAI_TARGET_ID STREQUAL "x86_64-linux-musl" OR
+                      NOT CAI_DEPENDENCY_MODE STREQUAL "cpkt"))
+  message(FATAL_ERROR
+    "The cai CLI currently requires x86_64-linux-musl and cpkt dependencies")
+endif()
+if(CAI_BUILD_CLI AND NOT CAI_BUILD_STATIC)
+  message(FATAL_ERROR "The cai CLI requires CAI_BUILD_STATIC=ON")
+endif()
 
 if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
   message(FATAL_ERROR "Enable at least one of CAI_BUILD_STATIC or CAI_BUILD_SHARED.")
@@ -427,6 +439,44 @@ function(cai_set_pslog_from_target)
   endif()
 endfunction()
 
+if(CAI_BUILD_CLI)
+  set(_cai_softline_name
+      "softline-${CAI_SOFTLINE_VERSION}-x86_64-linux-musl")
+  set(_cai_softline_prefix "${CAI_DEPS_DIR}/${_cai_softline_name}")
+  cai_dependency_archive_path(
+    "${_cai_softline_name}.tar.gz"
+    "c9379cfb6ba0d5a29846fa3954e837086989286ef12dfc18f78d6b9804aaf101"
+    _cai_softline_archive)
+  cai_download_tarball(
+    "softline ${CAI_SOFTLINE_VERSION} x86_64-linux-musl"
+    "https://github.com/sa6mwa/softline/releases/download/v${CAI_SOFTLINE_VERSION}/${_cai_softline_name}.tar.gz"
+    "${_cai_softline_archive}" "${_cai_softline_prefix}"
+    "c9379cfb6ba0d5a29846fa3954e837086989286ef12dfc18f78d6b9804aaf101"
+    "${_cai_softline_prefix}/include/softline/softline.h")
+  set(_cai_libmdf_name "libmdf-${CAI_LIBMDF_VERSION}-x86_64-linux-musl")
+  set(_cai_libmdf_prefix "${CAI_DEPS_DIR}/${_cai_libmdf_name}")
+  cai_dependency_archive_path(
+    "${_cai_libmdf_name}.tar.gz"
+    "5846405faff4f94e4838eed1aebafe94889dd47db8921d6a28cbfa7443601021"
+    _cai_libmdf_archive)
+  cai_download_tarball(
+    "libmdf ${CAI_LIBMDF_VERSION} x86_64-linux-musl"
+    "https://github.com/sa6mwa/libmdf/releases/download/v${CAI_LIBMDF_VERSION}/${_cai_libmdf_name}.tar.gz"
+    "${_cai_libmdf_archive}" "${_cai_libmdf_prefix}"
+    "5846405faff4f94e4838eed1aebafe94889dd47db8921d6a28cbfa7443601021"
+    "${_cai_libmdf_prefix}/include/libmdf/mdf.h")
+  list(PREPEND CMAKE_PREFIX_PATH "${_cai_softline_prefix}"
+       "${_cai_libmdf_prefix}")
+  list(APPEND CMAKE_FIND_ROOT_PATH "${_cai_softline_prefix}"
+       "${_cai_libmdf_prefix}")
+  set(softline_DIR "${_cai_softline_prefix}/lib/cmake/softline"
+      CACHE PATH "softline package directory" FORCE)
+  set(libmdf_DIR "${_cai_libmdf_prefix}/lib/cmake/libmdf"
+      CACHE PATH "libmdf package directory" FORCE)
+  find_package(softline CONFIG REQUIRED)
+  find_package(libmdf CONFIG REQUIRED)
+endif()
+
 if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
   cai_c_pkt_systems_sha256("${CAI_TARGET_ID}" CAI_C_PKT_SYSTEMS_SHA256)
   set(CAI_C_PKT_SYSTEMS_NAME
@@ -498,6 +548,9 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
   find_package(pslog CONFIG REQUIRED)
   cai_set_lonejson_from_target()
   cai_set_pslog_from_target()
+  if(CAI_BUILD_CLI)
+    set(CAI_LONEJSON_LINK lonejson::lonejson_static)
+  endif()
   list(APPEND CMAKE_INSTALL_RPATH "${CAI_INSTALL_RPATH_TOKEN}")
   get_filename_component(_cai_lonejson_library_dir
     "${CAI_LONEJSON_LIBRARY}" DIRECTORY)
@@ -723,6 +776,7 @@ set(CAI_SOURCES
   src/cai_mcp.c
   src/cai_mcp_client.c
   src/cai_model_catalog.c
+  src/cai_quota.c
   src/cai_models.c
   src/cai_response.c
   src/cai_smith.c
@@ -872,6 +926,66 @@ if(CAI_BUILD_EXAMPLES)
   endforeach()
 endif()
 
+if(CAI_BUILD_CLI)
+  add_executable(cai_cli cli/main.c cli/options.c cli/status.c)
+  set_target_properties(cai_cli PROPERTIES OUTPUT_NAME cai SKIP_BUILD_RPATH ON)
+  target_link_libraries(cai_cli PRIVATE cai_static
+    softline::softline_static libmdf::mdf_static)
+  target_link_options(cai_cli PRIVATE -static)
+  cai_configure_c_target(cai_cli)
+  if(CAI_INSTALL)
+    install(TARGETS cai_cli RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+      COMPONENT cai-cli)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+      "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+      DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai"
+      COMPONENT cai-cli)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/man/cai.1"
+      DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
+      COMPONENT cai-cli)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/model-metadata.md"
+      DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/docs"
+      COMPONENT cai-cli)
+    add_custom_target(cai_package_cli
+      COMMAND "${CMAKE_COMMAND}"
+        "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        "-DCAI_DIST_DIR=${CAI_DIST_DIR}"
+        "-DCAI_VERSION=${CAI_PACKAGE_VERSION}"
+        "-DCAI_STRIP_BIN=${CMAKE_STRIP}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_cli.cmake"
+      DEPENDS cai_cli
+      VERBATIM)
+  endif()
+  if(CAI_BUILD_TESTS)
+    add_test(NAME cai_cli_help COMMAND cai_cli --help)
+    add_executable(cai_cli_options_test tests/cli_options_test.c cli/options.c)
+    target_include_directories(cai_cli_options_test PRIVATE
+      "${CAI_PUBLIC_INCLUDE_DIR}" "${CAI_GENERATED_INCLUDE_DIR}")
+    target_link_options(cai_cli_options_test PRIVATE -static)
+    cai_configure_c_target(cai_cli_options_test)
+    add_test(NAME cai_cli_options COMMAND cai_cli_options_test)
+    add_executable(cai_cli_reasoning_test tests/cli_reasoning_test.c
+      cli/options.c cli/status.c)
+    target_link_libraries(cai_cli_reasoning_test PRIVATE cai_static
+      softline::softline_static libmdf::mdf_static)
+    target_link_options(cai_cli_reasoning_test PRIVATE -static)
+    cai_configure_c_target(cai_cli_reasoning_test)
+    add_test(NAME cai_cli_reasoning COMMAND cai_cli_reasoning_test)
+    add_executable(cai_cli_status_test tests/cli_status_test.c cli/status.c)
+    target_link_libraries(cai_cli_status_test PRIVATE cai_static
+      softline::softline_static)
+    target_link_options(cai_cli_status_test PRIVATE -static)
+    cai_configure_c_target(cai_cli_status_test)
+    add_test(NAME cai_cli_status COMMAND cai_cli_status_test)
+    add_test(NAME cai_cli_sessions
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_sessions_test.sh"
+        "$<TARGET_FILE:cai_cli>" "${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME cai_cli_package_layout
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_package_layout_test.sh"
+        "${CMAKE_CURRENT_BINARY_DIR}")
+  endif()
+endif()
+
 if(CAI_BUILD_LUA_RUNNER)
   add_executable(cai_lua_runner tests/lua/runner.c)
   target_include_directories(cai_lua_runner PRIVATE "${CAI_LUA_INCLUDE_DIR}")
@@ -1004,6 +1118,8 @@ if(CAI_BUILD_TESTS)
       TIMEOUT 3)
   endif()
   set(CAI_UNIT_TEST_GROUPS
+    chatgpt_quota_parse
+    chatgpt_quota_http
     model_capabilities
     env_precedence
     source_sink
@@ -2346,6 +2462,8 @@ endif()
 
 find_program(CLANG_FORMAT_BIN NAMES clang-format)
 file(GLOB_RECURSE CAI_FORMAT_SOURCES CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/cli/*.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/cli/*.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/include/*.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/examples/*.c"
   "${CMAKE_CURRENT_SOURCE_DIR}/lua/*.c"

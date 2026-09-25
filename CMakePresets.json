@@ -59,6 +59,23 @@
       }
     },
     {
+      "name": "libcai",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CAI_BUILD_CLI": "OFF"
+      }
+    },
+    {
+      "name": "cai",
+      "inherits": "x86_64-linux-musl-release",
+      "cacheVariables": {
+        "CAI_BUILD_CLI": "ON",
+        "CAI_BUILD_SHARED": "OFF",
+        "CAI_BUILD_EXAMPLES": "OFF",
+        "CAI_BUILD_LUA": "OFF"
+      }
+    },
+    {
       "name": "debug-host-deps",
       "inherits": "debug",
       "cacheVariables": {
@@ -192,6 +209,14 @@
       "configurePreset": "debug"
     },
     {
+      "name": "libcai",
+      "configurePreset": "libcai"
+    },
+    {
+      "name": "cai",
+      "configurePreset": "cai"
+    },
+    {
       "name": "debug-host-deps",
       "configurePreset": "debug-host-deps"
     },
@@ -256,6 +281,31 @@
     {
       "name": "debug",
       "configurePreset": "debug",
+      "execution": {
+        "stopOnFailure": true
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "libcai",
+      "configurePreset": "libcai",
+      "execution": {
+        "stopOnFailure": true
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "cai",
+      "configurePreset": "cai",
+      "filter": {
+        "include": {
+          "name": "^cai_cli_"
+        }
+      },
       "execution": {
         "stopOnFailure": true
       },

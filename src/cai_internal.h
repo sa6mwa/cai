@@ -2,6 +2,7 @@
 #define CAI_INTERNAL_H
 
 #include <cai/cai.h>
+#include <cai/quota.h>
 #include <cai/skills.h>
 
 #include "cai_lj.h"
@@ -353,6 +354,8 @@ int cai_http_json_request(cai_client *client, const char *method,
                           const char *path, const char *request_json,
                           char **out_json, long *out_http_status,
                           char **out_request_id, cai_error *error);
+int cai_chatgpt_quota_parse_json(const char *json, cai_chatgpt_quota *out,
+                                 cai_error *error);
 int cai_http_json_request_spooled(cai_client *client, const char *method,
                                   const char *path,
                                   const lonejson_spooled *request_json,

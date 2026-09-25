@@ -140,6 +140,16 @@ Recent hardening runs have covered:
 
 ## Active First-Release Work
 
+The first `cai` CLI release targets a single static x86_64 Linux musl binary.
+It uses the Smith runtime, softline 0.7.0, libmdf 0.12.0, ChatGPT auth, and
+workspace-scoped JSONL sessions. CLI MCP connection configuration is deferred
+to a later release; the `libcai` MCP client API remains available to embedders.
+Ship a `cai(1)` manual page in the binary archive alongside the executable,
+README, and LICENSE using the SDK's relocatable install layout.
+The CLI status bar reads ChatGPT subscription quota windows when the backend
+provides them. A future version should refresh quota without blocking the
+prompt during a backend request.
+
 Before tagging the first C SDK prerelease:
 
 - Keep README, examples, and installed docs aligned with the current API.

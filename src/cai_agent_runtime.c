@@ -518,11 +518,14 @@ struct cai_agent_runtime {
   cai_session *session;
   cai_agent_session_store local_store;
   const cai_agent_session_store *session_store;
+  int record_transcript;
   int owns_local_store;
   /* Provider-declared metadata recorded for the active model selection. */
   char *model_compaction_hash;
   long long model_context_window;
   long long model_auto_compact_token_limit;
+  double context_projection_percent;
+  int context_projection_available;
   char *workspace_directory;
   char *session_scope;
   char *session_id;
@@ -691,6 +694,9 @@ static int cai_runtime_compact_pending_history(cai_agent_runtime *runtime,
                                                cai_error *error);
 static int cai_runtime_apply_pending_settings(cai_agent_runtime *runtime,
                                               cai_error *error);
+static int cai_runtime_append_journal_event_locked(
+    cai_agent_runtime *runtime, const char *type, const char *data,
+    unsigned long long *out_sequence, cai_error *error);
 
 static int cai_runtime_export_session_id_valid(const char *session_id) {
   const unsigned char *cursor;
@@ -1262,6 +1268,22 @@ static int cai_runtime_forward_subagent_event(
     node->event.terminal_output_truncated = event->terminal_output_truncated;
     node->event.terminal_detached_processes_possible =
         event->terminal_detached_processes_possible;
+    if (parent->record_transcript &&
+        event->type == CAI_AGENT_EVENT_TEXT_DELTA && event->data_length > 0U) {
+      if (memchr(event->data, '\0', event->data_length) != NULL) {
+        rc = cai_set_error(error, CAI_ERR_INVALID,
+                           "subagent text contains an unsupported NUL byte");
+      } else {
+        rc = cai_runtime_append_journal_event_locked(
+            parent, "assistant_text_delta", event->data, NULL, error);
+      }
+    } else if (parent->record_transcript &&
+               event->type == CAI_AGENT_EVENT_RESPONSE_COMPLETED) {
+      rc = cai_runtime_append_journal_event_locked(parent, "assistant_text_end",
+                                                   NULL, NULL, error);
+    }
+  }
+  if (rc == CAI_OK) {
     cai_runtime_append_event_node_locked(parent, node);
   } else {
     cai_runtime_event_node_free(node);
@@ -2863,8 +2885,20 @@ static int cai_runtime_refresh_goal_projection(cai_agent_runtime *runtime,
   cai_session_impl *goal;
   char *objective;
   char *status;
+  long long context_window;
+  int context_available;
+  double context_percent;
 
   goal = CAI_SESSION_IMPL(runtime->session);
+  context_window = runtime->model_context_window;
+  if (context_window <= 0LL) {
+    context_window = runtime->session->context_window_tokens(runtime->session);
+  }
+  context_available = goal->has_context_usage && context_window > 0LL;
+  context_percent = context_available
+                        ? (double)goal->context_usage.total_tokens * 100.0 /
+                              (double)context_window
+                        : 0.0;
   objective = NULL;
   status = NULL;
   if (goal->goal_status != NULL) {
@@ -2894,6 +2928,8 @@ static int cai_runtime_refresh_goal_projection(cai_agent_runtime *runtime,
   runtime->goal_projection_active_started_at = goal->goal_active_started_at;
   runtime->goal_projection_created_at = goal->goal_created_at;
   runtime->goal_projection_updated_at = goal->goal_updated_at;
+  runtime->context_projection_available = context_available;
+  runtime->context_projection_percent = context_percent;
   pthread_mutex_unlock(&runtime->lock);
   return CAI_OK;
 }
@@ -3395,7 +3431,17 @@ static int cai_runtime_output_text_delta(void *context, const char *item_id,
   rc = cai_runtime_spooled_copy(delta, &data, &length, error);
   if (rc == CAI_OK && length > 0U) {
     pthread_mutex_lock(&runtime->lock);
-    rc = cai_runtime_append_review_report_locked(runtime, data, length, error);
+    if (runtime->record_transcript && memchr(data, '\0', length) != NULL) {
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "assistant text contains an unsupported NUL byte");
+    } else if (runtime->record_transcript) {
+      rc = cai_runtime_append_journal_event_locked(
+          runtime, "assistant_text_delta", data, NULL, error);
+    }
+    if (rc == CAI_OK) {
+      rc =
+          cai_runtime_append_review_report_locked(runtime, data, length, error);
+    }
     if (rc == CAI_OK) {
       rc =
           cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_TEXT_DELTA, data,
@@ -3441,8 +3487,15 @@ static int cai_runtime_response_completed(void *context, cai_error *error) {
                          "response completion has no runtime");
   }
   pthread_mutex_lock(&runtime->lock);
-  rc = cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RESPONSE_COMPLETED,
-                                  NULL, 0U, NULL, NULL, runtime->state, error);
+  rc = runtime->record_transcript
+           ? cai_runtime_append_journal_event_locked(
+                 runtime, "assistant_text_end", NULL, NULL, error)
+           : CAI_OK;
+  if (rc == CAI_OK) {
+    rc =
+        cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RESPONSE_COMPLETED,
+                                   NULL, 0U, NULL, NULL, runtime->state, error);
+  }
   pthread_mutex_unlock(&runtime->lock);
   return rc;
 }
@@ -6181,6 +6234,15 @@ int cai_agent_runtime_open(cai_client *client,
         error, CAI_ERR_INVALID,
         "agent session identifier must contain 1 to 128 bytes");
   }
+  if (config->resume_session_id != NULL &&
+      (config->resume_session_id[0] == '\0' ||
+       strnlen(config->resume_session_id, CAI_AGENT_SESSION_ID_MAX) >=
+           CAI_AGENT_SESSION_ID_MAX ||
+       config->resume_latest || config->session_id != NULL)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "exact session resume requires one valid ID and no "
+                         "other session selection");
+  }
   cai_agent_preset_from_smith(&builtin_preset);
   preset = config->preset_descriptor != NULL ? config->preset_descriptor
                                              : &builtin_preset;
@@ -6209,7 +6271,8 @@ int cai_agent_runtime_open(cai_client *client,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "agent preset does not support isolated review");
   }
-  if (review_mode && (config->resume_latest || config->session_id != NULL)) {
+  if (review_mode && (config->resume_latest || config->session_id != NULL ||
+                      config->resume_session_id != NULL)) {
     return cai_set_error(
         error, CAI_ERR_INVALID,
         "isolated review runtime always uses a fresh session and cannot "
@@ -6245,6 +6308,7 @@ int cai_agent_runtime_open(cai_client *client,
                             : CAI_RUNTIME_DEFAULT_TURN_LIMIT;
   runtime->goal_control_limit = CAI_RUNTIME_DEFAULT_GOAL_CONTROL_LIMIT;
   runtime->event_callback = config->event_callback;
+  runtime->record_transcript = config->record_transcript ? 1 : 0;
   runtime->event_context = config->event_context;
   if (config->logger != NULL) {
     runtime->logger = config->logger;
@@ -6424,14 +6488,35 @@ int cai_agent_runtime_open(cai_client *client,
         runtime->owns_local_store = 1;
       }
     }
-    if (rc == CAI_OK && config->resume_latest &&
+    if (rc == CAI_OK &&
+        (config->resume_latest || config->resume_session_id != NULL) &&
         runtime->session_store != NULL) {
       cai_source *state;
 
       state = NULL;
-      rc = runtime->session_store->load_latest(
-          runtime->session_store->context, runtime->session_scope, session_id,
-          sizeof(session_id), &state, &runtime->applied_event_sequence, error);
+      if (config->resume_session_id != NULL) {
+        if (runtime->session_store->load_id == NULL) {
+          rc = cai_set_error(error, CAI_ERR_INVALID,
+                             "session store does not support exact resume");
+        } else {
+          rc = runtime->session_store->load_id(
+              runtime->session_store->context, runtime->session_scope,
+              config->resume_session_id, &state,
+              &runtime->applied_event_sequence, error);
+          if (rc == CAI_OK && state == NULL) {
+            rc = cai_set_error(error, CAI_ERR_INVALID,
+                               "requested session has no checkpoint");
+          } else if (rc == CAI_OK) {
+            memcpy(session_id, config->resume_session_id,
+                   strlen(config->resume_session_id) + 1U);
+          }
+        }
+      } else {
+        rc = runtime->session_store->load_latest(
+            runtime->session_store->context, runtime->session_scope, session_id,
+            sizeof(session_id), &state, &runtime->applied_event_sequence,
+            error);
+      }
       if (rc == CAI_OK && state != NULL) {
         runtime->checkpoint_event_sequence = runtime->applied_event_sequence;
         rc = cai_session_import_state_source(runtime->session, state, error);
@@ -6469,7 +6554,7 @@ int cai_agent_runtime_open(cai_client *client,
       }
     }
     if (rc == CAI_OK && runtime->session_store != NULL &&
-        config->resume_latest) {
+        (config->resume_latest || config->resume_session_id != NULL)) {
       runtime->next_event_sequence = runtime->applied_event_sequence;
       runtime->journal_v2_start_sequence = ULLONG_MAX;
       rc = runtime->session_store->load_events_after(
@@ -6504,7 +6589,7 @@ int cai_agent_runtime_open(cai_client *client,
      * legacy watermark-only record if the process crashes before its own
      * checkpoint. */
     if (rc == CAI_OK && runtime->session_store != NULL &&
-        !config->resume_latest) {
+        !config->resume_latest && config->resume_session_id == NULL) {
       pthread_mutex_lock(&runtime->lock);
       rc = cai_runtime_append_journal_event_locked(
           runtime, "input_journal_v2", NULL,
@@ -10226,6 +10311,25 @@ int cai_agent_runtime_state(cai_agent_runtime *runtime,
   }
   pthread_mutex_lock(&runtime->lock);
   *out = runtime->terminal_event_pending ? CAI_AGENT_SAMPLING : runtime->state;
+  pthread_mutex_unlock(&runtime->lock);
+  return CAI_OK;
+}
+
+int cai_agent_runtime_context_percent(cai_agent_runtime *runtime, double *out,
+                                      int *available, cai_error *error) {
+  int rc;
+  if (out == NULL || available == NULL) {
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "context percent and availability outputs are required");
+  }
+  rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  pthread_mutex_lock(&runtime->lock);
+  *available = runtime->context_projection_available;
+  *out = runtime->context_projection_percent;
   pthread_mutex_unlock(&runtime->lock);
   return CAI_OK;
 }

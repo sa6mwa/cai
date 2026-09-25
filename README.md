@@ -46,6 +46,8 @@ points for existing event loops, HTTP servers, loggers, and dependency stacks.
 - Hardening gates for local unit tests, live integration tests, Lua tests,
   deterministic examples, AFL++ fuzzing, ASan/UBSan and Valgrind memory
   checks, and release artifact validation.
+- A static Linux x86_64 `cai` terminal agent package with a `cai(1)` manual,
+  README, and LICENSE in the SDK's relocatable install layout.
 
 ## Agent Runtimes and Smith
 
@@ -82,10 +84,63 @@ Smith defaults to `gpt-5.6-terra` with medium reasoning and provider-directed
 use `gpt-5.6-luna` and CAI-owned ChatGPT subscription authentication to keep
 interactive use and opt-in live acceptance economical. Run `make chatgpt-login`
 once; CAI reads its own XDG state file (or `CAI_CHATGPT_AUTH_JSON`) and never
-reads or refreshes Codex's auth state. See
+reads or refreshes Codex's auth state in those examples. The `cai` CLI has its
+own auth default described below. See
 [the Smith specification](docs/agent-smith-spec.md) and
 [the examples guide](examples/README.md#smith-terminal) for the complete
 runtime, review, storage, and presentation contracts.
+
+## Cai terminal agent
+
+The `cai` preset builds the terminal coding agent as a statically linked
+Linux x86_64 musl executable. It adds pinned softline 0.7.0 for the prompt and
+libmdf 0.12.0 for streamed Markdown rendering; `libcai` itself has no
+dependency on either. Softline and libmdf run on the UI thread. The runtime
+worker executes model requests and tools, then wakes the UI thread to render
+events.
+
+```sh
+cmake --preset libcai
+cmake --build --preset libcai
+cmake --preset cai
+cmake --build --preset cai
+cmake --build --preset cai --target cai_package_cli
+build/cai/cai --help
+build/cai/cai -n -C /path/to/project
+```
+
+The CLI reads `~/.codex/auth.json` by default; `--auth-json` selects another
+ChatGPT auth file. Auth refresh may update that file. It starts with
+`gpt-6-luna` and medium reasoning; `-m`/`--model` and
+`-r`/`--reasoning-effort` override those defaults. `--help` lists the other
+user-facing model, review, instructions, skills, image, terminal, and session
+options. Provider-issued reasoning summaries stream in the terminal as they
+arrive. The busy indicator does not invent reasoning text.
+The softline prompt is `> `. Its status bar shows model and reasoning effort,
+the last measured context percentage, a shortened workspace path, available
+ChatGPT subscription quota remaining, the Git branch when present, and an
+active goal. Quota appears as `w 72% 5h 48%` when both weekly and five-hour
+windows are available; missing windows are hidden. `libcai` exposes these
+windows through `cai_client_chatgpt_quota` in `<cai/quota.h>`. The quota query
+uses the ChatGPT subscription backend, so the CLI does not show API-priced USD
+estimates. The context percentage comes from completed response usage and is
+unknown until usage is available.
+The package target writes `dist/cai-cli-<version>-x86_64-linux-musl.tar.gz`.
+Its relocatable layout includes `bin/cai`, `share/man/man1/cai.1`, and
+`share/doc/libcai/{README.md,LICENSE}` plus the SDK's model metadata guide.
+Install under `/usr` to place the man page at `/usr/share/man/man1/cai.1`.
+
+Sessions use the local JSONL store under `$XDG_STATE_HOME/cai/sessions`, or
+`~/.local/state/cai/sessions` when `XDG_STATE_HOME` is unset. Each canonical
+workspace path maps to its own hashed subdirectory with one `.jsonl` file per
+session.
+Starting `cai` resumes the newest session for that directory. `-n`/`--new`
+starts a fresh session; `/new` does the same inside the prompt. `/resume`
+lists only sessions for the current directory, and `/resume <number>` loads
+one from that list. The CLI replays saved user prompts and assistant text
+through the terminal renderers without rerunning those events as commands.
+`--resume ID` addresses a saved session directly. MCP client configuration is
+planned for a later CLI release.
 
 ## Release Scope
 
@@ -203,7 +258,8 @@ dependency resolution and Bootlin libc selection in either mode.
   keep the auth handle alive for the client lifetime. If `auth_json_path` is
   NULL/empty, the auth library uses `$XDG_STATE_HOME/cai/auth.json`, or
   `$HOME/.local/state/cai/auth.json` when `XDG_STATE_HOME` is unset or
-  relative. CAI never reads, refreshes, or writes Codex's auth storage. Run
+  relative. The C SDK's implicit auth default never selects Codex's auth
+  storage; the `cai` CLI explicitly selects it by default. Run
   `make chatgpt-login` to create CAI's default auth file through browser OAuth.
   cai reads `id_token`, `access_token`, `refresh_token`, and `account_id` from
   the file, refreshes access tokens through the configured OAuth issuer before

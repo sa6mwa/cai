@@ -1555,6 +1555,155 @@ static int cai_local_session_load_latest(
   return rc;
 }
 
+static int cai_local_session_load_id(
+    void *context, const char *scope, const char *session_id, cai_source **out,
+    unsigned long long *out_applied_event_sequence, cai_error *error) {
+  cai_local_session_store *store;
+  char hash[65];
+  char filename[CAI_STORE_SESSION_FILENAME_MAX];
+  long state_start;
+  long state_end;
+  unsigned long long created_at_ns;
+  int has_created_at_ns;
+  int found_checkpoint;
+  int scope_fd;
+  int fd;
+  int rc;
+
+  if (context == NULL || out == NULL || out_applied_event_sequence == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session checkpoint lookup arguments are required");
+  }
+  *out = NULL;
+  *out_applied_event_sequence = 0U;
+  store = (cai_local_session_store *)context;
+  scope_fd = -1;
+  fd = -1;
+  rc = cai_store_session_filename_from_id(session_id, filename, error);
+  if (rc == CAI_OK) {
+    rc = cai_store_open_scope(store, scope, &scope_fd, hash, error);
+  }
+  if (rc == CAI_OK) {
+    fd = openat(scope_fd, filename, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) {
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "requested session has no checkpoint");
+    }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_store_validate_private_regular_fd(fd, error);
+  }
+  if (rc == CAI_OK && flock(fd, LOCK_SH) != 0) {
+    rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                       "failed to lock requested session checkpoint");
+  }
+  if (rc == CAI_OK) {
+    rc = cai_local_find_latest_checkpoint(
+        fd, &state_start, &state_end, out_applied_event_sequence,
+        &created_at_ns, &has_created_at_ns, &found_checkpoint, error);
+    if (rc == CAI_OK && !found_checkpoint) {
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "requested session has no complete checkpoint");
+    }
+    if (rc == CAI_OK) {
+      rc = cai_local_checkpoint_source_open(fd, state_start, state_end, out,
+                                            error);
+      if (rc == CAI_OK) {
+        fd = -1;
+      }
+    }
+  }
+  if (fd >= 0) {
+    (void)flock(fd, LOCK_UN);
+    close(fd);
+  }
+  if (scope_fd >= 0) {
+    close(scope_fd);
+  }
+  return rc;
+}
+
+int cai_agent_local_session_store_list(
+    const cai_agent_session_store *session_store, const char *scope,
+    cai_agent_local_session_visit_fn visit, void *context, cai_error *error) {
+  cai_local_session_store *store;
+  char hash[65];
+  DIR *directory;
+  struct dirent *entry;
+  int scope_fd;
+  int rc;
+
+  if (session_store == NULL ||
+      session_store->load_latest != cai_local_session_load_latest ||
+      visit == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "local session store and visitor are required");
+  }
+  store = (cai_local_session_store *)session_store->context;
+  scope_fd = -1;
+  rc = cai_store_open_scope(store, scope, &scope_fd, hash, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  directory = fdopendir(dup(scope_fd));
+  if (directory == NULL) {
+    close(scope_fd);
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to enumerate session checkpoints");
+  }
+  while ((entry = readdir(directory)) != NULL) {
+    struct stat st;
+    char session_id[CAI_AGENT_SESSION_ID_MAX];
+    long state_start;
+    long state_end;
+    unsigned long long applied_event_sequence;
+    unsigned long long created_at_ns;
+    int has_created_at_ns;
+    int found_checkpoint;
+    int fd;
+
+    if (!cai_store_session_filename_decode(entry->d_name, session_id) ||
+        fstatat(scope_fd, entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0 ||
+        !S_ISREG(st.st_mode) || st.st_nlink != 1 || st.st_uid != geteuid() ||
+        (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+      continue;
+    }
+    fd = openat(scope_fd, entry->d_name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) {
+      rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to open session checkpoint log");
+      break;
+    }
+    rc = cai_store_validate_private_regular_fd(fd, error);
+    if (rc == CAI_OK && flock(fd, LOCK_SH) != 0) {
+      rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "failed to lock session checkpoint log");
+    }
+    if (rc == CAI_OK) {
+      rc = cai_local_find_latest_checkpoint(
+          fd, &state_start, &state_end, &applied_event_sequence, &created_at_ns,
+          &has_created_at_ns, &found_checkpoint, error);
+    }
+    (void)flock(fd, LOCK_UN);
+    close(fd);
+    if (rc != CAI_OK) {
+      break;
+    }
+    if (found_checkpoint) {
+      rc = visit(
+          context, session_id,
+          cai_store_checkpoint_order(created_at_ns, has_created_at_ns, &st),
+          error);
+      if (rc != CAI_OK) {
+        break;
+      }
+    }
+  }
+  closedir(directory);
+  close(scope_fd);
+  return rc;
+}
+
 static void cai_local_session_store_destroy(void *context) {
   cai_local_session_store *store;
 
@@ -1643,6 +1792,7 @@ int cai_agent_local_session_store_open(
   out->load_latest = cai_local_session_load_latest;
   out->append_event = cai_local_session_append_event;
   out->load_events_after = cai_local_session_load_events_after;
+  out->load_id = cai_local_session_load_id;
   out->context = store;
   return CAI_OK;
 }

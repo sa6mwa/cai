@@ -1,0 +1,167 @@
+.TH CAI 1 "" "cai" "User Commands"
+.SH NAME
+cai \- terminal coding agent
+.SH SYNOPSIS
+.B cai
+.RI [ options ]
+.SH DESCRIPTION
+.B cai
+starts the Smith coding agent in the current directory or the directory selected
+with
+.BR \-C .
+It uses ChatGPT authentication from
+.I ~/.codex/auth.json
+by default and starts with the
+.B gpt-6-luna
+model at medium reasoning effort.
+The prompt is
+.BR "\(dq> \(dq" .
+Provider-issued reasoning summaries and assistant text stream through the
+terminal renderer.
+.PP
+The newest saved session for the workspace resumes automatically.
+Sessions are scoped to the canonical workspace directory.
+Use
+.B \-n
+to start a new session.
+.SH OPTIONS
+.TP
+.BR \-n , " " \-\-new
+Start a new session in the workspace.
+.TP
+.BI \-\-resume " ID"
+Resume a saved session by its exact ID.
+Cannot be combined with
+.BR \-\-new .
+.TP
+.BR \-C , " " \-\-workspace " " DIR
+Use
+.I DIR
+as the workspace.
+The default is the current directory.
+.TP
+.BR \-a , " " \-\-auth-json " " PATH
+Read ChatGPT authentication from
+.IR PATH .
+The default is
+.IR ~/.codex/auth.json .
+Token refresh may update this file.
+.TP
+.BR \-m , " " \-\-model " " ID
+Select the model.
+The default is
+.BR gpt-6-luna .
+.TP
+.BR \-r , " " \-\-reasoning-effort " " LEVEL
+Set reasoning effort:
+.BR none ,
+.BR low ,
+.BR medium ,
+.BR high ,
+.BR xhigh ,
+or
+.BR max .
+The default is
+.BR medium .
+.TP
+.BI \-\-reasoning-summary " MODE"
+Set provider reasoning summary mode:
+.BR none ,
+.BR auto ,
+.BR concise ,
+or
+.BR detailed .
+The default is
+.BR auto .
+.TP
+.BI \-\-review-model " ID"
+Select the model for review children.
+.TP
+.BI \-\-review-reasoning-effort " LEVEL"
+Set reasoning effort for review children.
+.TP
+.BI \-\-review-reasoning-summary " MODE"
+Set reasoning summary mode for review children.
+.TP
+.BI \-\-agents-md " PATH"
+Use a global AGENTS.md file at
+.IR PATH .
+.TP
+.BI \-\-config-dir " DIR"
+Use
+.I DIR
+as the global agent configuration directory.
+.TP
+.BI \-\-skills-dir " DIR"
+Use
+.I DIR
+as the global skills directory.
+.TP
+.BI \-\-identity " TEXT"
+Set the visible agent identity.
+.TP
+.BI \-\-instructions " TEXT"
+Append developer instructions.
+.TP
+.B \-\-codex-agents-md
+Discover ancestor AGENTS.md files.
+.TP
+.B \-\-no-image-generation
+Disable hosted image generation.
+.TP
+.B \-\-no-terminal
+Disable terminal tools.
+.TP
+.B \-\-no-review-subagent
+Disable the built-in reviewer.
+.TP
+.BR \-v , " " \-\-verbose
+Print runtime events; repeat for event sequence numbers.
+.TP
+.BR \-h , " " \-\-help
+Show command-line help.
+.TP
+.B \-\-version
+Show the version.
+.SH PROMPT COMMANDS
+.TP
+.B /resume
+List saved sessions for the current workspace, newest first.
+.TP
+.BI /resume " NUMBER"
+Load the numbered session from that list and replay saved user prompts and
+assistant text without repeating tool side effects.
+.TP
+.B /new
+Start a new session in the current workspace.
+.TP
+.BR /quit , " " /exit
+Exit the agent.
+.SH STATUS LINE
+The status line shows model and reasoning effort, context used as a percentage,
+the workspace, available ChatGPT subscription quota, the Git branch when
+available, and an active goal.
+Quota windows appear as weekly and five-hour percentages remaining.
+Unavailable values are hidden.
+.SH FILES
+.TP
+.I ~/.codex/auth.json
+Default ChatGPT authentication file.
+.TP
+.I $XDG_STATE_HOME/cai/sessions
+Workspace-scoped JSONL session storage when
+.B XDG_STATE_HOME
+is set.
+.TP
+.I ~/.local/state/cai/sessions
+Session storage when
+.B XDG_STATE_HOME
+is unset.
+.SH EXIT STATUS
+Returns zero after a normal exit, two for invalid command-line arguments, and
+one for startup or runtime failure.
+.SH SEE ALSO
+.I README.md
+in the installed
+.I share/doc/libcai
+directory.

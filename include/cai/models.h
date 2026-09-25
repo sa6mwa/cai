@@ -7,6 +7,7 @@ extern "C" {
 
 /** OpenAI Responses model id constants. */
 #define CAI_MODEL_GPT_6_ASTRA "gpt-6-astra"
+#define CAI_MODEL_GPT_6_LUNA "gpt-6-luna"
 #define CAI_MODEL_GPT_5_6 "gpt-5.6"
 #define CAI_MODEL_GPT_5_6_SOL "gpt-5.6-sol"
 #define CAI_MODEL_GPT_5_6_TERRA "gpt-5.6-terra"

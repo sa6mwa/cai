@@ -29,6 +29,12 @@ typedef int (*cai_agent_session_event_fn)(void *context,
                                           const cai_agent_session_event *event,
                                           cai_error *error);
 
+/** Visit one resumable session in a local store. Timestamp is nanoseconds
+ * since the Unix epoch and belongs to its newest complete checkpoint. */
+typedef int (*cai_agent_local_session_visit_fn)(
+    void *context, const char *session_id,
+    unsigned long long checkpoint_created_at_ns, cai_error *error);
+
 /**
  * Callback-backed store for complete agent-session checkpoints.
  *
@@ -71,6 +77,12 @@ typedef struct cai_agent_session_store {
                            unsigned long long after_sequence,
                            cai_agent_session_event_fn callback,
                            void *callback_context, cai_error *error);
+  /** Optional exact-ID checkpoint lookup for hosts offering session selection.
+   */
+  int (*load_id)(void *context, const char *scope, const char *session_id,
+                 cai_source **out,
+                 unsigned long long *out_applied_event_sequence,
+                 cai_error *error);
   /** Host-owned callback context, valid until every using runtime has closed.
    */
   void *context;
@@ -112,6 +124,13 @@ int cai_agent_local_session_store_open(
     cai_agent_session_store *out, cai_error *error);
 /** Close a store returned by cai_agent_local_session_store_open. */
 void cai_agent_local_session_store_close(cai_agent_session_store *store);
+
+/** Enumerate complete checkpoints in one exact scope. Callback order is
+ * unspecified; callers may sort by timestamp and ID. */
+int cai_agent_local_session_store_list(const cai_agent_session_store *store,
+                                       const char *scope,
+                                       cai_agent_local_session_visit_fn visit,
+                                       void *context, cai_error *error);
 
 #ifdef __cplusplus
 }

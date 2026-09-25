@@ -2,6 +2,7 @@
 #include <cai/auth.h>
 #include <cai/cai.h>
 #include <cai/mcp.h>
+#include <cai/quota.h>
 #include <cai/session_store.h>
 #include <cai/smith.h>
 #include <cai/tools/exec.h>
@@ -60,6 +61,8 @@ typedef struct test_entry {
 static const char *g_current_test_name = NULL;
 
 void cai_mcp_test_set_sleep_ms_fn(void (*fn)(long ms));
+int cai_chatgpt_quota_parse_json(const char *json, cai_chatgpt_quota *out,
+                                 cai_error *error);
 int cai_mcp_test_header_callback_unterminated(void);
 void cai_patch_test_pause_before_publish(int enabled);
 void cai_patch_test_fail_directory_sync(int enabled);
@@ -254,9 +257,9 @@ typedef struct runtime_session_store_state {
   char replay_event_type[64];
   char replay_event_data[256];
   size_t replay_event_count;
-  unsigned long long replay_event_sequences[8];
-  char replay_event_types[8][64];
-  char replay_event_data_items[8][256];
+  unsigned long long replay_event_sequences[32];
+  char replay_event_types[32][64];
+  char replay_event_data_items[32][256];
   char scope[128];
   char session_id[CAI_AGENT_SESSION_ID_MAX];
   char loaded_session_id[CAI_AGENT_SESSION_ID_MAX];
@@ -280,6 +283,12 @@ typedef struct session_event_capture_state {
   char type[64];
   char data[256];
 } session_event_capture_state;
+
+typedef struct session_list_capture_state {
+  int count;
+  unsigned long long newest_timestamp;
+  char ids[8][CAI_AGENT_SESSION_ID_MAX];
+} session_list_capture_state;
 
 typedef struct fail_write_state {
   int writes;
@@ -2391,6 +2400,18 @@ static int test_runtime_session_store_load(
   return cai_source_from_callbacks(&callbacks, out, error);
 }
 
+static int test_runtime_session_store_load_id_empty(
+    void *context, const char *scope, const char *session_id, cai_source **out,
+    unsigned long long *out_applied_event_sequence, cai_error *error) {
+  (void)context;
+  (void)scope;
+  (void)session_id;
+  (void)error;
+  *out = NULL;
+  *out_applied_event_sequence = 0U;
+  return CAI_OK;
+}
+
 static int test_runtime_session_store_append_event(
     void *context, const char *scope, const char *session_id,
     const cai_agent_session_event *event, cai_error *error) {
@@ -2479,6 +2500,24 @@ static int test_session_event_capture(void *context,
                  event->type != NULL ? event->type : "");
   (void)snprintf(state->data, sizeof(state->data), "%s",
                  event->data != NULL ? event->data : "");
+  return CAI_OK;
+}
+
+static int test_session_list_capture(void *context, const char *session_id,
+                                     unsigned long long timestamp,
+                                     cai_error *error) {
+  session_list_capture_state *capture;
+  (void)error;
+  capture = (session_list_capture_state *)context;
+  if (capture == NULL || session_id == NULL || capture->count >= 8) {
+    return CAI_ERR_INVALID;
+  }
+  (void)snprintf(capture->ids[capture->count],
+                 sizeof(capture->ids[capture->count]), "%s", session_id);
+  capture->count++;
+  if (timestamp > capture->newest_timestamp) {
+    capture->newest_timestamp = timestamp;
+  }
   return CAI_OK;
 }
 
@@ -26630,6 +26669,8 @@ static void test_agent_runtime_failed_subagent_resume(test_state *state) {
   cai_error error;
   int i;
   int saw_handoff_marker;
+  int saw_assistant_text;
+  int saw_assistant_end;
 
   if (http_mock_client_open_script(
           state, "agent_runtime_failed_subagent_resume", script,
@@ -26685,6 +26726,7 @@ static void test_agent_runtime_failed_subagent_resume(test_state *state) {
   config.disable_default_session_store = 1;
   config.session_store = &store;
   config.session_scope = "failed-subagent-resume";
+  config.record_transcript = 1;
   config.subagents = &profile;
   config.subagent_count = 1U;
   config.event_callback = test_runtime_event;
@@ -26715,14 +26757,28 @@ static void test_agent_runtime_failed_subagent_resume(test_state *state) {
                                            "\"type\":\"function_call_output\""),
                1L);
     saw_handoff_marker = 0;
+    saw_assistant_text = 0;
+    saw_assistant_end = 0;
     for (i = 0; i < (int)store_state.replay_event_count; i++) {
       if (strcmp(store_state.replay_event_types[i],
                  "subagent_handoff_committed") == 0) {
         saw_handoff_marker = 1;
       }
+      if (strcmp(store_state.replay_event_types[i], "assistant_text_delta") ==
+              0 &&
+          strcmp(store_state.replay_event_data_items[i],
+                 "parent handled child failure") == 0) {
+        saw_assistant_text = 1;
+      }
+      if (strcmp(store_state.replay_event_types[i], "assistant_text_end") ==
+          0) {
+        saw_assistant_end = 1;
+      }
     }
     expect_int(state, "agent_runtime_failed_subagent_marker",
                saw_handoff_marker, 1L);
+    expect_int(state, "agent_runtime_transcript_text", saw_assistant_text, 1L);
+    expect_int(state, "agent_runtime_transcript_end", saw_assistant_end, 1L);
     store_state.checkpoint_json = store_state.saved_checkpoint;
     store_state.load_applied_event_sequence =
         store_state.saved_applied_event_sequence;
@@ -27133,6 +27189,8 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   cai_client *client;
   cai_agent_runtime *runtime;
   cai_agent_run_state run_state;
+  double context_percent;
+  int has_context;
   struct pollfd poll_fd;
   runtime_event_state events;
   runtime_session_store_state store_state;
@@ -27206,6 +27264,11 @@ static void test_agent_runtime_lifecycle(test_state *state) {
     expect_int(state, "runtime_idle_state",
                cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
     expect_int(state, "runtime_idle_value", run_state, CAI_AGENT_IDLE);
+    expect_int(state, "runtime_empty_context_query",
+               cai_agent_runtime_context_percent(runtime, &context_percent,
+                                                 &has_context, &error),
+               CAI_OK);
+    expect_int(state, "runtime_empty_context_unknown", has_context, 0L);
     expect_int(state, "runtime_empty_session_anchor", store_state.checkpoints,
                1L);
     expect_int(state, "runtime_empty_session_anchor_watermark",
@@ -27312,6 +27375,18 @@ static void test_agent_runtime_lifecycle(test_state *state) {
                close_steering_state.steering_result, CAI_ERR_CANCELLED);
     runtime = NULL;
   }
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.session_store = &store;
+  runtime_config.resume_session_id = "missing";
+  store.load_id = test_runtime_session_store_load_id_empty;
+  expect_int(state, "runtime_exact_resume_missing_checkpoint",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_ERR_INVALID);
+  expect_int(state, "runtime_exact_resume_missing_runtime", runtime == NULL,
+             1L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   cai_agent_runtime_config_init(&runtime_config);
   runtime_config.preset = CAI_SMITH_REVIEW_PRESET;
   runtime_config.workspace_directory = "/tmp";
@@ -29297,6 +29372,8 @@ static void test_agent_runtime_semantic_events_common(test_state *state,
   cai_client *client;
   cai_agent_runtime *runtime;
   cai_agent_run_state run_state;
+  double context_percent;
+  int has_context;
   struct pollfd poll_fd;
   runtime_event_state events;
   cai_error error;
@@ -29397,6 +29474,14 @@ static void test_agent_runtime_semantic_events_common(test_state *state,
     }
     expect_int(state, "runtime_semantic_completed", run_state,
                CAI_AGENT_COMPLETED);
+    expect_int(state, "runtime_semantic_context_query",
+               cai_agent_runtime_context_percent(runtime, &context_percent,
+                                                 &has_context, &error),
+               CAI_OK);
+    expect_int(state, "runtime_semantic_context_available", has_context, 1L);
+    if (has_context && context_percent <= 0.0) {
+      test_fail(state, "runtime_semantic_context_positive", "expected usage");
+    }
     if (poll_only) {
       expect_int(state, "runtime_poll_only_no_event_callback",
                  (long)events.calls, 0L);
@@ -30135,6 +30220,7 @@ static void test_agent_local_session_store(test_state *state) {
   read_state reader;
   cai_agent_session_event event;
   session_event_capture_state event_capture;
+  session_list_capture_state list_capture;
   cai_error error;
   unsigned char digest[SHA256_DIGEST_LENGTH];
   static const char hex[] = "0123456789abcdef";
@@ -30148,6 +30234,7 @@ static void test_agent_local_session_store(test_state *state) {
   loaded_sequence = 0U;
   linked_contents = NULL;
   memset(&event_capture, 0, sizeof(event_capture));
+  memset(&list_capture, 0, sizeof(list_capture));
   memset(&store, 0, sizeof(store));
   if (mkdtemp(template_directory) == NULL) {
     test_fail(state, "local_session_store_tmpdir", "mkdtemp failed");
@@ -30429,6 +30516,14 @@ static void test_agent_local_session_store(test_state *state) {
              CAI_OK);
   expect_str(state, "local_session_store_recency_id", session_id,
              "newer-checkpoint");
+  expect_int(state, "local_session_store_list",
+             cai_agent_local_session_store_list(&store, "checkpoint-recency",
+                                                test_session_list_capture,
+                                                &list_capture, &error),
+             CAI_OK);
+  expect_int(state, "local_session_store_list_count", list_capture.count, 2L);
+  expect_int(state, "local_session_store_list_timestamp",
+             list_capture.newest_timestamp != 0U, 1L);
   if (loaded == NULL) {
     test_fail(state, "local_session_store_recency_load",
               "newest checkpoint missing");
@@ -30443,6 +30538,36 @@ static void test_agent_local_session_store(test_state *state) {
   }
   cai_source_close(loaded);
   loaded = NULL;
+  expect_int(state, "local_session_store_load_id",
+             store.load_id(store.context, "checkpoint-recency",
+                           "older-checkpoint", &loaded, &loaded_sequence,
+                           &error),
+             CAI_OK);
+  if (loaded != NULL) {
+    memset(buffer, 0, sizeof(buffer));
+    expect_int(
+        state, "local_session_store_load_id_read",
+        (long)cai_source_read(loaded, buffer, sizeof(buffer) - 1U, &error),
+        (long)strlen("{\"checkpoint\":\"older\"}"));
+    expect_str(state, "local_session_store_load_id_value", buffer,
+               "{\"checkpoint\":\"older\"}");
+  }
+  cai_source_close(loaded);
+  loaded = NULL;
+  expect_int(state, "local_session_store_load_id_missing",
+             store.load_id(store.context, "checkpoint-recency", "missing",
+                           &loaded, &loaded_sequence, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  memset(&list_capture, 0, sizeof(list_capture));
+  expect_int(state, "local_session_store_list_other_scope",
+             cai_agent_local_session_store_list(
+                 &store, "checkpoint-recency-empty", test_session_list_capture,
+                 &list_capture, &error),
+             CAI_OK);
+  expect_int(state, "local_session_store_list_other_scope_count",
+             list_capture.count, 0L);
   reader.text = "{\"version\":4}";
   reader.offset = 0U;
   reader.closed = 0;
@@ -30729,6 +30854,23 @@ test_agent_runtime_explicit_local_store_opaque_id(test_state *state) {
     cai_agent_runtime_close(runtime);
     runtime = NULL;
   }
+  runtime_config.resume_latest = 0;
+  runtime_config.resume_session_id = "release.1";
+  expect_int(state, "runtime_explicit_local_opaque_exact_open",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_OK);
+  if (runtime != NULL) {
+    expect_str(state, "runtime_explicit_local_opaque_exact_id",
+               cai_agent_runtime_session_id(runtime), "release.1");
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  runtime_config.resume_latest = 1;
+  expect_int(state, "runtime_explicit_local_opaque_selection_conflict",
+             cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   memset(loaded_session_id, 0, sizeof(loaded_session_id));
   expect_int(state, "runtime_explicit_local_opaque_load",
              store.load_latest(store.context, scope, loaded_session_id,
@@ -43691,7 +43833,98 @@ static void test_stream_openrouter_metadata_events(test_state *state) {
   }
 }
 
+static void test_chatgpt_quota_parse(test_state *state) {
+  cai_chatgpt_quota quota;
+  cai_error error;
+  cai_error_init(&error);
+  expect_int(state, "quota_parse_windows",
+             cai_chatgpt_quota_parse_json(
+                 "{\"rate_limit\":{\"primary_window\":{"
+                 "\"used_percent\":25.0,\"limit_window_seconds\":18000},"
+                 "\"secondary_window\":{\"used_percent\":60.0,"
+                 "\"limit_window_seconds\":604800}}}",
+                 &quota, &error),
+             CAI_OK);
+  expect_int(state, "quota_five_hour_present", quota.has_five_hour, 1L);
+  expect_int(state, "quota_five_hour_remaining",
+             (long)quota.five_hour_remaining_percent, 75L);
+  expect_int(state, "quota_weekly_present", quota.has_weekly, 1L);
+  expect_int(state, "quota_weekly_remaining",
+             (long)quota.weekly_remaining_percent, 40L);
+  expect_int(state, "quota_parse_absent",
+             cai_chatgpt_quota_parse_json("{}", &quota, &error), CAI_OK);
+  expect_int(state, "quota_absent_five_hour", quota.has_five_hour, 0L);
+  expect_int(state, "quota_absent_weekly", quota.has_weekly, 0L);
+  expect_int(
+      state, "quota_parse_null_secondary",
+      cai_chatgpt_quota_parse_json(
+          "{\"rate_limit\":{\"secondary_window\":null}}", &quota, &error),
+      CAI_OK);
+  expect_int(state, "quota_null_secondary_hidden", quota.has_weekly, 0L);
+  expect_int(state, "quota_parse_wrong_window",
+             cai_chatgpt_quota_parse_json(
+                 "{\"rate_limit\":{\"primary_window\":{"
+                 "\"used_percent\":20,\"limit_window_seconds\":3600}}}",
+                 &quota, &error),
+             CAI_OK);
+  expect_int(state, "quota_wrong_window_hidden", quota.has_five_hour, 0L);
+  expect_int(state, "quota_parse_invalid",
+             cai_chatgpt_quota_parse_json("{", &quota, &error),
+             CAI_ERR_PROTOCOL);
+  cai_error_cleanup(&error);
+}
+
+static void test_chatgpt_quota_http(test_state *state) {
+  static const char *required[] = {"GET /backend-api/wham/usage HTTP/",
+                                   "Authorization: Bearer "};
+  static const mock_http_expectation script[] = {
+      {"GET /backend-api/wham/usage HTTP/", required, 2U, NULL, 0U, 200, "OK",
+       "application/json", NULL,
+       "{\"rate_limit\":{\"primary_window\":{\"used_percent\":12,"
+       "\"limit_window_seconds\":18000}}}"}};
+  http_mock_server server;
+  cai_chatgpt_auth auth;
+  cai_client_config config;
+  cai_client *client;
+  cai_chatgpt_quota quota;
+  cai_error error;
+  char base_url[sizeof(server.base_url)];
+  char *suffix;
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "quota_http_mock", script, 1U,
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  memset(&auth, 0, sizeof(auth));
+  auth.access_token = test_chatgpt_auth_access_token;
+  strcpy(base_url, server.base_url);
+  suffix = strrchr(base_url, '/');
+  if (suffix != NULL) {
+    strcpy(suffix, "/backend-api/codex");
+  }
+  cai_client_config_init(&config);
+  config.chatgpt_auth = &auth;
+  config.base_url = base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 1000L;
+  client = NULL;
+  expect_int(state, "quota_http_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  if (client != NULL) {
+    expect_int(state, "quota_http_fetch",
+               cai_client_chatgpt_quota(client, &quota, &error), CAI_OK);
+    expect_int(state, "quota_http_five_hour", quota.has_five_hour, 1L);
+    expect_int(state, "quota_http_weekly_absent", quota.has_weekly, 0L);
+    cai_client_close(client);
+  }
+  expect_child_exit(state, "quota_http_mock", server.pid, &server.child_status);
+  cai_error_cleanup(&error);
+}
+
 static const test_entry test_entries[] = {
+    {"chatgpt_quota_parse", test_chatgpt_quota_parse},
+    {"chatgpt_quota_http", test_chatgpt_quota_http},
     {"model_capabilities", test_model_capabilities},
     {"env_precedence", test_env_precedence},
     {"source_sink", test_source_sink},

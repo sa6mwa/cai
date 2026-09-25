@@ -580,6 +580,11 @@ typedef struct cai_agent_runtime_config {
    * rejects this to preserve review-session isolation.
    */
   int resume_latest;
+  /** Resume this exact session ID instead of the newest one. Mutually
+   * exclusive with resume_latest and requires a store with load_id. */
+  const char *resume_session_id;
+  /** Record visible assistant text in the session journal for UI replay. */
+  int record_transcript;
   /** Disable CAI's default local JSONL store when session_store is NULL. */
   int disable_default_session_store;
   /** Maximum queued runtime events; zero selects the bounded default. */
@@ -806,6 +811,9 @@ int cai_agent_runtime_wakeup_fd(const cai_agent_runtime *runtime, int *out_fd,
 /** Read the currently observable runtime state on the owner thread. */
 int cai_agent_runtime_state(cai_agent_runtime *runtime,
                             cai_agent_run_state *out, cai_error *error);
+/** Last completed response's context use; unavailable until usage is known. */
+int cai_agent_runtime_context_percent(cai_agent_runtime *runtime, double *out,
+                                      int *available, cai_error *error);
 /** Return the runtime's stable session identifier, borrowed until close. */
 const char *cai_agent_runtime_session_id(const cai_agent_runtime *runtime);
 /**
