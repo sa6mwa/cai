@@ -109,9 +109,17 @@ build/cai/cai --help
 build/cai/cai -n -C /path/to/project
 ```
 
-The CLI reads `~/.codex/auth.json` by default; `--auth-json` selects another
-ChatGPT auth file. Auth refresh may update that file. It starts with
-`gpt-6-luna` and medium reasoning; `-m`/`--model` and
+The default `chatgpt` provider reads `~/.codex/auth.json` first, then
+`$XDG_STATE_HOME/cai/auth.json` (or `~/.local/state/cai/auth.json`) when the
+Codex file is absent. `--auth-json` selects another file. Auth refresh may
+update the selected file. If neither default exists, `cai --login` opens a
+browser login and stores auth in cai's state directory, then exits. The
+`openai` provider uses `OPENAI_API_KEY`, `openrouter` uses
+`OPENROUTER_API_KEY`, and `custom` requires `--endpoint` and `--model` with
+`CAI_API_KEY` by default or a variable selected by `--api-key-env`.
+`--provider`/`-p` selects a provider. ChatGPT and OpenAI start with
+`gpt-6-luna`; OpenRouter starts with `openai/gpt-5.6-luna`. All providers use
+medium reasoning unless overridden; `-m`/`--model` and
 `-r`/`--reasoning-effort` override those defaults. `--help` lists the other
 user-facing model, review, instructions, skills, image, terminal, and session
 options. Cai requests concise provider reasoning summaries by default; the
@@ -131,8 +139,10 @@ credit balance through `cai_client_chatgpt_quota` in `<cai/quota.h>`. The status
 bar fetches quota at startup and after completed turns, at most once every five
 minutes automatically. `/status` fetches quota on every invocation, updates the
 bar, and renders a Markdown table with model, effort, available context
-and usage, quota, and credits. Its cost estimate, when available, uses API
-prices as an equivalent estimate, not a ChatGPT subscription charge. The
+and usage, quota, and credits. API key providers show `cost ?$` in the status
+bar until a USD cost estimate is available. ChatGPT's cost estimate, when
+available, uses API prices as an equivalent estimate, not a subscription
+charge. The
 context percentage is unknown until response usage is available.
 The package target writes `dist/cai-cli-<version>-x86_64-linux-musl.tar.gz`.
 Its relocatable layout includes `bin/cai`, `share/man/man1/cai.1`, and

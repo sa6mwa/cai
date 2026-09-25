@@ -31,7 +31,8 @@ int main(void) {
   memset(&quota, 0, sizeof(quota));
   cai_cli_status_init(&status, "/home/alice/project", "/home/alice");
   status.branch[0] = '\0';
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
+                       &goal);
   failures += check(status.count == 3U, "unknown quota hidden");
   failures += check(strcmp(status.elements[0], "gpt-6-luna medium") == 0,
                     "model effort");
@@ -47,7 +48,8 @@ int main(void) {
   quota.short_window_remaining_percent = 48.0;
   quota.has_weekly = 1;
   quota.weekly_remaining_percent = 72.0;
-  cai_cli_status_build(&status, "gpt-6-luna", "high", 37.4, 1, &quota, &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "high", 37.4, 1, &quota, 0.0,
+                       &goal);
   failures += check(status.count == 6U, "full element count");
   failures +=
       check(strcmp(status.elements[1], "ctx 37%") == 0, "context rounded");
@@ -65,23 +67,36 @@ int main(void) {
   }
   goal.objective = "Line\nBreak";
   memset(&quota, 0, sizeof(quota));
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
+                       &goal);
   failures += check(strcmp(status.elements[4], "goal active: Line Break") == 0,
                     "goal controls sanitized");
   cai_cli_status_refresh_branch(&status, "/proc");
   failures += check(status.branch[0] == '\0', "nonrepository branch hidden");
   goal.status = "complete";
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
+                       &goal);
   failures += check(status.count == 3U, "completed goal hidden");
   quota.has_weekly = 1;
   quota.weekly_remaining_percent = 73.0;
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, &goal);
-  failures += check(strcmp(status.quota, "w 73%") == 0, "weekly only");
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
+                       &goal);
+  failures += check(strcmp(status.usage, "w 73%") == 0, "weekly only");
   quota.has_short_window = 1;
   quota.short_window_seconds = 3600;
   quota.short_window_remaining_percent = 55.0;
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, &goal);
-  failures += check(strcmp(status.quota, "w 73% 1h 55%") == 0, "hourly label");
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
+                       &goal);
+  failures += check(strcmp(status.usage, "w 73% 1h 55%") == 0, "hourly label");
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", 20.0, 1, NULL, 1.25,
+                       &goal);
+  failures +=
+      check(strcmp(status.usage, "cost ~$1.2500") == 0, "API cost status");
+  failures += check(status.count == 4U, "API status element count");
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, NULL, 0.0,
+                       &goal);
+  failures += check(strcmp(status.usage, "cost ?$") == 0,
+                    "unknown API cost placeholder");
   metrics.context_window_tokens = 200000;
   metrics.context_used_tokens = 50000;
   metrics.has_context_usage = 1;
@@ -90,7 +105,7 @@ int main(void) {
   quota.credit_balance = 42.5;
   failures +=
       check(cai_cli_status_markdown(markdown, sizeof(markdown), "gpt-6-luna",
-                                    "medium", &metrics, &quota) == 0,
+                                    "medium", "chatgpt", &metrics, &quota) == 0,
             "status markdown builds");
   failures +=
       check(strstr(markdown, "| Context window | 200000 tokens |") != NULL,
@@ -110,6 +125,13 @@ int main(void) {
             "hourly row");
   failures += check(strstr(markdown, "| Credits left | 42.50 |") != NULL,
                     "credits row");
+  failures +=
+      check(cai_cli_status_markdown(markdown, sizeof(markdown), "gpt-6-luna",
+                                    "medium", "openai", &metrics, NULL) == 0 &&
+                strstr(markdown, "| Provider | openai |") != NULL &&
+                strstr(markdown, "| Cost estimate | $1.2500 USD |") != NULL &&
+                strstr(markdown, "Weekly limit") == NULL,
+            "API provider status rows");
   memset(&metrics, 0, sizeof(metrics));
   failures +=
       check(cai_cli_turn_status_message(turn_message, sizeof(turn_message), "",

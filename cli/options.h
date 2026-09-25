@@ -2,6 +2,9 @@
 #define CAI_CLI_OPTIONS_H
 
 typedef struct cai_cli_options {
+  const char *provider;
+  const char *endpoint;
+  const char *api_key_env;
   const char *workspace;
   const char *auth_json;
   const char *model;
@@ -16,6 +19,7 @@ typedef struct cai_cli_options {
   const char *identity;
   const char *instructions;
   const char *resume_id;
+  int login;
   int new_session;
   int image_generation;
   int terminal;

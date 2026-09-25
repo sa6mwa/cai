@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
 
+#include "login.h"
 #include "options.h"
 #include "status.h"
 
@@ -355,7 +356,9 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
     return rc;
   }
   cai_cli_status_build(&state->status, model, effort, context_percent,
-                       has_context, &state->quota, &goal);
+                       has_context,
+                       state->quota_client != NULL ? &state->quota : NULL,
+                       metrics.session_usage.estimated_spend_usd, &goal);
   if (sl_set_status_busy(state->sl, busy) != SL_OK ||
       sl_set_status_spinner(state->sl, busy) != SL_OK ||
       sl_set_status_message(state->sl, turn_message) != SL_OK ||
@@ -652,7 +655,9 @@ static int cli_handle_command(cli_state *state, const char *line,
       return rc;
     cli_refresh_quota(state, 1);
     if (cai_cli_status_markdown(markdown, sizeof(markdown), model, effort,
-                                &metrics, &state->quota) != 0 ||
+                                state->options.provider, &metrics,
+                                state->quota_client != NULL ? &state->quota
+                                                            : NULL) != 0 ||
         cli_text(state, markdown, strlen(markdown)) != 0 ||
         cli_finish_response(state) != 0) {
       return CAI_ERR_TRANSPORT;
@@ -711,6 +716,7 @@ int main(int argc, char **argv) {
   cai_error error;
   sl_readline_status_t prompt_status;
   char auth_path[PATH_MAX];
+  char *state_auth_path;
   const char *auth_file;
   const char *home_directory;
   char *line;
@@ -725,36 +731,53 @@ int main(int argc, char **argv) {
   parsed = cai_cli_parse_options(argc, argv, &state.options);
   if (parsed <= 0)
     return parsed == 0 ? 0 : 2;
+  if (state.options.login)
+    return cai_cli_login(state.options.auth_json);
   if (realpath(state.options.workspace != NULL ? state.options.workspace : ".",
                state.workspace) == NULL) {
     fprintf(stderr, "cai: cannot resolve workspace: %s\n", strerror(errno));
     return 2;
   }
   auth_file = state.options.auth_json;
-  if (auth_file == NULL) {
+  state_auth_path = NULL;
+  if (strcmp(state.options.provider, "chatgpt") == 0 && auth_file == NULL) {
     home_directory = getenv("HOME");
-    if (home_directory == NULL ||
+    if (home_directory != NULL &&
         snprintf(auth_path, sizeof(auth_path), "%s/.codex/auth.json",
-                 home_directory) >= (int)sizeof(auth_path)) {
-      fputs("cai: HOME is required for the default ~/.codex/auth.json\n",
-            stderr);
-      return 2;
+                 home_directory) < (int)sizeof(auth_path) &&
+        access(auth_path, F_OK) == 0) {
+      auth_file = auth_path;
+    } else {
+      rc = cai_chatgpt_auth_default_path(&state_auth_path, &error);
+      if (rc != CAI_OK) {
+        cli_print_error("resolve cai auth path", &error);
+        cai_error_cleanup(&error);
+        return 2;
+      }
+      if (access(state_auth_path, F_OK) != 0) {
+        fputs("cai: ChatGPT authentication not found; run cai --login (-l) "
+              "to authenticate\n",
+              stderr);
+        cai_string_destroy(state_auth_path);
+        cai_error_cleanup(&error);
+        return 2;
+      }
+      auth_file = state_auth_path;
     }
-    auth_file = auth_path;
   }
   state.interactive = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
   cai_cli_status_init(&state.status, state.workspace, getenv("HOME"));
+  result = 1;
   state.sl = sl_create();
   if (state.sl == NULL) {
     fputs("cai: failed to create softline prompt\n", stderr);
-    return 1;
+    goto cleanup;
   }
   state.width = mdf_terminal_width(STDOUT_FILENO, 80);
   mdf_options_init(&mdf_config);
   mdf_config.width = state.width;
   mdf_config.margin_left = state.width >= 5 ? 2 : 0;
   mdf_config.boring = !state.interactive;
-  result = 1;
   if ((state.interactive &&
        (sl_set_bounds(state.sl, 0, 0, 0, 0) != SL_OK ||
         sl_set_statusline(state.sl, 1, 0) != SL_OK ||
@@ -788,21 +811,29 @@ int main(int argc, char **argv) {
     cli_print_error("open session store", &error);
     goto cleanup;
   }
-  cai_chatgpt_auth_config_init(&auth_config);
-  auth_config.auth_json_path = auth_file;
-  rc = cai_chatgpt_auth_open(&auth_config, &state.auth, &error);
-  if (rc != CAI_OK) {
-    cli_print_error("open ChatGPT auth", &error);
-    goto cleanup;
-  }
   cai_client_config_init(&client_config);
-  client_config.chatgpt_auth = state.auth;
+  if (strcmp(state.options.provider, "chatgpt") == 0) {
+    cai_chatgpt_auth_config_init(&auth_config);
+    auth_config.auth_json_path = auth_file;
+    rc = cai_chatgpt_auth_open(&auth_config, &state.auth, &error);
+    if (rc != CAI_OK) {
+      cli_print_error("open ChatGPT auth", &error);
+      fputs("cai: run cai --login (-l) to authenticate\n", stderr);
+      goto cleanup;
+    }
+    client_config.chatgpt_auth = state.auth;
+  } else if (strcmp(state.options.provider, "openrouter") == 0) {
+    cai_client_config_use_openrouter(&client_config);
+  } else if (strcmp(state.options.provider, "custom") == 0) {
+    client_config.base_url = state.options.endpoint;
+    client_config.api_key_env = state.options.api_key_env;
+  }
   rc = cai_client_open(&client_config, &state.client, &error);
   if (rc != CAI_OK) {
     cli_print_error("open client", &error);
     goto cleanup;
   }
-  {
+  if (state.auth != NULL) {
     cai_error quota_error;
     cai_client_config quota_config;
     cai_error_init(&quota_error);
@@ -895,6 +926,7 @@ cleanup:
     state.quota_client->close(state.quota_client);
   if (state.auth != NULL)
     state.auth->close(state.auth);
+  cai_string_destroy(state_auth_path);
   if (state.store.context != NULL)
     cai_agent_local_session_store_close(&state.store);
   if (state.renderer != NULL) {

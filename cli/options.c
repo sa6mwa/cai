@@ -8,6 +8,7 @@
 
 void cai_cli_options_init(cai_cli_options *options) {
   memset(options, 0, sizeof(*options));
+  options->provider = "chatgpt";
   options->model = CAI_MODEL_GPT_6_LUNA;
   options->reasoning_effort = "medium";
   options->reasoning_summary = "concise";
@@ -27,8 +28,15 @@ static void cai_cli_help(void) {
         "      --resume ID              Resume a session by ID\n"
         "  -C, --workspace DIR          Use DIR as the workspace\n"
         "  -a, --auth-json PATH         ChatGPT auth file (default "
-        "~/.codex/auth.json)\n"
-        "  -m, --model ID               Model (default gpt-6-luna)\n"
+        "~/.codex/auth.json, then cai state)\n"
+        "  -l, --login                  Log in to ChatGPT and exit\n"
+        "  -p, --provider NAME          chatgpt|openai|openrouter|custom\n",
+        stdout);
+  fputs("      --endpoint URL           Custom provider API base URL\n"
+        "      --api-key-env NAME       Custom API key variable (default "
+        "CAI_API_KEY)\n",
+        stdout);
+  fputs("  -m, --model ID               Model (provider default if omitted)\n"
         "  -r, --reasoning-effort LEVEL none|low|medium|high|xhigh|max\n"
         "      --reasoning-summary MODE none|auto|concise|detailed (default "
         "concise)\n",
@@ -42,15 +50,17 @@ static void cai_cli_help(void) {
         "      --identity TEXT         Visible agent identity\n"
         "      --instructions TEXT     Append developer instructions\n",
         stdout);
-  fputs("      --codex-agents-md       Discover ancestor AGENTS.md files\n"
-        "      --no-image-generation   Disable hosted image generation\n"
-        "      --no-terminal           Disable terminal tools\n"
-        "      --no-review-subagent    Disable the built-in reviewer\n"
-        "  -v, --verbose                Print runtime events (repeat for "
-        "sequences)\n"
-        "  -h, --help                   Show this help\n"
-        "      --version                Show version\n",
-        stdout);
+  fputs(
+      "      --codex-agents-md       Discover ancestor AGENTS.md files\n"
+      "      --no-image-generation   Disable hosted image generation\n"
+      "      --no-terminal           Disable terminal tools\n"
+      "      --no-review-subagent    Disable the built-in reviewer\n"
+      "  -v, --verbose                Print runtime events (repeat for "
+      "sequences)\n"
+      "  -h, --help                   Show this help\n"
+      "      --version                Show version\n\n"
+      "cai and libcai Copyright (C) 2026 C89 Systems AB https://c89.systems\n",
+      stdout);
 }
 
 static int cai_cli_one_of(const char *value, const char *const *values) {
@@ -69,6 +79,9 @@ int cai_cli_parse_options(int argc, char *const *argv,
                                         "xhigh", "max", NULL};
   static const char *const summaries[] = {"none", "auto", "concise", "detailed",
                                           NULL};
+  static const char *const providers[] = {"chatgpt", "openai", "openrouter",
+                                          "custom", NULL};
+  int model_explicit = 0;
   int i;
 
   if (options == NULL) {
@@ -91,6 +104,10 @@ int cai_cli_parse_options(int argc, char *const *argv,
     }
     if (strcmp(flag, "-n") == 0 || strcmp(flag, "--new") == 0) {
       options->new_session = 1;
+      continue;
+    }
+    if (strcmp(flag, "-l") == 0 || strcmp(flag, "--login") == 0) {
+      options->login = 1;
       continue;
     }
     if (strcmp(flag, "--no-image-generation") == 0) {
@@ -120,6 +137,12 @@ int cai_cli_parse_options(int argc, char *const *argv,
     field = NULL;
     if (strcmp(flag, "--resume") == 0)
       field = &options->resume_id;
+    else if (strcmp(flag, "-p") == 0 || strcmp(flag, "--provider") == 0)
+      field = &options->provider;
+    else if (strcmp(flag, "--endpoint") == 0)
+      field = &options->endpoint;
+    else if (strcmp(flag, "--api-key-env") == 0)
+      field = &options->api_key_env;
     else if (strcmp(flag, "-C") == 0 || strcmp(flag, "--workspace") == 0)
       field = &options->workspace;
     else if (strcmp(flag, "-a") == 0 || strcmp(flag, "--auth-json") == 0)
@@ -156,6 +179,8 @@ int cai_cli_parse_options(int argc, char *const *argv,
     }
     value = argv[i];
     *field = value;
+    if (field == &options->model)
+      model_explicit = 1;
     if ((field == &options->reasoning_effort ||
          field == &options->review_reasoning_effort) &&
         !cai_cli_one_of(value, efforts)) {
@@ -173,5 +198,37 @@ int cai_cli_parse_options(int argc, char *const *argv,
     fputs("cai: --new and --resume cannot be combined\n", stderr);
     return -1;
   }
+  if (!cai_cli_one_of(options->provider, providers)) {
+    fprintf(stderr, "cai: invalid provider: %s\n", options->provider);
+    return -1;
+  }
+  if (strcmp(options->provider, "chatgpt") != 0 &&
+      (options->auth_json != NULL || options->login)) {
+    fputs("cai: --auth-json and --login require --provider chatgpt\n", stderr);
+    return -1;
+  }
+  if (options->login && (options->new_session || options->resume_id != NULL)) {
+    fputs("cai: --login cannot be combined with --new or --resume\n", stderr);
+    return -1;
+  }
+  if (strcmp(options->provider, "custom") == 0) {
+    if (options->endpoint == NULL || !model_explicit) {
+      fputs("cai: custom provider requires --endpoint and --model\n", stderr);
+      return -1;
+    }
+    if (strncmp(options->endpoint, "https://", 8U) != 0 &&
+        strncmp(options->endpoint, "http://", 7U) != 0) {
+      fputs("cai: --endpoint must start with https:// or http://\n", stderr);
+      return -1;
+    }
+    if (options->api_key_env == NULL)
+      options->api_key_env = "CAI_API_KEY";
+  } else if (options->endpoint != NULL || options->api_key_env != NULL) {
+    fputs("cai: --endpoint and --api-key-env require --provider custom\n",
+          stderr);
+    return -1;
+  }
+  if (strcmp(options->provider, "openrouter") == 0 && !model_explicit)
+    options->model = CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES;
   return 1;
 }

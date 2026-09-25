@@ -198,6 +198,7 @@ void cai_cli_status_refresh_branch(cai_cli_status *status,
 void cai_cli_status_build(cai_cli_status *status, const char *model,
                           const char *effort, double context_percent,
                           int has_context, const cai_chatgpt_quota *quota,
+                          double estimated_spend_usd,
                           const cai_agent_goal_snapshot *goal) {
   char safe_model[128];
   char safe_effort[32];
@@ -220,33 +221,41 @@ void cai_cli_status_build(cai_cli_status *status, const char *model,
   status->elements[status->count++] = status->model_effort;
   status->elements[status->count++] = status->context;
   status->elements[status->count++] = status->directory;
-  status->quota[0] = '\0';
+  status->usage[0] = '\0';
+  if (quota == NULL) {
+    if (estimated_spend_usd > 0.0) {
+      snprintf(status->usage, sizeof(status->usage), "cost ~$%.4f",
+               estimated_spend_usd);
+    } else {
+      snprintf(status->usage, sizeof(status->usage), "cost ?$");
+    }
+  }
   if (quota != NULL && quota->has_weekly &&
       quota->weekly_remaining_percent >= 0.0 &&
       quota->weekly_remaining_percent <= 100.0) {
-    snprintf(status->quota, sizeof(status->quota), "w %.0f%%",
+    snprintf(status->usage, sizeof(status->usage), "w %.0f%%",
              quota->weekly_remaining_percent);
   }
   if (quota != NULL && quota->has_short_window &&
       quota->short_window_remaining_percent >= 0.0 &&
       quota->short_window_remaining_percent <= 100.0) {
-    n = strlen(status->quota);
+    n = strlen(status->usage);
     if (quota->short_window_seconds % 3600LL == 0LL) {
-      snprintf(status->quota + n, sizeof(status->quota) - n, "%s%lldh %.0f%%",
+      snprintf(status->usage + n, sizeof(status->usage) - n, "%s%lldh %.0f%%",
                n > 0U ? " " : "", quota->short_window_seconds / 3600LL,
                quota->short_window_remaining_percent);
     } else if (quota->short_window_seconds % 60LL == 0LL) {
-      snprintf(status->quota + n, sizeof(status->quota) - n, "%s%lldm %.0f%%",
+      snprintf(status->usage + n, sizeof(status->usage) - n, "%s%lldm %.0f%%",
                n > 0U ? " " : "", quota->short_window_seconds / 60LL,
                quota->short_window_remaining_percent);
     } else {
-      snprintf(status->quota + n, sizeof(status->quota) - n, "%s%llds %.0f%%",
+      snprintf(status->usage + n, sizeof(status->usage) - n, "%s%llds %.0f%%",
                n > 0U ? " " : "", quota->short_window_seconds,
                quota->short_window_remaining_percent);
     }
   }
-  if (status->quota[0] != '\0') {
-    status->elements[status->count++] = status->quota;
+  if (status->usage[0] != '\0') {
+    status->elements[status->count++] = status->usage;
   }
   if (status->branch[0] != '\0') {
     status->elements[status->count++] = status->branch;
@@ -274,16 +283,18 @@ static int cai_cli_table_row(char *out, size_t capacity, size_t *used,
 }
 
 int cai_cli_status_markdown(char *out, size_t capacity, const char *model,
-                            const char *effort,
+                            const char *effort, const char *provider,
                             const cai_agent_runtime_metrics *metrics,
                             const cai_chatgpt_quota *quota) {
   char safe_model[128];
   char safe_effort[32];
+  char safe_provider[32];
   char value[160];
   size_t used;
   int written;
   size_t i;
-  if (out == NULL || capacity == 0U || model == NULL || effort == NULL) {
+  if (out == NULL || capacity == 0U || model == NULL || effort == NULL ||
+      provider == NULL) {
     return -1;
   }
   written = snprintf(out, capacity,
@@ -294,6 +305,7 @@ int cai_cli_status_markdown(char *out, size_t capacity, const char *model,
   used = (size_t)written;
   cai_cli_status_copy(safe_model, sizeof(safe_model), model);
   cai_cli_status_copy(safe_effort, sizeof(safe_effort), effort);
+  cai_cli_status_copy(safe_provider, sizeof(safe_provider), provider);
   for (i = 0U; safe_model[i] != '\0'; i++) {
     if (safe_model[i] == '|')
       safe_model[i] = ' ';
@@ -302,7 +314,8 @@ int cai_cli_status_markdown(char *out, size_t capacity, const char *model,
     if (safe_effort[i] == '|')
       safe_effort[i] = ' ';
   }
-  if (cai_cli_table_row(out, capacity, &used, "Model", safe_model) != 0 ||
+  if (cai_cli_table_row(out, capacity, &used, "Provider", safe_provider) != 0 ||
+      cai_cli_table_row(out, capacity, &used, "Model", safe_model) != 0 ||
       cai_cli_table_row(out, capacity, &used, "Reasoning effort",
                         safe_effort) != 0) {
     return -1;
@@ -322,8 +335,9 @@ int cai_cli_status_markdown(char *out, size_t capacity, const char *model,
     }
   }
   if (metrics != NULL && metrics->session_usage.estimated_spend_usd > 0.0) {
-    snprintf(value, sizeof(value), "$%.4f USD (API equivalent)",
-             metrics->session_usage.estimated_spend_usd);
+    snprintf(value, sizeof(value), "$%.4f USD%s",
+             metrics->session_usage.estimated_spend_usd,
+             quota != NULL ? " (API equivalent)" : "");
     if (cai_cli_table_row(out, capacity, &used, "Cost estimate", value) != 0)
       return -1;
   }

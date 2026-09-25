@@ -10,7 +10,7 @@ typedef struct cai_cli_status {
   char branch[160];
   char model_effort[192];
   char context[32];
-  char quota[64];
+  char usage[64];
   char goal[192];
   const char *elements[6];
   size_t count;
@@ -23,10 +23,11 @@ void cai_cli_status_refresh_branch(cai_cli_status *status,
 void cai_cli_status_build(cai_cli_status *status, const char *model,
                           const char *effort, double context_percent,
                           int has_context, const cai_chatgpt_quota *quota,
+                          double estimated_spend_usd,
                           const cai_agent_goal_snapshot *goal);
 /** Write a Markdown table into the caller's buffer; return 0 on success. */
 int cai_cli_status_markdown(char *out, size_t capacity, const char *model,
-                            const char *effort,
+                            const char *effort, const char *provider,
                             const cai_agent_runtime_metrics *metrics,
                             const cai_chatgpt_quota *quota);
 /** Format the active summary or most recent turn duration for softline. */

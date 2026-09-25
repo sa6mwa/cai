@@ -11,7 +11,7 @@ with
 .BR \-C .
 It uses ChatGPT authentication from
 .I ~/.codex/auth.json
-by default and starts with the
+first, then cai's state auth file if the Codex file is absent, and starts with the
 .B gpt-6-luna
 model at medium reasoning effort.
 The prompt is
@@ -44,13 +44,47 @@ The default is the current directory.
 Read ChatGPT authentication from
 .IR PATH .
 The default is
-.IR ~/.codex/auth.json .
+.IR ~/.codex/auth.json ,
+then cai's state auth file.
 Token refresh may update this file.
+.TP
+.BR \-l , " " \-\-login
+Open the browser login flow, save ChatGPT auth to cai's state directory, and
+exit. With
+.BR \-\-auth-json ,
+save to that path instead.
+.TP
+.BR \-p , " " \-\-provider " " NAME
+Select
+.BR chatgpt ,
+.BR openai ,
+.BR openrouter ,
+or
+.BR custom .
+The default is
+.BR chatgpt .
+OpenAI reads
+.BR OPENAI_API_KEY ;
+OpenRouter reads
+.BR OPENROUTER_API_KEY .
+.TP
+.BI \-\-endpoint " URL"
+Base URL for the
+.B custom
+provider. Required with
+.BR custom .
+.TP
+.BI \-\-api-key-env " NAME"
+Environment variable containing the custom provider API key. The default is
+.BR CAI_API_KEY .
 .TP
 .BR \-m , " " \-\-model " " ID
 Select the model.
-The default is
-.BR gpt-6-luna .
+ChatGPT and OpenAI default to
+.BR gpt-6-luna ;
+OpenRouter defaults to
+.BR openai/gpt-5.6-luna .
+The custom provider requires an explicit model.
 .TP
 .BR \-r , " " \-\-reasoning-effort " " LEVEL
 Set reasoning effort:
@@ -136,16 +170,16 @@ assistant text without repeating tool side effects.
 Start a new session in the current workspace.
 .TP
 .B /status
-Fetch ChatGPT quota immediately, update the status line, and show a Markdown
-table of available model, reasoning,
-context, API-equivalent cost estimate, usage-window, and credit metrics.
+Show a Markdown table of provider, model, reasoning, context, and available
+cost or quota metrics. For ChatGPT, fetch quota immediately and update the
+status line.
 .TP
 .BR /quit , " " /exit
 Exit the agent.
 .SH STATUS LINE
 The status line shows model and reasoning effort, context used as a percentage,
-the workspace, available ChatGPT subscription quota, the Git branch when
-available, and an active goal.
+the workspace, available ChatGPT subscription quota or API cost estimate,
+the Git branch when available, and an active goal.
 Quota windows are labeled by their returned duration, including weekly-only
 accounts and any shorter window returned by the backend. Quota is fetched at
 startup and after completed turns, with automatic requests limited to one
@@ -164,7 +198,16 @@ minutes thereafter.
 .SH FILES
 .TP
 .I ~/.codex/auth.json
-Default ChatGPT authentication file.
+Preferred ChatGPT authentication file when present.
+.TP
+.I $XDG_STATE_HOME/cai/auth.json
+ChatGPT authentication created by
+.BR \-\-login ;
+fallback auth file when the Codex file is absent. Uses
+.I ~/.local/state/cai/auth.json
+when
+.B XDG_STATE_HOME
+is unset.
 .TP
 .I $XDG_STATE_HOME/cai/sessions
 Workspace-scoped JSONL session storage when
@@ -183,3 +226,5 @@ one for startup or runtime failure.
 in the installed
 .I share/doc/libcai
 directory.
+.SH COPYRIGHT
+cai and libcai Copyright (C) 2026 C89 Systems AB https://c89.systems
