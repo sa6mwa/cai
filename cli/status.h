@@ -2,6 +2,7 @@
 #define CAI_CLI_STATUS_H
 
 #include <cai/agent_runtime.h>
+#include <cai/quota.h>
 #include <softline/softline.h>
 
 typedef struct cai_cli_status {
@@ -21,10 +22,13 @@ void cai_cli_status_refresh_branch(cai_cli_status *status,
                                    const char *workspace);
 void cai_cli_status_build(cai_cli_status *status, const char *model,
                           const char *effort, double context_percent,
-                          int has_context, int has_five_hour,
-                          double five_hour_remaining, int has_weekly,
-                          double weekly_remaining,
+                          int has_context, const cai_chatgpt_quota *quota,
                           const cai_agent_goal_snapshot *goal);
+/** Write a Markdown table into the caller's buffer; return 0 on success. */
+int cai_cli_status_markdown(char *out, size_t capacity, const char *model,
+                            const char *effort,
+                            const cai_agent_runtime_metrics *metrics,
+                            const cai_chatgpt_quota *quota);
 int cai_cli_status_apply(sl_t *sl, const cai_cli_status *status);
 
 #endif

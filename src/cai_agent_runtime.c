@@ -526,6 +526,7 @@ struct cai_agent_runtime {
   long long model_auto_compact_token_limit;
   double context_projection_percent;
   int context_projection_available;
+  cai_agent_runtime_metrics metrics_projection;
   char *workspace_directory;
   char *session_scope;
   char *session_id;
@@ -2930,6 +2931,11 @@ static int cai_runtime_refresh_goal_projection(cai_agent_runtime *runtime,
   runtime->goal_projection_updated_at = goal->goal_updated_at;
   runtime->context_projection_available = context_available;
   runtime->context_projection_percent = context_percent;
+  runtime->metrics_projection.context_window_tokens = context_window;
+  runtime->metrics_projection.context_used_tokens =
+      context_available ? goal->context_usage.total_tokens : 0LL;
+  runtime->metrics_projection.has_context_usage = context_available;
+  runtime->metrics_projection.session_usage = goal->usage;
   pthread_mutex_unlock(&runtime->lock);
   return CAI_OK;
 }
@@ -10330,6 +10336,24 @@ int cai_agent_runtime_context_percent(cai_agent_runtime *runtime, double *out,
   pthread_mutex_lock(&runtime->lock);
   *available = runtime->context_projection_available;
   *out = runtime->context_projection_percent;
+  pthread_mutex_unlock(&runtime->lock);
+  return CAI_OK;
+}
+
+int cai_agent_runtime_get_metrics(cai_agent_runtime *runtime,
+                                  cai_agent_runtime_metrics *out,
+                                  cai_error *error) {
+  int rc;
+  if (out == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "runtime metrics output is required");
+  }
+  rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK) {
+    return rc;
+  }
+  pthread_mutex_lock(&runtime->lock);
+  *out = runtime->metrics_projection;
   pthread_mutex_unlock(&runtime->lock);
   return CAI_OK;
 }

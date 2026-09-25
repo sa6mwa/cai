@@ -135,13 +135,21 @@ assistant text without repeating tool side effects.
 .B /new
 Start a new session in the current workspace.
 .TP
+.B /status
+Fetch ChatGPT quota immediately, update the status line, and show a Markdown
+table of available model, reasoning,
+context, API-equivalent cost estimate, usage-window, and credit metrics.
+.TP
 .BR /quit , " " /exit
 Exit the agent.
 .SH STATUS LINE
 The status line shows model and reasoning effort, context used as a percentage,
 the workspace, available ChatGPT subscription quota, the Git branch when
 available, and an active goal.
-Quota windows appear as weekly and five-hour percentages remaining.
+Quota windows are labeled by their returned duration, including weekly-only
+accounts and any shorter window returned by the backend. Quota is fetched at
+startup and after completed turns, with automatic requests limited to one
+attempt every five minutes.
 Unavailable values are hidden.
 .SH FILES
 .TP

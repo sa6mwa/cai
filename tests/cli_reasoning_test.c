@@ -15,8 +15,18 @@ int main(void) {
   char *label;
   ssize_t count;
   int rc;
+  struct timespec start = {100, 500000000L};
+  struct timespec before = {400, 499999999L};
+  struct timespec boundary = {400, 500000000L};
 
   memset(&state, 0, sizeof(state));
+  if (!cli_quota_due(0, start, start, 0) ||
+      cli_quota_due(1, start, before, 0) ||
+      !cli_quota_due(1, start, boundary, 0) ||
+      !cli_quota_due(1, start, before, 1)) {
+    fprintf(stderr, "quota refresh interval or forced refresh failed\n");
+    return 1;
+  }
   memset(&event, 0, sizeof(event));
   if (pipe(pipe_fd) != 0) {
     return 1;

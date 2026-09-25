@@ -11,8 +11,11 @@ cat > "$fixture/auth.json" <<'JSON'
 JSON
 export XDG_STATE_HOME="$fixture/state"
 
-first=$(printf '/resume\n/quit\n' | "$cli" -n -C "$fixture/work-a" \
+first=$(printf '/status\n/resume\n/quit\n' | env HTTPS_PROXY=http://127.0.0.1:1 \
+  HTTP_PROXY=http://127.0.0.1:1 NO_PROXY= "$cli" -n -C "$fixture/work-a" \
   --auth-json "$fixture/auth.json")
+[[ "$first" == *"Status"* && "$first" == *"Model"* && "$first" == *"Reasoning effort"* ]]
+[[ "$first" != *"Weekly limit"* && "$first" != *"Credits left"* ]]
 first_id=$(printf '%s\n' "$first" | sed -n 's/^  1  \([^ ]*\)  (current)$/\1/p')
 [[ -n "$first_id" ]]
 journals=("$fixture/state/cai/sessions"/*/"$first_id.jsonl")

@@ -29372,6 +29372,7 @@ static void test_agent_runtime_semantic_events_common(test_state *state,
   cai_client *client;
   cai_agent_runtime *runtime;
   cai_agent_run_state run_state;
+  cai_agent_runtime_metrics metrics;
   double context_percent;
   int has_context;
   struct pollfd poll_fd;
@@ -29479,6 +29480,17 @@ static void test_agent_runtime_semantic_events_common(test_state *state,
                                                  &has_context, &error),
                CAI_OK);
     expect_int(state, "runtime_semantic_context_available", has_context, 1L);
+    expect_int(state, "runtime_semantic_metrics",
+               cai_agent_runtime_get_metrics(runtime, &metrics, &error),
+               CAI_OK);
+    expect_int(state, "runtime_semantic_metrics_context_available",
+               metrics.has_context_usage, 1L);
+    if (metrics.context_window_tokens <= 0LL ||
+        metrics.context_used_tokens <= 0LL ||
+        metrics.session_usage.usage.total_tokens <= 0LL) {
+      test_fail(state, "runtime_semantic_metrics_positive",
+                "expected context and session usage");
+    }
     if (has_context && context_percent <= 0.0) {
       test_fail(state, "runtime_semantic_context_positive", "expected usage");
     }
@@ -43845,15 +43857,16 @@ static void test_chatgpt_quota_parse(test_state *state) {
                  "\"limit_window_seconds\":604800}}}",
                  &quota, &error),
              CAI_OK);
-  expect_int(state, "quota_five_hour_present", quota.has_five_hour, 1L);
-  expect_int(state, "quota_five_hour_remaining",
-             (long)quota.five_hour_remaining_percent, 75L);
+  expect_int(state, "quota_short_present", quota.has_short_window, 1L);
+  expect_int(state, "quota_short_duration", quota.short_window_seconds, 18000L);
+  expect_int(state, "quota_short_remaining",
+             (long)quota.short_window_remaining_percent, 75L);
   expect_int(state, "quota_weekly_present", quota.has_weekly, 1L);
   expect_int(state, "quota_weekly_remaining",
              (long)quota.weekly_remaining_percent, 40L);
   expect_int(state, "quota_parse_absent",
              cai_chatgpt_quota_parse_json("{}", &quota, &error), CAI_OK);
-  expect_int(state, "quota_absent_five_hour", quota.has_five_hour, 0L);
+  expect_int(state, "quota_absent_short", quota.has_short_window, 0L);
   expect_int(state, "quota_absent_weekly", quota.has_weekly, 0L);
   expect_int(
       state, "quota_parse_null_secondary",
@@ -43867,7 +43880,45 @@ static void test_chatgpt_quota_parse(test_state *state) {
                  "\"used_percent\":20,\"limit_window_seconds\":3600}}}",
                  &quota, &error),
              CAI_OK);
-  expect_int(state, "quota_wrong_window_hidden", quota.has_five_hour, 0L);
+  expect_int(state, "quota_hourly_present", quota.has_short_window, 1L);
+  expect_int(state, "quota_hourly_duration", quota.short_window_seconds, 3600L);
+  expect_int(state, "quota_hourly_remaining",
+             (long)quota.short_window_remaining_percent, 80L);
+  expect_int(state, "quota_weekly_only_parse",
+             cai_chatgpt_quota_parse_json(
+                 "{\"rate_limit\":{\"primary_window\":{"
+                 "\"used_percent\":25,\"limit_window_seconds\":604800}},"
+                 "\"credits\":{\"balance\":42.5,\"unlimited\":false}}",
+                 &quota, &error),
+             CAI_OK);
+  expect_int(state, "quota_weekly_only", quota.has_weekly, 1L);
+  expect_int(state, "quota_weekly_only_remaining",
+             (long)quota.weekly_remaining_percent, 75L);
+  expect_int(state, "quota_weekly_only_short_absent", quota.has_short_window,
+             0L);
+  expect_int(state, "quota_credits_balance_present", quota.has_credit_balance,
+             1L);
+  expect_int(state, "quota_credits_balance", (long)quota.credit_balance, 42L);
+  expect_int(state, "quota_string_balance_parse",
+             cai_chatgpt_quota_parse_json(
+                 "{\"credits\":{\"balance\":\"17.75\"}}", &quota, &error),
+             CAI_OK);
+  expect_int(state, "quota_string_balance_present", quota.has_credit_balance,
+             1L);
+  expect_int(state, "quota_string_balance", (long)quota.credit_balance, 17L);
+  expect_int(state, "quota_reversed_parse",
+             cai_chatgpt_quota_parse_json(
+                 "{\"rate_limit\":{\"primary_window\":{"
+                 "\"used_percent\":20,\"limit_window_seconds\":604800},"
+                 "\"secondary_window\":{\"used_percent\":40,"
+                 "\"limit_window_seconds\":3600}},"
+                 "\"credits\":{\"balance\":null,\"unlimited\":true}}",
+                 &quota, &error),
+             CAI_OK);
+  expect_int(state, "quota_reversed_weekly", quota.has_weekly, 1L);
+  expect_int(state, "quota_reversed_hourly", quota.short_window_seconds, 3600L);
+  expect_int(state, "quota_unlimited", quota.credits_unlimited, 1L);
+  expect_int(state, "quota_null_balance_hidden", quota.has_credit_balance, 0L);
   expect_int(state, "quota_parse_invalid",
              cai_chatgpt_quota_parse_json("{", &quota, &error),
              CAI_ERR_PROTOCOL);
@@ -43881,7 +43932,8 @@ static void test_chatgpt_quota_http(test_state *state) {
       {"GET /backend-api/wham/usage HTTP/", required, 2U, NULL, 0U, 200, "OK",
        "application/json", NULL,
        "{\"rate_limit\":{\"primary_window\":{\"used_percent\":12,"
-       "\"limit_window_seconds\":18000}}}"}};
+       "\"limit_window_seconds\":604800}},"
+       "\"credits\":{\"balance\":\"28.5\"}}"}};
   http_mock_server server;
   cai_chatgpt_auth auth;
   cai_client_config config;
@@ -43914,8 +43966,13 @@ static void test_chatgpt_quota_http(test_state *state) {
   if (client != NULL) {
     expect_int(state, "quota_http_fetch",
                cai_client_chatgpt_quota(client, &quota, &error), CAI_OK);
-    expect_int(state, "quota_http_five_hour", quota.has_five_hour, 1L);
-    expect_int(state, "quota_http_weekly_absent", quota.has_weekly, 0L);
+    expect_int(state, "quota_http_short_absent", quota.has_short_window, 0L);
+    expect_int(state, "quota_http_weekly", quota.has_weekly, 1L);
+    expect_int(state, "quota_http_weekly_remaining",
+               (long)quota.weekly_remaining_percent, 88L);
+    expect_int(state, "quota_http_credits", quota.has_credit_balance, 1L);
+    expect_int(state, "quota_http_credit_balance", (long)quota.credit_balance,
+               28L);
     cai_client_close(client);
   }
   expect_child_exit(state, "quota_http_mock", server.pid, &server.child_status);

@@ -196,9 +196,7 @@ void cai_cli_status_refresh_branch(cai_cli_status *status,
 
 void cai_cli_status_build(cai_cli_status *status, const char *model,
                           const char *effort, double context_percent,
-                          int has_context, int has_five_hour,
-                          double five_hour_remaining, int has_weekly,
-                          double weekly_remaining,
+                          int has_context, const cai_chatgpt_quota *quota,
                           const cai_agent_goal_snapshot *goal) {
   char safe_model[128];
   char safe_effort[32];
@@ -222,15 +220,29 @@ void cai_cli_status_build(cai_cli_status *status, const char *model,
   status->elements[status->count++] = status->context;
   status->elements[status->count++] = status->directory;
   status->quota[0] = '\0';
-  if (has_weekly && weekly_remaining >= 0.0 && weekly_remaining <= 100.0) {
+  if (quota != NULL && quota->has_weekly &&
+      quota->weekly_remaining_percent >= 0.0 &&
+      quota->weekly_remaining_percent <= 100.0) {
     snprintf(status->quota, sizeof(status->quota), "w %.0f%%",
-             weekly_remaining);
+             quota->weekly_remaining_percent);
   }
-  if (has_five_hour && five_hour_remaining >= 0.0 &&
-      five_hour_remaining <= 100.0) {
+  if (quota != NULL && quota->has_short_window &&
+      quota->short_window_remaining_percent >= 0.0 &&
+      quota->short_window_remaining_percent <= 100.0) {
     n = strlen(status->quota);
-    snprintf(status->quota + n, sizeof(status->quota) - n, "%s5h %.0f%%",
-             n > 0U ? " " : "", five_hour_remaining);
+    if (quota->short_window_seconds % 3600LL == 0LL) {
+      snprintf(status->quota + n, sizeof(status->quota) - n, "%s%lldh %.0f%%",
+               n > 0U ? " " : "", quota->short_window_seconds / 3600LL,
+               quota->short_window_remaining_percent);
+    } else if (quota->short_window_seconds % 60LL == 0LL) {
+      snprintf(status->quota + n, sizeof(status->quota) - n, "%s%lldm %.0f%%",
+               n > 0U ? " " : "", quota->short_window_seconds / 60LL,
+               quota->short_window_remaining_percent);
+    } else {
+      snprintf(status->quota + n, sizeof(status->quota) - n, "%s%llds %.0f%%",
+               n > 0U ? " " : "", quota->short_window_seconds,
+               quota->short_window_remaining_percent);
+    }
   }
   if (status->quota[0] != '\0') {
     status->elements[status->count++] = status->quota;
@@ -247,6 +259,108 @@ void cai_cli_status_build(cai_cli_status *status, const char *model,
              safe_objective);
     status->elements[status->count++] = status->goal;
   }
+}
+
+static int cai_cli_table_row(char *out, size_t capacity, size_t *used,
+                             const char *label, const char *value) {
+  int written =
+      snprintf(out + *used, capacity - *used, "| %s | %s |\n", label, value);
+  if (written < 0 || (size_t)written >= capacity - *used) {
+    return -1;
+  }
+  *used += (size_t)written;
+  return 0;
+}
+
+int cai_cli_status_markdown(char *out, size_t capacity, const char *model,
+                            const char *effort,
+                            const cai_agent_runtime_metrics *metrics,
+                            const cai_chatgpt_quota *quota) {
+  char safe_model[128];
+  char safe_effort[32];
+  char value[160];
+  size_t used;
+  int written;
+  size_t i;
+  if (out == NULL || capacity == 0U || model == NULL || effort == NULL) {
+    return -1;
+  }
+  written = snprintf(out, capacity,
+                     "## Status\n\n| Metric | Value |\n| --- | --- |\n");
+  if (written < 0 || (size_t)written >= capacity) {
+    return -1;
+  }
+  used = (size_t)written;
+  cai_cli_status_copy(safe_model, sizeof(safe_model), model);
+  cai_cli_status_copy(safe_effort, sizeof(safe_effort), effort);
+  for (i = 0U; safe_model[i] != '\0'; i++) {
+    if (safe_model[i] == '|')
+      safe_model[i] = ' ';
+  }
+  for (i = 0U; safe_effort[i] != '\0'; i++) {
+    if (safe_effort[i] == '|')
+      safe_effort[i] = ' ';
+  }
+  if (cai_cli_table_row(out, capacity, &used, "Model", safe_model) != 0 ||
+      cai_cli_table_row(out, capacity, &used, "Reasoning effort",
+                        safe_effort) != 0) {
+    return -1;
+  }
+  if (metrics != NULL && metrics->context_window_tokens > 0LL) {
+    snprintf(value, sizeof(value), "%lld tokens",
+             metrics->context_window_tokens);
+    if (cai_cli_table_row(out, capacity, &used, "Context window", value) != 0)
+      return -1;
+    if (metrics->has_context_usage) {
+      snprintf(value, sizeof(value), "%lld tokens (%.0f%%)",
+               metrics->context_used_tokens,
+               (double)metrics->context_used_tokens * 100.0 /
+                   (double)metrics->context_window_tokens);
+      if (cai_cli_table_row(out, capacity, &used, "Context used", value) != 0)
+        return -1;
+    }
+  }
+  if (metrics != NULL && metrics->session_usage.estimated_spend_usd > 0.0) {
+    snprintf(value, sizeof(value), "$%.4f USD (API equivalent)",
+             metrics->session_usage.estimated_spend_usd);
+    if (cai_cli_table_row(out, capacity, &used, "Cost estimate", value) != 0)
+      return -1;
+  }
+  if (quota != NULL && quota->has_weekly) {
+    snprintf(value, sizeof(value), "%.0f%% remaining",
+             quota->weekly_remaining_percent);
+    if (cai_cli_table_row(out, capacity, &used, "Weekly limit", value) != 0)
+      return -1;
+  }
+  if (quota != NULL && quota->has_short_window) {
+    if (quota->short_window_seconds % 3600LL == 0LL) {
+      snprintf(value, sizeof(value), "%lld-hour limit",
+               quota->short_window_seconds / 3600LL);
+    } else if (quota->short_window_seconds % 60LL == 0LL) {
+      snprintf(value, sizeof(value), "%lld-minute limit",
+               quota->short_window_seconds / 60LL);
+    } else {
+      snprintf(value, sizeof(value), "%lld-second limit",
+               quota->short_window_seconds);
+    }
+    {
+      char remaining[64];
+      snprintf(remaining, sizeof(remaining), "%.0f%% remaining",
+               quota->short_window_remaining_percent);
+      if (cai_cli_table_row(out, capacity, &used, value, remaining) != 0)
+        return -1;
+    }
+  }
+  if (quota != NULL && quota->credits_unlimited) {
+    if (cai_cli_table_row(out, capacity, &used, "Credits left", "Unlimited") !=
+        0)
+      return -1;
+  } else if (quota != NULL && quota->has_credit_balance) {
+    snprintf(value, sizeof(value), "%.2f", quota->credit_balance);
+    if (cai_cli_table_row(out, capacity, &used, "Credits left", value) != 0)
+      return -1;
+  }
+  return 0;
 }
 
 int cai_cli_status_apply(sl_t *sl, const cai_cli_status *status) {

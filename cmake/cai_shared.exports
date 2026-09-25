@@ -42,6 +42,7 @@ cai_agent_runtime_export_markdown
 cai_agent_runtime_export_markdown_file
 cai_agent_runtime_finish_review
 cai_agent_runtime_get_goal
+cai_agent_runtime_get_metrics
 cai_agent_runtime_get_settings
 cai_agent_runtime_model
 cai_agent_runtime_open

@@ -814,6 +814,17 @@ int cai_agent_runtime_state(cai_agent_runtime *runtime,
 /** Last completed response's context use; unavailable until usage is known. */
 int cai_agent_runtime_context_percent(cai_agent_runtime *runtime, double *out,
                                       int *available, cai_error *error);
+/** Last published context and cumulative session usage. Values are copied at
+ * safe boundaries; context_used_tokens is unavailable until usage is known. */
+typedef struct cai_agent_runtime_metrics {
+  long long context_window_tokens;
+  long long context_used_tokens;
+  int has_context_usage;
+  cai_usage_accounting session_usage;
+} cai_agent_runtime_metrics;
+int cai_agent_runtime_get_metrics(cai_agent_runtime *runtime,
+                                  cai_agent_runtime_metrics *out,
+                                  cai_error *error);
 /** Return the runtime's stable session identifier, borrowed until close. */
 const char *cai_agent_runtime_session_id(const cai_agent_runtime *runtime);
 /**

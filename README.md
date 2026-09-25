@@ -119,12 +119,16 @@ arrive. The busy indicator does not invent reasoning text.
 The softline prompt is `> `. Its status bar shows model and reasoning effort,
 the last measured context percentage, a shortened workspace path, available
 ChatGPT subscription quota remaining, the Git branch when present, and an
-active goal. Quota appears as `w 72% 5h 48%` when both weekly and five-hour
-windows are available; missing windows are hidden. `libcai` exposes these
-windows through `cai_client_chatgpt_quota` in `<cai/quota.h>`. The quota query
-uses the ChatGPT subscription backend, so the CLI does not show API-priced USD
-estimates. The context percentage comes from completed response usage and is
-unknown until usage is available.
+active goal. Quota appears as `w 72%` when only a weekly window is available,
+or `w 72% 1h 48%` when the backend also reports an hourly window. Windows are
+identified by their returned duration. `libcai` exposes windows and available
+credit balance through `cai_client_chatgpt_quota` in `<cai/quota.h>`. The status
+bar fetches quota at startup and after completed turns, at most once every five
+minutes automatically. `/status` fetches quota on every invocation, updates the
+bar, and renders a Markdown table with model, effort, available context
+and usage, quota, and credits. Its cost estimate, when available, uses API
+prices as an equivalent estimate, not a ChatGPT subscription charge. The
+context percentage is unknown until response usage is available.
 The package target writes `dist/cai-cli-<version>-x86_64-linux-musl.tar.gz`.
 Its relocatable layout includes `bin/cai`, `share/man/man1/cai.1`, and
 `share/doc/libcai/{README.md,LICENSE}` plus the SDK's model metadata guide.

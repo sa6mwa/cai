@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef PATH_MAX
@@ -50,6 +51,8 @@ typedef struct cli_state {
   int exit_requested;
   int was_busy;
   cai_chatgpt_quota quota;
+  struct timespec quota_last_attempt;
+  int quota_attempted;
   cai_cli_status status;
   char workspace[PATH_MAX];
 } cli_state;
@@ -61,6 +64,41 @@ static void cli_print_error(const char *operation, const cai_error *error) {
   if (error != NULL && error->detail != NULL) {
     fprintf(stderr, "cai: detail: %s\n", error->detail);
   }
+}
+
+static int cli_quota_due(int attempted, struct timespec last_attempt,
+                         struct timespec now, int force) {
+  time_t elapsed;
+  if (force || !attempted || now.tv_sec < last_attempt.tv_sec)
+    return 1;
+  elapsed = now.tv_sec - last_attempt.tv_sec;
+  return elapsed > 300 ||
+         (elapsed == 300 && now.tv_nsec >= last_attempt.tv_nsec);
+}
+
+static void cli_refresh_quota(cli_state *state, int force) {
+  struct timespec now;
+  cai_error optional_error;
+  cai_chatgpt_quota fresh;
+  if (state->quota_client == NULL ||
+      clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+    return;
+  }
+  if (!cli_quota_due(state->quota_attempted, state->quota_last_attempt, now,
+                     force)) {
+    return;
+  }
+  state->quota_attempted = 1;
+  state->quota_last_attempt = now;
+  memset(&fresh, 0, sizeof(fresh));
+  cai_error_init(&optional_error);
+  if (cai_client_chatgpt_quota(state->quota_client, &fresh, &optional_error) ==
+      CAI_OK) {
+    state->quota = fresh;
+  } else {
+    memset(&state->quota, 0, sizeof(state->quota));
+  }
+  cai_error_cleanup(&optional_error);
 }
 
 static int cli_sink(void *context, const char *bytes, size_t count) {
@@ -233,13 +271,7 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
          run_state == CAI_AGENT_DISPATCHING_TOOL;
   if (state->was_busy && !busy) {
     cai_cli_status_refresh_branch(&state->status, state->workspace);
-    memset(&state->quota, 0, sizeof(state->quota));
-    cai_error_init(&optional_error);
-    if (state->quota_client != NULL) {
-      (void)cai_client_chatgpt_quota(state->quota_client, &state->quota,
-                                     &optional_error);
-    }
-    cai_error_cleanup(&optional_error);
+    cli_refresh_quota(state, 0);
   }
   state->was_busy = busy;
   model = state->options.model;
@@ -265,10 +297,8 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
   if (rc != CAI_OK) {
     return rc;
   }
-  cai_cli_status_build(
-      &state->status, model, effort, context_percent, has_context,
-      state->quota.has_five_hour, state->quota.five_hour_remaining_percent,
-      state->quota.has_weekly, state->quota.weekly_remaining_percent, &goal);
+  cai_cli_status_build(&state->status, model, effort, context_percent,
+                       has_context, &state->quota, &goal);
   if (sl_set_status_busy(state->sl, busy) != SL_OK ||
       sl_set_status_spinner(state->sl, busy) != SL_OK ||
       sl_set_status_message(state->sl, NULL) != SL_OK ||
@@ -513,6 +543,35 @@ static int cli_handle_command(cli_state *state, const char *line,
   if (strcmp(line, "/new") == 0) {
     return cli_switch_session(state, NULL, 1, error);
   }
+  if (strcmp(line, "/status") == 0) {
+    cai_agent_runtime_settings settings;
+    cai_agent_runtime_metrics metrics;
+    cai_error optional_error;
+    char markdown[2048];
+    const char *model = state->options.model;
+    const char *effort = state->options.reasoning_effort;
+    memset(&settings, 0, sizeof(settings));
+    cai_error_init(&optional_error);
+    if (cai_agent_runtime_get_settings(state->runtime, &settings, NULL,
+                                       &optional_error) == CAI_OK) {
+      if (settings.model != NULL)
+        model = settings.model;
+      if (settings.reasoning_effort != NULL)
+        effort = settings.reasoning_effort;
+    }
+    cai_error_cleanup(&optional_error);
+    rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
+    if (rc != CAI_OK)
+      return rc;
+    cli_refresh_quota(state, 1);
+    if (cai_cli_status_markdown(markdown, sizeof(markdown), model, effort,
+                                &metrics, &state->quota) != 0 ||
+        cli_text(state, markdown, strlen(markdown)) != 0 ||
+        cli_finish_response(state) != 0) {
+      return CAI_ERR_TRANSPORT;
+    }
+    return CAI_OK;
+  }
   if (strcmp(line, "/resume") == 0) {
     return cli_list_sessions(state, error);
   }
@@ -640,7 +699,7 @@ int main(int argc, char **argv) {
     cli_print_error("open client", &error);
     goto cleanup;
   }
-  if (state.interactive) {
+  {
     cai_error quota_error;
     cai_client_config quota_config;
     cai_error_init(&quota_error);
@@ -649,8 +708,8 @@ int main(int argc, char **argv) {
     quota_config.timeout_ms = 1500L;
     if (cai_client_open(&quota_config, &state.quota_client, &quota_error) ==
         CAI_OK) {
-      (void)cai_client_chatgpt_quota(state.quota_client, &state.quota,
-                                     &quota_error);
+      if (state.interactive)
+        cli_refresh_quota(&state, 0);
     }
     cai_error_cleanup(&quota_error);
   }
@@ -661,8 +720,10 @@ int main(int argc, char **argv) {
     goto cleanup;
   }
   if (state.interactive &&
-      cli_write(&state, "\nCai Smith. Enter sends; /resume lists sessions; "
-                        "/new starts fresh; /quit exits.\n") != 0) {
+      cli_write(&state,
+                "\nCai Smith. Enter sends; /resume lists sessions; "
+                "/new starts fresh; /status shows usage; /quit exits.\n") !=
+          0) {
     goto cleanup;
   }
   while (!state.exit_requested) {
