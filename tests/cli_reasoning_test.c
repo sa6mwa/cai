@@ -53,10 +53,25 @@ int main(void) {
   if (state.renderer->set_sink(state.renderer, &sink) != MDF_OK) {
     return 1;
   }
+  strcpy(state.reasoning_summary_raw, "Previous turn");
+  state.reasoning_summary_length = strlen(state.reasoning_summary_raw);
+  event.type = CAI_AGENT_EVENT_RUN_STARTED;
+  rc = cli_event(&state, &event, NULL);
+  if (state.reasoning_summary_length != 0U)
+    return 1;
   event.type = CAI_AGENT_EVENT_REASONING_SUMMARY;
   event.data = "Actual provider ";
   event.data_length = strlen(event.data);
-  rc = cli_event(&state, &event, NULL);
+  if (rc == CAI_OK)
+    rc = cli_event(&state, &event, NULL);
+  event.type = CAI_AGENT_EVENT_RUN_STARTED;
+  event.parent_tool_call_id = "child-tool";
+  if (rc == CAI_OK)
+    rc = cli_event(&state, &event, NULL);
+  if (strcmp(state.reasoning_summary_raw, "Actual provider ") != 0)
+    return 1;
+  event.parent_tool_call_id = NULL;
+  event.type = CAI_AGENT_EVENT_REASONING_SUMMARY;
   event.data = "summary";
   event.data_length = strlen(event.data);
   if (rc == CAI_OK) {
@@ -68,6 +83,12 @@ int main(void) {
   if (rc == CAI_OK) {
     rc = cli_event(&state, &event, NULL);
   }
+  state.timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+  if (state.timer_fd < 0 || cli_timer_wakeup(state.sl, NULL, &state) != SL_OK) {
+    return 1;
+  }
+  close(state.timer_fd);
+  state.timer_fd = -1;
   if (sl_output_stream_end(state.sl) != SL_OK) {
     rc = CAI_ERR_TRANSPORT;
   }
@@ -79,7 +100,8 @@ int main(void) {
   close(saved_stdout);
   count = read(pipe_fd[0], output, sizeof(output) - 1U);
   close(pipe_fd[0]);
-  if (count < 0 || rc != CAI_OK || state.reasoning_open) {
+  if (count < 0 || rc != CAI_OK || state.reasoning_open ||
+      strcmp(state.reasoning_summary_raw, "Actual provider summary") != 0) {
     return 1;
   }
   output[count] = '\0';

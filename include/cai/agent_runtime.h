@@ -821,6 +821,14 @@ typedef struct cai_agent_runtime_metrics {
   long long context_used_tokens;
   int has_context_usage;
   cai_usage_accounting session_usage;
+  /** Monotonic elapsed time for the active turn, if turn_active is nonzero. */
+  int turn_active;
+  unsigned long long turn_elapsed_ms;
+  /** Most recently settled turn, including failed or cancelled turns. */
+  int has_last_turn;
+  unsigned long long last_turn_duration_ms;
+  /** UTC Unix epoch seconds when the last turn settled. */
+  long long last_turn_finished_unix_seconds;
 } cai_agent_runtime_metrics;
 int cai_agent_runtime_get_metrics(cai_agent_runtime *runtime,
                                   cai_agent_runtime_metrics *out,

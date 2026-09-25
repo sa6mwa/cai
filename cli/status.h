@@ -29,6 +29,10 @@ int cai_cli_status_markdown(char *out, size_t capacity, const char *model,
                             const char *effort,
                             const cai_agent_runtime_metrics *metrics,
                             const cai_chatgpt_quota *quota);
+/** Format the active summary or most recent turn duration for softline. */
+int cai_cli_turn_status_message(char *out, size_t capacity,
+                                const char *reasoning_summary,
+                                const cai_agent_runtime_metrics *metrics);
 int cai_cli_status_apply(sl_t *sl, const cai_cli_status *status);
 
 #endif

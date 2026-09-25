@@ -29452,6 +29452,13 @@ static void test_agent_runtime_semantic_events_common(test_state *state,
                cai_agent_runtime_submit(runtime, "stream list error tool turn",
                                         &error),
                CAI_OK);
+    expect_int(state, "runtime_semantic_timing_after_submit",
+               cai_agent_runtime_get_metrics(runtime, &metrics, &error),
+               CAI_OK);
+    if (!metrics.turn_active && !metrics.has_last_turn) {
+      test_fail(state, "runtime_semantic_timing_started",
+                "accepted turn has neither active nor completed timing");
+    }
     if (poll_only) {
       expect_int(state, "runtime_poll_only_queue",
                  cai_agent_runtime_submit_queued(
@@ -29485,6 +29492,14 @@ static void test_agent_runtime_semantic_events_common(test_state *state,
                CAI_OK);
     expect_int(state, "runtime_semantic_metrics_context_available",
                metrics.has_context_usage, 1L);
+    expect_int(state, "runtime_semantic_turn_finished", metrics.turn_active,
+               0L);
+    expect_int(state, "runtime_semantic_turn_duration_recorded",
+               metrics.has_last_turn, 1L);
+    if (metrics.last_turn_finished_unix_seconds <= 0LL) {
+      test_fail(state, "runtime_semantic_turn_timestamp",
+                "expected wall-clock completion timestamp");
+    }
     if (metrics.context_window_tokens <= 0LL ||
         metrics.context_used_tokens <= 0LL ||
         metrics.session_usage.usage.total_tokens <= 0LL) {

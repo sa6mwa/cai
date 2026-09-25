@@ -70,8 +70,9 @@ int main(void) {
 
   if (cai_cli_parse_options(1, defaults, &options) != 1 ||
       strcmp(options.model, CAI_MODEL_GPT_6_LUNA) != 0 ||
-      strcmp(options.reasoning_effort, "medium") != 0 || options.new_session ||
-      !options.image_generation || !options.terminal) {
+      strcmp(options.reasoning_effort, "medium") != 0 ||
+      strcmp(options.reasoning_summary, "concise") != 0 ||
+      options.new_session || !options.image_generation || !options.terminal) {
     fputs("CLI defaults failed\n", stderr);
     return 1;
   }

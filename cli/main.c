@@ -14,9 +14,11 @@
 #include <errno.h>
 #include <limits.h>
 #include <poll.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/timerfd.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -42,7 +44,11 @@ typedef struct cli_state {
   size_t session_count;
   size_t session_capacity;
   sl_watch_id_t watch_id;
+  sl_watch_id_t timer_watch_id;
   int has_watch;
+  int has_timer_watch;
+  int timer_fd;
+  int timer_armed;
   int interactive;
   int width;
   int response_open;
@@ -54,6 +60,8 @@ typedef struct cli_state {
   struct timespec quota_last_attempt;
   int quota_attempted;
   cai_cli_status status;
+  char reasoning_summary_raw[512];
+  size_t reasoning_summary_length;
   char workspace[PATH_MAX];
 } cli_state;
 
@@ -186,6 +194,29 @@ static int cli_prompt(cli_state *state, const char *text, int history) {
                                                                         : -1;
 }
 
+static void cli_reasoning_append(cli_state *state, const char *data,
+                                 size_t length) {
+  size_t capacity = sizeof(state->reasoning_summary_raw) - 1U;
+  size_t shift;
+  size_t i;
+  if (length >= capacity) {
+    data += length - capacity;
+    length = capacity;
+    state->reasoning_summary_length = 0U;
+  } else if (state->reasoning_summary_length + length > capacity) {
+    shift = state->reasoning_summary_length + length - capacity;
+    memmove(state->reasoning_summary_raw, state->reasoning_summary_raw + shift,
+            state->reasoning_summary_length - shift);
+    state->reasoning_summary_length -= shift;
+  }
+  for (i = 0U; i < length; i++) {
+    state->reasoning_summary_raw[state->reasoning_summary_length + i] =
+        data[i] == '\0' ? ' ' : data[i];
+  }
+  state->reasoning_summary_length += length;
+  state->reasoning_summary_raw[state->reasoning_summary_length] = '\0';
+}
+
 static int cli_event(void *context, const cai_agent_runtime_event *event,
                      cai_error *error) {
   cli_state *state;
@@ -194,6 +225,11 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
 
   (void)error;
   state = (cli_state *)context;
+  if (event->type == CAI_AGENT_EVENT_RUN_STARTED &&
+      event->parent_tool_call_id == NULL) {
+    state->reasoning_summary_length = 0U;
+    state->reasoning_summary_raw[0] = '\0';
+  }
   if (event->type == CAI_AGENT_EVENT_TEXT_DELTA) {
     return cli_text(state, event->data, event->data_length) == 0
                ? CAI_OK
@@ -222,6 +258,8 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     }
   } else if (event->type == CAI_AGENT_EVENT_REASONING_SUMMARY &&
              event->data != NULL && event->data_length > 0U) {
+    if (event->parent_tool_call_id == NULL)
+      cli_reasoning_append(state, event->data, event->data_length);
     if (cli_geometry(state) != 0 || cli_finish_response(state) != 0) {
       return CAI_ERR_TRANSPORT;
     }
@@ -253,7 +291,10 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
   cai_agent_run_state run_state;
   cai_agent_runtime_settings settings;
   cai_agent_goal_snapshot goal;
+  cai_agent_runtime_metrics metrics;
   cai_error optional_error;
+  struct itimerspec timer_spec;
+  char turn_message[640];
   double context_percent;
   int has_context;
   const char *model;
@@ -293,6 +334,22 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
   if (rc != CAI_OK) {
     return rc;
   }
+  rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (state->timer_fd >= 0 && state->timer_armed != metrics.turn_active) {
+    memset(&timer_spec, 0, sizeof(timer_spec));
+    if (metrics.turn_active) {
+      timer_spec.it_value.tv_sec = 1;
+      timer_spec.it_interval.tv_sec = 1;
+    }
+    if (timerfd_settime(state->timer_fd, 0, &timer_spec, NULL) != 0)
+      return CAI_ERR_TRANSPORT;
+    state->timer_armed = metrics.turn_active;
+  }
+  if (cai_cli_turn_status_message(turn_message, sizeof(turn_message),
+                                  state->reasoning_summary_raw, &metrics) != 0)
+    return CAI_ERR_TRANSPORT;
   rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
   if (rc != CAI_OK) {
     return rc;
@@ -301,11 +358,33 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
                        has_context, &state->quota, &goal);
   if (sl_set_status_busy(state->sl, busy) != SL_OK ||
       sl_set_status_spinner(state->sl, busy) != SL_OK ||
-      sl_set_status_message(state->sl, NULL) != SL_OK ||
+      sl_set_status_message(state->sl, turn_message) != SL_OK ||
       cai_cli_status_apply(state->sl, &state->status) != 0) {
     return CAI_ERR_TRANSPORT;
   }
   return CAI_OK;
+}
+
+static int cli_timer_wakeup(sl_t *sl, const sl_watch_event_t *event,
+                            void *context) {
+  cli_state *state = (cli_state *)context;
+  uint64_t expirations;
+  cai_error error;
+  ssize_t read_count;
+  int rc;
+  (void)sl;
+  (void)event;
+  read_count = read(state->timer_fd, &expirations, sizeof(expirations));
+  if (read_count < 0 && (errno == EAGAIN || errno == EINTR))
+    return SL_OK;
+  if (read_count != (ssize_t)sizeof(expirations))
+    return SL_ERROR_IO;
+  cai_error_init(&error);
+  rc = cli_sync_status(state, &error);
+  if (rc != CAI_OK)
+    cli_print_error("turn timer", &error);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
 }
 
 static int cli_wakeup(sl_t *sl, const sl_watch_event_t *event, void *context) {
@@ -422,12 +501,20 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
 }
 
 static void cli_close_runtime(cli_state *state) {
+  if (state->timer_fd >= 0 && state->timer_armed) {
+    struct itimerspec stopped;
+    memset(&stopped, 0, sizeof(stopped));
+    (void)timerfd_settime(state->timer_fd, 0, &stopped, NULL);
+    state->timer_armed = 0;
+  }
   if (state->has_watch) {
     (void)sl_watch_remove(state->sl, state->watch_id);
     state->has_watch = 0;
   }
   cai_agent_runtime_close(state->runtime);
   state->runtime = NULL;
+  state->reasoning_summary_length = 0U;
+  state->reasoning_summary_raw[0] = '\0';
 }
 
 static int cli_visit_session(void *context, const char *session_id,
@@ -633,6 +720,7 @@ int main(int argc, char **argv) {
   int result;
 
   memset(&state, 0, sizeof(state));
+  state.timer_fd = -1;
   cai_error_init(&error);
   parsed = cai_cli_parse_options(argc, argv, &state.options);
   if (parsed <= 0)
@@ -667,8 +755,10 @@ int main(int argc, char **argv) {
   mdf_config.margin_left = state.width >= 5 ? 2 : 0;
   mdf_config.boring = !state.interactive;
   result = 1;
-  if ((state.interactive && (sl_set_bounds(state.sl, 0, 0, 0, 0) != SL_OK ||
-                             sl_set_statusline(state.sl, 1, 0) != SL_OK)) ||
+  if ((state.interactive &&
+       (sl_set_bounds(state.sl, 0, 0, 0, 0) != SL_OK ||
+        sl_set_statusline(state.sl, 1, 0) != SL_OK ||
+        sl_set_status_message_prefix(state.sl, "") != SL_OK)) ||
       sl_output_stream_begin(state.sl) != SL_OK ||
       mdf_create(MDF_FORMAT_ANSI, &mdf_config, &state.renderer) != MDF_OK) {
     fputs("cai: failed to initialize terminal renderers\n", stderr);
@@ -679,6 +769,19 @@ int main(int argc, char **argv) {
   if (state.renderer->set_sink(state.renderer, &sink) != MDF_OK) {
     fputs("cai: failed to connect Markdown renderer\n", stderr);
     goto cleanup;
+  }
+  if (state.interactive) {
+    state.timer_fd =
+        timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+    if (state.timer_fd < 0 ||
+        sl_watch_add(state.sl, state.timer_fd,
+                     SL_WATCH_READ | SL_WATCH_ERROR | SL_WATCH_HANGUP,
+                     cli_timer_wakeup, &state,
+                     &state.timer_watch_id) != SL_OK) {
+      fputs("cai: failed to start turn status timer\n", stderr);
+      goto cleanup;
+    }
+    state.has_timer_watch = 1;
   }
   rc = cai_agent_local_session_store_open(NULL, &state.store, &error);
   if (rc != CAI_OK) {
@@ -782,6 +885,10 @@ int main(int argc, char **argv) {
 cleanup:
   if (state.runtime != NULL)
     cli_close_runtime(&state);
+  if (state.has_timer_watch)
+    (void)sl_watch_remove(state.sl, state.timer_watch_id);
+  if (state.timer_fd >= 0)
+    close(state.timer_fd);
   if (state.client != NULL)
     state.client->close(state.client);
   if (state.quota_client != NULL)

@@ -72,7 +72,7 @@ Set provider reasoning summary mode:
 or
 .BR detailed .
 The default is
-.BR auto .
+.BR concise .
 .TP
 .BI \-\-review-model " ID"
 Select the model for review children.
@@ -151,6 +151,16 @@ accounts and any shorter window returned by the backend. Quota is fetched at
 startup and after completed turns, with automatic requests limited to one
 attempt every five minutes.
 Unavailable values are hidden.
+The message above it shows the provider's concise reasoning summary and the
+active turn's elapsed time. Before a summary arrives it shows
+.BR Working .
+After the turn settles it shows
+.B Worked for
+followed by its duration and a local
+.I ddhhmm
+date-time group (day of month, 24-hour clock, minute). Durations show minutes
+and seconds below an hour, hours and minutes below a day, and days, hours, and
+minutes thereafter.
 .SH FILES
 .TP
 .I ~/.codex/auth.json

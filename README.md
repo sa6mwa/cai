@@ -114,8 +114,13 @@ ChatGPT auth file. Auth refresh may update that file. It starts with
 `gpt-6-luna` and medium reasoning; `-m`/`--model` and
 `-r`/`--reasoning-effort` override those defaults. `--help` lists the other
 user-facing model, review, instructions, skills, image, terminal, and session
-options. Provider-issued reasoning summaries stream in the terminal as they
-arrive. The busy indicator does not invent reasoning text.
+options. Cai requests concise provider reasoning summaries by default; the
+`--reasoning-summary` flag overrides that choice. Provider-issued summaries
+stream in the terminal as they arrive and appear above the status line with
+the active turn's elapsed time. Before a summary arrives, the bar says
+`Working` with elapsed time. At completion it shows `Worked for 13m 32s -
+252243`, where the final six digits are the local day, hour, and minute.
+The live timer advances while the turn is active and stops when it settles.
 The softline prompt is `> `. Its status bar shows model and reasoning effort,
 the last measured context percentage, a shortened workspace path, available
 ChatGPT subscription quota remaining, the Git branch when present, and an

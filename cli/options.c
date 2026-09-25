@@ -10,7 +10,7 @@ void cai_cli_options_init(cai_cli_options *options) {
   memset(options, 0, sizeof(*options));
   options->model = CAI_MODEL_GPT_6_LUNA;
   options->reasoning_effort = "medium";
-  options->reasoning_summary = "auto";
+  options->reasoning_summary = "concise";
   options->image_generation = 1;
   options->terminal = 1;
   options->review_subagent = 1;
@@ -30,7 +30,8 @@ static void cai_cli_help(void) {
         "~/.codex/auth.json)\n"
         "  -m, --model ID               Model (default gpt-6-luna)\n"
         "  -r, --reasoning-effort LEVEL none|low|medium|high|xhigh|max\n"
-        "      --reasoning-summary MODE none|auto|concise|detailed\n",
+        "      --reasoning-summary MODE none|auto|concise|detailed (default "
+        "concise)\n",
         stdout);
   fputs("      --review-model ID        Model for review children\n"
         "      --review-reasoning-effort LEVEL\n"

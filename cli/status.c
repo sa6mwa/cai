@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -361,6 +362,67 @@ int cai_cli_status_markdown(char *out, size_t capacity, const char *model,
       return -1;
   }
   return 0;
+}
+
+int cai_cli_turn_status_message(char *out, size_t capacity,
+                                const char *reasoning_summary,
+                                const cai_agent_runtime_metrics *metrics) {
+  unsigned long long seconds;
+  unsigned long long minutes;
+  unsigned long long hours;
+  unsigned long long days;
+  char duration[64];
+  char summary[512];
+  struct tm local_time;
+  time_t finished;
+  int written;
+  if (out == NULL || capacity == 0U || metrics == NULL)
+    return -1;
+  out[0] = '\0';
+  if (!metrics->turn_active && !metrics->has_last_turn)
+    return 0;
+  seconds = (metrics->turn_active ? metrics->turn_elapsed_ms
+                                  : metrics->last_turn_duration_ms) /
+            1000ULL;
+  days = seconds / 86400ULL;
+  hours = (seconds / 3600ULL) % 24ULL;
+  minutes = (seconds / 60ULL) % 60ULL;
+  if (days > 0ULL) {
+    written = snprintf(duration, sizeof(duration), "%llud %lluh %llum", days,
+                       hours, minutes);
+  } else if (seconds >= 3600ULL) {
+    written =
+        snprintf(duration, sizeof(duration), "%lluh %llum", hours, minutes);
+  } else {
+    written = snprintf(duration, sizeof(duration), "%llum %llus", minutes,
+                       seconds % 60ULL);
+  }
+  if (written < 0 || (size_t)written >= sizeof(duration))
+    return -1;
+  if (metrics->turn_active) {
+    size_t read_at;
+    size_t write_at = 0U;
+    cai_cli_status_copy(summary, sizeof(summary), reasoning_summary);
+    for (read_at = 0U; summary[read_at] != '\0'; read_at++) {
+      if (summary[read_at] == ' ' &&
+          (write_at == 0U || summary[write_at - 1U] == ' '))
+        continue;
+      summary[write_at++] = summary[read_at];
+    }
+    if (write_at > 0U && summary[write_at - 1U] == ' ')
+      write_at--;
+    summary[write_at] = '\0';
+    written = snprintf(out, capacity, "%s (%s)",
+                       summary[0] != '\0' ? summary : "Working", duration);
+  } else {
+    finished = (time_t)metrics->last_turn_finished_unix_seconds;
+    if (localtime_r(&finished, &local_time) == NULL)
+      return -1;
+    written =
+        snprintf(out, capacity, "Worked for %s - %02d%02d%02d", duration,
+                 local_time.tm_mday, local_time.tm_hour, local_time.tm_min);
+  }
+  return written < 0 || (size_t)written >= capacity ? -1 : 0;
 }
 
 int cai_cli_status_apply(sl_t *sl, const cai_cli_status *status) {

@@ -527,6 +527,11 @@ struct cai_agent_runtime {
   double context_projection_percent;
   int context_projection_available;
   cai_agent_runtime_metrics metrics_projection;
+  struct timespec turn_started_monotonic;
+  int turn_timing_active;
+  int has_last_turn_timing;
+  unsigned long long last_turn_duration_ms;
+  long long last_turn_finished_unix_seconds;
   char *workspace_directory;
   char *session_scope;
   char *session_id;
@@ -2878,6 +2883,46 @@ static int cai_runtime_record_usage_limited_goal(cai_agent_runtime *runtime,
   return CAI_OK;
 }
 
+static unsigned long long cai_runtime_elapsed_ms(struct timespec start,
+                                                 struct timespec end) {
+  unsigned long long seconds;
+  long nanoseconds;
+  if (end.tv_sec < start.tv_sec ||
+      (end.tv_sec == start.tv_sec && end.tv_nsec < start.tv_nsec)) {
+    return 0ULL;
+  }
+  seconds = (unsigned long long)(end.tv_sec - start.tv_sec);
+  nanoseconds = end.tv_nsec - start.tv_nsec;
+  if (nanoseconds < 0L) {
+    seconds--;
+    nanoseconds += 1000000000L;
+  }
+  return seconds * 1000ULL + (unsigned long long)(nanoseconds / 1000000L);
+}
+
+/* Both helpers run while runtime->lock is held. */
+static void cai_runtime_turn_start_locked(cai_agent_runtime *runtime) {
+  if (clock_gettime(CLOCK_MONOTONIC, &runtime->turn_started_monotonic) == 0) {
+    runtime->turn_timing_active = 1;
+  }
+}
+
+static void cai_runtime_turn_finish_locked(cai_agent_runtime *runtime) {
+  struct timespec ended;
+  time_t wall_time;
+  if (!runtime->turn_timing_active ||
+      clock_gettime(CLOCK_MONOTONIC, &ended) != 0) {
+    return;
+  }
+  runtime->last_turn_duration_ms =
+      cai_runtime_elapsed_ms(runtime->turn_started_monotonic, ended);
+  wall_time = time(NULL);
+  runtime->last_turn_finished_unix_seconds =
+      wall_time == (time_t)-1 ? 0LL : (long long)wall_time;
+  runtime->has_last_turn_timing = 1;
+  runtime->turn_timing_active = 0;
+}
+
 /* Called only by the worker, or during open before the worker starts.  The
  * runtime lock publishes a fully copied projection for owner-thread polling;
  * callers of get_goal never read the concurrently mutable session object. */
@@ -4613,6 +4658,7 @@ static void *cai_runtime_worker(void *context) {
   if (rc != CAI_OK) {
     pthread_mutex_lock(&runtime->lock);
     runtime->state = CAI_AGENT_FAILED;
+    cai_runtime_turn_finish_locked(runtime);
     if (runtime->event_callback != NULL &&
         cai_runtime_enqueue_locked(
             runtime, CAI_AGENT_EVENT_RUN_FAILED,
@@ -4675,6 +4721,7 @@ static void *cai_runtime_worker(void *context) {
     if (rc != CAI_OK) {
       pthread_mutex_lock(&runtime->lock);
       runtime->state = CAI_AGENT_FAILED;
+      cai_runtime_turn_finish_locked(runtime);
       if (runtime->event_callback != NULL &&
           cai_runtime_enqueue_locked(
               runtime, CAI_AGENT_EVENT_RUN_FAILED,
@@ -4708,6 +4755,7 @@ static void *cai_runtime_worker(void *context) {
     }
     if (input != NULL && input->queued_turn) {
       runtime->state = CAI_AGENT_SAMPLING;
+      cai_runtime_turn_start_locked(runtime);
       runtime->accepting_steering = 1;
       rc = cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_STARTED,
                                       input->text, strlen(input->text), NULL,
@@ -4757,6 +4805,7 @@ static void *cai_runtime_worker(void *context) {
       runtime->turn_cancel_requested = 0;
       runtime->turn_cancel_armed = 0;
       runtime->state = CAI_AGENT_FAILED;
+      cai_runtime_turn_finish_locked(runtime);
       if (runtime->event_callback != NULL &&
           cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_FAILED,
                                      message, sizeof(message) - 1U, NULL, NULL,
@@ -4928,6 +4977,7 @@ static void *cai_runtime_worker(void *context) {
     cai_error_cleanup(&settings_error);
     pthread_mutex_lock(&runtime->lock);
     runtime->accepting_steering = 0;
+    cai_runtime_turn_finish_locked(runtime);
     if (runtime->turn_cancel_requested && rc == CAI_ERR_CANCELLED) {
       runtime->state = CAI_AGENT_CANCELLED;
       if (runtime->event_callback != NULL &&
@@ -6843,6 +6893,9 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
   }
   if (event_node != NULL) {
     cai_runtime_append_event_node_locked(runtime, event_node);
+  }
+  if (activated && kind == CAI_RUNTIME_INPUT_TURN) {
+    cai_runtime_turn_start_locked(runtime);
   }
   node->queued_turn = kind == CAI_RUNTIME_INPUT_QUEUED_TURN;
   node->counts_toward_turn_limit = node->queued_turn;
@@ -10354,6 +10407,18 @@ int cai_agent_runtime_get_metrics(cai_agent_runtime *runtime,
   }
   pthread_mutex_lock(&runtime->lock);
   *out = runtime->metrics_projection;
+  out->turn_active = runtime->turn_timing_active;
+  out->has_last_turn = runtime->has_last_turn_timing;
+  out->last_turn_duration_ms = runtime->last_turn_duration_ms;
+  out->last_turn_finished_unix_seconds =
+      runtime->last_turn_finished_unix_seconds;
+  if (runtime->turn_timing_active) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) == 0) {
+      out->turn_elapsed_ms =
+          cai_runtime_elapsed_ms(runtime->turn_started_monotonic, now);
+    }
+  }
   pthread_mutex_unlock(&runtime->lock);
   return CAI_OK;
 }

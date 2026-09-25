@@ -1,7 +1,11 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "../cli/status.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static int check(int condition, const char *name) {
   if (!condition) {
@@ -17,6 +21,8 @@ int main(void) {
   cai_agent_runtime_metrics metrics;
   cai_chatgpt_quota quota;
   char markdown[2048];
+  char turn_message[640];
+  struct tm finished_local;
   sl_t *sl;
   int failures;
   failures = 0;
@@ -104,5 +110,59 @@ int main(void) {
             "hourly row");
   failures += check(strstr(markdown, "| Credits left | 42.50 |") != NULL,
                     "credits row");
+  memset(&metrics, 0, sizeof(metrics));
+  failures +=
+      check(cai_cli_turn_status_message(turn_message, sizeof(turn_message), "",
+                                        &metrics) == 0 &&
+                turn_message[0] == '\0',
+            "idle turn has no message");
+  metrics.turn_active = 1;
+  metrics.turn_elapsed_ms = 812000ULL;
+  failures +=
+      check(cai_cli_turn_status_message(turn_message, sizeof(turn_message),
+                                        "Checking files", &metrics) == 0 &&
+                strcmp(turn_message, "Checking files (13m 32s)") == 0,
+            "active minutes seconds");
+  failures += check(
+      cai_cli_turn_status_message(turn_message, sizeof(turn_message),
+                                  " \nChecking\n files  ", &metrics) == 0 &&
+          strcmp(turn_message, "Checking files (13m 32s)") == 0,
+      "reasoning summary remains a single status line");
+  metrics.turn_elapsed_ms = 3720000ULL;
+  failures +=
+      check(cai_cli_turn_status_message(turn_message, sizeof(turn_message),
+                                        "Checking files", &metrics) == 0 &&
+                strcmp(turn_message, "Checking files (1h 2m)") == 0,
+            "active hours minutes");
+  metrics.turn_elapsed_ms = 93780000ULL;
+  failures +=
+      check(cai_cli_turn_status_message(turn_message, sizeof(turn_message), "",
+                                        &metrics) == 0 &&
+                strcmp(turn_message, "Working (1d 2h 3m)") == 0,
+            "active days and no fabricated reasoning");
+  failures += check(setenv("TZ", "UTC", 1) == 0, "set test timezone");
+  tzset();
+  memset(&finished_local, 0, sizeof(finished_local));
+  finished_local.tm_year = 2026 - 1900;
+  finished_local.tm_mon = 8;
+  finished_local.tm_mday = 25;
+  finished_local.tm_hour = 22;
+  finished_local.tm_min = 43;
+  metrics.turn_active = 0;
+  metrics.has_last_turn = 1;
+  metrics.last_turn_duration_ms = 812000ULL;
+  metrics.last_turn_finished_unix_seconds = (long long)mktime(&finished_local);
+  failures +=
+      check(cai_cli_turn_status_message(turn_message, sizeof(turn_message),
+                                        "ignored", &metrics) == 0 &&
+                strcmp(turn_message, "Worked for 13m 32s - 252243") == 0,
+            "completed local DTG");
+  failures += check(setenv("TZ", "UTC-2", 1) == 0, "shift test timezone");
+  tzset();
+  failures +=
+      check(cai_cli_turn_status_message(turn_message, sizeof(turn_message),
+                                        "ignored", &metrics) == 0 &&
+                strcmp(turn_message, "Worked for 13m 32s - 260043") == 0,
+            "completed DTG uses local timezone and date rollover");
   return failures > 0 ? 1 : 0;
 }
