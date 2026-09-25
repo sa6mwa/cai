@@ -106,7 +106,7 @@ cmake --preset cai
 cmake --build --preset cai
 cmake --build --preset cai --target cai_package_cli
 build/cai/cai --help
-build/cai/cai -n -C /path/to/project
+build/cai/cai -N -C /path/to/project
 ```
 
 The default `chatgpt` provider reads `~/.codex/auth.json` first, then
@@ -153,13 +153,40 @@ Sessions use the local JSONL store under `$XDG_STATE_HOME/cai/sessions`, or
 `~/.local/state/cai/sessions` when `XDG_STATE_HOME` is unset. Each canonical
 workspace path maps to its own hashed subdirectory with one `.jsonl` file per
 session.
-Starting `cai` resumes the newest session for that directory. `-n`/`--new`
+Starting `cai` resumes the newest session for that directory. `-N`/`--new`
 starts a fresh session; `/new` does the same inside the prompt. `/resume`
 lists only sessions for the current directory, and `/resume <number>` loads
 one from that list. The CLI replays saved user prompts and assistant text
 through the terminal renderers without rerunning those events as commands.
 `--resume ID` addresses a saved session directly. MCP client configuration is
 planned for a later CLI release.
+
+`-C DIR`/`--directory DIR` changes directory before the agent opens its
+session. Repeat `-i TEXT`/`--instruction TEXT` to run prompts in order, after
+the saved conversation has replayed. `-g TEXT`/`--goal TEXT` starts or replaces
+a durable goal; the agent keeps working until the goal completes or stops.
+`-n`/`--non-interactive` runs the supplied turns or goal and exits without
+reading terminal input. For example, `cai -Nni 'write a snake game in Lua'
+-i 'rewrite it in Go'` starts fresh, completes both turns, then exits.
+
+`cai --review` runs one isolated review of uncommitted changes and exits.
+`--base REF` selects a base reference, or one `-i TEXT` supplies custom review
+instructions. Activity, assistant output, and reasoning appear on stderr;
+the validated Markdown findings report appears on stdout. `-o FILE` writes
+only the findings to that file and leaves stdout empty. `-T json` selects the
+validated structured report instead of Markdown. Failure returns a nonzero
+exit status. `cai --review-and-fix` starts a new non-interactive Smith goal
+that invokes the built-in review subagent, fixes actionable issues, verifies,
+and repeats until a clean review; stopped or failed goals return nonzero.
+It has no default iteration limit. Review model and reasoning flags apply to
+review subagents in both workflows.
+
+Smith loads cai's global `AGENTS.md` from
+`${XDG_CONFIG_HOME:-$HOME/.config}/cai/AGENTS.md` when it exists;
+`--agents-md PATH` overrides that file. `--codex-agents-md` additionally
+loads `${CODEX_HOME:-$HOME/.codex}/AGENTS.md` after the cai global file and
+before repository ancestor `AGENTS.md` files. `-I TEXT` or
+`--developer-instructions TEXT` appends developer instructions.
 
 ## Release Scope
 

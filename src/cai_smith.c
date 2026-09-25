@@ -567,6 +567,35 @@ static int cai_smith_default_config_directory(const cai_allocator *allocator,
 static int
 cai_smith_load_global_instruction_file(const cai_allocator *allocator,
                                        const char *path, char **out,
+                                       cai_error *error);
+
+static int
+cai_smith_load_codex_global_instructions(const cai_allocator *allocator,
+                                         char **out, cai_error *error) {
+  const char *codex_home;
+  const char *home;
+  char path[PATH_MAX];
+  int length;
+
+  *out = NULL;
+  codex_home = getenv("CODEX_HOME");
+  if (codex_home != NULL && codex_home[0] != '\0') {
+    length = snprintf(path, sizeof(path), "%s/AGENTS.md", codex_home);
+  } else {
+    home = getenv("HOME");
+    if (home == NULL || home[0] == '\0')
+      return CAI_OK;
+    length = snprintf(path, sizeof(path), "%s/.codex/AGENTS.md", home);
+  }
+  if (length < 0 || (size_t)length >= sizeof(path))
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Codex global AGENTS.md path is too long");
+  return cai_smith_load_global_instruction_file(allocator, path, out, error);
+}
+
+static int
+cai_smith_load_global_instruction_file(const cai_allocator *allocator,
+                                       const char *path, char **out,
                                        cai_error *error) {
   int fd;
   int rc;
@@ -652,6 +681,7 @@ cai_smith_load_repository_instructions(const cai_allocator *allocator,
   char canonical_workspace[PATH_MAX];
   char *global_path;
   char *global_part;
+  char *hierarchy;
   char *part;
   char *cursor;
   const char *configured_directory;
@@ -676,6 +706,7 @@ cai_smith_load_repository_instructions(const cai_allocator *allocator,
   }
   global_path = NULL;
   global_part = NULL;
+  hierarchy = NULL;
   part = NULL;
   if (config->global_instruction_store != NULL) {
     rc = cai_smith_load_global_instruction_store(
@@ -731,19 +762,26 @@ cai_smith_load_repository_instructions(const cai_allocator *allocator,
   cai_free_mem(allocator, global_path);
   global_part = part;
   part = NULL;
-  if (rc == CAI_OK && !config->codex_compat_agents_md) {
+  if (rc == CAI_OK) {
     rc = cai_smith_append_instructions(allocator, out, global_part, 0, error);
   }
-  if (rc != CAI_OK || !config->codex_compat_agents_md) {
-    cai_free_mem(allocator, global_part);
-    if (rc == CAI_OK) {
-      rc = cai_smith_load_workspace_instruction_file(
-          allocator, config->workspace_directory, &part, error);
-      if (rc == CAI_OK) {
-        rc = cai_smith_append_instructions(allocator, out, part, 0, error);
-      }
-      cai_free_mem(allocator, part);
-    }
+  cai_free_mem(allocator, global_part);
+  if (rc != CAI_OK)
+    return rc;
+  if (config->codex_compat_agents_md) {
+    rc = cai_smith_load_codex_global_instructions(allocator, &part, error);
+    if (rc == CAI_OK)
+      rc = cai_smith_append_instructions(allocator, out, part, 0, error);
+    cai_free_mem(allocator, part);
+    part = NULL;
+    if (rc != CAI_OK)
+      return rc;
+  } else {
+    rc = cai_smith_load_workspace_instruction_file(
+        allocator, config->workspace_directory, &part, error);
+    if (rc == CAI_OK)
+      rc = cai_smith_append_instructions(allocator, out, part, 0, error);
+    cai_free_mem(allocator, part);
     return rc;
   }
   if (realpath(config->workspace_directory, canonical_workspace) == NULL) {
@@ -775,12 +813,8 @@ cai_smith_load_repository_instructions(const cai_allocator *allocator,
     }
   }
   if (!rc) {
-    rc = cai_smith_append_instructions(allocator, out, global_part, 0, error);
-    cai_free_mem(allocator, global_part);
-    if (rc == CAI_OK) {
-      rc = cai_smith_load_workspace_instruction_file(
-          allocator, canonical_workspace, &part, error);
-    }
+    rc = cai_smith_load_workspace_instruction_file(
+        allocator, canonical_workspace, &part, error);
     if (rc == CAI_OK) {
       rc = cai_smith_append_instructions(allocator, out, part, 0, error);
     }
@@ -798,8 +832,8 @@ cai_smith_load_repository_instructions(const cai_allocator *allocator,
     if (rc == CAI_OK) {
       workspace_part = part;
       part = NULL;
-      rc = cai_smith_append_instructions(allocator, out, workspace_part, 1,
-                                         error);
+      rc = cai_smith_append_instructions(allocator, &hierarchy, workspace_part,
+                                         1, error);
     }
     cai_free_mem(allocator, workspace_part);
     if (rc != CAI_OK || strcmp(cursor, resolved) == 0) {
@@ -813,15 +847,12 @@ cai_smith_load_repository_instructions(const cai_allocator *allocator,
     }
   }
   if (rc != CAI_OK) {
+    cai_free_mem(allocator, hierarchy);
     return rc;
   }
-  rc = cai_smith_append_instructions(allocator, out, global_part, 1, error);
-  cai_free_mem(allocator, global_part);
-  global_part = NULL;
-  if (rc != CAI_OK) {
-    return rc;
-  }
-  return CAI_OK;
+  rc = cai_smith_append_instructions(allocator, out, hierarchy, 0, error);
+  cai_free_mem(allocator, hierarchy);
+  return rc;
 }
 
 int cai_client_new_preset_agent(cai_client *client,

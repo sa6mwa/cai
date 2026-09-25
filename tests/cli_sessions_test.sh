@@ -12,7 +12,7 @@ JSON
 export XDG_STATE_HOME="$fixture/state"
 
 first=$(printf '/status\n/resume\n/quit\n' | env HTTPS_PROXY=http://127.0.0.1:1 \
-  HTTP_PROXY=http://127.0.0.1:1 NO_PROXY= "$cli" -n -C "$fixture/work-a" \
+  HTTP_PROXY=http://127.0.0.1:1 NO_PROXY= "$cli" -N -C "$fixture/work-a" \
   --auth-json "$fixture/auth.json")
 [[ "$first" == *"Status"* && "$first" == *"Model"* && "$first" == *"Reasoning effort"* ]]
 [[ "$first" != *"Weekly limit"* && "$first" != *"Credits left"* ]]

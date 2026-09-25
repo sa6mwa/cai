@@ -3,6 +3,7 @@
 
 #include "login.h"
 #include "options.h"
+#include "review_report.h"
 #include "status.h"
 
 #include <cai/agent_runtime.h>
@@ -41,6 +42,10 @@ typedef struct cli_state {
   cai_agent_runtime *runtime;
   sl_t *sl;
   mdf *renderer;
+  FILE *activity;
+  char *review_report;
+  size_t review_report_length;
+  char generated_goal[4096];
   cli_session *sessions;
   size_t session_count;
   size_t session_capacity;
@@ -57,6 +62,11 @@ typedef struct cli_state {
   int reasoning_open;
   int exit_requested;
   int was_busy;
+  int awaiting_turn;
+  int automation_done;
+  int automation_failed;
+  int auto_goal;
+  size_t next_instruction;
   cai_chatgpt_quota quota;
   struct timespec quota_last_attempt;
   int quota_attempted;
@@ -65,6 +75,8 @@ typedef struct cli_state {
   size_t reasoning_summary_length;
   char workspace[PATH_MAX];
 } cli_state;
+
+static int cli_advance_automation(cli_state *state, cai_error *error);
 
 static void cli_print_error(const char *operation, const cai_error *error) {
   fprintf(stderr, "cai: %s: %s\n", operation,
@@ -113,12 +125,15 @@ static void cli_refresh_quota(cli_state *state, int force) {
 static int cli_sink(void *context, const char *bytes, size_t count) {
   cli_state *state;
   state = (cli_state *)context;
+  if (state->activity != NULL)
+    return fwrite(bytes, 1U, count, state->activity) == count ? 0 : -1;
   return sl_output_stream_write(state->sl, bytes, count) == SL_OK ? 0 : -1;
 }
 
 static int cli_geometry(cli_state *state) {
   int width;
-  width = mdf_terminal_width(STDOUT_FILENO, 80);
+  width = mdf_terminal_width(
+      state->activity != NULL ? STDERR_FILENO : STDOUT_FILENO, 80);
   if (width == state->width) {
     return 0;
   }
@@ -180,6 +195,8 @@ static int cli_write(cli_state *state, const char *text) {
   if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0) {
     return -1;
   }
+  if (state->activity != NULL)
+    return fputs(text, state->activity) >= 0 ? 0 : -1;
   return sl_output_stream_write(state->sl, text, strlen(text)) == SL_OK ? 0
                                                                         : -1;
 }
@@ -226,6 +243,29 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
 
   (void)error;
   state = (cli_state *)context;
+  if (event->type == CAI_AGENT_EVENT_REVIEW_REPORT) {
+    char *report;
+    if (event->data == NULL || event->data_length == (size_t)-1 ||
+        memchr(event->data, '\0', event->data_length) != NULL)
+      return CAI_ERR_PROTOCOL;
+    report = (char *)malloc(event->data_length + 1U);
+    if (report == NULL)
+      return CAI_ERR_NOMEM;
+    memcpy(report, event->data, event->data_length);
+    report[event->data_length] = '\0';
+    free(state->review_report);
+    state->review_report = report;
+    state->review_report_length = event->data_length;
+  }
+  if (event->parent_tool_call_id == NULL &&
+      event->type == CAI_AGENT_EVENT_RUN_COMPLETED)
+    state->awaiting_turn = 0;
+  if (event->parent_tool_call_id == NULL &&
+      (event->type == CAI_AGENT_EVENT_RUN_FAILED ||
+       event->type == CAI_AGENT_EVENT_RUN_CANCELLED)) {
+    state->awaiting_turn = 0;
+    state->automation_failed = 1;
+  }
   if (event->type == CAI_AGENT_EVENT_RUN_STARTED &&
       event->parent_tool_call_id == NULL) {
     state->reasoning_summary_length = 0U;
@@ -244,8 +284,7 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
   if (event->type == CAI_AGENT_EVENT_RUN_FAILED) {
     if (event->data != NULL) {
       if (cli_write(state, "\n[error] ") != 0 ||
-          sl_output_stream_write(state->sl, event->data, event->data_length) !=
-              SL_OK ||
+          cli_sink(state, event->data, event->data_length) != 0 ||
           cli_write(state, "\n") != 0) {
         return CAI_ERR_TRANSPORT;
       }
@@ -257,6 +296,23 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
         cli_write(state, message) != 0) {
       return CAI_ERR_TRANSPORT;
     }
+  } else if (state->activity != NULL &&
+             (event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED ||
+              event->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED)) {
+    if (cli_write(state, event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED
+                             ? "\n[tool result] "
+                             : "\n[tool error] ") != 0 ||
+        (event->data != NULL &&
+         cli_sink(state, event->data, event->data_length) != 0) ||
+        cli_write(state, "\n") != 0)
+      return CAI_ERR_TRANSPORT;
+  } else if (state->activity != NULL &&
+             event->type == CAI_AGENT_EVENT_TERMINAL_OUTPUT &&
+             event->data != NULL) {
+    if (cli_write(state, "\n[terminal] ") != 0 ||
+        cli_sink(state, event->data, event->data_length) != 0 ||
+        cli_write(state, "\n") != 0)
+      return CAI_ERR_TRANSPORT;
   } else if (event->type == CAI_AGENT_EVENT_REASONING_SUMMARY &&
              event->data != NULL && event->data_length > 0U) {
     if (event->parent_tool_call_id == NULL)
@@ -265,7 +321,7 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
       return CAI_ERR_TRANSPORT;
     }
     if (!state->reasoning_open) {
-      if (sl_output_stream_write(state->sl, "\n[reasoning]\n", 13U) != SL_OK ||
+      if (cli_sink(state, "\n[reasoning]\n", 13U) != 0 ||
           (state->documents_rendered > 0 &&
            state->renderer->begin_document(state->renderer) != MDF_OK)) {
         return CAI_ERR_TRANSPORT;
@@ -276,6 +332,18 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
                               event->data_length) != MDF_OK) {
       return CAI_ERR_TRANSPORT;
     }
+  }
+  if (state->activity != NULL &&
+      (event->type == CAI_AGENT_EVENT_RUN_STARTED ||
+       event->type == CAI_AGENT_EVENT_RUN_COMPLETED ||
+       event->type == CAI_AGENT_EVENT_RUN_CANCELLED)) {
+    const char *phase = event->type == CAI_AGENT_EVENT_RUN_STARTED
+                            ? "[review started]\n"
+                        : event->type == CAI_AGENT_EVENT_RUN_COMPLETED
+                            ? "\n[review completed]\n"
+                            : "\n[review cancelled]\n";
+    if (cli_write(state, phase) != 0)
+      return CAI_ERR_TRANSPORT;
   }
   if (state->options.verbosity > 0) {
     if (state->options.verbosity > 1) {
@@ -401,6 +469,8 @@ static int cli_wakeup(sl_t *sl, const sl_watch_event_t *event, void *context) {
   rc = cli_geometry(state) == 0
            ? cai_agent_runtime_pump(state->runtime, 0L, &error)
            : CAI_ERR_TRANSPORT;
+  if (rc == CAI_OK)
+    rc = cli_advance_automation(state, &error);
   if (rc == CAI_OK) {
     rc = cli_sync_status(state, &error);
   }
@@ -454,11 +524,14 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
 
   cai_agent_runtime_config_init(&config);
   cai_skill_config_init(&skills);
+  if (state->options.review)
+    config.preset = CAI_SMITH_REVIEW_PRESET;
   skills.skills_directory = state->options.skills_dir;
   config.workspace_directory = state->workspace;
   config.session_store = &state->store;
-  config.resume_latest = !new_session && resume_id == NULL;
-  config.resume_session_id = resume_id;
+  config.resume_latest =
+      !state->options.review && !new_session && resume_id == NULL;
+  config.resume_session_id = state->options.review ? NULL : resume_id;
   config.record_transcript = 1;
   config.model = state->options.model;
   config.reasoning_effort = state->options.reasoning_effort;
@@ -470,7 +543,8 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   config.global_agents_md_path = state->options.agents_md;
   config.skills = state->options.skills_dir != NULL ? &skills : NULL;
   config.agent_identity = state->options.identity;
-  config.developer_instructions_extension = state->options.instructions;
+  config.developer_instructions_extension =
+      state->options.developer_instructions;
   config.codex_compat_agents_md = state->options.codex_agents_md;
   config.enable_image_generation = state->options.image_generation;
   config.disable_terminal = !state->options.terminal;
@@ -496,7 +570,7 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
     }
     state->has_watch = 1;
   }
-  rc = cli_replay(state, error);
+  rc = state->options.review ? CAI_OK : cli_replay(state, error);
   if (rc == CAI_OK) {
     rc = cli_sync_status(state, error);
   }
@@ -690,6 +764,165 @@ static int cli_handle_command(cli_state *state, const char *line,
   return CAI_OK;
 }
 
+static int cli_submit_automation(cli_state *state, const char *instruction,
+                                 cai_error *error) {
+  int rc;
+  if (instruction == NULL || cli_prompt(state, instruction, 1) != 0)
+    return CAI_ERR_TRANSPORT;
+  state->awaiting_turn = 1;
+  rc = cai_agent_runtime_submit_interactive(state->runtime, instruction, error);
+  if (rc != CAI_OK)
+    state->awaiting_turn = 0;
+  return rc;
+}
+
+static int cli_start_goal(cli_state *state, const char *objective,
+                          cai_error *error) {
+  cai_agent_goal_snapshot goal;
+  cai_agent_goal_request request;
+  int rc;
+
+  rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (goal.has_goal && strcmp(goal.status, "complete") != 0) {
+    rc = cai_agent_runtime_clear_goal(state->runtime, error);
+    if (rc != CAI_OK)
+      return rc;
+    do {
+      rc = cai_agent_runtime_pump(state->runtime, 100L, error);
+      if (rc != CAI_OK)
+        return rc;
+      rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
+    } while (rc == CAI_OK && goal.has_goal);
+    if (rc != CAI_OK)
+      return rc;
+  }
+  cai_agent_goal_request_init(&request);
+  request.objective = objective;
+  rc = cai_agent_runtime_create_goal(state->runtime, &request, error);
+  if (rc != CAI_OK)
+    return rc;
+  do {
+    rc = cai_agent_runtime_pump(state->runtime, 100L, error);
+    if (rc != CAI_OK)
+      return rc;
+    rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
+  } while (rc == CAI_OK &&
+           (!goal.has_goal || strcmp(goal.objective, objective) != 0));
+  return rc;
+}
+
+static int cli_start_automation(cli_state *state, cai_error *error) {
+  const char *objective;
+  const char *instruction;
+  int length;
+  int rc;
+
+  objective = state->options.goal;
+  if (state->options.review_and_fix) {
+    const char *format =
+        "Review the current changes with the built-in run_review subagent. "
+        "Fix every actionable finding while preserving project invariants. "
+        "After each fix, run relevant verification, then repeat the review "
+        "until it reports no actionable findings. Explain why any reported "
+        "finding is irrelevant. Mark this goal complete only after a clean "
+        "review and passing verification.";
+    if (state->options.base != NULL) {
+      length = snprintf(state->generated_goal, sizeof(state->generated_goal),
+                        "Review changes against base %s with the built-in "
+                        "run_review subagent. Fix every actionable finding "
+                        "while preserving project invariants. After each "
+                        "fix, run relevant verification, then repeat review "
+                        "against the same base until no actionable findings "
+                        "remain. Explain why any finding is irrelevant. "
+                        "Mark this goal complete only after a clean review "
+                        "and passing verification.",
+                        state->options.base);
+    } else {
+      length = snprintf(state->generated_goal, sizeof(state->generated_goal),
+                        "%s", format);
+    }
+    if (length < 0 || (size_t)length >= sizeof(state->generated_goal))
+      return CAI_ERR_INVALID;
+    objective = state->generated_goal;
+  }
+  state->auto_goal = objective != NULL;
+  if (objective != NULL) {
+    rc = cli_start_goal(state, objective, error);
+    if (rc != CAI_OK)
+      return rc;
+  }
+  if (state->options.instruction_count > 0U) {
+    instruction = cai_cli_instruction_at(&state->options, 0U);
+    state->next_instruction = 1U;
+  } else {
+    instruction = objective;
+  }
+  if (instruction == NULL) {
+    state->automation_done = 1;
+    return CAI_OK;
+  }
+  return cli_submit_automation(state, instruction, error);
+}
+
+static int cli_advance_automation(cli_state *state, cai_error *error) {
+  cai_agent_goal_snapshot goal;
+  const char *next;
+  int rc;
+
+  if (state->automation_done || state->awaiting_turn)
+    return CAI_OK;
+  if (state->automation_failed) {
+    state->automation_done = 1;
+    return CAI_OK;
+  }
+  if (state->auto_goal) {
+    rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
+    if (rc != CAI_OK)
+      return rc;
+    if (!goal.has_goal || goal.status == NULL) {
+      state->automation_failed = 1;
+      state->automation_done = 1;
+      return CAI_OK;
+    }
+    if (strcmp(goal.status, "active") == 0)
+      return cli_submit_automation(
+          state,
+          "Continue pursuing the active goal. Finish the remaining "
+          "work, verify the result, and update the goal status when "
+          "appropriate.",
+          error);
+    if (strcmp(goal.status, "complete") != 0) {
+      state->automation_failed = 1;
+      state->automation_done = 1;
+      fprintf(stderr, "cai: goal stopped with status %s\n", goal.status);
+      return CAI_OK;
+    }
+    state->auto_goal = 0;
+  }
+  next = cai_cli_instruction_at(&state->options, state->next_instruction);
+  if (next != NULL) {
+    state->next_instruction++;
+    return cli_submit_automation(state, next, error);
+  }
+  state->automation_done = 1;
+  return CAI_OK;
+}
+
+static int cli_run_noninteractive(cli_state *state, cai_error *error) {
+  int rc;
+  while (!state->automation_done) {
+    rc = cai_agent_runtime_pump(state->runtime, 100L, error);
+    if (rc != CAI_OK)
+      return rc;
+    rc = cli_advance_automation(state, error);
+    if (rc != CAI_OK)
+      return rc;
+  }
+  return state->automation_failed ? CAI_ERR_TRANSPORT : CAI_OK;
+}
+
 static int cli_drain(cli_state *state, cai_error *error) {
   cai_agent_run_state run_state;
   int rc;
@@ -705,6 +938,65 @@ static int cli_drain(cli_state *state, cai_error *error) {
       return cai_agent_runtime_pump(state->runtime, 0L, error);
     }
   }
+}
+
+static int cli_run_review(cli_state *state, cai_error *error) {
+  cai_agent_review_request request;
+  cai_agent_run_state run_state;
+  const char *instruction;
+  FILE *destination;
+  char *formatted;
+  int rc;
+
+  cai_agent_review_request_init(&request);
+  instruction = cai_cli_instruction_at(&state->options, 0U);
+  if (instruction != NULL) {
+    request.target = CAI_AGENT_REVIEW_CUSTOM;
+    request.instructions = instruction;
+  } else if (state->options.base != NULL) {
+    request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
+    request.base_branch = state->options.base;
+  } else {
+    request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+  }
+  rc = cai_agent_runtime_submit_review(state->runtime, &request, error);
+  if (rc != CAI_OK)
+    return rc;
+  rc = cli_drain(state, error);
+  if (rc != CAI_OK)
+    return rc;
+  rc = cai_agent_runtime_state(state->runtime, &run_state, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (run_state != CAI_AGENT_COMPLETED || state->review_report == NULL) {
+    fputs("cai: review ended without a valid findings report\n", stderr);
+    return CAI_ERR_PROTOCOL;
+  }
+  if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
+    return CAI_ERR_TRANSPORT;
+  formatted = NULL;
+  if (cai_cli_review_format(state->review_report, state->review_report_length,
+                            state->options.output_type, &formatted) != 0) {
+    fputs("cai: failed to format review findings\n", stderr);
+    return CAI_ERR_PROTOCOL;
+  }
+  fflush(stderr);
+  destination =
+      state->options.out != NULL ? fopen(state->options.out, "w") : stdout;
+  if (destination == NULL) {
+    fprintf(stderr, "cai: cannot open review output: %s\n", strerror(errno));
+    free(formatted);
+    return CAI_ERR_TRANSPORT;
+  }
+  rc = fputs(formatted, destination) < 0 || fflush(destination) != 0
+           ? CAI_ERR_TRANSPORT
+           : CAI_OK;
+  if (state->options.out != NULL && fclose(destination) != 0)
+    rc = CAI_ERR_TRANSPORT;
+  free(formatted);
+  if (rc != CAI_OK)
+    fputs("cai: failed to write review findings\n", stderr);
+  return rc;
 }
 
 int main(int argc, char **argv) {
@@ -731,10 +1023,15 @@ int main(int argc, char **argv) {
   parsed = cai_cli_parse_options(argc, argv, &state.options);
   if (parsed <= 0)
     return parsed == 0 ? 0 : 2;
+  if (state.options.directory != NULL && chdir(state.options.directory) != 0) {
+    fprintf(stderr, "cai: cannot change directory to %s: %s\n",
+            state.options.directory, strerror(errno));
+    cai_error_cleanup(&error);
+    return 2;
+  }
   if (state.options.login)
     return cai_cli_login(state.options.auth_json);
-  if (realpath(state.options.workspace != NULL ? state.options.workspace : ".",
-               state.workspace) == NULL) {
+  if (realpath(".", state.workspace) == NULL) {
     fprintf(stderr, "cai: cannot resolve workspace: %s\n", strerror(errno));
     return 2;
   }
@@ -765,24 +1062,31 @@ int main(int argc, char **argv) {
       auth_file = state_auth_path;
     }
   }
-  state.interactive = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
+  state.interactive = !state.options.review && !state.options.non_interactive &&
+                      isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
+  if (state.options.review)
+    state.activity = stderr;
   cai_cli_status_init(&state.status, state.workspace, getenv("HOME"));
   result = 1;
-  state.sl = sl_create();
-  if (state.sl == NULL) {
-    fputs("cai: failed to create softline prompt\n", stderr);
-    goto cleanup;
+  if (!state.options.review) {
+    state.sl = sl_create();
+    if (state.sl == NULL) {
+      fputs("cai: failed to create softline prompt\n", stderr);
+      goto cleanup;
+    }
   }
-  state.width = mdf_terminal_width(STDOUT_FILENO, 80);
+  state.width = mdf_terminal_width(
+      state.options.review ? STDERR_FILENO : STDOUT_FILENO, 80);
   mdf_options_init(&mdf_config);
   mdf_config.width = state.width;
   mdf_config.margin_left = state.width >= 5 ? 2 : 0;
-  mdf_config.boring = !state.interactive;
+  mdf_config.boring =
+      state.options.review ? !isatty(STDERR_FILENO) : !state.interactive;
   if ((state.interactive &&
        (sl_set_bounds(state.sl, 0, 0, 0, 0) != SL_OK ||
         sl_set_statusline(state.sl, 1, 0) != SL_OK ||
         sl_set_status_message_prefix(state.sl, "") != SL_OK)) ||
-      sl_output_stream_begin(state.sl) != SL_OK ||
+      (!state.options.review && sl_output_stream_begin(state.sl) != SL_OK) ||
       mdf_create(MDF_FORMAT_ANSI, &mdf_config, &state.renderer) != MDF_OK) {
     fputs("cai: failed to initialize terminal renderers\n", stderr);
     goto cleanup;
@@ -858,6 +1162,27 @@ int main(int argc, char **argv) {
                 "\nCai Smith. Enter sends; /resume lists sessions; "
                 "/new starts fresh; /status shows usage; /quit exits.\n") !=
           0) {
+    goto cleanup;
+  }
+  if (state.options.review) {
+    rc = cli_run_review(&state, &error);
+    if (rc != CAI_OK)
+      cli_print_error("review", &error);
+    else
+      result = 0;
+    goto cleanup;
+  }
+  rc = cli_start_automation(&state, &error);
+  if (rc != CAI_OK) {
+    cli_print_error("start work", &error);
+    goto cleanup;
+  }
+  if (state.options.non_interactive) {
+    rc = cli_run_noninteractive(&state, &error);
+    if (rc != CAI_OK)
+      cli_print_error("non-interactive run", &error);
+    else
+      result = 0;
     goto cleanup;
   }
   while (!state.exit_requested) {
@@ -938,6 +1263,7 @@ cleanup:
     sl_destroy(state.sl);
   }
   free(state.sessions);
+  free(state.review_report);
   cai_error_cleanup(&error);
   return result;
 }

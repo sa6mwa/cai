@@ -22,23 +22,79 @@ terminal renderer.
 The newest saved session for the workspace resumes automatically.
 Sessions are scoped to the canonical workspace directory.
 Use
-.B \-n
+.B \-N
 to start a new session.
 .SH OPTIONS
 .TP
-.BR \-n , " " \-\-new
+.BR \-N , " " \-\-new
 Start a new session in the workspace.
+.TP
+.BR \-n , " " \-\-non-interactive
+Run supplied instructions or a goal to completion and exit without reading
+from the terminal. Requires at least one
+.BR \-i ,
+.BR \-g ,
+or a review mode.
 .TP
 .BI \-\-resume " ID"
 Resume a saved session by its exact ID.
 Cannot be combined with
 .BR \-\-new .
 .TP
-.BR \-C , " " \-\-workspace " " DIR
-Use
+.BR \-C , " " \-\-directory " " DIR
+Change to
 .I DIR
-as the workspace.
-The default is the current directory.
+before opening auth, sessions, or the agent. Relative paths are resolved
+from that directory. The default is the current directory.
+.TP
+.BR \-i , " " \-\-instruction " " TEXT
+Submit
+.I TEXT
+as a prompt after saved conversation replay. Repeat to queue ordered turns;
+each prompt starts after the previous turn or goal ends.
+.TP
+.BR \-g , " " \-\-goal " " TEXT
+Create or replace a durable goal with objective
+.IR TEXT .
+The agent continues until the goal finishes or stops. In interactive mode,
+the prompt then remains available; in non-interactive mode cai exits.
+.TP
+.B \-\-review
+Run one isolated review and exit. The default target is uncommitted changes.
+With
+.BR \-\-base ,
+review changes against a reference; with one
+.BR \-i ,
+use custom review instructions. Review activity and reasoning go to standard
+error. Validated findings go to standard output unless
+.B \-\-out
+is specified.
+.TP
+.B \-\-review-and-fix
+Start a new, non-interactive Smith session with a durable goal to invoke the
+built-in review subagent, fix actionable findings, verify, and repeat until
+the review is clean. There is no default iteration limit. Requires the review
+subagent. Errors and stopped goals return a nonzero status.
+.TP
+.BI \-\-base " REF"
+Review against
+.I REF
+in either review mode.
+.TP
+.BR \-o , " " \-\-out " " FILE
+Write only the final review findings to
+.IR FILE .
+Standard output remains empty; review activity remains on standard error.
+Requires
+.BR \-\-review .
+.TP
+.BR \-T , " " \-\-output-type " " TYPE
+Select
+.B markdown
+(default) or
+.B json
+for final review findings. Requires
+.BR \-\-review .
 .TP
 .BR \-a , " " \-\-auth-json " " PATH
 Read ChatGPT authentication from
@@ -118,8 +174,9 @@ Set reasoning effort for review children.
 Set reasoning summary mode for review children.
 .TP
 .BI \-\-agents-md " PATH"
-Use a global AGENTS.md file at
-.IR PATH .
+Use the global cai AGENTS.md file at
+.I PATH
+instead of the default under cai's XDG config directory.
 .TP
 .BI \-\-config-dir " DIR"
 Use
@@ -134,11 +191,14 @@ as the global skills directory.
 .BI \-\-identity " TEXT"
 Set the visible agent identity.
 .TP
-.BI \-\-instructions " TEXT"
+.BR \-I , " " \-\-developer-instructions " " TEXT
 Append developer instructions.
 .TP
 .B \-\-codex-agents-md
-Discover ancestor AGENTS.md files.
+Load
+.I ${CODEX_HOME:-$HOME/.codex}/AGENTS.md
+after cai's global AGENTS.md, then discover ancestor AGENTS.md files from the
+repository root to the workspace.
 .TP
 .B \-\-no-image-generation
 Disable hosted image generation.
@@ -218,9 +278,16 @@ is set.
 Session storage when
 .B XDG_STATE_HOME
 is unset.
+.TP
+.I $XDG_CONFIG_HOME/cai/AGENTS.md
+Default cai global instructions when
+.B XDG_CONFIG_HOME
+is set; otherwise
+.IR ~/.config/cai/AGENTS.md .
 .SH EXIT STATUS
-Returns zero after a normal exit, two for invalid command-line arguments, and
-one for startup or runtime failure.
+Returns zero after a normal exit, a completed non-interactive goal, or a
+successful review. Returns two for invalid command-line arguments and one for
+startup, runtime, review, or stopped-goal failure.
 .SH SEE ALSO
 .I README.md
 in the installed

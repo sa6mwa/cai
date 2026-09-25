@@ -9,7 +9,7 @@ int main(void) {
   cai_cli_options options;
   char defaults_raw[][32] = {"cai"};
   char configured_raw[][32] = {"cai",
-                               "-n",
+                               "-N",
                                "-C",
                                "/tmp/project",
                                "-m",
@@ -40,7 +40,7 @@ int main(void) {
                             "/tmp/config",
                             "--identity",
                             "Smith",
-                            "--instructions",
+                            "--developer-instructions",
                             "Be precise",
                             "--codex-agents-md",
                             "--no-terminal",
@@ -79,6 +79,32 @@ int main(void) {
   char *invalid_login[4];
   char login_raw[][64] = {"cai", "--login"};
   char *login[2];
+  char seeded_raw[][128] = {
+      "cai",         "-Nni", "first turn",    "--instruction",
+      "second turn", "-C",   "/tmp/project",  "-I",
+      "developer",   "-g",   "finish project"};
+  char *seeded[11];
+  char review_raw[][128] = {"cai", "--review",  "--base", "trunk",
+                            "-o",  "review.md", "-T",     "json"};
+  char *review[8];
+  char fix_raw[][64] = {"cai", "--review-and-fix"};
+  char *fix[2];
+  char invalid_review_raw[][64] = {"cai",   "--review", "--base",
+                                   "trunk", "-i",       "custom"};
+  char *invalid_review[6];
+  char invalid_noninteractive_raw[][32] = {"cai", "-n"};
+  char invalid_review_subagent_raw[][32] = {"cai", "--review-and-fix",
+                                            "--no-review-subagent"};
+  char invalid_output_type_raw[][32] = {"cai", "--review", "-T", "xml"};
+  char invalid_output_without_review_raw[][32] = {"cai", "-o", "review.md"};
+  char invalid_legacy_instructions_raw[][32] = {"cai", "--instructions", "old"};
+  char invalid_legacy_workspace_raw[][32] = {"cai", "--workspace", "/tmp"};
+  char *invalid_noninteractive[2];
+  char *invalid_review_subagent[3];
+  char *invalid_output_type[4];
+  char *invalid_output_without_review[3];
+  char *invalid_legacy_instructions[3];
+  char *invalid_legacy_workspace[3];
   size_t i;
 
   for (i = 0U; i < sizeof(openrouter) / sizeof(openrouter[0]); i++)
@@ -95,6 +121,37 @@ int main(void) {
     invalid_login[i] = invalid_login_raw[i];
   for (i = 0U; i < sizeof(login) / sizeof(login[0]); i++)
     login[i] = login_raw[i];
+  for (i = 0U; i < sizeof(seeded) / sizeof(seeded[0]); i++)
+    seeded[i] = seeded_raw[i];
+  for (i = 0U; i < sizeof(review) / sizeof(review[0]); i++)
+    review[i] = review_raw[i];
+  for (i = 0U; i < sizeof(fix) / sizeof(fix[0]); i++)
+    fix[i] = fix_raw[i];
+  for (i = 0U; i < sizeof(invalid_review) / sizeof(invalid_review[0]); i++)
+    invalid_review[i] = invalid_review_raw[i];
+  for (i = 0U;
+       i < sizeof(invalid_noninteractive) / sizeof(invalid_noninteractive[0]);
+       i++)
+    invalid_noninteractive[i] = invalid_noninteractive_raw[i];
+  for (i = 0U;
+       i < sizeof(invalid_review_subagent) / sizeof(invalid_review_subagent[0]);
+       i++)
+    invalid_review_subagent[i] = invalid_review_subagent_raw[i];
+  for (i = 0U; i < sizeof(invalid_output_type) / sizeof(invalid_output_type[0]);
+       i++)
+    invalid_output_type[i] = invalid_output_type_raw[i];
+  for (i = 0U; i < sizeof(invalid_output_without_review) /
+                       sizeof(invalid_output_without_review[0]);
+       i++)
+    invalid_output_without_review[i] = invalid_output_without_review_raw[i];
+  for (i = 0U; i < sizeof(invalid_legacy_instructions) /
+                       sizeof(invalid_legacy_instructions[0]);
+       i++)
+    invalid_legacy_instructions[i] = invalid_legacy_instructions_raw[i];
+  for (i = 0U; i < sizeof(invalid_legacy_workspace) /
+                       sizeof(invalid_legacy_workspace[0]);
+       i++)
+    invalid_legacy_workspace[i] = invalid_legacy_workspace_raw[i];
   defaults[0] = defaults_raw[0];
   for (i = 0U; i < 11U; i++)
     configured[i] = configured_raw[i];
@@ -116,7 +173,7 @@ int main(void) {
     return 1;
   }
   if (cai_cli_parse_options(11, configured, &options) != 1 ||
-      strcmp(options.workspace, "/tmp/project") != 0 ||
+      strcmp(options.directory, "/tmp/project") != 0 ||
       strcmp(options.model, "gpt-5.6-luna") != 0 ||
       strcmp(options.reasoning_effort, "high") != 0 ||
       strcmp(options.skills_dir, "/tmp/skills") != 0 || !options.new_session ||
@@ -141,7 +198,7 @@ int main(void) {
       strcmp(options.agents_md, "/tmp/AGENTS.md") != 0 ||
       strcmp(options.config_dir, "/tmp/config") != 0 ||
       strcmp(options.identity, "Smith") != 0 ||
-      strcmp(options.instructions, "Be precise") != 0 ||
+      strcmp(options.developer_instructions, "Be precise") != 0 ||
       !options.codex_agents_md || options.terminal || options.review_subagent ||
       options.verbosity != 2) {
     fputs("CLI runtime settings failed\n", stderr);
@@ -167,5 +224,31 @@ int main(void) {
     fputs("CLI provider options failed\n", stderr);
     return 1;
   }
+  if (cai_cli_parse_options(11, seeded, &options) != 1 ||
+      !options.new_session || !options.non_interactive ||
+      options.instruction_count != 2U ||
+      strcmp(cai_cli_instruction_at(&options, 0U), "first turn") != 0 ||
+      strcmp(cai_cli_instruction_at(&options, 1U), "second turn") != 0 ||
+      cai_cli_instruction_at(&options, 2U) != NULL ||
+      strcmp(options.directory, "/tmp/project") != 0 ||
+      strcmp(options.developer_instructions, "developer") != 0 ||
+      strcmp(options.goal, "finish project") != 0)
+    return 1;
+  if (cai_cli_parse_options(8, review, &options) != 1 || !options.review ||
+      strcmp(options.base, "trunk") != 0 ||
+      strcmp(options.out, "review.md") != 0 ||
+      strcmp(options.output_type, "json") != 0)
+    return 1;
+  if (cai_cli_parse_options(2, fix, &options) != 1 || !options.review_and_fix ||
+      !options.new_session || !options.non_interactive ||
+      cai_cli_parse_options(6, invalid_review, &options) != -1)
+    return 1;
+  if (cai_cli_parse_options(2, invalid_noninteractive, &options) != -1 ||
+      cai_cli_parse_options(3, invalid_review_subagent, &options) != -1 ||
+      cai_cli_parse_options(4, invalid_output_type, &options) != -1 ||
+      cai_cli_parse_options(3, invalid_output_without_review, &options) != -1 ||
+      cai_cli_parse_options(3, invalid_legacy_instructions, &options) != -1 ||
+      cai_cli_parse_options(3, invalid_legacy_workspace, &options) != -1)
+    return 1;
   return 0;
 }

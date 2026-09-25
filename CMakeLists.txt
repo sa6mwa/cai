@@ -927,7 +927,8 @@ if(CAI_BUILD_EXAMPLES)
 endif()
 
 if(CAI_BUILD_CLI)
-  add_executable(cai_cli cli/main.c cli/options.c cli/status.c cli/login.c)
+  add_executable(cai_cli cli/main.c cli/options.c cli/status.c cli/login.c
+    cli/review_report.c)
   set_target_properties(cai_cli PROPERTIES OUTPUT_NAME cai SKIP_BUILD_RPATH ON)
   target_link_libraries(cai_cli PRIVATE cai_static
     softline::softline_static libmdf::mdf_static)
@@ -965,7 +966,7 @@ if(CAI_BUILD_CLI)
     cai_configure_c_target(cai_cli_options_test)
     add_test(NAME cai_cli_options COMMAND cai_cli_options_test)
     add_executable(cai_cli_reasoning_test tests/cli_reasoning_test.c
-      cli/options.c cli/status.c cli/login.c)
+      cli/options.c cli/status.c cli/login.c cli/review_report.c)
     target_link_libraries(cai_cli_reasoning_test PRIVATE cai_static
       softline::softline_static libmdf::mdf_static)
     target_link_options(cai_cli_reasoning_test PRIVATE -static)
@@ -977,6 +978,12 @@ if(CAI_BUILD_CLI)
     target_link_options(cai_cli_status_test PRIVATE -static)
     cai_configure_c_target(cai_cli_status_test)
     add_test(NAME cai_cli_status COMMAND cai_cli_status_test)
+    add_executable(cai_cli_review_report_test
+      tests/cli_review_report_test.c cli/review_report.c)
+    target_link_libraries(cai_cli_review_report_test PRIVATE cai_static)
+    target_link_options(cai_cli_review_report_test PRIVATE -static)
+    cai_configure_c_target(cai_cli_review_report_test)
+    add_test(NAME cai_cli_review_report COMMAND cai_cli_review_report_test)
     add_test(NAME cai_cli_sessions
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_sessions_test.sh"
         "$<TARGET_FILE:cai_cli>" "${CMAKE_CURRENT_BINARY_DIR}")
@@ -985,6 +992,9 @@ if(CAI_BUILD_CLI)
         "$<TARGET_FILE:cai_cli>" "${CMAKE_CURRENT_BINARY_DIR}")
     add_test(NAME cai_cli_login
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_login_test.py"
+        "$<TARGET_FILE:cai_cli>")
+    add_test(NAME cai_cli_modes
+      COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_modes_test.py"
         "$<TARGET_FILE:cai_cli>")
     add_test(NAME cai_cli_package_layout
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_package_layout_test.sh"

@@ -25291,6 +25291,11 @@ static void test_smith_profile(test_state *state) {
   char policy_root[] = "/tmp/cai-smith-policy-XXXXXX";
   char policy_dir[PATH_MAX];
   char policy_global_path[PATH_MAX];
+  char policy_codex_dir[PATH_MAX];
+  char policy_codex_agents[PATH_MAX];
+  char policy_home_codex_dir[PATH_MAX];
+  char policy_home_codex_agents[PATH_MAX];
+  char policy_override_path[PATH_MAX];
   char policy_project[PATH_MAX];
   char policy_workspace[PATH_MAX];
   char policy_project_agents[PATH_MAX];
@@ -25299,6 +25304,8 @@ static void test_smith_profile(test_state *state) {
   blob_store_test_state policy_store_state;
   cai_blob_store policy_store;
   test_env_snapshot xdg_config_env;
+  test_env_snapshot codex_home_env;
+  test_env_snapshot policy_home_env;
   int external_fd;
 
   cai_error_init(&error);
@@ -25311,6 +25318,8 @@ static void test_smith_profile(test_state *state) {
   memset(&policy_store_state, 0, sizeof(policy_store_state));
   memset(&policy_store, 0, sizeof(policy_store));
   test_env_capture(&xdg_config_env, "XDG_CONFIG_HOME");
+  test_env_capture(&codex_home_env, "CODEX_HOME");
+  test_env_capture(&policy_home_env, "HOME");
   cai_smith_config_init(&config);
   expect_str(state, "smith_prompt_version", cai_smith_prompt_version(),
              CAI_SMITH_PROMPT_VERSION);
@@ -25333,6 +25342,19 @@ static void test_smith_profile(test_state *state) {
           (int)sizeof(policy_dir) ||
       snprintf(policy_global_path, sizeof(policy_global_path), "%s/AGENTS.md",
                policy_dir) >= (int)sizeof(policy_global_path) ||
+      snprintf(policy_codex_dir, sizeof(policy_codex_dir), "%s/codex",
+               policy_root) >= (int)sizeof(policy_codex_dir) ||
+      snprintf(policy_codex_agents, sizeof(policy_codex_agents), "%s/AGENTS.md",
+               policy_codex_dir) >= (int)sizeof(policy_codex_agents) ||
+      snprintf(policy_home_codex_dir, sizeof(policy_home_codex_dir),
+               "%s/.codex",
+               policy_root) >= (int)sizeof(policy_home_codex_dir) ||
+      snprintf(policy_home_codex_agents, sizeof(policy_home_codex_agents),
+               "%s/AGENTS.md", policy_home_codex_dir) >=
+          (int)sizeof(policy_home_codex_agents) ||
+      snprintf(policy_override_path, sizeof(policy_override_path),
+               "%s/override.md",
+               policy_root) >= (int)sizeof(policy_override_path) ||
       snprintf(policy_project, sizeof(policy_project), "%s/project",
                policy_root) >= (int)sizeof(policy_project) ||
       snprintf(policy_workspace, sizeof(policy_workspace), "%s/child",
@@ -25345,12 +25367,17 @@ static void test_smith_profile(test_state *state) {
                policy_workspace) >= (int)sizeof(policy_workspace_agents) ||
       snprintf(policy_marker, sizeof(policy_marker), "%s/.git",
                policy_project) >= (int)sizeof(policy_marker) ||
-      mkdir(policy_dir, 0700) != 0 || mkdir(policy_project, 0700) != 0 ||
-      mkdir(policy_workspace, 0700) != 0 || mkdir(policy_marker, 0700) != 0) {
+      mkdir(policy_dir, 0700) != 0 || mkdir(policy_codex_dir, 0700) != 0 ||
+      mkdir(policy_home_codex_dir, 0700) != 0 ||
+      mkdir(policy_project, 0700) != 0 || mkdir(policy_workspace, 0700) != 0 ||
+      mkdir(policy_marker, 0700) != 0) {
     test_fail(state, "smith_global_instructions_setup",
               "failed to create global instruction fixtures");
   } else {
     write_file_or_die(policy_global_path, "Global policy.");
+    write_file_or_die(policy_codex_agents, "Codex policy.");
+    write_file_or_die(policy_home_codex_agents, "Home Codex policy.");
+    write_file_or_die(policy_override_path, "Override policy.");
     write_file_or_die(policy_project_agents, "Ancestor policy.");
     write_file_or_die(policy_workspace_agents, "Workspace policy.");
     config.workspace_directory = policy_workspace;
@@ -25374,6 +25401,8 @@ static void test_smith_profile(test_state *state) {
       agent = NULL;
     }
     config.codex_compat_agents_md = 1;
+    expect_int(state, "smith_codex_home_setenv",
+               setenv("CODEX_HOME", policy_codex_dir, 1), 0);
     expect_int(state, "smith_codex_compat_instructions_open",
                cai_client_new_smith_agent(mock.client, &config, &agent, &error),
                CAI_OK);
@@ -25382,11 +25411,14 @@ static void test_smith_profile(test_state *state) {
           CAI_AGENT_IMPL(agent)->developer_instructions, "Global policy.");
       const char *ancestor_policy = strstr(
           CAI_AGENT_IMPL(agent)->developer_instructions, "Ancestor policy.");
+      const char *codex_policy = strstr(
+          CAI_AGENT_IMPL(agent)->developer_instructions, "Codex policy.");
       const char *workspace_policy = strstr(
           CAI_AGENT_IMPL(agent)->developer_instructions, "Workspace policy.");
 
-      if (global_policy == NULL || ancestor_policy == NULL ||
-          workspace_policy == NULL || global_policy >= ancestor_policy ||
+      if (global_policy == NULL || codex_policy == NULL ||
+          ancestor_policy == NULL || workspace_policy == NULL ||
+          global_policy >= codex_policy || codex_policy >= ancestor_policy ||
           ancestor_policy >= workspace_policy) {
         test_fail(state, "smith_codex_compat_instruction_order",
                   "compatibility discovery did not preserve policy order");
@@ -25416,10 +25448,55 @@ static void test_smith_profile(test_state *state) {
       cai_agent_destroy(agent);
       agent = NULL;
     }
+    expect_int(state, "smith_codex_home_unsetenv", unsetenv("CODEX_HOME"), 0);
+    expect_int(state, "smith_codex_home_fallback_setenv",
+               setenv("HOME", policy_root, 1), 0);
+    expect_int(state, "smith_codex_home_fallback_open",
+               cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+               CAI_OK);
+    if (agent != NULL) {
+      const char *global_policy = strstr(
+          CAI_AGENT_IMPL(agent)->developer_instructions, "Global policy.");
+      const char *codex_policy = strstr(
+          CAI_AGENT_IMPL(agent)->developer_instructions, "Home Codex policy.");
+      const char *workspace_policy = strstr(
+          CAI_AGENT_IMPL(agent)->developer_instructions, "Workspace policy.");
+
+      if (global_policy == NULL || codex_policy == NULL ||
+          workspace_policy == NULL || global_policy >= codex_policy ||
+          codex_policy >= workspace_policy) {
+        test_fail(state, "smith_codex_home_fallback_order",
+                  "HOME Codex instructions were missing or out of order");
+      }
+      cai_agent_destroy(agent);
+      agent = NULL;
+    }
+    config.global_agents_md_path = policy_override_path;
+    expect_int(state, "smith_global_instructions_override_open",
+               cai_client_new_smith_agent(mock.client, &config, &agent, &error),
+               CAI_OK);
+    if (agent != NULL) {
+      expect_substr(state, "smith_global_instructions_override_visible",
+                    CAI_AGENT_IMPL(agent)->developer_instructions,
+                    "Override policy.");
+      expect_substr(state, "smith_global_instructions_override_codex",
+                    CAI_AGENT_IMPL(agent)->developer_instructions,
+                    "Home Codex policy.");
+      if (strstr(CAI_AGENT_IMPL(agent)->developer_instructions,
+                 "Global policy.") != NULL) {
+        test_fail(state, "smith_global_instructions_override_default",
+                  "default cai global instructions were still loaded");
+      }
+      cai_agent_destroy(agent);
+      agent = NULL;
+    }
+    config.global_agents_md_path = NULL;
+    test_env_restore(&policy_home_env);
     policy_store_state.reader.text = "Stored global policy.";
     policy_store.load = test_blob_store_load;
     policy_store.context = &policy_store_state;
     config.codex_compat_agents_md = 0;
+    test_env_restore(&codex_home_env);
     config.agent_config_directory = NULL;
     config.global_instruction_store = &policy_store;
     expect_int(state, "smith_global_instruction_store_open",
@@ -25456,10 +25533,15 @@ static void test_smith_profile(test_state *state) {
     unlink(policy_workspace_agents);
     unlink(policy_project_agents);
     unlink(policy_global_path);
+    unlink(policy_codex_agents);
+    unlink(policy_home_codex_agents);
+    unlink(policy_override_path);
     rmdir(policy_marker);
     rmdir(policy_workspace);
     rmdir(policy_project);
     rmdir(policy_dir);
+    rmdir(policy_codex_dir);
+    rmdir(policy_home_codex_dir);
     rmdir(policy_root);
   }
   /* This remains deliberately relative. CTest runs from the build directory,
