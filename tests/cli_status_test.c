@@ -39,6 +39,13 @@ int main(void) {
   failures +=
       check(strcmp(status.elements[1], "ctx --") == 0, "unknown context");
   failures += check(strcmp(status.elements[2], "~/project") == 0, "home path");
+  quota.has_credit_balance = 1;
+  quota.credit_balance = 42.5;
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
+                       &goal);
+  failures += check(status.count == 3U && status.usage[0] == '\0',
+                    "credits never appear in element bar");
+  quota.has_credit_balance = 0;
   strcpy(status.branch, "feature/ui");
   goal.has_goal = 1;
   goal.status = "active";

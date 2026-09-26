@@ -245,8 +245,13 @@ accounts and any shorter window returned by the backend. Quota is fetched at
 startup and after completed turns, with automatic requests limited to one
 attempt every five minutes.
 Unavailable values are hidden.
+Credits appear only in
+.BR /status ,
+when the provider reports them.
 The message above it shows the provider's concise reasoning summary and the
-active turn's elapsed time. Before a summary arrives it shows
+active turn's elapsed time. Softline supplies its default
+.B "! "
+prefix to that message. Before a summary arrives it shows
 .BR Working .
 After the turn settles it shows
 .B Worked for

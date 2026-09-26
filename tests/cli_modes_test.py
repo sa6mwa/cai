@@ -4,11 +4,15 @@ import http.server
 import json
 import os
 import pathlib
+import pty
+import re
+import select
 import socketserver
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 CLI = sys.argv[1]
 REPORT = {
@@ -119,6 +123,44 @@ with tempfile.TemporaryDirectory() as directory:
         return subprocess.run(base + list(args), cwd=root, env=env,
                               text=True, capture_output=True, timeout=10)
 
+    def run_interactive(*args):
+        master, slave = pty.openpty()
+        process = subprocess.Popen(base + list(args), cwd=root, env=env,
+                                   stdin=slave, stdout=slave,
+                                   stderr=subprocess.PIPE)
+        os.close(slave)
+        output = bytearray()
+        try:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                ready, _, _ = select.select([master], [], [], 0.1)
+                if ready:
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                if b"Worked for" in output:
+                    os.write(master, b"/quit\r")
+                    break
+                if process.poll() is not None:
+                    break
+            try:
+                _, stderr = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired as exc:
+                raise AssertionError(
+                    bytes(output).decode(errors="replace")) from exc
+            rendered = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", bytes(output))
+            return (process.returncode, rendered.decode(errors="replace"),
+                    stderr.decode(errors="replace"))
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+            os.close(master)
+
     try:
         server.responses[:] = ["first reply", "second reply"]
         completed = run("-Nni", "first task", "-i", "second task")
@@ -134,6 +176,14 @@ with tempfile.TemporaryDirectory() as directory:
         assert resumed.returncode == 0, (resumed.stdout, resumed.stderr)
         assert "second reply" in resumed.stdout and "resumed reply" in resumed.stdout
         assert "third task" in server.requests[0]
+        server.requests.clear()
+
+        server.responses[:] = ["interactive reply"]
+        status_code, terminal_output, terminal_error = run_interactive(
+            "-N", "-i", "verify status prefix")
+        assert status_code == 0, (terminal_output, terminal_error)
+        assert "! Working" in terminal_output, terminal_output
+        assert "! Worked for" in terminal_output, terminal_output
         server.requests.clear()
 
         server.responses[:] = ["working on goal", "__complete_goal__", "goal done"]

@@ -438,8 +438,7 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
     return rc;
   }
   cai_cli_status_build(&state->status, model, effort, context_percent,
-                       has_context,
-                       state->quota_client != NULL ? &state->quota : NULL,
+                       has_context, state->auth != NULL ? &state->quota : NULL,
                        metrics.session_usage.estimated_spend_usd, &goal);
   if (sl_set_status_busy(state->sl, busy) != SL_OK ||
       sl_set_status_spinner(state->sl, busy) != SL_OK ||
@@ -742,10 +741,9 @@ static int cli_handle_command(cli_state *state, const char *line,
     if (rc != CAI_OK)
       return rc;
     cli_refresh_quota(state, 1);
-    if (cai_cli_status_markdown(markdown, sizeof(markdown), model, effort,
-                                state->options.provider, &metrics,
-                                state->quota_client != NULL ? &state->quota
-                                                            : NULL) != 0 ||
+    if (cai_cli_status_markdown(
+            markdown, sizeof(markdown), model, effort, state->options.provider,
+            &metrics, state->auth != NULL ? &state->quota : NULL) != 0 ||
         cli_text(state, markdown, strlen(markdown)) != 0 ||
         cli_finish_response(state) != 0) {
       return CAI_ERR_TRANSPORT;
@@ -1096,10 +1094,8 @@ int main(int argc, char **argv) {
   mdf_config.margin_left = state.width >= 5 ? 2 : 0;
   mdf_config.boring =
       state.options.review ? !isatty(STDERR_FILENO) : !state.interactive;
-  if ((state.interactive &&
-       (sl_set_bounds(state.sl, 0, 0, 0, 0) != SL_OK ||
-        sl_set_statusline(state.sl, 1, 0) != SL_OK ||
-        sl_set_status_message_prefix(state.sl, "") != SL_OK)) ||
+  if ((state.interactive && (sl_set_bounds(state.sl, 0, 0, 0, 0) != SL_OK ||
+                             sl_set_statusline(state.sl, 1, 0) != SL_OK)) ||
       (!state.options.review && sl_output_stream_begin(state.sl) != SL_OK) ||
       mdf_create(MDF_FORMAT_ANSI, &mdf_config, &state.renderer) != MDF_OK) {
     fputs("cai: failed to initialize terminal renderers\n", stderr);
