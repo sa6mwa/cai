@@ -231,6 +231,31 @@ static int offline_runtime(cai_cli_pouch *pouch, const char *id,
   return cai_agent_runtime_open(*client, &config, runtime, error);
 }
 
+static int export_path(char *path, size_t capacity, const char *root,
+                       const char *id, cai_error *error) {
+  const char *base;
+  int n;
+  if (root != NULL)
+    n = snprintf(path, capacity, "%s/%s", root, id);
+  else {
+    base = getenv("XDG_DATA_HOME");
+    if (base != NULL && base[0] == '/')
+      n = snprintf(path, capacity, "%s/cai/exports/%s", base, id);
+    else {
+      base = getenv("HOME");
+      if (base == NULL || base[0] != '/')
+        return cai_cli_error(
+            error, CAI_ERR_INVALID,
+            "set HOME or XDG_DATA_HOME for conversation exports");
+      n = snprintf(path, capacity, "%s/.local/share/cai/exports/%s", base, id);
+    }
+  }
+  if (n < 0 || (size_t)n >= capacity)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "export directory path too long");
+  return CAI_OK;
+}
+
 static int export_directory(char *path, cai_error *error) {
   char *cursor;
   struct stat status;
@@ -326,15 +351,8 @@ int cai_cli_session_export(cai_cli_pouch *pouch, const char *id,
     rc = offline_runtime(pouch, id, &metadata, &storage, &callbacks, &client,
                          &runtime, error);
   if (rc == CAI_OK) {
-    if (export_root == NULL)
-      rc = snprintf(directory, sizeof(directory), "%s/exports/%s",
-                    pouch->state_directory, id);
-    else
-      rc = snprintf(directory, sizeof(directory), "%s/%s", export_root, id);
-    if (rc < 0 || (size_t)rc >= sizeof(directory))
-      rc = cai_cli_error(error, CAI_ERR_INVALID,
-                         "export directory path too long");
-    else
+    rc = export_path(directory, sizeof(directory), export_root, id, error);
+    if (rc == CAI_OK)
       rc = export_directory(directory, error);
   }
   if (rc == CAI_OK && (snprintf(json_path, sizeof(json_path), "%s/%s.jsonl",

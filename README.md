@@ -186,7 +186,8 @@ preview, clipped to the terminal width or 80 columns without a terminal.
 Saved prompts and assistant text replay without repeating tool side effects.
 
 `--export ID` and `/export [ID]` write paired `ID.jsonl` and `ID.md` files
-under `$XDG_STATE_HOME/cai/exports/ID` by default. `/export` selects the active
+under `$XDG_DATA_HOME/cai/exports/ID` by default (falling back to
+`~/.local/share/cai/exports/ID`). `/export` selects the active
 session. `--export-dir DIR` overrides the export root. JSONL contains the
 complete resumable checkpoint and journal; Markdown uses libcai's existing
 Markdown exporter, including its instructions, conversation, runtime, and

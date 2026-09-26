@@ -46,7 +46,7 @@ static void cai_cli_help(void) {
       "      --export ID              Export resumable JSONL and Markdown\n"
       "      --import FILE            Import JSONL as a new session and exit\n"
       "      --export-dir DIR         Export root (default "
-      "state/cai/exports)\n",
+      "$XDG_DATA_HOME/cai/exports)\n",
       stdout);
   fputs("  -C, --directory DIR          Change to DIR before starting\n"
         "  -i, --instruction TEXT       Submit a prompt (repeatable)\n"

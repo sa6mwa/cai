@@ -131,7 +131,8 @@ libcai's existing exporter, including instructions and runtime/goal metadata.
 No model requests or tools run during export. Files are plaintext, mode 0600.
 .TP
 .BI \-\-export-dir " DIR"
-Override the export root. Default: cai's state directory followed by exports.
+Override the export root. Default: $XDG_DATA_HOME/cai/exports, falling back to
+~/.local/share/cai/exports.
 Each conversation writes ID/ID.jsonl and ID/ID.md beneath this root.
 .TP
 .BI \-\-import " FILE"
@@ -342,10 +343,12 @@ losing it makes encrypted data unrecoverable. Cai refuses to generate a
 replacement for an existing root. Uses ~/.local/state/cai/pouch.key when
 XDG_STATE_HOME is unset. The cai state directory must be private (mode 0700).
 .TP
-.I $XDG_STATE_HOME/cai/exports/ID/ID.jsonl
+.I $XDG_DATA_HOME/cai/exports/ID/ID.jsonl
 Default resumable conversation export, including checkpoint and journal.
+Uses ~/.local/share/cai/exports/ID/ID.jsonl when XDG_DATA_HOME is unset, empty,
+or relative.
 .TP
-.I $XDG_STATE_HOME/cai/exports/ID/ID.md
+.I $XDG_DATA_HOME/cai/exports/ID/ID.md
 Default Markdown conversation export. Exports are plaintext private files;
 the authentication namespace is excluded.
 .TP

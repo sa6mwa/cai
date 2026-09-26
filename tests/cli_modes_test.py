@@ -124,6 +124,7 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
     env.update({"HOME": str(root), "XDG_STATE_HOME": str(root / "state"),
                 "XDG_CONFIG_HOME": str(root / "config"),
                 "XDG_CACHE_HOME": str(root / "cache"),
+                "XDG_DATA_HOME": str(root / "data"),
                 "CAI_API_KEY": "fixture", "NO_PROXY": "127.0.0.1,localhost",
                 "no_proxy": "127.0.0.1,localhost"})
     for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy",
@@ -223,6 +224,17 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
         exported = run("--export", identifier)
         assert exported.returncode == 0, exported.stderr
         json_file, markdown_file = map(pathlib.Path, exported.stdout.splitlines())
+        assert json_file.parent == root / "data/cai/exports" / identifier
+        assert not (root / "state/cai/exports").exists()
+        for value in (None, "", "relative-data-home"):
+            fallback = run("--export", identifier, overrides={"XDG_DATA_HOME": value})
+            assert fallback.returncode == 0, fallback.stderr
+            fallback_files = list(map(pathlib.Path, fallback.stdout.splitlines()))
+            assert fallback_files[0].parent == root / ".local/share/cai/exports" / identifier
+            assert fallback_files[0].read_bytes() == json_file.read_bytes()
+        override_export = run("--export", identifier, "--export-dir", "relative-exports")
+        assert override_export.returncode == 0, override_export.stderr
+        assert (work / "relative-exports" / identifier / f"{identifier}.md").is_file()
         records = [json.loads(line) for line in json_file.read_text().splitlines()]
         assert records[0]["record_type"] == "checkpoint"
         assert records[0]["applied_event_sequence"] > 0
