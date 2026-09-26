@@ -59,7 +59,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 with tempfile.TemporaryDirectory(dir=pathlib.Path(cli).parent) as directory:
     root = pathlib.Path(directory)
-    env = os.environ.copy()
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("LOG_")}
     env.update(HOME=str(root), XDG_STATE_HOME=str(root / "state"),
                NO_PROXY="127.0.0.1", no_proxy="127.0.0.1")
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
@@ -73,6 +74,7 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(cli).parent) as directory:
                                     text=True, timeout=10)
             assert result.returncode == 0, result.stderr
             assert result.stdout == "No conversations.\n"
+            assert result.stderr == "", result.stderr
             path, request = Handler.requests[-1]
             parsed = urllib.parse.urlsplit(path)
             assert parsed.path == "/v1/query", path
@@ -140,6 +142,7 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(cli).parent) as directory:
                                 timeout=10)
         assert result.returncode == 0, result.stderr
         assert result.stdout == "No conversations.\n"
+        assert result.stderr == "", result.stderr
     finally:
         server.shutdown()
         server.server_close()

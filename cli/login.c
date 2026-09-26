@@ -188,6 +188,12 @@ int cai_cli_login(const cai_blob_store *storage, pslog_logger *logger) {
     cai_cli_log_error(logger, "start ChatGPT login", &error);
     goto done;
   }
+  /* Login instructions are utility output, independent of the log threshold. */
+  if (printf("Open this URL to authenticate:\n%s\n\n", authorize_url) < 0 ||
+      fflush(stdout) != 0) {
+    logger->error(logger, "write login instructions", NULL, 0U);
+    goto done;
+  }
   field = pslog_str("url", authorize_url);
   logger->info(logger, "Open this URL to authenticate", &field, 1U);
   if (cai_chatgpt_login_open_browser(authorize_url, &error) != CAI_OK) {
@@ -195,6 +201,11 @@ int cai_cli_login(const cai_blob_store *storage, pslog_logger *logger) {
     logger->warn(logger, "browser did not open; use the URL above", &field, 1U);
     cai_error_cleanup(&error);
     cai_error_init(&error);
+  }
+  if (printf("Waiting for OAuth callback on %s\n", redirect_uri) < 0 ||
+      fflush(stdout) != 0) {
+    logger->error(logger, "write login callback location", NULL, 0U);
+    goto done;
   }
   field = pslog_str("redirect_uri", redirect_uri);
   logger->info(logger, "Waiting for OAuth callback", &field, 1U);
@@ -234,12 +245,23 @@ int cai_cli_login(const cai_blob_store *storage, pslog_logger *logger) {
     write_http_response(client_fd, &login_response);
     close(client_fd);
     callback_completed = login_response.completed;
+    if (callback_completed && !login->completed(login) && rc == CAI_OK) {
+      field = pslog_i64("http_status", login_response.status);
+      logger->error(logger, "ChatGPT login was rejected or cancelled", &field,
+                    1U);
+    }
     if (response_owned)
       cai_chatgpt_login_response_cleanup(&login_response);
     if (login->completed(login)) {
       logger->info(logger,
                    "ChatGPT auth saved to cai.auth in the selected lockd store",
                    NULL, 0U);
+      if (puts("ChatGPT auth saved to cai.auth in the selected lockd store") ==
+              EOF ||
+          fflush(stdout) != 0) {
+        logger->error(logger, "write login result", NULL, 0U);
+        break;
+      }
       exit_code = 0;
       break;
     }

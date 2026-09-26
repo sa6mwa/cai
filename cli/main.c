@@ -1154,6 +1154,8 @@ int main(int argc, char **argv) {
   char auth_path[PATH_MAX];
   const char *auth_file;
   char *line;
+  pslog_level default_log_level;
+  int utility_mode;
   int parsed;
   int handled;
   int rc;
@@ -1167,23 +1169,29 @@ int main(int argc, char **argv) {
   cai_error_init(&error);
   parsed = cai_cli_parse_options(argc, argv, &state.options);
   if (parsed <= 0) {
-    if (parsed < 0 && cai_cli_log_open(&state.log, &error) == CAI_OK)
+    if (parsed < 0 &&
+        cai_cli_log_open(&state.log, PSLOG_LEVEL_WARN, 0, &error) == CAI_OK)
       cli_diagnostic(&state, PSLOG_LEVEL_ERROR, state.options.diagnostic);
     result = parsed == 0 ? 0 : 2;
     goto cleanup;
   }
   state.batch = state.options.review || state.options.non_interactive;
+  utility_mode = state.options.login || state.options.list ||
+                 state.options.resume_list || state.options.export_id != NULL ||
+                 state.options.import_file != NULL;
+  default_log_level = utility_mode ? PSLOG_LEVEL_WARN : PSLOG_LEVEL_TRACE;
   if (state.options.directory != NULL && chdir(state.options.directory) != 0) {
     int change_error = errno;
     pslog_field path = pslog_str("directory", state.options.directory);
-    if (cai_cli_log_open(&state.log, &error) == CAI_OK)
+    if (cai_cli_log_open(&state.log, default_log_level, 0, &error) == CAI_OK)
       cai_cli_log_message(state.log.logger, PSLOG_LEVEL_ERROR, "chdir",
                           "diagnostic", strerror(change_error),
                           strlen(strerror(change_error)), &path, 1U);
     result = 2;
     goto cleanup;
   }
-  if (cai_cli_log_open(&state.log, &error) != CAI_OK)
+  if (cai_cli_log_open(&state.log, default_log_level,
+                       !state.batch && !utility_mode, &error) != CAI_OK)
     goto cleanup;
   (void)setlocale(LC_CTYPE, "");
   result = 1;
@@ -1192,9 +1200,7 @@ int main(int argc, char **argv) {
     result = 2;
     goto cleanup;
   }
-  if (!state.batch && !state.options.login && !state.options.list &&
-      !state.options.resume_list && state.options.export_id == NULL &&
-      state.options.import_file == NULL) {
+  if (!state.batch && !utility_mode) {
     rc = cai_cli_log_interactive(&state.log, &error);
     if (rc != CAI_OK) {
       cli_print_error(&state, "open interactive log", &error);

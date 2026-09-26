@@ -150,6 +150,13 @@ static int log_write(void *context, const char *data, size_t count,
   return n < 0 ? log->failed : 0;
 }
 
+static int log_isatty(void *context) {
+  cai_cli_log *log;
+  log = (cai_cli_log *)context;
+  /* The interactive sink is a file, even before its startup file is opened. */
+  return !log->interactive && isatty(log->fd >= 0 ? log->fd : STDERR_FILENO);
+}
+
 static int cache_directory(cai_cli_log *log, cai_error *error) {
   const char *base;
   char *cursor;
@@ -191,20 +198,23 @@ static int cache_directory(cai_cli_log *log, cai_error *error) {
   return CAI_OK;
 }
 
-int cai_cli_log_open(cai_cli_log *log, cai_error *error) {
+int cai_cli_log_open(cai_cli_log *log, pslog_level default_level,
+                     int interactive, cai_error *error) {
   pslog_config config;
   memset(log, 0, sizeof(*log));
   log->fd = -1;
+  log->interactive = interactive;
   log->wakeup_fd = -1;
   if (pthread_mutex_init(&log->lock, NULL) != 0)
     return cai_cli_error(error, CAI_ERR_TRANSPORT, "initialize logging lock");
   log->initialized = 1;
   pslog_default_config(&config);
   config.mode = PSLOG_MODE_JSON;
-  config.min_level = PSLOG_LEVEL_TRACE;
+  config.min_level = default_level;
+  config.color = PSLOG_COLOR_AUTO;
   config.output.write = log_write;
   config.output.close = NULL;
-  config.output.isatty = NULL;
+  config.output.isatty = log_isatty;
   config.output.userdata = log;
   config.output.owned = 0;
   log->root = pslog_new_from_env("LOG_", &config);

@@ -230,7 +230,15 @@ Earlier replies, replay, reasoning, tools, and child reviews stay in the log.
 Activity logging is immediate; final stdout selection uses a private,
 unlinked file-backed spool with bounded reads, then renders through libmdf.
 Help, version, listing, export, and import keep their normal stdout results.
+Utility commands (`--list`/`-l`, `--resume` without an ID, `--export`,
+`--import`, and `--login`) default to warning-level diagnostics on stderr.
+Agent sessions and review modes retain all levels by default. Login URLs,
+callback guidance, and successful login results are normal stdout output.
+`LOG_LEVEL=info`, `debug`, or `trace` enables more utility diagnostics through
+pslog's normal environment overrides.
 
+Color defaults to automatic terminal detection for stdout/stderr logs;
+redirected output and interactive log files stay uncolored.
 Native pslog environment settings apply, including `LOG_MODE`, `LOG_LEVEL`,
 `LOG_NO_COLOR`, `LOG_FORCE_COLOR`, `LOG_PALETTE`, `LOG_VERBOSE_FIELDS`,
 `LOG_DISABLE_TIMESTAMP`, `LOG_TIME_FORMAT`, `LOG_UTC`, `LOG_OUTPUT`, and

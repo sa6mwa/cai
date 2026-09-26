@@ -120,7 +120,8 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
     server = Server(("127.0.0.1", 0))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    env = os.environ.copy()
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("LOG_")}
     env.update({"HOME": str(root), "XDG_STATE_HOME": str(root / "state"),
                 "XDG_CONFIG_HOME": str(root / "config"),
                 "XDG_CACHE_HOME": str(root / "cache"),
@@ -144,11 +145,13 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
         return subprocess.run(base + list(args), cwd=root, env=selected_env,
                               text=True, capture_output=True, timeout=10)
 
-    def run_interactive(*args):
+    def run_interactive(*args, overrides=None, terminal_stderr=False):
         master, slave = pty.openpty()
-        process = subprocess.Popen(base + list(args), cwd=root, env=env,
+        selected_env = env.copy()
+        selected_env.update(overrides or {})
+        process = subprocess.Popen(base + list(args), cwd=root, env=selected_env,
                                    stdin=slave, stdout=slave,
-                                   stderr=subprocess.PIPE)
+                                   stderr=slave if terminal_stderr else subprocess.PIPE)
         os.close(slave)
         output = bytearray()
         try:
@@ -183,7 +186,7 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
                 output.extend(chunk)
             rendered = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", bytes(output))
             return (process.returncode, rendered.decode(errors="replace"),
-                    stderr.decode(errors="replace"))
+                    stderr.decode(errors="replace") if stderr is not None else "")
         finally:
             if process.poll() is None:
                 process.kill()
@@ -219,10 +222,64 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
 
         listed = run("-l")
         assert listed.returncode == 0, listed.stderr
+        assert listed.stderr == "", listed.stderr
+        long_list = run("--list")
+        assert long_list.returncode == 0 and long_list.stdout == listed.stdout
+        assert long_list.stderr == "", long_list.stderr
+        for level in ("info", "debug", "trace"):
+            verbose_list = run("--list", overrides={"LOG_LEVEL": level})
+            assert verbose_list.returncode == 0 and verbose_list.stdout == listed.stdout
+            logs = [json.loads(line) for line in verbose_list.stderr.splitlines()]
+            assert any(entry.get("lvl") == level for entry in logs), logs
+            assert "\x1b" not in verbose_list.stderr
+        utility_file = root / "utility.log"
+        redirected_list = run("--list", overrides={"LOG_LEVEL": "debug",
+                              "LOG_OUTPUT": str(utility_file)})
+        assert redirected_list.returncode == 0 and redirected_list.stderr == ""
+        assert redirected_list.stdout == listed.stdout
+        assert any(entry.get("lvl") == "debug" for entry in
+                   map(json.loads, utility_file.read_text().splitlines()))
+        for flag in ("--help", "--version"):
+            utility = run(flag)
+            assert utility.returncode == 0 and utility.stdout and utility.stderr == ""
+        bad_option = run("--invalid-option")
+        assert bad_option.returncode != 0 and bad_option.stdout == ""
+        assert any(entry.get("lvl") == "error" for entry in
+                   map(json.loads, bad_option.stderr.splitlines()))
+        # Auto color follows the real stderr destination, including JSON output.
+        for mode in ("json", "console"):
+            terminal_env = env.copy()
+            terminal_env.pop("NO_COLOR", None)
+            terminal_env["TERM"] = "xterm-256color"
+            terminal_env["LOG_MODE"] = mode
+            master, slave = pty.openpty()
+            try:
+                colored = subprocess.run(base + ["--invalid-option"], env=terminal_env,
+                                         stdout=subprocess.PIPE, stderr=slave, timeout=10)
+                os.close(slave)
+                slave = -1
+                colored_log = bytearray()
+                while select.select([master], [], [], 1)[0]:
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    colored_log.extend(chunk)
+                assert colored.returncode != 0 and colored.stdout == b""
+                assert b"\x1b[" in colored_log, (mode, colored_log)
+            finally:
+                if slave >= 0:
+                    os.close(slave)
+                os.close(master)
+            plain = run("--invalid-option", overrides={"LOG_MODE": mode})
+            assert plain.returncode != 0 and "\x1b" not in plain.stderr
         identifier = listed.stdout.split()[0]
         assert "first task" in listed.stdout and len(listed.stdout.rstrip()) <= 80
         exported = run("--export", identifier)
         assert exported.returncode == 0, exported.stderr
+        assert exported.stderr == "", exported.stderr
         json_file, markdown_file = map(pathlib.Path, exported.stdout.splitlines())
         assert json_file.parent == root / "data/cai/exports" / identifier
         assert not (root / "state/cai/exports").exists()
@@ -249,9 +306,11 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
         imported_directory.mkdir()
         imported = run("-C", str(imported_directory), "--import", str(json_file))
         assert imported.returncode == 0, imported.stderr
+        assert imported.stderr == "", imported.stderr
         new_id = imported.stdout.strip()
         assert new_id != identifier
         resumed_list = run("-C", str(imported_directory), "--resume")
+        assert resumed_list.returncode == 0 and resumed_list.stderr == ""
         assert new_id in resumed_list.stdout and identifier not in resumed_list.stdout
         roundtrip = run("--export", new_id, "--export-dir", str(root / "exports"))
         assert roundtrip.returncode == 0, roundtrip.stderr
@@ -271,6 +330,8 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
             invalid_file.write_text(invalid)
             failed_import = run("--import", str(invalid_file))
             assert failed_import.returncode != 0, (index, failed_import.stdout)
+            assert any(entry.get("lvl") == "error" for entry in
+                       map(json.loads, failed_import.stderr.splitlines()))
             assert run("-l").stdout == before_failed_import, "failed import published a session"
         assert not server.requests
 
@@ -300,6 +361,17 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
         assert "No conversations." in selected_store.stdout
         assert custom_root.is_dir()
         assert run("-l").stdout == before_failed_import
+
+        server.responses[:] = ["console cache reply"]
+        status_code, terminal_output, terminal_error = run_interactive(
+            "-N", "-i", "console cache prompt", overrides={"LOG_MODE": "console"},
+            terminal_stderr=True)
+        assert status_code == 0 and terminal_error == "", (terminal_output, terminal_error)
+        console_id = run("--resume").stdout.split()[1]
+        console_cache = (root / "cache/cai" / f"{console_id}.log").read_text()
+        assert "console cache prompt" in console_cache and "INF" in console_cache
+        assert "\x1b" not in console_cache
+        server.requests.clear()
 
         server.responses[:] = ["interactive reply"]
         status_code, terminal_output, terminal_error = run_interactive(

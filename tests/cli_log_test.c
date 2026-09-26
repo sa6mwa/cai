@@ -104,7 +104,7 @@ int main(int argc, char **argv) {
   CHECK(unsetenv("LOG_FORCE_COLOR") == 0);
   CHECK(unsetenv("LOG_VERBOSE_FIELDS") == 0);
   cai_error_init(&error);
-  CHECK(cai_cli_log_open(&log, &error) == CAI_OK);
+  CHECK(cai_cli_log_open(&log, PSLOG_LEVEL_TRACE, 1, &error) == CAI_OK);
   CHECK(cai_cli_log_interactive(&log, &error) == CAI_OK);
   strcpy(startup_path, log.path);
   log.logger->debug(log.logger, "startup diagnostic", NULL, 0U);
@@ -178,7 +178,7 @@ int main(int argc, char **argv) {
   CHECK(setenv("LOG_MODE", "console", 1) == 0);
   CHECK(setenv("LOG_NO_COLOR", "false", 1) == 0);
   CHECK(setenv("LOG_FORCE_COLOR", "true", 1) == 0);
-  CHECK(cai_cli_log_open(&log, &error) == CAI_OK);
+  CHECK(cai_cli_log_open(&log, PSLOG_LEVEL_TRACE, 1, &error) == CAI_OK);
   CHECK(cai_cli_log_interactive(&log, &error) == CAI_OK);
   log.logger->info(log.logger, "message says WRN fake warning", NULL, 0U);
   log.logger->warn(log.logger, "real console warning", NULL, 0U);
@@ -193,7 +193,7 @@ int main(int argc, char **argv) {
   CHECK(setenv("LOG_NO_COLOR", "true", 1) == 0);
   CHECK(setenv("LOG_VERBOSE_FIELDS", "true", 1) == 0);
   CHECK(setenv("LOG_LEVEL", "warn", 1) == 0);
-  CHECK(cai_cli_log_open(&log, &error) == CAI_OK);
+  CHECK(cai_cli_log_open(&log, PSLOG_LEVEL_TRACE, 1, &error) == CAI_OK);
   CHECK(cai_cli_log_interactive(&log, &error) == CAI_OK);
   log.logger->info(log.logger, "filtered info", NULL, 0U);
   log.logger->warn(log.logger, "verbose warning", NULL, 0U);
@@ -212,7 +212,7 @@ int main(int argc, char **argv) {
   CHECK(snprintf(tee_output, sizeof(tee_output), "default+%s", extra_path) <
         (int)sizeof(tee_output));
   CHECK(setenv("LOG_OUTPUT", tee_output, 1) == 0);
-  CHECK(cai_cli_log_open(&log, &error) == CAI_OK);
+  CHECK(cai_cli_log_open(&log, PSLOG_LEVEL_TRACE, 1, &error) == CAI_OK);
   CHECK(cai_cli_log_interactive(&log, &error) == CAI_OK);
   CHECK(cai_cli_log_session(&log, "tee", &error) == CAI_OK);
   log.logger->warn(log.logger, "tee warning", NULL, 0U);
@@ -227,7 +227,7 @@ int main(int argc, char **argv) {
   CHECK(unsetenv("LOG_OUTPUT") == 0);
   CHECK(setenv("HOME", root, 1) == 0);
   CHECK(unsetenv("XDG_CACHE_HOME") == 0);
-  CHECK(cai_cli_log_open(&log, &error) == CAI_OK);
+  CHECK(cai_cli_log_open(&log, PSLOG_LEVEL_TRACE, 1, &error) == CAI_OK);
   CHECK(cai_cli_log_interactive(&log, &error) == CAI_OK);
   CHECK(strstr(log.directory, "/.cache/cai") != NULL);
   CHECK(cai_cli_log_close(&log) == 0);

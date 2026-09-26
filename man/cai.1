@@ -322,6 +322,13 @@ immediate. Review findings retain their selected Markdown or JSON format;
 .B \-\-out
 keeps standard output empty. Utility commands retain their normal stdout results.
 .PP
+Listing, resume listings, export, import, and login default to warning-level
+diagnostics on standard error. Agent sessions and review modes keep all levels
+by default. LOG_LEVEL overrides these defaults. Login URLs, callback guidance,
+and successful login results are normal standard output.
+.PP
+Color defaults to automatic terminal detection for stdout/stderr logs.
+Redirected output and interactive log files stay uncolored.
 Native environment settings include LOG_MODE, LOG_LEVEL, LOG_NO_COLOR,
 LOG_FORCE_COLOR, LOG_PALETTE, LOG_VERBOSE_FIELDS, LOG_DISABLE_TIMESTAMP,
 LOG_TIME_FORMAT, LOG_UTC, LOG_OUTPUT, and LOG_OUTPUT_FILE_MODE.

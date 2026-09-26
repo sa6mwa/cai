@@ -10,6 +10,7 @@ typedef struct cai_cli_log {
   pslog_logger *logger;
   pthread_mutex_t lock;
   int initialized;
+  int interactive;
   int fd;
   int wakeup_fd;
   int failed;
@@ -24,7 +25,8 @@ typedef struct cai_cli_log {
   unsigned long dropped;
 } cai_cli_log;
 
-int cai_cli_log_open(cai_cli_log *log, cai_error *error);
+int cai_cli_log_open(cai_cli_log *log, pslog_level default_level,
+                     int interactive, cai_error *error);
 int cai_cli_log_interactive(cai_cli_log *log, cai_error *error);
 int cai_cli_log_session(cai_cli_log *log, const char *id, cai_error *error);
 int cai_cli_log_notices(cai_cli_log *log, int (*visit)(void *, const char *),
