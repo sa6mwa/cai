@@ -40,12 +40,13 @@ int main(void) {
       check(strcmp(status.elements[1], "ctx --") == 0, "unknown context");
   failures += check(strcmp(status.elements[2], "~/project") == 0, "home path");
   quota.has_credit_balance = 1;
-  quota.credit_balance = 42.5;
+  quota.credit_balance = 42.75;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
                        &goal);
-  failures += check(status.count == 4U && status.usage[0] == '\0' &&
-                        strcmp(status.elements[3], "crd 42.5") == 0,
-                    "available credits without quota windows");
+  failures +=
+      check(status.count == 4U && status.usage[0] == '\0' &&
+                strcmp(status.elements[3], "crd 43") == 0,
+            "available fractional credits round up without quota windows");
   quota.credit_balance = 42.0;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
                        &goal);
@@ -56,8 +57,8 @@ int main(void) {
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
                        &goal);
   failures +=
-      check(status.count == 4U && strcmp(status.elements[3], "crd 42.25") == 0,
-            "fractional credits retain precision");
+      check(status.count == 4U && strcmp(status.elements[3], "crd 42") == 0,
+            "fractional credits round down");
   quota.credit_balance = 0.0;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
                        &goal);
@@ -73,7 +74,7 @@ int main(void) {
                     "unlimited credits without numeric balance");
   quota.has_credit_balance = 1;
   quota.credits_unlimited = 0;
-  quota.credit_balance = 42.5;
+  quota.credit_balance = 42.75;
   strcpy(status.branch, "feature/ui");
   goal.has_goal = 1;
   goal.status = "active";
@@ -90,8 +91,7 @@ int main(void) {
       check(strcmp(status.elements[1], "ctx 37%") == 0, "context rounded");
   failures +=
       check(strcmp(status.elements[3], "w 72% 5h 48%") == 0, "quota order");
-  failures +=
-      check(strcmp(status.elements[4], "crd 42.5") == 0, "credits order");
+  failures += check(strcmp(status.elements[4], "crd 43") == 0, "credits order");
   failures +=
       check(strcmp(status.elements[5], "feature/ui") == 0, "branch order");
   failures += check(strcmp(status.elements[6], "goal active: Ship agent") == 0,

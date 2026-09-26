@@ -135,8 +135,9 @@ ChatGPT subscription quota remaining and credits, the Git branch when present,
 and an active goal. Quota appears as `w 72%` when only a weekly window is available,
 or `w 72% 1h 48%` when the backend also reports an hourly window. Windows are
 identified by their returned duration. Available credits follow the quota as
-`crd 42.5` or `crd unlimited`, without trailing decimal zeroes; missing credit
-values are hidden. `libcai` exposes windows and available credit balance through
+`crd 43` or `crd unlimited`, rounded to whole numbers; `/status` retains
+fractional balances. Missing credit values are hidden. `libcai` exposes windows
+and available credit balance through
 `cai_client_chatgpt_quota` in `<cai/quota.h>`. The status
 bar fetches quota at startup and after completed turns, at most once every five
 minutes automatically. `/status` fetches quota on every invocation, updates the
