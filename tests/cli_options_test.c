@@ -5,6 +5,52 @@
 #include <stdio.h>
 #include <string.h>
 
+static int storage_options(void) {
+  cai_cli_options options;
+  char arguments[][64] = {"cai",
+                          "--lockd",
+                          "https://lockd.example.test",
+                          "--lockd-client-pem",
+                          "client.pem",
+                          "--export",
+                          "session",
+                          "--export-dir",
+                          "exports"};
+  char cases[][7][64] = {{"cai", "-l"},
+                         {"cai", "--resume"},
+                         {"cai", "--resume", "--lockd", "pouch:///tmp/pouch"},
+                         {"cai", "--import", "conversation.jsonl"},
+                         {"cai", "--list", "--import", "conversation.jsonl"},
+                         {"cai", "--export", "id", "-i", "work"},
+                         {"cai", "--import", "conversation.jsonl", "--new"},
+                         {"cai", "--list", "--lockd", "file:///tmp/store"},
+                         {"cai", "--login", "--auth-json", "auth.json"},
+                         {"cai", "--export"}};
+  int lengths[] = {2, 2, 4, 3, 4, 5, 4, 4, 4, 2};
+  char *argv[9];
+  size_t i;
+  size_t j;
+  for (i = 0U; i < 9U; i++)
+    argv[i] = arguments[i];
+  if (cai_cli_parse_options(9, argv, &options) != 1 ||
+      strcmp(options.lockd, arguments[2]) != 0 ||
+      strcmp(options.lockd_client_pem, "client.pem") != 0 ||
+      strcmp(options.export_id, "session") != 0 ||
+      strcmp(options.export_dir, "exports") != 0)
+    return 1;
+  for (i = 0U; i < sizeof(lengths) / sizeof(lengths[0]); i++) {
+    for (j = 0U; j < (size_t)lengths[i]; j++)
+      argv[j] = cases[i][j];
+    if (cai_cli_parse_options(lengths[i], argv, &options) != (i < 4U ? 1 : -1))
+      return 1;
+    if ((i == 0U && (!options.list || options.login)) ||
+        ((i == 1U || i == 2U) && !options.resume_list) ||
+        (i == 3U && strcmp(options.import_file, "conversation.jsonl") != 0))
+      return 1;
+  }
+  return 0;
+}
+
 int main(void) {
   cai_cli_options options;
   char defaults_raw[][32] = {"cai"};
@@ -75,7 +121,7 @@ int main(void) {
   char *missing_model[5];
   char invalid_provider_raw[][64] = {"cai", "-p", "invalid"};
   char *invalid_provider[3];
-  char invalid_login_raw[][64] = {"cai", "-p", "openai", "-l"};
+  char invalid_login_raw[][64] = {"cai", "-p", "openai", "--login"};
   char *invalid_login[4];
   char login_raw[][64] = {"cai", "--login"};
   char *login[2];
@@ -250,5 +296,5 @@ int main(void) {
       cai_cli_parse_options(3, invalid_legacy_instructions, &options) != -1 ||
       cai_cli_parse_options(3, invalid_legacy_workspace, &options) != -1)
     return 1;
-  return 0;
+  return storage_options();
 }

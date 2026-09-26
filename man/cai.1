@@ -11,7 +11,7 @@ with
 .BR \-C .
 It uses ChatGPT authentication from
 .I ~/.codex/auth.json
-first, then cai's state auth file if the Codex file is absent, and starts with the
+first, then credentials in cai's lockd store if the Codex file is absent, and starts with the
 .B gpt-6-luna
 model at medium reasoning effort.
 The prompt is
@@ -36,8 +36,9 @@ from the terminal. Requires at least one
 .BR \-g ,
 or a review mode.
 .TP
-.BI \-\-resume " ID"
-Resume a saved session by its exact ID.
+.BI \-\-resume " [ID]"
+With no ID, list numbered conversations for the current directory and exit.
+With an ID, resume that saved session in the current directory.
 Cannot be combined with
 .BR \-\-new .
 .TP
@@ -97,18 +98,44 @@ for final review findings. Requires
 .BR \-\-review .
 .TP
 .BR \-a , " " \-\-auth-json " " PATH
-Read ChatGPT authentication from
+Import ChatGPT authentication from
 .IR PATH .
-The default is
-.IR ~/.codex/auth.json ,
-then cai's state auth file.
-Token refresh may update this file.
+The default source is
+.IR ~/.codex/auth.json .
+Otherwise use credentials in the lockd store. Unchanged source files preserve
+refreshed stored tokens. Token refresh never changes the source file.
 .TP
-.BR \-l , " " \-\-login
-Open the browser login flow, save ChatGPT auth to cai's state directory, and
-exit. With
-.BR \-\-auth-json ,
-save to that path instead.
+.B \-\-login
+Open the browser login flow, save ChatGPT auth in the cai.auth namespace of
+cai's lockd store, and exit. Cannot be combined with
+.BR \-\-auth-json .
+.TP
+.BR \-l , " " \-\-list
+List all conversations across directories and exit. Rows show the ID,
+directory, and first prompt, truncated to terminal width or 80 columns.
+.TP
+.BI \-\-lockd " ENDPOINT"
+Select an absolute pouch:///path/to/root or remote http:// or https:// lockd
+endpoint. Default: the Pouch root under cai's XDG state directory.
+Selected Pouch roots use cai's key, durable sync, indexing, and shared writer
+settings. Remote encryption and access policy are managed by the server.
+.TP
+.BI \-\-lockd-client-pem " FILE"
+Enable remote mTLS with a combined client certificate, private key, and CA
+PEM bundle. HTTPS verifies server certificates.
+.TP
+.BI \-\-export " ID"
+Export resumable JSONL and Markdown for a conversation and exit. Markdown uses
+libcai's existing exporter, including instructions and runtime/goal metadata.
+No model requests or tools run during export. Files are plaintext, mode 0600.
+.TP
+.BI \-\-export-dir " DIR"
+Override the export root. Default: cai's state directory followed by exports.
+Each conversation writes ID/ID.jsonl and ID/ID.md beneath this root.
+.TP
+.BI \-\-import " FILE"
+Validate a JSONL export, assign a new ID in the current directory, and exit.
+Failed imports are not published in conversation lists.
 .TP
 .BR \-p , " " \-\-provider " " NAME
 Select
@@ -226,6 +253,9 @@ List saved sessions for the current workspace, newest first.
 Load the numbered session from that list and replay saved user prompts and
 assistant text without repeating tool side effects.
 .TP
+.BI /export " [ID]"
+Export the active session, or the supplied ID, as JSONL and Markdown.
+.TP
 .B /new
 Start a new session in the current workspace.
 .TP
@@ -269,24 +299,22 @@ minutes thereafter.
 .I ~/.codex/auth.json
 Preferred ChatGPT authentication file when present.
 .TP
-.I $XDG_STATE_HOME/cai/auth.json
-ChatGPT authentication created by
-.BR \-\-login ;
-fallback auth file when the Codex file is absent. Uses
-.I ~/.local/state/cai/auth.json
-when
-.B XDG_STATE_HOME
-is unset.
+.I $XDG_STATE_HOME/cai/pouch
+Encrypted default Pouch root containing cai.sessions and cai.auth namespaces.
+Uses ~/.local/state/cai/pouch when XDG_STATE_HOME is unset.
 .TP
-.I $XDG_STATE_HOME/cai/sessions
-Workspace-scoped JSONL session storage when
-.B XDG_STATE_HOME
-is set.
+.I $XDG_STATE_HOME/cai/pouch.key
+Plaintext encryption key, mode 0600. Back up this original key with the root;
+losing it makes encrypted data unrecoverable. Cai refuses to generate a
+replacement for an existing root. Uses ~/.local/state/cai/pouch.key when
+XDG_STATE_HOME is unset. The cai state directory must be private (mode 0700).
 .TP
-.I ~/.local/state/cai/sessions
-Session storage when
-.B XDG_STATE_HOME
-is unset.
+.I $XDG_STATE_HOME/cai/exports/ID/ID.jsonl
+Default resumable conversation export, including checkpoint and journal.
+.TP
+.I $XDG_STATE_HOME/cai/exports/ID/ID.md
+Default Markdown conversation export. Exports are plaintext private files;
+the authentication namespace is excluded.
 .TP
 .I $XDG_CONFIG_HOME/cai/AGENTS.md
 Default cai global instructions when

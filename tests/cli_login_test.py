@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 
 cli = sys.argv[1]
-with tempfile.TemporaryDirectory() as root:
+with tempfile.TemporaryDirectory(dir=pathlib.Path(cli).parent) as root:
     root = pathlib.Path(root)
     (root / "bin").mkdir()
     opener = root / "bin" / "xdg-open"

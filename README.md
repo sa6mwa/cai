@@ -94,8 +94,9 @@ runtime, review, storage, and presentation contracts.
 
 The `cai` preset builds the terminal coding agent as a statically linked
 Linux x86_64 musl executable. It adds pinned softline 0.7.0 for the prompt and
-libmdf 0.12.0 for streamed Markdown rendering; `libcai` itself has no
-dependency on either. Softline and libmdf run on the UI thread. The runtime
+libmdf 0.12.0 for streamed Markdown rendering, and liblockdc 0.18.0 with
+liblql 0.3.0 for durable storage. `libcai` itself has no dependency on these.
+Softline and libmdf run on the UI thread. The runtime
 worker executes model requests and tools, then wakes the UI thread to render
 events.
 
@@ -109,11 +110,12 @@ build/cai/cai --help
 build/cai/cai -N -C /path/to/project
 ```
 
-The default `chatgpt` provider reads `~/.codex/auth.json` first, then
-`$XDG_STATE_HOME/cai/auth.json` (or `~/.local/state/cai/auth.json`) when the
-Codex file is absent. `--auth-json` selects another file. Auth refresh may
-update the selected file. If neither default exists, `cai --login` opens a
-browser login and stores auth in cai's state directory, then exits. The
+The default `chatgpt` provider imports `~/.codex/auth.json` first when present,
+otherwise it loads credentials from cai's lockd store. `--auth-json` selects
+another import source. Unchanged source files preserve tokens refreshed in
+cai's store; refresh never writes back to the source file. If neither source
+nor stored credentials exist, `cai --login` opens a browser login, stores auth
+in the `cai.auth` namespace, and exits. `-l` means `--list`, not login. The
 `openai` provider uses `OPENAI_API_KEY`, `openrouter` uses
 `OPENROUTER_API_KEY`, and `custom` requires `--endpoint` and `--model` with
 `CAI_API_KEY` by default or a variable selected by `--api-key-env`.
@@ -152,17 +154,48 @@ Its relocatable layout includes `bin/cai`, `share/man/man1/cai.1`, and
 `share/doc/libcai/{README.md,LICENSE}` plus the SDK's model metadata guide.
 Install under `/usr` to place the man page at `/usr/share/man/man1/cai.1`.
 
-Sessions use the local JSONL store under `$XDG_STATE_HOME/cai/sessions`, or
-`~/.local/state/cai/sessions` when `XDG_STATE_HOME` is unset. Each canonical
-workspace path maps to its own hashed subdirectory with one `.jsonl` file per
-session.
-Starting `cai` resumes the newest session for that directory. `-N`/`--new`
-starts a fresh session; `/new` does the same inside the prompt. `/resume`
-lists only sessions for the current directory, and `/resume <number>` loads
-one from that list. The CLI replays saved user prompts and assistant text
-through the terminal renderers without rerunning those events as commands.
-`--resume ID` addresses a saved session directly. MCP client configuration is
-planned for a later CLI release.
+The cai binary stores sessions and ChatGPT credentials in one encrypted
+liblockdc Pouch root at `$XDG_STATE_HOME/cai/pouch`, or
+`~/.local/state/cai/pouch`. Session metadata is indexed in `cai.sessions`;
+checkpoints and journal events are immutable attachments streamed into and
+out of that namespace. Credentials are stored separately in `cai.auth`.
+The root uses shared writer mode so cai can run in multiple directories.
+The generated plaintext key is `$XDG_STATE_HOME/cai/pouch.key` (mode 0600).
+**Back up the Pouch root and its original key together.** Losing the key
+makes encrypted data unrecoverable; cai refuses to generate a replacement
+key for an existing root. The state directory must be owned by you with mode
+0700. libcai keeps its existing session store APIs and JSONL backend; these
+CLI dependencies are excluded from the `libcai` preset.
+
+`--lockd ENDPOINT` selects another absolute `pouch:///path/to/root` or a
+remote `http://` / `https://` lockd server. Pouch roots selected this way use
+cai's key and its durable, indexed, shared writer settings. Remote storage
+uses the same namespaces; its encryption and access policies belong to the
+server. HTTPS verifies server certificates. `--lockd-client-pem FILE` enables
+mTLS using a combined client certificate, private key, and CA PEM bundle.
+No local Pouch key is created for a remote endpoint.
+
+Starting `cai` resumes the newest session for the canonical current directory.
+`-N`/`--new` starts fresh; `/new` does the same inside the prompt.
+`-l`/`--list` shows all conversations across directories. `--resume` without
+an ID and `/resume` show a numbered list for the current directory only;
+`/resume <number>` loads an entry. Rows show ID, directory, and a first-prompt
+preview, clipped to the terminal width or 80 columns without a terminal.
+`--resume ID` addresses a saved session in the current directory directly.
+Saved prompts and assistant text replay without repeating tool side effects.
+
+`--export ID` and `/export [ID]` write paired `ID.jsonl` and `ID.md` files
+under `$XDG_STATE_HOME/cai/exports/ID` by default. `/export` selects the active
+session. `--export-dir DIR` overrides the export root. JSONL contains the
+complete resumable checkpoint and journal; Markdown uses libcai's existing
+Markdown exporter, including its instructions, conversation, runtime, and
+goal sections. Export performs no model requests or tool execution. These
+exports are plaintext private files (mode 0600); exported state contains
+conversation and execution context, never the credential namespace.
+`--import FILE` validates a JSONL export, assigns a new session ID in the
+current directory, and exits. Failed imports never appear in the list.
+Existing cai JSONL files are not automatically migrated.
+MCP client configuration is planned for a later CLI release.
 
 `-C DIR`/`--directory DIR` changes directory before the agent opens its
 session. Repeat `-i TEXT`/`--instruction TEXT` to run prompts in order, after

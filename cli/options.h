@@ -25,10 +25,17 @@ typedef struct cai_cli_options {
   const char *out;
   const char *output_type;
   const char *resume_id;
+  const char *export_id;
+  const char *export_dir;
+  const char *import_file;
+  const char *lockd;
+  const char *lockd_client_pem;
   char *const *argv;
   int argc;
   size_t instruction_count;
   int login;
+  int list;
+  int resume_list;
   int new_session;
   int non_interactive;
   int review;

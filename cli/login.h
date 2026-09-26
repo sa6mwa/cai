@@ -1,7 +1,10 @@
 #ifndef CAI_CLI_LOGIN_H
 #define CAI_CLI_LOGIN_H
 
-/* Run browser login and persist ChatGPT auth in cai state, or at path. */
-int cai_cli_login(const char *auth_json_path);
+#include <cai/blob_store.h>
+
+/* Run browser login and persist ChatGPT auth in the supplied encrypted store.
+ */
+int cai_cli_login(const cai_blob_store *storage);
 
 #endif

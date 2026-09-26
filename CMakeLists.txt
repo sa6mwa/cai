@@ -440,6 +440,32 @@ function(cai_set_pslog_from_target)
 endfunction()
 
 if(CAI_BUILD_CLI)
+  set(_cai_liblql_name "liblql-0.3.0-x86_64-linux-musl")
+  set(_cai_liblql_prefix "${CAI_DEPS_DIR}/${_cai_liblql_name}")
+  cai_dependency_archive_path("${_cai_liblql_name}.tar.gz"
+    "e33a57e5d97337304c8541efaf8ab33bff9060cae600d1fe744a6734dca74ad4"
+    _cai_liblql_archive)
+  cai_download_tarball("liblql 0.3.0 x86_64-linux-musl"
+    "https://github.com/sa6mwa/liblql/releases/download/v0.3.0/${_cai_liblql_name}.tar.gz"
+    "${_cai_liblql_archive}" "${_cai_liblql_prefix}"
+    "e33a57e5d97337304c8541efaf8ab33bff9060cae600d1fe744a6734dca74ad4"
+    "${_cai_liblql_prefix}/include/lql/lql.h")
+  set(_cai_lockdc_name "liblockdc-0.18.0-x86_64-linux-musl")
+  set(_cai_lockdc_prefix "${CAI_DEPS_DIR}/${_cai_lockdc_name}")
+  cai_dependency_archive_path("${_cai_lockdc_name}.tar.gz"
+    "580b8f4b8dd87d77a3ef16f8a304ce3dc472e45e64e39ec1250a8582a8182c31"
+    _cai_lockdc_archive)
+  cai_download_tarball("liblockdc 0.18.0 x86_64-linux-musl"
+    "https://github.com/sa6mwa/liblockdc/releases/download/v0.18.0/${_cai_lockdc_name}.tar.gz"
+    "${_cai_lockdc_archive}" "${_cai_lockdc_prefix}"
+    "580b8f4b8dd87d77a3ef16f8a304ce3dc472e45e64e39ec1250a8582a8182c31"
+    "${_cai_lockdc_prefix}/include/lc/lc.h")
+  list(PREPEND CMAKE_PREFIX_PATH "${_cai_lockdc_prefix}" "${_cai_liblql_prefix}")
+  list(APPEND CMAKE_FIND_ROOT_PATH "${_cai_lockdc_prefix}" "${_cai_liblql_prefix}")
+  set(lockdc_DIR "${_cai_lockdc_prefix}/lib/cmake/lockdc"
+    CACHE PATH "liblockdc package directory" FORCE)
+  set(liblql_DIR "${_cai_liblql_prefix}/lib/cmake/liblql"
+    CACHE PATH "liblql package directory" FORCE)
   set(_cai_softline_name
       "softline-${CAI_SOFTLINE_VERSION}-x86_64-linux-musl")
   set(_cai_softline_prefix "${CAI_DEPS_DIR}/${_cai_softline_name}")
@@ -927,11 +953,12 @@ if(CAI_BUILD_EXAMPLES)
 endif()
 
 if(CAI_BUILD_CLI)
+  find_package(lockdc CONFIG REQUIRED COMPONENTS static)
   add_executable(cai_cli cli/main.c cli/options.c cli/status.c cli/login.c
-    cli/review_report.c)
+    cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/session_commands.c)
   set_target_properties(cai_cli PROPERTIES OUTPUT_NAME cai SKIP_BUILD_RPATH ON)
   target_link_libraries(cai_cli PRIVATE cai_static
-    softline::softline_static libmdf::mdf_static)
+    softline::softline_static libmdf::mdf_static lockdc::static)
   target_link_options(cai_cli PRIVATE -static)
   cai_configure_c_target(cai_cli)
   if(CAI_INSTALL)
@@ -947,6 +974,16 @@ if(CAI_BUILD_CLI)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/model-metadata.md"
       DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/docs"
       COMPONENT cai-cli)
+    foreach(_cai_cli_dep_doc
+        "${_cai_lockdc_prefix}/share/doc/liblockdc"
+        "${_cai_liblql_prefix}/share/doc/liblql"
+        "${CAI_DEPS_DIR}/softline-${CAI_SOFTLINE_VERSION}-${CAI_TARGET_ID}/share/doc/softline"
+        "${CAI_DEPS_DIR}/libmdf-${CAI_LIBMDF_VERSION}-${CAI_TARGET_ID}/share/doc/libmdf")
+      get_filename_component(_cai_cli_dep_name "${_cai_cli_dep_doc}" NAME)
+      install(FILES "${_cai_cli_dep_doc}/LICENSE"
+        DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/third_party/${_cai_cli_dep_name}"
+        COMPONENT cai-cli)
+    endforeach()
     add_custom_target(cai_package_cli
       COMMAND "${CMAKE_COMMAND}"
         "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
@@ -965,10 +1002,18 @@ if(CAI_BUILD_CLI)
     target_link_options(cai_cli_options_test PRIVATE -static)
     cai_configure_c_target(cai_cli_options_test)
     add_test(NAME cai_cli_options COMMAND cai_cli_options_test)
+    add_executable(cai_cli_storage_stream_test
+      tests/cli_storage_stream_test.c cli/pouch_stream.c)
+    target_link_libraries(cai_cli_storage_stream_test PRIVATE cai_static lockdc::static)
+    target_link_options(cai_cli_storage_stream_test PRIVATE -static)
+    cai_configure_c_target(cai_cli_storage_stream_test)
+    add_test(NAME cai_cli_storage_stream COMMAND cai_cli_storage_stream_test)
+    set_tests_properties(cai_cli_storage_stream PROPERTIES TIMEOUT 30)
     add_executable(cai_cli_reasoning_test tests/cli_reasoning_test.c
-      cli/options.c cli/status.c cli/login.c cli/review_report.c)
+      cli/options.c cli/status.c cli/login.c cli/review_report.c
+      cli/pouch.c cli/pouch_stream.c cli/session_commands.c)
     target_link_libraries(cai_cli_reasoning_test PRIVATE cai_static
-      softline::softline_static libmdf::mdf_static)
+      softline::softline_static libmdf::mdf_static lockdc::static)
     target_link_options(cai_cli_reasoning_test PRIVATE -static)
     cai_configure_c_target(cai_cli_reasoning_test)
     add_test(NAME cai_cli_reasoning COMMAND cai_cli_reasoning_test)
@@ -995,6 +1040,9 @@ if(CAI_BUILD_CLI)
         "$<TARGET_FILE:cai_cli>")
     add_test(NAME cai_cli_modes
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_modes_test.py"
+        "$<TARGET_FILE:cai_cli>")
+    add_test(NAME cai_cli_lockd_endpoint
+      COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_lockd_endpoint_test.py"
         "$<TARGET_FILE:cai_cli>")
     add_test(NAME cai_cli_package_layout
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_package_layout_test.sh"

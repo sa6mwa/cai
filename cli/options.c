@@ -27,10 +27,17 @@ static void cai_cli_help(void) {
       "automatically; use --new to start a fresh one. In the prompt, /resume\n"
       "lists sessions for this directory and /resume N opens entry N.\n\n",
       stdout);
-  fputs("  -N, --new                    Start a new session\n"
-        "  -n, --non-interactive        Run supplied work and exit\n"
-        "      --resume ID              Resume a session by ID\n"
-        "  -C, --directory DIR          Change to DIR before starting\n"
+  fputs(
+      "  -N, --new                    Start a new session\n"
+      "  -n, --non-interactive        Run supplied work and exit\n"
+      "      --resume [ID]            List directory sessions or resume ID\n"
+      "  -l, --list                   List conversations in all directories\n"
+      "      --export ID              Export resumable JSONL and Markdown\n"
+      "      --import FILE            Import JSONL as a new session and exit\n"
+      "      --export-dir DIR         Export root (default "
+      "state/cai/exports)\n",
+      stdout);
+  fputs("  -C, --directory DIR          Change to DIR before starting\n"
         "  -i, --instruction TEXT       Submit a prompt (repeatable)\n"
         "  -g, --goal TEXT              Start or replace a durable goal\n"
         "      --review                 Run one isolated review and exit\n"
@@ -40,8 +47,12 @@ static void cai_cli_help(void) {
         "  -o, --out FILE               Write review findings to FILE\n"
         "  -T, --output-type TYPE       Review findings: markdown|json\n"
         "  -a, --auth-json PATH         ChatGPT auth file (default "
-        "~/.codex/auth.json, then cai state)\n"
-        "  -l, --login                  Log in to ChatGPT and exit\n"
+        "~/.codex/auth.json, then encrypted cai store)\n"
+        "      --login                  Log in to ChatGPT and exit\n"
+        "      --lockd ENDPOINT         Storage endpoint (default "
+        "state/cai/pouch)\n",
+        stdout);
+  fputs("      --lockd-client-pem FILE  Remote lockd mTLS PEM bundle\n"
         "  -p, --provider NAME          chatgpt|openai|openrouter|custom\n",
         stdout);
   fputs("      --endpoint URL           Custom provider API base URL\n"
@@ -118,6 +129,8 @@ int cai_cli_parse_options(int argc, char *const *argv,
           options->non_interactive = 1;
         else if (flag[j] == 'v')
           options->verbosity++;
+        else if (flag[j] == 'l')
+          options->list = 1;
         else if (flag[j + 1U] == '\0' && (flag[j] == 'i' || flag[j] == 'g')) {
           short_flag[0] = '-';
           short_flag[1] = flag[j];
@@ -158,8 +171,17 @@ int cai_cli_parse_options(int argc, char *const *argv,
       options->non_interactive = 1;
       continue;
     }
-    if (strcmp(flag, "-l") == 0 || strcmp(flag, "--login") == 0) {
+    if (strcmp(flag, "--login") == 0) {
       options->login = 1;
+      continue;
+    }
+    if (strcmp(flag, "-l") == 0 || strcmp(flag, "--list") == 0) {
+      options->list = 1;
+      continue;
+    }
+    if (strcmp(flag, "--resume") == 0 &&
+        (i + 1 >= argc || argv[i + 1][0] == '-')) {
+      options->resume_list = 1;
       continue;
     }
     if (strcmp(flag, "--no-image-generation") == 0) {
@@ -197,6 +219,16 @@ int cai_cli_parse_options(int argc, char *const *argv,
     }
     if (strcmp(flag, "--resume") == 0)
       field = &options->resume_id;
+    else if (strcmp(flag, "--export") == 0)
+      field = &options->export_id;
+    else if (strcmp(flag, "--export-dir") == 0)
+      field = &options->export_dir;
+    else if (strcmp(flag, "--import") == 0)
+      field = &options->import_file;
+    else if (strcmp(flag, "--lockd") == 0)
+      field = &options->lockd;
+    else if (strcmp(flag, "--lockd-client-pem") == 0)
+      field = &options->lockd_client_pem;
     else if (strcmp(flag, "-g") == 0 || strcmp(flag, "--goal") == 0)
       field = &options->goal;
     else if (strcmp(flag, "--base") == 0)
@@ -263,7 +295,31 @@ int cai_cli_parse_options(int argc, char *const *argv,
       return -1;
     }
   }
-  if (options->new_session && options->resume_id != NULL) {
+  if ((options->list + options->resume_list + options->login +
+       (options->export_id != NULL) + (options->import_file != NULL)) > 1) {
+    fputs("cai: select only one of --list, --resume without ID, --login, "
+          "--export, or --import\n",
+          stderr);
+    return -1;
+  }
+  if ((options->list || options->resume_list || options->export_id != NULL ||
+       options->import_file != NULL) &&
+      (options->new_session || options->resume_id != NULL || options->review ||
+       options->review_and_fix || options->goal != NULL ||
+       options->instruction_count != 0U || options->non_interactive)) {
+    fputs("cai: storage commands cannot be combined with session work\n",
+          stderr);
+    return -1;
+  }
+  if (options->lockd != NULL && strncmp(options->lockd, "pouch://", 8U) != 0 &&
+      strncmp(options->lockd, "http://", 7U) != 0 &&
+      strncmp(options->lockd, "https://", 8U) != 0) {
+    fputs("cai: --lockd requires a pouch://, http://, or https:// endpoint\n",
+          stderr);
+    return -1;
+  }
+  if (options->new_session &&
+      (options->resume_id != NULL || options->resume_list)) {
     fputs("cai: --new and --resume cannot be combined\n", stderr);
     return -1;
   }
@@ -325,10 +381,14 @@ int cai_cli_parse_options(int argc, char *const *argv,
   if (options->login &&
       (options->new_session || options->resume_id != NULL ||
        options->non_interactive || options->review || options->review_and_fix ||
-       options->goal != NULL || options->instruction_count != 0U)) {
+       options->goal != NULL || options->instruction_count != 0U ||
+       options->auth_json != NULL)) {
     fputs("cai: --login cannot be combined with session work\n", stderr);
     return -1;
   }
+  if (options->list || options->resume_list || options->export_id != NULL ||
+      options->import_file != NULL)
+    return 1;
   if (strcmp(options->provider, "custom") == 0) {
     if (options->endpoint == NULL || !model_explicit) {
       fputs("cai: custom provider requires --endpoint and --model\n", stderr);
@@ -370,16 +430,19 @@ const char *cai_cli_instruction_at(const cai_cli_options *options,
                    flag[strlen(flag) - 1U] == 'i');
     has_value =
         instruction || strcmp(flag, "--resume") == 0 ||
-        strcmp(flag, "-g") == 0 || strcmp(flag, "--goal") == 0 ||
-        strcmp(flag, "--base") == 0 || strcmp(flag, "-o") == 0 ||
-        strcmp(flag, "--out") == 0 || strcmp(flag, "-T") == 0 ||
-        strcmp(flag, "--output-type") == 0 || strcmp(flag, "-p") == 0 ||
-        strcmp(flag, "--provider") == 0 || strcmp(flag, "--endpoint") == 0 ||
-        strcmp(flag, "--api-key-env") == 0 || strcmp(flag, "-C") == 0 ||
-        strcmp(flag, "--directory") == 0 || strcmp(flag, "-a") == 0 ||
-        strcmp(flag, "--auth-json") == 0 || strcmp(flag, "-m") == 0 ||
-        strcmp(flag, "--model") == 0 || strcmp(flag, "-r") == 0 ||
-        strcmp(flag, "--reasoning-effort") == 0 ||
+        strcmp(flag, "--lockd") == 0 ||
+        strcmp(flag, "--lockd-client-pem") == 0 ||
+        strcmp(flag, "--export") == 0 || strcmp(flag, "--export-dir") == 0 ||
+        strcmp(flag, "--import") == 0 || strcmp(flag, "-g") == 0 ||
+        strcmp(flag, "--goal") == 0 || strcmp(flag, "--base") == 0 ||
+        strcmp(flag, "-o") == 0 || strcmp(flag, "--out") == 0 ||
+        strcmp(flag, "-T") == 0 || strcmp(flag, "--output-type") == 0 ||
+        strcmp(flag, "-p") == 0 || strcmp(flag, "--provider") == 0 ||
+        strcmp(flag, "--endpoint") == 0 || strcmp(flag, "--api-key-env") == 0 ||
+        strcmp(flag, "-C") == 0 || strcmp(flag, "--directory") == 0 ||
+        strcmp(flag, "-a") == 0 || strcmp(flag, "--auth-json") == 0 ||
+        strcmp(flag, "-m") == 0 || strcmp(flag, "--model") == 0 ||
+        strcmp(flag, "-r") == 0 || strcmp(flag, "--reasoning-effort") == 0 ||
         strcmp(flag, "--reasoning-summary") == 0 ||
         strcmp(flag, "--review-model") == 0 ||
         strcmp(flag, "--review-reasoning-effort") == 0 ||

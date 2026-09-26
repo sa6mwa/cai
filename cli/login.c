@@ -143,7 +143,7 @@ static void write_http_response(int fd,
   write_all_ignore_errors(fd, body, strlen(body));
 }
 
-int cai_cli_login(const char *auth_json_path) {
+int cai_cli_login(const cai_blob_store *storage) {
   char redirect_uri[256];
   int port = 0;
   int server_fd;
@@ -151,7 +151,6 @@ int cai_cli_login(const char *auth_json_path) {
   int rc;
   int exit_code = 1;
   char *authorize_url = NULL;
-  char *auth_json_display = NULL;
   char request_buffer[16384];
   char bad_request_body[] = "Bad Request\n";
   char callback_failed_body[] = "OAuth callback failed\n";
@@ -178,7 +177,7 @@ int cai_cli_login(const char *auth_json_path) {
            CAI_CHATGPT_AUTH_DEFAULT_CALLBACK_PATH);
   cai_error_init(&error);
   cai_chatgpt_login_config_init(&login_config);
-  login_config.auth_json_path = auth_json_path;
+  login_config.storage = storage;
   login_config.redirect_uri = redirect_uri;
   rc = cai_chatgpt_login_start(&login_config, &login, &authorize_url, &error);
   if (rc != CAI_OK) {
@@ -233,14 +232,8 @@ int cai_cli_login(const char *auth_json_path) {
     if (response_owned)
       cai_chatgpt_login_response_cleanup(&login_response);
     if (login->completed(login)) {
-      if (auth_json_path != NULL && auth_json_path[0] != '\0') {
-        fprintf(stderr, "ChatGPT auth saved to %s\n", auth_json_path);
-      } else if (cai_chatgpt_auth_default_path(&auth_json_display, &error) ==
-                 CAI_OK) {
-        fprintf(stderr, "ChatGPT auth saved to %s\n", auth_json_display);
-      } else {
-        fprintf(stderr, "ChatGPT auth saved to cai state\n");
-      }
+      fprintf(stderr,
+              "ChatGPT auth saved to cai.auth in the selected lockd store\n");
       exit_code = 0;
       break;
     }
@@ -249,7 +242,6 @@ int cai_cli_login(const char *auth_json_path) {
   }
 done:
   cai_string_destroy(authorize_url);
-  cai_string_destroy(auth_json_display);
   if (login != NULL)
     login->close(login);
   cai_error_cleanup(&error);

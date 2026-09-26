@@ -93,7 +93,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-with tempfile.TemporaryDirectory() as directory:
+with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
     root = pathlib.Path(directory)
     work = root / "work"
     work.mkdir()
@@ -177,6 +177,79 @@ with tempfile.TemporaryDirectory() as directory:
         assert "second reply" in resumed.stdout and "resumed reply" in resumed.stdout
         assert "third task" in server.requests[0]
         server.requests.clear()
+
+        listed = run("-l")
+        assert listed.returncode == 0, listed.stderr
+        identifier = listed.stdout.split()[0]
+        assert "first task" in listed.stdout and len(listed.stdout.rstrip()) <= 80
+        exported = run("--export", identifier)
+        assert exported.returncode == 0, exported.stderr
+        json_file, markdown_file = map(pathlib.Path, exported.stdout.splitlines())
+        records = [json.loads(line) for line in json_file.read_text().splitlines()]
+        assert records[0]["record_type"] == "checkpoint"
+        assert records[0]["applied_event_sequence"] > 0
+        assert any(record.get("record_type") == "event" for record in records)
+        markdown = markdown_file.read_text()
+        assert "## User" in markdown and "first task" in markdown
+        assert "first reply" in markdown and "resumed reply" in markdown
+        assert not server.requests, "export sent a provider request"
+        assert (json_file.stat().st_mode & 0o777) == 0o600
+        assert (markdown_file.stat().st_mode & 0o777) == 0o600
+        imported_directory = root / "imported"
+        imported_directory.mkdir()
+        imported = run("-C", str(imported_directory), "--import", str(json_file))
+        assert imported.returncode == 0, imported.stderr
+        new_id = imported.stdout.strip()
+        assert new_id != identifier
+        resumed_list = run("-C", str(imported_directory), "--resume")
+        assert new_id in resumed_list.stdout and identifier not in resumed_list.stdout
+        roundtrip = run("--export", new_id, "--export-dir", str(root / "exports"))
+        assert roundtrip.returncode == 0, roundtrip.stderr
+        roundtrip_files = list(map(pathlib.Path, roundtrip.stdout.splitlines()))
+        assert "resumed reply" in roundtrip_files[1].read_text()
+        assert len(roundtrip_files[0].read_text().splitlines()) == len(records)
+        assert not server.requests
+
+        before_failed_import = run("-l").stdout
+        invalid_inputs = ["{", '{}\n', json.dumps({**records[0], "state": {}}),
+                          json.dumps(records[0]) + '\n{"record_type":"event","sequence":0,"type":"bad"}\n',
+                          json.dumps(records[0]) + '\n{"record_type":"event","sequence":1,"type":"bad"}\n'
+                          '{"record_type":"event","sequence":1,"type":"duplicate"}\n',
+                          json_file.read_text() + '{"record_type":"event"']
+        for index, invalid in enumerate(invalid_inputs):
+            invalid_file = root / f"invalid-{index}.jsonl"
+            invalid_file.write_text(invalid)
+            failed_import = run("--import", str(invalid_file))
+            assert failed_import.returncode != 0, (index, failed_import.stdout)
+            assert run("-l").stdout == before_failed_import, "failed import published a session"
+        assert not server.requests
+
+        key_file = root / "state" / "cai" / "pouch.key"
+        key = key_file.read_bytes()
+        assert (key_file.stat().st_mode & 0o777) == 0o600
+        key_file.unlink()
+        missing_key = run("-l")
+        assert missing_key.returncode != 0 and "restore the original key" in missing_key.stderr
+        assert not key_file.exists()
+        key_file.write_bytes(key)
+        key_file.chmod(0o600)
+        assert run("-l").returncode == 0
+        key_file.write_bytes(key[:-2] + (b"1" if key[-2:-1] != b"1" else b"2") + key[-1:])
+        wrong_key = run("-l")
+        assert wrong_key.returncode != 0, wrong_key.stdout
+        assert key_file.read_bytes() != key, "wrong key was silently replaced"
+        key_file.write_bytes(key)
+        for stored_file in (root / "state/cai/pouch").rglob("*"):
+            if stored_file.is_file():
+                assert b"first task" not in stored_file.read_bytes(), stored_file
+
+        custom_root = root / "alternate pouch"
+        custom_endpoint = "pouch://" + str(custom_root).replace(" ", "%20")
+        selected_store = run("--lockd", custom_endpoint, "--list")
+        assert selected_store.returncode == 0, selected_store.stderr
+        assert "No conversations." in selected_store.stdout
+        assert custom_root.is_dir()
+        assert run("-l").stdout == before_failed_import
 
         server.responses[:] = ["interactive reply"]
         status_code, terminal_output, terminal_error = run_interactive(

@@ -11,6 +11,9 @@ test -f "$stage/share/man/man1/cai.1"
 test -f "$stage/share/doc/libcai/README.md"
 test -f "$stage/share/doc/libcai/LICENSE"
 test -f "$stage/share/doc/libcai/docs/model-metadata.md"
+for dependency in liblockdc liblql softline libmdf; do
+  test -f "$stage/share/doc/libcai/third_party/$dependency/LICENSE"
+done
 test ! -e "$stage/share/doc/cai"
 
 if command -v groff >/dev/null; then

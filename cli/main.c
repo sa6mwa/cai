@@ -3,8 +3,11 @@
 
 #include "login.h"
 #include "options.h"
+#include "pouch.h"
 #include "review_report.h"
+#include "session_commands.h"
 #include "status.h"
+#include <locale.h>
 
 #include <cai/agent_runtime.h>
 #include <cai/auth.h>
@@ -28,14 +31,12 @@
 #define PATH_MAX 4096
 #endif
 
-typedef struct cli_session {
-  char id[CAI_AGENT_SESSION_ID_MAX];
-  unsigned long long checkpoint_ns;
-} cli_session;
+typedef cai_cli_session cli_session;
 
 typedef struct cli_state {
   cai_cli_options options;
   cai_agent_session_store store;
+  cai_cli_pouch pouch;
   cai_chatgpt_auth *auth;
   cai_client *client;
   cai_client *quota_client;
@@ -48,7 +49,6 @@ typedef struct cli_state {
   char generated_goal[4096];
   cli_session *sessions;
   size_t session_count;
-  size_t session_capacity;
   sl_watch_id_t watch_id;
   sl_watch_id_t timer_watch_id;
   int has_watch;
@@ -607,77 +607,36 @@ static void cli_close_runtime(cli_state *state) {
   state->reasoning_summary_raw[0] = '\0';
 }
 
-static int cli_visit_session(void *context, const char *session_id,
-                             unsigned long long timestamp, cai_error *error) {
+static int cli_list_write(void *context, const void *bytes, size_t count,
+                          cai_error *error) {
   cli_state *state;
-  cli_session *entries;
-  size_t capacity;
-  (void)error;
   state = (cli_state *)context;
-  if (state->session_count == state->session_capacity) {
-    capacity =
-        state->session_capacity == 0U ? 8U : state->session_capacity * 2U;
-    entries =
-        (cli_session *)realloc(state->sessions, capacity * sizeof(*entries));
-    if (entries == NULL) {
-      return CAI_ERR_NOMEM;
-    }
-    state->sessions = entries;
-    state->session_capacity = capacity;
-  }
-  memcpy(state->sessions[state->session_count].id, session_id,
-         strlen(session_id) + 1U);
-  state->sessions[state->session_count].checkpoint_ns = timestamp;
-  state->session_count++;
+  if (cli_sink(state, bytes, count) != 0)
+    return cai_cli_error(error, CAI_ERR_TRANSPORT, "write session rows");
   return CAI_OK;
-}
-
-static int cli_session_compare(const void *left, const void *right) {
-  const cli_session *a;
-  const cli_session *b;
-  a = (const cli_session *)left;
-  b = (const cli_session *)right;
-  if (a->checkpoint_ns > b->checkpoint_ns)
-    return -1;
-  if (a->checkpoint_ns < b->checkpoint_ns)
-    return 1;
-  return strcmp(b->id, a->id);
 }
 
 static int cli_list_sessions(cli_state *state, cai_error *error) {
-  size_t i;
-  char line[230];
-  int n;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
   int rc;
+  free(state->sessions);
+  state->sessions = NULL;
   state->session_count = 0U;
-  rc = cai_agent_local_session_store_list(&state->store, state->workspace,
-                                          cli_visit_session, state, error);
-  if (rc != CAI_OK) {
+  rc = cai_cli_pouch_list(&state->pouch, state->workspace, &state->sessions,
+                          &state->session_count, error);
+  if (rc != CAI_OK)
     return rc;
-  }
-  qsort(state->sessions, state->session_count, sizeof(*state->sessions),
-        cli_session_compare);
-  if (state->session_count == 0U) {
-    return cli_write(state, "\nNo sessions for this directory.\n") == 0
-               ? CAI_OK
-               : CAI_ERR_TRANSPORT;
-  }
-  if (cli_write(state, "\nSessions for this directory:\n") != 0) {
-    return CAI_ERR_TRANSPORT;
-  }
-  for (i = 0U; i < state->session_count; i++) {
-    n = snprintf(line, sizeof(line), "  %lu  %s%s\n", (unsigned long)(i + 1U),
-                 state->sessions[i].id,
-                 state->runtime != NULL && strcmp(state->sessions[i].id,
-                                                  cai_agent_runtime_session_id(
-                                                      state->runtime)) == 0
-                     ? "  (current)"
-                     : "");
-    if (n < 0 || (size_t)n >= sizeof(line) || cli_write(state, line) != 0) {
-      return CAI_ERR_TRANSPORT;
-    }
-  }
-  return CAI_OK;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.context = state;
+  callbacks.write = cli_list_write;
+  sink = NULL;
+  rc = cai_sink_from_callbacks(&callbacks, &sink, error);
+  if (rc == CAI_OK)
+    rc = cai_cli_sessions_print(sink, state->sessions, state->session_count, 1,
+                                state->width, error);
+  cai_sink_close(sink);
+  return rc;
 }
 
 static int cli_switch_session(cli_state *state, const char *id, int new_session,
@@ -749,6 +708,27 @@ static int cli_handle_command(cli_state *state, const char *line,
       return CAI_ERR_TRANSPORT;
     }
     return CAI_OK;
+  }
+  if (strcmp(line, "/export") == 0 || strncmp(line, "/export ", 8U) == 0) {
+    cai_sink_callbacks callbacks;
+    cai_sink *destination;
+    const char *id;
+    id = line[7] == '\0' ? cai_agent_runtime_session_id(state->runtime)
+                         : line + 8U;
+    memset(&callbacks, 0, sizeof(callbacks));
+    callbacks.context = state;
+    callbacks.write = cli_list_write;
+    destination = NULL;
+    rc = cai_sink_from_callbacks(&callbacks, &destination, error);
+    if (rc == CAI_OK)
+      rc = cai_cli_session_export(
+          &state->pouch, id, state->options.export_dir,
+          strcmp(id, cai_agent_runtime_session_id(state->runtime)) == 0
+              ? state->runtime
+              : NULL,
+          destination, error);
+    cai_sink_close(destination);
+    return rc;
   }
   if (strcmp(line, "/resume") == 0) {
     return cli_list_sessions(state, error);
@@ -1020,9 +1000,7 @@ int main(int argc, char **argv) {
   cai_error error;
   sl_readline_status_t prompt_status;
   char auth_path[PATH_MAX];
-  char *state_auth_path;
   const char *auth_file;
-  const char *home_directory;
   char *line;
   int parsed;
   int handled;
@@ -1041,37 +1019,82 @@ int main(int argc, char **argv) {
     cai_error_cleanup(&error);
     return 2;
   }
-  if (state.options.login)
-    return cai_cli_login(state.options.auth_json);
+  (void)setlocale(LC_CTYPE, "");
+  result = 1;
   if (realpath(".", state.workspace) == NULL) {
     fprintf(stderr, "cai: cannot resolve workspace: %s\n", strerror(errno));
     return 2;
   }
+  rc = cai_cli_pouch_open(&state.pouch, state.options.lockd,
+                          state.options.lockd_client_pem, &error);
+  if (rc != CAI_OK) {
+    cli_print_error("open lockd store", &error);
+    goto cleanup;
+  }
+  state.store = state.pouch.store;
+  if (state.options.login) {
+    result = cai_cli_login(&state.pouch.credentials);
+    goto cleanup;
+  }
+  if (state.options.list || state.options.resume_list) {
+    cai_sink *destination;
+    destination = NULL;
+    rc = cai_cli_pouch_list(&state.pouch,
+                            state.options.list ? NULL : state.workspace,
+                            &state.sessions, &state.session_count, &error);
+    if (rc == CAI_OK)
+      rc = cai_sink_stdout(&destination, &error);
+    if (rc == CAI_OK)
+      rc =
+          cai_cli_sessions_print(destination, state.sessions,
+                                 state.session_count, state.options.resume_list,
+                                 mdf_terminal_width(STDOUT_FILENO, 80), &error);
+    cai_sink_close(destination);
+    if (rc != CAI_OK)
+      cli_print_error("list conversations", &error);
+    result = rc == CAI_OK ? 0 : 1;
+    goto cleanup;
+  }
+  if (state.options.export_id != NULL) {
+    cai_sink *destination;
+    destination = NULL;
+    rc = cai_sink_stdout(&destination, &error);
+    if (rc == CAI_OK)
+      rc = cai_cli_session_export(&state.pouch, state.options.export_id,
+                                  state.options.export_dir, NULL, destination,
+                                  &error);
+    cai_sink_close(destination);
+    if (rc != CAI_OK)
+      cli_print_error("export conversation", &error);
+    result = rc == CAI_OK ? 0 : 1;
+    goto cleanup;
+  }
+  if (state.options.import_file != NULL) {
+    char id[CAI_AGENT_SESSION_ID_MAX];
+    rc = cai_cli_pouch_import(&state.pouch, state.options.import_file,
+                              state.workspace, id, sizeof(id), &error);
+    if (rc == CAI_OK)
+      puts(id);
+    else
+      cli_print_error("import conversation", &error);
+    result = rc == CAI_OK ? 0 : 1;
+    goto cleanup;
+  }
   auth_file = state.options.auth_json;
-  state_auth_path = NULL;
-  if (strcmp(state.options.provider, "chatgpt") == 0 && auth_file == NULL) {
-    home_directory = getenv("HOME");
-    if (home_directory != NULL &&
-        snprintf(auth_path, sizeof(auth_path), "%s/.codex/auth.json",
-                 home_directory) < (int)sizeof(auth_path) &&
-        access(auth_path, F_OK) == 0) {
-      auth_file = auth_path;
-    } else {
-      rc = cai_chatgpt_auth_default_path(&state_auth_path, &error);
+  if (strcmp(state.options.provider, "chatgpt") == 0) {
+    if (auth_file == NULL && getenv("HOME") != NULL) {
+      rc = snprintf(auth_path, sizeof(auth_path), "%s/.codex/auth.json",
+                    getenv("HOME"));
+      if (rc > 0 && (size_t)rc < sizeof(auth_path) &&
+          access(auth_path, F_OK) == 0)
+        auth_file = auth_path;
+    }
+    if (auth_file != NULL) {
+      rc = cai_cli_pouch_seed_auth(&state.pouch, auth_file, &error);
       if (rc != CAI_OK) {
-        cli_print_error("resolve cai auth path", &error);
-        cai_error_cleanup(&error);
-        return 2;
+        cli_print_error("import ChatGPT auth", &error);
+        goto cleanup;
       }
-      if (access(state_auth_path, F_OK) != 0) {
-        fputs("cai: ChatGPT authentication not found; run cai --login (-l) "
-              "to authenticate\n",
-              stderr);
-        cai_string_destroy(state_auth_path);
-        cai_error_cleanup(&error);
-        return 2;
-      }
-      auth_file = state_auth_path;
     }
   }
   state.interactive = !state.options.review && !state.options.non_interactive &&
@@ -1120,19 +1143,14 @@ int main(int argc, char **argv) {
     }
     state.has_timer_watch = 1;
   }
-  rc = cai_agent_local_session_store_open(NULL, &state.store, &error);
-  if (rc != CAI_OK) {
-    cli_print_error("open session store", &error);
-    goto cleanup;
-  }
   cai_client_config_init(&client_config);
   if (strcmp(state.options.provider, "chatgpt") == 0) {
     cai_chatgpt_auth_config_init(&auth_config);
-    auth_config.auth_json_path = auth_file;
+    auth_config.storage = &state.pouch.credentials;
     rc = cai_chatgpt_auth_open(&auth_config, &state.auth, &error);
     if (rc != CAI_OK) {
       cli_print_error("open ChatGPT auth", &error);
-      fputs("cai: run cai --login (-l) to authenticate\n", stderr);
+      fputs("cai: run cai --login to authenticate\n", stderr);
       goto cleanup;
     }
     client_config.chatgpt_auth = state.auth;
@@ -1263,9 +1281,7 @@ cleanup:
     state.quota_client->close(state.quota_client);
   if (state.auth != NULL)
     state.auth->close(state.auth);
-  cai_string_destroy(state_auth_path);
-  if (state.store.context != NULL)
-    cai_agent_local_session_store_close(&state.store);
+  cai_cli_pouch_close(&state.pouch);
   if (state.renderer != NULL) {
     (void)cli_finish_response(&state);
     state.renderer->destroy(state.renderer);

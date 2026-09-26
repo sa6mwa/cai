@@ -5,9 +5,9 @@ cli=$1
 build_dir=$2
 fixture=$(mktemp -d "$build_dir/cli-providers.XXXXXX")
 trap 'rm -rf "$fixture"' EXIT
-mkdir -p "$fixture/home/.codex" "$fixture/state/cai" "$fixture/work"
+mkdir -p "$fixture/home/.codex" "$fixture/state" "$fixture/work"
 export HOME="$fixture/home" XDG_STATE_HOME="$fixture/state"
-cat > "$fixture/state/cai/auth.json" <<'JSON'
+cat > "$fixture/home/.codex/auth.json" <<'JSON'
 {"auth_mode":"chatgpt","tokens":{"id_token":"eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA0MTAyNDQ0ODAwfQ.sig","access_token":"eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA0MTAyNDQ0ODAwfQ.sig","refresh_token":"fixture","account_id":"fixture"},"last_refresh":"2026-09-25T00:00:00Z"}
 JSON
 export HTTPS_PROXY=http://127.0.0.1:1 HTTP_PROXY=http://127.0.0.1:1 NO_PROXY=
@@ -20,8 +20,11 @@ if printf '/quit\n' | "$cli" -C "$fixture/work" >"$fixture/out" 2>"$fixture/err"
   echo 'Codex auth was not preferred' >&2
   exit 1
 fi
-grep -q 'open ChatGPT auth' "$fixture/err"
+grep -q 'import ChatGPT auth' "$fixture/err"
 rm "$fixture/home/.codex/auth.json"
+stored=$(printf '/status\n/quit\n' | "$cli" -C "$fixture/work")
+[[ "$stored" == *"chatgpt"* ]]
+test ! -f "$fixture/state/cai/auth.json"
 
 openai=$(printf '/status\n/quit\n' | OPENAI_API_KEY=fixture "$cli" -p openai -C "$fixture/work")
 [[ "$openai" == *"Provider"* && "$openai" == *"openai"* ]]
@@ -43,12 +46,12 @@ if printf '/quit\n' | env -u OPENAI_API_KEY "$cli" -p openai -C "$fixture/work" 
 fi
 grep -q 'OPENAI_API_KEY' "$fixture/err"
 
-rm "$fixture/state/cai/auth.json"
+export XDG_STATE_HOME="$fixture/state-empty"
 if printf '/quit\n' | "$cli" -C "$fixture/work" >"$fixture/out" 2>"$fixture/err"; then
   echo 'missing auth was accepted' >&2
   exit 1
 fi
-grep -q 'run cai --login (-l)' "$fixture/err"
+grep -q 'run cai --login' "$fixture/err"
 help=$("$cli" --help)
 [[ "$help" == $'cai and libcai Copyright (C) 2026 C89 Systems AB https://c89.systems\n\nUsage: cai '* ]]
 [[ "$("$cli" -h)" == "$help" ]]
