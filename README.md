@@ -94,7 +94,7 @@ runtime, review, storage, and presentation contracts.
 
 The `cai` preset builds the terminal coding agent as a statically linked
 Linux x86_64 musl executable. It adds pinned softline 0.7.0 for the prompt and
-libmdf 0.12.0 for streamed Markdown rendering, and liblockdc 0.18.0 with
+libmdf 0.13.0 for streamed Markdown rendering, and liblockdc 0.18.0 with
 liblql 0.3.0 for durable storage. It uses libpslog 0.12.0 for logging.
 `libcai` itself has no dependency on the CLI prompt, rendering, or storage libraries.
 Softline and libmdf run on the UI thread. The runtime
@@ -229,6 +229,8 @@ invocation, including when a later turn fails without producing a response.
 Earlier replies, replay, reasoning, tools, and child reviews stay in the log.
 Activity logging is immediate; final stdout selection uses a private,
 unlinked file-backed spool with bounded reads, then renders through libmdf.
+Markdown rendering detects stdout: terminals allow ANSI styling, while pipes
+and files receive escape-free UTF-8 rendered at 80 columns.
 Help, version, listing, export, and import keep their normal stdout results.
 Utility commands (`--list`/`-l`, `--resume` without an ID, `--export`,
 `--import`, and `--login`) default to warning-level diagnostics on stderr.

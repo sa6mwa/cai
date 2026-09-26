@@ -322,6 +322,9 @@ immediate. Review findings retain their selected Markdown or JSON format;
 .B \-\-out
 keeps standard output empty. Utility commands retain their normal stdout results.
 .PP
+Rendered assistant output detects its stdout destination: terminals allow ANSI
+styling, while pipes and files receive escape-free UTF-8 at 80 columns.
+.PP
 Listing, resume listings, export, import, and login default to warning-level
 diagnostics on standard error. Agent sessions and review modes keep all levels
 by default. LOG_LEVEL overrides these defaults. Login URLs, callback guidance,

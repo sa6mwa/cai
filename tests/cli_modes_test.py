@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Observable CLI modes against a local Responses stream fixture."""
+import fcntl
 import http.server
 import json
 import os
@@ -8,9 +9,11 @@ import pty
 import re
 import select
 import socketserver
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import threading
 import time
 
@@ -345,7 +348,11 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
         key_file.write_bytes(key)
         key_file.chmod(0o600)
         assert run("-l").returncode == 0
-        key_file.write_bytes(key[:-2] + (b"1" if key[-2:-1] != b"1" else b"2") + key[-1:])
+        # Change significant key bits, not unused bits in the final base64url byte.
+        key_start = key.index(b":") + 1
+        key_file.write_bytes(key[:key_start] +
+                             (b"A" if key[key_start:key_start + 1] != b"A" else b"B") +
+                             key[key_start + 1:])
         wrong_key = run("-l")
         assert wrong_key.returncode != 0, wrong_key.stdout
         assert key_file.read_bytes() != key, "wrong key was silently replaced"
@@ -572,6 +579,59 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
         server.responses[:] = ["not a review report"]
         failed = run("--review")
         assert failed.returncode != 0 and failed.stdout == "", (failed.stdout, failed.stderr)
+        server.requests.clear()
+        markdown_fixture = ("# Renderer fixture\n\n**UTF-8**: café λ → "
+                            "[link](https://example.test)\n\n" +
+                            "wrap-fixture " * 100 +
+                            "\n\n```text\n\x1b[31mansi-coded\x1b[0m\n```\n")
+        server.responses[:] = [markdown_fixture]
+        pipe_rendered = run("-Nni", "render to pipe", overrides={"COLUMNS": "120"})
+        assert pipe_rendered.returncode == 0, pipe_rendered.stderr
+        assert "\x1b" not in pipe_rendered.stdout, pipe_rendered.stdout
+        assert "café λ →" in pipe_rendered.stdout and "ansi-coded" in pipe_rendered.stdout
+        wrapped = [line for line in pipe_rendered.stdout.splitlines() if "wrap-fixture" in line]
+        assert len(wrapped) > 1 and max(map(len, wrapped)) <= 80, wrapped
+        server.requests.clear()
+
+        server.responses[:] = [markdown_fixture]
+        rendered_path = root / "rendered.txt"
+        file_env = env.copy()
+        file_env["COLUMNS"] = "120"
+        with rendered_path.open("w") as destination:
+            file_rendered = subprocess.run(base + ["-Nni", "render to file"], env=file_env,
+                                           stdout=destination, stderr=subprocess.PIPE,
+                                           text=True, timeout=10)
+        assert file_rendered.returncode == 0, file_rendered.stderr
+        assert rendered_path.read_text() == pipe_rendered.stdout
+        server.requests.clear()
+
+        server.responses[:] = [markdown_fixture]
+        master, slave = pty.openpty()
+        try:
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 120, 0, 0))
+            terminal_rendered = subprocess.run(base + ["-Nni", "render to terminal"], env=env,
+                                              stdin=subprocess.DEVNULL, stdout=slave,
+                                              stderr=subprocess.PIPE, timeout=10)
+            os.close(slave)
+            slave = -1
+            terminal_bytes = bytearray()
+            while select.select([master], [], [], 1)[0]:
+                try:
+                    chunk = os.read(master, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                terminal_bytes.extend(chunk)
+            assert terminal_rendered.returncode == 0, terminal_rendered.stderr
+            assert b"\x1b[" in terminal_bytes, terminal_bytes
+            terminal_text = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", bytes(terminal_bytes)).decode()
+            wrapped = [line for line in terminal_text.splitlines() if "wrap-fixture" in line]
+            assert 80 < max(map(len, wrapped)) <= 120, wrapped
+        finally:
+            if slave >= 0:
+                os.close(slave)
+            os.close(master)
     finally:
         server.shutdown()
         server.server_close()

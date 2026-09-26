@@ -158,6 +158,7 @@ int main(void) {
   }
   state.width = 80;
   mdf_options_init(&renderer_options);
+  renderer_options.output_fd = STDOUT_FILENO;
   renderer_options.width = state.width;
   renderer_options.boring = 1;
   if (mdf_create(MDF_FORMAT_ANSI, &renderer_options, &state.renderer) !=

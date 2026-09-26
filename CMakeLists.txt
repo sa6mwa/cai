@@ -130,7 +130,7 @@ set(CAI_LONEJSON_VERSION "0.44.0")
 set(CAI_LONEJSON_ABI_VERSION "26")
 set(CAI_PSLOG_VERSION "0.12.0")
 set(CAI_SOFTLINE_VERSION "0.7.0")
-set(CAI_LIBMDF_VERSION "0.12.0")
+set(CAI_LIBMDF_VERSION "0.13.0")
 
 if(CAI_BUILD_CLI AND (NOT CAI_TARGET_ID STREQUAL "x86_64-linux-musl" OR
                       NOT CAI_DEPENDENCY_MODE STREQUAL "cpkt"))
@@ -483,13 +483,13 @@ if(CAI_BUILD_CLI)
   set(_cai_libmdf_prefix "${CAI_DEPS_DIR}/${_cai_libmdf_name}")
   cai_dependency_archive_path(
     "${_cai_libmdf_name}.tar.gz"
-    "5846405faff4f94e4838eed1aebafe94889dd47db8921d6a28cbfa7443601021"
+    "1fd8758bed2eab39b84a6265dad32386531943c13ee400a0ab6663e98d2cd404"
     _cai_libmdf_archive)
   cai_download_tarball(
     "libmdf ${CAI_LIBMDF_VERSION} x86_64-linux-musl"
     "https://github.com/sa6mwa/libmdf/releases/download/v${CAI_LIBMDF_VERSION}/${_cai_libmdf_name}.tar.gz"
     "${_cai_libmdf_archive}" "${_cai_libmdf_prefix}"
-    "5846405faff4f94e4838eed1aebafe94889dd47db8921d6a28cbfa7443601021"
+    "1fd8758bed2eab39b84a6265dad32386531943c13ee400a0ab6663e98d2cd404"
     "${_cai_libmdf_prefix}/include/libmdf/mdf.h")
   list(PREPEND CMAKE_PREFIX_PATH "${_cai_softline_prefix}"
        "${_cai_libmdf_prefix}")

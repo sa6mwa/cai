@@ -138,9 +138,13 @@ static int cli_sink(void *context, const char *bytes, size_t count) {
   return sl_output_stream_write(state->sl, bytes, count) == SL_OK ? 0 : -1;
 }
 
+static int cli_render_width(void) {
+  return isatty(STDOUT_FILENO) ? mdf_terminal_width(STDOUT_FILENO, 80) : 80;
+}
+
 static int cli_geometry(cli_state *state) {
   int width;
-  width = mdf_terminal_width(STDOUT_FILENO, 80);
+  width = cli_render_width();
   if (width == state->width) {
     return 0;
   }
@@ -1293,8 +1297,9 @@ int main(int argc, char **argv) {
       goto cleanup;
     }
   }
-  state.width = mdf_terminal_width(STDOUT_FILENO, 80);
+  state.width = cli_render_width();
   mdf_options_init(&mdf_config);
+  mdf_config.output_fd = STDOUT_FILENO;
   mdf_config.width = state.width;
   mdf_config.margin_left = state.width >= 5 ? 2 : 0;
   mdf_config.boring = !state.interactive;
