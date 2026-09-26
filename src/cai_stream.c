@@ -3059,6 +3059,7 @@ static int cai_client_stream_response_params_with_id(
   cai_sse_state state;
   cai_response_request_upload *upload;
   char *url;
+  char *request_id;
   long http_status;
   int rc;
   int http_success;
@@ -3123,6 +3124,7 @@ retry_request:
   url = NULL;
   headers = NULL;
   upload = NULL;
+  request_id = NULL;
   memset(&state, 0, sizeof(state));
   sse_options = lonejson_default_sse_options();
   sse_options.max_line_bytes = CAI_DEFAULT_SSE_EVENT_LIMIT;
@@ -3233,6 +3235,9 @@ retry_request:
                      cai_response_request_upload_size(upload));
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_sse_write);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION,
+                     cai_http_request_id_header_write);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &request_id);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
@@ -3257,7 +3262,7 @@ retry_request:
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
     if (curl_rc == CURLE_OK) {
       cai_log_http_request_done(CAI_CLIENT_IMPL(client), "POST", "responses",
-                                http_status, state.body_length, NULL);
+                                http_status, state.body_length, request_id);
     }
   } else {
     curl_rc = CURLE_OK;
@@ -3298,12 +3303,14 @@ retry_request:
   cai_response_request_upload_close(upload);
   if (rc != CAI_OK) {
     cai_free_mem(NULL, state.body);
+    cai_free_mem(NULL, request_id);
     return rc;
   }
   if (!http_success && !retried_auth &&
       (http_status == 401L || http_status == 403L) &&
       CAI_CLIENT_IMPL(client)->chatgpt_auth != NULL) {
     cai_free_mem(NULL, state.body);
+    cai_free_mem(NULL, request_id);
     rc = cai_client_refresh_chatgpt_auth_after_http(client, http_status, error);
     if (rc != CAI_OK) {
       return rc;
@@ -3315,16 +3322,19 @@ retry_request:
     if (curl_rc == CURLE_ABORTED_BY_CALLBACK &&
         cai_stream_thread_cancel_requested()) {
       cai_free_mem(NULL, state.body);
+      cai_free_mem(NULL, request_id);
       return cai_set_error(error, CAI_ERR_CANCELLED,
                            "agent turn was cancelled");
     }
     if (http_status > 0L && (http_status < 200L || http_status >= 300L)) {
-      rc = cai_set_openai_error(error, http_status,
-                                state.body != NULL ? state.body : "", NULL);
+      rc = cai_set_openai_error(
+          error, http_status, state.body != NULL ? state.body : "", request_id);
       cai_free_mem(NULL, state.body);
+      cai_free_mem(NULL, request_id);
       return rc;
     }
     cai_free_mem(NULL, state.body);
+    cai_free_mem(NULL, request_id);
     if (state.failed) {
       cai_log_http_transport_error(CAI_CLIENT_IMPL(client), "POST", "responses",
                                    state.failed_message);
@@ -3338,18 +3348,21 @@ retry_request:
   }
   if (!http_success) {
     rc = cai_set_openai_error(error, http_status,
-                              state.body != NULL ? state.body : "", NULL);
+                              state.body != NULL ? state.body : "", request_id);
     cai_free_mem(NULL, state.body);
+    cai_free_mem(NULL, request_id);
     return rc;
   }
   if (state.failed) {
     cai_free_mem(NULL, state.body);
+    cai_free_mem(NULL, request_id);
     cai_log_http_transport_error(CAI_CLIENT_IMPL(client), "POST", "responses",
                                  state.failed_message);
     return cai_set_error(error, state.failed_code, state.failed_message);
   }
   if (state.response_incomplete_seen) {
     cai_free_mem(NULL, state.body);
+    cai_free_mem(NULL, request_id);
     return cai_set_error_detail(error, CAI_ERR_LIMIT,
                                 "response ended incomplete",
                                 state.response_incomplete_reason[0] != '\0'
@@ -3358,10 +3371,12 @@ retry_request:
   }
   if (!state.response_completed_seen) {
     cai_free_mem(NULL, state.body);
+    cai_free_mem(NULL, request_id);
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "stream ended before response.completed");
   }
   cai_free_mem(NULL, state.body);
+  cai_free_mem(NULL, request_id);
   return CAI_OK;
 }
 

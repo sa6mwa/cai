@@ -49,6 +49,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if text == "__http_error__":
             self.send_error(500, "fixture error")
             return
+        if text == "__api_error__":
+            body = json.dumps({"error": {"message": "quota exhausted",
+                                         "type": "rate_limit_error",
+                                         "code": "rate_limit_exceeded"}}).encode()
+            self.send_response(429)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("x-request-id", "req_fixture_429")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         identifier = f"resp_{len(self.server.requests)}"
         if text == "__complete_goal__":
             events = [{"type": "response.output_item.done", "output_index": 0,
@@ -145,7 +156,21 @@ with tempfile.TemporaryDirectory() as directory:
         server.responses[:] = ["__http_error__"]
         failed_turn = run("-n", "-i", "should fail", "-i", "must not run")
         assert failed_turn.returncode != 0, (failed_turn.stdout, failed_turn.stderr)
+        assert "HTTP 500" in failed_turn.stderr
+        assert "fixture error" in failed_turn.stderr
         assert len(server.requests) == 1, server.requests
+        server.requests.clear()
+
+        server.responses[:] = ["__api_error__"]
+        provider_failure = run("-Nni", "trigger quota error")
+        assert provider_failure.returncode != 0
+        assert "OpenAI API request failed" in provider_failure.stderr
+        assert "HTTP 429" in provider_failure.stderr
+        assert "rate_limit_exceeded" in provider_failure.stderr
+        assert "req_fixture_429" in provider_failure.stderr
+        assert "quota exhausted" in provider_failure.stderr
+        assert "operation failed" not in provider_failure.stderr
+        assert "[error]" not in provider_failure.stdout
         server.requests.clear()
 
         server.responses[:] = [json.dumps(REPORT)]

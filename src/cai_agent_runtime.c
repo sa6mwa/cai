@@ -1343,6 +1343,60 @@ static int cai_runtime_enqueue_locked(cai_agent_runtime *runtime, int type,
   return CAI_OK;
 }
 
+static int cai_runtime_enqueue_failure_locked(cai_agent_runtime *runtime,
+                                              const cai_error *failure,
+                                              const char *fallback,
+                                              cai_error *event_error) {
+  cai_buffer_builder description;
+  cai_error format_error;
+  const char *message;
+  char status[48];
+  int length;
+  int rc;
+
+  memset(&description, 0, sizeof(description));
+  cai_error_init(&format_error);
+  message =
+      failure != NULL && failure->message != NULL ? failure->message : fallback;
+  rc = cai_buffer_append_cstr(&description, message, &format_error);
+  if (rc == CAI_OK && failure != NULL && failure->http_status > 0L) {
+    length =
+        snprintf(status, sizeof(status), "\nHTTP %ld", failure->http_status);
+    if (length < 0 || (size_t)length >= sizeof(status))
+      rc = CAI_ERR_INVALID;
+    else
+      rc = cai_buffer_append_cstr(&description, status, &format_error);
+  }
+  if (rc == CAI_OK && failure != NULL && failure->server_code != NULL &&
+      failure->server_code[0] != '\0') {
+    rc = cai_buffer_append_cstr(&description,
+                                "\nProvider code: ", &format_error);
+    if (rc == CAI_OK)
+      rc = cai_buffer_append_cstr(&description, failure->server_code,
+                                  &format_error);
+  }
+  if (rc == CAI_OK && failure != NULL && failure->request_id != NULL &&
+      failure->request_id[0] != '\0') {
+    rc = cai_buffer_append_cstr(&description, "\nRequest ID: ", &format_error);
+    if (rc == CAI_OK)
+      rc = cai_buffer_append_cstr(&description, failure->request_id,
+                                  &format_error);
+  }
+  if (rc == CAI_OK && failure != NULL && failure->detail != NULL &&
+      failure->detail[0] != '\0') {
+    rc = cai_buffer_append_cstr(&description, "\nDetail: ", &format_error);
+    if (rc == CAI_OK)
+      rc = cai_buffer_append_cstr(&description, failure->detail, &format_error);
+  }
+  message = rc == CAI_OK ? description.data : message;
+  rc = cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_FAILED, message,
+                                  strlen(message), NULL, NULL, runtime->state,
+                                  event_error);
+  cai_free_mem(NULL, description.data);
+  cai_error_cleanup(&format_error);
+  return rc;
+}
+
 /* Owner-thread control operations cannot wait for callback delivery: that
  * same owner is the only consumer that can create event-queue capacity. */
 static int cai_runtime_enqueue_nonblocking_locked(
@@ -4660,15 +4714,9 @@ static void *cai_runtime_worker(void *context) {
     runtime->state = CAI_AGENT_FAILED;
     cai_runtime_turn_finish_locked(runtime);
     if (runtime->event_callback != NULL &&
-        cai_runtime_enqueue_locked(
-            runtime, CAI_AGENT_EVENT_RUN_FAILED,
-            error.message != NULL
-                ? error.message
-                : "failed to initialize reasoning summary stream",
-            error.message != NULL
-                ? strlen(error.message)
-                : sizeof("failed to initialize reasoning summary stream") - 1U,
-            NULL, NULL, runtime->state, &error) == CAI_OK) {
+        cai_runtime_enqueue_failure_locked(
+            runtime, &error, "failed to initialize reasoning summary stream",
+            &error) == CAI_OK) {
       runtime->terminal_event_pending = 1;
     }
     pthread_cond_broadcast(&runtime->condition);
@@ -4723,14 +4771,9 @@ static void *cai_runtime_worker(void *context) {
       runtime->state = CAI_AGENT_FAILED;
       cai_runtime_turn_finish_locked(runtime);
       if (runtime->event_callback != NULL &&
-          cai_runtime_enqueue_locked(
-              runtime, CAI_AGENT_EVENT_RUN_FAILED,
-              error.message != NULL ? error.message
-                                    : "pending settings could not be applied",
-              error.message != NULL
-                  ? strlen(error.message)
-                  : sizeof("pending settings could not be applied") - 1U,
-              NULL, NULL, runtime->state, &error) == CAI_OK) {
+          cai_runtime_enqueue_failure_locked(
+              runtime, &error, "pending settings could not be applied",
+              &error) == CAI_OK) {
         runtime->terminal_event_pending = 1;
       }
       pthread_mutex_unlock(&runtime->lock);
@@ -5003,15 +5046,11 @@ static void *cai_runtime_worker(void *context) {
         runtime->terminal_event_pending = 1;
       }
     } else {
-      const char *message;
-
       runtime->state =
           rc == CAI_ERR_CANCELLED ? CAI_AGENT_CANCELLED : CAI_AGENT_FAILED;
-      message = error.message != NULL ? error.message : "agent run failed";
       if (runtime->event_callback != NULL &&
-          cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_FAILED,
-                                     message, strlen(message), NULL, NULL,
-                                     runtime->state, &error) == CAI_OK) {
+          cai_runtime_enqueue_failure_locked(
+              runtime, &error, "agent run failed", &error) == CAI_OK) {
         runtime->terminal_event_pending = 1;
       }
     }

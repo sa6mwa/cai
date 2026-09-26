@@ -41063,6 +41063,8 @@ static void test_stream_http_error_preserves_openai_error(test_state *state) {
              "invalid API key");
   expect_str(state, "stream_http_error_code", error.server_code,
              "invalid_api_key");
+  expect_str(state, "stream_http_error_request_id", error.request_id,
+             "req_stream_error");
   expect_str(state, "stream_http_error_sink_empty", writer.buffer, "");
 
   cai_sink_close(sink);
@@ -41153,6 +41155,8 @@ static void test_stream_source_error_preserves_openai_error(test_state *state) {
              "invalid API key");
   expect_str(state, "stream_source_error_server_code", error.server_code,
              "invalid_api_key");
+  expect_str(state, "stream_source_error_request_id", error.request_id,
+             "req_stream_error");
 
   cai_source_close(source);
   cai_response_create_params_destroy(params);

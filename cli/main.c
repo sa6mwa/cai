@@ -82,6 +82,12 @@ static void cli_print_error(const char *operation, const cai_error *error) {
   fprintf(stderr, "cai: %s: %s\n", operation,
           error != NULL && error->message != NULL ? error->message
                                                   : "operation failed");
+  if (error != NULL && error->http_status > 0L)
+    fprintf(stderr, "cai: HTTP %ld\n", error->http_status);
+  if (error != NULL && error->server_code != NULL)
+    fprintf(stderr, "cai: provider code: %s\n", error->server_code);
+  if (error != NULL && error->request_id != NULL)
+    fprintf(stderr, "cai: request ID: %s\n", error->request_id);
   if (error != NULL && error->detail != NULL) {
     fprintf(stderr, "cai: detail: %s\n", error->detail);
   }
@@ -283,9 +289,17 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
   }
   if (event->type == CAI_AGENT_EVENT_RUN_FAILED) {
     if (event->data != NULL) {
-      if (cli_write(state, "\n[error] ") != 0 ||
-          cli_sink(state, event->data, event->data_length) != 0 ||
-          cli_write(state, "\n") != 0) {
+      if (state->options.non_interactive && state->activity == NULL) {
+        if (cli_finish_response(state) != 0 ||
+            cli_finish_reasoning(state) != 0 ||
+            fputs("cai: agent failed: ", stderr) < 0 ||
+            fwrite(event->data, 1U, event->data_length, stderr) !=
+                event->data_length ||
+            fputc('\n', stderr) == EOF)
+          return CAI_ERR_TRANSPORT;
+      } else if (cli_write(state, "\n[error] ") != 0 ||
+                 cli_sink(state, event->data, event->data_length) != 0 ||
+                 cli_write(state, "\n") != 0) {
         return CAI_ERR_TRANSPORT;
       }
     }
@@ -1179,10 +1193,12 @@ int main(int argc, char **argv) {
   }
   if (state.options.non_interactive) {
     rc = cli_run_noninteractive(&state, &error);
-    if (rc != CAI_OK)
-      cli_print_error("non-interactive run", &error);
-    else
+    if (rc != CAI_OK) {
+      if (!state.automation_failed || error.message != NULL)
+        cli_print_error("non-interactive run", &error);
+    } else {
       result = 0;
+    }
     goto cleanup;
   }
   while (!state.exit_requested) {

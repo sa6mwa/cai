@@ -350,6 +350,8 @@ int cai_append_prefixed_header(cai_client *client, struct curl_slist **headers,
                                cai_error *error);
 int cai_append_client_headers(cai_client *client, struct curl_slist **headers,
                               cai_error *error);
+size_t cai_http_request_id_header_write(char *ptr, size_t size, size_t nmemb,
+                                        void *userdata);
 int cai_http_json_request(cai_client *client, const char *method,
                           const char *path, const char *request_json,
                           char **out_json, long *out_http_status,

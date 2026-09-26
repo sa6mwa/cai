@@ -119,8 +119,8 @@ static size_t cai_http_write(char *ptr, size_t size, size_t nmemb,
   return count;
 }
 
-static size_t cai_http_header_write(char *ptr, size_t size, size_t nmemb,
-                                    void *userdata) {
+size_t cai_http_request_id_header_write(char *ptr, size_t size, size_t nmemb,
+                                        void *userdata) {
   static const char request_id_header[] = "x-request-id:";
   char **request_id;
   size_t count;
@@ -130,6 +130,8 @@ static size_t cai_http_header_write(char *ptr, size_t size, size_t nmemb,
 
   request_id = (char **)userdata;
   count = size * nmemb;
+  if (size != 0U && count / size != nmemb)
+    return 0U;
   if (request_id == NULL || *request_id != NULL ||
       count <= sizeof(request_id_header) - 1U) {
     return count;
@@ -639,7 +641,8 @@ retry_request:
   }
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_http_write);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-  curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, cai_http_header_write);
+  curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION,
+                   cai_http_request_id_header_write);
   curl_easy_setopt(curl, CURLOPT_HEADERDATA, &request_id);
   curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
   if (CAI_CLIENT_IMPL(client)->timeout_ms > 0L) {
@@ -856,7 +859,8 @@ retry_request:
                      cai_response_request_upload_size(upload));
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_http_write);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, cai_http_header_write);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION,
+                     cai_http_request_id_header_write);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &request_id);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     if (CAI_CLIENT_IMPL(client)->timeout_ms > 0L) {

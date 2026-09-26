@@ -288,6 +288,8 @@ is set; otherwise
 Returns zero after a normal exit, a completed non-interactive goal, or a
 successful review. Returns two for invalid command-line arguments and one for
 startup, runtime, review, or stopped-goal failure.
+Provider failures show the available HTTP status, provider code, request ID,
+and diagnostic detail. Non-interactive errors are written to standard error.
 .SH SEE ALSO
 .I README.md
 in the installed
