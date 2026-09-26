@@ -856,7 +856,8 @@ static int ensure_parents(char *path, cai_error *error) {
 }
 
 int cai_cli_pouch_open(cai_cli_pouch *pouch, const char *selected_endpoint,
-                       const char *client_pem, cai_error *error) {
+                       const char *client_pem, pslog_logger *logger,
+                       cai_error *error) {
   const char *base;
   char path[PATH_MAX];
   char root[PATH_MAX];
@@ -874,6 +875,7 @@ int cai_cli_pouch_open(cai_cli_pouch *pouch, const char *selected_endpoint,
   char *decoded_root;
   int rc;
   memset(pouch, 0, sizeof(*pouch));
+  pouch->logger = logger;
   base = getenv("XDG_STATE_HOME");
   if (base != NULL && base[0] != '\0')
     rc = snprintf(path, sizeof(path), "%s/cai", base);
@@ -943,6 +945,7 @@ int cai_cli_pouch_open(cai_cli_pouch *pouch, const char *selected_endpoint,
     rc = lc_pouch_endpoint_build(root, NULL, 0U, &endpoint, &local);
   }
   lc_client_config_init(&config);
+  config.logger = logger;
   lc_pouch_settings_init(&settings);
   settings.set_mask =
       LC_POUCH_SETTING_SINGLE_WRITER | LC_POUCH_SETTING_DURABLE_SYNC |
@@ -1035,6 +1038,7 @@ int cai_cli_pouch_seed_auth(cai_cli_pouch *pouch, const char *path,
    * Opening auth only validates the document; token access performs refresh. */
   auth = NULL;
   cai_chatgpt_auth_config_init(&auth_config);
+  auth_config.logger = pouch->logger;
   auth_config.auth_json_path = current.path;
   rc = cai_chatgpt_auth_open(&auth_config, &auth, error);
   cai_chatgpt_auth_close(auth);
@@ -1230,6 +1234,7 @@ static int validate_checkpoint(cai_cli_pouch *pouch, const char *id,
   session = NULL;
   state = NULL;
   cai_client_config_init(&client_config);
+  client_config.logger = pouch->logger;
   client_config.base_url = "http://127.0.0.1:1/v1";
   client_config.api_key = "offline-state-validation";
   cai_agent_config_init(&agent_config);

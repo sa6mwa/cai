@@ -95,7 +95,8 @@ runtime, review, storage, and presentation contracts.
 The `cai` preset builds the terminal coding agent as a statically linked
 Linux x86_64 musl executable. It adds pinned softline 0.7.0 for the prompt and
 libmdf 0.12.0 for streamed Markdown rendering, and liblockdc 0.18.0 with
-liblql 0.3.0 for durable storage. `libcai` itself has no dependency on these.
+liblql 0.3.0 for durable storage. It uses libpslog 0.10.0 for logging.
+`libcai` itself has no dependency on the CLI prompt, rendering, or storage libraries.
 Softline and libmdf run on the UI thread. The runtime
 worker executes model requests and tools, then wakes the UI thread to render
 events.
@@ -205,9 +206,40 @@ a durable goal; the agent keeps working until the goal completes or stops.
 reading terminal input. For example, `cai -Nni 'write a snake game in Lua'
 -i 'rewrite it in Go'` starts fresh, completes both turns, then exits.
 
+Cai uses `pslog_new_from_env("LOG_", ...)` for all diagnostics and runtime
+activity, including libcai, liblockdc, tools, and subagents. JSON is the default
+format. Ordinary prompts, assistant text, and provider reasoning summaries
+are `info` records. Conversation records include `role` and `prompt_kind`
+(`normal`, `steering`, `queued`, `developer_instructions`, or
+`reasoning_summary`), with event and invocation identifiers where available.
+There is no added `app` field. Long text is logged as ordered bounded chunks
+with an `offset` field; activity reaches the sink as it arrives.
+
+In prompt mode, logs append to `$XDG_CACHE_HOME/cai/<sessionid>.log`, falling
+back to `~/.cache/cai/<sessionid>.log`. Files are private (0600), with a private
+cai cache directory (0700). Startup records are transferred to the selected
+session's log; failed startup records remain in a `startup-*` file. The UI
+surfaces warning and error diagnostics, while normal conversation rendering
+continues through softline and libmdf.
+
+With `-n`, `--review`, or `--review-and-fix`, the default log sink is stderr.
+Stdout contains only the latest top-level assistant response of the entire
+invocation, including when a later turn fails without producing a response.
+Earlier replies, replay, reasoning, tools, and child reviews stay in the log.
+Activity logging is immediate; final stdout selection uses a private,
+unlinked file-backed spool with bounded reads, then renders through libmdf.
+Help, version, listing, export, and import keep their normal stdout results.
+
+Native pslog environment settings apply, including `LOG_MODE`, `LOG_LEVEL`,
+`LOG_NO_COLOR`, `LOG_FORCE_COLOR`, `LOG_PALETTE`, `LOG_VERBOSE_FIELDS`,
+`LOG_DISABLE_TIMESTAMP`, `LOG_TIME_FORMAT`, `LOG_UTC`, `LOG_OUTPUT`, and
+`LOG_OUTPUT_FILE_MODE`. `LOG_OUTPUT` explicitly overrides the default sink;
+`default+PATH` adds a second file while retaining the default sink and its UI
+warning notices. `LOG_LEVEL=warn` filters out ordinary conversation records.
+
 `cai --review` runs one isolated review of uncommitted changes and exits.
 `--base REF` selects a base reference, or one `-i TEXT` supplies custom review
-instructions. Activity, assistant output, and reasoning appear on stderr;
+instructions. Activity, assistant output, and reasoning are pslog records on stderr;
 the validated Markdown findings report appears on stdout. `-o FILE` writes
 only the findings to that file and leaves stdout empty. `-T json` selects the
 validated structured report instead of Markdown. Failure returns a nonzero

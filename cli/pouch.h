@@ -25,12 +25,14 @@ typedef struct cai_cli_pouch {
   lc_client *auth;
   cai_agent_session_store store;
   cai_blob_store credentials;
+  pslog_logger *logger;
   char state_directory[PATH_MAX];
   char key_path[PATH_MAX];
 } cai_cli_pouch;
 
 int cai_cli_pouch_open(cai_cli_pouch *pouch, const char *endpoint,
-                       const char *client_pem, cai_error *error);
+                       const char *client_pem, pslog_logger *logger,
+                       cai_error *error);
 void cai_cli_pouch_close(cai_cli_pouch *pouch);
 int cai_cli_pouch_seed_auth(cai_cli_pouch *pouch, const char *path,
                             cai_error *error);

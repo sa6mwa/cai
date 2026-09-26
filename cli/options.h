@@ -45,6 +45,7 @@ typedef struct cai_cli_options {
   int review_subagent;
   int codex_agents_md;
   int verbosity;
+  char diagnostic[512];
 } cai_cli_options;
 
 void cai_cli_options_init(cai_cli_options *options);

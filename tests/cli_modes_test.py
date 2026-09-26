@@ -70,6 +70,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                        "item": {"id": "fc_goal", "type": "function_call",
                                 "call_id": "call_goal", "name": "update_goal",
                                 "arguments": '{"status":"complete"}'}}]
+        elif text == "__run_review__":
+            events = [{"type": "response.output_item.done", "output_index": 0,
+                       "item": {"id": "fc_review", "type": "function_call",
+                                "call_id": "call_review", "name": "run_review",
+                                "arguments": '{"target":"uncommitted"}'}}]
+        elif text == "__summary__":
+            events = [{"type": "response.reasoning_summary_text.delta",
+                       "delta": "Short provider summary"},
+                      {"type": "response.output_text.delta", "delta": "summary reply"}]
+        elif text == "__partial_failure__":
+            events = [{"type": "response.output_text.delta", "delta": "partial answer"},
+                      {"type": "error", "code": "fixture_error", "message": "stream failed"}]
         elif text == "__read_file__":
             events = [{"type": "response.output_item.done", "output_index": 0,
                        "item": {"id": "fc_read", "type": "function_call",
@@ -77,7 +89,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                 "arguments": '{"path":"tracked.txt"}'}}]
         else:
             events = [{"type": "response.output_text.delta", "delta": text}]
-        events.append({"type": "response.completed", "response": {
+        if text != "__partial_failure__":
+            events.append({"type": "response.completed", "response": {
             "id": identifier,
             "usage": {"input_tokens": 5, "output_tokens": 5,
                       "total_tokens": 10},
@@ -110,6 +123,7 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
     env = os.environ.copy()
     env.update({"HOME": str(root), "XDG_STATE_HOME": str(root / "state"),
                 "XDG_CONFIG_HOME": str(root / "config"),
+                "XDG_CACHE_HOME": str(root / "cache"),
                 "CAI_API_KEY": "fixture", "NO_PROXY": "127.0.0.1,localhost",
                 "no_proxy": "127.0.0.1,localhost"})
     for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy",
@@ -119,8 +133,14 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
             f"http://127.0.0.1:{server.server_port}/v1", "-m", "gpt-5.6-luna",
             "--no-terminal", "--no-image-generation", "-C", str(work)]
 
-    def run(*args):
-        return subprocess.run(base + list(args), cwd=root, env=env,
+    def run(*args, overrides=None):
+        selected_env = env.copy()
+        for name, value in (overrides or {}).items():
+            if value is None:
+                selected_env.pop(name, None)
+            else:
+                selected_env[name] = value
+        return subprocess.run(base + list(args), cwd=root, env=selected_env,
                               text=True, capture_output=True, timeout=10)
 
     def run_interactive(*args):
@@ -152,6 +172,14 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
             except subprocess.TimeoutExpired as exc:
                 raise AssertionError(
                     bytes(output).decode(errors="replace")) from exc
+            while select.select([master], [], [], 0)[0]:
+                try:
+                    chunk = os.read(master, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                output.extend(chunk)
             rendered = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", bytes(output))
             return (process.returncode, rendered.decode(errors="replace"),
                     stderr.decode(errors="replace"))
@@ -165,7 +193,16 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
         server.responses[:] = ["first reply", "second reply"]
         completed = run("-Nni", "first task", "-i", "second task")
         assert completed.returncode == 0, (completed.stdout, completed.stderr)
-        assert "first reply" in completed.stdout and "second reply" in completed.stdout
+        assert "first reply" not in completed.stdout and "second reply" in completed.stdout
+        records = [json.loads(line) for line in completed.stderr.splitlines()]
+        assert all("app" not in entry for entry in records)
+        for role, text in (("user", "first task"), ("assistant", "first reply"),
+                           ("user", "second task"), ("assistant", "second reply")):
+            assert any(entry.get("lvl") == "info" and entry.get("role") == role
+                       and entry.get("prompt_kind") == "normal"
+                       and entry.get("msg") == text for entry in records), (role, text)
+        assert any(entry.get("msg") == "cai.client.opened" for entry in records)
+        assert any(entry.get("sys") == "storage.pouch" for entry in records)
         assert len(server.requests) == 2, server.requests
         assert "first task" in server.requests[0]
         assert "second task" in server.requests[1]
@@ -174,7 +211,8 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
         server.responses[:] = ["resumed reply"]
         resumed = run("-ni", "third task")
         assert resumed.returncode == 0, (resumed.stdout, resumed.stderr)
-        assert "second reply" in resumed.stdout and "resumed reply" in resumed.stdout
+        assert "second reply" not in resumed.stdout and "resumed reply" in resumed.stdout
+        assert "second reply" in resumed.stderr
         assert "third task" in server.requests[0]
         server.requests.clear()
 
@@ -257,12 +295,37 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
         assert status_code == 0, (terminal_output, terminal_error)
         assert "! Working" in terminal_output, terminal_output
         assert "! Worked for" in terminal_output, terminal_output
+        assert terminal_error == "", terminal_error
+        assert "cai.client.opened" not in terminal_output
+        assert '"sys":"storage.pouch"' not in terminal_output
+        active_id = run("--resume").stdout.split()[1]
+        log_file = root / "cache/cai" / f"{active_id}.log"
+        session_logs = [json.loads(line) for line in log_file.read_text().splitlines()]
+        assert any(entry.get("role") == "user" and entry.get("lvl") == "info"
+                   and entry.get("msg") == "verify status prefix" for entry in session_logs)
+        assert any(entry.get("role") == "assistant" and entry.get("msg") == "interactive reply"
+                   for entry in session_logs)
+        assert any(entry.get("msg") == "cai.client.opened" for entry in session_logs)
+        assert any(entry.get("sys") == "storage.pouch" for entry in session_logs)
+        assert all("app" not in entry for entry in session_logs)
+        assert (log_file.stat().st_mode & 0o777) == 0o600
+        assert not list((root / "cache/cai").glob("startup-*"))
+        server.requests.clear()
+
+        server.responses[:] = ["__api_error__"]
+        error_code, error_terminal, error_stderr = run_interactive(
+            "-N", "-i", "interactive failure")
+        assert error_code == 0, (error_terminal, error_stderr)
+        assert "[error]" in error_terminal and "quota exhausted" in error_terminal
+        assert "req_fixture_429" in error_terminal and error_stderr == ""
+        assert "cai.client.opened" not in error_terminal
         server.requests.clear()
 
         server.responses[:] = ["working on goal", "__complete_goal__", "goal done"]
         goal = run("-Nn", "-g", "finish fixture")
         assert goal.returncode == 0, (goal.stdout, goal.stderr)
-        assert "working on goal" in goal.stdout and "goal done" in goal.stdout
+        assert "working on goal" not in goal.stdout and "goal done" in goal.stdout
+        assert "working on goal" in goal.stderr
         assert len(server.requests) == 3, server.requests
         assert "finish fixture" in server.requests[0]
         assert "Continue pursuing the active goal" in server.requests[1]
@@ -276,10 +339,89 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
         assert "no actionable findings" in server.requests[0]
         server.requests.clear()
 
+        server.responses[:] = ["__run_review__", json.dumps(REPORT),
+                              "__complete_goal__", "parent fix complete"]
+        child_review = run("--review-and-fix")
+        assert child_review.returncode == 0, (child_review.stdout, child_review.stderr)
+        assert "parent fix complete" in child_review.stdout
+        assert "Fix parser" not in child_review.stdout and "patch is incorrect" not in child_review.stdout
+        child_records = [json.loads(line) for line in child_review.stderr.splitlines()]
+        assert any(entry.get("parent_tool_call_id") == "call_review" and
+                   entry.get("role") == "assistant" for entry in child_records)
+        assert "Fix parser" in child_review.stderr
+        assert len(server.requests) == 4, server.requests
+        server.requests.clear()
+
+        server.responses[:] = ["__summary__"]
+        summary = run("-Nni", "summarize", "-I", "developer fixture")
+        assert summary.returncode == 0, (summary.stdout, summary.stderr)
+        assert "summary reply" in summary.stdout and "Short provider summary" not in summary.stdout
+        summary_records = [json.loads(line) for line in summary.stderr.splitlines()]
+        assert any(entry.get("role") == "assistant" and entry.get("lvl") == "info" and
+                   entry.get("prompt_kind") == "reasoning_summary" and
+                   entry.get("msg") == "Short provider summary" for entry in summary_records)
+        assert any(entry.get("role") == "developer" and entry.get("lvl") == "info" and
+                   entry.get("msg") == "developer fixture" for entry in summary_records)
+        server.requests.clear()
+
+        server.responses[:] = ["previous completed answer", "__api_error__"]
+        failed_after_reply = run("-Nni", "first succeeds", "-i", "second fails")
+        assert failed_after_reply.returncode != 0
+        assert "previous completed answer" in failed_after_reply.stdout
+        assert "first succeeds" not in failed_after_reply.stdout and "quota exhausted" not in failed_after_reply.stdout
+        server.requests.clear()
+
+        server.responses[:] = ["__partial_failure__"]
+        partial = run("-Nni", "partial fails")
+        assert partial.returncode != 0, partial.stderr
+        assert "partial answer" in partial.stdout
+        assert any(entry.get("event") == "run_failed" and entry.get("lvl") == "error"
+                   for entry in map(json.loads, partial.stderr.splitlines()))
+        assert all(json.loads(line) for line in partial.stderr.splitlines())
+        server.requests.clear()
+
+        server.responses[:] = ["quiet final"]
+        filtered = run("-Nni", "quiet prompt", overrides={"LOG_LEVEL": "warn"})
+        assert filtered.returncode == 0 and "quiet final" in filtered.stdout
+        assert "quiet prompt" not in filtered.stderr and "quiet final" not in filtered.stderr
+        server.requests.clear()
+
+        server.responses[:] = ["console final"]
+        console = run("-Nni", "console prompt", overrides={"LOG_MODE": "console", "LOG_NO_COLOR": "true"})
+        assert console.returncode == 0 and "console final" in console.stdout
+        assert "console prompt" in console.stderr and "INF" in console.stderr
+        assert "\x1b" not in console.stderr
+        server.requests.clear()
+
+        server.responses[:] = ["relative activity final"]
+        relative_log = run("-Nni", "relative activity prompt",
+                           overrides={"LOG_OUTPUT": "relative-activity.log"})
+        assert relative_log.returncode == 0 and relative_log.stderr == ""
+        assert "relative activity final" in relative_log.stdout
+        assert (work / "relative-activity.log").is_file()
+        assert not (root / "relative-activity.log").exists()
+        assert "relative activity prompt" in (work / "relative-activity.log").read_text()
+        server.requests.clear()
+
+        redirected_file = root / "redirected.log"
+        server.responses[:] = ["redirected final"]
+        redirected = run("-Nni", "redirected prompt", overrides={"LOG_OUTPUT": str(redirected_file),
+                         "LOG_VERBOSE_FIELDS": "true", "LOG_OUTPUT_FILE_MODE": "0600"})
+        assert redirected.returncode == 0 and redirected.stderr == ""
+        assert "redirected final" in redirected.stdout
+        redirected_records = [json.loads(line) for line in redirected_file.read_text().splitlines()]
+        assert any(entry.get("level") == "info" and entry.get("message") == "redirected prompt"
+                   and entry.get("role") == "user" for entry in redirected_records)
+        assert (redirected_file.stat().st_mode & 0o777) == 0o600
+        assert not list((root / "state/cai").glob(".response-*"))
+        server.requests.clear()
+
         server.responses[:] = ["__http_error__"]
         failed_turn = run("-n", "-i", "should fail", "-i", "must not run")
         assert failed_turn.returncode != 0, (failed_turn.stdout, failed_turn.stderr)
         assert "HTTP 500" in failed_turn.stderr
+        assert all(json.loads(line) for line in failed_turn.stderr.splitlines())
+        assert failed_turn.stdout == ""
         assert "fixture error" in failed_turn.stderr
         assert len(server.requests) == 1, server.requests
         server.requests.clear()
@@ -289,6 +431,7 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
         assert provider_failure.returncode != 0
         assert "OpenAI API request failed" in provider_failure.stderr
         assert "HTTP 429" in provider_failure.stderr
+        assert all(json.loads(line) for line in provider_failure.stderr.splitlines())
         assert "rate_limit_exceeded" in provider_failure.stderr
         assert "req_fixture_429" in provider_failure.stderr
         assert "quota exhausted" in provider_failure.stderr
@@ -301,8 +444,8 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
         assert reviewed_default.returncode == 0, (reviewed_default.stdout, reviewed_default.stderr)
         assert "# Review findings" in reviewed_default.stdout
         assert "patch is incorrect" in reviewed_default.stderr
-        assert "[review started]" in reviewed_default.stderr
-        assert "[review completed]" in reviewed_default.stderr
+        assert '"event":"run_started"' in reviewed_default.stderr
+        assert '"event":"run_completed"' in reviewed_default.stderr
         assert "staged, unstaged, and untracked" in server.requests[0].lower()
         server.requests.clear()
 
@@ -330,8 +473,9 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
         server.responses[:] = ["__read_file__", json.dumps(REPORT)]
         reviewed_activity = run("--review")
         assert reviewed_activity.returncode == 0, (reviewed_activity.stdout, reviewed_activity.stderr)
-        assert "[tool] read_file" in reviewed_activity.stderr
-        assert "[tool result]" in reviewed_activity.stderr
+        assert '"event":"tool_call_started"' in reviewed_activity.stderr
+        assert '"tool":"read_file"' in reviewed_activity.stderr
+        assert '"event":"tool_call_completed"' in reviewed_activity.stderr
         assert len(server.requests) == 2
         server.requests.clear()
 

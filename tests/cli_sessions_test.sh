@@ -6,7 +6,7 @@ build_dir=$2
 fixture=$(mktemp -d "$build_dir/cli-sessions.XXXXXX")
 trap 'rm -rf "$fixture"' EXIT
 mkdir -p "$fixture/work-a" "$fixture/work-b" "$fixture/state"
-export XDG_STATE_HOME="$fixture/state" OPENAI_API_KEY=fixture
+export XDG_STATE_HOME="$fixture/state" XDG_CACHE_HOME="$fixture/cache" OPENAI_API_KEY=fixture
 
 first=$(printf '/status\n/resume\n/quit\n' | "$cli" -p openai -N -C "$fixture/work-a")
 [[ "$first" == *"Status"* && "$first" == *"Model"* && "$first" == *"Reasoning effort"* ]]
@@ -46,4 +46,4 @@ if printf '/quit\n' | "$cli" -p openai --resume "$first_id" -C "$fixture/work-b"
   echo 'cross-directory resume was accepted' >&2
   exit 1
 fi
-grep -q 'another directory' "$fixture/err"
+grep -q 'another directory' "$fixture/out"

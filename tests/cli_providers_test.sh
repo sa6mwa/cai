@@ -6,7 +6,7 @@ build_dir=$2
 fixture=$(mktemp -d "$build_dir/cli-providers.XXXXXX")
 trap 'rm -rf "$fixture"' EXIT
 mkdir -p "$fixture/home/.codex" "$fixture/state" "$fixture/work"
-export HOME="$fixture/home" XDG_STATE_HOME="$fixture/state"
+export HOME="$fixture/home" XDG_STATE_HOME="$fixture/state" XDG_CACHE_HOME="$fixture/cache"
 cat > "$fixture/home/.codex/auth.json" <<'JSON'
 {"auth_mode":"chatgpt","tokens":{"id_token":"eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA0MTAyNDQ0ODAwfQ.sig","access_token":"eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA0MTAyNDQ0ODAwfQ.sig","refresh_token":"fixture","account_id":"fixture"},"last_refresh":"2026-09-25T00:00:00Z"}
 JSON
@@ -44,14 +44,14 @@ if printf '/quit\n' | env -u OPENAI_API_KEY "$cli" -p openai -C "$fixture/work" 
   echo 'missing OpenAI key was accepted' >&2
   exit 1
 fi
-grep -q 'OPENAI_API_KEY' "$fixture/err"
+grep -q 'OPENAI_API_KEY' "$fixture/out"
 
 export XDG_STATE_HOME="$fixture/state-empty"
 if printf '/quit\n' | "$cli" -C "$fixture/work" >"$fixture/out" 2>"$fixture/err"; then
   echo 'missing auth was accepted' >&2
   exit 1
 fi
-grep -q 'run cai --login' "$fixture/err"
+grep -q 'run cai --login' "$fixture/out"
 help=$("$cli" --help)
 [[ "$help" == $'cai and libcai Copyright (C) 2026 C89 Systems AB https://c89.systems\n\nUsage: cai '* ]]
 [[ "$("$cli" -h)" == "$help" ]]

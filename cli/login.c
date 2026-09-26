@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "login.h"
+#include "log.h"
 #include <cai/auth.h>
 
 #include <arpa/inet.h>
@@ -143,7 +144,7 @@ static void write_http_response(int fd,
   write_all_ignore_errors(fd, body, strlen(body));
 }
 
-int cai_cli_login(const cai_blob_store *storage) {
+int cai_cli_login(const cai_blob_store *storage, pslog_logger *logger) {
   char redirect_uri[256];
   int port = 0;
   int server_fd;
@@ -163,14 +164,16 @@ int cai_cli_login(const cai_blob_store *storage) {
   cai_chatgpt_login_response login_response;
   cai_chatgpt_login *login = NULL;
   cai_error error;
+  pslog_field field;
 
   server_fd = listen_localhost(CAI_CHATGPT_AUTH_DEFAULT_CALLBACK_PORT, &port);
   if (server_fd < 0)
     server_fd =
         listen_localhost(CAI_CHATGPT_AUTH_FALLBACK_CALLBACK_PORT, &port);
   if (server_fd < 0) {
-    fprintf(stderr, "cai: cannot listen for ChatGPT login callback: %s\n",
-            strerror(errno));
+    field = pslog_str("detail", strerror(errno));
+    logger->error(logger, "cannot listen for ChatGPT login callback", &field,
+                  1U);
     return 1;
   }
   snprintf(redirect_uri, sizeof(redirect_uri), "http://localhost:%d%s", port,
@@ -178,27 +181,30 @@ int cai_cli_login(const cai_blob_store *storage) {
   cai_error_init(&error);
   cai_chatgpt_login_config_init(&login_config);
   login_config.storage = storage;
+  login_config.logger = logger;
   login_config.redirect_uri = redirect_uri;
   rc = cai_chatgpt_login_start(&login_config, &login, &authorize_url, &error);
   if (rc != CAI_OK) {
-    fprintf(stderr, "cai: start ChatGPT login: %s\n",
-            error.message != NULL ? error.message : cai_status_string(rc));
+    cai_cli_log_error(logger, "start ChatGPT login", &error);
     goto done;
   }
-  fprintf(stderr, "\nOpen this URL to authenticate:\n\n%s\n\n", authorize_url);
+  field = pslog_str("url", authorize_url);
+  logger->info(logger, "Open this URL to authenticate", &field, 1U);
   if (cai_chatgpt_login_open_browser(authorize_url, &error) != CAI_OK) {
-    fprintf(stderr, "cai: browser did not open; use the URL above: %s\n",
-            error.message != NULL ? error.message : "opener unavailable");
+    field = pslog_str("detail", error.message);
+    logger->warn(logger, "browser did not open; use the URL above", &field, 1U);
     cai_error_cleanup(&error);
     cai_error_init(&error);
   }
-  fprintf(stderr, "Waiting for OAuth callback on %s\n", redirect_uri);
+  field = pslog_str("redirect_uri", redirect_uri);
+  logger->info(logger, "Waiting for OAuth callback", &field, 1U);
   for (;;) {
     client_fd = accept(server_fd, NULL, NULL);
     if (client_fd < 0) {
       if (errno == EINTR)
         continue;
-      fprintf(stderr, "cai: login callback: %s\n", strerror(errno));
+      field = pslog_str("detail", strerror(errno));
+      logger->error(logger, "login callback", &field, 1U);
       break;
     }
     memset(request_buffer, 0, sizeof(request_buffer));
@@ -219,8 +225,7 @@ int cai_cli_login(const cai_blob_store *storage) {
     rc = login->handle_callback(login, &login_request, &login_response, &error);
     response_owned = rc == CAI_OK && login_response.body != NULL;
     if (rc != CAI_OK) {
-      fprintf(stderr, "cai: OAuth callback failed: %s\n",
-              error.message != NULL ? error.message : cai_status_string(rc));
+      cai_cli_log_error(logger, "OAuth callback", &error);
       login_response.status = 500;
       login_response.content_type = "text/plain; charset=utf-8";
       login_response.body = callback_failed_body;
@@ -232,8 +237,9 @@ int cai_cli_login(const cai_blob_store *storage) {
     if (response_owned)
       cai_chatgpt_login_response_cleanup(&login_response);
     if (login->completed(login)) {
-      fprintf(stderr,
-              "ChatGPT auth saved to cai.auth in the selected lockd store\n");
+      logger->info(logger,
+                   "ChatGPT auth saved to cai.auth in the selected lockd store",
+                   NULL, 0U);
       exit_code = 0;
       break;
     }

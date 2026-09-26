@@ -203,6 +203,7 @@ static int offline_runtime(cai_cli_pouch *pouch, const char *id,
   struct stat status;
   int rc;
   cai_client_config_init(&client_config);
+  client_config.logger = pouch->logger;
   client_config.api_key = "offline-export";
   client_config.base_url = "http://127.0.0.1:1/v1";
   rc = cai_client_open(&client_config, client, error);

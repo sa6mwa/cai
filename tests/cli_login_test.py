@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise the CLI's loopback OAuth callback without real credentials."""
+import json
 import os
 import pathlib
 import re
@@ -39,7 +40,8 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(cli).parent) as root:
             if b"Waiting for OAuth callback" in output:
                 break
         output = output.decode()
-        match = re.search(r"Waiting for OAuth callback on (http://localhost:\d+/auth/callback)", output)
+        match = re.search(r'"redirect_uri":"(http://localhost:\d+/auth/callback)"', output)
+        assert all(json.loads(line) for line in output.splitlines())
         assert match, output
         try:
             urllib.request.urlopen(match.group(1).replace("/auth/callback", "/wrong"), timeout=2)

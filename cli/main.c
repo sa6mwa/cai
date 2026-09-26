@@ -1,9 +1,11 @@
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
 
+#include "log.h"
 #include "login.h"
 #include "options.h"
 #include "pouch.h"
+#include "response.h"
 #include "review_report.h"
 #include "session_commands.h"
 #include "status.h"
@@ -43,7 +45,11 @@ typedef struct cli_state {
   cai_agent_runtime *runtime;
   sl_t *sl;
   mdf *renderer;
-  FILE *activity;
+  cai_cli_log log;
+  cai_cli_response final_response;
+  int batch;
+  sl_watch_id_t log_watch_id;
+  int has_log_watch;
   char *review_report;
   size_t review_report_length;
   char generated_goal[4096];
@@ -78,19 +84,15 @@ typedef struct cli_state {
 
 static int cli_advance_automation(cli_state *state, cai_error *error);
 
-static void cli_print_error(const char *operation, const cai_error *error) {
-  fprintf(stderr, "cai: %s: %s\n", operation,
-          error != NULL && error->message != NULL ? error->message
-                                                  : "operation failed");
-  if (error != NULL && error->http_status > 0L)
-    fprintf(stderr, "cai: HTTP %ld\n", error->http_status);
-  if (error != NULL && error->server_code != NULL)
-    fprintf(stderr, "cai: provider code: %s\n", error->server_code);
-  if (error != NULL && error->request_id != NULL)
-    fprintf(stderr, "cai: request ID: %s\n", error->request_id);
-  if (error != NULL && error->detail != NULL) {
-    fprintf(stderr, "cai: detail: %s\n", error->detail);
-  }
+static void cli_print_error(cli_state *state, const char *operation,
+                            const cai_error *error) {
+  cai_cli_log_error(state->log.logger, operation, error);
+}
+
+static void cli_diagnostic(cli_state *state, pslog_level level,
+                           const char *text) {
+  cai_cli_log_message(state->log.logger, level, "diagnostic", "diagnostic",
+                      text, strlen(text), NULL, 0U);
 }
 
 static int cli_quota_due(int attempted, struct timespec last_attempt,
@@ -131,15 +133,14 @@ static void cli_refresh_quota(cli_state *state, int force) {
 static int cli_sink(void *context, const char *bytes, size_t count) {
   cli_state *state;
   state = (cli_state *)context;
-  if (state->activity != NULL)
-    return fwrite(bytes, 1U, count, state->activity) == count ? 0 : -1;
+  if (state->batch)
+    return fwrite(bytes, 1U, count, stdout) == count ? 0 : -1;
   return sl_output_stream_write(state->sl, bytes, count) == SL_OK ? 0 : -1;
 }
 
 static int cli_geometry(cli_state *state) {
   int width;
-  width = mdf_terminal_width(
-      state->activity != NULL ? STDERR_FILENO : STDOUT_FILENO, 80);
+  width = mdf_terminal_width(STDOUT_FILENO, 80);
   if (width == state->width) {
     return 0;
   }
@@ -201,13 +202,17 @@ static int cli_write(cli_state *state, const char *text) {
   if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0) {
     return -1;
   }
-  if (state->activity != NULL)
-    return fputs(text, state->activity) >= 0 ? 0 : -1;
+  if (state->batch) {
+    cli_diagnostic(state, PSLOG_LEVEL_INFO, text);
+    return 0;
+  }
   return sl_output_stream_write(state->sl, text, strlen(text)) == SL_OK ? 0
                                                                         : -1;
 }
 
 static int cli_prompt(cli_state *state, const char *text, int history) {
+  if (state->batch)
+    return 0;
   if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0) {
     return -1;
   }
@@ -241,15 +246,129 @@ static void cli_reasoning_append(cli_state *state, const char *data,
   state->reasoning_summary_raw[state->reasoning_summary_length] = '\0';
 }
 
+static void cli_log_event(cli_state *state,
+                          const cai_agent_runtime_event *event) {
+  static const char *const names[] = {"unknown",
+                                      "run_started",
+                                      "run_state_changed",
+                                      "assistant_text_delta",
+                                      "tool_call_started",
+                                      "tool_call_completed",
+                                      "tool_call_failed",
+                                      "steering_queued",
+                                      "steering_delivered",
+                                      "run_completed",
+                                      "run_failed",
+                                      "session_checkpointed",
+                                      "terminal_command_started",
+                                      "terminal_output",
+                                      "terminal_waiting",
+                                      "terminal_command_completed",
+                                      "terminal_command_cancelled",
+                                      "turn_queued",
+                                      "review_report",
+                                      "review_started",
+                                      "review_handed_off",
+                                      "reasoning_summary",
+                                      "response_completed",
+                                      "goal_changed",
+                                      "subagent_started",
+                                      "subagent_handed_off",
+                                      "compaction_started",
+                                      "compaction_progress",
+                                      "compaction_completed",
+                                      "run_cancelled"};
+  pslog_field fields[16];
+  size_t count;
+  const char *name;
+  const char *role;
+  const char *kind;
+  const char *text;
+  size_t length;
+  pslog_level level;
+  name =
+      event->type > 0 && (size_t)event->type < sizeof(names) / sizeof(names[0])
+          ? names[event->type]
+          : "unknown";
+  role = "runtime";
+  kind = NULL;
+  level = PSLOG_LEVEL_INFO;
+  if (event->type == CAI_AGENT_EVENT_RUN_STARTED ||
+      event->type == CAI_AGENT_EVENT_TURN_QUEUED ||
+      event->type == CAI_AGENT_EVENT_STEERING_QUEUED ||
+      event->type == CAI_AGENT_EVENT_STEERING_DELIVERED) {
+    role = "user";
+    kind = event->type == CAI_AGENT_EVENT_RUN_STARTED   ? "normal"
+           : event->type == CAI_AGENT_EVENT_TURN_QUEUED ? "queued"
+                                                        : "steering";
+  } else if (event->type == CAI_AGENT_EVENT_TEXT_DELTA ||
+             event->type == CAI_AGENT_EVENT_REASONING_SUMMARY ||
+             event->type == CAI_AGENT_EVENT_REVIEW_REPORT ||
+             event->type == CAI_AGENT_EVENT_SUBAGENT_STARTED) {
+    role = "assistant";
+    kind = event->type == CAI_AGENT_EVENT_REASONING_SUMMARY
+               ? "reasoning_summary"
+           : event->type == CAI_AGENT_EVENT_REVIEW_REPORT    ? "review_findings"
+           : event->type == CAI_AGENT_EVENT_SUBAGENT_STARTED ? "delegation"
+                                                             : "normal";
+  } else if (event->tool_name != NULL || event->terminal_id != NULL) {
+    role = "tool";
+  }
+  if (event->type == CAI_AGENT_EVENT_RUN_FAILED)
+    level = PSLOG_LEVEL_ERROR;
+  else if (event->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED)
+    level = PSLOG_LEVEL_WARN;
+  count = 0U;
+  fields[count++] = pslog_i64("state", event->state);
+  fields[count++] = pslog_u64("sequence", (pslog_uint64)event->sequence);
+  if (kind != NULL)
+    fields[count++] = pslog_str("prompt_kind", kind);
+  if (event->runtime_session_id != NULL)
+    fields[count++] = pslog_str("session_id", event->runtime_session_id);
+  if (event->parent_tool_call_id != NULL)
+    fields[count++] =
+        pslog_str("parent_tool_call_id", event->parent_tool_call_id);
+  if (event->subagent_name != NULL)
+    fields[count++] = pslog_str("subagent", event->subagent_name);
+  if (event->tool_name != NULL)
+    fields[count++] = pslog_str("tool", event->tool_name);
+  if (event->tool_call_id != NULL)
+    fields[count++] = pslog_str("tool_call_id", event->tool_call_id);
+  if (event->tool_path != NULL)
+    fields[count++] = pslog_str("path", event->tool_path);
+  if (event->terminal_id != NULL) {
+    fields[count++] = pslog_str("terminal_id", event->terminal_id);
+    fields[count++] =
+        pslog_u64("command_id", (pslog_uint64)event->terminal_command_id);
+    if (event->terminal_has_exit_code)
+      fields[count++] =
+          pslog_i64("exit_code", (pslog_int64)event->terminal_exit_code);
+  }
+  text = event->data != NULL ? event->data : name;
+  length = event->data != NULL ? event->data_length : strlen(name);
+  cai_cli_log_message(state->log.logger, level, name, role, text, length,
+                      fields, count);
+  if (event->subagent_instruction != NULL) {
+    if (kind != NULL)
+      fields[2] = pslog_str("prompt_kind", "delegated");
+    else
+      fields[count++] = pslog_str("prompt_kind", "delegated");
+    cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO,
+                        "subagent_instruction", "user",
+                        event->subagent_instruction,
+                        strlen(event->subagent_instruction), fields, count);
+  }
+}
+
 static int cli_event(void *context, const cai_agent_runtime_event *event,
                      cai_error *error) {
   cli_state *state;
   char message[320];
   int n;
-
-  (void)error;
   state = (cli_state *)context;
-  if (event->type == CAI_AGENT_EVENT_REVIEW_REPORT) {
+  cli_log_event(state, event);
+  if (event->type == CAI_AGENT_EVENT_REVIEW_REPORT &&
+      event->parent_tool_call_id == NULL && state->options.review) {
     char *report;
     if (event->data == NULL || event->data_length == (size_t)-1 ||
         memchr(event->data, '\0', event->data_length) != NULL)
@@ -263,111 +382,84 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     state->review_report = report;
     state->review_report_length = event->data_length;
   }
-  if (event->parent_tool_call_id == NULL &&
-      event->type == CAI_AGENT_EVENT_RUN_COMPLETED)
-    state->awaiting_turn = 0;
-  if (event->parent_tool_call_id == NULL &&
-      (event->type == CAI_AGENT_EVENT_RUN_FAILED ||
-       event->type == CAI_AGENT_EVENT_RUN_CANCELLED)) {
-    state->awaiting_turn = 0;
-    state->automation_failed = 1;
+  if (event->parent_tool_call_id == NULL) {
+    if (event->type == CAI_AGENT_EVENT_RUN_COMPLETED)
+      state->awaiting_turn = 0;
+    if (event->type == CAI_AGENT_EVENT_RUN_FAILED ||
+        event->type == CAI_AGENT_EVENT_RUN_CANCELLED) {
+      state->awaiting_turn = 0;
+      state->automation_failed = 1;
+    }
+    if (event->type == CAI_AGENT_EVENT_RUN_STARTED) {
+      state->reasoning_summary_length = 0U;
+      state->reasoning_summary_raw[0] = '\0';
+      cai_cli_response_boundary(&state->final_response);
+    }
   }
-  if (event->type == CAI_AGENT_EVENT_RUN_STARTED &&
-      event->parent_tool_call_id == NULL) {
-    state->reasoning_summary_length = 0U;
-    state->reasoning_summary_raw[0] = '\0';
+  if (state->batch) {
+    if (event->parent_tool_call_id == NULL && !state->options.review) {
+      if (event->type == CAI_AGENT_EVENT_TEXT_DELTA)
+        return cai_cli_response_append(&state->final_response,
+                                       state->pouch.state_directory,
+                                       event->data, event->data_length, error);
+      if (event->type == CAI_AGENT_EVENT_RESPONSE_COMPLETED)
+        cai_cli_response_boundary(&state->final_response);
+    }
+    return CAI_OK;
   }
-  if (event->type == CAI_AGENT_EVENT_TEXT_DELTA) {
+  if (event->type == CAI_AGENT_EVENT_TEXT_DELTA)
     return cli_text(state, event->data, event->data_length) == 0
                ? CAI_OK
                : CAI_ERR_TRANSPORT;
-  }
-  if (event->type == CAI_AGENT_EVENT_RESPONSE_COMPLETED) {
+  if (event->type == CAI_AGENT_EVENT_RESPONSE_COMPLETED)
     return cli_finish_response(state) == 0 && cli_finish_reasoning(state) == 0
                ? CAI_OK
                : CAI_ERR_TRANSPORT;
-  }
-  if (event->type == CAI_AGENT_EVENT_RUN_FAILED) {
-    if (event->data != NULL) {
-      if (state->options.non_interactive && state->activity == NULL) {
-        if (cli_finish_response(state) != 0 ||
-            cli_finish_reasoning(state) != 0 ||
-            fputs("cai: agent failed: ", stderr) < 0 ||
-            fwrite(event->data, 1U, event->data_length, stderr) !=
-                event->data_length ||
-            fputc('\n', stderr) == EOF)
-          return CAI_ERR_TRANSPORT;
-      } else if (cli_write(state, "\n[error] ") != 0 ||
-                 cli_sink(state, event->data, event->data_length) != 0 ||
-                 cli_write(state, "\n") != 0) {
-        return CAI_ERR_TRANSPORT;
-      }
-    }
-  } else if (event->type == CAI_AGENT_EVENT_TOOL_CALL_STARTED &&
-             event->tool_name != NULL) {
+  if (event->type == CAI_AGENT_EVENT_TOOL_CALL_STARTED &&
+      event->tool_name != NULL) {
     n = snprintf(message, sizeof(message), "\n[tool] %s\n", event->tool_name);
-    if (n < 0 || (size_t)n >= sizeof(message) ||
-        cli_write(state, message) != 0) {
-      return CAI_ERR_TRANSPORT;
-    }
-  } else if (state->activity != NULL &&
-             (event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED ||
-              event->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED)) {
-    if (cli_write(state, event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED
-                             ? "\n[tool result] "
-                             : "\n[tool error] ") != 0 ||
-        (event->data != NULL &&
-         cli_sink(state, event->data, event->data_length) != 0) ||
-        cli_write(state, "\n") != 0)
-      return CAI_ERR_TRANSPORT;
-  } else if (state->activity != NULL &&
-             event->type == CAI_AGENT_EVENT_TERMINAL_OUTPUT &&
-             event->data != NULL) {
-    if (cli_write(state, "\n[terminal] ") != 0 ||
-        cli_sink(state, event->data, event->data_length) != 0 ||
-        cli_write(state, "\n") != 0)
+    if (n < 0 || (size_t)n >= sizeof(message) || cli_write(state, message) != 0)
       return CAI_ERR_TRANSPORT;
   } else if (event->type == CAI_AGENT_EVENT_REASONING_SUMMARY &&
              event->data != NULL && event->data_length > 0U) {
     if (event->parent_tool_call_id == NULL)
       cli_reasoning_append(state, event->data, event->data_length);
-    if (cli_geometry(state) != 0 || cli_finish_response(state) != 0) {
+    if (cli_geometry(state) != 0 || cli_finish_response(state) != 0)
       return CAI_ERR_TRANSPORT;
-    }
     if (!state->reasoning_open) {
       if (cli_sink(state, "\n[reasoning]\n", 13U) != 0 ||
           (state->documents_rendered > 0 &&
-           state->renderer->begin_document(state->renderer) != MDF_OK)) {
+           state->renderer->begin_document(state->renderer) != MDF_OK))
         return CAI_ERR_TRANSPORT;
-      }
     }
     state->reasoning_open = 1;
     if (state->renderer->feed(state->renderer, event->data,
-                              event->data_length) != MDF_OK) {
+                              event->data_length) != MDF_OK)
       return CAI_ERR_TRANSPORT;
-    }
-  }
-  if (state->activity != NULL &&
-      (event->type == CAI_AGENT_EVENT_RUN_STARTED ||
-       event->type == CAI_AGENT_EVENT_RUN_COMPLETED ||
-       event->type == CAI_AGENT_EVENT_RUN_CANCELLED)) {
-    const char *phase = event->type == CAI_AGENT_EVENT_RUN_STARTED
-                            ? "[review started]\n"
-                        : event->type == CAI_AGENT_EVENT_RUN_COMPLETED
-                            ? "\n[review completed]\n"
-                            : "\n[review cancelled]\n";
-    if (cli_write(state, phase) != 0)
-      return CAI_ERR_TRANSPORT;
-  }
-  if (state->options.verbosity > 0) {
-    if (state->options.verbosity > 1) {
-      fprintf(stderr, "cai: event=%d state=%d sequence=%llu\n", event->type,
-              event->state, event->sequence);
-    } else {
-      fprintf(stderr, "cai: event=%d state=%d\n", event->type, event->state);
-    }
   }
   return CAI_OK;
+}
+
+static int cli_notice(void *context, const char *text) {
+  cli_state *state = (cli_state *)context;
+  return cli_write(state, "\n") == 0 && cli_write(state, text) == 0 &&
+                 cli_write(state, "\n") == 0
+             ? 0
+             : -1;
+}
+
+static int cli_startup_notice(void *context, const char *text) {
+  (void)context;
+  return fprintf(stderr, "%s\n", text) >= 0 ? 0 : -1;
+}
+
+static int cli_log_wakeup(sl_t *sl, const sl_watch_event_t *event,
+                          void *context) {
+  cli_state *state = (cli_state *)context;
+  (void)sl;
+  (void)event;
+  return cai_cli_log_notices(&state->log, cli_notice, state) == 0 ? SL_OK
+                                                                  : SL_ERROR_IO;
 }
 
 static int cli_sync_status(cli_state *state, cai_error *error) {
@@ -466,7 +558,7 @@ static int cli_timer_wakeup(sl_t *sl, const sl_watch_event_t *event,
   cai_error_init(&error);
   rc = cli_sync_status(state, &error);
   if (rc != CAI_OK)
-    cli_print_error("turn timer", &error);
+    cli_print_error(state, "turn timer", &error);
   cai_error_cleanup(&error);
   return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
 }
@@ -488,7 +580,7 @@ static int cli_wakeup(sl_t *sl, const sl_watch_event_t *event, void *context) {
     rc = cli_sync_status(state, &error);
   }
   if (rc != CAI_OK) {
-    cli_print_error("runtime event", &error);
+    cli_print_error(state, "runtime event", &error);
   }
   cai_error_cleanup(&error);
   return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
@@ -499,6 +591,24 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
   cli_state *state;
   (void)error;
   state = (cli_state *)context;
+  if (event->data != NULL &&
+      (strcmp(event->type, "turn_submitted") == 0 ||
+       strcmp(event->type, "turn_queued") == 0 ||
+       strcmp(event->type, "steering_queued") == 0 ||
+       strcmp(event->type, "assistant_text_delta") == 0)) {
+    pslog_field fields[2];
+    int assistant = strcmp(event->type, "assistant_text_delta") == 0;
+    fields[0] = pslog_bool("replay", 1);
+    fields[1] = pslog_str(
+        "prompt_kind", strcmp(event->type, "steering_queued") == 0 ? "steering"
+                       : strcmp(event->type, "turn_queued") == 0   ? "queued"
+                                                                   : "normal");
+    cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, event->type,
+                        assistant ? "assistant" : "user", event->data,
+                        strlen(event->data), fields, 2U);
+  }
+  if (state->batch)
+    return CAI_OK;
   if ((strcmp(event->type, "turn_submitted") == 0 ||
        strcmp(event->type, "turn_queued") == 0 ||
        strcmp(event->type, "steering_queued") == 0) &&
@@ -540,6 +650,7 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   if (state->options.review)
     config.preset = CAI_SMITH_REVIEW_PRESET;
   skills.skills_directory = state->options.skills_dir;
+  config.logger = state->log.logger;
   config.workspace_directory = state->workspace;
   config.session_store = &state->store;
   config.resume_latest =
@@ -567,6 +678,17 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   rc = cai_agent_runtime_open(state->client, &config, &state->runtime, error);
   if (rc != CAI_OK) {
     return rc;
+  }
+  rc = cai_cli_log_session(&state->log,
+                           cai_agent_runtime_session_id(state->runtime), error);
+  if (rc != CAI_OK)
+    return rc;
+  if (state->options.developer_instructions != NULL) {
+    pslog_field kind = pslog_str("prompt_kind", "developer_instructions");
+    cai_cli_log_message(
+        state->log.logger, PSLOG_LEVEL_INFO, "developer_instructions",
+        "developer", state->options.developer_instructions,
+        strlen(state->options.developer_instructions), &kind, 1U);
   }
   if (state->interactive) {
     rc = cai_agent_runtime_wakeup_fd(state->runtime, &wakeup_fd, error);
@@ -888,7 +1010,7 @@ static int cli_advance_automation(cli_state *state, cai_error *error) {
     if (strcmp(goal.status, "complete") != 0) {
       state->automation_failed = 1;
       state->automation_done = 1;
-      fprintf(stderr, "cai: goal stopped with status %s\n", goal.status);
+      cli_diagnostic(state, PSLOG_LEVEL_WARN, goal.status);
       return CAI_OK;
     }
     state->auto_goal = 0;
@@ -961,22 +1083,22 @@ static int cli_run_review(cli_state *state, cai_error *error) {
   if (rc != CAI_OK)
     return rc;
   if (run_state != CAI_AGENT_COMPLETED || state->review_report == NULL) {
-    fputs("cai: review ended without a valid findings report\n", stderr);
-    return CAI_ERR_PROTOCOL;
+    return cai_cli_error(error, CAI_ERR_PROTOCOL,
+                         "review ended without a valid findings report");
   }
   if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
     return CAI_ERR_TRANSPORT;
   formatted = NULL;
   if (cai_cli_review_format(state->review_report, state->review_report_length,
                             state->options.output_type, &formatted) != 0) {
-    fputs("cai: failed to format review findings\n", stderr);
-    return CAI_ERR_PROTOCOL;
+    return cai_cli_error(error, CAI_ERR_PROTOCOL,
+                         "failed to format review findings");
   }
   fflush(stderr);
   destination =
       state->options.out != NULL ? fopen(state->options.out, "w") : stdout;
   if (destination == NULL) {
-    fprintf(stderr, "cai: cannot open review output: %s\n", strerror(errno));
+    cli_diagnostic(state, PSLOG_LEVEL_ERROR, "cannot open review output");
     free(formatted);
     return CAI_ERR_TRANSPORT;
   }
@@ -985,9 +1107,39 @@ static int cli_run_review(cli_state *state, cai_error *error) {
            : CAI_OK;
   if (state->options.out != NULL && fclose(destination) != 0)
     rc = CAI_ERR_TRANSPORT;
+  if (rc == CAI_OK) {
+    pslog_field kind = pslog_str("prompt_kind", "review_findings");
+    cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, "final_response",
+                        "assistant", formatted, strlen(formatted), &kind, 1U);
+  }
   free(formatted);
   if (rc != CAI_OK)
-    fputs("cai: failed to write review findings\n", stderr);
+    cai_cli_error(error, rc, "failed to write review findings");
+  return rc;
+}
+
+static int cli_output_final(cli_state *state, cai_error *error) {
+  cai_source *source;
+  char bytes[8192];
+  size_t n;
+  int rc;
+  source = NULL;
+  rc = cai_cli_response_source(&state->final_response, &source, error);
+  if (rc != CAI_OK || source == NULL)
+    return rc;
+  while ((n = cai_source_read(source, bytes, sizeof(bytes), error)) > 0U) {
+    if (cli_text(state, bytes, n) != 0) {
+      rc = cai_cli_error(error, CAI_ERR_TRANSPORT,
+                         "render final assistant response");
+      break;
+    }
+  }
+  if (error->code != CAI_OK)
+    rc = error->code;
+  if (rc == CAI_OK && (cli_finish_response(state) != 0 || fflush(stdout) != 0))
+    rc = cai_cli_error(error, CAI_ERR_TRANSPORT,
+                       "write final assistant response");
+  cai_source_close(source);
   return rc;
 }
 
@@ -1009,31 +1161,56 @@ int main(int argc, char **argv) {
 
   memset(&state, 0, sizeof(state));
   state.timer_fd = -1;
+  state.log.fd = -1;
+  state.log.wakeup_fd = -1;
+  result = 1;
   cai_error_init(&error);
   parsed = cai_cli_parse_options(argc, argv, &state.options);
-  if (parsed <= 0)
-    return parsed == 0 ? 0 : 2;
-  if (state.options.directory != NULL && chdir(state.options.directory) != 0) {
-    fprintf(stderr, "cai: cannot change directory to %s: %s\n",
-            state.options.directory, strerror(errno));
-    cai_error_cleanup(&error);
-    return 2;
+  if (parsed <= 0) {
+    if (parsed < 0 && cai_cli_log_open(&state.log, &error) == CAI_OK)
+      cli_diagnostic(&state, PSLOG_LEVEL_ERROR, state.options.diagnostic);
+    result = parsed == 0 ? 0 : 2;
+    goto cleanup;
   }
+  state.batch = state.options.review || state.options.non_interactive;
+  if (state.options.directory != NULL && chdir(state.options.directory) != 0) {
+    int change_error = errno;
+    pslog_field path = pslog_str("directory", state.options.directory);
+    if (cai_cli_log_open(&state.log, &error) == CAI_OK)
+      cai_cli_log_message(state.log.logger, PSLOG_LEVEL_ERROR, "chdir",
+                          "diagnostic", strerror(change_error),
+                          strlen(strerror(change_error)), &path, 1U);
+    result = 2;
+    goto cleanup;
+  }
+  if (cai_cli_log_open(&state.log, &error) != CAI_OK)
+    goto cleanup;
   (void)setlocale(LC_CTYPE, "");
   result = 1;
   if (realpath(".", state.workspace) == NULL) {
-    fprintf(stderr, "cai: cannot resolve workspace: %s\n", strerror(errno));
-    return 2;
+    cli_diagnostic(&state, PSLOG_LEVEL_ERROR, "cannot resolve workspace");
+    result = 2;
+    goto cleanup;
+  }
+  if (!state.batch && !state.options.login && !state.options.list &&
+      !state.options.resume_list && state.options.export_id == NULL &&
+      state.options.import_file == NULL) {
+    rc = cai_cli_log_interactive(&state.log, &error);
+    if (rc != CAI_OK) {
+      cli_print_error(&state, "open interactive log", &error);
+      goto cleanup;
+    }
   }
   rc = cai_cli_pouch_open(&state.pouch, state.options.lockd,
-                          state.options.lockd_client_pem, &error);
+                          state.options.lockd_client_pem, state.log.logger,
+                          &error);
   if (rc != CAI_OK) {
-    cli_print_error("open lockd store", &error);
+    cli_print_error(&state, "open lockd store", &error);
     goto cleanup;
   }
   state.store = state.pouch.store;
   if (state.options.login) {
-    result = cai_cli_login(&state.pouch.credentials);
+    result = cai_cli_login(&state.pouch.credentials, state.log.logger);
     goto cleanup;
   }
   if (state.options.list || state.options.resume_list) {
@@ -1051,7 +1228,7 @@ int main(int argc, char **argv) {
                                  mdf_terminal_width(STDOUT_FILENO, 80), &error);
     cai_sink_close(destination);
     if (rc != CAI_OK)
-      cli_print_error("list conversations", &error);
+      cli_print_error(&state, "list conversations", &error);
     result = rc == CAI_OK ? 0 : 1;
     goto cleanup;
   }
@@ -1065,7 +1242,7 @@ int main(int argc, char **argv) {
                                   &error);
     cai_sink_close(destination);
     if (rc != CAI_OK)
-      cli_print_error("export conversation", &error);
+      cli_print_error(&state, "export conversation", &error);
     result = rc == CAI_OK ? 0 : 1;
     goto cleanup;
   }
@@ -1076,7 +1253,7 @@ int main(int argc, char **argv) {
     if (rc == CAI_OK)
       puts(id);
     else
-      cli_print_error("import conversation", &error);
+      cli_print_error(&state, "import conversation", &error);
     result = rc == CAI_OK ? 0 : 1;
     goto cleanup;
   }
@@ -1092,42 +1269,42 @@ int main(int argc, char **argv) {
     if (auth_file != NULL) {
       rc = cai_cli_pouch_seed_auth(&state.pouch, auth_file, &error);
       if (rc != CAI_OK) {
-        cli_print_error("import ChatGPT auth", &error);
+        cli_print_error(&state, "import ChatGPT auth", &error);
         goto cleanup;
       }
     }
   }
   state.interactive = !state.options.review && !state.options.non_interactive &&
                       isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
-  if (state.options.review)
-    state.activity = stderr;
+
   cai_cli_status_init(&state.status, state.workspace, getenv("HOME"));
   result = 1;
-  if (!state.options.review) {
+  if (!state.batch) {
     state.sl = sl_create();
     if (state.sl == NULL) {
-      fputs("cai: failed to create softline prompt\n", stderr);
+      cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
+                     "cai: failed to create softline prompt\n");
       goto cleanup;
     }
   }
-  state.width = mdf_terminal_width(
-      state.options.review ? STDERR_FILENO : STDOUT_FILENO, 80);
+  state.width = mdf_terminal_width(STDOUT_FILENO, 80);
   mdf_options_init(&mdf_config);
   mdf_config.width = state.width;
   mdf_config.margin_left = state.width >= 5 ? 2 : 0;
-  mdf_config.boring =
-      state.options.review ? !isatty(STDERR_FILENO) : !state.interactive;
+  mdf_config.boring = !state.interactive;
   if ((state.interactive && (sl_set_bounds(state.sl, 0, 0, 0, 0) != SL_OK ||
                              sl_set_statusline(state.sl, 1, 0) != SL_OK)) ||
-      (!state.options.review && sl_output_stream_begin(state.sl) != SL_OK) ||
+      (!state.batch && sl_output_stream_begin(state.sl) != SL_OK) ||
       mdf_create(MDF_FORMAT_ANSI, &mdf_config, &state.renderer) != MDF_OK) {
-    fputs("cai: failed to initialize terminal renderers\n", stderr);
+    cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
+                   "cai: failed to initialize terminal renderers\n");
     goto cleanup;
   }
   sink.userdata = &state;
   sink.write = cli_sink;
   if (state.renderer->set_sink(state.renderer, &sink) != MDF_OK) {
-    fputs("cai: failed to connect Markdown renderer\n", stderr);
+    cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
+                   "cai: failed to connect Markdown renderer\n");
     goto cleanup;
   }
   if (state.interactive) {
@@ -1138,19 +1315,31 @@ int main(int argc, char **argv) {
                      SL_WATCH_READ | SL_WATCH_ERROR | SL_WATCH_HANGUP,
                      cli_timer_wakeup, &state,
                      &state.timer_watch_id) != SL_OK) {
-      fputs("cai: failed to start turn status timer\n", stderr);
+      cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
+                     "cai: failed to start turn status timer\n");
       goto cleanup;
     }
     state.has_timer_watch = 1;
+    if (sl_watch_add(state.sl, state.log.wakeup_fd,
+                     SL_WATCH_READ | SL_WATCH_ERROR | SL_WATCH_HANGUP,
+                     cli_log_wakeup, &state, &state.log_watch_id) != SL_OK) {
+      cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
+                     "watch interactive log notices");
+      goto cleanup;
+    }
+    state.has_log_watch = 1;
   }
   cai_client_config_init(&client_config);
+  client_config.logger = state.log.logger;
   if (strcmp(state.options.provider, "chatgpt") == 0) {
     cai_chatgpt_auth_config_init(&auth_config);
+    auth_config.logger = state.log.logger;
     auth_config.storage = &state.pouch.credentials;
     rc = cai_chatgpt_auth_open(&auth_config, &state.auth, &error);
     if (rc != CAI_OK) {
-      cli_print_error("open ChatGPT auth", &error);
-      fputs("cai: run cai --login to authenticate\n", stderr);
+      cli_print_error(&state, "open ChatGPT auth", &error);
+      cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
+                     "cai: run cai --login to authenticate\n");
       goto cleanup;
     }
     client_config.chatgpt_auth = state.auth;
@@ -1162,7 +1351,7 @@ int main(int argc, char **argv) {
   }
   rc = cai_client_open(&client_config, &state.client, &error);
   if (rc != CAI_OK) {
-    cli_print_error("open client", &error);
+    cli_print_error(&state, "open client", &error);
     goto cleanup;
   }
   if (state.auth != NULL) {
@@ -1170,6 +1359,7 @@ int main(int argc, char **argv) {
     cai_client_config quota_config;
     cai_error_init(&quota_error);
     cai_client_config_init(&quota_config);
+    quota_config.logger = state.log.logger;
     quota_config.chatgpt_auth = state.auth;
     quota_config.timeout_ms = 1500L;
     if (cai_client_open(&quota_config, &state.quota_client, &quota_error) ==
@@ -1182,7 +1372,7 @@ int main(int argc, char **argv) {
   rc = cli_open_runtime(&state, state.options.resume_id,
                         state.options.new_session, &error);
   if (rc != CAI_OK) {
-    cli_print_error("open agent session", &error);
+    cli_print_error(&state, "open agent session", &error);
     goto cleanup;
   }
   if (state.interactive &&
@@ -1195,27 +1385,29 @@ int main(int argc, char **argv) {
   if (state.options.review) {
     rc = cli_run_review(&state, &error);
     if (rc != CAI_OK)
-      cli_print_error("review", &error);
+      cli_print_error(&state, "review", &error);
     else
       result = 0;
     goto cleanup;
   }
   rc = cli_start_automation(&state, &error);
   if (rc != CAI_OK) {
-    cli_print_error("start work", &error);
+    cli_print_error(&state, "start work", &error);
     goto cleanup;
   }
   if (state.options.non_interactive) {
     rc = cli_run_noninteractive(&state, &error);
     if (rc != CAI_OK) {
       if (!state.automation_failed || error.message != NULL)
-        cli_print_error("non-interactive run", &error);
+        cli_print_error(&state, "non-interactive run", &error);
     } else {
       result = 0;
     }
     goto cleanup;
   }
   while (!state.exit_requested) {
+    if (cai_cli_log_notices(&state.log, cli_notice, &state) != 0)
+      goto cleanup;
     line = sl_next_prompt(state.sl, "> ", NULL);
     if (line == NULL) {
       prompt_status = sl_last_readline_status(state.sl);
@@ -1229,7 +1421,7 @@ int main(int argc, char **argv) {
         continue;
       }
       if (prompt_status == SL_READLINE_ERROR) {
-        fputs("cai: prompt input failed\n", stderr);
+        cli_diagnostic(&state, PSLOG_LEVEL_ERROR, "cai: prompt input failed\n");
         goto cleanup;
       }
       break;
@@ -1245,7 +1437,7 @@ int main(int argc, char **argv) {
         }
       }
       if (rc != CAI_OK) {
-        cli_print_error("input", &error);
+        cli_print_error(&state, "input", &error);
         if (state.runtime == NULL) {
           sl_free_string(state.sl, line);
           goto cleanup;
@@ -1256,21 +1448,33 @@ int main(int argc, char **argv) {
     }
     sl_free_string(state.sl, line);
     if (state.runtime != NULL && cli_sync_status(&state, &error) != CAI_OK) {
-      cli_print_error("status", &error);
+      cli_print_error(&state, "status", &error);
       goto cleanup;
     }
   }
   if (state.runtime != NULL && !state.exit_requested) {
     rc = cli_drain(&state, &error);
     if (rc != CAI_OK) {
-      cli_print_error("finish agent turn", &error);
+      cli_print_error(&state, "finish agent turn", &error);
       goto cleanup;
     }
   }
   result = 0;
 cleanup:
+  if (state.batch && !state.options.review && state.renderer != NULL) {
+    cai_error final_error;
+    cai_error_init(&final_error);
+    if (cli_output_final(&state, &final_error) != CAI_OK) {
+      cli_print_error(&state, "final response", &final_error);
+      result = 1;
+    }
+    cai_error_cleanup(&final_error);
+  }
+  cai_cli_response_close(&state.final_response);
   if (state.runtime != NULL)
     cli_close_runtime(&state);
+  if (state.has_log_watch)
+    (void)sl_watch_remove(state.sl, state.log_watch_id);
   if (state.has_timer_watch)
     (void)sl_watch_remove(state.sl, state.timer_watch_id);
   if (state.timer_fd >= 0)
@@ -1282,16 +1486,23 @@ cleanup:
   if (state.auth != NULL)
     state.auth->close(state.auth);
   cai_cli_pouch_close(&state.pouch);
+  if (state.sl != NULL)
+    (void)cai_cli_log_notices(&state.log, cli_notice, &state);
   if (state.renderer != NULL) {
     (void)cli_finish_response(&state);
+    (void)cli_finish_reasoning(&state);
     state.renderer->destroy(state.renderer);
   }
   if (state.sl != NULL) {
     (void)sl_output_stream_end(state.sl);
     sl_destroy(state.sl);
   }
+  if (state.sl == NULL)
+    (void)cai_cli_log_notices(&state.log, cli_startup_notice, &state);
   free(state.sessions);
   free(state.review_report);
   cai_error_cleanup(&error);
+  if (cai_cli_log_close(&state.log) != 0)
+    result = 1;
   return result;
 }

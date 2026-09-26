@@ -3,8 +3,19 @@
 #include <cai/models.h>
 #include <cai/version.h>
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+
+static void cai_cli_option_error(cai_cli_options *options, const char *format,
+                                 ...) {
+  va_list arguments;
+  va_start(arguments, format);
+  vsnprintf(options->diagnostic, sizeof(options->diagnostic), format,
+            arguments);
+  va_end(arguments);
+  options->diagnostic[strcspn(options->diagnostic, "\n")] = '\0';
+}
 
 void cai_cli_options_init(cai_cli_options *options) {
   memset(options, 0, sizeof(*options));
@@ -138,7 +149,8 @@ int cai_cli_parse_options(int argc, char *const *argv,
           flag = short_flag;
           break;
         } else {
-          fprintf(stderr, "cai: invalid short option group: %s\n", argv[i]);
+          cai_cli_option_error(options, "cai: invalid short option group: %s\n",
+                               argv[i]);
           return -1;
         }
       }
@@ -211,7 +223,7 @@ int cai_cli_parse_options(int argc, char *const *argv,
     field = NULL;
     if (strcmp(flag, "-i") == 0 || strcmp(flag, "--instruction") == 0) {
       if (++i >= argc || argv[i][0] == '\0') {
-        fprintf(stderr, "cai: %s requires a value\n", flag);
+        cai_cli_option_error(options, "cai: %s requires a value\n", flag);
         return -1;
       }
       options->instruction_count++;
@@ -271,11 +283,11 @@ int cai_cli_parse_options(int argc, char *const *argv,
              strcmp(flag, "--developer-instructions") == 0)
       field = &options->developer_instructions;
     if (field == NULL) {
-      fprintf(stderr, "cai: unknown option: %s\n", flag);
+      cai_cli_option_error(options, "cai: unknown option: %s\n", flag);
       return -1;
     }
     if (++i >= argc || argv[i][0] == '\0') {
-      fprintf(stderr, "cai: %s requires a value\n", flag);
+      cai_cli_option_error(options, "cai: %s requires a value\n", flag);
       return -1;
     }
     value = argv[i];
@@ -285,21 +297,24 @@ int cai_cli_parse_options(int argc, char *const *argv,
     if ((field == &options->reasoning_effort ||
          field == &options->review_reasoning_effort) &&
         !cai_cli_one_of(value, efforts)) {
-      fprintf(stderr, "cai: invalid reasoning effort: %s\n", value);
+      cai_cli_option_error(options, "cai: invalid reasoning effort: %s\n",
+                           value);
       return -1;
     }
     if ((field == &options->reasoning_summary ||
          field == &options->review_reasoning_summary) &&
         !cai_cli_one_of(value, summaries)) {
-      fprintf(stderr, "cai: invalid reasoning summary: %s\n", value);
+      cai_cli_option_error(options, "cai: invalid reasoning summary: %s\n",
+                           value);
       return -1;
     }
   }
   if ((options->list + options->resume_list + options->login +
        (options->export_id != NULL) + (options->import_file != NULL)) > 1) {
-    fputs("cai: select only one of --list, --resume without ID, --login, "
-          "--export, or --import\n",
-          stderr);
+    cai_cli_option_error(
+        options, "%s",
+        "cai: select only one of --list, --resume without ID, --login, "
+        "--export, or --import\n");
     return -1;
   }
   if ((options->list || options->resume_list || options->export_id != NULL ||
@@ -307,57 +322,69 @@ int cai_cli_parse_options(int argc, char *const *argv,
       (options->new_session || options->resume_id != NULL || options->review ||
        options->review_and_fix || options->goal != NULL ||
        options->instruction_count != 0U || options->non_interactive)) {
-    fputs("cai: storage commands cannot be combined with session work\n",
-          stderr);
+    cai_cli_option_error(
+        options, "%s",
+        "cai: storage commands cannot be combined with session work\n");
     return -1;
   }
   if (options->lockd != NULL && strncmp(options->lockd, "pouch://", 8U) != 0 &&
       strncmp(options->lockd, "http://", 7U) != 0 &&
       strncmp(options->lockd, "https://", 8U) != 0) {
-    fputs("cai: --lockd requires a pouch://, http://, or https:// endpoint\n",
-          stderr);
+    cai_cli_option_error(
+        options, "%s",
+        "cai: --lockd requires a pouch://, http://, or https:// endpoint\n");
     return -1;
   }
   if (options->new_session &&
       (options->resume_id != NULL || options->resume_list)) {
-    fputs("cai: --new and --resume cannot be combined\n", stderr);
+    cai_cli_option_error(options, "%s",
+                         "cai: --new and --resume cannot be combined\n");
     return -1;
   }
   if (options->review && options->review_and_fix) {
-    fputs("cai: --review and --review-and-fix cannot be combined\n", stderr);
+    cai_cli_option_error(
+        options, "%s",
+        "cai: --review and --review-and-fix cannot be combined\n");
     return -1;
   }
   if (options->review &&
       (options->new_session || options->resume_id != NULL ||
        options->goal != NULL || options->instruction_count > 1U ||
        (options->base != NULL && options->instruction_count != 0U))) {
-    fputs("cai: --review accepts one of --base or one -i, without session or "
-          "goal flags\n",
-          stderr);
+    cai_cli_option_error(
+        options, "%s",
+        "cai: --review accepts one of --base or one -i, without session or "
+        "goal flags\n");
     return -1;
   }
   if (options->review_and_fix &&
       (options->goal != NULL || options->instruction_count != 0U)) {
-    fputs("cai: --review-and-fix supplies its own goal and prompt\n", stderr);
+    cai_cli_option_error(
+        options, "%s",
+        "cai: --review-and-fix supplies its own goal and prompt\n");
     return -1;
   }
   if (options->review_and_fix && !options->review_subagent) {
-    fputs("cai: --review-and-fix requires the review subagent\n", stderr);
+    cai_cli_option_error(
+        options, "%s", "cai: --review-and-fix requires the review subagent\n");
     return -1;
   }
   if (options->base != NULL && !options->review && !options->review_and_fix) {
-    fputs("cai: --base requires --review or --review-and-fix\n", stderr);
+    cai_cli_option_error(options, "%s",
+                         "cai: --base requires --review or --review-and-fix\n");
     return -1;
   }
   if ((options->out != NULL || options->output_type != NULL) &&
       !options->review) {
-    fputs("cai: --out and --output-type require --review\n", stderr);
+    cai_cli_option_error(options, "%s",
+                         "cai: --out and --output-type require --review\n");
     return -1;
   }
   if (options->output_type != NULL &&
       strcmp(options->output_type, "markdown") != 0 &&
       strcmp(options->output_type, "json") != 0) {
-    fputs("cai: --output-type must be markdown or json\n", stderr);
+    cai_cli_option_error(options, "%s",
+                         "cai: --output-type must be markdown or json\n");
     return -1;
   }
   if (options->output_type == NULL)
@@ -365,17 +392,21 @@ int cai_cli_parse_options(int argc, char *const *argv,
   if (options->non_interactive && !options->review &&
       !options->review_and_fix && options->instruction_count == 0U &&
       options->goal == NULL) {
-    fputs("cai: --non-interactive requires -i, --goal, or a review mode\n",
-          stderr);
+    cai_cli_option_error(
+        options, "%s",
+        "cai: --non-interactive requires -i, --goal, or a review mode\n");
     return -1;
   }
   if (!cai_cli_one_of(options->provider, providers)) {
-    fprintf(stderr, "cai: invalid provider: %s\n", options->provider);
+    cai_cli_option_error(options, "cai: invalid provider: %s\n",
+                         options->provider);
     return -1;
   }
   if (strcmp(options->provider, "chatgpt") != 0 &&
       (options->auth_json != NULL || options->login)) {
-    fputs("cai: --auth-json and --login require --provider chatgpt\n", stderr);
+    cai_cli_option_error(
+        options, "%s",
+        "cai: --auth-json and --login require --provider chatgpt\n");
     return -1;
   }
   if (options->login &&
@@ -383,7 +414,8 @@ int cai_cli_parse_options(int argc, char *const *argv,
        options->non_interactive || options->review || options->review_and_fix ||
        options->goal != NULL || options->instruction_count != 0U ||
        options->auth_json != NULL)) {
-    fputs("cai: --login cannot be combined with session work\n", stderr);
+    cai_cli_option_error(options, "%s",
+                         "cai: --login cannot be combined with session work\n");
     return -1;
   }
   if (options->list || options->resume_list || options->export_id != NULL ||
@@ -391,19 +423,24 @@ int cai_cli_parse_options(int argc, char *const *argv,
     return 1;
   if (strcmp(options->provider, "custom") == 0) {
     if (options->endpoint == NULL || !model_explicit) {
-      fputs("cai: custom provider requires --endpoint and --model\n", stderr);
+      cai_cli_option_error(
+          options, "%s",
+          "cai: custom provider requires --endpoint and --model\n");
       return -1;
     }
     if (strncmp(options->endpoint, "https://", 8U) != 0 &&
         strncmp(options->endpoint, "http://", 7U) != 0) {
-      fputs("cai: --endpoint must start with https:// or http://\n", stderr);
+      cai_cli_option_error(
+          options, "%s",
+          "cai: --endpoint must start with https:// or http://\n");
       return -1;
     }
     if (options->api_key_env == NULL)
       options->api_key_env = "CAI_API_KEY";
   } else if (options->endpoint != NULL || options->api_key_env != NULL) {
-    fputs("cai: --endpoint and --api-key-env require --provider custom\n",
-          stderr);
+    cai_cli_option_error(
+        options, "%s",
+        "cai: --endpoint and --api-key-env require --provider custom\n");
     return -1;
   }
   if (strcmp(options->provider, "openrouter") == 0 && !model_explicit)

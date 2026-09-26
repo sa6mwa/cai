@@ -17,7 +17,8 @@ model at medium reasoning effort.
 The prompt is
 .BR "\(dq> \(dq" .
 Provider-issued reasoning summaries and assistant text stream through the
-terminal renderer.
+terminal renderer in prompt mode. Non-interactive activity is logged through
+libpslog; only the final assistant response is rendered on standard output.
 .PP
 The newest saved session for the workspace resumes automatically.
 Sessions are scoped to the canonical workspace directory.
@@ -67,7 +68,7 @@ With
 review changes against a reference; with one
 .BR \-i ,
 use custom review instructions. Review activity and reasoning go to standard
-error. Validated findings go to standard output unless
+error as pslog records. Validated findings go to standard output unless
 .B \-\-out
 is specified.
 .TP
@@ -294,6 +295,38 @@ followed by its duration and a local
 date-time group (day of month, 24-hour clock, minute). Durations show minutes
 and seconds below an hour, hours and minutes below a day, and days, hours, and
 minutes thereafter.
+.SH LOGGING
+All diagnostics and runtime activity use libpslog with the
+.B LOG_
+environment prefix and JSON output by default. Ordinary prompts, assistant
+messages, and reasoning summaries use info level. Conversation records carry
+role and prompt_kind fields to distinguish normal prompts, queued turns,
+steering, developer instructions, and reasoning summaries. No app field is added.
+.PP
+In prompt mode, all levels append to the session cache log. Only warning and
+error diagnostics are surfaced in the UI. Startup records are moved into the
+selected session log; failed startup logs remain in a startup-* file.
+.PP
+With
+.BR \-n ,
+.BR \-\-review ,
+or
+.BR \-\-review-and-fix ,
+activity goes to standard error as pslog records. Only the latest top-level
+assistant response of the entire invocation goes to standard output. Replay,
+reasoning, tool activity, and child reviews are log-only. If a later turn fails
+without a reply, the latest available reply is still emitted. Final response
+selection uses a private, unlinked file-backed spool; activity logging remains
+immediate. Review findings retain their selected Markdown or JSON format;
+.B \-\-out
+keeps standard output empty. Utility commands retain their normal stdout results.
+.PP
+Native environment settings include LOG_MODE, LOG_LEVEL, LOG_NO_COLOR,
+LOG_FORCE_COLOR, LOG_PALETTE, LOG_VERBOSE_FIELDS, LOG_DISABLE_TIMESTAMP,
+LOG_TIME_FORMAT, LOG_UTC, LOG_OUTPUT, and LOG_OUTPUT_FILE_MODE.
+LOG_OUTPUT overrides the default sink; default+PATH retains the default sink
+and its UI warning notices while adding a file. LOG_LEVEL=warn filters out
+ordinary conversation messages.
 .SH FILES
 .TP
 .I ~/.codex/auth.json
@@ -315,6 +348,10 @@ Default resumable conversation export, including checkpoint and journal.
 .I $XDG_STATE_HOME/cai/exports/ID/ID.md
 Default Markdown conversation export. Exports are plaintext private files;
 the authentication namespace is excluded.
+.TP
+.I $XDG_CACHE_HOME/cai/SESSIONID.log
+Private session activity log (mode 0600). Uses ~/.cache/cai/SESSIONID.log
+when XDG_CACHE_HOME is unset.
 .TP
 .I $XDG_CONFIG_HOME/cai/AGENTS.md
 Default cai global instructions when

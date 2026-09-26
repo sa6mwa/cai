@@ -955,7 +955,8 @@ endif()
 if(CAI_BUILD_CLI)
   find_package(lockdc CONFIG REQUIRED COMPONENTS static)
   add_executable(cai_cli cli/main.c cli/options.c cli/status.c cli/login.c
-    cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/session_commands.c)
+    cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/session_commands.c
+    cli/log.c cli/response.c)
   set_target_properties(cai_cli PROPERTIES OUTPUT_NAME cai SKIP_BUILD_RPATH ON)
   target_link_libraries(cai_cli PRIVATE cai_static
     softline::softline_static libmdf::mdf_static lockdc::static)
@@ -975,6 +976,7 @@ if(CAI_BUILD_CLI)
       DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/docs"
       COMPONENT cai-cli)
     foreach(_cai_cli_dep_doc
+        "${CAI_DEPS_DIR}/libpslog-${CAI_PSLOG_VERSION}-${CAI_TARGET_ID}/share/doc/libpslog"
         "${_cai_lockdc_prefix}/share/doc/liblockdc"
         "${_cai_liblql_prefix}/share/doc/liblql"
         "${CAI_DEPS_DIR}/softline-${CAI_SOFTLINE_VERSION}-${CAI_TARGET_ID}/share/doc/softline"
@@ -1011,12 +1013,18 @@ if(CAI_BUILD_CLI)
     set_tests_properties(cai_cli_storage_stream PROPERTIES TIMEOUT 30)
     add_executable(cai_cli_reasoning_test tests/cli_reasoning_test.c
       cli/options.c cli/status.c cli/login.c cli/review_report.c
-      cli/pouch.c cli/pouch_stream.c cli/session_commands.c)
+      cli/pouch.c cli/pouch_stream.c cli/session_commands.c cli/log.c cli/response.c)
     target_link_libraries(cai_cli_reasoning_test PRIVATE cai_static
       softline::softline_static libmdf::mdf_static lockdc::static)
     target_link_options(cai_cli_reasoning_test PRIVATE -static)
     cai_configure_c_target(cai_cli_reasoning_test)
     add_test(NAME cai_cli_reasoning COMMAND cai_cli_reasoning_test)
+    add_executable(cai_cli_log_test tests/cli_log_test.c
+      cli/log.c cli/response.c cli/pouch_stream.c)
+    target_link_libraries(cai_cli_log_test PRIVATE cai_static lockdc::static)
+    target_link_options(cai_cli_log_test PRIVATE -static)
+    cai_configure_c_target(cai_cli_log_test)
+    add_test(NAME cai_cli_log COMMAND cai_cli_log_test "${CMAKE_CURRENT_BINARY_DIR}")
     add_executable(cai_cli_status_test tests/cli_status_test.c cli/status.c)
     target_link_libraries(cai_cli_status_test PRIVATE cai_static
       softline::softline_static)
