@@ -175,8 +175,11 @@ static int native_agent_session_load_events_after(
 }
 
 static cai_agent_session_store native_agent_session_store = {
-    native_agent_session_checkpoint, native_agent_session_load_latest,
-    native_agent_session_append_event, native_agent_session_load_events_after,
+    native_agent_session_checkpoint,
+    native_agent_session_load_latest,
+    native_agent_session_append_event,
+    native_agent_session_load_events_after,
+    NULL,
     &native_session_store};
 
 static size_t native_blob_store_read(void *context, void *buffer, size_t count,

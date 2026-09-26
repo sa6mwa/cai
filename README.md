@@ -95,7 +95,7 @@ runtime, review, storage, and presentation contracts.
 The `cai` preset builds the terminal coding agent as a statically linked
 Linux x86_64 musl executable. It adds pinned softline 0.7.0 for the prompt and
 libmdf 0.12.0 for streamed Markdown rendering, and liblockdc 0.18.0 with
-liblql 0.3.0 for durable storage. It uses libpslog 0.10.0 for logging.
+liblql 0.3.0 for durable storage. It uses libpslog 0.12.0 for logging.
 `libcai` itself has no dependency on the CLI prompt, rendering, or storage libraries.
 Softline and libmdf run on the UI thread. The runtime
 worker executes model requests and tools, then wakes the UI thread to render
