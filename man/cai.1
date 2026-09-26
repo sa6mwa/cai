@@ -238,16 +238,20 @@ status line.
 Exit the agent.
 .SH STATUS LINE
 The status line shows model and reasoning effort, context used as a percentage,
-the workspace, available ChatGPT subscription quota or API cost estimate,
+the workspace, available ChatGPT subscription quota and credits or API cost estimate,
 the Git branch when available, and an active goal.
 Quota windows are labeled by their returned duration, including weekly-only
 accounts and any shorter window returned by the backend. Quota is fetched at
 startup and after completed turns, with automatic requests limited to one
 attempt every five minutes.
 Unavailable values are hidden.
-Credits appear only in
-.BR /status ,
-when the provider reports them.
+Credits follow the quota windows as
+.B crd 42.5
+or
+.BR "crd unlimited" ,
+when the provider reports them. Whole numbers have no decimal suffix.
+They also appear in
+.BR /status .
 The message above it shows the provider's concise reasoning summary and the
 active turn's elapsed time. Softline supplies its default
 .B "! "

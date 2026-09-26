@@ -11,8 +11,9 @@ typedef struct cai_cli_status {
   char model_effort[192];
   char context[32];
   char usage[64];
+  char credits[64];
   char goal[192];
-  const char *elements[6];
+  const char *elements[7];
   size_t count;
 } cai_cli_status;
 

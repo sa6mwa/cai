@@ -131,11 +131,13 @@ the active turn's elapsed time. Before a summary arrives, the bar says
 The live timer advances while the turn is active and stops when it settles.
 The softline prompt is `> `. Its status bar shows model and reasoning effort,
 the last measured context percentage, a shortened workspace path, available
-ChatGPT subscription quota remaining, the Git branch when present, and an
-active goal. Quota appears as `w 72%` when only a weekly window is available,
+ChatGPT subscription quota remaining and credits, the Git branch when present,
+and an active goal. Quota appears as `w 72%` when only a weekly window is available,
 or `w 72% 1h 48%` when the backend also reports an hourly window. Windows are
-identified by their returned duration. `libcai` exposes windows and available
-credit balance through `cai_client_chatgpt_quota` in `<cai/quota.h>`. The status
+identified by their returned duration. Available credits follow the quota as
+`crd 42.5` or `crd unlimited`, without trailing decimal zeroes; missing credit
+values are hidden. `libcai` exposes windows and available credit balance through
+`cai_client_chatgpt_quota` in `<cai/quota.h>`. The status
 bar fetches quota at startup and after completed turns, at most once every five
 minutes automatically. `/status` fetches quota on every invocation, updates the
 bar, and renders a Markdown table with model, effort, available context

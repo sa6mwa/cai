@@ -257,6 +257,23 @@ void cai_cli_status_build(cai_cli_status *status, const char *model,
   if (status->usage[0] != '\0') {
     status->elements[status->count++] = status->usage;
   }
+  status->credits[0] = '\0';
+  if (quota != NULL && quota->credits_unlimited) {
+    snprintf(status->credits, sizeof(status->credits), "crd unlimited");
+  } else if (quota != NULL && quota->has_credit_balance) {
+    snprintf(status->credits, sizeof(status->credits), "crd %.2f",
+             quota->credit_balance);
+    n = strlen(status->credits);
+    while (n > 0U && status->credits[n - 1U] == '0') {
+      status->credits[--n] = '\0';
+    }
+    if (n > 0U && status->credits[n - 1U] == '.') {
+      status->credits[n - 1U] = '\0';
+    }
+  }
+  if (status->credits[0] != '\0') {
+    status->elements[status->count++] = status->credits;
+  }
   if (status->branch[0] != '\0') {
     status->elements[status->count++] = status->branch;
   }

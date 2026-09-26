@@ -43,9 +43,37 @@ int main(void) {
   quota.credit_balance = 42.5;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
                        &goal);
-  failures += check(status.count == 3U && status.usage[0] == '\0',
-                    "credits never appear in element bar");
+  failures += check(status.count == 4U && status.usage[0] == '\0' &&
+                        strcmp(status.elements[3], "crd 42.5") == 0,
+                    "available credits without quota windows");
+  quota.credit_balance = 42.0;
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
+                       &goal);
+  failures +=
+      check(status.count == 4U && strcmp(status.elements[3], "crd 42") == 0,
+            "whole credits have no decimal suffix");
+  quota.credit_balance = 42.25;
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
+                       &goal);
+  failures +=
+      check(status.count == 4U && strcmp(status.elements[3], "crd 42.25") == 0,
+            "fractional credits retain precision");
+  quota.credit_balance = 0.0;
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
+                       &goal);
+  failures +=
+      check(status.count == 4U && strcmp(status.elements[3], "crd 0") == 0,
+            "zero credit balance remains visible");
+  quota.credits_unlimited = 1;
   quota.has_credit_balance = 0;
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
+                       &goal);
+  failures += check(status.count == 4U &&
+                        strcmp(status.elements[3], "crd unlimited") == 0,
+                    "unlimited credits without numeric balance");
+  quota.has_credit_balance = 1;
+  quota.credits_unlimited = 0;
+  quota.credit_balance = 42.5;
   strcpy(status.branch, "feature/ui");
   goal.has_goal = 1;
   goal.status = "active";
@@ -57,14 +85,16 @@ int main(void) {
   quota.weekly_remaining_percent = 72.0;
   cai_cli_status_build(&status, "gpt-6-luna", "high", 37.4, 1, &quota, 0.0,
                        &goal);
-  failures += check(status.count == 6U, "full element count");
+  failures += check(status.count == 7U, "full element count");
   failures +=
       check(strcmp(status.elements[1], "ctx 37%") == 0, "context rounded");
   failures +=
       check(strcmp(status.elements[3], "w 72% 5h 48%") == 0, "quota order");
   failures +=
-      check(strcmp(status.elements[4], "feature/ui") == 0, "branch order");
-  failures += check(strcmp(status.elements[5], "goal active: Ship agent") == 0,
+      check(strcmp(status.elements[4], "crd 42.5") == 0, "credits order");
+  failures +=
+      check(strcmp(status.elements[5], "feature/ui") == 0, "branch order");
+  failures += check(strcmp(status.elements[6], "goal active: Ship agent") == 0,
                     "goal order");
   sl = sl_create();
   failures += check(sl != NULL && cai_cli_status_apply(sl, &status) == 0,
@@ -76,6 +106,8 @@ int main(void) {
   memset(&quota, 0, sizeof(quota));
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
                        &goal);
+  failures += check(status.count == 5U && status.credits[0] == '\0',
+                    "unavailable credits cleared on refresh");
   failures += check(strcmp(status.elements[4], "goal active: Line Break") == 0,
                     "goal controls sanitized");
   cai_cli_status_refresh_branch(&status, "/proc");
@@ -95,11 +127,18 @@ int main(void) {
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
                        &goal);
   failures += check(strcmp(status.usage, "w 73% 1h 55%") == 0, "hourly label");
+  quota.has_credit_balance = 1;
+  quota.credit_balance = 42.5;
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
+                       &goal);
+  failures += check(status.count == 5U && status.credits[0] != '\0',
+                    "credits present before provider switch");
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 20.0, 1, NULL, 1.25,
                        &goal);
   failures +=
       check(strcmp(status.usage, "cost ~$1.2500") == 0, "API cost status");
   failures += check(status.count == 4U, "API status element count");
+  failures += check(status.credits[0] == '\0', "API provider hides credits");
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, NULL, 0.0,
                        &goal);
   failures += check(strcmp(status.usage, "cost ?$") == 0,
