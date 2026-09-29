@@ -84,6 +84,75 @@ typedef struct cli_state {
 
 static int cli_advance_automation(cli_state *state, cai_error *error);
 
+static int cli_load_model_metadata(const cai_cli_options *options, char **out,
+                                   cai_error *error) {
+  char path[PATH_MAX];
+  char message[PATH_MAX + 128];
+  const char *root;
+  FILE *file;
+  long length;
+  size_t size;
+  int written;
+
+  *out = NULL;
+  if (options->model_metadata != NULL) {
+    written = snprintf(path, sizeof(path), "%s", options->model_metadata);
+  } else {
+    root = options->config_dir;
+    if (root != NULL) {
+      written = snprintf(path, sizeof(path), "%s/models.json", root);
+    } else if (getenv("XDG_CONFIG_HOME") != NULL &&
+               getenv("XDG_CONFIG_HOME")[0] != '\0') {
+      written = snprintf(path, sizeof(path), "%s/cai/models.json",
+                         getenv("XDG_CONFIG_HOME"));
+    } else if (getenv("HOME") != NULL) {
+      written = snprintf(path, sizeof(path), "%s/.config/cai/models.json",
+                         getenv("HOME"));
+    } else {
+      return CAI_OK;
+    }
+  }
+  if (written < 0 || (size_t)written >= sizeof(path)) {
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "model metadata path is too long");
+  }
+  file = fopen(path, "rb");
+  if (file == NULL) {
+    if (options->model_metadata == NULL && errno == ENOENT) {
+      return CAI_OK;
+    }
+    snprintf(message, sizeof(message), "cannot open model metadata %s: %s",
+             path, strerror(errno));
+    return cai_cli_error(error, CAI_ERR_TRANSPORT, message);
+  }
+  if (fseek(file, 0L, SEEK_END) != 0 || (length = ftell(file)) < 0L ||
+      length > 1024L * 1024L || fseek(file, 0L, SEEK_SET) != 0) {
+    fclose(file);
+    snprintf(message, sizeof(message),
+             "cannot read model metadata %s (file must be at most 1 MiB)",
+             path);
+    return cai_cli_error(error, CAI_ERR_INVALID, message);
+  }
+  *out = (char *)malloc((size_t)length + 1U);
+  if (*out == NULL) {
+    fclose(file);
+    return cai_cli_error(error, CAI_ERR_NOMEM,
+                         "cannot allocate model metadata file");
+  }
+  size = fread(*out, 1U, (size_t)length, file);
+  if (fclose(file) != 0 || size != (size_t)length ||
+      memchr(*out, '\0', size) != NULL) {
+    free(*out);
+    *out = NULL;
+    snprintf(message, sizeof(message),
+             "cannot read model metadata %s (read error or embedded NUL)",
+             path);
+    return cai_cli_error(error, CAI_ERR_INVALID, message);
+  }
+  (*out)[size] = '\0';
+  return CAI_OK;
+}
+
 static void cli_print_error(cli_state *state, const char *operation,
                             const cai_error *error) {
   cai_cli_log_error(state->log.logger, operation, error);
@@ -535,7 +604,9 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
   }
   cai_cli_status_build(&state->status, model, effort, context_percent,
                        has_context, state->auth != NULL ? &state->quota : NULL,
-                       metrics.session_usage.estimated_spend_usd, &goal);
+                       metrics.session_usage.estimated_spend_usd,
+                       metrics.session_usage.estimated_spend_eur,
+                       state->options.provider, &goal);
   if (sl_set_status_busy(state->sl, busy) != SL_OK ||
       sl_set_status_spinner(state->sl, busy) != SL_OK ||
       sl_set_status_message(state->sl, turn_message) != SL_OK ||
@@ -1157,6 +1228,7 @@ int main(int argc, char **argv) {
   sl_readline_status_t prompt_status;
   char auth_path[PATH_MAX];
   const char *auth_file;
+  char *metadata_json;
   char *line;
   pslog_level default_log_level;
   int utility_mode;
@@ -1170,6 +1242,7 @@ int main(int argc, char **argv) {
   state.log.fd = -1;
   state.log.wakeup_fd = -1;
   result = 1;
+  metadata_json = NULL;
   cai_error_init(&error);
   parsed = cai_cli_parse_options(argc, argv, &state.options);
   if (parsed <= 0) {
@@ -1342,6 +1415,12 @@ int main(int argc, char **argv) {
   }
   cai_client_config_init(&client_config);
   client_config.logger = state.log.logger;
+  rc = cli_load_model_metadata(&state.options, &metadata_json, &error);
+  if (rc != CAI_OK) {
+    cli_print_error(&state, "load model metadata", &error);
+    goto cleanup;
+  }
+  client_config.model_metadata_json = metadata_json;
   if (strcmp(state.options.provider, "chatgpt") == 0) {
     cai_chatgpt_auth_config_init(&auth_config);
     auth_config.logger = state.log.logger;
@@ -1362,6 +1441,7 @@ int main(int argc, char **argv) {
     client_config.base_url = state.options.endpoint;
     client_config.api_key_env = state.options.api_key_env;
   }
+  client_config.metadata_provider = state.options.provider;
   rc = cai_client_open(&client_config, &state.client, &error);
   if (rc != CAI_OK) {
     cli_print_error(&state, "open client", &error);
@@ -1514,6 +1594,7 @@ cleanup:
     (void)cai_cli_log_notices(&state.log, cli_startup_notice, &state);
   free(state.sessions);
   free(state.review_report);
+  free(metadata_json);
   cai_error_cleanup(&error);
   if (cai_cli_log_close(&state.log) != 0)
     result = 1;

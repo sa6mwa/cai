@@ -32,7 +32,7 @@ int main(void) {
   cai_cli_status_init(&status, "/home/alice/project", "/home/alice");
   status.branch[0] = '\0';
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       &goal);
+                       0.0, "openai", &goal);
   failures += check(status.count == 3U, "unknown quota hidden");
   failures += check(strcmp(status.elements[0], "gpt-6-luna medium") == 0,
                     "model effort");
@@ -42,33 +42,33 @@ int main(void) {
   quota.has_credit_balance = 1;
   quota.credit_balance = 42.75;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       &goal);
+                       0.0, "openai", &goal);
   failures +=
       check(status.count == 4U && status.usage[0] == '\0' &&
                 strcmp(status.elements[3], "crd 43") == 0,
             "available fractional credits round up without quota windows");
   quota.credit_balance = 42.0;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       &goal);
+                       0.0, "openai", &goal);
   failures +=
       check(status.count == 4U && strcmp(status.elements[3], "crd 42") == 0,
             "whole credits have no decimal suffix");
   quota.credit_balance = 42.25;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       &goal);
+                       0.0, "openai", &goal);
   failures +=
       check(status.count == 4U && strcmp(status.elements[3], "crd 42") == 0,
             "fractional credits round down");
   quota.credit_balance = 0.0;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       &goal);
+                       0.0, "openai", &goal);
   failures +=
       check(status.count == 4U && strcmp(status.elements[3], "crd 0") == 0,
             "zero credit balance remains visible");
   quota.credits_unlimited = 1;
   quota.has_credit_balance = 0;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       &goal);
+                       0.0, "openai", &goal);
   failures += check(status.count == 4U &&
                         strcmp(status.elements[3], "crd unlimited") == 0,
                     "unlimited credits without numeric balance");
@@ -84,8 +84,8 @@ int main(void) {
   quota.short_window_remaining_percent = 48.0;
   quota.has_weekly = 1;
   quota.weekly_remaining_percent = 72.0;
-  cai_cli_status_build(&status, "gpt-6-luna", "high", 37.4, 1, &quota, 0.0,
-                       &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "high", 37.4, 1, &quota, 0.0, 0.0,
+                       "openai", &goal);
   failures += check(status.count == 7U, "full element count");
   failures +=
       check(strcmp(status.elements[1], "ctx 37%") == 0, "context rounded");
@@ -105,7 +105,7 @@ int main(void) {
   goal.objective = "Line\nBreak";
   memset(&quota, 0, sizeof(quota));
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       &goal);
+                       0.0, "openai", &goal);
   failures += check(status.count == 5U && status.credits[0] == '\0',
                     "unavailable credits cleared on refresh");
   failures += check(strcmp(status.elements[4], "goal active: Line Break") == 0,
@@ -114,35 +114,43 @@ int main(void) {
   failures += check(status.branch[0] == '\0', "nonrepository branch hidden");
   goal.status = "complete";
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       &goal);
+                       0.0, "openai", &goal);
   failures += check(status.count == 3U, "completed goal hidden");
   quota.has_weekly = 1;
   quota.weekly_remaining_percent = 73.0;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       &goal);
+                       0.0, "openai", &goal);
   failures += check(strcmp(status.usage, "w 73%") == 0, "weekly only");
   quota.has_short_window = 1;
   quota.short_window_seconds = 3600;
   quota.short_window_remaining_percent = 55.0;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       &goal);
+                       0.0, "openai", &goal);
   failures += check(strcmp(status.usage, "w 73% 1h 55%") == 0, "hourly label");
   quota.has_credit_balance = 1;
   quota.credit_balance = 42.5;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       &goal);
+                       0.0, "openai", &goal);
   failures += check(status.count == 5U && status.credits[0] != '\0',
                     "credits present before provider switch");
   cai_cli_status_build(&status, "gpt-6-luna", "medium", 20.0, 1, NULL, 1.25,
-                       &goal);
+                       0.0, "openai", &goal);
   failures +=
       check(strcmp(status.usage, "cost ~$1.2500") == 0, "API cost status");
   failures += check(status.count == 4U, "API status element count");
   failures += check(status.credits[0] == '\0', "API provider hides credits");
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, NULL, 0.0,
-                       &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, NULL, 0.0, 0.0,
+                       "openai", &goal);
   failures += check(strcmp(status.usage, "cost ?$") == 0,
                     "unknown API cost placeholder");
+  cai_cli_status_build(&status, "zai-org/GLM-5.3-Flash", "medium", 0.0, 0, NULL,
+                       0.0, 1.25, "berget", &goal);
+  failures += check(strcmp(status.usage, "cost ~€1.2500") == 0,
+                    "Berget cost status uses EUR");
+  cai_cli_status_build(&status, "zai-org/GLM-5.3-Flash", "medium", 0.0, 0, NULL,
+                       0.0, 0.0, "berget", &goal);
+  failures += check(strcmp(status.usage, "cost ?€") == 0,
+                    "Berget unknown cost uses EUR");
   metrics.context_window_tokens = 200000;
   metrics.context_used_tokens = 50000;
   metrics.has_context_usage = 1;
@@ -171,6 +179,16 @@ int main(void) {
             "hourly row");
   failures += check(strstr(markdown, "| Credits left | 42.50 |") != NULL,
                     "credits row");
+  metrics.session_usage.estimated_spend_usd = 0.0;
+  metrics.session_usage.estimated_spend_eur = 1.25;
+  failures += check(cai_cli_status_markdown(markdown, sizeof(markdown),
+                                            "zai-org/GLM-5.3-Flash", "medium",
+                                            "berget", &metrics, NULL) == 0,
+                    "Berget status markdown builds");
+  failures += check(strstr(markdown, "| Cost estimate | €1.2500 EUR |") != NULL,
+                    "Berget cost row uses EUR");
+  metrics.session_usage.estimated_spend_usd = 1.25;
+  metrics.session_usage.estimated_spend_eur = 0.0;
   failures +=
       check(cai_cli_status_markdown(markdown, sizeof(markdown), "gpt-6-luna",
                                     "medium", "openai", &metrics, NULL) == 0 &&

@@ -47,6 +47,7 @@ void cai_client_config_use_openrouter(cai_client_config *config) {
   config->base_url = CAI_OPENROUTER_BASE_URL;
   config->organization_id = NULL;
   config->project_id = NULL;
+  config->metadata_provider = "openrouter";
 }
 
 void cai_client_config_use_berget(cai_client_config *config) {
@@ -56,6 +57,7 @@ void cai_client_config_use_berget(cai_client_config *config) {
   config->api_key_env = CAI_BERGET_API_KEY_ENV;
   config->base_url = CAI_BERGET_BASE_URL;
   config->api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
+  config->metadata_provider = "berget";
   config->organization_id = NULL;
   config->project_id = NULL;
 }
@@ -112,11 +114,13 @@ static void cai_client_destroy_fields(cai_client_impl *impl) {
   cai_client_clear_secret(impl->api_key);
   cai_free_mem(&impl->allocator, impl->api_key);
   cai_free_mem(&impl->allocator, impl->base_url);
+  cai_free_mem(&impl->allocator, impl->metadata_provider);
   cai_free_mem(&impl->allocator, impl->organization_id);
   cai_free_mem(&impl->allocator, impl->project_id);
   cai_free_mem(&impl->allocator, impl->ca_bundle_path);
   cai_free_mem(&impl->allocator, impl->ca_path);
   cai_model_catalog_close(impl->model_catalog);
+  cai_model_catalog_close(impl->fallback_catalog);
 }
 
 int cai_client_open(const cai_client_config *config, cai_client **out,
@@ -173,6 +177,7 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   impl->chatgpt_auth = effective->chatgpt_auth;
   impl->base_url = NULL;
   impl->api_protocol = effective->api_protocol;
+  impl->metadata_provider = NULL;
   impl->organization_id = NULL;
   impl->project_id = NULL;
   impl->timeout_ms = effective->timeout_ms > 0L ? effective->timeout_ms
@@ -192,6 +197,7 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   impl->responses_ws_curl = NULL;
   impl->responses_ws_headers = NULL;
   impl->model_catalog = NULL;
+  impl->fallback_catalog = NULL;
   impl->model_catalog_fetched_at = 0;
 
   if (impl->json_response_limit_bytes == 0U) {
@@ -236,6 +242,18 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
     cai_free_mem(&impl->allocator, impl);
     cai_free_mem(&effective->allocator, client);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate base URL");
+  }
+  impl->metadata_provider = cai_strdup(
+      &impl->allocator,
+      effective->metadata_provider != NULL
+          ? effective->metadata_provider
+          : (effective->chatgpt_auth != NULL ? "chatgpt" : "openai"));
+  if (impl->metadata_provider == NULL) {
+    cai_client_destroy_fields(impl);
+    cai_free_mem(&impl->allocator, impl);
+    cai_free_mem(&effective->allocator, client);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate metadata provider name");
   }
   impl->organization_id =
       cai_strdup(&impl->allocator, effective->organization_id);
@@ -304,6 +322,14 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   client->usage = cai_client_usage;
   client->close = cai_client_close;
   client->impl = impl;
+  if (effective->model_metadata_json != NULL) {
+    rc = cai_model_catalog_load_fallback(client, effective->model_metadata_json,
+                                         error);
+    if (rc != CAI_OK) {
+      cai_client_close(client);
+      return rc;
+    }
+  }
   *out = client;
   cai_log_client_opened(impl);
   return CAI_OK;

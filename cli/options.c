@@ -71,6 +71,8 @@ static void cai_cli_help(void) {
         "      --api-key-env NAME       Custom API key variable (default "
         "CAI_API_KEY)\n",
         stdout);
+  fputs("      --model-metadata FILE    Provider model metadata JSON\n",
+        stdout);
   fputs("  -m, --model ID               Model (provider default if omitted)\n"
         "  -r, --reasoning-effort LEVEL none|low|medium|high|xhigh|max\n"
         "      --reasoning-summary MODE none|auto|concise|detailed (default "
@@ -256,6 +258,8 @@ int cai_cli_parse_options(int argc, char *const *argv,
       field = &options->endpoint;
     else if (strcmp(flag, "--api-key-env") == 0)
       field = &options->api_key_env;
+    else if (strcmp(flag, "--model-metadata") == 0)
+      field = &options->model_metadata;
     else if (strcmp(flag, "-C") == 0 || strcmp(flag, "--directory") == 0)
       field = &options->directory;
     else if (strcmp(flag, "-a") == 0 || strcmp(flag, "--auth-json") == 0)
@@ -482,10 +486,11 @@ const char *cai_cli_instruction_at(const cai_cli_options *options,
         strcmp(flag, "-T") == 0 || strcmp(flag, "--output-type") == 0 ||
         strcmp(flag, "-p") == 0 || strcmp(flag, "--provider") == 0 ||
         strcmp(flag, "--endpoint") == 0 || strcmp(flag, "--api-key-env") == 0 ||
-        strcmp(flag, "-C") == 0 || strcmp(flag, "--directory") == 0 ||
-        strcmp(flag, "-a") == 0 || strcmp(flag, "--auth-json") == 0 ||
-        strcmp(flag, "-m") == 0 || strcmp(flag, "--model") == 0 ||
-        strcmp(flag, "-r") == 0 || strcmp(flag, "--reasoning-effort") == 0 ||
+        strcmp(flag, "--model-metadata") == 0 || strcmp(flag, "-C") == 0 ||
+        strcmp(flag, "--directory") == 0 || strcmp(flag, "-a") == 0 ||
+        strcmp(flag, "--auth-json") == 0 || strcmp(flag, "-m") == 0 ||
+        strcmp(flag, "--model") == 0 || strcmp(flag, "-r") == 0 ||
+        strcmp(flag, "--reasoning-effort") == 0 ||
         strcmp(flag, "--reasoning-summary") == 0 ||
         strcmp(flag, "--review-model") == 0 ||
         strcmp(flag, "--review-reasoning-effort") == 0 ||

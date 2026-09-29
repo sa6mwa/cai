@@ -37,7 +37,7 @@ points for existing event loops, HTTP servers, loggers, and dependency stacks.
   `auth.json`, browser OAuth login helper, token persistence, and transparent one-shot
   refresh retry on 401/403.
 - Usage accounting with per-client and per-session limits for input tokens,
-  output tokens, total tokens, requests, and estimated USD spend.
+  output tokens, total tokens, requests, and currency-specific spend estimates.
 - Lua 5.5 binding and LuaRock packaging covering the same main client,
   session, streaming, tool, MCP, and ChatGPT auth workflows as the C API.
 - Release archives with installed headers, static/shared `libcai`, CMake
@@ -127,6 +127,13 @@ selected by `--api-key-env`.
 cai's local and MCP tools. Berget does not offer provider-hosted image
 generation. All providers start with medium reasoning;
 `-m`/`--model` and `-r`/`--reasoning-effort` override those defaults.
+`cai` loads optional model metadata from `$XDG_CONFIG_HOME/cai/models.json`
+(or `~/.config/cai/models.json`); `--model-metadata FILE` overrides it.
+libcai accepts the same JSON through `cai_client_config.model_metadata_json`.
+Berget's live model catalog includes every model it advertises, with model
+type, capabilities, and EUR token prices. Fallback JSON fills fields absent
+from live metadata, such as context windows. See
+[model metadata](docs/model-metadata.md) for the schema and precedence.
 `--help` lists the other
 user-facing model, review, instructions, skills, image, terminal, and session
 options. Cai requests concise provider reasoning summaries by default; the
@@ -163,7 +170,8 @@ bar fetches quota at startup and after completed turns, at most once every five
 minutes automatically. `/status` fetches quota on every invocation, updates the
 bar, and renders a Markdown table with model, effort, available context
 and usage, quota, and credits. API key providers show `cost ?$` in the status
-bar until a USD cost estimate is available. ChatGPT's cost estimate, when
+bar until a USD cost estimate is available. Berget shows `cost ?€` and EUR
+estimates without a USD conversion. ChatGPT's cost estimate, when
 available, uses API prices as an equivalent estimate, not a subscription
 charge. The
 context percentage is unknown until response usage is available.

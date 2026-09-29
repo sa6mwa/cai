@@ -26,6 +26,7 @@ typedef struct cai_client_impl {
   cai_chatgpt_auth *chatgpt_auth;
   char *base_url;
   cai_api_protocol api_protocol;
+  char *metadata_provider;
   char *organization_id;
   char *project_id;
   long timeout_ms;
@@ -43,8 +44,22 @@ typedef struct cai_client_impl {
   CURL *responses_ws_curl;
   struct curl_slist *responses_ws_headers;
   cai_model_catalog *model_catalog;
+  cai_model_catalog *fallback_catalog;
   time_t model_catalog_fetched_at;
 } cai_client_impl;
+
+int cai_model_catalog_load_fallback(cai_client *client, const char *json,
+                                    cai_error *error);
+const cai_model_catalog_entry *
+cai_client_cached_model_metadata(const cai_client *client, const char *model);
+int cai_client_model_can_estimate_usd(const cai_client *client,
+                                      const char *model);
+void cai_client_model_estimate_usage(const cai_client *client,
+                                     const char *model,
+                                     const cai_token_usage *usage, double *usd,
+                                     double *eur);
+long long cai_client_model_context_window(const cai_client *client,
+                                          const char *model);
 
 typedef struct cai_response_request_upload cai_response_request_upload;
 typedef struct cai_chat_upload cai_chat_upload;

@@ -199,6 +199,7 @@ void cai_cli_status_build(cai_cli_status *status, const char *model,
                           const char *effort, double context_percent,
                           int has_context, const cai_chatgpt_quota *quota,
                           double estimated_spend_usd,
+                          double estimated_spend_eur, const char *provider,
                           const cai_agent_goal_snapshot *goal) {
   char safe_model[128];
   char safe_effort[32];
@@ -223,7 +224,14 @@ void cai_cli_status_build(cai_cli_status *status, const char *model,
   status->elements[status->count++] = status->directory;
   status->usage[0] = '\0';
   if (quota == NULL) {
-    if (estimated_spend_usd > 0.0) {
+    if (provider != NULL && strcmp(provider, "berget") == 0) {
+      if (estimated_spend_eur > 0.0) {
+        snprintf(status->usage, sizeof(status->usage), "cost ~€%.4f",
+                 estimated_spend_eur);
+      } else {
+        snprintf(status->usage, sizeof(status->usage), "cost ?€");
+      }
+    } else if (estimated_spend_usd > 0.0) {
       snprintf(status->usage, sizeof(status->usage), "cost ~$%.4f",
                estimated_spend_usd);
     } else {
@@ -348,6 +356,12 @@ int cai_cli_status_markdown(char *out, size_t capacity, const char *model,
     snprintf(value, sizeof(value), "$%.4f USD%s",
              metrics->session_usage.estimated_spend_usd,
              quota != NULL ? " (API equivalent)" : "");
+    if (cai_cli_table_row(out, capacity, &used, "Cost estimate", value) != 0)
+      return -1;
+  }
+  if (metrics != NULL && metrics->session_usage.estimated_spend_eur > 0.0) {
+    snprintf(value, sizeof(value), "€%.4f EUR",
+             metrics->session_usage.estimated_spend_eur);
     if (cai_cli_table_row(out, capacity, &used, "Cost estimate", value) != 0)
       return -1;
   }

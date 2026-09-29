@@ -442,6 +442,27 @@ assert_not_ok(cai.chatgpt_auth({ logger = {} }))
 assert_not_ok(cai.chatgpt_login({ logger = {} }))
 assert_not_ok(cai.mcp_client({ url = "http://127.0.0.1:1/mcp", logger = {} }))
 
+do
+  local berget_client = assert_ok(cai.open({
+    berget = true,
+    api_key = "test-key",
+    model_metadata_json = '{"models":[{"provider":"berget",' ..
+      '"id":"zai-org/GLM-5.3-Flash","model_type":"text",' ..
+      '"context_window_tokens":131072,' ..
+      '"pricing":{"currency":"EUR","input":1,"output":2}}]}',
+  }))
+  local catalog = assert_ok(berget_client:list_models("offline"))
+  assert_eq(#catalog, 1, "Lua provider catalog count")
+  assert_eq(catalog[1].model_type, "text", "Lua provider model type")
+  assert_eq(catalog[1].pricing_currency, "EUR", "Lua provider currency")
+  assert_eq(catalog[1].pricing_unit, "M Token", "Lua provider price unit")
+  assert_eq(catalog[1].context_window_tokens, 131072,
+    "Lua provider context fallback")
+  assert_eq(berget_client:usage().estimated_spend_eur, 0,
+    "Lua provider EUR accounting")
+  berget_client:close()
+end
+
 local logger_chunks = {}
 local base_logger = pslog.new_json({
   output = function(chunk)

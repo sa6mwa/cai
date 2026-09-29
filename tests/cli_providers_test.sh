@@ -7,6 +7,11 @@ fixture=$(mktemp -d "$build_dir/cli-providers.XXXXXX")
 trap 'rm -rf "$fixture"' EXIT
 mkdir -p "$fixture/home/.codex" "$fixture/state" "$fixture/work"
 export HOME="$fixture/home" XDG_STATE_HOME="$fixture/state" XDG_CACHE_HOME="$fixture/cache"
+export XDG_CONFIG_HOME="$fixture/config"
+mkdir -p "$XDG_CONFIG_HOME/cai"
+cat > "$XDG_CONFIG_HOME/cai/models.json" <<'JSON'
+{"models":[{"provider":"berget","id":"zai-org/GLM-5.3-Flash","context_window_tokens":131072}]}
+JSON
 cat > "$fixture/home/.codex/auth.json" <<'JSON'
 {"auth_mode":"chatgpt","tokens":{"id_token":"eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA0MTAyNDQ0ODAwfQ.sig","access_token":"eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA0MTAyNDQ0ODAwfQ.sig","refresh_token":"fixture","account_id":"fixture"},"last_refresh":"2026-09-25T00:00:00Z"}
 JSON
@@ -37,6 +42,16 @@ berget=$(printf '/status\n/quit\n' | BERGET_API_KEY=fixture "$cli" -p berget -C 
 [[ "$berget" == *"Model"* && "$berget" == *"zai-org/GLM-5.3-Flash"* ]]
 [[ "$berget" == *"Reasoning effort"* && "$berget" == *"medium"* ]]
 [[ "$berget" != *"Weekly limit"* && "$berget" != *"Credits left"* ]]
+printf 'invalid\n' > "$fixture/invalid-models.json"
+if printf '/quit\n' | BERGET_API_KEY=fixture "$cli" -p berget -C "$fixture/work" \
+  --model-metadata "$fixture/invalid-models.json" >"$fixture/out" 2>"$fixture/err"; then
+  echo 'invalid model metadata was accepted' >&2
+  exit 1
+fi
+cat "$fixture/out" "$fixture/err" | grep -q 'invalid model metadata JSON'
+override=$(printf '/status\n/quit\n' | BERGET_API_KEY=fixture "$cli" -p berget \
+  -C "$fixture/work" --model-metadata "$XDG_CONFIG_HOME/cai/models.json")
+[[ "$override" == *"zai-org/GLM-5.3-Flash"* ]]
 custom=$(printf '/status\n/quit\n' | LOCAL_KEY=fixture "$cli" -p custom \
   --endpoint https://example.test/v1 --api-key-env LOCAL_KEY -m local-model -C "$fixture/work")
 [[ "$custom" == *"Provider"* && "$custom" == *"custom"* ]]

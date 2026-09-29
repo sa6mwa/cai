@@ -520,10 +520,11 @@ static int cai_usage_spend_pricing_error(cai_error *error) {
 }
 
 static int cai_usage_limits_require_pricing(const cai_usage_limits *limits,
+                                            const cai_client *client,
                                             const char *model,
                                             cai_error *error) {
   if (limits != NULL && limits->max_spend_usd > 0.0 &&
-      !cai_model_can_estimate_usage_usd(model)) {
+      !cai_client_model_can_estimate_usd(client, model)) {
     return cai_usage_spend_pricing_error(error);
   }
   return CAI_OK;
@@ -543,12 +544,14 @@ static int cai_usage_limits_preflight(const cai_usage_accounting *usage,
 
 static void cai_usage_accounting_add(cai_usage_accounting *total,
                                      const cai_token_usage *usage,
-                                     double estimated_spend_usd) {
+                                     double estimated_spend_usd,
+                                     double estimated_spend_eur) {
   if (total == NULL || usage == NULL) {
     return;
   }
   cai_token_usage_add(&total->usage, usage);
   total->estimated_spend_usd += estimated_spend_usd;
+  total->estimated_spend_eur += estimated_spend_eur;
 }
 
 void cai_run_options_init(cai_run_options *options) {
@@ -597,7 +600,7 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
   if (rc != CAI_OK) {
     return rc;
   }
-  rc = cai_usage_limits_require_pricing(&config->session_usage_limits,
+  rc = cai_usage_limits_require_pricing(&config->session_usage_limits, client,
                                         config->model, error);
   if (rc != CAI_OK) {
     return rc;
@@ -677,7 +680,7 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
   } else if (impl->auto_compact) {
     long long context_window;
 
-    context_window = cai_model_context_window_tokens(impl->model);
+    context_window = cai_client_model_context_window(client, impl->model);
     impl->auto_compact_token_limit =
         context_window > 0LL
             ? (context_window * (long long)impl->compact_threshold_percent) /
@@ -4433,6 +4436,7 @@ static int cai_session_record_usage(cai_session *session,
   cai_client_impl *client_impl;
   cai_agent_impl *agent_impl;
   double estimated_spend_usd;
+  double estimated_spend_eur;
 
   if (session == NULL || usage == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -4452,18 +4456,21 @@ static int cai_session_record_usage(cai_session *session,
   agent_impl = CAI_SESSION_AGENT_IMPL(session);
   client_impl = CAI_SESSION_CLIENT_IMPL(session);
   if (cai_usage_limits_require_pricing(&CAI_SESSION_IMPL(session)->usage_limits,
+                                       CAI_SESSION_CLIENT(session),
                                        agent_impl->model, error) != CAI_OK ||
       cai_usage_limits_require_pricing(&client_impl->usage_limits,
+                                       CAI_SESSION_CLIENT(session),
                                        agent_impl->model, error) != CAI_OK) {
     return CAI_ERR_INVALID;
   }
-  estimated_spend_usd = cai_model_estimate_usage_usd(
-      agent_impl->model, usage->input_tokens, usage->input_cached_tokens,
-      usage->output_tokens);
+  cai_client_model_estimate_usage(CAI_SESSION_CLIENT(session),
+                                  agent_impl->model, usage,
+                                  &estimated_spend_usd, &estimated_spend_eur);
   cai_session_set_last_usage(session, usage, NULL);
   cai_usage_accounting_add(&CAI_SESSION_IMPL(session)->usage, usage,
-                           estimated_spend_usd);
-  cai_usage_accounting_add(&client_impl->usage, usage, estimated_spend_usd);
+                           estimated_spend_usd, estimated_spend_eur);
+  cai_usage_accounting_add(&client_impl->usage, usage, estimated_spend_usd,
+                           estimated_spend_eur);
   if (cai_usage_accounting_exceeds(&CAI_SESSION_IMPL(session)->usage,
                                    &CAI_SESSION_IMPL(session)->usage_limits)) {
     CAI_SESSION_IMPL(session)->usage.limit_exceeded = 1;
@@ -4489,13 +4496,14 @@ static int cai_session_check_usage_available(cai_session *session,
   }
   agent_impl = CAI_SESSION_AGENT_IMPL(session);
   rc = cai_usage_limits_require_pricing(
-      &CAI_SESSION_IMPL(session)->usage_limits, agent_impl->model, error);
+      &CAI_SESSION_IMPL(session)->usage_limits, CAI_SESSION_CLIENT(session),
+      agent_impl->model, error);
   if (rc != CAI_OK) {
     return rc;
   }
   rc = cai_usage_limits_require_pricing(
-      &CAI_SESSION_CLIENT_IMPL(session)->usage_limits, agent_impl->model,
-      error);
+      &CAI_SESSION_CLIENT_IMPL(session)->usage_limits,
+      CAI_SESSION_CLIENT(session), agent_impl->model, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -6202,8 +6210,9 @@ int cai_session_set_usage_limits(cai_session *session,
   if (rc != CAI_OK) {
     return rc;
   }
-  rc = cai_usage_limits_require_pricing(
-      limits, CAI_SESSION_AGENT_IMPL(session)->model, error);
+  rc = cai_usage_limits_require_pricing(limits, CAI_SESSION_CLIENT(session),
+                                        CAI_SESSION_AGENT_IMPL(session)->model,
+                                        error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -6247,8 +6256,8 @@ long long cai_session_context_window_tokens(const cai_session *session) {
   if (session == NULL || CAI_SESSION_IMPL(session)->agent == NULL) {
     return 0LL;
   }
-  return cai_model_context_window_tokens(
-      CAI_SESSION_AGENT_IMPL(session)->model);
+  return cai_client_model_context_window(
+      CAI_SESSION_CLIENT(session), CAI_SESSION_AGENT_IMPL(session)->model);
 }
 
 long long cai_session_auto_compact_token_limit(const cai_session *session) {
@@ -7544,7 +7553,8 @@ int cai_agent_set_session_usage_limits(cai_agent *agent,
   if (rc != CAI_OK) {
     return rc;
   }
-  rc = cai_usage_limits_require_pricing(limits, impl->model, error);
+  rc = cai_usage_limits_require_pricing(limits, impl->client, impl->model,
+                                        error);
   if (rc != CAI_OK) {
     return rc;
   }

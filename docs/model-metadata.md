@@ -1,5 +1,58 @@
 # Model Metadata Maintenance
 
+## Provider catalog fallback
+
+`cai_client_list_models` fetches the live ChatGPT or Berget catalog when
+available. Berget's `GET /v1/models` currently includes text, rerank,
+embedding, speech-to-text, and system-one models. The adapter includes every
+returned model; `model_type` identifies which ones are usable for chat. The
+catalog is cached for five minutes per client. Other providers can use the
+JSON fallback catalog directly.
+
+The CLI reads `$XDG_CONFIG_HOME/cai/models.json`, falling back to
+`$HOME/.config/cai/models.json`. `--config-dir` changes the base directory;
+`--model-metadata FILE` selects a specific file. A missing default file is
+allowed. libcai callers can supply the same JSON through
+`cai_client_config.model_metadata_json`; libcai copies and validates it during
+client creation. Lua callers can pass `model_metadata_json` to `cai.open`.
+The schema is:
+
+```json
+{
+  "models": [
+    {
+      "provider": "berget",
+      "id": "zai-org/GLM-5.3-Flash",
+      "context_window_tokens": 131072,
+      "auto_compact_token_limit": 104857,
+      "capabilities": { "streaming": true, "vision": true, "function_calling": true },
+      "pricing": { "currency": "EUR", "input": 0.2, "output": 0.8 }
+    }
+  ]
+}
+```
+
+Prices default to per million tokens. `pricing.unit` can specify another
+unit, such as `second`; these prices remain visible in the catalog but do not
+drive token spend estimates. These example values illustrate the file
+format; verify actual limits and prices with the provider before using them.
+Each entry needs `provider` and `id`; other fields are optional. Optional
+string fields are `name`, `description`, `model_type`, `lifecycle_status`, and
+`comp_hash`. Optional capability booleans are `streaming`,
+`function_calling`, `vision`, `formatted_output`, and `json_mode`. Only `USD`
+and `EUR` token prices are used for estimates. Live provider fields take
+precedence; the file fills fields omitted by the provider, including a missing
+context window. An explicit live `false` capability remains false. When a
+live catalog is available, the fallback does not add models that the provider
+does not advertise. A fallback-only catalog is returned when live discovery
+fails or the provider has no catalog endpoint.
+Verified bundled OpenAI/OpenRouter USD prices remain authoritative for spend
+accounting even when a fallback file names the same model.
+
+Berget token estimates remain in EUR. CAI does not convert them to USD.
+Positive USD spend limits fail closed for models with only EUR pricing.
+Provider prices are estimates for text tokens and are not a billing record.
+
 CAI keeps model metadata as curated SDK data because the OpenAI Models API does
 not expose enough operational information for a C SDK. Model constants stay as
 plain strings so callers can use new remote models before CAI knows about them,

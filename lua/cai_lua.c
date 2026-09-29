@@ -2256,11 +2256,20 @@ static int cai_lua_open(lua_State *L) {
       cai_client_config_use_openrouter(&config);
     }
     lua_pop(L, 1);
+    lua_getfield(L, 1, "berget");
+    if (lua_toboolean(L, -1)) {
+      cai_client_config_use_berget(&config);
+    }
+    lua_pop(L, 1);
     config.api_key = cai_lua_opt_string_field(L, 1, "api_key", config.api_key);
     config.api_key_env =
         cai_lua_opt_string_field(L, 1, "api_key_env", config.api_key_env);
     config.base_url =
         cai_lua_opt_string_field(L, 1, "base_url", config.base_url);
+    config.metadata_provider = cai_lua_opt_string_field(
+        L, 1, "metadata_provider", config.metadata_provider);
+    config.model_metadata_json = cai_lua_opt_string_field(
+        L, 1, "model_metadata_json", config.model_metadata_json);
     config.organization_id = cai_lua_opt_string_field(L, 1, "organization_id",
                                                       config.organization_id);
     config.project_id =
@@ -2872,7 +2881,7 @@ static int cai_lua_client_list_models(lua_State *L) {
     const cai_model_catalog_entry *entry;
 
     entry = catalog->entries + i;
-    lua_createtable(L, 0, 7);
+    lua_createtable(L, 0, 14);
     lua_pushstring(L, entry->slug);
     lua_setfield(L, -2, "slug");
     if (entry->display_name != NULL) {
@@ -2893,6 +2902,32 @@ static int cai_lua_client_list_models(lua_State *L) {
     }
     lua_pushboolean(L, entry->supported_in_api);
     lua_setfield(L, -2, "supported_in_api");
+    if (entry->model_type != NULL) {
+      lua_pushstring(L, entry->model_type);
+      lua_setfield(L, -2, "model_type");
+    }
+    if (entry->lifecycle_status != NULL) {
+      lua_pushstring(L, entry->lifecycle_status);
+      lua_setfield(L, -2, "lifecycle_status");
+    }
+    lua_pushinteger(L, (lua_Integer)entry->capabilities);
+    lua_setfield(L, -2, "capabilities");
+    lua_pushinteger(L, (lua_Integer)entry->capabilities_known);
+    lua_setfield(L, -2, "capabilities_known");
+    if (entry->pricing_currency != NULL) {
+      lua_pushstring(L, entry->pricing_currency);
+      lua_setfield(L, -2, "pricing_currency");
+    }
+    if (entry->pricing_unit != NULL) {
+      lua_pushstring(L, entry->pricing_unit);
+      lua_setfield(L, -2, "pricing_unit");
+    }
+    lua_pushnumber(L, entry->input_price);
+    lua_setfield(L, -2, "input_price");
+    lua_pushnumber(L, entry->output_price);
+    lua_setfield(L, -2, "output_price");
+    lua_pushboolean(L, entry->has_pricing);
+    lua_setfield(L, -2, "has_pricing");
     lua_rawseti(L, -2, (lua_Integer)i + 1);
   }
   cai_model_catalog_close(catalog);
@@ -5387,6 +5422,8 @@ static int cai_lua_push_accounting(lua_State *L,
   lua_setfield(L, -2, "usage");
   lua_pushnumber(L, accounting->estimated_spend_usd);
   lua_setfield(L, -2, "estimated_spend_usd");
+  lua_pushnumber(L, accounting->estimated_spend_eur);
+  lua_setfield(L, -2, "estimated_spend_eur");
   lua_pushboolean(L, accounting->limit_exceeded != 0);
   lua_setfield(L, -2, "limit_exceeded");
   return 1;

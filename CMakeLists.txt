@@ -1581,6 +1581,7 @@ if(CAI_BUILD_TESTS)
     agent_tool_output_max_bytes
     conversations
     stream_response_text
+    provider_model_metadata
     chat_completions_adapter
     stream_compaction_progress_callback
     stream_upload_setup_failure

@@ -104,6 +104,9 @@ int main(void) {
   char *openrouter[3];
   char berget_raw[][80] = {"cai", "-p", "berget"};
   char *berget[3];
+  char metadata_raw[][80] = {"cai", "--model-metadata", "/tmp/models.json",
+                             "-i", "write a test"};
+  char *metadata[5];
   char berget_override_raw[][80] = {"cai",         "-p", "berget", "-m",
                                     "other-model", "-r", "high"};
   char *berget_override[7];
@@ -162,6 +165,8 @@ int main(void) {
     openrouter[i] = openrouter_raw[i];
   for (i = 0U; i < sizeof(berget) / sizeof(berget[0]); i++)
     berget[i] = berget_raw[i];
+  for (i = 0U; i < sizeof(metadata) / sizeof(metadata[0]); i++)
+    metadata[i] = metadata_raw[i];
   for (i = 0U; i < sizeof(berget_override) / sizeof(berget_override[0]); i++)
     berget_override[i] = berget_override_raw[i];
   for (i = 0U; i < sizeof(custom) / sizeof(custom[0]); i++)
@@ -269,6 +274,11 @@ int main(void) {
       strcmp(options.model, "zai-org/GLM-5.3-Flash") != 0 ||
       strcmp(options.reasoning_effort, "medium") != 0 ||
       options.image_generation)
+    return 1;
+  if (cai_cli_parse_options(5, metadata, &options) != 1 ||
+      strcmp(options.model_metadata, "/tmp/models.json") != 0 ||
+      options.instruction_count != 1U ||
+      strcmp(cai_cli_instruction_at(&options, 0U), "write a test") != 0)
     return 1;
   if (cai_cli_parse_options(7, berget_override, &options) != 1 ||
       strcmp(options.model, "other-model") != 0 ||

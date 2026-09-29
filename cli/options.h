@@ -7,6 +7,7 @@ typedef struct cai_cli_options {
   const char *provider;
   const char *endpoint;
   const char *api_key_env;
+  const char *model_metadata;
   const char *directory;
   const char *auth_json;
   const char *model;

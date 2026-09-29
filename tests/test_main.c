@@ -38861,6 +38861,295 @@ static void test_agent_auto_compaction(test_state *state) {
   }
 }
 
+static void test_provider_model_metadata(test_state *state) {
+  static const char *berget_ids[] = {
+      "Qwen/Qwen3.8-27B-FP8",
+      "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+      "zai-org/GLM-5.3-Flash",
+      "moonshotai/Kimi-K3",
+      "google/gemma-4-31B-it",
+      "BAAI/bge-reranker-v2-m3",
+      "Qwen/Qwen3.5-2B",
+      "convaiinnovations/laya",
+      "KBLab/kb-whisper-large",
+      "NbAiLab/nb-whisper-large",
+      "klang/pianissimo",
+      "Systran/faster-whisper-large-v3",
+      "intfloat/multilingual-e5-large-instruct",
+      "intfloat/multilingual-e5-large"};
+  static const char live_catalog[] =
+      "{\"data\":[{\"id\":\"zai-org/GLM-5.3-Flash\","
+      "\"model_type\":\"text\",\"capabilities\":{"
+      "\"streaming\":true,\"vision\":true,\"function_calling\":true},"
+      "\"pricing\":{\"currency\":\"EUR\",\"unit\":\"€ / M Token\","
+      "\"input\":0.2,\"output\":0.8}},{\"id\":\"BAAI/rerank\","
+      "\"model_type\":\"rerank\",\"capabilities\":{\"vision\":false}},"
+      "{\"id\":\"vendor/embed\","
+      "\"model_type\":\"embedding\"},{\"id\":\"vendor/speech\","
+      "\"model_type\":\"speech-to-text\",\"pricing\":{"
+      "\"currency\":\"EUR\",\"unit\":\"€ / second\","
+      "\"input\":0.001,\"output\":0.001}}]}";
+  static const char fallback[] =
+      "{\"models\":[{\"provider\":\"berget\","
+      "\"id\":\"zai-org/GLM-5.3-Flash\","
+      "\"context_window_tokens\":131072,"
+      "\"pricing\":{\"currency\":\"EUR\",\"input\":9,\"output\":9}},"
+      "{\"provider\":\"berget\",\"id\":\"BAAI/rerank\","
+      "\"capabilities\":{\"vision\":true}},"
+      "{\"provider\":\"custom\",\"id\":\"test-model\","
+      "\"context_window_tokens\":32768,"
+      "\"pricing\":{\"currency\":\"USD\",\"input\":1,\"output\":2}}]}";
+  static const char misleading_openai_fallback[] =
+      "{\"models\":[{\"provider\":\"openai\",\"id\":\"gpt-5.6-luna\","
+      "\"pricing\":{\"currency\":\"EUR\",\"input\":9,\"output\":9}}]}";
+  static const char response_body[] =
+      "data: {\"id\":\"metadata_one\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"content\":\"private thought</think>OK\"},"
+      "\"finish_reason\":\"stop\"}]}\n\n"
+      "data: {\"id\":\"metadata_one\",\"choices\":[],\"usage\":{"
+      "\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"
+      "data: [DONE]\n\n";
+  static const mock_http_expectation script[] = {
+      {"GET /v1/models HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "application/json", NULL, live_catalog},
+      {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, response_body}};
+  cai_client_config config;
+  cai_agent_config agent_config;
+  cai_usage_limits limits;
+  cai_model_catalog *catalog;
+  const cai_model_catalog_entry *entry;
+  cai_client *client;
+  cai_agent *agent;
+  cai_session *session;
+  cai_response *response;
+  cai_usage_accounting recorded;
+  cai_token_usage usage;
+  http_mock_server server;
+  cai_error error;
+  double usd;
+  double eur;
+  const char *live_key;
+  size_t i;
+
+  cai_error_init(&error);
+  catalog = NULL;
+  client = NULL;
+  agent = NULL;
+  session = NULL;
+  response = NULL;
+  if (http_mock_server_open_script(state, "provider_model_metadata", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    cai_error_cleanup(&error);
+    return;
+  }
+  cai_client_config_init(&config);
+  cai_client_config_use_berget(&config);
+  config.api_key = "mock-key";
+  config.base_url = server.base_url;
+  config.model_metadata_json = fallback;
+  config.http_2_disabled = 1;
+  expect_int(state, "provider_metadata_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  if (client != NULL) {
+    expect_int(state, "provider_metadata_live",
+               cai_client_list_models(
+                   client, CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED,
+                   &catalog, &error),
+               CAI_OK);
+    if (catalog != NULL) {
+      expect_int(state, "provider_metadata_count", (long)catalog->count, 4L);
+      entry = cai_model_catalog_find(catalog, "zai-org/GLM-5.3-Flash");
+      if (entry != NULL) {
+        expect_str(state, "provider_metadata_type", entry->model_type, "text");
+        expect_str(state, "provider_metadata_currency", entry->pricing_currency,
+                   "EUR");
+        expect_int(state, "provider_metadata_context",
+                   entry->context_window_tokens, 131072LL);
+        expect_int(state, "provider_metadata_vision",
+                   (entry->capabilities & CAI_MODEL_CAP_IMAGE_INPUT) != 0U, 1L);
+        expect_int(state, "provider_metadata_price_precedence",
+                   (long)(entry->input_price * 10.0 + 0.5), 2L);
+      } else {
+        test_fail(state, "provider_metadata_text", "model missing");
+      }
+      entry = cai_model_catalog_find(catalog, "BAAI/rerank");
+      if (entry != NULL) {
+        expect_str(state, "provider_metadata_rerank", entry->model_type,
+                   "rerank");
+        expect_int(state, "provider_metadata_explicit_false",
+                   (entry->capabilities & CAI_MODEL_CAP_IMAGE_INPUT) != 0U, 0L);
+      } else {
+        test_fail(state, "provider_metadata_rerank", "model missing");
+      }
+      entry = cai_model_catalog_find(catalog, "vendor/embed");
+      if (entry != NULL) {
+        expect_str(state, "provider_metadata_embedding", entry->model_type,
+                   "embedding");
+      } else {
+        test_fail(state, "provider_metadata_embedding", "model missing");
+      }
+      entry = cai_model_catalog_find(catalog, "vendor/speech");
+      if (entry != NULL) {
+        expect_str(state, "provider_metadata_speech_unit", entry->pricing_unit,
+                   "€ / second");
+        expect_int(state, "provider_metadata_speech_priced", entry->has_pricing,
+                   1L);
+      } else {
+        test_fail(state, "provider_metadata_speech", "model missing");
+      }
+      cai_model_catalog_close(catalog);
+      catalog = NULL;
+    }
+    expect_int(state, "provider_metadata_cached",
+               cai_client_list_models(
+                   client, CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED,
+                   &catalog, &error),
+               CAI_OK);
+    cai_model_catalog_close(catalog);
+    catalog = NULL;
+    memset(&usage, 0, sizeof(usage));
+    usage.input_tokens = 1000000LL;
+    usage.output_tokens = 1000000LL;
+    cai_client_model_estimate_usage(client, "zai-org/GLM-5.3-Flash", &usage,
+                                    &usd, &eur);
+    expect_int(state, "provider_metadata_usd_zero", (long)usd, 0L);
+    expect_int(state, "provider_metadata_eur_live", (long)(eur * 10.0 + 0.5),
+               10L);
+    cai_client_model_estimate_usage(client, "vendor/speech", &usage, &usd,
+                                    &eur);
+    expect_int(state, "provider_metadata_speech_not_token_estimate",
+               (long)(eur * 1000.0), 0L);
+    cai_agent_config_init(&agent_config);
+    agent_config.model = "zai-org/GLM-5.3-Flash";
+    expect_int(state, "provider_metadata_accounting_agent",
+               cai_client_new_agent(client, &agent_config, &agent, &error),
+               CAI_OK);
+    if (agent != NULL) {
+      expect_int(state, "provider_metadata_accounting_session",
+                 cai_agent_new_session(agent, &session, &error), CAI_OK);
+      if (session != NULL) {
+        expect_int(state, "provider_metadata_accounting_prompt",
+                   cai_session_add_user_text(session, "Say OK", &error),
+                   CAI_OK);
+        expect_int(state, "provider_metadata_accounting_turn",
+                   cai_session_run(session, &response, &error), CAI_OK);
+        cai_response_destroy(response);
+        expect_int(state, "provider_metadata_accounting_usage",
+                   cai_session_usage(session, &recorded, &error), CAI_OK);
+        if (recorded.estimated_spend_eur <= 0.0 ||
+            recorded.estimated_spend_usd != 0.0) {
+          test_fail(state, "provider_metadata_eur_accounting",
+                    "EUR usage was not recorded separately");
+        }
+        cai_session_destroy(session);
+      }
+      cai_agent_destroy(agent);
+      agent = NULL;
+    }
+    cai_usage_limits_init(&limits);
+    limits.max_spend_usd = 1.0;
+    cai_agent_config_init(&agent_config);
+    agent_config.model = "zai-org/GLM-5.3-Flash";
+    agent_config.session_usage_limits = limits;
+    expect_int(state, "provider_metadata_usd_limit_rejects_eur",
+               cai_client_new_agent(client, &agent_config, &agent, &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    cai_client_close(client);
+    client = NULL;
+  }
+  expect_child_exit(state, "provider_model_metadata", server.pid,
+                    &server.child_status);
+
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.metadata_provider = "custom";
+  config.model_metadata_json = fallback;
+  expect_int(state, "provider_metadata_custom_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  if (client != NULL) {
+    expect_int(state, "provider_metadata_custom_catalog",
+               cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_OFFLINE,
+                                      &catalog, &error),
+               CAI_OK);
+    if (catalog != NULL) {
+      expect_int(state, "provider_metadata_custom_only", (long)catalog->count,
+                 1L);
+      cai_model_catalog_close(catalog);
+      catalog = NULL;
+    }
+    cai_agent_config_init(&agent_config);
+    agent_config.model = "test-model";
+    agent_config.session_usage_limits = limits;
+    expect_int(state, "provider_metadata_custom_usd_limit",
+               cai_client_new_agent(client, &agent_config, &agent, &error),
+               CAI_OK);
+    cai_agent_destroy(agent);
+    cai_client_close(client);
+  }
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.model_metadata_json = misleading_openai_fallback;
+  client = NULL;
+  expect_int(state, "provider_metadata_openai_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  if (client != NULL) {
+    expect_int(
+        state, "provider_metadata_openai_bundled_price",
+        cai_client_model_can_estimate_usd(client, CAI_MODEL_GPT_5_6_LUNA), 1L);
+    cai_client_model_estimate_usage(client, CAI_MODEL_GPT_5_6_LUNA, &usage,
+                                    &usd, &eur);
+    expect_int(state, "provider_metadata_openai_no_eur", (long)eur, 0L);
+    if (usd <= 0.0) {
+      test_fail(state, "provider_metadata_openai_usd", "USD estimate missing");
+    }
+    cai_client_close(client);
+  }
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.model_metadata_json = "{\"models\":[{\"provider\":\"custom\"}]}";
+  client = NULL;
+  expect_int(state, "provider_metadata_invalid_json_entry",
+             cai_client_open(&config, &client, &error), CAI_ERR_PROTOCOL);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  live_key = getenv("BERGET_API_KEY");
+  if (live_key != NULL && live_key[0] != '\0') {
+    cai_client_config_init(&config);
+    cai_client_config_use_berget(&config);
+    config.api_key = live_key;
+    client = NULL;
+    expect_int(state, "provider_metadata_live_client",
+               cai_client_open(&config, &client, &error), CAI_OK);
+    if (client != NULL) {
+      expect_int(state, "provider_metadata_live_fetch",
+                 cai_client_list_models(client,
+                                        CAI_MODEL_CATALOG_REFRESH_ONLINE,
+                                        &catalog, &error),
+                 CAI_OK);
+      if (catalog != NULL) {
+        for (i = 0U; i < sizeof(berget_ids) / sizeof(berget_ids[0]); i++) {
+          entry = cai_model_catalog_find(catalog, berget_ids[i]);
+          if (entry == NULL || !entry->has_pricing) {
+            test_fail(state, "provider_metadata_live_model", berget_ids[i]);
+          }
+        }
+        entry = cai_model_catalog_find(catalog, "KBLab/kb-whisper-large");
+        if (entry != NULL) {
+          expect_str(state, "provider_metadata_live_speech_unit",
+                     entry->pricing_unit, "€ / second");
+        }
+        cai_model_catalog_close(catalog);
+      }
+      cai_client_close(client);
+    }
+  }
+  cai_error_cleanup(&error);
+}
+
 static void test_chat_completions_adapter(test_state *state) {
   static const char *first_required[] = {"Authorization: Bearer mock-key",
                                          "\"model\":\"test-model\"",
@@ -45103,6 +45392,7 @@ static const test_entry test_entries[] = {
      test_agent_tool_error_output_continues},
     {"agent_tool_output_max_bytes", test_agent_tool_output_max_bytes},
     {"conversations", test_conversations},
+    {"provider_model_metadata", test_provider_model_metadata},
     {"chat_completions_adapter", test_chat_completions_adapter},
     {"stream_response_text", test_stream_response_text},
     {"stream_compaction_progress_callback",

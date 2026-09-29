@@ -170,6 +170,12 @@ provider. Required with
 Environment variable containing the custom provider API key. The default is
 .BR CAI_API_KEY .
 .TP
+.BI \-\-model-metadata " FILE"
+Load provider model metadata fallback JSON from FILE. By default, cai reads
+$XDG_CONFIG_HOME/cai/models.json (or ~/.config/cai/models.json) if it exists.
+Live provider fields take precedence; the fallback fills omitted fields.
+Berget prices are estimated in EUR and are never converted to USD.
+.TP
 .BR \-m , " " \-\-model " " ID
 Select the model.
 ChatGPT and OpenAI default to

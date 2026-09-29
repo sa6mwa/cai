@@ -52,6 +52,113 @@ static const lonejson_field cai_model_catalog_fields[] = {
 LONEJSON_MAP_DEFINE(cai_model_catalog_map, cai_model_catalog_doc,
                     cai_model_catalog_fields);
 
+typedef struct cai_provider_capabilities_doc {
+  int streaming;
+  int has_streaming;
+  int function_calling;
+  int has_function_calling;
+  int vision;
+  int has_vision;
+  int formatted_output;
+  int has_formatted_output;
+  int json_mode;
+  int has_json_mode;
+} cai_provider_capabilities_doc;
+
+typedef struct cai_provider_pricing_doc {
+  char *currency;
+  char *unit;
+  double input;
+  double output;
+  int has_input;
+  int has_output;
+} cai_provider_pricing_doc;
+
+typedef struct cai_provider_model_doc {
+  char *provider;
+  char *id;
+  char *name;
+  char *description;
+  char *model_type;
+  char *lifecycle_status;
+  char *comp_hash;
+  long long context_window_tokens;
+  int has_context_window_tokens;
+  long long auto_compact_token_limit;
+  int has_auto_compact_token_limit;
+  cai_provider_capabilities_doc capabilities;
+  cai_provider_pricing_doc pricing;
+} cai_provider_model_doc;
+
+typedef struct cai_provider_catalog_doc {
+  lonejson_object_array data;
+  lonejson_object_array models;
+} cai_provider_catalog_doc;
+
+static const lonejson_field cai_provider_capabilities_fields[] = {
+    LONEJSON_FIELD_BOOL_PRESENT(cai_provider_capabilities_doc, streaming,
+                                has_streaming, "streaming"),
+    LONEJSON_FIELD_BOOL_PRESENT(cai_provider_capabilities_doc, function_calling,
+                                has_function_calling, "function_calling"),
+    LONEJSON_FIELD_BOOL_PRESENT(cai_provider_capabilities_doc, vision,
+                                has_vision, "vision"),
+    LONEJSON_FIELD_BOOL_PRESENT(cai_provider_capabilities_doc, formatted_output,
+                                has_formatted_output, "formatted_output"),
+    LONEJSON_FIELD_BOOL_PRESENT(cai_provider_capabilities_doc, json_mode,
+                                has_json_mode, "json_mode")};
+LONEJSON_MAP_DEFINE(cai_provider_capabilities_map,
+                    cai_provider_capabilities_doc,
+                    cai_provider_capabilities_fields);
+
+static const lonejson_field cai_provider_pricing_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_provider_pricing_doc, currency,
+                                          "currency"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_provider_pricing_doc, unit,
+                                          "unit"),
+    LONEJSON_FIELD_F64_PRESENT(cai_provider_pricing_doc, input, has_input,
+                               "input"),
+    LONEJSON_FIELD_F64_PRESENT(cai_provider_pricing_doc, output, has_output,
+                               "output")};
+LONEJSON_MAP_DEFINE(cai_provider_pricing_map, cai_provider_pricing_doc,
+                    cai_provider_pricing_fields);
+
+static const lonejson_field cai_provider_model_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_provider_model_doc, id, "id"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_provider_model_doc, provider,
+                                          "provider"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_provider_model_doc, name, "name"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_provider_model_doc, description,
+                                          "description"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_provider_model_doc, model_type,
+                                          "model_type"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_provider_model_doc,
+                                          lifecycle_status, "lifecycle_status"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_provider_model_doc, comp_hash,
+                                          "comp_hash"),
+    LONEJSON_FIELD_I64_PRESENT(cai_provider_model_doc, context_window_tokens,
+                               has_context_window_tokens,
+                               "context_window_tokens"),
+    LONEJSON_FIELD_I64_PRESENT(cai_provider_model_doc, auto_compact_token_limit,
+                               has_auto_compact_token_limit,
+                               "auto_compact_token_limit"),
+    LONEJSON_FIELD_OBJECT_OMIT_EMPTY(cai_provider_model_doc, capabilities,
+                                     "capabilities",
+                                     &cai_provider_capabilities_map),
+    LONEJSON_FIELD_OBJECT_OMIT_EMPTY(cai_provider_model_doc, pricing, "pricing",
+                                     &cai_provider_pricing_map)};
+LONEJSON_MAP_DEFINE(cai_provider_model_map, cai_provider_model_doc,
+                    cai_provider_model_fields);
+
+static const lonejson_field cai_provider_catalog_fields[] = {
+    LONEJSON_FIELD_OBJECT_ARRAY_OMIT_EMPTY(
+        cai_provider_catalog_doc, data, "data", cai_provider_model_doc,
+        &cai_provider_model_map, LONEJSON_OVERFLOW_FAIL),
+    LONEJSON_FIELD_OBJECT_ARRAY_OMIT_EMPTY(
+        cai_provider_catalog_doc, models, "models", cai_provider_model_doc,
+        &cai_provider_model_map, LONEJSON_OVERFLOW_FAIL)};
+LONEJSON_MAP_DEFINE(cai_provider_catalog_map, cai_provider_catalog_doc,
+                    cai_provider_catalog_fields);
+
 static void cai_model_catalog_destroy(cai_model_catalog *catalog) {
   cai_model_catalog_impl *impl;
   size_t i;
@@ -67,6 +174,10 @@ static void cai_model_catalog_destroy(cai_model_catalog *catalog) {
       cai_free_mem(&impl->allocator, impl->entries[i].description);
       cai_free_mem(&impl->allocator,
                    impl->entries[i].compaction_compatibility_hash);
+      cai_free_mem(&impl->allocator, impl->entries[i].model_type);
+      cai_free_mem(&impl->allocator, impl->entries[i].lifecycle_status);
+      cai_free_mem(&impl->allocator, impl->entries[i].pricing_currency);
+      cai_free_mem(&impl->allocator, impl->entries[i].pricing_unit);
     }
     cai_free_mem(&impl->allocator, impl->entries);
     cai_free_mem(&impl->allocator, impl);
@@ -142,14 +253,34 @@ static int cai_model_catalog_copy_entry(const cai_allocator *allocator,
   destination->description = cai_strdup(allocator, source->description);
   destination->compaction_compatibility_hash =
       cai_strdup(allocator, source->compaction_compatibility_hash);
+  destination->model_type = cai_strdup(allocator, source->model_type);
+  destination->lifecycle_status =
+      cai_strdup(allocator, source->lifecycle_status);
+  destination->pricing_currency =
+      cai_strdup(allocator, source->pricing_currency);
+  destination->pricing_unit =
+      cai_strdup(allocator, source->pricing_unit != NULL
+                                ? source->pricing_unit
+                                : (source->has_pricing ? "M Token" : NULL));
   destination->context_window_tokens = source->context_window_tokens;
   destination->auto_compact_token_limit = source->auto_compact_token_limit;
   destination->supported_in_api = source->supported_in_api;
+  destination->capabilities = source->capabilities;
+  destination->capabilities_known = source->capabilities_known;
+  destination->input_price = source->input_price;
+  destination->output_price = source->output_price;
+  destination->has_pricing = source->has_pricing;
   if (destination->slug == NULL ||
       (source->display_name != NULL && destination->display_name == NULL) ||
       (source->description != NULL && destination->description == NULL) ||
       (source->compaction_compatibility_hash != NULL &&
-       destination->compaction_compatibility_hash == NULL)) {
+       destination->compaction_compatibility_hash == NULL) ||
+      (source->model_type != NULL && destination->model_type == NULL) ||
+      (source->lifecycle_status != NULL &&
+       destination->lifecycle_status == NULL) ||
+      (source->pricing_currency != NULL &&
+       destination->pricing_currency == NULL) ||
+      (source->has_pricing && destination->pricing_unit == NULL)) {
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to copy model catalog entry");
   }
@@ -181,6 +312,327 @@ static int cai_model_catalog_clone(const cai_model_catalog *source,
     return rc;
   }
   *out = copy;
+  return CAI_OK;
+}
+
+static unsigned int cai_provider_capability_flags(
+    const cai_provider_capabilities_doc *capabilities) {
+  unsigned int flags;
+
+  flags = 0U;
+  if (capabilities->streaming) {
+    flags |= CAI_MODEL_CAP_STREAMING;
+  }
+  if (capabilities->function_calling) {
+    flags |= CAI_MODEL_CAP_FUNCTION_CALLING;
+  }
+  if (capabilities->vision) {
+    flags |= CAI_MODEL_CAP_IMAGE_INPUT;
+  }
+  if (capabilities->formatted_output || capabilities->json_mode) {
+    flags |= CAI_MODEL_CAP_STRUCTURED_OUTPUTS;
+  }
+  return flags;
+}
+
+static unsigned int cai_provider_capability_known(
+    const cai_provider_capabilities_doc *capabilities) {
+  unsigned int flags;
+
+  flags = 0U;
+  if (capabilities->has_streaming) {
+    flags |= CAI_MODEL_CAP_STREAMING;
+  }
+  if (capabilities->has_function_calling) {
+    flags |= CAI_MODEL_CAP_FUNCTION_CALLING;
+  }
+  if (capabilities->has_vision) {
+    flags |= CAI_MODEL_CAP_IMAGE_INPUT;
+  }
+  if (capabilities->has_formatted_output || capabilities->has_json_mode) {
+    flags |= CAI_MODEL_CAP_STRUCTURED_OUTPUTS;
+  }
+  return flags;
+}
+
+static int cai_model_catalog_parse_provider(cai_client *client,
+                                            const char *json, int fallback,
+                                            cai_model_catalog **out,
+                                            cai_error *error) {
+  cai_client_impl *impl;
+  cai_provider_catalog_doc doc;
+  cai_provider_model_doc *models;
+  cai_model_catalog *catalog;
+  cai_model_catalog_impl *catalog_impl;
+  lonejson_error json_error;
+  lonejson_status status;
+  size_t model_count;
+  size_t selected_count;
+  size_t i;
+  size_t j;
+  int rc;
+
+  impl = CAI_CLIENT_IMPL(client);
+  memset(&doc, 0, sizeof(doc));
+  CAI_LJ->init(CAI_LJ, &cai_provider_catalog_map, &doc);
+  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_provider_catalog_map, &doc, json,
+                              &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_provider_catalog_map, &doc);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                fallback ? "invalid model metadata JSON"
+                                         : "invalid provider model catalog",
+                                json_error.message);
+  }
+  models =
+      (cai_provider_model_doc *)(fallback ? doc.models.items : doc.data.items);
+  model_count = fallback ? doc.models.count : doc.data.count;
+  selected_count = 0U;
+  for (i = 0U; i < model_count; i++) {
+    if (models[i].id == NULL || models[i].id[0] == '\0' ||
+        (fallback &&
+         (models[i].provider == NULL || models[i].provider[0] == '\0')) ||
+        models[i].context_window_tokens < 0LL ||
+        models[i].auto_compact_token_limit < 0LL ||
+        models[i].pricing.input < 0.0 || models[i].pricing.output < 0.0) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_provider_catalog_map, &doc);
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "invalid model metadata entry");
+    }
+    for (j = 0U; j < i; j++) {
+      if (strcmp(models[j].id, models[i].id) == 0 &&
+          (!fallback || strcmp(models[j].provider, models[i].provider) == 0)) {
+        CAI_LJ->cleanup(CAI_LJ, &cai_provider_catalog_map, &doc);
+        return cai_set_error(error, CAI_ERR_INVALID,
+                             "duplicate provider model metadata entry");
+      }
+    }
+    if (!fallback || strcmp(models[i].provider, impl->metadata_provider) == 0) {
+      selected_count++;
+    }
+  }
+  catalog = NULL;
+  rc = cai_model_catalog_allocate(&impl->allocator, selected_count, &catalog,
+                                  error);
+  catalog_impl =
+      catalog != NULL ? (cai_model_catalog_impl *)catalog->impl : NULL;
+  selected_count = 0U;
+  for (i = 0U; rc == CAI_OK && i < model_count; i++) {
+    cai_model_catalog_entry source;
+    const cai_provider_pricing_doc *price;
+
+    if (fallback && strcmp(models[i].provider, impl->metadata_provider) != 0) {
+      continue;
+    }
+    memset(&source, 0, sizeof(source));
+    source.slug = models[i].id;
+    source.display_name = models[i].name;
+    source.description = models[i].description;
+    source.model_type = models[i].model_type;
+    source.lifecycle_status = models[i].lifecycle_status;
+    source.compaction_compatibility_hash = models[i].comp_hash;
+    source.context_window_tokens = models[i].context_window_tokens;
+    source.auto_compact_token_limit = models[i].auto_compact_token_limit;
+    source.capabilities =
+        cai_provider_capability_flags(&models[i].capabilities);
+    source.capabilities_known =
+        cai_provider_capability_known(&models[i].capabilities);
+    price = &models[i].pricing;
+    if (price->currency != NULL && price->currency[0] != '\0' &&
+        price->has_input && price->has_output &&
+        (fallback || (price->unit != NULL && price->unit[0] != '\0'))) {
+      source.pricing_currency = price->currency;
+      source.pricing_unit = price->unit;
+      source.input_price = price->input;
+      source.output_price = price->output;
+      source.has_pricing = 1;
+    }
+    rc = cai_model_catalog_copy_entry(&impl->allocator,
+                                      catalog_impl->entries + selected_count,
+                                      &source, error);
+    selected_count++;
+  }
+  CAI_LJ->cleanup(CAI_LJ, &cai_provider_catalog_map, &doc);
+  if (rc != CAI_OK) {
+    cai_model_catalog_close(catalog);
+    return rc;
+  }
+  *out = catalog;
+  return CAI_OK;
+}
+
+int cai_model_catalog_load_fallback(cai_client *client, const char *json,
+                                    cai_error *error) {
+  cai_model_catalog *catalog;
+  int rc;
+
+  catalog = NULL;
+  rc = cai_model_catalog_parse_provider(client, json, 1, &catalog, error);
+  if (rc == CAI_OK) {
+    CAI_CLIENT_IMPL(client)->fallback_catalog = catalog;
+  }
+  return rc;
+}
+
+const cai_model_catalog_entry *
+cai_client_cached_model_metadata(const cai_client *client, const char *model) {
+  const cai_client_impl *impl;
+  const cai_model_catalog_entry *entry;
+
+  if (client == NULL || client->impl == NULL || model == NULL) {
+    return NULL;
+  }
+  impl = CAI_CLIENT_IMPL(client);
+  entry = cai_model_catalog_find(impl->model_catalog, model);
+  return entry != NULL ? entry
+                       : cai_model_catalog_find(impl->fallback_catalog, model);
+}
+
+static int
+cai_model_catalog_has_token_price(const cai_model_catalog_entry *entry) {
+  return entry != NULL && entry->has_pricing && entry->pricing_unit != NULL &&
+         strstr(entry->pricing_unit, "M Token") != NULL;
+}
+
+static int cai_client_static_model_matches(const cai_client *client,
+                                           const char *model) {
+  const cai_model_info *info;
+  const char *provider;
+  int openrouter_row;
+
+  if (client == NULL || client->impl == NULL) {
+    return 0;
+  }
+  info = cai_model_info_by_id(model);
+  if (info == NULL) {
+    return 0;
+  }
+  provider = CAI_CLIENT_IMPL(client)->metadata_provider;
+  openrouter_row =
+      (info->metadata_flags & CAI_MODEL_META_PROVIDER_OPENROUTER) != 0U;
+  if (strcmp(provider, "openrouter") == 0) {
+    return openrouter_row;
+  }
+  return !openrouter_row &&
+         (strcmp(provider, "openai") == 0 || strcmp(provider, "chatgpt") == 0);
+}
+
+int cai_client_model_can_estimate_usd(const cai_client *client,
+                                      const char *model) {
+  const cai_model_catalog_entry *entry;
+
+  if (cai_client_static_model_matches(client, model) &&
+      cai_model_can_estimate_usage_usd(model)) {
+    return 1;
+  }
+  entry = cai_client_cached_model_metadata(client, model);
+  if (cai_model_catalog_has_token_price(entry)) {
+    return strcmp(entry->pricing_currency, "USD") == 0;
+  }
+  return 0;
+}
+
+void cai_client_model_estimate_usage(const cai_client *client,
+                                     const char *model,
+                                     const cai_token_usage *usage, double *usd,
+                                     double *eur) {
+  const cai_model_catalog_entry *entry;
+  double estimate;
+
+  *usd = 0.0;
+  *eur = 0.0;
+  if (usage == NULL) {
+    return;
+  }
+  if (cai_client_static_model_matches(client, model) &&
+      cai_model_can_estimate_usage_usd(model)) {
+    *usd = cai_model_estimate_usage_usd(model, usage->input_tokens,
+                                        usage->input_cached_tokens,
+                                        usage->output_tokens);
+    return;
+  }
+  entry = cai_client_cached_model_metadata(client, model);
+  if (cai_model_catalog_has_token_price(entry)) {
+    estimate =
+        ((double)(usage->input_tokens > 0LL ? usage->input_tokens : 0LL) *
+             entry->input_price +
+         (double)(usage->output_tokens > 0LL ? usage->output_tokens : 0LL) *
+             entry->output_price) /
+        1000000.0;
+    if (strcmp(entry->pricing_currency, "EUR") == 0) {
+      *eur = estimate;
+    } else if (strcmp(entry->pricing_currency, "USD") == 0) {
+      *usd = estimate;
+    }
+  }
+}
+
+long long cai_client_model_context_window(const cai_client *client,
+                                          const char *model) {
+  const cai_model_catalog_entry *entry;
+
+  entry = cai_client_cached_model_metadata(client, model);
+  if (entry != NULL && entry->context_window_tokens > 0LL) {
+    return entry->context_window_tokens;
+  }
+  return cai_client_static_model_matches(client, model)
+             ? cai_model_context_window_tokens(model)
+             : 0LL;
+}
+
+static int cai_model_catalog_merge_fallback(cai_client *client,
+                                            cai_model_catalog *catalog,
+                                            cai_error *error) {
+  cai_client_impl *impl;
+  const cai_model_catalog_entry *fallback;
+  cai_model_catalog_entry *entries;
+  size_t i;
+
+  impl = CAI_CLIENT_IMPL(client);
+  entries = ((cai_model_catalog_impl *)catalog->impl)->entries;
+  for (i = 0U; i < catalog->count; i++) {
+    fallback = cai_model_catalog_find(impl->fallback_catalog, entries[i].slug);
+    if (fallback == NULL) {
+      continue;
+    }
+    if (entries[i].context_window_tokens == 0LL) {
+      entries[i].context_window_tokens = fallback->context_window_tokens;
+    }
+    if (entries[i].auto_compact_token_limit == 0LL) {
+      entries[i].auto_compact_token_limit = fallback->auto_compact_token_limit;
+    }
+    entries[i].capabilities |=
+        fallback->capabilities & ~entries[i].capabilities_known;
+    entries[i].capabilities_known |= fallback->capabilities_known;
+#define CAI_FILL_CATALOG_STRING(field)                                         \
+  if (entries[i].field == NULL && fallback->field != NULL) {                   \
+    entries[i].field = cai_strdup(&impl->allocator, fallback->field);          \
+    if (entries[i].field == NULL) {                                            \
+      return cai_set_error(error, CAI_ERR_NOMEM,                               \
+                           "failed to merge model metadata");                  \
+    }                                                                          \
+  }
+    CAI_FILL_CATALOG_STRING(display_name)
+    CAI_FILL_CATALOG_STRING(description)
+    CAI_FILL_CATALOG_STRING(model_type)
+    CAI_FILL_CATALOG_STRING(lifecycle_status)
+    CAI_FILL_CATALOG_STRING(compaction_compatibility_hash)
+#undef CAI_FILL_CATALOG_STRING
+    if (!entries[i].has_pricing && fallback->has_pricing) {
+      entries[i].pricing_currency =
+          cai_strdup(&impl->allocator, fallback->pricing_currency);
+      entries[i].pricing_unit =
+          cai_strdup(&impl->allocator, fallback->pricing_unit);
+      if (entries[i].pricing_currency == NULL ||
+          entries[i].pricing_unit == NULL) {
+        return cai_set_error(error, CAI_ERR_NOMEM,
+                             "failed to merge model pricing");
+      }
+      entries[i].input_price = fallback->input_price;
+      entries[i].output_price = fallback->output_price;
+      entries[i].has_pricing = 1;
+    }
+  }
   return CAI_OK;
 }
 
@@ -248,6 +700,7 @@ int cai_client_list_models(cai_client *client,
   long http_status;
   time_t now;
   int rc;
+  int is_berget;
 
   if (out == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -264,9 +717,14 @@ int cai_client_list_models(cai_client *client,
                          "invalid model catalog refresh strategy");
   }
   impl = CAI_CLIENT_IMPL(client);
-  if (impl->chatgpt_auth == NULL) {
+  is_berget = strcmp(impl->metadata_provider, "berget") == 0;
+  if (impl->chatgpt_auth == NULL && !is_berget) {
+    if (impl->fallback_catalog != NULL) {
+      return cai_model_catalog_clone(impl->fallback_catalog, out, error);
+    }
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "Codex model discovery requires ChatGPT auth");
+                         "provider has no model catalog; configure model "
+                         "metadata JSON");
   }
   now = time(NULL);
   if (impl->model_catalog != NULL &&
@@ -278,24 +736,40 @@ int cai_client_list_models(cai_client *client,
     return cai_model_catalog_clone(impl->model_catalog, out, error);
   }
   if (strategy == CAI_MODEL_CATALOG_REFRESH_OFFLINE) {
+    if (impl->fallback_catalog != NULL) {
+      return cai_model_catalog_clone(impl->fallback_catalog, out, error);
+    }
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "no cached ChatGPT model catalog is available");
+                         "no cached provider model catalog is available");
   }
   body = NULL;
   request_id = NULL;
   http_status = 0L;
-  rc = cai_http_json_request(client, "GET",
-                             "models?client_version=" CAI_VERSION_STRING, NULL,
-                             &body, &http_status, &request_id, error);
+  rc = cai_http_json_request(
+      client, "GET",
+      is_berget ? "models" : "models?client_version=" CAI_VERSION_STRING, NULL,
+      &body, &http_status, &request_id, error);
   if (rc == CAI_OK && (http_status < 200L || http_status >= 300L)) {
     rc = cai_set_openai_error(error, http_status, body, request_id);
   }
   if (rc == CAI_OK) {
-    rc = cai_model_catalog_parse(client, body, &catalog, error);
+    rc = is_berget ? cai_model_catalog_parse_provider(client, body, 0, &catalog,
+                                                      error)
+                   : cai_model_catalog_parse(client, body, &catalog, error);
+  }
+  if (rc == CAI_OK && impl->fallback_catalog != NULL) {
+    rc = cai_model_catalog_merge_fallback(client, catalog, error);
   }
   cai_free_mem(NULL, body);
   cai_free_mem(NULL, request_id);
   if (rc != CAI_OK) {
+    cai_model_catalog_close(catalog);
+    if (impl->fallback_catalog != NULL &&
+        strategy == CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED) {
+      cai_error_cleanup(error);
+      cai_error_init(error);
+      return cai_model_catalog_clone(impl->fallback_catalog, out, error);
+    }
     return rc;
   }
   cai_model_catalog_close(impl->model_catalog);

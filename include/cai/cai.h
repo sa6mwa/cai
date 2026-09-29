@@ -173,12 +173,14 @@ typedef struct cai_usage_limits {
   double max_spend_usd;
 } cai_usage_limits;
 
-/** Cumulative usage and estimated USD spend recorded by a client or session. */
+/** Cumulative usage and currency-specific spend estimates. */
 typedef struct cai_usage_accounting {
   /** Cumulative token usage. */
   cai_token_usage usage;
   /** Cumulative estimated spend in USD using cai's model price table. */
   double estimated_spend_usd;
+  /** Cumulative EUR estimate when the provider prices usage in EUR. */
+  double estimated_spend_eur;
   /** Non-zero once a configured limit has been exceeded. */
   int limit_exceeded;
 } cai_usage_accounting;
@@ -224,9 +226,13 @@ typedef struct cai_client_config {
   cai_allocator allocator;
   /** Wire protocol; zero selects the Responses API. */
   cai_api_protocol api_protocol;
+  /** Metadata catalog identity: chatgpt, openai, openrouter, berget, custom. */
+  const char *metadata_provider;
+  /** Optional JSON fallback catalog; copied and validated at client open. */
+  const char *model_metadata_json;
 } cai_client_config;
 
-/** Refresh policy for the ChatGPT Codex model catalog. */
+/** Refresh policy for a provider model catalog. */
 typedef enum cai_model_catalog_refresh_strategy {
   /** Fetch the current catalog from the provider. */
   CAI_MODEL_CATALOG_REFRESH_ONLINE = 0,
@@ -236,8 +242,7 @@ typedef enum cai_model_catalog_refresh_strategy {
   CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED = 2
 } cai_model_catalog_refresh_strategy;
 
-/** Provider-declared metadata for one model available to this ChatGPT account.
- */
+/** Provider-declared and fallback metadata for one model. */
 typedef struct cai_model_catalog_entry {
   /** Provider model slug. */
   char *slug;
@@ -253,6 +258,25 @@ typedef struct cai_model_catalog_entry {
   char *compaction_compatibility_hash;
   /** Non-zero when the provider advertises Responses API support. */
   int supported_in_api;
+  /** Provider model type, such as text, embedding, rerank, or speech-to-text.
+   */
+  char *model_type;
+  /** Provider lifecycle status, when available. */
+  char *lifecycle_status;
+  /** ORed CAI_MODEL_CAP_* flags; zero when unknown. */
+  unsigned int capabilities;
+  /** ORed CAI_MODEL_CAP_* fields supplied by the provider. */
+  unsigned int capabilities_known;
+  /** Provider pricing currency, or NULL when pricing is unknown. */
+  char *pricing_currency;
+  /** Provider pricing unit, such as "M Token" or "second". */
+  char *pricing_unit;
+  /** Provider input price in pricing_currency per pricing_unit. */
+  double input_price;
+  /** Provider output price in pricing_currency per pricing_unit. */
+  double output_price;
+  /** Non-zero when both provider prices are known, including free models. */
+  int has_pricing;
 } cai_model_catalog_entry;
 
 /** Owned model catalog returned by cai_client_list_models. */
@@ -1578,9 +1602,9 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
 /** Close and destroy a cai client. */
 void cai_client_close(cai_client *client);
 /**
- * List models enabled for the current ChatGPT subscription through Codex's
- * authoritative `/models` endpoint. This requires chatgpt_auth; API-key and
- * third-party clients do not have an equivalent catalog contract.
+ * List provider models. ChatGPT uses its Codex account catalog, Berget uses
+ * /v1/models, and other providers return configured fallback entries.
+ * Live fields take precedence over fallback fields. Results are client-cached.
  */
 int cai_client_list_models(cai_client *client,
                            cai_model_catalog_refresh_strategy strategy,
@@ -1594,7 +1618,7 @@ void cai_model_catalog_close(cai_model_catalog *catalog);
 int cai_client_set_usage_limits(cai_client *client,
                                 const cai_usage_limits *limits,
                                 cai_error *error);
-/** Return cumulative usage and estimated USD spend for a client. */
+/** Return cumulative usage and currency-specific spend estimates. */
 int cai_client_usage(const cai_client *client, cai_usage_accounting *out,
                      cai_error *error);
 
