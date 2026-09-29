@@ -64,7 +64,8 @@ static void cai_cli_help(void) {
         "state/cai/pouch)\n",
         stdout);
   fputs("      --lockd-client-pem FILE  Remote lockd mTLS PEM bundle\n"
-        "  -p, --provider NAME          chatgpt|openai|openrouter|custom\n",
+        "  -p, --provider NAME          "
+        "chatgpt|openai|openrouter|berget|custom\n",
         stdout);
   fputs("      --endpoint URL           Custom provider API base URL\n"
         "      --api-key-env NAME       Custom API key variable (default "
@@ -113,7 +114,7 @@ int cai_cli_parse_options(int argc, char *const *argv,
   static const char *const summaries[] = {"none", "auto", "concise", "detailed",
                                           NULL};
   static const char *const providers[] = {"chatgpt", "openai", "openrouter",
-                                          "custom", NULL};
+                                          "berget",  "custom", NULL};
   int model_explicit = 0;
   int i;
   size_t j;
@@ -445,6 +446,11 @@ int cai_cli_parse_options(int argc, char *const *argv,
   }
   if (strcmp(options->provider, "openrouter") == 0 && !model_explicit)
     options->model = CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES;
+  if (strcmp(options->provider, "berget") == 0) {
+    if (!model_explicit)
+      options->model = "zai-org/GLM-5.3-Flash";
+    options->image_generation = 0;
+  }
   return 1;
 }
 

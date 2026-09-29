@@ -957,6 +957,10 @@ int cai_client_create_response(cai_client *client,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "response params are required");
   }
+  if (client != NULL && CAI_CLIENT_IMPL(client)->api_protocol ==
+                            CAI_API_PROTOCOL_CHAT_COMPLETIONS) {
+    return cai_chat_create_response(client, params, out, error);
+  }
   {
     char *body;
     char *request_id;
@@ -999,6 +1003,12 @@ int cai_client_count_response_input_tokens(
   if (params == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "response params are required");
+  }
+  if (client != NULL && CAI_CLIENT_IMPL(client)->api_protocol ==
+                            CAI_API_PROTOCOL_CHAT_COMPLETIONS) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Chat Completions does not provide input token "
+                         "counting; use completed response usage");
   }
   count_params = NULL;
   body = NULL;

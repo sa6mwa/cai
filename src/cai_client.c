@@ -49,6 +49,17 @@ void cai_client_config_use_openrouter(cai_client_config *config) {
   config->project_id = NULL;
 }
 
+void cai_client_config_use_berget(cai_client_config *config) {
+  if (config == NULL) {
+    return;
+  }
+  config->api_key_env = CAI_BERGET_API_KEY_ENV;
+  config->base_url = CAI_BERGET_BASE_URL;
+  config->api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
+  config->organization_id = NULL;
+  config->project_id = NULL;
+}
+
 static int cai_allocator_is_empty(const cai_allocator *allocator) {
   return allocator->malloc_fn == NULL && allocator->realloc_fn == NULL &&
          allocator->free_fn == NULL;
@@ -136,6 +147,15 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   if (rc != CAI_OK) {
     return rc;
   }
+  if (effective->api_protocol != CAI_API_PROTOCOL_RESPONSES &&
+      effective->api_protocol != CAI_API_PROTOCOL_CHAT_COMPLETIONS) {
+    return cai_set_error(error, CAI_ERR_INVALID, "invalid API protocol");
+  }
+  if (effective->api_protocol == CAI_API_PROTOCOL_CHAT_COMPLETIONS &&
+      effective->chatgpt_auth != NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "ChatGPT authentication requires Responses API");
+  }
   client = (cai_client *)cai_alloc(&effective->allocator, sizeof(*client));
   if (client == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate client");
@@ -152,6 +172,7 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   impl->api_key = NULL;
   impl->chatgpt_auth = effective->chatgpt_auth;
   impl->base_url = NULL;
+  impl->api_protocol = effective->api_protocol;
   impl->organization_id = NULL;
   impl->project_id = NULL;
   impl->timeout_ms = effective->timeout_ms > 0L ? effective->timeout_ms

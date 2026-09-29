@@ -130,6 +130,19 @@ typedef struct cai_allocator {
 /** Environment variable name for OpenRouter API keys. */
 #define CAI_OPENROUTER_API_KEY_ENV "OPENROUTER_API_KEY"
 
+/** Berget.ai OpenAI-compatible Chat Completions API base URL. */
+#define CAI_BERGET_BASE_URL "https://api.berget.ai/v1"
+/** Environment variable used by the Berget.ai provider preset. */
+#define CAI_BERGET_API_KEY_ENV "BERGET_API_KEY"
+
+/** Wire protocol used to create model responses. */
+typedef enum cai_api_protocol {
+  /** OpenAI Responses API (the default). */
+  CAI_API_PROTOCOL_RESPONSES = 0,
+  /** OpenAI-compatible Chat Completions API with local history. */
+  CAI_API_PROTOCOL_CHAT_COMPLETIONS = 1
+} cai_api_protocol;
+
 /** Token usage counters reported by Responses. */
 typedef struct cai_token_usage {
   /** Input tokens charged for the request. */
@@ -209,6 +222,8 @@ typedef struct cai_client_config {
   cai_usage_limits usage_limits;
   /** Optional custom allocator callbacks. */
   cai_allocator allocator;
+  /** Wire protocol; zero selects the Responses API. */
+  cai_api_protocol api_protocol;
 } cai_client_config;
 
 /** Refresh policy for the ChatGPT Codex model catalog. */
@@ -1550,6 +1565,8 @@ void cai_usage_limits_init(cai_usage_limits *limits);
 void cai_usage_accounting_init(cai_usage_accounting *accounting);
 /** Configure a client config to use OpenRouter defaults. */
 void cai_client_config_use_openrouter(cai_client_config *config);
+/** Select Berget.ai with BERGET_API_KEY and Chat Completions transport. */
+void cai_client_config_use_berget(cai_client_config *config);
 /** Explicitly load one API key from a dotenv-formatted file. */
 int cai_load_dotenv_api_key(const char *dotenv_path, const char *api_key_env,
                             char **out, cai_error *error);

@@ -808,6 +808,7 @@ set(CAI_SOURCES
   src/cai_smith.c
   src/cai_source.c
   src/cai_stream.c
+  src/cai_chat.c
   src/cai_tool.c
   src/tools/exec.c
   src/tools/goal.c
@@ -1580,6 +1581,7 @@ if(CAI_BUILD_TESTS)
     agent_tool_output_max_bytes
     conversations
     stream_response_text
+    chat_completions_adapter
     stream_compaction_progress_callback
     stream_upload_setup_failure
     stream_responses_websocket

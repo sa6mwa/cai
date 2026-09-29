@@ -38861,6 +38861,341 @@ static void test_agent_auto_compaction(test_state *state) {
   }
 }
 
+static void test_chat_completions_adapter(test_state *state) {
+  static const char *first_required[] = {"Authorization: Bearer mock-key",
+                                         "\"model\":\"test-model\"",
+                                         "\"role\":\"system\"",
+                                         "\"content\":\"chat test\"",
+                                         "\"reasoning_effort\":\"none\"",
+                                         "\"include_usage\":true"};
+  static const char *second_required[] = {
+      "\"name\":\"echo\"", "\"parameters\":{\"type\":\"object\"}",
+      "\"content\":\"call a tool\""};
+  static const char *third_required[] = {
+      "\"role\":\"tool\"", "\"tool_call_id\":\"call_one\"",
+      "\"name\":\"apply_patch\"", "\"required\":[\"input\"]",
+      "\"content\":\"continue\""};
+  static const char *fourth_required[] = {"\"tool_call_id\":\"call_patch\"",
+                                          "\"name\":\"apply_patch\"",
+                                          "\"arguments\":"};
+  static const char *image_required[] = {
+      "\"type\":\"image_url\"", "\"url\":\"https://example.test/image.png\"",
+      "\"url\":\"https://example.test/old.png\"", "\"detail\":\"high\""};
+  static const char *tool_image_required[] = {
+      "\"role\":\"tool\"", "\"tool_call_id\":\"call_image\"",
+      "\"type\":\"image_url\"", "\"url\":\"data:image/png;base64,aGVsbG8=\""};
+  static const char *first_forbidden[] = {"previous_response_id",
+                                          "\"input\":["};
+  static const char first_body[] =
+      "data: {\"id\":\"chat_one\",\"choices\":[{\"index\":0,\"delta\":"
+      "{\"reasoning_content\":\"Considered.\",\"content\":\"he\"}}]}\n\n"
+      "data: {\"id\":\"chat_one\",\"choices\":[{\"index\":0,\"delta\":"
+      "{\"content\":\"llo\"},\"finish_reason\":\"stop\"}]}\n\n"
+      "data: {\"id\":\"chat_one\",\"choices\":[],\"usage\":{"
+      "\"prompt_tokens\":7,\"completion_tokens\":2,\"total_tokens\":9,"
+      "\"prompt_tokens_details\":{\"cached_tokens\":3}}}\n\n"
+      "data: [DONE]\n\n";
+  static const char glm_body[] =
+      "data: {\"id\":\"glm_one\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"content\":\"private thought</thi\"}}]}\n\n"
+      "data: {\"id\":\"glm_one\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"content\":\"nk>OK\"},\"finish_reason\":\"stop\"}]}\n\n"
+      "data: [DONE]\n\n";
+  static const char glm_json_body[] =
+      "data: {\"id\":\"glm_json\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"content\":\"{\\\"answer\\\":\\\"OK\\\"}\"},"
+      "\"finish_reason\":\"stop\"}]}\n\n"
+      "data: [DONE]\n\n";
+  static const char second_body[] =
+      "data: {\"id\":\"chat_two\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"tool_calls\":[{\"index\":0,\"id\":\"call_one\",\"type\":\"function\","
+      "\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"x\\\":\"}}]}}]}\n\n"
+      "data: {\"id\":\"chat_two\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"1}\"}}]},"
+      "\"finish_reason\":\"tool_calls\"}]}\n\n"
+      "data: [DONE]\n\n";
+  static const char third_body[] =
+      "data: {\"id\":\"chat_three\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"tool_calls\":[{\"index\":0,\"id\":\"call_patch\",\"function\":{"
+      "\"name\":\"apply_patch\",\"arguments\":\"{\\\"input\\\":\\\"patch\\\"}"
+      "\"}}]},"
+      "\"finish_reason\":\"tool_calls\"}]}\n\n"
+      "data: [DONE]\n\n";
+  static const mock_http_expectation script[] = {
+      {"POST /v1/chat/completions HTTP/", first_required,
+       sizeof(first_required) / sizeof(first_required[0]), first_forbidden,
+       sizeof(first_forbidden) / sizeof(first_forbidden[0]), 200, "OK",
+       "text/event-stream", NULL, first_body},
+      {"POST /v1/chat/completions HTTP/", second_required,
+       sizeof(second_required) / sizeof(second_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, second_body},
+      {"POST /v1/chat/completions HTTP/", third_required,
+       sizeof(third_required) / sizeof(third_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, third_body},
+      {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 429,
+       "Too Many Requests", "application/json", "req_chat_rate",
+       "{\"error\":{\"message\":\"quota exhausted\",\"code\":"
+       "\"rate_limit_exceeded\"}}"},
+      {"POST /v1/chat/completions HTTP/", fourth_required,
+       sizeof(fourth_required) / sizeof(fourth_required[0]), NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, first_body},
+      {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, second_body},
+      {"POST /v1/chat/completions HTTP/", image_required,
+       sizeof(image_required) / sizeof(image_required[0]), NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, first_body},
+      {"POST /v1/chat/completions HTTP/", tool_image_required,
+       sizeof(tool_image_required) / sizeof(tool_image_required[0]), NULL, 0U,
+       200, "OK", "text/event-stream", NULL, first_body},
+      {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, glm_body},
+      {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, glm_json_body}};
+  http_mock_server server;
+  cai_client_config config;
+  cai_client *client;
+  cai_response_create_params *params;
+  cai_response *response;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  cai_stream_sinks sinks;
+  cai_token_usage usage;
+  cai_custom_tool_format format;
+  stream_tool_state tool;
+  stream_output_item_state item;
+  write_state text;
+  write_state reasoning;
+  char *id;
+  cai_error error;
+  size_t step;
+  int rc;
+
+  if (http_mock_server_open_script(state, "chat_completions_adapter", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0) {
+    return;
+  }
+  cai_error_init(&error);
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = server.base_url;
+  config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 5000L;
+  client = NULL;
+  sink = NULL;
+  params = NULL;
+  response = NULL;
+  id = NULL;
+  memset(&text, 0, sizeof(text));
+  memset(&reasoning, 0, sizeof(reasoning));
+  memset(&tool, 0, sizeof(tool));
+  memset(&item, 0, sizeof(item));
+  cai_stream_sinks_init(&sinks);
+  rc = cai_client_open(&config, &client, &error);
+  expect_int(state, "chat_client_open", rc, CAI_OK);
+  if (rc != CAI_OK) {
+    goto chat_done;
+  }
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &text;
+  rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+  expect_int(state, "chat_sink_open", rc, CAI_OK);
+  if (rc != CAI_OK) {
+    goto chat_done;
+  }
+  cai_stream_sinks_init(&sinks);
+  sinks.output_text = sink;
+  sinks.output_text_prefix.text = "<";
+  sinks.output_text_suffix.text = ">";
+  sinks.reasoning_summary_prefix.text = "[";
+  sinks.reasoning_summary_suffix.text = "]";
+  sinks.output_text_delta = test_stream_output_delta;
+  sinks.output_text_context = NULL;
+  callbacks.context = &reasoning;
+  rc = cai_sink_from_callbacks(&callbacks, &sinks.reasoning_summary, &error);
+  expect_int(state, "chat_reasoning_sink_open", rc, CAI_OK);
+  if (rc != CAI_OK) {
+    goto chat_done;
+  }
+  sinks.output_text_delta = NULL;
+  sinks.function_call_arguments_delta = test_stream_tool_delta;
+  sinks.function_call_arguments_done = test_stream_tool_done;
+  sinks.custom_tool_call_input_done = test_stream_tool_done;
+  sinks.function_call_context = &tool;
+  sinks.custom_tool_call_context = &tool;
+  sinks.output_item_done = test_stream_output_item_done;
+  sinks.output_item_context = &item;
+
+  for (step = 0U; step < 10U; step++) {
+    cai_response_create_params_destroy(params);
+    params = NULL;
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "chat_params_new",
+               cai_response_create_params_new(&params, &error), CAI_OK);
+    if (params == NULL) {
+      break;
+    }
+    params->set_model(
+        params, step >= 8U ? "zai-org/GLM-5.3-Flash" : "test-model", &error);
+    params->set_instructions(params, "chat test", &error);
+    params->set_reasoning(params, "none", "concise", &error);
+    if (step == 0U) {
+      params->add_text(params, "user", "hello", &error);
+    } else if (step == 1U) {
+      params->add_text(params, "user", "call a tool", &error);
+      params->add_function_tool(params, "echo", "Echo", "{\"type\":\"object\"}",
+                                0, &error);
+    } else if (step == 2U) {
+      static const char history[] =
+          "[{\"type\":\"message\",\"role\":\"user\",\"content\":[{"
+          "\"type\":\"input_text\",\"text\":\"call a tool\"}]},{"
+          "\"type\":\"function_call\",\"call_id\":\"call_one\","
+          "\"name\":\"echo\",\"arguments\":\"{\\\"x\\\":1}\"},{"
+          "\"type\":\"function_call_output\",\"call_id\":\"call_one\","
+          "\"output\":\"tool done\"}]";
+      cai_response_create_params_set_raw_input_json(params, history, &error);
+      params->add_text(params, "user", "continue", &error);
+      format.type = "grammar";
+      format.syntax = "lark";
+      format.definition = "start: /./+";
+      params->add_custom_tool(params, "apply_patch", "Patch", &format, &error);
+    } else if (step == 3U) {
+      params->add_text(params, "user", "rate limit", &error);
+    } else if (step == 4U) {
+      static const char custom_history[] =
+          "[{\"type\":\"custom_tool_call\",\"call_id\":\"call_patch\","
+          "\"name\":\"apply_patch\",\"input\":\"patch\"},{"
+          "\"type\":\"custom_tool_call_output\",\"call_id\":\"call_patch\","
+          "\"output\":\"done\"}]";
+      cai_response_create_params_set_raw_input_json(params, custom_history,
+                                                    &error);
+      params->add_text(params, "user", "nonstream", &error);
+    } else if (step == 5U) {
+      params->add_text(params, "user", "nonstream tool", &error);
+      params->add_function_tool(params, "echo", "Echo", "{\"type\":\"object\"}",
+                                0, &error);
+    } else if (step == 6U) {
+      static const char image_history[] =
+          "[{\"type\":\"message\",\"role\":\"user\",\"content\":[{"
+          "\"type\":\"input_image\",\"image_url\":\"https://example.test/"
+          "old.png\"}]}]";
+      cai_response_create_params_set_raw_input_json(params, image_history,
+                                                    &error);
+      params->add_text(params, "user", "describe", &error);
+      params->add_image_url(params, "user", "https://example.test/image.png",
+                            "high", &error);
+    } else if (step == 7U) {
+      params->add_function_call_output_image_url(
+          params, "call_image", "data:image/png;base64,aGVsbG8=", NULL, &error);
+    } else {
+      params->add_text(params, "user", "Reply with exactly OK.", &error);
+      if (step == 9U) {
+        params->set_text_format_json_schema(
+            params, "answer", NULL,
+            "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":"
+            "\"string\"}},"
+            "\"required\":[\"answer\"]}",
+            1, &error);
+      }
+      memset(&text, 0, sizeof(text));
+    }
+    id = NULL;
+    memset(&usage, 0, sizeof(usage));
+    if (step == 4U || step == 5U) {
+      rc = cai_client_create_response(client, params, &response, &error);
+    } else {
+      rc = cai_client_stream_response_with_id(client, params, &sinks, &id,
+                                              &usage, &error);
+    }
+    if (step == 0U) {
+      expect_int(state, "chat_text_stream", rc, CAI_OK);
+      expect_str(state, "chat_text_value", text.buffer, "<hello>");
+      expect_str(state, "chat_reasoning_value", reasoning.buffer,
+                 "[Considered.]");
+      expect_str(state, "chat_id", id, "chat_one");
+      expect_int(state, "chat_usage", (int)usage.total_tokens, 9);
+      expect_int(state, "chat_cached_usage", (int)usage.input_cached_tokens, 3);
+    } else if (step == 1U) {
+      expect_int(state, "chat_tool_stream", rc, CAI_OK);
+      expect_str(state, "chat_tool_name", tool.name, "echo");
+      expect_str(state, "chat_tool_arguments", tool.arguments, "{\"x\":1}");
+      expect_str(state, "chat_tool_item_type", item.type, "function_call");
+    } else if (step == 2U) {
+      expect_int(state, "chat_custom_stream", rc, CAI_OK);
+      expect_str(state, "chat_custom_name", tool.name, "apply_patch");
+      expect_str(state, "chat_custom_input", tool.arguments, "patch");
+      expect_str(state, "chat_custom_item_type", item.type, "custom_tool_call");
+    } else if (step == 3U) {
+      expect_int(state, "chat_http_error", rc, CAI_ERR_SERVER);
+      expect_int(state, "chat_http_status", (int)error.http_status, 429);
+      if ((error.message == NULL ||
+           strstr(error.message, "quota exhausted") == NULL) &&
+          (error.detail == NULL ||
+           strstr(error.detail, "quota exhausted") == NULL)) {
+        test_fail(state, "chat_http_error", "server error detail missing");
+      }
+    } else if (step == 4U || step == 5U) {
+      expect_int(state, "chat_nonstream", rc, CAI_OK);
+      if (response != NULL) {
+        if (step == 4U) {
+          expect_str(state, "chat_nonstream_text",
+                     cai_response_output_text(response), "hello");
+        } else {
+          expect_int(state, "chat_nonstream_tool_count",
+                     (int)cai_response_tool_call_count(response), 1);
+          expect_str(state, "chat_nonstream_tool_name",
+                     cai_response_tool_call_name(response, 0U), "echo");
+          expect_str(state, "chat_nonstream_tool_id",
+                     cai_response_tool_call_id(response, 0U), "call_one");
+        }
+        cai_response_destroy(response);
+        response = NULL;
+      }
+    } else if (step == 8U) {
+      expect_int(state, "chat_glm_stream", rc, CAI_OK);
+      expect_str(state, "chat_glm_final_only", text.buffer, "<OK>");
+    } else if (step == 9U) {
+      expect_int(state, "chat_glm_json_stream", rc, CAI_OK);
+      expect_str(state, "chat_glm_json_final", text.buffer,
+                 "<{\"answer\":\"OK\"}>");
+    } else {
+      expect_int(state, "chat_image_stream", rc, CAI_OK);
+    }
+    cai_string_destroy(id);
+    id = NULL;
+    if (rc != CAI_OK && step != 3U) {
+      break;
+    }
+  }
+  cai_response_create_params_destroy(params);
+  params = NULL;
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  if (cai_response_create_params_new(&params, &error) == CAI_OK) {
+    params->set_model(params, "test-model", &error);
+    params->add_file_id(params, "user", "file_123", NULL, &error);
+    rc = cai_client_stream_response_with_id(client, params, &sinks, NULL, NULL,
+                                            &error);
+    expect_int(state, "chat_file_rejected", rc, CAI_ERR_INVALID);
+    if (error.message == NULL || strstr(error.message, "file") == NULL) {
+      test_fail(state, "chat_file_rejected", "missing file capability error");
+    }
+  }
+chat_done:
+  cai_response_destroy(response);
+  cai_string_destroy(id);
+  cai_response_create_params_destroy(params);
+  cai_sink_close(sink);
+  cai_sink_close(sinks.reasoning_summary);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "chat_completions_adapter", server.pid,
+                    &server.child_status);
+}
+
 static void test_stream_response_text(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -44768,6 +45103,7 @@ static const test_entry test_entries[] = {
      test_agent_tool_error_output_continues},
     {"agent_tool_output_max_bytes", test_agent_tool_output_max_bytes},
     {"conversations", test_conversations},
+    {"chat_completions_adapter", test_chat_completions_adapter},
     {"stream_response_text", test_stream_response_text},
     {"stream_compaction_progress_callback",
      test_stream_compaction_progress_callback},

@@ -88,6 +88,7 @@ cai_client_cancel_response
 cai_client_chatgpt_quota
 cai_client_close
 cai_client_config_init
+cai_client_config_use_berget
 cai_client_config_use_openrouter
 cai_client_count_response_input_tokens
 cai_client_create_conversation

@@ -32,6 +32,11 @@ openai=$(printf '/status\n/quit\n' | OPENAI_API_KEY=fixture "$cli" -p openai -C 
 router=$(printf '/status\n/quit\n' | OPENROUTER_API_KEY=fixture "$cli" -p openrouter -C "$fixture/work")
 [[ "$router" == *"Provider"* && "$router" == *"openrouter"* ]]
 [[ "$router" == *"Model"* && "$router" == *"openai/gpt-5.6-luna"* ]]
+berget=$(printf '/status\n/quit\n' | BERGET_API_KEY=fixture "$cli" -p berget -C "$fixture/work")
+[[ "$berget" == *"Provider"* && "$berget" == *"berget"* ]]
+[[ "$berget" == *"Model"* && "$berget" == *"zai-org/GLM-5.3-Flash"* ]]
+[[ "$berget" == *"Reasoning effort"* && "$berget" == *"medium"* ]]
+[[ "$berget" != *"Weekly limit"* && "$berget" != *"Credits left"* ]]
 custom=$(printf '/status\n/quit\n' | LOCAL_KEY=fixture "$cli" -p custom \
   --endpoint https://example.test/v1 --api-key-env LOCAL_KEY -m local-model -C "$fixture/work")
 [[ "$custom" == *"Provider"* && "$custom" == *"custom"* ]]
@@ -45,6 +50,12 @@ if printf '/quit\n' | env -u OPENAI_API_KEY "$cli" -p openai -C "$fixture/work" 
   exit 1
 fi
 grep -q 'OPENAI_API_KEY' "$fixture/out"
+if printf '/quit\n' | env -u BERGET_API_KEY "$cli" -p berget -C "$fixture/work" \
+  >"$fixture/out" 2>"$fixture/err"; then
+  echo 'missing Berget key was accepted' >&2
+  exit 1
+fi
+grep -q 'BERGET_API_KEY' "$fixture/out"
 
 export XDG_STATE_HOME="$fixture/state-empty"
 if printf '/quit\n' | "$cli" -C "$fixture/work" >"$fixture/out" 2>"$fixture/err"; then

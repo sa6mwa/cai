@@ -25,6 +25,7 @@ typedef struct cai_client_impl {
   char *api_key;
   cai_chatgpt_auth *chatgpt_auth;
   char *base_url;
+  cai_api_protocol api_protocol;
   char *organization_id;
   char *project_id;
   long timeout_ms;
@@ -46,6 +47,7 @@ typedef struct cai_client_impl {
 } cai_client_impl;
 
 typedef struct cai_response_request_upload cai_response_request_upload;
+typedef struct cai_chat_upload cai_chat_upload;
 
 typedef struct cai_agent_impl {
   cai_client *client;
@@ -284,6 +286,20 @@ size_t cai_response_request_upload_read(char *ptr, size_t size, size_t nmemb,
 curl_off_t
 cai_response_request_upload_size(const cai_response_request_upload *upload);
 void cai_response_request_upload_close(cai_response_request_upload *upload);
+int cai_chat_upload_open(const cai_response_create_params *params,
+                         cai_chat_upload **out, cai_error *error);
+size_t cai_chat_upload_read(char *ptr, size_t size, size_t nmemb,
+                            void *userdata);
+curl_off_t cai_chat_upload_size(const cai_chat_upload *upload);
+int cai_chat_upload_close(cai_chat_upload *upload, cai_error *error);
+int cai_chat_stream_response(cai_client *client,
+                             const cai_response_create_params *params,
+                             const cai_stream_sinks *sinks,
+                             char **out_response_id, cai_token_usage *out_usage,
+                             cai_error *error);
+int cai_chat_create_response(cai_client *client,
+                             const cai_response_create_params *params,
+                             cai_response **out, cai_error *error);
 #ifdef CAI_TESTING
 int cai_test_response_request_upload_active(void);
 void cai_session_store_test_set_fail_scope_parent_sync(int enabled);

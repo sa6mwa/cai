@@ -118,12 +118,16 @@ cai's store; refresh never writes back to the source file. If neither source
 nor stored credentials exist, `cai --login` opens a browser login, stores auth
 in the `cai.auth` namespace, and exits. `-l` means `--list`, not login. The
 `openai` provider uses `OPENAI_API_KEY`, `openrouter` uses
-`OPENROUTER_API_KEY`, and `custom` requires `--endpoint` and `--model` with
-`CAI_API_KEY` by default or a variable selected by `--api-key-env`.
+`OPENROUTER_API_KEY`, `berget` uses `BERGET_API_KEY`, and `custom` requires
+`--endpoint` and `--model` with `CAI_API_KEY` by default or a variable
+selected by `--api-key-env`.
 `--provider`/`-p` selects a provider. ChatGPT and OpenAI start with
-`gpt-6-luna`; OpenRouter starts with `openai/gpt-5.6-luna`. All providers use
-medium reasoning unless overridden; `-m`/`--model` and
-`-r`/`--reasoning-effort` override those defaults. `--help` lists the other
+`gpt-6-luna`; OpenRouter starts with `openai/gpt-5.6-luna`. Berget starts with
+`zai-org/GLM-5.3-Flash`. It supports vision, streaming, and function calls for
+cai's local and MCP tools. Berget does not offer provider-hosted image
+generation. All providers start with medium reasoning;
+`-m`/`--model` and `-r`/`--reasoning-effort` override those defaults.
+`--help` lists the other
 user-facing model, review, instructions, skills, image, terminal, and session
 options. Cai requests concise provider reasoning summaries by default; the
 `--reasoning-summary` flag overrides that choice. Provider-issued summaries
@@ -132,6 +136,19 @@ the active turn's elapsed time. Before a summary arrives, the bar says
 `Working` with elapsed time. At completion it shows `Worked for 13m 32s -
 252243`, where the final six digits are the local day, hour, and minute.
 The live timer advances while the turn is active and stops when it settles.
+
+Berget uses its OpenAI-compatible Chat Completions endpoint. The CLI streams
+text, image URLs, and function tools, including `apply_patch` and MCP tools,
+through libcai's normal agent and session runtime. It resumes conversations
+by sending local history as chat messages. The default Berget model accepts
+image input. Hosted image generation is disabled because Berget does not
+provide that API; file IDs and arbitrary file attachments return an explicit
+error. Berget API keys and session content are kept in the same
+locations as other `cai` providers; the key is read from `BERGET_API_KEY`.
+GLM currently emits thinking inside its content stream; cai keeps that content
+out of the final answer. Berget does not provide a concise reasoning summary
+for that model.
+
 The softline prompt is `> `. Its status bar shows model and reasoning effort,
 the last measured context percentage, a shortened workspace path, available
 ChatGPT subscription quota remaining and credits, the Git branch when present,

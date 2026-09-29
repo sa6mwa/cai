@@ -102,6 +102,11 @@ int main(void) {
   char *invalid_summary[3];
   char openrouter_raw[][64] = {"cai", "-p", "openrouter"};
   char *openrouter[3];
+  char berget_raw[][80] = {"cai", "-p", "berget"};
+  char *berget[3];
+  char berget_override_raw[][80] = {"cai",         "-p", "berget", "-m",
+                                    "other-model", "-r", "high"};
+  char *berget_override[7];
   char custom_raw[][64] = {
       "cai", "-p",           "custom", "--endpoint", "https://example.test/v1",
       "-m",  "example-model"};
@@ -155,6 +160,10 @@ int main(void) {
 
   for (i = 0U; i < sizeof(openrouter) / sizeof(openrouter[0]); i++)
     openrouter[i] = openrouter_raw[i];
+  for (i = 0U; i < sizeof(berget) / sizeof(berget[0]); i++)
+    berget[i] = berget_raw[i];
+  for (i = 0U; i < sizeof(berget_override) / sizeof(berget_override[0]); i++)
+    berget_override[i] = berget_override_raw[i];
   for (i = 0U; i < sizeof(custom) / sizeof(custom[0]); i++)
     custom[i] = custom_raw[i];
   for (i = 0U; i < sizeof(custom_env) / sizeof(custom_env[0]); i++)
@@ -255,6 +264,15 @@ int main(void) {
   if (cai_cli_parse_options(3, openrouter, &options) != 1 ||
       strcmp(options.model, CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES) != 0 ||
       strcmp(options.provider, "openrouter") != 0)
+    return 1;
+  if (cai_cli_parse_options(3, berget, &options) != 1 ||
+      strcmp(options.model, "zai-org/GLM-5.3-Flash") != 0 ||
+      strcmp(options.reasoning_effort, "medium") != 0 ||
+      options.image_generation)
+    return 1;
+  if (cai_cli_parse_options(7, berget_override, &options) != 1 ||
+      strcmp(options.model, "other-model") != 0 ||
+      strcmp(options.reasoning_effort, "high") != 0)
     return 1;
   if (cai_cli_parse_options(7, custom, &options) != 1 ||
       strcmp(options.api_key_env, "CAI_API_KEY") != 0 ||

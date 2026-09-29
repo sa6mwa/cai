@@ -408,8 +408,10 @@ static int cai_client_base_url_is_openrouter(const cai_client_impl *client) {
 
 static int
 cai_client_uses_client_history_continuity(const cai_client_impl *client) {
-  return client != NULL && (client->chatgpt_auth != NULL ||
-                            cai_client_base_url_is_openrouter(client));
+  return client != NULL &&
+         (client->chatgpt_auth != NULL ||
+          client->api_protocol == CAI_API_PROTOCOL_CHAT_COMPLETIONS ||
+          cai_client_base_url_is_openrouter(client));
 }
 
 static void

@@ -1044,6 +1044,7 @@ int cai_client_new_preset_review_agent(cai_client *client,
   const char *identity;
   const char *extension;
   char *repository_instructions;
+  char *review_schema;
   char *skill_catalog_prompt;
   cai_skill_catalog *skill_catalog;
   static const char *const review_suffix_parts[] = {
@@ -1136,6 +1137,7 @@ int cai_client_new_preset_review_agent(cai_client *client,
     return cai_set_error(error, CAI_ERR_INVALID, "client is closed");
   }
   instructions = NULL;
+  review_schema = NULL;
   repository_instructions = NULL;
   skill_catalog_prompt = NULL;
   skill_catalog = NULL;
@@ -1266,12 +1268,67 @@ review_instructions_ready:
           : (preset->default_reasoning_summary != NULL
                  ? preset->default_reasoning_summary
                  : CAI_REASONING_SUMMARY_AUTO);
+  if (client_impl->api_protocol == CAI_API_PROTOCOL_CHAT_COMPLETIONS) {
+    static const char *const review_schema_parts[] = {
+        "{\"type\":\"object\",\"properties\":{\"findings\":{\"type\":\"array\","
+        "\"items\":{\"type\":\"object\",\"properties\":{\"title\":{\"type\":"
+        "\"string\"},\"body\":{\"type\":\"string\"},\"confidence_score\":{"
+        "\"type\":\"number\"},\"priority\":{\"ty",
+        "pe\":\"integer\"},\"code_location\":{\"type\":\"object\","
+        "\"properties\":{\"absolute_file_path\":{\"type\":\"string\"},\"line_"
+        "range\":{\"type\":\"object\",\"properties\":{\"start\":{\"type\":"
+        "\"integer\"},\"end\":{\"type\":\"integer\"}},\"r",
+        "equired\":[\"start\",\"end\"]}},\"required\":[\"absolute_file_path\","
+        "\"line_range\"]}},\"required\":[\"title\",\"body\",\"confidence_"
+        "score\",\"code_location\"]}},\"overall_correctness\":{\"type\":"
+        "\"string\",\"enum\":[\"patch is co",
+        "rrect\",\"patch is "
+        "incorrect\"]},\"overall_explanation\":{\"type\":\"string\"},\"overall_"
+        "confidence_score\":{\"type\":\"number\"}},\"required\":[\"findings\","
+        "\"overall_correctness\",\"overall_explanation\",\"overall_confiden",
+        "ce_score\"]}"};
+    size_t schema_length;
+    size_t schema_offset;
+    size_t schema_i;
+
+    schema_length = 0U;
+    for (schema_i = 0U; schema_i < sizeof(review_schema_parts) /
+                                       sizeof(review_schema_parts[0]);
+         schema_i++) {
+      schema_length += strlen(review_schema_parts[schema_i]);
+    }
+    review_schema =
+        (char *)cai_alloc(&client_impl->allocator, schema_length + 1U);
+    if (review_schema == NULL) {
+      cai_free_mem(&client_impl->allocator, instructions);
+      if (skill_catalog != NULL) {
+        cai_skills_catalog_cleanup(skill_catalog);
+      }
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate review JSON schema");
+    }
+    schema_offset = 0U;
+    for (schema_i = 0U; schema_i < sizeof(review_schema_parts) /
+                                       sizeof(review_schema_parts[0]);
+         schema_i++) {
+      size_t part_length;
+
+      part_length = strlen(review_schema_parts[schema_i]);
+      memcpy(review_schema + schema_offset, review_schema_parts[schema_i],
+             part_length);
+      schema_offset += part_length;
+    }
+    review_schema[schema_offset] = '\0';
+    agent_config.text_format_name = "review_report";
+    agent_config.text_format_schema_json = review_schema;
+  }
   agent_config.tool_choice = CAI_TOOL_CHOICE_AUTO;
   agent_config.disable_parallel_tool_calls = 1;
   agent_config.session_continuity = CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
   agent_config.enable_local_history = 1;
   agent_config.disable_auto_compaction = 1;
   rc = cai_client_new_agent(client, &agent_config, out, error);
+  cai_free_mem(&client_impl->allocator, review_schema);
   cai_free_mem(&client_impl->allocator, instructions);
   if (rc != CAI_OK) {
     if (skill_catalog != NULL) {

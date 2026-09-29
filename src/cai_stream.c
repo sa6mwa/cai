@@ -3428,6 +3428,11 @@ int cai_client_stream_response_internal_with_id(
   if (params == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "params are required");
   }
+  if (client != NULL && CAI_CLIENT_IMPL(client)->api_protocol ==
+                            CAI_API_PROTOCOL_CHAT_COMPLETIONS) {
+    return cai_chat_stream_response(client, params, sinks, out_response_id,
+                                    out_usage, error);
+  }
   return cai_client_stream_response_params_with_id(
       client, params, sinks, out_response_id, out_usage, error);
 }

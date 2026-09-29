@@ -1356,6 +1356,8 @@ int main(int argc, char **argv) {
     client_config.chatgpt_auth = state.auth;
   } else if (strcmp(state.options.provider, "openrouter") == 0) {
     cai_client_config_use_openrouter(&client_config);
+  } else if (strcmp(state.options.provider, "berget") == 0) {
+    cai_client_config_use_berget(&client_config);
   } else if (strcmp(state.options.provider, "custom") == 0) {
     client_config.base_url = state.options.endpoint;
     client_config.api_key_env = state.options.api_key_env;
