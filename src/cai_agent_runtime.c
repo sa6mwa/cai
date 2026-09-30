@@ -931,6 +931,49 @@ static void cai_runtime_log_input_accepted(const cai_agent_runtime *runtime,
       runtime->session_id != NULL ? runtime->session_id : "", kind_name);
 }
 
+static void cai_runtime_log_chat_recovery(const cai_agent_runtime *runtime,
+                                          const char *action, int attempt,
+                                          int exhausted,
+                                          const cai_error *error) {
+  void (*emit)(pslog_logger *, const char *, const char *, ...);
+  if (runtime->logger_disabled || runtime->logger == NULL)
+    return;
+  emit = exhausted ? runtime->logger->warnf : runtime->logger->infof;
+  if (emit != NULL) {
+    emit(runtime->logger, "cai.agent.runtime.chat.recovery",
+         "session_id=%s action=%s attempt=%d exhausted=%b code=%d status=%d "
+         "server_code=%s request_id=%s",
+         runtime->session_id != NULL ? runtime->session_id : "", action,
+         attempt, exhausted, error != NULL ? error->code : CAI_OK,
+         error != NULL ? (int)error->http_status : 0,
+         error != NULL && error->server_code != NULL ? error->server_code : "",
+         error != NULL && error->request_id != NULL ? error->request_id : "");
+  }
+}
+
+static void cai_runtime_log_compaction(const cai_agent_runtime *runtime,
+                                       int started, int rc,
+                                       const cai_error *error) {
+  void (*emit)(pslog_logger *, const char *, const char *, ...);
+  if (runtime->logger_disabled || runtime->logger == NULL)
+    return;
+  emit = rc == CAI_OK              ? runtime->logger->infof
+         : rc == CAI_ERR_CANCELLED ? runtime->logger->debugf
+                                   : runtime->logger->warnf;
+  if (emit != NULL) {
+    emit(runtime->logger,
+         started ? "cai.agent.runtime.compaction.start"
+                 : "cai.agent.runtime.compaction.done",
+         "session_id=%s code=%d error=%s detail=%s",
+         runtime->session_id != NULL ? runtime->session_id : "", rc,
+         rc != CAI_OK && error != NULL && error->message != NULL
+             ? error->message
+             : "",
+         rc != CAI_OK && error != NULL && error->detail != NULL ? error->detail
+                                                                : "");
+  }
+}
+
 static void cai_runtime_log_tool_event(const cai_agent_runtime *runtime,
                                        const cai_tool_event *event,
                                        int action) {
@@ -3646,6 +3689,7 @@ static int cai_runtime_compact(cai_agent_runtime *runtime,
   snapshot = NULL;
   compaction_committed = 0;
   budget_limited = 0;
+  cai_runtime_log_compaction(runtime, 1, CAI_OK, NULL);
   if (runtime->session_store != NULL) {
     /* Responses V2 replaces live history before the durable checkpoint. Keep
      * a complete state snapshot until that checkpoint commits so a failed
@@ -3660,6 +3704,7 @@ static int cai_runtime_compact(cai_agent_runtime *runtime,
     }
     if (rc != CAI_OK) {
       cai_source_close(snapshot);
+      cai_runtime_log_compaction(runtime, 0, rc, error);
       return rc;
     }
   }
@@ -3727,6 +3772,7 @@ static int cai_runtime_compact(cai_agent_runtime *runtime,
     cai_runtime_emit_compaction_event(
         runtime, CAI_AGENT_EVENT_COMPACTION_COMPLETED, "Made room to continue");
   }
+  cai_runtime_log_compaction(runtime, 0, rc, error);
   return rc;
 }
 
@@ -4992,6 +5038,8 @@ static void *cai_runtime_worker(void *context) {
         if (cai_runtime_chat_context_overflow(&error) &&
             overflow_retried == 0) {
           overflow_retried = 1;
+          cai_runtime_log_chat_recovery(runtime, "compact", overflow_retried, 0,
+                                        &error);
           cai_error_cleanup(&error);
           cai_error_init(&error);
           rc = cai_runtime_compact(runtime, &budget_limited, &error);
@@ -5001,8 +5049,17 @@ static void *cai_runtime_worker(void *context) {
                    strcmp(error.server_code, "output_length") == 0 &&
                    output_continuations < 3) {
           output_continuations++;
+          cai_runtime_log_chat_recovery(runtime, "continue",
+                                        output_continuations, 0, &error);
           rc = CAI_OK;
         } else {
+          if (cai_runtime_chat_context_overflow(&error))
+            cai_runtime_log_chat_recovery(runtime, "compact", overflow_retried,
+                                          1, &error);
+          else if (error.server_code != NULL &&
+                   strcmp(error.server_code, "output_length") == 0)
+            cai_runtime_log_chat_recovery(runtime, "continue",
+                                          output_continuations, 1, &error);
           break;
         }
         cai_error_cleanup(&error);

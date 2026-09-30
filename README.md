@@ -683,11 +683,20 @@ Current cai-owned log events cover client setup, runtime open/input/tool/
 subagent lifecycle, OpenRouter server-continuity
 warnings, HTTP request start/completion, API error status responses, transport
 failures, and configured HTTP response-size limit failures. API keys and
-request/response bodies are not logged; runtime logs likewise exclude user
-prompts, tool arguments, delegated instructions, and streamed model output.
+normal request/response payloads are not logged; runtime logs likewise exclude
+user prompts, tool arguments, delegated instructions, and streamed model output.
 HTTP request starts are trace-level,
 successful completions are debug-level, 4xx API responses are warn-level, and
-5xx/transport failures are error-level.
+5xx/transport failures are error-level. Chat Completions also logs the final
+stream result (including HTTP status, model, error code, provider error detail,
+and request ID), so HTTP 200 inference errors, invalid streams, and failed
+callbacks remain visible. Cancellation is debug-level; output cutoffs and
+compaction/continuation attempts are info-level. Exhausted recovery attempts
+and failed compactions are warn-level. Runtime compaction completion is logged
+after checkpoint/rollback handling. Model catalog source/cache selection is
+debug-level; failed refreshes and fallback to configured metadata are warn-level.
+These diagnostics exclude normal conversation content; cai's CLI separately
+logs conversation events as described above.
 
 ## Agent Instructions
 

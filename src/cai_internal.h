@@ -221,6 +221,14 @@ void cai_log_http_transport_error(const cai_client_impl *client,
 void cai_log_http_response_limit(const cai_client_impl *client,
                                  const char *method, const char *path,
                                  size_t limit);
+void cai_log_chat_result(const cai_client_impl *client, const char *model,
+                         int rc, long http_status, const char *request_id,
+                         const cai_error *error);
+void cai_log_chat_compaction(const cai_client_impl *client, const char *model,
+                             int started, size_t history_bytes, int rc,
+                             const cai_error *error);
+void cai_log_model_catalog(const cai_client_impl *client, const char *source,
+                           size_t count, int rc, const cai_error *error);
 
 struct cai_content_part {
   char *type;

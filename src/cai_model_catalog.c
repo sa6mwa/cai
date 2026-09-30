@@ -816,6 +816,7 @@ static int cai_model_catalog_install_response(cai_client *client,
   cai_model_catalog_close(impl->model_catalog);
   impl->model_catalog = catalog;
   impl->model_catalog_fetched_at = time(NULL);
+  cai_log_model_catalog(impl, "provider", catalog->count, CAI_OK, NULL);
   return CAI_OK;
 }
 
@@ -863,10 +864,14 @@ int cai_client_list_models(cai_client *client,
         now >= impl->model_catalog_fetched_at &&
         now - impl->model_catalog_fetched_at <=
             CAI_MODEL_CATALOG_CACHE_SECONDS))) {
+    cai_log_model_catalog(impl, "cache", impl->model_catalog->count, CAI_OK,
+                          NULL);
     return cai_model_catalog_clone(impl->model_catalog, out, error);
   }
   if (policy == NULL) {
     if (impl->fallback_catalog != NULL) {
+      cai_log_model_catalog(impl, "configured", impl->fallback_catalog->count,
+                            CAI_OK, NULL);
       return cai_model_catalog_clone(impl->fallback_catalog, out, error);
     }
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -875,6 +880,8 @@ int cai_client_list_models(cai_client *client,
   }
   if (strategy == CAI_MODEL_CATALOG_REFRESH_OFFLINE) {
     if (impl->fallback_catalog != NULL) {
+      cai_log_model_catalog(impl, "configured", impl->fallback_catalog->count,
+                            CAI_OK, NULL);
       return cai_model_catalog_clone(impl->fallback_catalog, out, error);
     }
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -897,10 +904,13 @@ int cai_client_list_models(cai_client *client,
   if (rc != CAI_OK) {
     if (impl->fallback_catalog != NULL &&
         strategy == CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED) {
+      cai_log_model_catalog(impl, "fallback", impl->fallback_catalog->count, rc,
+                            error);
       cai_error_cleanup(error);
       cai_error_init(error);
       return cai_model_catalog_clone(impl->fallback_catalog, out, error);
     }
+    cai_log_model_catalog(impl, "provider", 0U, rc, error);
     return rc;
   }
   return cai_model_catalog_clone(impl->model_catalog, out, error);

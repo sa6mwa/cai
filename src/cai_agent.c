@@ -5154,7 +5154,18 @@ int cai_session_compact_with_sinks(cai_session *session,
                            "Chat Completions compaction requires committed "
                            "local history and no pending inputs");
     }
-    return cai_session_compact_chat(session, caller_sinks, error);
+    cai_log_chat_compaction(CAI_SESSION_CLIENT_IMPL(session),
+                            CAI_SESSION_AGENT_IMPL(session)->model, 1,
+                            CAI_SESSION_IMPL(session)->history.size_fn(
+                                &CAI_SESSION_IMPL(session)->history),
+                            CAI_OK, NULL);
+    rc = cai_session_compact_chat(session, caller_sinks, error);
+    cai_log_chat_compaction(CAI_SESSION_CLIENT_IMPL(session),
+                            CAI_SESSION_AGENT_IMPL(session)->model, 0,
+                            CAI_SESSION_IMPL(session)->history.size_fn(
+                                &CAI_SESSION_IMPL(session)->history),
+                            rc, error);
+    return rc;
   }
   if (!CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
     return cai_set_error(error, CAI_ERR_INVALID,

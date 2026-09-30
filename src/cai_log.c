@@ -109,3 +109,81 @@ void cai_log_http_response_limit(const cai_client_impl *client,
              method != NULL ? method : "", path != NULL ? path : "",
              (unsigned int)limit);
 }
+
+/* Log diagnostics, never the request, transcript, or raw SSE payload. */
+void cai_log_chat_result(const cai_client_impl *client, const char *model,
+                         int rc, long http_status, const char *request_id,
+                         const cai_error *error) {
+  pslog_logger *log = cai_logger(client);
+  void (*emit)(pslog_logger *, const char *, const char *, ...);
+
+  if (log == NULL)
+    return;
+  if (rc == CAI_OK || rc == CAI_ERR_CANCELLED)
+    emit = log->debugf;
+  else if (rc == CAI_ERR_LIMIT)
+    emit = log->infof;
+  else if (rc == CAI_ERR_SERVER && http_status >= 400L && http_status < 500L)
+    emit = log->warnf;
+  else if (rc == CAI_ERR_SERVER || rc == CAI_ERR_TRANSPORT ||
+           rc == CAI_ERR_NOMEM)
+    emit = log->errorf;
+  else
+    emit = log->warnf;
+  if (emit != NULL) {
+    emit(log, "cai.chat.stream.done",
+         "model=%s status=%d code=%d server_code=%s request_id=%s error=%s "
+         "detail=%s",
+         model != NULL ? model : "", (int)http_status, rc,
+         error != NULL && error->server_code != NULL ? error->server_code : "",
+         request_id != NULL ? request_id : "",
+         rc != CAI_OK && error != NULL && error->message != NULL
+             ? error->message
+             : "",
+         rc != CAI_OK && error != NULL && error->detail != NULL ? error->detail
+                                                                : "");
+  }
+}
+
+void cai_log_chat_compaction(const cai_client_impl *client, const char *model,
+                             int started, size_t history_bytes, int rc,
+                             const cai_error *error) {
+  pslog_logger *log = cai_logger(client);
+  void (*emit)(pslog_logger *, const char *, const char *, ...);
+
+  if (log == NULL)
+    return;
+  emit = rc == CAI_OK              ? log->infof
+         : rc == CAI_ERR_CANCELLED ? log->debugf
+                                   : log->warnf;
+  if (emit != NULL) {
+    emit(
+        log, started ? "cai.chat.compaction.start" : "cai.chat.compaction.done",
+        "model=%s history_bytes=%lu code=%d error=%s detail=%s",
+        model != NULL ? model : "", (unsigned long)history_bytes, rc,
+        rc != CAI_OK && error != NULL && error->message != NULL ? error->message
+                                                                : "",
+        rc != CAI_OK && error != NULL && error->detail != NULL ? error->detail
+                                                               : "");
+  }
+}
+
+void cai_log_model_catalog(const cai_client_impl *client, const char *source,
+                           size_t count, int rc, const cai_error *error) {
+  pslog_logger *log = cai_logger(client);
+  void (*emit)(pslog_logger *, const char *, const char *, ...);
+
+  if (log == NULL)
+    return;
+  emit = rc != CAI_OK ? log->warnf : log->debugf;
+  if (emit != NULL) {
+    emit(log, "cai.models.catalog",
+         "source=%s models=%lu code=%d error=%s detail=%s",
+         source != NULL ? source : "", (unsigned long)count, rc,
+         rc != CAI_OK && error != NULL && error->message != NULL
+             ? error->message
+             : "",
+         rc != CAI_OK && error != NULL && error->detail != NULL ? error->detail
+                                                                : "");
+  }
+}

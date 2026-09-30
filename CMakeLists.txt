@@ -1169,6 +1169,13 @@ if(CAI_BUILD_TESTS)
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
   target_compile_definitions(cai_tests PRIVATE CAI_TESTING)
   cai_link_internal_consumer(cai_tests)
+  if(CAI_PSLOG_LINK)
+    target_link_libraries(cai_tests PRIVATE ${CAI_PSLOG_LINK})
+  else()
+    message(FATAL_ERROR
+      "The logging integration tests require libpslog. Install libpslog, set "
+      "CAI_PSLOG_LIBRARY, or configure with CAI_BUILD_TESTS=OFF.")
+  endif()
   cai_configure_c_target(cai_tests)
   if(CAI_BUILD_EXAMPLES)
     add_executable(cai_smith_terminal_renderer_test
@@ -1595,6 +1602,8 @@ if(CAI_BUILD_TESTS)
     chat_runtime_overflow_variants
     chat_stream_failure_modes
     chat_connection_failure
+    chat_logging
+    model_catalog_logging
     chat_transport_failure_modes
     chat_failed_tool_stream_preserves_session
     chat_completions_adapter

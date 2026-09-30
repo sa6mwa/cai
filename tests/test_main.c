@@ -826,6 +826,72 @@ static int read_source_text(test_state *state, const char *name,
   return 1;
 }
 
+typedef struct test_log_capture {
+  char buffer[65536];
+  size_t length;
+  int overflow;
+} test_log_capture;
+
+static int test_log_write(void *context, const char *bytes, size_t count,
+                          size_t *written) {
+  test_log_capture *capture = (test_log_capture *)context;
+  *written = 0U;
+  if (count >= sizeof(capture->buffer) - capture->length) {
+    capture->overflow = 1;
+    return -1;
+  }
+  memcpy(capture->buffer + capture->length, bytes, count);
+  capture->length += count;
+  capture->buffer[capture->length] = '\0';
+  *written = count;
+  return 0;
+}
+
+static pslog_logger *test_log_open(test_log_capture *capture) {
+  pslog_config config;
+  memset(capture, 0, sizeof(*capture));
+  pslog_default_config(&config);
+  config.mode = PSLOG_MODE_JSON;
+  config.color = PSLOG_COLOR_NEVER;
+  config.min_level = PSLOG_LEVEL_TRACE;
+  config.timestamps = 0;
+  config.output.write = test_log_write;
+  config.output.userdata = capture;
+  return pslog_new(&config);
+}
+
+static void test_expect_log(test_state *state, const char *name,
+                            const test_log_capture *capture,
+                            const char *message, const char *level,
+                            const char *field) {
+  const char *start = capture->buffer;
+  const char *end;
+  char line[4096];
+  char expected[256];
+  char expected_level[64];
+  size_t length;
+  expect_int(state, name, capture->overflow, 0L);
+  snprintf(expected_level, sizeof(expected_level), "\"lvl\":\"%s\"", level);
+  while (*start != '\0') {
+    end = strchr(start, '\n');
+    length = end != NULL ? (size_t)(end - start) : strlen(start);
+    if (length < sizeof(line)) {
+      memcpy(line, start, length);
+      line[length] = '\0';
+      snprintf(expected, sizeof(expected), "\"msg\":\"%s\"", message);
+      if (strstr(line, expected) != NULL &&
+          strstr(line, expected_level) != NULL &&
+          (field == NULL || strstr(line, field) != NULL)) {
+        return;
+      }
+    }
+    if (end == NULL)
+      break;
+    start = end + 1;
+  }
+  test_fail(state, name, "expected structured log event/field missing");
+}
+
 static int g_test_infof_count = 0;
 static int g_test_tracef_count = 0;
 static int g_test_debugf_count = 0;
@@ -40097,6 +40163,8 @@ static void test_chat_runtime_case(test_state *state, const char *name,
   runtime_event_state events;
   cai_agent_run_state run_state = CAI_AGENT_IDLE;
   cai_error error;
+  test_log_capture logs;
+  pslog_logger *logger;
   struct timespec delay;
   int rc;
   int i;
@@ -40104,8 +40172,10 @@ static void test_chat_runtime_case(test_state *state, const char *name,
   if (http_mock_server_open_script(state, name, script, script_count,
                                    &server) != 0)
     return;
+  logger = test_log_open(&logs);
   cai_error_init(&error);
   cai_client_config_init(&client_config);
+  client_config.logger = logger;
   client_config.api_key = "mock-key";
   client_config.base_url = server.base_url;
   client_config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
@@ -40157,7 +40227,49 @@ static void test_chat_runtime_case(test_state *state, const char *name,
                   store_state.saved_checkpoint, "partial text");
   }
   cai_agent_runtime_close(runtime);
+  if (strcmp(name, "chat_repeated_overflow") == 0) {
+    test_expect_log(state, name, &logs, "cai.agent.runtime.chat.recovery",
+                    "info", "\"exhausted\":false");
+    test_expect_log(state, name, &logs, "cai.agent.runtime.chat.recovery",
+                    "warn", "\"exhausted\":true");
+    test_expect_log(state, name, &logs, "cai.chat.compaction.done", "info",
+                    "\"code\":0");
+    test_expect_log(state, name, &logs, "cai.agent.runtime.compaction.done",
+                    "info", "\"code\":0");
+  } else if (strcmp(name, "chat_summary_failure") == 0) {
+    test_expect_log(state, name, &logs, "cai.chat.compaction.done", "warn",
+                    "summarizer unavailable");
+    test_expect_log(state, name, &logs, "cai.agent.runtime.compaction.done",
+                    "warn", "summarizer unavailable");
+  } else if (strcmp(name, "chat_repeated_cutoff") == 0) {
+    test_expect_log(state, name, &logs, "cai.agent.runtime.chat.recovery",
+                    "info", "\"attempt\":3");
+    test_expect_log(state, name, &logs, "cai.agent.runtime.chat.recovery",
+                    "warn", "\"exhausted\":true");
+  } else if (strcmp(name, "chat_invalid_request") == 0) {
+    expect_int(state, name,
+               strstr(logs.buffer, "cai.agent.runtime.chat.recovery") == NULL,
+               1L);
+  }
+  if (expected_state == CAI_AGENT_COMPLETED) {
+    test_expect_log(state, name, &logs, "cai.agent.runtime.chat.recovery",
+                    "info", "\"action\":\"compact\"");
+    test_expect_log(state, name, &logs, "cai.agent.runtime.compaction.done",
+                    "info", "\"code\":0");
+    expect_int(state, name, strstr(logs.buffer, "\"exhausted\":true") == NULL,
+               1L);
+  } else if (strncmp(name, "chat_rate_limit", 15U) == 0 ||
+             strncmp(name, "chat_quota", 10U) == 0 ||
+             strncmp(name, "chat_outage", 11U) == 0) {
+    expect_int(state, name,
+               strstr(logs.buffer, "cai.agent.runtime.chat.recovery") == NULL,
+               1L);
+  }
+  expect_int(state, name, strstr(logs.buffer, prompt) == NULL, 1L);
+  expect_int(state, name, strstr(logs.buffer, "partial text") == NULL, 1L);
   cai_client_close(client);
+  if (logger != NULL)
+    logger->destroy(logger);
   cai_error_cleanup(&error);
   expect_child_exit(state, name, server.pid, &server.child_status);
 }
@@ -40677,6 +40789,8 @@ static void test_chat_stream_failure_modes(test_state *state) {
     fail_write_state rejected_sink;
     write_state output;
     cai_error error;
+    test_log_capture logs;
+    pslog_logger *logger;
     int rc;
 
     memset(script, 0, sizeof(script));
@@ -40692,9 +40806,11 @@ static void test_chat_stream_failure_modes(test_state *state) {
     if (http_mock_server_open_script(state, cases[i].name, script, 2U,
                                      &server) != 0)
       continue;
+    logger = test_log_open(&logs);
     cai_error_init(&error);
     cai_client_config_init(&config);
     cai_client_config_use_berget(&config);
+    config.logger = logger;
     config.api_key = "fixture-key";
     config.base_url = server.base_url;
     config.http_2_disabled = 1;
@@ -40740,6 +40856,31 @@ static void test_chat_stream_failure_modes(test_state *state) {
           client, params, &sinks, NULL, NULL,
           cases[i].reject_callback == 4 ? NULL : &error);
       expect_int(state, cases[i].name, rc, cases[i].code);
+      {
+        char field[128];
+        const char *level =
+            cases[i].code == CAI_ERR_LIMIT ? "info"
+            : cases[i].code == CAI_ERR_TRANSPORT ||
+                    (cases[i].code == CAI_ERR_SERVER &&
+                     (cases[i].status < 400 || cases[i].status >= 500))
+                ? "error"
+                : "warn";
+        snprintf(field, sizeof(field), "\"code\":%d", cases[i].code);
+        test_expect_log(state, cases[i].name, &logs, "cai.chat.stream.done",
+                        level, field);
+        test_expect_log(state, cases[i].name, &logs, "cai.chat.stream.done",
+                        level, "\"request_id\":\"req_berget_failure\"");
+        if (cases[i].server_code != NULL) {
+          snprintf(field, sizeof(field), "\"server_code\":\"%s\"",
+                   cases[i].server_code);
+          test_expect_log(state, cases[i].name, &logs, "cai.chat.stream.done",
+                          level, field);
+        }
+        expect_int(state, cases[i].name,
+                   strstr(logs.buffer, "fixture-key") == NULL, 1L);
+        expect_int(state, cases[i].name,
+                   strstr(logs.buffer, "failure test") == NULL, 1L);
+      }
       if (cases[i].detail != NULL &&
           (error.detail == NULL ||
            strstr(error.detail, cases[i].detail) == NULL) &&
@@ -40775,10 +40916,16 @@ static void test_chat_stream_failure_modes(test_state *state) {
                                                 NULL, &error);
       expect_int(state, cases[i].name, rc, CAI_OK);
       expect_str(state, cases[i].name, output.buffer, "healthy reply");
+      test_expect_log(state, cases[i].name, &logs, "cai.chat.stream.done",
+                      "debug", "\"code\":0");
+      expect_int(state, cases[i].name,
+                 strstr(logs.buffer, "healthy reply") == NULL, 1L);
     }
     cai_response_create_params_destroy(params);
     cai_sink_close(sink);
     cai_client_close(client);
+    if (logger != NULL)
+      logger->destroy(logger);
     cai_error_cleanup(&error);
     expect_child_exit(state, cases[i].name, server.pid, &server.child_status);
   }
@@ -40820,6 +40967,8 @@ static void test_chat_transport_failure_modes(test_state *state) {
     double cancel_deadline;
     write_state output;
     cai_error error;
+    test_log_capture logs;
+    pslog_logger *logger;
     char url[128];
     int rc;
 
@@ -40889,7 +41038,9 @@ static void test_chat_transport_failure_modes(test_state *state) {
     close(pipe_fds[0]);
     snprintf(url, sizeof(url), "http://127.0.0.1:%d/v1", port);
     cai_error_init(&error);
+    logger = test_log_open(&logs);
     cai_client_config_init(&config);
+    config.logger = logger;
     cai_client_config_use_berget(&config);
     config.api_key = "fixture-key";
     config.base_url = url;
@@ -40929,6 +41080,14 @@ static void test_chat_transport_failure_modes(test_state *state) {
       expect_int(state, names[mode], rc,
                  mode == 3 ? CAI_ERR_CANCELLED : CAI_ERR_TRANSPORT);
       expect_int(state, names[mode], completed.count, 0L);
+      test_expect_log(state, names[mode], &logs, "cai.chat.stream.done",
+                      mode == 3 ? "debug" : "error", NULL);
+      if (mode != 3)
+        test_expect_log(state, names[mode], &logs, "cai.http.transport_error",
+                        "error", NULL);
+      else
+        expect_int(state, names[mode],
+                   strstr(logs.buffer, "cai.http.transport_error") == NULL, 1L);
       if (mode == 1) {
         expect_str(state, names[mode], output.buffer, "partial");
         expect_str(state, names[mode], error.request_id, "req_dropped");
@@ -40949,6 +41108,8 @@ static void test_chat_transport_failure_modes(test_state *state) {
     cai_sink_close(sink);
     cai_response_create_params_destroy(params);
     cai_client_close(client);
+    if (logger != NULL)
+      logger->destroy(logger);
     cai_error_cleanup(&error);
     expect_child_exit(state, names[mode], pid, &child_status);
   }
@@ -41082,6 +41243,177 @@ static void test_chat_failed_tool_stream_preserves_session(test_state *state) {
     expect_child_exit(state, "chat_tool_failure", server.pid,
                       &server.child_status);
   }
+}
+
+static void test_chat_logging(test_state *state) {
+  static const char prefix[] =
+      "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"";
+  static const char suffix[] =
+      "\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+  char *body = (char *)malloc(sizeof(prefix) + 70000U + sizeof(suffix));
+  int mode;
+  if (body == NULL) {
+    test_fail(state, "chat_logging", "allocation failed");
+    return;
+  }
+  memcpy(body, prefix, sizeof(prefix) - 1U);
+  memset(body + sizeof(prefix) - 1U, 'x', 70000U);
+  memcpy(body + sizeof(prefix) - 1U + 70000U, suffix, sizeof(suffix));
+  for (mode = 0; mode < 4; mode++) {
+    mock_http_expectation script;
+    http_mock_server server;
+    cai_client_config config;
+    cai_client *client = NULL;
+    cai_response_create_params *params = NULL;
+    cai_stream_sinks sinks;
+    stream_response_completed_state completed;
+    test_log_capture logs;
+    pslog_logger *logger;
+    pslog_logger partial_logger;
+    cai_error error;
+    char field[128];
+    int rc;
+
+    memset(&script, 0, sizeof(script));
+    script.request_prefix = "POST /v1/chat/completions HTTP/";
+    script.status = mode == 1 ? 500 : 200;
+    script.content_type = mode == 1 ? "application/json" : "text/event-stream";
+    script.body =
+        mode == 1 ? "{\"error\":{\"message\":\"unavailable\"}}" : body;
+    if (http_mock_server_open_script(state, "chat_logging", &script, 1U,
+                                     &server) != 0)
+      continue;
+    logger = test_log_open(&logs);
+    expect_int(state, "chat_logging_logger", logger != NULL, 1L);
+    memset(&partial_logger, 0, sizeof(partial_logger));
+    cai_error_init(&error);
+    cai_client_config_init(&config);
+    config.api_key = "private-api-key";
+    config.base_url = server.base_url;
+    config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
+    config.http_2_disabled = 1;
+    config.timeout_ms = 1000L;
+    config.logger = mode == 2 ? NULL : mode == 3 ? &partial_logger : logger;
+    config.logger_disabled = mode == 1;
+    cai_stream_sinks_init(&sinks);
+    memset(&completed, 0, sizeof(completed));
+    sinks.response_completed = test_stream_response_completed;
+    sinks.response_completed_context = &completed;
+    rc = cai_client_open(&config, &client, &error);
+    if (rc == CAI_OK)
+      rc = cai_response_create_params_new(&params, &error);
+    if (rc == CAI_OK)
+      rc = params->set_model(params, "test-model", &error);
+    if (rc == CAI_OK)
+      rc = params->add_text(params, "user", "private-user-prompt", &error);
+    if (rc == CAI_OK)
+      rc = cai_client_stream_response_with_id(client, params, &sinks, NULL,
+                                              NULL, &error);
+    expect_int(state, "chat_logging_result", rc,
+               mode == 1 ? CAI_ERR_SERVER : CAI_OK);
+    if (mode == 0) {
+      snprintf(field, sizeof(field), "\"response_bytes\":%u",
+               (unsigned int)strlen(body));
+      test_expect_log(state, "chat_logging_full_bytes", &logs,
+                      "cai.http.request.done", "debug", field);
+      test_expect_log(state, "chat_logging_success", &logs,
+                      "cai.chat.stream.done", "debug", "\"code\":0");
+      expect_int(state, "chat_logging_private_key",
+                 strstr(logs.buffer, "private-api-key") == NULL, 1L);
+      expect_int(state, "chat_logging_private_prompt",
+                 strstr(logs.buffer, "private-user-prompt") == NULL, 1L);
+      expect_int(state, "chat_logging_no_response_body",
+                 strstr(logs.buffer, "xxxxxxxxxx") == NULL, 1L);
+    } else {
+      expect_int(state, "chat_logging_disabled", (long)logs.length, 0L);
+    }
+    cai_response_create_params_destroy(params);
+    cai_client_close(client);
+    if (logger != NULL)
+      logger->destroy(logger);
+    cai_error_cleanup(&error);
+    expect_child_exit(state, "chat_logging", server.pid, &server.child_status);
+  }
+  free(body);
+}
+
+static void test_model_catalog_logging(test_state *state) {
+  static const mock_http_expectation script[] = {
+      {"GET /v1/models HTTP/", NULL, 0U, NULL, 0U, 500, "Internal Server Error",
+       "application/json", "req_catalog_outage",
+       "{\"error\":{\"message\":\"catalog unavailable\"}}"},
+      {"GET /v1/models HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "application/json", NULL, "{not json}"},
+      {"GET /v1/models HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "application/json", NULL,
+       "{\"data\":[{\"id\":\"zai-org/GLM-5.3-Flash\"}]}"}};
+  http_mock_server server;
+  cai_client_config config;
+  cai_client *client = NULL;
+  cai_model_catalog *catalog = NULL;
+  test_log_capture logs;
+  pslog_logger *logger;
+  cai_error error;
+  int rc;
+  if (http_mock_server_open_script(state, "model_catalog_logging", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0)
+    return;
+  logger = test_log_open(&logs);
+  cai_error_init(&error);
+  cai_client_config_init(&config);
+  cai_client_config_use_berget(&config);
+  config.api_key = "private-api-key";
+  config.base_url = server.base_url;
+  config.logger = logger;
+  config.model_metadata_json =
+      "{\"models\":[{\"provider\":\"berget\",\"id\":\"zai-org/"
+      "GLM-5.3-Flash\",\"context_window_tokens\":1048576}]}";
+  config.http_2_disabled = 1;
+  config.timeout_ms = 1000L;
+  rc = cai_client_open(&config, &client, &error);
+  expect_int(state, "catalog_logging_open", rc, CAI_OK);
+  if (rc == CAI_OK) {
+    /* The loopback fixture uses the same catalog policy as the real endpoint.
+     */
+    CAI_CLIENT_IMPL(client)->catalog_policy_origin = CAI_BERGET_BASE_URL;
+    rc = cai_client_list_models(
+        client, CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED, &catalog, &error);
+    expect_int(state, "catalog_logging_fallback", rc, CAI_OK);
+    expect_int(state, "catalog_logging_cleared_error", error.code, CAI_OK);
+    test_expect_log(state, "catalog_logging_fallback_source", &logs,
+                    "cai.models.catalog", "warn", "\"source\":\"fallback\"");
+    test_expect_log(state, "catalog_logging_original_error", &logs,
+                    "cai.models.catalog", "warn", "catalog unavailable");
+    cai_model_catalog_close(catalog);
+    catalog = NULL;
+    rc = cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_ONLINE,
+                                &catalog, &error);
+    expect_int(state, "catalog_logging_parse_failure", rc, CAI_ERR_PROTOCOL);
+    test_expect_log(state, "catalog_logging_parse_event", &logs,
+                    "cai.models.catalog", "warn", "\"source\":\"provider\"");
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    rc = cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_ONLINE,
+                                &catalog, &error);
+    expect_int(state, "catalog_logging_provider", rc, CAI_OK);
+    test_expect_log(state, "catalog_logging_provider_event", &logs,
+                    "cai.models.catalog", "debug", "\"models\":1");
+    cai_model_catalog_close(catalog);
+    catalog = NULL;
+    rc = cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_OFFLINE,
+                                &catalog, &error);
+    expect_int(state, "catalog_logging_cache", rc, CAI_OK);
+    test_expect_log(state, "catalog_logging_cache_event", &logs,
+                    "cai.models.catalog", "debug", "\"source\":\"cache\"");
+  }
+  cai_model_catalog_close(catalog);
+  cai_client_close(client);
+  if (logger != NULL)
+    logger->destroy(logger);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "model_catalog_logging", server.pid,
+                    &server.child_status);
 }
 
 static void test_chat_connection_failure(test_state *state) {
@@ -47408,6 +47740,8 @@ static const test_entry test_entries[] = {
     {"chat_runtime_overflow_variants", test_chat_runtime_overflow_variants},
     {"chat_stream_failure_modes", test_chat_stream_failure_modes},
     {"chat_connection_failure", test_chat_connection_failure},
+    {"chat_logging", test_chat_logging},
+    {"model_catalog_logging", test_model_catalog_logging},
     {"chat_transport_failure_modes", test_chat_transport_failure_modes},
     {"chat_failed_tool_stream_preserves_session",
      test_chat_failed_tool_stream_preserves_session},

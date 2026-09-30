@@ -1059,6 +1059,7 @@ typedef struct cai_chat_stream_state {
   size_t tool_count;
   char *body;
   size_t body_length;
+  size_t response_bytes;
   int failure_code;
   int completed;
   int length_finish;
@@ -1788,6 +1789,7 @@ static size_t cai_chat_curl_write(char *ptr, size_t size, size_t nmemb,
 
   state = (cai_chat_stream_state *)user;
   count = size * nmemb;
+  state->response_bytes += count;
   copy = count;
   if (copy > 65536U - state->body_length) {
     copy = 65536U - state->body_length;
@@ -2008,7 +2010,7 @@ int cai_chat_stream_response(cai_client *client,
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
     if (curl_rc == CURLE_OK) {
       cai_log_http_request_done(impl, "POST", "chat/completions", http_status,
-                                state.body_length, request_id);
+                                state.response_bytes, request_id);
     }
   }
   if (curl != NULL) {
@@ -2047,6 +2049,9 @@ int cai_chat_stream_response(cai_client *client,
           "Chat Completions HTTP request failed",
           curl_error[0] != '\0' ? curl_error : curl_easy_strerror(curl_rc),
           NULL, request_id);
+      cai_log_http_transport_error(
+          impl, "POST", "chat/completions",
+          curl_error[0] != '\0' ? curl_error : curl_easy_strerror(curl_rc));
     }
   }
   if (rc == CAI_OK && upload_rc != CAI_OK) {
@@ -2085,6 +2090,7 @@ int cai_chat_stream_response(cai_client *client,
   for (i = 0U; rc == CAI_OK && i < state.tool_count; i++) {
     rc = cai_chat_emit_tool_done(&state, i);
   }
+  cai_log_chat_result(impl, params->model, rc, http_status, request_id, error);
   curl_slist_free_all(headers);
   cai_free_mem(&impl->allocator, url);
   cai_free_mem(NULL, request_id);
