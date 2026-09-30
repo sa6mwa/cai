@@ -2,12 +2,24 @@
 
 ## Provider catalog fallback
 
-`cai_client_list_models` fetches the live ChatGPT or Berget catalog when
-available. Berget's `GET /v1/models` currently includes text, rerank,
+`cai_client_list_models` selects a catalog policy by the exact API endpoint
+host. `chatgpt.com` uses the Codex account catalog; `api.berget.ai` uses
+`GET /v1/models`. Berget's catalog currently includes text, rerank,
 embedding, speech-to-text, and system-one models. The adapter includes every
 returned model; `model_type` identifies which ones are usable for chat. The
 catalog is cached for five minutes per client. Other providers can use the
 JSON fallback catalog directly.
+
+Berget does not report context windows. `src/cai_model_contexts.h` contains
+model-owner published token limits for its text, rerank, and embedding models,
+with a source URL beside each value. These are available to libcai at client
+open, even before catalog discovery. They describe the model architecture;
+Berget's serving limit may be lower. A provider-reported context window wins,
+then an optional JSON value, then the compiled model-card value. Update this
+small header as published limits change. Model IDs, availability, types,
+capabilities, lifecycle, and EUR prices come from Berget's live API; no
+snapshot of those fields is bundled. Offline catalog listing requires a prior
+live fetch in the same client or an optional JSON file.
 
 The CLI reads `$XDG_CONFIG_HOME/cai/models.json`, falling back to
 `$HOME/.config/cai/models.json`. `--config-dir` changes the base directory;
@@ -24,7 +36,6 @@ The schema is:
       "provider": "berget",
       "id": "zai-org/GLM-5.3-Flash",
       "context_window_tokens": 131072,
-      "auto_compact_token_limit": 104857,
       "capabilities": { "streaming": true, "vision": true, "function_calling": true },
       "pricing": { "currency": "EUR", "input": 0.2, "output": 0.8 }
     }

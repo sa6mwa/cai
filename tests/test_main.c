@@ -28012,6 +28012,7 @@ static void test_agent_runtime_model_switch(test_state *state) {
   expect_int(state, "runtime_model_switch_client",
              cai_client_open(&client_config, &client, &error), CAI_OK);
   if (client != NULL) {
+    CAI_CLIENT_IMPL(client)->catalog_policy_origin = CAI_CHATGPT_CODEX_BASE_URL;
     expect_int(state, "runtime_model_switch_catalog_fetch",
                cai_client_list_models(
                    client, CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED,
@@ -28338,6 +28339,9 @@ test_agent_runtime_model_switch_catalog_recovery(test_state *state) {
   client_config.http_2_disabled = 1;
   expect_int(state, "runtime_model_switch_catalog_recovery_client",
              cai_client_open(&client_config, &client, &error), CAI_OK);
+  if (client != NULL) {
+    CAI_CLIENT_IMPL(client)->catalog_policy_origin = CAI_CHATGPT_CODEX_BASE_URL;
+  }
   cai_agent_runtime_config_init(&runtime_config);
   runtime_config.workspace_directory = "/tmp";
   runtime_config.model = CAI_MODEL_GPT_6_ASTRA;
@@ -28455,6 +28459,9 @@ test_agent_runtime_model_switch_live_catalog_outage(test_state *state) {
   client_config.http_2_disabled = 1;
   expect_int(state, "runtime_live_catalog_outage_client",
              cai_client_open(&client_config, &client, &error), CAI_OK);
+  if (client != NULL) {
+    CAI_CLIENT_IMPL(client)->catalog_policy_origin = CAI_CHATGPT_CODEX_BASE_URL;
+  }
   cai_agent_runtime_config_init(&runtime_config);
   runtime_config.workspace_directory = "/tmp";
   runtime_config.model = CAI_MODEL_GPT_5_5;
@@ -38862,6 +38869,20 @@ static void test_agent_auto_compaction(test_state *state) {
 }
 
 static void test_provider_model_metadata(test_state *state) {
+  static const struct {
+    const char *id;
+    long long context;
+  } berget_contexts[] = {
+      {"Qwen/Qwen3.8-27B-FP8", 262144LL},
+      {"mistralai/Mistral-Small-3.2-24B-Instruct-2506", 131072LL},
+      {"zai-org/GLM-5.3-Flash", 1048576LL},
+      {"moonshotai/Kimi-K3", 1048576LL},
+      {"google/gemma-4-31B-it", 262144LL},
+      {"BAAI/bge-reranker-v2-m3", 8192LL},
+      {"Qwen/Qwen3.5-2B", 262144LL},
+      {"convaiinnovations/laya", 512LL},
+      {"intfloat/multilingual-e5-large-instruct", 512LL},
+      {"intfloat/multilingual-e5-large", 512LL}};
   static const char *berget_ids[] = {
       "Qwen/Qwen3.8-27B-FP8",
       "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
@@ -38889,6 +38910,9 @@ static void test_provider_model_metadata(test_state *state) {
       "\"model_type\":\"speech-to-text\",\"pricing\":{"
       "\"currency\":\"EUR\",\"unit\":\"€ / second\","
       "\"input\":0.001,\"output\":0.001}}]}";
+  static const char live_context_catalog[] =
+      "{\"data\":[{\"id\":\"zai-org/GLM-5.3-Flash\","
+      "\"context_window_tokens\":65536}]}";
   static const char fallback[] =
       "{\"models\":[{\"provider\":\"berget\","
       "\"id\":\"zai-org/GLM-5.3-Flash\","
@@ -38896,6 +38920,7 @@ static void test_provider_model_metadata(test_state *state) {
       "\"pricing\":{\"currency\":\"EUR\",\"input\":9,\"output\":9}},"
       "{\"provider\":\"berget\",\"id\":\"BAAI/rerank\","
       "\"capabilities\":{\"vision\":true}},"
+      "{\"provider\":\"berget\",\"id\":\"google/gemma-4-31B-it\"},"
       "{\"provider\":\"custom\",\"id\":\"test-model\","
       "\"context_window_tokens\":32768,"
       "\"pricing\":{\"currency\":\"USD\",\"input\":1,\"output\":2}}]}";
@@ -38910,8 +38935,6 @@ static void test_provider_model_metadata(test_state *state) {
       "\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}\n\n"
       "data: [DONE]\n\n";
   static const mock_http_expectation script[] = {
-      {"GET /v1/models HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
-       "application/json", NULL, live_catalog},
       {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
        "text/event-stream", NULL, response_body}};
   cai_client_config config;
@@ -38938,6 +38961,128 @@ static void test_provider_model_metadata(test_state *state) {
   agent = NULL;
   session = NULL;
   response = NULL;
+  cai_client_config_init(&config);
+  cai_client_config_use_berget(&config);
+  config.api_key = "mock-key";
+  config.metadata_provider = "custom";
+  expect_int(state, "provider_metadata_endpoint_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  if (client != NULL) {
+    expect_int(state, "provider_metadata_endpoint_policy",
+               cai_client_has_live_model_catalog(client), 1L);
+    for (i = 0U; i < sizeof(berget_contexts) / sizeof(berget_contexts[0]);
+         i++) {
+      expect_int(state, berget_contexts[i].id,
+                 cai_client_model_context_window(client, berget_contexts[i].id),
+                 berget_contexts[i].context);
+    }
+    expect_int(state, "provider_metadata_seeded_context",
+               cai_client_model_context_window(client, "zai-org/GLM-5.3-Flash"),
+               1048576LL);
+    expect_int(state, "provider_metadata_seeded_embedding",
+               cai_client_model_context_window(
+                   client, "intfloat/multilingual-e5-large"),
+               512LL);
+    expect_int(
+        state, "provider_metadata_no_speech_token_context",
+        cai_client_model_context_window(client, "KBLab/kb-whisper-large"), 0LL);
+    expect_int(state, "provider_metadata_no_offline_snapshot",
+               cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_OFFLINE,
+                                      &catalog, &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "provider_metadata_endpoint_import",
+               cai_model_catalog_import_provider_response(client, live_catalog,
+                                                          &error),
+               CAI_OK);
+    expect_int(state, "provider_metadata_endpoint_cached",
+               cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_OFFLINE,
+                                      &catalog, &error),
+               CAI_OK);
+    if (catalog != NULL) {
+      entry = cai_model_catalog_find(catalog, "zai-org/GLM-5.3-Flash");
+      if (entry != NULL) {
+        expect_int(state, "provider_metadata_live_seeded_context",
+                   entry->context_window_tokens, 1048576LL);
+        expect_str(state, "provider_metadata_live_price_currency",
+                   entry->pricing_currency, "EUR");
+      } else {
+        test_fail(state, "provider_metadata_live_seeded_entry", "missing GLM");
+      }
+      cai_model_catalog_close(catalog);
+      catalog = NULL;
+    }
+    expect_int(state, "provider_metadata_live_context_import",
+               cai_model_catalog_import_provider_response(
+                   client, live_context_catalog, &error),
+               CAI_OK);
+    expect_int(state, "provider_metadata_live_context_precedence",
+               cai_client_model_context_window(client, "zai-org/GLM-5.3-Flash"),
+               65536LL);
+    cai_client_close(client);
+    client = NULL;
+  }
+  config.base_url = "https://api.berget.ai.example/v1";
+  expect_int(state, "provider_metadata_lookalike_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  if (client != NULL) {
+    expect_int(state, "provider_metadata_lookalike_no_policy",
+               cai_client_has_live_model_catalog(client), 0L);
+    expect_int(state, "provider_metadata_lookalike_no_context",
+               cai_client_model_context_window(client, "zai-org/GLM-5.3-Flash"),
+               0LL);
+    cai_client_close(client);
+    client = NULL;
+  }
+  cai_client_config_init(&config);
+  cai_client_config_use_berget(&config);
+  config.api_key = "mock-key";
+  config.model_metadata_json = fallback;
+  expect_int(state, "provider_metadata_override_client",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  if (client != NULL) {
+    expect_int(state, "provider_metadata_user_context_precedence",
+               cai_client_model_context_window(client, "zai-org/GLM-5.3-Flash"),
+               131072LL);
+    expect_int(state, "provider_metadata_fallback_offline",
+               cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_OFFLINE,
+                                      &catalog, &error),
+               CAI_OK);
+    if (catalog != NULL) {
+      entry = cai_model_catalog_find(catalog, "google/gemma-4-31B-it");
+      if (entry != NULL) {
+        expect_int(state, "provider_metadata_fallback_seeded_context",
+                   entry->context_window_tokens, 262144LL);
+      } else {
+        test_fail(state, "provider_metadata_fallback_seeded_entry",
+                  "missing Gemma");
+      }
+      cai_model_catalog_close(catalog);
+      catalog = NULL;
+    }
+    expect_int(state, "provider_metadata_override_import",
+               cai_model_catalog_import_provider_response(client, live_catalog,
+                                                          &error),
+               CAI_OK);
+    expect_int(state, "provider_metadata_override_cached",
+               cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_OFFLINE,
+                                      &catalog, &error),
+               CAI_OK);
+    if (catalog != NULL) {
+      entry = cai_model_catalog_find(catalog, "zai-org/GLM-5.3-Flash");
+      if (entry != NULL) {
+        expect_int(state, "provider_metadata_override_live_context",
+                   entry->context_window_tokens, 131072LL);
+        expect_int(state, "provider_metadata_override_live_price",
+                   (long)(entry->input_price * 10.0 + 0.5), 2L);
+      }
+      cai_model_catalog_close(catalog);
+      catalog = NULL;
+    }
+    cai_client_close(client);
+    client = NULL;
+  }
   if (http_mock_server_open_script(state, "provider_model_metadata", script,
                                    sizeof(script) / sizeof(script[0]),
                                    &server) != 0) {
@@ -38953,6 +39098,12 @@ static void test_provider_model_metadata(test_state *state) {
   expect_int(state, "provider_metadata_client",
              cai_client_open(&config, &client, &error), CAI_OK);
   if (client != NULL) {
+    expect_int(state, "provider_metadata_mock_no_policy",
+               cai_client_has_live_model_catalog(client), 0L);
+    expect_int(state, "provider_metadata_import",
+               cai_model_catalog_import_provider_response(client, live_catalog,
+                                                          &error),
+               CAI_OK);
     expect_int(state, "provider_metadata_live",
                cai_client_list_models(
                    client, CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED,

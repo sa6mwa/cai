@@ -131,8 +131,9 @@ generation. All providers start with medium reasoning;
 (or `~/.config/cai/models.json`); `--model-metadata FILE` overrides it.
 libcai accepts the same JSON through `cai_client_config.model_metadata_json`.
 Berget's live model catalog includes every model it advertises, with model
-type, capabilities, and EUR token prices. Fallback JSON fills fields absent
-from live metadata, such as context windows. See
+type, capabilities, and EUR prices. libcai includes a maintained table of
+model-card context limits for Berget models because its API omits them;
+fallback JSON can override those limits. See
 [model metadata](docs/model-metadata.md) for the schema and precedence.
 `--help` lists the other
 user-facing model, review, instructions, skills, image, terminal, and session

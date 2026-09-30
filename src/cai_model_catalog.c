@@ -1,9 +1,88 @@
 #include "cai_internal.h"
+#include "cai_model_contexts.h"
 
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 
 #define CAI_MODEL_CATALOG_CACHE_SECONDS 300
+
+typedef struct cai_catalog_policy {
+  const char *host;
+  const char *request_path;
+  int provider_format;
+  const cai_model_context_seed *contexts;
+  size_t context_count;
+} cai_catalog_policy;
+
+static const cai_catalog_policy cai_catalog_policies[] = {
+    {"chatgpt.com", "models?client_version=" CAI_VERSION_STRING, 0, NULL, 0U},
+    {"api.berget.ai", "models", 1, cai_berget_contexts,
+     sizeof(cai_berget_contexts) / sizeof(cai_berget_contexts[0])}};
+
+static void cai_model_catalog_seed_contexts(cai_client *client,
+                                            cai_model_catalog *catalog);
+
+static const cai_catalog_policy *cai_catalog_policy_for_url(const char *url) {
+  CURLU *parsed;
+  char *host;
+  const cai_catalog_policy *policy;
+  size_t i;
+
+  if (url == NULL) {
+    return NULL;
+  }
+  parsed = curl_url();
+  if (parsed == NULL) {
+    return NULL;
+  }
+  host = NULL;
+  policy = NULL;
+  if (curl_url_set(parsed, CURLUPART_URL, url, 0U) == CURLUE_OK &&
+      curl_url_get(parsed, CURLUPART_HOST, &host, 0U) == CURLUE_OK) {
+    for (i = 0U;
+         i < sizeof(cai_catalog_policies) / sizeof(cai_catalog_policies[0]);
+         i++) {
+      if (strcasecmp(host, cai_catalog_policies[i].host) == 0) {
+        policy = &cai_catalog_policies[i];
+        break;
+      }
+    }
+  }
+  curl_free(host);
+  curl_url_cleanup(parsed);
+  return policy;
+}
+
+static const cai_catalog_policy *
+cai_client_catalog_policy(const cai_client *client) {
+  const cai_client_impl *impl;
+  if (client == NULL || client->impl == NULL) {
+    return NULL;
+  }
+  impl = CAI_CLIENT_IMPL(client);
+  return cai_catalog_policy_for_url(impl->catalog_policy_origin != NULL
+                                        ? impl->catalog_policy_origin
+                                        : impl->base_url);
+}
+
+int cai_client_has_live_model_catalog(const cai_client *client) {
+  return cai_client_catalog_policy(client) != NULL;
+}
+
+static long long cai_catalog_seed_context(const cai_catalog_policy *policy,
+                                          const char *model) {
+  size_t i;
+  if (policy == NULL || model == NULL) {
+    return 0LL;
+  }
+  for (i = 0U; i < policy->context_count; i++) {
+    if (strcmp(policy->contexts[i].id, model) == 0) {
+      return policy->contexts[i].tokens;
+    }
+  }
+  return 0LL;
+}
 
 typedef struct cai_model_catalog_impl {
   cai_allocator allocator;
@@ -469,6 +548,7 @@ int cai_model_catalog_load_fallback(cai_client *client, const char *json,
   catalog = NULL;
   rc = cai_model_catalog_parse_provider(client, json, 1, &catalog, error);
   if (rc == CAI_OK) {
+    cai_model_catalog_seed_contexts(client, catalog);
     CAI_CLIENT_IMPL(client)->fallback_catalog = catalog;
   }
   return rc;
@@ -575,9 +655,34 @@ long long cai_client_model_context_window(const cai_client *client,
   if (entry != NULL && entry->context_window_tokens > 0LL) {
     return entry->context_window_tokens;
   }
+  if (cai_client_catalog_policy(client) != NULL) {
+    long long seeded =
+        cai_catalog_seed_context(cai_client_catalog_policy(client), model);
+    if (seeded > 0LL) {
+      return seeded;
+    }
+  }
   return cai_client_static_model_matches(client, model)
              ? cai_model_context_window_tokens(model)
              : 0LL;
+}
+
+static void cai_model_catalog_seed_contexts(cai_client *client,
+                                            cai_model_catalog *catalog) {
+  const cai_catalog_policy *policy = cai_client_catalog_policy(client);
+  cai_model_catalog_entry *entries;
+  size_t i;
+
+  if (policy == NULL || policy->context_count == 0U) {
+    return;
+  }
+  entries = ((cai_model_catalog_impl *)catalog->impl)->entries;
+  for (i = 0U; i < catalog->count; i++) {
+    if (entries[i].context_window_tokens == 0LL) {
+      entries[i].context_window_tokens =
+          cai_catalog_seed_context(policy, entries[i].slug);
+    }
+  }
 }
 
 static int cai_model_catalog_merge_fallback(cai_client *client,
@@ -690,17 +795,50 @@ static int cai_model_catalog_parse(cai_client *client, const char *json,
   return CAI_OK;
 }
 
+static int cai_model_catalog_install_response(cai_client *client,
+                                              const char *json,
+                                              int provider_format,
+                                              cai_error *error) {
+  cai_client_impl *impl = CAI_CLIENT_IMPL(client);
+  cai_model_catalog *catalog = NULL;
+  int rc =
+      provider_format
+          ? cai_model_catalog_parse_provider(client, json, 0, &catalog, error)
+          : cai_model_catalog_parse(client, json, &catalog, error);
+  if (rc == CAI_OK && impl->fallback_catalog != NULL) {
+    rc = cai_model_catalog_merge_fallback(client, catalog, error);
+  }
+  if (rc != CAI_OK) {
+    cai_model_catalog_close(catalog);
+    return rc;
+  }
+  cai_model_catalog_seed_contexts(client, catalog);
+  cai_model_catalog_close(impl->model_catalog);
+  impl->model_catalog = catalog;
+  impl->model_catalog_fetched_at = time(NULL);
+  return CAI_OK;
+}
+
+int cai_model_catalog_import_provider_response(cai_client *client,
+                                               const char *json,
+                                               cai_error *error) {
+  if (client == NULL || client->impl == NULL || json == NULL) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "client and provider response are required");
+  }
+  return cai_model_catalog_install_response(client, json, 1, error);
+}
+
 int cai_client_list_models(cai_client *client,
                            cai_model_catalog_refresh_strategy strategy,
                            cai_model_catalog **out, cai_error *error) {
   cai_client_impl *impl;
-  cai_model_catalog *catalog = NULL;
   char *body;
   char *request_id;
   long http_status;
   time_t now;
   int rc;
-  int is_berget;
+  const cai_catalog_policy *policy;
 
   if (out == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -717,15 +855,7 @@ int cai_client_list_models(cai_client *client,
                          "invalid model catalog refresh strategy");
   }
   impl = CAI_CLIENT_IMPL(client);
-  is_berget = strcmp(impl->metadata_provider, "berget") == 0;
-  if (impl->chatgpt_auth == NULL && !is_berget) {
-    if (impl->fallback_catalog != NULL) {
-      return cai_model_catalog_clone(impl->fallback_catalog, out, error);
-    }
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "provider has no model catalog; configure model "
-                         "metadata JSON");
-  }
+  policy = cai_client_catalog_policy(client);
   now = time(NULL);
   if (impl->model_catalog != NULL &&
       (strategy == CAI_MODEL_CATALOG_REFRESH_OFFLINE ||
@@ -734,6 +864,14 @@ int cai_client_list_models(cai_client *client,
         now - impl->model_catalog_fetched_at <=
             CAI_MODEL_CATALOG_CACHE_SECONDS))) {
     return cai_model_catalog_clone(impl->model_catalog, out, error);
+  }
+  if (policy == NULL) {
+    if (impl->fallback_catalog != NULL) {
+      return cai_model_catalog_clone(impl->fallback_catalog, out, error);
+    }
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "provider has no model catalog; configure model "
+                         "metadata JSON");
   }
   if (strategy == CAI_MODEL_CATALOG_REFRESH_OFFLINE) {
     if (impl->fallback_catalog != NULL) {
@@ -745,25 +883,18 @@ int cai_client_list_models(cai_client *client,
   body = NULL;
   request_id = NULL;
   http_status = 0L;
-  rc = cai_http_json_request(
-      client, "GET",
-      is_berget ? "models" : "models?client_version=" CAI_VERSION_STRING, NULL,
-      &body, &http_status, &request_id, error);
+  rc = cai_http_json_request(client, "GET", policy->request_path, NULL, &body,
+                             &http_status, &request_id, error);
   if (rc == CAI_OK && (http_status < 200L || http_status >= 300L)) {
     rc = cai_set_openai_error(error, http_status, body, request_id);
   }
   if (rc == CAI_OK) {
-    rc = is_berget ? cai_model_catalog_parse_provider(client, body, 0, &catalog,
-                                                      error)
-                   : cai_model_catalog_parse(client, body, &catalog, error);
-  }
-  if (rc == CAI_OK && impl->fallback_catalog != NULL) {
-    rc = cai_model_catalog_merge_fallback(client, catalog, error);
+    rc = cai_model_catalog_install_response(client, body,
+                                            policy->provider_format, error);
   }
   cai_free_mem(NULL, body);
   cai_free_mem(NULL, request_id);
   if (rc != CAI_OK) {
-    cai_model_catalog_close(catalog);
     if (impl->fallback_catalog != NULL &&
         strategy == CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED) {
       cai_error_cleanup(error);
@@ -772,8 +903,5 @@ int cai_client_list_models(cai_client *client,
     }
     return rc;
   }
-  cai_model_catalog_close(impl->model_catalog);
-  impl->model_catalog = catalog;
-  impl->model_catalog_fetched_at = now;
   return cai_model_catalog_clone(impl->model_catalog, out, error);
 }

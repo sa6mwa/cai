@@ -226,7 +226,7 @@ typedef struct cai_client_config {
   cai_allocator allocator;
   /** Wire protocol; zero selects the Responses API. */
   cai_api_protocol api_protocol;
-  /** Metadata catalog identity: chatgpt, openai, openrouter, berget, custom. */
+  /** Fallback JSON identity; live catalog policy is selected by URL host. */
   const char *metadata_provider;
   /** Optional JSON fallback catalog; copied and validated at client open. */
   const char *model_metadata_json;
@@ -1602,9 +1602,11 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
 /** Close and destroy a cai client. */
 void cai_client_close(cai_client *client);
 /**
- * List provider models. ChatGPT uses its Codex account catalog, Berget uses
- * /v1/models, and other providers return configured fallback entries.
- * Live fields take precedence over fallback fields. Results are client-cached.
+ * List provider models. Endpoint hosts select live policies: chatgpt.com uses
+ * its Codex account catalog and api.berget.ai uses /v1/models. Other endpoints
+ * return configured fallback entries. Live fields take precedence over JSON;
+ * Berget's compiled model-card context limits fill still-missing values.
+ * Results are client-cached.
  */
 int cai_client_list_models(cai_client *client,
                            cai_model_catalog_refresh_strategy strategy,

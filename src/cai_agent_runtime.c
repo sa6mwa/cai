@@ -6075,8 +6075,7 @@ static int cai_runtime_capture_active_model_metadata(cai_agent_runtime *runtime,
     return CAI_OK;
   }
   if (CAI_CLIENT_IMPL(runtime->client)->chatgpt_auth == NULL &&
-      strcmp(CAI_CLIENT_IMPL(runtime->client)->metadata_provider, "berget") !=
-          0 &&
+      !cai_client_has_live_model_catalog(runtime->client) &&
       CAI_CLIENT_IMPL(runtime->client)->fallback_catalog == NULL) {
     return CAI_OK;
   }
@@ -6222,8 +6221,7 @@ static int cai_runtime_model_switch_metadata(
   *out_next_compact_limit = 0LL;
   *out_catalog_unavailable = 0;
   if (CAI_CLIENT_IMPL(runtime->client)->chatgpt_auth == NULL &&
-      strcmp(CAI_CLIENT_IMPL(runtime->client)->metadata_provider, "berget") !=
-          0 &&
+      !cai_client_has_live_model_catalog(runtime->client) &&
       CAI_CLIENT_IMPL(runtime->client)->fallback_catalog == NULL) {
     return CAI_OK;
   }

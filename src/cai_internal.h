@@ -25,6 +25,9 @@ typedef struct cai_client_impl {
   char *api_key;
   cai_chatgpt_auth *chatgpt_auth;
   char *base_url;
+  /* Effective origin for catalog lookup when a local transport is substituted.
+   */
+  const char *catalog_policy_origin;
   cai_api_protocol api_protocol;
   char *metadata_provider;
   char *organization_id;
@@ -50,6 +53,10 @@ typedef struct cai_client_impl {
 
 int cai_model_catalog_load_fallback(cai_client *client, const char *json,
                                     cai_error *error);
+int cai_model_catalog_import_provider_response(cai_client *client,
+                                               const char *json,
+                                               cai_error *error);
+int cai_client_has_live_model_catalog(const cai_client *client);
 const cai_model_catalog_entry *
 cai_client_cached_model_metadata(const cai_client *client, const char *model);
 int cai_client_model_can_estimate_usd(const cai_client *client,

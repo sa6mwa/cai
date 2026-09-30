@@ -1447,6 +1447,23 @@ int main(int argc, char **argv) {
     cli_print_error(&state, "open client", &error);
     goto cleanup;
   }
+  if (strcmp(state.options.provider, "berget") == 0) {
+    cai_model_catalog *catalog = NULL;
+    rc = cai_client_list_models(state.client,
+                                CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED,
+                                &catalog, &error);
+    cai_model_catalog_close(catalog);
+    if (rc != CAI_OK) {
+      char detail[512];
+      snprintf(detail, sizeof(detail),
+               "Berget model catalog unavailable: %s; context uses "
+               "compiled model-card limits until discovery succeeds",
+               error.message != NULL ? error.message : "unknown error");
+      cli_diagnostic(&state, PSLOG_LEVEL_WARN, detail);
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+    }
+  }
   if (state.auth != NULL) {
     cai_error quota_error;
     cai_client_config quota_config;

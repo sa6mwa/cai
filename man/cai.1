@@ -174,6 +174,8 @@ Environment variable containing the custom provider API key. The default is
 Load provider model metadata fallback JSON from FILE. By default, cai reads
 $XDG_CONFIG_HOME/cai/models.json (or ~/.config/cai/models.json) if it exists.
 Live provider fields take precedence; the fallback fills omitted fields.
+For Berget, libcai also carries model-card context limits when the API omits
+them. A provider value wins over the file, which wins over the compiled limit.
 Berget prices are estimated in EUR and are never converted to USD.
 .TP
 .BR \-m , " " \-\-model " " ID

@@ -42,6 +42,10 @@ berget=$(printf '/status\n/quit\n' | BERGET_API_KEY=fixture "$cli" -p berget -C 
 [[ "$berget" == *"Model"* && "$berget" == *"zai-org/GLM-5.3-Flash"* ]]
 [[ "$berget" == *"Reasoning effort"* && "$berget" == *"medium"* ]]
 [[ "$berget" != *"Weekly limit"* && "$berget" != *"Credits left"* ]]
+mv "$XDG_CONFIG_HOME/cai/models.json" "$fixture/models.saved"
+berget_no_file=$(printf '/status\n/quit\n' | BERGET_API_KEY=fixture "$cli" -p berget -C "$fixture/work")
+[[ "$berget_no_file" == *"Context window"* && "$berget_no_file" == *"1048576"* ]]
+mv "$fixture/models.saved" "$XDG_CONFIG_HOME/cai/models.json"
 printf 'invalid\n' > "$fixture/invalid-models.json"
 if printf '/quit\n' | BERGET_API_KEY=fixture "$cli" -p berget -C "$fixture/work" \
   --model-metadata "$fixture/invalid-models.json" >"$fixture/out" 2>"$fixture/err"; then
