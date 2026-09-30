@@ -1779,8 +1779,9 @@ int cai_session_stream_text(cai_session *session, cai_sink *sink,
 /** Open output text as a streaming source. */
 int cai_session_open_text_source(cai_session *session, cai_source **out,
                                  cai_error *error);
-/** Compact local client history through the Responses compaction-trigger
- * protocol. */
+/** Compact committed local client history. Responses uses the provider's
+ * compaction trigger; Chat Completions summarizes older history in bounded
+ * streamed requests and retains recent turns. */
 int cai_session_compact(cai_session *session, cai_error *error);
 /** Add one user text message and run the session. */
 int cai_session_send_text(cai_session *session, const char *text,

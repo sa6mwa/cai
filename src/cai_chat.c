@@ -1028,6 +1028,7 @@ typedef struct cai_chat_stream_state {
   size_t body_length;
   int failed;
   int completed;
+  int length_finish;
   int done_seen;
   int text_started;
   int reasoning_started;
@@ -1581,19 +1582,18 @@ static int cai_chat_parse_event(cai_chat_stream_state *state) {
       rc = cai_chat_emit_tool_delta(state, &tools[j]);
     }
     if (rc == CAI_OK && choices[i].finish_reason != NULL) {
-      if (state->glm_thinking && state->glm_content_seen &&
-          !state->glm_thinking_done) {
+      if (strcmp(choices[i].finish_reason, "length") == 0) {
+        state->length_finish = 1;
+        state->completed = 1;
+      } else if (state->glm_thinking && state->glm_content_seen &&
+                 !state->glm_thinking_done) {
         rc = cai_set_error(state->error, CAI_ERR_PROTOCOL,
                            "GLM ended before its thinking delimiter; final "
                            "answer was not available");
         break;
-      }
-      if (strcmp(choices[i].finish_reason, "stop") == 0 ||
-          strcmp(choices[i].finish_reason, "tool_calls") == 0) {
+      } else if (strcmp(choices[i].finish_reason, "stop") == 0 ||
+                 strcmp(choices[i].finish_reason, "tool_calls") == 0) {
         state->completed = 1;
-      } else if (strcmp(choices[i].finish_reason, "length") == 0) {
-        rc = cai_set_error(state->error, CAI_ERR_LIMIT,
-                           "Chat Completions output token limit reached");
       } else {
         rc = cai_set_error_detail(state->error, CAI_ERR_PROTOCOL,
                                   "Chat Completions ended unexpectedly",
@@ -1929,6 +1929,18 @@ int cai_chat_stream_response(cai_client *client,
   if (rc == CAI_OK && state.reasoning_started) {
     rc = cai_chat_emit_affix(sinks->reasoning_summary,
                              &sinks->reasoning_summary_suffix, error);
+  }
+  if (rc == CAI_OK && state.length_finish) {
+    long long window = cai_client_model_context_window(client, params->model);
+    int pressure = window > 0LL && state.saw_usage && state.out_usage != NULL &&
+                   state.out_usage->total_tokens >= (window * 9LL) / 10LL;
+    rc = cai_set_error_http(
+        error, CAI_ERR_LIMIT, 0L,
+        pressure ? "Chat Completions context limit reached"
+                 : "Chat Completions output token limit reached",
+        pressure ? "finish_reason=length near model context window"
+                 : "finish_reason=length; continuation is required",
+        pressure ? "context_length_exceeded" : "output_length", request_id);
   }
   for (i = 0U; rc == CAI_OK && i < state.tool_count; i++) {
     rc = cai_chat_emit_tool_done(&state, i);

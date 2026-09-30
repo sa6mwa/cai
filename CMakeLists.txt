@@ -1582,6 +1582,10 @@ if(CAI_BUILD_TESTS)
     conversations
     stream_response_text
     provider_model_metadata
+    chat_client_compaction
+    chat_compaction_failure_preserves_history
+    chat_length_continuation
+    chat_runtime_overflow_recovery
     chat_completions_adapter
     stream_compaction_progress_callback
     stream_upload_setup_failure

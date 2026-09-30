@@ -591,8 +591,12 @@ handling, and session state save/restore. See
   `--max-total-tokens`, or `--max-spend-usd`; pass `0` to disable that lane.
 - Production SDK calls should choose a model explicitly.
 - Ordinary sessions use Responses context management. The agent runtime keeps
-  local client history and, when its advertised context limit is reached,
-  compacts it through the Responses V2 `compaction_trigger` protocol.
+  local client history and compacts it before a known context limit. Responses
+  uses the V2 `compaction_trigger` protocol. Chat Completions providers such as
+  Berget use bounded client-side summaries, retaining recent turns; provider
+  context-overflow errors also trigger one compaction and retry. A streamed
+  `finish_reason=length` near the known context limit triggers compaction and
+  continuation; an output-only cutoff continues without compaction.
 - Local spooled session history is opt-in with `enable_local_history`; default
   sessions rely on OpenAI server-side context through `previous_response_id` or
   Conversations. When enabled, `cai_session_export_history_source` streams the

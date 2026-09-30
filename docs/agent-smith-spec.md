@@ -1521,11 +1521,15 @@ reached. When either model lacks a provider hash, Smith follows Codex and does
 not infer compatibility from a model name or a CAI-maintained table. This policy
 and its reason are persisted in `compaction_started`.
 
-Compaction uses the Responses V2 protocol: CAI sends the complete local client
-history followed by `{"type":"compaction_trigger"}` in a normal streamed
-Responses request. The provider must return exactly one opaque `compaction`
-output item. CAI atomically replaces active context with that item plus bounded
-recent user inputs, then persists the replacement before reporting completion.
+For Responses, compaction uses the V2 protocol: CAI sends the complete local
+client history followed by `{"type":"compaction_trigger"}` in a normal
+streamed Responses request. The provider must return exactly one opaque
+`compaction` output item. For Chat Completions, CAI summarizes older history in
+bounded streamed requests and retains recent complete turns. A context overflow
+error triggers one compaction and retry; a length cutoff near the known context
+limit preserves partial assistant text before compaction and continuation.
+CAI atomically replaces active context with the compacted history, then persists
+the replacement before reporting completion.
 The durable event history remains available to the host separately. If the
 request or checkpoint fails, CAI preserves the original context and reports the
 error; it never silently truncates arbitrary history as a substitute for

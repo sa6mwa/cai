@@ -3740,6 +3740,8 @@ static int cai_runtime_compact_before_request(cai_agent_runtime *runtime,
   long long limit;
   long long context_window;
   size_t history_bytes;
+  long long estimated_history_tokens;
+  int chat;
   int rc;
 
   if (runtime == NULL || runtime->session == NULL) {
@@ -3756,9 +3758,8 @@ static int cai_runtime_compact_before_request(cai_agent_runtime *runtime,
   if (history_bytes == 0U) {
     return CAI_OK;
   }
-  if (!session->has_context_usage) {
-    return CAI_OK;
-  }
+  chat = CAI_SESSION_CLIENT_IMPL(runtime->session)->api_protocol ==
+         CAI_API_PROTOCOL_CHAT_COMPLETIONS;
   limit = runtime->model_auto_compact_token_limit;
   if (limit <= 0LL) {
     limit = cai_model_auto_compact_token_limit(
@@ -3769,8 +3770,16 @@ static int cai_runtime_compact_before_request(cai_agent_runtime *runtime,
     context_window =
         cai_model_context_window_tokens(CAI_AGENT_IMPL(runtime->agent)->model);
   }
-  if ((limit > 0LL && session->context_usage.total_tokens >= limit) ||
-      (context_window > 0LL &&
+  if (chat && limit <= 0LL && context_window > 0LL) {
+    limit = (context_window * 80LL) / 100LL;
+  }
+  estimated_history_tokens = history_bytes > (size_t)LLONG_MAX / 3U
+                                 ? LLONG_MAX
+                                 : (long long)(history_bytes / 3U);
+  if ((limit > 0LL && session->has_context_usage &&
+       session->context_usage.total_tokens >= limit) ||
+      (chat && limit > 0LL && estimated_history_tokens >= limit) ||
+      (context_window > 0LL && session->has_context_usage &&
        session->context_usage.total_tokens >= context_window)) {
     if (cai_runtime_goal_budget_limited(runtime)) {
       return cai_set_error(
@@ -3787,6 +3796,54 @@ static int cai_runtime_compact_before_request(cai_agent_runtime *runtime,
     return rc;
   }
   return CAI_OK;
+}
+
+static int cai_runtime_contains_ci(const char *text, const char *needle) {
+  const unsigned char *start;
+  const unsigned char *match;
+  const unsigned char *expected;
+  if (text == NULL || needle == NULL)
+    return 0;
+  for (start = (const unsigned char *)text; *start != '\0'; start++) {
+    match = start;
+    expected = (const unsigned char *)needle;
+    while (*match != '\0' && *expected != '\0' &&
+           tolower(*match) == tolower(*expected)) {
+      match++;
+      expected++;
+    }
+    if (*expected == '\0')
+      return 1;
+  }
+  return 0;
+}
+
+static int cai_runtime_chat_context_overflow(const cai_error *error) {
+  const char *detail;
+  if (error == NULL)
+    return 0;
+  if (error->server_code != NULL &&
+      (strcmp(error->server_code, "context_length_exceeded") == 0 ||
+       strcmp(error->server_code, "prompt_too_long") == 0 ||
+       strcmp(error->server_code, "model_context_window_exceeded") == 0 ||
+       strcmp(error->server_code, "request_too_large") == 0))
+    return 1;
+  if (error->http_status != 400L && error->http_status != 413L)
+    return 0;
+  detail = error->detail;
+  if (detail == NULL)
+    return error->http_status == 413L;
+  if (cai_runtime_contains_ci(detail, "rate limit") ||
+      cai_runtime_contains_ci(detail, "too many requests"))
+    return 0;
+  return error->http_status == 413L ||
+         cai_runtime_contains_ci(detail, "context window") ||
+         cai_runtime_contains_ci(detail, "context length") ||
+         cai_runtime_contains_ci(detail, "context size") ||
+         cai_runtime_contains_ci(detail, "maximum input length") ||
+         cai_runtime_contains_ci(detail, "prompt is too long") ||
+         cai_runtime_contains_ci(detail, "too many tokens") ||
+         cai_runtime_contains_ci(detail, "token limit exceeded");
 }
 
 static int cai_runtime_tool_action(const cai_agent_runtime *runtime,
@@ -4908,6 +4965,8 @@ static void *cai_runtime_worker(void *context) {
       pthread_mutex_unlock(&runtime->lock);
     }
     while (rc == CAI_OK && !budget_limited) {
+      int overflow_retried = 0;
+      int output_continuations = 0;
       cai_runtime_set_state(runtime, CAI_AGENT_SAMPLING);
       if (cai_runtime_cancel_requested(runtime)) {
         rc = cai_set_error(&error, CAI_ERR_CANCELLED,
@@ -4915,9 +4974,38 @@ static void *cai_runtime_worker(void *context) {
         break;
       }
       rc = cai_runtime_compact_before_request(runtime, &error);
-      if (rc == CAI_OK) {
+      while (rc == CAI_OK) {
         rc =
             cai_session_stream_auto(runtime->session, &options, &sinks, &error);
+        if (rc == CAI_OK ||
+            CAI_SESSION_CLIENT_IMPL(runtime->session)->api_protocol !=
+                CAI_API_PROTOCOL_CHAT_COMPLETIONS ||
+            cai_runtime_cancel_requested(runtime)) {
+          break;
+        }
+        if (cai_runtime_chat_context_overflow(&error) &&
+            overflow_retried == 0) {
+          overflow_retried = 1;
+          cai_error_cleanup(&error);
+          cai_error_init(&error);
+          rc = cai_runtime_compact(runtime, &budget_limited, &error);
+          if (rc != CAI_OK || budget_limited)
+            break;
+        } else if (error.server_code != NULL &&
+                   strcmp(error.server_code, "output_length") == 0 &&
+                   output_continuations < 3) {
+          output_continuations++;
+          rc = CAI_OK;
+        } else {
+          break;
+        }
+        cai_error_cleanup(&error);
+        cai_error_init(&error);
+        rc = cai_session_add_user_text(
+            runtime->session,
+            "Continue the preceding task from the partial response. Do not "
+            "repeat completed text or tool actions.",
+            &error);
       }
       if (rc == CAI_OK) {
         rc = cai_runtime_refresh_goal_projection(runtime, &error);
