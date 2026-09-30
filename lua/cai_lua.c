@@ -2276,6 +2276,13 @@ static int cai_lua_open(lua_State *L) {
         cai_lua_opt_string_field(L, 1, "project_id", config.project_id);
     config.timeout_ms =
         cai_lua_opt_long_field(L, 1, "timeout_ms", config.timeout_ms);
+    config.chat_max_attempts = (unsigned int)cai_lua_opt_int_field(
+        L, 1, "chat_max_attempts", (int)config.chat_max_attempts);
+    config.chat_retry_initial_delay_ms =
+        cai_lua_opt_long_field(L, 1, "chat_retry_initial_delay_ms",
+                               config.chat_retry_initial_delay_ms);
+    config.chat_retry_max_delay_ms = cai_lua_opt_long_field(
+        L, 1, "chat_retry_max_delay_ms", config.chat_retry_max_delay_ms);
     config.http_2_disabled =
         cai_lua_opt_int_field(L, 1, "http_2_disabled", config.http_2_disabled);
     config.insecure_skip_verify = cai_lua_opt_int_field(
@@ -2877,6 +2884,8 @@ static int cai_lua_client_list_models(lua_State *L) {
     return cai_lua_fail(L, rc, &error);
   }
   lua_createtable(L, (int)catalog->count, 0);
+  lua_pushboolean(L, catalog->is_stale);
+  lua_setfield(L, -2, "is_stale");
   for (i = 0U; i < catalog->count; i++) {
     const cai_model_catalog_entry *entry;
 

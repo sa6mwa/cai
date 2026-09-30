@@ -49,6 +49,11 @@ typedef struct cai_client_impl {
   cai_model_catalog *model_catalog;
   cai_model_catalog *fallback_catalog;
   time_t model_catalog_fetched_at;
+  double model_catalog_retry_at;
+  cai_error model_catalog_refresh_error;
+  unsigned int chat_max_attempts;
+  long chat_retry_initial_delay_ms;
+  long chat_retry_max_delay_ms;
 } cai_client_impl;
 
 int cai_model_catalog_load_fallback(cai_client *client, const char *json,
@@ -224,6 +229,12 @@ void cai_log_http_response_limit(const cai_client_impl *client,
 void cai_log_chat_result(const cai_client_impl *client, const char *model,
                          int rc, long http_status, const char *request_id,
                          const cai_error *error);
+void cai_log_chat_retry(const cai_client_impl *client, unsigned int attempt,
+                        long status, long delay_ms);
+void cai_log_chat_metrics(const cai_client *client, const char *model,
+                          const char *request_id, unsigned int attempt,
+                          double elapsed_ms, double first_token_ms,
+                          int has_usage, const cai_token_usage *usage);
 void cai_log_chat_compaction(const cai_client_impl *client, const char *model,
                              int started, size_t history_bytes, int rc,
                              const cai_error *error);

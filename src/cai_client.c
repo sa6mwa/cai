@@ -121,6 +121,7 @@ static void cai_client_destroy_fields(cai_client_impl *impl) {
   cai_free_mem(&impl->allocator, impl->ca_path);
   cai_model_catalog_close(impl->model_catalog);
   cai_model_catalog_close(impl->fallback_catalog);
+  cai_error_cleanup(&impl->model_catalog_refresh_error);
 }
 
 int cai_client_open(const cai_client_config *config, cai_client **out,
@@ -150,6 +151,18 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   rc = cai_usage_limits_validate(&effective->usage_limits, error);
   if (rc != CAI_OK) {
     return rc;
+  }
+  if (effective->chat_max_attempts > 16U ||
+      effective->chat_retry_initial_delay_ms < 0L ||
+      effective->chat_retry_max_delay_ms < 0L ||
+      effective->chat_retry_max_delay_ms > 60000L ||
+      (effective->chat_retry_initial_delay_ms > 0L
+           ? effective->chat_retry_initial_delay_ms
+           : 500L) > (effective->chat_retry_max_delay_ms > 0L
+                          ? effective->chat_retry_max_delay_ms
+                          : 30000L)) {
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "invalid Chat Completions retry policy");
   }
   if (effective->api_protocol != CAI_API_PROTOCOL_RESPONSES &&
       effective->api_protocol != CAI_API_PROTOCOL_CHAT_COMPLETIONS) {
@@ -182,6 +195,15 @@ int cai_client_open(const cai_client_config *config, cai_client **out,
   impl->project_id = NULL;
   impl->timeout_ms = effective->timeout_ms > 0L ? effective->timeout_ms
                                                 : CAI_DEFAULT_HTTP_TIMEOUT_MS;
+  impl->chat_max_attempts =
+      effective->chat_max_attempts != 0U ? effective->chat_max_attempts : 3U;
+  impl->chat_retry_initial_delay_ms =
+      effective->chat_retry_initial_delay_ms != 0L
+          ? effective->chat_retry_initial_delay_ms
+          : 500L;
+  impl->chat_retry_max_delay_ms = effective->chat_retry_max_delay_ms != 0L
+                                      ? effective->chat_retry_max_delay_ms
+                                      : 30000L;
   impl->http_2_disabled = effective->http_2_disabled;
   impl->insecure_skip_verify = effective->insecure_skip_verify;
   impl->ca_bundle_path = NULL;

@@ -1,6 +1,7 @@
 #include "cai_internal.h"
 
 #include <pslog.h>
+#include <string.h>
 
 static pslog_logger *cai_logger(const cai_client_impl *client) {
   if (client == NULL || client->logger_disabled) {
@@ -186,4 +187,96 @@ void cai_log_model_catalog(const cai_client_impl *client, const char *source,
          rc != CAI_OK && error != NULL && error->detail != NULL ? error->detail
                                                                 : "");
   }
+}
+
+void cai_log_chat_retry(const cai_client_impl *client, unsigned int attempt,
+                        long status, long delay_ms) {
+  pslog_logger *log = cai_logger(client);
+  if (log != NULL && log->infof != NULL)
+    log->infof(log, "cai.chat.retry", "attempt=%u status=%d delay_ms=%ld",
+               attempt, (int)status, delay_ms);
+}
+
+/* Construct fields locally: libcai borrows the receiver and requires only
+ * pslog headers, never a linked libpslog implementation. */
+static pslog_field cai_log_string(const char *key, const char *value) {
+  pslog_field field;
+  memset(&field, 0, sizeof(field));
+  field.key = key;
+  field.key_len = strlen(key);
+  field.type = PSLOG_FIELD_STRING;
+  field.as.string_value = value;
+  field.value_len = strlen(value);
+  return field;
+}
+static pslog_field cai_log_integer(const char *key, pslog_int64 value) {
+  pslog_field field;
+  memset(&field, 0, sizeof(field));
+  field.key = key;
+  field.key_len = strlen(key);
+  field.type = PSLOG_FIELD_SIGNED;
+  field.as.signed_value = value;
+  return field;
+}
+static pslog_field cai_log_number(const char *key, double value) {
+  pslog_field field;
+  memset(&field, 0, sizeof(field));
+  field.key = key;
+  field.key_len = strlen(key);
+  field.type = PSLOG_FIELD_DOUBLE;
+  field.as.double_value = value;
+  return field;
+}
+static pslog_field cai_log_boolean(const char *key, int value) {
+  pslog_field field;
+  memset(&field, 0, sizeof(field));
+  field.key = key;
+  field.key_len = strlen(key);
+  field.type = PSLOG_FIELD_BOOL;
+  field.as.bool_value = value;
+  return field;
+}
+
+void cai_log_chat_metrics(const cai_client *client, const char *model,
+                          const char *request_id, unsigned int attempt,
+                          double elapsed_ms, double first_token_ms,
+                          int has_usage, const cai_token_usage *usage) {
+  pslog_logger *log = cai_logger(CAI_CLIENT_IMPL(client));
+  const cai_model_catalog_entry *entry;
+  pslog_field fields[15];
+  size_t count = 0U;
+  double usd, eur;
+  int has_usd, has_eur;
+  if (log == NULL || log->debug == NULL)
+    return;
+  fields[count++] = cai_log_string("model", model != NULL ? model : "");
+  fields[count++] =
+      cai_log_string("request_id", request_id != NULL ? request_id : "");
+  fields[count++] = cai_log_integer("attempt", attempt);
+  fields[count++] = cai_log_number("elapsed_ms", elapsed_ms);
+  if (first_token_ms >= 0.0)
+    fields[count++] = cai_log_number("first_token_ms", first_token_ms);
+  fields[count++] = cai_log_boolean("has_usage", has_usage);
+  if (has_usage) {
+    fields[count++] = cai_log_integer("input_tokens", usage->input_tokens);
+    fields[count++] =
+        cai_log_integer("cached_input_tokens", usage->input_cached_tokens);
+    fields[count++] = cai_log_integer("output_tokens", usage->output_tokens);
+    fields[count++] =
+        cai_log_integer("reasoning_tokens", usage->output_reasoning_tokens);
+    fields[count++] = cai_log_integer("total_tokens", usage->total_tokens);
+    cai_client_model_estimate_usage(client, model, usage, &usd, &eur);
+    has_usd = cai_client_model_can_estimate_usd(client, model);
+    entry = cai_client_cached_model_metadata(client, model);
+    has_eur = entry != NULL && entry->has_pricing &&
+              entry->pricing_currency != NULL &&
+              strcmp(entry->pricing_currency, "EUR") == 0 &&
+              entry->pricing_unit != NULL &&
+              strstr(entry->pricing_unit, "M Token") != NULL;
+    if (has_usd)
+      fields[count++] = cai_log_number("estimated_cost_usd", usd);
+    if (has_eur)
+      fields[count++] = cai_log_number("estimated_cost_eur", eur);
+  }
+  log->debug(log, "cai.chat.request.metrics", fields, count);
 }

@@ -174,7 +174,33 @@ variants, bounded recovery, intact history after failed tool streams, and
 parallel function/custom tools across session export and restore. Run them with
 `ctest --test-dir build/debug -R 'cai_tests.chat_' --output-on-failure`. The
 fixtures exercise both the Berget preset with a local endpoint and generic
-Chat Completions clients; live tests use GLM.
+Chat Completions clients. A separate opt-in canary discovers every currently
+advertised streaming text model and tests streamed text, JSON/schema output,
+function tools followed by forced compaction and continuation, and image input,
+according to each model's advertised capabilities:
+
+```sh
+CAI_RUN_BERGET_LIVE_CANARIES=1 BERGET_API_KEY=... \
+  ctest --test-dir build/debug -R '^cai_tests.berget_live_canaries$' --output-on-failure
+```
+
+Set `CAI_BERGET_CANARY_MODEL` to a model ID to restrict this gate to one model.
+Live tests require credentials and spend tokens; they make no requests unless
+explicitly enabled.
+
+Chat Completions requests retry transient HTTP 429, 502, and 503 failures and
+connection failures before response headers, with at most three attempts.
+Retries stop once model activity or usage is received. Authentication, invalid
+requests, permanent quota errors, malformed streams, callback failures, and
+partial responses are not retried. A retry after a completed tool round resends
+the tool results without executing the tools again. Backoff starts at 500 ms,
+adds jitter, and doubles up to 30 seconds. Valid `Retry-After` seconds or HTTP
+dates set a minimum wait; values above the cap return the original error.
+Cancellation interrupts the wait promptly. `timeout_ms` applies to each attempt.
+The C client config and Lua `cai.open` accept `chat_max_attempts` (1 disables
+retries, maximum 16), `chat_retry_initial_delay_ms`, and
+`chat_retry_max_delay_ms` (maximum 60000). Zero selects each field's default;
+the effective initial delay must not exceed the maximum delay.
 
 The softline prompt is `> `. Its status bar shows model and reasoning effort,
 the last measured context percentage, a shortened workspace path, available
@@ -260,6 +286,15 @@ are `info` records. Conversation records include `role` and `prompt_kind`
 `reasoning_summary`), with event and invocation identifiers where available.
 There is no added `app` field. Long text is logged as ordered bounded chunks
 with an `offset` field; activity reaches the sink as it arrives.
+
+Chat Completions emit `cai.chat.request.metrics` at debug level for each HTTP
+attempt: model, request ID, attempt number, elapsed milliseconds, and first-token
+milliseconds when a token or tool delta arrives. Available usage adds input,
+cached input, output, reasoning, and total token counts. Known token prices add
+`estimated_cost_usd` or `estimated_cost_eur`; unavailable estimates are omitted,
+and no currency conversion is performed. Attempt timing excludes retry waits.
+Retry decisions emit `cai.chat.retry` at info level with the attempt, HTTP status,
+and wait in milliseconds.
 
 In prompt mode, logs append to `$XDG_CACHE_HOME/cai/<sessionid>.log`, falling
 back to `~/.cache/cai/<sessionid>.log`. Files are private (0600), with a private

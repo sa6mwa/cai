@@ -230,6 +230,15 @@ typedef struct cai_client_config {
   const char *metadata_provider;
   /** Optional JSON fallback catalog; copied and validated at client open. */
   const char *model_metadata_json;
+  /** Chat Completions HTTP attempts including the first; zero uses 3,
+   * 1 disables transient retries. Maximum 16. Retries stop on model activity.
+   */
+  unsigned int chat_max_attempts;
+  /** Initial Chat retry backoff in milliseconds; zero uses 500. */
+  long chat_retry_initial_delay_ms;
+  /** Maximum Chat retry wait in milliseconds; zero uses 30000, maximum 60000.
+   * A longer Retry-After prevents retry instead of shortening the wait. */
+  long chat_retry_max_delay_ms;
 } cai_client_config;
 
 /** Refresh policy for a provider model catalog. */
@@ -238,7 +247,9 @@ typedef enum cai_model_catalog_refresh_strategy {
   CAI_MODEL_CATALOG_REFRESH_ONLINE = 0,
   /** Return only a catalog already cached by this client. */
   CAI_MODEL_CATALOG_REFRESH_OFFLINE = 1,
-  /** Use a fresh client cache, otherwise fetch the provider catalog. */
+  /** Use a fresh client cache, otherwise fetch. After a failed refresh,
+   * return stale cached metadata (or configured fallback) and defer another
+   * automatic refresh for five minutes. No background polling. */
   CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED = 2
 } cai_model_catalog_refresh_strategy;
 
@@ -289,6 +300,10 @@ typedef struct cai_model_catalog {
   void (*close)(struct cai_model_catalog *catalog);
   /** Private implementation; do not access directly. */
   void *impl;
+  /** Non-zero when a cached provider catalog is older than five minutes
+   * or its last refresh failed.
+   * Explicit ONLINE refreshes bypass the failed-refresh cooldown. */
+  int is_stale;
 } cai_model_catalog;
 
 /**
@@ -1606,7 +1621,8 @@ void cai_client_close(cai_client *client);
  * its Codex account catalog and api.berget.ai uses /v1/models. Other endpoints
  * return configured fallback entries. Live fields take precedence over JSON;
  * Berget's compiled model-card context limits fill still-missing values.
- * Results are client-cached.
+ * Results are client-cached. ONLINE always fetches and reports refresh errors.
+ * ONLINE_IF_UNCACHED preserves the last successful catalog during outages.
  */
 int cai_client_list_models(cai_client *client,
                            cai_model_catalog_refresh_strategy strategy,

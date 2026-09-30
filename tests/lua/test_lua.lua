@@ -443,15 +443,24 @@ assert_not_ok(cai.chatgpt_login({ logger = {} }))
 assert_not_ok(cai.mcp_client({ url = "http://127.0.0.1:1/mcp", logger = {} }))
 
 do
+  assert_not_ok(cai.open({api_key = "test-key", chat_max_attempts = -1}))
+  assert_not_ok(cai.open({api_key = "test-key", chat_max_attempts = 17}))
+  assert_not_ok(cai.open({api_key = "test-key", chat_retry_initial_delay_ms = -1}))
+  assert_not_ok(cai.open({api_key = "test-key", chat_retry_max_delay_ms = 60001}))
+  assert_not_ok(cai.open({api_key = "test-key", chat_retry_initial_delay_ms = 100, chat_retry_max_delay_ms = 50}))
   local berget_client = assert_ok(cai.open({
     berget = true,
     api_key = "test-key",
+    chat_max_attempts = 2,
+    chat_retry_initial_delay_ms = 10,
+    chat_retry_max_delay_ms = 1000,
     model_metadata_json = '{"models":[{"provider":"berget",' ..
       '"id":"zai-org/GLM-5.3-Flash","model_type":"text",' ..
       '"context_window_tokens":131072,' ..
       '"pricing":{"currency":"EUR","input":1,"output":2}}]}',
   }))
   local catalog = assert_ok(berget_client:list_models("offline"))
+  assert_eq(catalog.is_stale, false, "Lua configured catalog is not stale")
   assert_eq(#catalog, 1, "Lua provider catalog count")
   assert_eq(catalog[1].model_type, "text", "Lua provider model type")
   assert_eq(catalog[1].pricing_currency, "EUR", "Lua provider currency")

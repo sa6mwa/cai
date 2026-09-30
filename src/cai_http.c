@@ -193,8 +193,9 @@ int cai_set_openai_error(cai_error *error, long http_status, const char *body,
   CAI_LJ->init(CAI_LJ, &cai_api_error_map, &doc);
   status =
       CAI_LJ->parse_cstr(CAI_LJ, &cai_api_error_map, &doc, detail, &json_error);
-  if (status == LONEJSON_STATUS_OK && doc.error.message != NULL) {
-    detail = doc.error.message;
+  if (status == LONEJSON_STATUS_OK) {
+    if (doc.error.message != NULL)
+      detail = doc.error.message;
     server_code = doc.error.code != NULL ? doc.error.code : doc.error.type;
   }
   rc = cai_set_error_http(error, CAI_ERR_SERVER, http_status,

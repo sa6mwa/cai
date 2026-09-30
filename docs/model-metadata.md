@@ -10,6 +10,19 @@ returned model; `model_type` identifies which ones are usable for chat. The
 catalog is cached for five minutes per client. Other providers can use the
 JSON fallback catalog directly.
 
+Automatic refresh (`CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED`) retains the
+last successful live catalog if a refresh fails and marks it `is_stale`. That
+catalog takes precedence over a configured fallback. Failed automatic refreshes
+have a five-minute cooldown measured with a monotonic clock: subsequent access
+returns the retained catalog or configured fallback without another request.
+If neither exists, access returns the saved failure during the cooldown.
+There is no background polling when idle. Explicit
+`CAI_MODEL_CATALOG_REFRESH_ONLINE` bypasses the cooldown and reports refresh
+errors; a successful refresh clears the failure and stale flag. A catalog also
+becomes stale when its five-minute freshness window expires. Offline access
+does not fetch or refresh. C callers can inspect `cai_model_catalog.is_stale`;
+Lua `client:list_models()` exposes the same flag on the returned array table.
+
 Berget does not report context windows. `src/cai_model_contexts.h` contains
 model-owner published token limits for its text, rerank, and embedding models,
 with a source URL beside each value. These are available to libcai at client

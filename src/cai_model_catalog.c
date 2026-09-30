@@ -7,6 +7,13 @@
 
 #define CAI_MODEL_CATALOG_CACHE_SECONDS 300
 
+static double cai_catalog_retry_clock(void) {
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) == 0)
+    return (double)now.tv_sec + (double)now.tv_nsec / 1000000000.0;
+  return (double)time(NULL);
+}
+
 typedef struct cai_catalog_policy {
   const char *host;
   const char *request_path;
@@ -390,6 +397,7 @@ static int cai_model_catalog_clone(const cai_model_catalog *source,
     cai_model_catalog_close(copy);
     return rc;
   }
+  copy->is_stale = source->is_stale;
   *out = copy;
   return CAI_OK;
 }
@@ -816,6 +824,8 @@ static int cai_model_catalog_install_response(cai_client *client,
   cai_model_catalog_close(impl->model_catalog);
   impl->model_catalog = catalog;
   impl->model_catalog_fetched_at = time(NULL);
+  impl->model_catalog_retry_at = 0.0;
+  cai_error_cleanup(&impl->model_catalog_refresh_error);
   cai_log_model_catalog(impl, "provider", catalog->count, CAI_OK, NULL);
   return CAI_OK;
 }
@@ -858,6 +868,33 @@ int cai_client_list_models(cai_client *client,
   impl = CAI_CLIENT_IMPL(client);
   policy = cai_client_catalog_policy(client);
   now = time(NULL);
+  if (impl->model_catalog != NULL) {
+    impl->model_catalog->is_stale =
+        impl->model_catalog_refresh_error.code != CAI_OK ||
+        now < impl->model_catalog_fetched_at ||
+        now - impl->model_catalog_fetched_at > CAI_MODEL_CATALOG_CACHE_SECONDS;
+  }
+  if (strategy == CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED &&
+      impl->model_catalog_refresh_error.code != CAI_OK &&
+      cai_catalog_retry_clock() < impl->model_catalog_retry_at) {
+    if (impl->model_catalog != NULL || impl->fallback_catalog != NULL) {
+      const cai_model_catalog *cached = impl->model_catalog != NULL
+                                            ? impl->model_catalog
+                                            : impl->fallback_catalog;
+      cai_log_model_catalog(impl,
+                            impl->model_catalog != NULL ? "stale_cache"
+                                                        : "cooldown_fallback",
+                            cached->count, CAI_OK, NULL);
+      return cai_model_catalog_clone(cached, out, error);
+    }
+    return cai_set_error_http(
+        error, impl->model_catalog_refresh_error.code,
+        impl->model_catalog_refresh_error.http_status,
+        "provider model catalog refresh deferred during failure cooldown",
+        impl->model_catalog_refresh_error.detail,
+        impl->model_catalog_refresh_error.server_code,
+        impl->model_catalog_refresh_error.request_id);
+  }
   if (impl->model_catalog != NULL &&
       (strategy == CAI_MODEL_CATALOG_REFRESH_OFFLINE ||
        (strategy == CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED &&
@@ -902,6 +939,23 @@ int cai_client_list_models(cai_client *client,
   cai_free_mem(NULL, body);
   cai_free_mem(NULL, request_id);
   if (rc != CAI_OK) {
+    impl->model_catalog_retry_at =
+        cai_catalog_retry_clock() + CAI_MODEL_CATALOG_CACHE_SECONDS;
+    cai_set_error_http(&impl->model_catalog_refresh_error, rc, http_status,
+                       error != NULL ? error->message
+                                     : "provider model catalog refresh failed",
+                       error != NULL ? error->detail : NULL,
+                       error != NULL ? error->server_code : NULL,
+                       error != NULL ? error->request_id : NULL);
+    if (impl->model_catalog != NULL &&
+        strategy == CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED) {
+      impl->model_catalog->is_stale = 1;
+      cai_log_model_catalog(impl, "stale_cache", impl->model_catalog->count, rc,
+                            error);
+      cai_error_cleanup(error);
+      cai_error_init(error);
+      return cai_model_catalog_clone(impl->model_catalog, out, error);
+    }
     if (impl->fallback_catalog != NULL &&
         strategy == CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED) {
       cai_log_model_catalog(impl, "fallback", impl->fallback_catalog->count, rc,

@@ -1,11 +1,13 @@
 #include "cai_internal.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -1060,6 +1062,10 @@ typedef struct cai_chat_stream_state {
   char *body;
   size_t body_length;
   size_t response_bytes;
+  double started_at;
+  double first_token_ms;
+  long retry_after_ms;
+  int model_activity;
   int failure_code;
   int completed;
   int length_finish;
@@ -1073,6 +1079,13 @@ typedef struct cai_chat_stream_state {
   size_t glm_start_match;
   size_t glm_end_match;
 } cai_chat_stream_state;
+
+static double cai_chat_now(void) {
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+    return 0.0;
+  return (double)now.tv_sec + (double)now.tv_nsec / 1000000000.0;
+}
 
 typedef struct cai_chat_custom_arguments_doc {
   lonejson_spooled input;
@@ -1661,7 +1674,15 @@ static int cai_chat_parse_event(cai_chat_stream_state *state) {
     }
   }
   choices = (cai_chat_chunk_choice_doc *)chunk.choices.items;
+  if (rc == CAI_OK && chunk.choices.count != 0U)
+    state->model_activity = 1;
   for (i = 0U; rc == CAI_OK && i < chunk.choices.count; i++) {
+    if (state->first_token_ms < 0.0 &&
+        (choices[i].delta.content.size_fn(&choices[i].delta.content) > 0U ||
+         choices[i].delta.reasoning_content.size_fn(
+             &choices[i].delta.reasoning_content) > 0U ||
+         choices[i].delta.tool_calls.count > 0U))
+      state->first_token_ms = (cai_chat_now() - state->started_at) * 1000.0;
     if (choices[i].index != 0LL) {
       rc = cai_set_error(state->error, CAI_ERR_PROTOCOL,
                          "unexpected Chat Completions choice index");
@@ -1841,6 +1862,44 @@ static size_t cai_chat_curl_header(char *ptr, size_t size, size_t nmemb,
     line[copy] = '\0';
     if (sscanf(line, "HTTP/%*s %ld", &status) == 1) {
       state->http_status = status;
+      state->retry_after_ms = -1L;
+    }
+  }
+  if (count > 12U && strncasecmp(ptr, "Retry-After:", 12U) == 0) {
+    char value[128];
+    size_t len = count - 12U;
+    if (len < sizeof(value)) {
+      char *start;
+      char *end;
+      unsigned long seconds;
+      time_t date;
+      memcpy(value, ptr + 12U, len);
+      value[len] = '\0';
+      start = value;
+      while (*start == ' ' || *start == '\t')
+        start++;
+      end = value + len;
+      while (end > start && (end[-1] == '\r' || end[-1] == '\n' ||
+                             end[-1] == ' ' || end[-1] == '\t'))
+        *--end = '\0';
+      if (*start >= '0' && *start <= '9') {
+        errno = 0;
+        seconds = strtoul(start, &end, 10);
+        if (*end == '\0')
+          state->retry_after_ms =
+              errno == ERANGE || seconds > (unsigned long)LONG_MAX / 1000UL
+                  ? LONG_MAX
+                  : (long)seconds * 1000L;
+      } else if ((date = curl_getdate(start, NULL)) != (time_t)-1) {
+        double remaining = difftime(date, time(NULL));
+        state->retry_after_ms = remaining <= 0.0 ? 0L
+                                : remaining > (double)LONG_MAX / 1000.0
+                                    ? LONG_MAX
+                                    : (long)(remaining * 1000.0);
+      }
+    } else {
+      /* Oversized values must never make the client retry earlier. */
+      state->retry_after_ms = LONG_MAX;
     }
   }
   return cai_http_request_id_header_write(ptr, size, nmemb, state->request_id);
@@ -1877,11 +1936,19 @@ static void cai_chat_stream_cleanup(cai_chat_stream_state *state) {
   cai_free_mem(NULL, state->body);
 }
 
-int cai_chat_stream_response(cai_client *client,
-                             const cai_response_create_params *params,
-                             const cai_stream_sinks *sinks,
-                             char **out_response_id, cai_token_usage *out_usage,
-                             cai_error *error) {
+typedef struct cai_chat_attempt_result {
+  long status;
+  long retry_after_ms;
+  int retryable;
+} cai_chat_attempt_result;
+
+static int cai_chat_stream_attempt(cai_client *client,
+                                   const cai_response_create_params *params,
+                                   const cai_stream_sinks *sinks,
+                                   char **out_response_id,
+                                   cai_token_usage *out_usage, cai_error *error,
+                                   unsigned int attempt,
+                                   cai_chat_attempt_result *result) {
   cai_client_impl *impl;
   cai_chat_stream_state state;
   cai_chat_upload *upload;
@@ -1916,6 +1983,10 @@ int cai_chat_stream_response(cai_client *client,
                          "at least one stream sink or callback is required");
   }
   memset(&state, 0, sizeof(state));
+  memset(result, 0, sizeof(*result));
+  state.started_at = cai_chat_now();
+  state.first_token_ms = -1.0;
+  state.retry_after_ms = -1L;
   state.client = client;
   state.params = params;
   state.sinks = sinks;
@@ -2091,11 +2162,112 @@ int cai_chat_stream_response(cai_client *client,
     rc = cai_chat_emit_tool_done(&state, i);
   }
   cai_log_chat_result(impl, params->model, rc, http_status, request_id, error);
+  cai_log_chat_metrics(client, params->model, request_id, attempt,
+                       (cai_chat_now() - state.started_at) * 1000.0,
+                       state.first_token_ms, state.saw_usage, &state.usage);
+  result->status = http_status;
+  result->retry_after_ms = state.retry_after_ms;
+  result->retryable =
+      !state.model_activity && !state.saw_usage &&
+      !cai_stream_thread_cancel_requested() && upload_rc == CAI_OK &&
+      state.failure_code == CAI_OK &&
+      ((rc == CAI_ERR_SERVER &&
+        (http_status == 429L || http_status == 502L || http_status == 503L)) ||
+       (rc == CAI_ERR_TRANSPORT && http_status == 0L &&
+        (curl_rc == CURLE_COULDNT_CONNECT ||
+         curl_rc == CURLE_OPERATION_TIMEDOUT || curl_rc == CURLE_GOT_NOTHING ||
+         curl_rc == CURLE_SEND_ERROR || curl_rc == CURLE_RECV_ERROR)));
+  if (error != NULL && error->server_code != NULL &&
+      (strcmp(error->server_code, "insufficient_quota") == 0 ||
+       strcmp(error->server_code, "quota_exceeded") == 0 ||
+       strcmp(error->server_code, "billing_hard_limit_reached") == 0))
+    result->retryable = 0;
   curl_slist_free_all(headers);
   cai_free_mem(&impl->allocator, url);
   cai_free_mem(NULL, request_id);
   cai_chat_stream_cleanup(&state);
   cai_error_cleanup(&upload_error);
+  return rc;
+}
+
+static int cai_chat_stream_retries(cai_client *client,
+                                   const cai_response_create_params *params,
+                                   const cai_stream_sinks *sinks,
+                                   char **out_response_id,
+                                   cai_token_usage *out_usage,
+                                   cai_error *error) {
+  cai_chat_attempt_result result;
+  cai_client_impl *impl;
+  unsigned int attempt;
+  long backoff;
+  int rc;
+  if (client == NULL || params == NULL || sinks == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "client, params and stream sinks are required");
+  impl = CAI_CLIENT_IMPL(client);
+  backoff = impl->chat_retry_initial_delay_ms;
+  for (attempt = 1U;; attempt++) {
+    long delay;
+    long remaining;
+    struct timespec jitter = {0, 0};
+    if (cai_stream_thread_cancel_requested())
+      return cai_set_error(error, CAI_ERR_CANCELLED,
+                           "agent turn was cancelled");
+    memset(&result, 0, sizeof(result));
+    rc = cai_chat_stream_attempt(client, params, sinks, out_response_id,
+                                 out_usage, error, attempt, &result);
+    if (!result.retryable || attempt >= impl->chat_max_attempts)
+      return rc;
+    /* Clock nanoseconds provide request-local jitter without process-global
+     * random state. Retry-After is a minimum, including when it exceeds our
+     * cap. */
+    (void)clock_gettime(CLOCK_MONOTONIC, &jitter);
+    delay = backoff - backoff / 4L + jitter.tv_nsec % (backoff / 2L + 1L);
+    if (delay > impl->chat_retry_max_delay_ms)
+      delay = impl->chat_retry_max_delay_ms;
+    if (result.retry_after_ms > impl->chat_retry_max_delay_ms)
+      return rc;
+    if (result.retry_after_ms > delay)
+      delay = result.retry_after_ms;
+    cai_log_chat_retry(impl, attempt + 1U, result.status, delay);
+    remaining = delay;
+    while (remaining > 0L) {
+      long chunk = remaining > 10L ? 10L : remaining;
+      struct timespec pause;
+      pause.tv_sec = 0;
+      pause.tv_nsec = chunk * 1000000L;
+      if (cai_stream_thread_cancel_requested())
+        return cai_set_error(error, CAI_ERR_CANCELLED,
+                             "agent turn was cancelled during retry wait");
+      while (nanosleep(&pause, &pause) != 0) {
+        if (errno != EINTR)
+          return cai_set_error(error, CAI_ERR_TRANSPORT,
+                               "Chat retry wait failed");
+        if (cai_stream_thread_cancel_requested())
+          return cai_set_error(error, CAI_ERR_CANCELLED,
+                               "agent turn was cancelled during retry wait");
+      }
+      remaining -= chunk;
+    }
+    cai_error_cleanup(error);
+    if (backoff > impl->chat_retry_max_delay_ms / 2L)
+      backoff = impl->chat_retry_max_delay_ms;
+    else
+      backoff *= 2L;
+  }
+}
+
+int cai_chat_stream_response(cai_client *client,
+                             const cai_response_create_params *params,
+                             const cai_stream_sinks *sinks,
+                             char **out_response_id, cai_token_usage *out_usage,
+                             cai_error *error) {
+  cai_error local_error;
+  int rc;
+  cai_error_init(&local_error);
+  rc = cai_chat_stream_retries(client, params, sinks, out_response_id,
+                               out_usage, error != NULL ? error : &local_error);
+  cai_error_cleanup(&local_error);
   return rc;
 }
 

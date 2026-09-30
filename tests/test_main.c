@@ -34,6 +34,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -701,6 +702,10 @@ static void run_test_group(test_state *state, const char *name, test_fn fn) {
   fprintf(stderr, "TEST %-48s ... ", name);
   fflush(stderr);
   timeout_seconds = strncmp(name, "berget_live_", 12U) == 0 ? 180U : 3U;
+  if (strcmp(name, "berget_live_canaries") == 0)
+    timeout_seconds = 900U;
+  else if (strcmp(name, "chat_transient_retries") == 0)
+    timeout_seconds = 15U;
   alarm(timeout_seconds);
   started = test_now_seconds();
   fn(state);
@@ -8734,7 +8739,7 @@ typedef struct mock_http_expectation {
   size_t required_count;
   const char **forbidden;
   size_t forbidden_count;
-  int status;
+  int status; /* Zero selects 200; -1 drops the connection before a response. */
   const char *status_text;
   const char *content_type;
   const char *request_id;
@@ -10162,6 +10167,13 @@ mock_scripted_openai_child(int pipe_fd,
   close(pipe_fd);
   for (i = 0U; i < expectation_count; i++) {
     expectation = &expectations[i];
+    /* Retry fixtures may intentionally wait longer than the normal socket
+     * deadline before opening the next connection. */
+    if (i > 0U && expectations[i - 1U].request_id != NULL &&
+        strstr(expectations[i - 1U].request_id, "Retry-After:") != NULL &&
+        mock_wait_fd(server_fd, 0, 5000U) != 0) {
+      _exit(7);
+    }
     client_fd = mock_accept_with_deadline(server_fd);
     if (client_fd < 0) {
       _exit(7);
@@ -10177,6 +10189,10 @@ mock_scripted_openai_child(int pipe_fd,
     if (!mock_request_matches(request, expectation)) {
       close(client_fd);
       _exit(9);
+    }
+    if (expectation->status == -1) {
+      close(client_fd);
+      continue;
     }
     if (mock_write_status_response(
             client_fd, expectation->status != 0 ? expectation->status : 200,
@@ -28433,6 +28449,15 @@ test_agent_runtime_model_switch_catalog_recovery(test_state *state) {
                   "runtime_model_switch_catalog_unavailable_checkpoint_hash",
                   store_state.saved_checkpoint,
                   "\"model_compaction_hash\":\"provider-2911\"");
+    {
+      cai_model_catalog *catalog = NULL;
+      expect_int(state, "runtime_model_switch_catalog_forced_recovery",
+                 cai_client_list_models(client,
+                                        CAI_MODEL_CATALOG_REFRESH_ONLINE,
+                                        &catalog, &error),
+                 CAI_OK);
+      cai_model_catalog_close(catalog);
+    }
     expect_int(state, "runtime_model_switch_catalog_recovery_submit",
                cai_agent_runtime_submit(runtime, "retry compaction", &error),
                CAI_OK);
@@ -28485,8 +28510,8 @@ test_agent_runtime_model_switch_live_catalog_outage(test_state *state) {
       {"GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/", NULL, 0U,
        NULL, 0U, 500, "Internal Server Error", "application/json", NULL,
        error_body},
-      {"GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/", NULL, 0U,
-       NULL, 0U, 200, "OK", "application/json", NULL, catalog_body},
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 500,
+       "Internal Server Error", "application/json", NULL, error_body},
       {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 500,
        "Internal Server Error", "application/json", NULL, error_body}};
   cai_client_config client_config;
@@ -28558,12 +28583,20 @@ test_agent_runtime_model_switch_live_catalog_outage(test_state *state) {
     expect_int(
         state, "runtime_live_catalog_outage_select",
         cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_6_ASTRA, &error),
-        CAI_OK);
+        CAI_ERR_SERVER);
+    /* Stale live metadata still supplies the declared incompatible hashes.
+     * Failed compaction must leave the selection and checkpoint unchanged. */
+    expect_str(state, "runtime_live_catalog_outage_preserves_model",
+               cai_agent_runtime_model(runtime), CAI_MODEL_GPT_5_5);
+    expect_int(state, "runtime_live_catalog_outage_stale",
+               CAI_CLIENT_IMPL(client)->model_catalog->is_stale, 1L);
     expect_substr(state, "runtime_live_catalog_outage_checkpoint_model",
                   store_state.saved_checkpoint, "\"model\":\"gpt-5.5\"");
     expect_substr(state, "runtime_live_catalog_outage_checkpoint_hash",
                   store_state.saved_checkpoint,
                   "\"model_compaction_hash\":\"provider-2911\"");
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
     expect_int(state, "runtime_live_catalog_outage_submit",
                cai_agent_runtime_submit(runtime, "retry metadata", &error),
                CAI_OK);
@@ -28575,7 +28608,7 @@ test_agent_runtime_model_switch_live_catalog_outage(test_state *state) {
       expect_int(state, "runtime_live_catalog_outage_state",
                  cai_agent_runtime_state(runtime, &run_state, &error), CAI_OK);
     }
-    expect_int(state, "runtime_live_catalog_outage_compacted", run_state,
+    expect_int(state, "runtime_live_catalog_outage_turn_failed", run_state,
                CAI_AGENT_FAILED);
     cai_agent_runtime_close(runtime);
     runtime = NULL;
@@ -39426,6 +39459,7 @@ static void test_chat_client_compaction(test_state *state) {
     return;
   cai_error_init(&error);
   cai_client_config_init(&client_config);
+  client_config.chat_max_attempts = 1U;
   client_config.api_key = "mock-key";
   client_config.base_url = server.base_url;
   client_config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
@@ -39518,11 +39552,13 @@ static void test_chat_compaction_failure_preserves_history(test_state *state) {
       "data: [DONE]\n\n";
   static const char *summary_required[] = {
       "Transcript fragment:", "original objective",
+      "Copy identifiers, exact values, markers",
+      "Record completed tool calls and their results",
       "\"max_completion_tokens\":1000"};
   static const mock_http_expectation script[] = {
       {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
        "text/event-stream", NULL, first_body},
-      {"POST /v1/chat/completions HTTP/", summary_required, 3U, NULL, 0U, 500,
+      {"POST /v1/chat/completions HTTP/", summary_required, 5U, NULL, 0U, 500,
        "Internal Server Error", "application/json", NULL,
        "{\"error\":{\"message\":\"summary unavailable\"}}"}};
   http_mock_server server;
@@ -39543,6 +39579,7 @@ static void test_chat_compaction_failure_preserves_history(test_state *state) {
     return;
   cai_error_init(&error);
   cai_client_config_init(&client_config);
+  client_config.chat_max_attempts = 1U;
   client_config.api_key = "mock-key";
   client_config.base_url = server.base_url;
   client_config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
@@ -39619,6 +39656,7 @@ static void test_chat_compaction_tiny_context(test_state *state) {
     return;
   cai_error_init(&error);
   cai_client_config_init(&client_config);
+  client_config.chat_max_attempts = 1U;
   client_config.api_key = "mock-key";
   client_config.base_url = server.base_url;
   client_config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
@@ -39701,6 +39739,8 @@ static void test_chat_parallel_tool_roundtrip(test_state *state) {
   static const mock_http_expectation script[] = {
       {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
        "text/event-stream", NULL, calls_body},
+      {"POST /v1/chat/completions HTTP/", required, 3U, NULL, 0U, 503,
+       "Service Unavailable", "application/json", NULL, "overloaded"},
       {"POST /v1/chat/completions HTTP/", required, 3U, NULL, 0U, 200, "OK",
        "text/event-stream", NULL, final_body},
       {"POST /v1/chat/completions HTTP/", required, 3U, NULL, 0U, 200, "OK",
@@ -39722,11 +39762,12 @@ static void test_chat_parallel_tool_roundtrip(test_state *state) {
   cai_error error;
   int rc;
 
-  if (http_mock_server_open_script(state, "chat_parallel_tools", script, 3U,
+  if (http_mock_server_open_script(state, "chat_parallel_tools", script, 4U,
                                    &server) != 0)
     return;
   cai_error_init(&error);
   cai_client_config_init(&config);
+  config.chat_retry_initial_delay_ms = 10L;
   cai_client_config_use_berget(&config);
   config.api_key = "fixture-key";
   config.base_url = server.base_url;
@@ -39807,9 +39848,9 @@ static int test_berget_live_marker_tool(void *context, const char *arguments,
 
 /* Explicit live smoke: first turn, forced client-side compaction, then a
  * second turn that can only answer by reading the replacement history. */
-static void test_berget_live_compaction(test_state *state) {
+static void test_berget_live_compaction_model(test_state *state,
+                                              const char *model) {
   static const char marker[] = "CAI_BERGET_COMPACTION_B7F9";
-  const char *enabled = getenv("CAI_RUN_BERGET_LIVE_TEST");
   const char *api_key = getenv("BERGET_API_KEY");
   cai_client_config client_config;
   cai_agent_config agent_config;
@@ -39826,8 +39867,6 @@ static void test_berget_live_compaction(test_state *state) {
   const char *phase = "open";
   int rc;
 
-  if (enabled == NULL || strcmp(enabled, "1") != 0)
-    return;
   if (api_key == NULL || api_key[0] == '\0') {
     test_fail(state, "berget_live_compaction", "BERGET_API_KEY is required");
     return;
@@ -39837,11 +39876,12 @@ static void test_berget_live_compaction(test_state *state) {
   cai_run_options_init(&run_options);
   run_options.max_tool_rounds = 3;
   cai_client_config_init(&client_config);
+  client_config.chat_max_attempts = 1U;
   cai_client_config_use_berget(&client_config);
   client_config.api_key = api_key;
   client_config.timeout_ms = 120000L;
   cai_agent_config_init(&agent_config);
-  agent_config.model = "zai-org/GLM-5.3-Flash";
+  agent_config.model = model;
   agent_config.max_output_tokens = 4096;
   agent_config.disable_auto_compaction = 1;
   rc = cai_client_open(&client_config, &client, &error);
@@ -39849,7 +39889,8 @@ static void test_berget_live_compaction(test_state *state) {
     rc = cai_client_new_agent(client, &agent_config, &agent, &error);
   if (rc == CAI_OK)
     rc = cai_agent_register_raw_tool(
-        agent, "remember_marker", "Return the secret marker to remember",
+        agent, "remember_marker",
+        "Return the synthetic test marker to remember",
         "{\"type\":\"object\",\"properties\":{}}", 0,
         test_berget_live_marker_tool, &tool_calls, &error);
   if (rc == CAI_OK)
@@ -39858,9 +39899,9 @@ static void test_berget_live_compaction(test_state *state) {
     phase = "first turn";
     rc = cai_session_add_user_text(
         session,
-        "Call remember_marker exactly once and remember the secret marker it "
-        "returns for my next question. Then reply READY. Do not print the "
-        "marker yet.",
+        "This is a memory test using a synthetic test value. Call "
+        "remember_marker exactly once and remember the test marker it returns "
+        "for my next question. Then reply READY.",
         &error);
     if (rc == CAI_OK)
       rc = cai_session_run_auto(session, &run_options, &response, &error);
@@ -39882,7 +39923,11 @@ static void test_berget_live_compaction(test_state *state) {
     if (rc == CAI_OK &&
         read_source_text(state, "berget_live_history", history, history_json,
                          sizeof(history_json), &error)) {
-      expect_substr(state, "berget_live_summary_marker", history_json, marker);
+      if (strstr(history_json, marker) == NULL) {
+        fprintf(stderr, "\nCANARY %s summary history: %s\n", model,
+                history_json);
+        test_fail(state, "berget_live_summary_marker", "substring missing");
+      }
     }
     cai_source_close(history);
     history = NULL;
@@ -39891,18 +39936,22 @@ static void test_berget_live_compaction(test_state *state) {
     phase = "continuation";
     rc = cai_session_send_text(
         session,
-        "What exact secret marker did the tool give you earlier? Do not call "
-        "any tools. Reply only with that marker.",
+        "What exact synthetic test marker did the tool give you earlier? Do "
+        "not call any tools. Reply only with that marker.",
         &response, &error);
     if (rc == CAI_OK) {
       expect_int(state, "berget_live_tool_not_reexecuted", tool_calls.calls,
                  1L);
       expect_substr(state, "berget_live_continuation",
                     cai_response_output_text(response), marker);
+      if (cai_response_output_text(response) != NULL &&
+          strstr(cai_response_output_text(response), marker) == NULL)
+        fprintf(stderr, "\nCANARY %s continuation: %s\n", model,
+                cai_response_output_text(response));
     }
   }
   if (rc != CAI_OK) {
-    snprintf(failure, sizeof(failure), "%s: %s", phase,
+    snprintf(failure, sizeof(failure), "%s %s: %s", model, phase,
              error.detail != NULL    ? error.detail
              : error.message != NULL ? error.message
                                      : "request failed");
@@ -39916,15 +39965,21 @@ static void test_berget_live_compaction(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_berget_live_compaction(test_state *state) {
+  const char *enabled = getenv("CAI_RUN_BERGET_LIVE_TEST");
+  if (enabled != NULL && strcmp(enabled, "1") == 0)
+    test_berget_live_compaction_model(state, "zai-org/GLM-5.3-Flash");
+}
+
 /* A deterministic red PNG proves the image reaches the live model; mere
  * acceptance of a request would not establish working vision input. */
-static void test_berget_live_vision(test_state *state) {
+static void test_berget_live_vision_model(test_state *state,
+                                          const char *model) {
   static const char image[] =
       "data:image/"
       "png;base64,"
       "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiG"
       "UQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII=";
-  const char *enabled = getenv("CAI_RUN_BERGET_LIVE_TEST");
   const char *api_key = getenv("BERGET_API_KEY");
   cai_client_config config;
   cai_client *client = NULL;
@@ -39933,14 +39988,13 @@ static void test_berget_live_vision(test_state *state) {
   cai_error error;
   int rc;
 
-  if (enabled == NULL || strcmp(enabled, "1") != 0)
-    return;
   if (api_key == NULL || api_key[0] == '\0') {
     test_fail(state, "berget_live_vision", "BERGET_API_KEY is required");
     return;
   }
   cai_error_init(&error);
   cai_client_config_init(&config);
+  config.chat_max_attempts = 1U;
   cai_client_config_use_berget(&config);
   config.api_key = api_key;
   config.timeout_ms = 120000L;
@@ -39948,7 +40002,7 @@ static void test_berget_live_vision(test_state *state) {
   if (rc == CAI_OK)
     rc = cai_response_create_params_new(&params, &error);
   if (rc == CAI_OK)
-    rc = params->set_model(params, "zai-org/GLM-5.3-Flash", &error);
+    rc = params->set_model(params, model, &error);
   if (rc == CAI_OK)
     rc = params->set_max_output_tokens(params, 4096, &error);
   if (rc == CAI_OK)
@@ -39969,6 +40023,134 @@ static void test_berget_live_vision(test_state *state) {
               error.detail != NULL ? error.detail : error.message);
   cai_response_destroy(response);
   cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+}
+
+static void test_berget_live_vision(test_state *state) {
+  const char *enabled = getenv("CAI_RUN_BERGET_LIVE_TEST");
+  if (enabled != NULL && strcmp(enabled, "1") == 0)
+    test_berget_live_vision_model(state, "zai-org/GLM-5.3-Flash");
+}
+
+static void test_berget_canary_text(test_state *state, cai_client *client,
+                                    const char *model, int format) {
+  cai_response_create_params *params = NULL;
+  cai_stream_sinks sinks;
+  stream_output_state output;
+  cai_error error;
+  int rc;
+  char name[256];
+  snprintf(name, sizeof(name), "berget_canary_%s_format_%d", model, format);
+  memset(&output, 0, sizeof(output));
+  cai_error_init(&error);
+  cai_stream_sinks_init(&sinks);
+  sinks.output_text_delta = test_stream_output_delta;
+  sinks.output_text_context = &output;
+  rc = cai_response_create_params_new(&params, &error);
+  if (rc == CAI_OK)
+    rc = params->set_model(params, model, &error);
+  if (rc == CAI_OK)
+    rc = params->set_max_output_tokens(params, 4096, &error);
+  if (rc == CAI_OK && format == 1)
+    rc = params->set_text_format_json_object(params, &error);
+  if (rc == CAI_OK && format == 2)
+    rc = params->set_text_format_json_schema(
+        params, "canary", NULL,
+        "{\"type\":\"object\",\"properties\":{\"marker\":{\"type\":\"string\","
+        "\"enum\":[\"CAI_BERGET_JSON\"]}},\"required\":[\"marker\"],"
+        "\"additionalProperties\":false}",
+        1, &error);
+  if (rc == CAI_OK)
+    rc = params->add_text(
+        params, "user",
+        format == 0 ? "Reply with exactly CAI_BERGET_TEXT and no other text."
+                    : "Return a JSON object with exactly one field, marker, "
+                      "whose value is CAI_BERGET_JSON. No prose.",
+        &error);
+  if (rc == CAI_OK)
+    rc = cai_client_stream_response_with_id(client, params, &sinks, NULL, NULL,
+                                            &error);
+  expect_int(state, name, rc, CAI_OK);
+  if (rc == CAI_OK) {
+    expect_int(state, name, output.delta_count > 0, 1L);
+    expect_substr(state, name, output.delta,
+                  format == 0 ? "CAI_BERGET_TEXT" : "CAI_BERGET_JSON");
+    if (format != 0)
+      expect_valid_json(state, name, output.delta);
+  } else {
+    test_fail(state, name, error.detail != NULL ? error.detail : error.message);
+  }
+  cai_response_create_params_destroy(params);
+  cai_error_cleanup(&error);
+}
+
+/* Separate opt-in: test every currently advertised streaming chat model,
+ * rather than maintaining another committed availability snapshot. */
+static void test_berget_live_canaries(test_state *state) {
+  const char *enabled = getenv("CAI_RUN_BERGET_LIVE_CANARIES");
+  const char *selected = getenv("CAI_BERGET_CANARY_MODEL");
+  const char *key = getenv("BERGET_API_KEY");
+  cai_client_config config;
+  cai_client *client = NULL;
+  cai_model_catalog *catalog = NULL;
+  cai_error error;
+  size_t i;
+  int tested = 0;
+  int rc;
+  if (enabled == NULL || strcmp(enabled, "1") != 0)
+    return;
+  if (key == NULL || key[0] == '\0') {
+    test_fail(state, "berget_live_canaries", "BERGET_API_KEY is required");
+    return;
+  }
+  cai_error_init(&error);
+  cai_client_config_init(&config);
+  cai_client_config_use_berget(&config);
+  config.api_key = key;
+  config.timeout_ms = 120000L;
+  rc = cai_client_open(&config, &client, &error);
+  if (rc == CAI_OK)
+    rc = cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_ONLINE,
+                                &catalog, &error);
+  expect_int(state, "berget_canary_catalog", rc, CAI_OK);
+  if (rc != CAI_OK)
+    test_fail(state, "berget_canary_catalog_detail",
+              error.detail != NULL ? error.detail : error.message);
+  for (i = 0U; rc == CAI_OK && i < catalog->count; i++) {
+    const cai_model_catalog_entry *entry = catalog->entries + i;
+    if (entry->model_type == NULL || strcmp(entry->model_type, "text") != 0 ||
+        (entry->capabilities & CAI_MODEL_CAP_STREAMING) == 0U ||
+        (entry->lifecycle_status != NULL &&
+         strcasecmp(entry->lifecycle_status, "retired") == 0) ||
+        (selected != NULL && selected[0] != '\0' &&
+         strcmp(selected, entry->slug) != 0))
+      continue;
+    printf("\nCANARY %s: streamed text, %s%s%s\n", entry->slug,
+           (entry->capabilities & CAI_MODEL_CAP_FUNCTION_CALLING) != 0U
+               ? "tools/compaction, "
+               : "",
+           (entry->capabilities & CAI_MODEL_CAP_STRUCTURED_OUTPUTS) != 0U
+               ? "JSON/schema, "
+               : "",
+           (entry->capabilities & CAI_MODEL_CAP_IMAGE_INPUT) != 0U
+               ? "vision"
+               : "no advertised vision");
+    fflush(stdout);
+    test_berget_canary_text(state, client, entry->slug, 0);
+    if ((entry->capabilities & CAI_MODEL_CAP_STRUCTURED_OUTPUTS) != 0U) {
+      test_berget_canary_text(state, client, entry->slug, 1);
+      test_berget_canary_text(state, client, entry->slug, 2);
+    }
+    if ((entry->capabilities & CAI_MODEL_CAP_FUNCTION_CALLING) != 0U)
+      test_berget_live_compaction_model(state, entry->slug);
+    if ((entry->capabilities & CAI_MODEL_CAP_IMAGE_INPUT) != 0U)
+      test_berget_live_vision_model(state, entry->slug);
+    tested++;
+  }
+  expect_int(state, "berget_canary_model_count",
+             tested >= (selected != NULL && selected[0] != '\0' ? 1 : 2), 1L);
+  cai_model_catalog_close(catalog);
   cai_client_close(client);
   cai_error_cleanup(&error);
 }
@@ -40010,6 +40192,7 @@ static void test_chat_length_continuation(test_state *state) {
     return;
   cai_error_init(&error);
   cai_client_config_init(&client_config);
+  client_config.chat_max_attempts = 1U;
   client_config.api_key = "mock-key";
   client_config.base_url = server.base_url;
   client_config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
@@ -40095,6 +40278,7 @@ static void test_chat_length_unfinished_tool(test_state *state) {
     return;
   cai_error_init(&error);
   cai_client_config_init(&client_config);
+  client_config.chat_max_attempts = 1U;
   client_config.api_key = "mock-key";
   client_config.base_url = server.base_url;
   client_config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
@@ -40175,6 +40359,7 @@ static void test_chat_runtime_case(test_state *state, const char *name,
   logger = test_log_open(&logs);
   cai_error_init(&error);
   cai_client_config_init(&client_config);
+  client_config.chat_max_attempts = 1U;
   client_config.logger = logger;
   client_config.api_key = "mock-key";
   client_config.base_url = server.base_url;
@@ -40481,6 +40666,7 @@ static void test_chat_runtime_overflow_recovery(test_state *state) {
     return;
   cai_error_init(&error);
   cai_client_config_init(&client_config);
+  client_config.chat_max_attempts = 1U;
   client_config.api_key = "mock-key";
   client_config.base_url = server.base_url;
   client_config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
@@ -40809,6 +40995,7 @@ static void test_chat_stream_failure_modes(test_state *state) {
     logger = test_log_open(&logs);
     cai_error_init(&error);
     cai_client_config_init(&config);
+    config.chat_max_attempts = 1U;
     cai_client_config_use_berget(&config);
     config.logger = logger;
     config.api_key = "fixture-key";
@@ -41040,6 +41227,7 @@ static void test_chat_transport_failure_modes(test_state *state) {
     cai_error_init(&error);
     logger = test_log_open(&logs);
     cai_client_config_init(&config);
+    config.chat_max_attempts = 1U;
     config.logger = logger;
     cai_client_config_use_berget(&config);
     config.api_key = "fixture-key";
@@ -41172,6 +41360,7 @@ static void test_chat_failed_tool_stream_preserves_session(test_state *state) {
       continue;
     cai_error_init(&error);
     cai_client_config_init(&config);
+    config.chat_max_attempts = 1U;
     cai_client_config_use_berget(&config);
     config.api_key = "fixture-key";
     config.base_url = server.base_url;
@@ -41288,6 +41477,7 @@ static void test_chat_logging(test_state *state) {
     memset(&partial_logger, 0, sizeof(partial_logger));
     cai_error_init(&error);
     cai_client_config_init(&config);
+    config.chat_max_attempts = 1U;
     config.api_key = "private-api-key";
     config.base_url = server.base_url;
     config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
@@ -41362,6 +41552,7 @@ static void test_model_catalog_logging(test_state *state) {
   logger = test_log_open(&logs);
   cai_error_init(&error);
   cai_client_config_init(&config);
+  config.chat_max_attempts = 1U;
   cai_client_config_use_berget(&config);
   config.api_key = "private-api-key";
   config.base_url = server.base_url;
@@ -41416,6 +41607,421 @@ static void test_model_catalog_logging(test_state *state) {
                     &server.child_status);
 }
 
+static void test_model_catalog_outage_recovery(test_state *state) {
+  static const char old_catalog[] =
+      "{\"data\":[{\"id\":\"zai-org/"
+      "GLM-5.3-Flash\",\"context_window_tokens\":5000,"
+      "\"pricing\":{\"currency\":\"EUR\",\"input\":1,\"output\":2,"
+      "\"unit\":\"€ / M Token\"}}]}";
+  static const char new_catalog[] =
+      "{\"data\":[{\"id\":\"zai-org/"
+      "GLM-5.3-Flash\",\"context_window_tokens\":8000,"
+      "\"pricing\":{\"currency\":\"EUR\",\"input\":2,\"output\":3,"
+      "\"unit\":\"€ / M Token\"}}]}";
+  int mode;
+  for (mode = 0; mode < 4; mode++) {
+    mock_http_expectation script[3];
+    http_mock_server server;
+    cai_client_config config;
+    cai_client *client = NULL;
+    cai_model_catalog *catalog = NULL;
+    cai_error error;
+    test_log_capture logs;
+    pslog_logger *logger;
+    size_t count = mode == 0 || mode == 3 ? 3U : 2U;
+    size_t failed = count == 3U ? 1U : 0U;
+    size_t i;
+    int rc;
+    memset(script, 0, sizeof(script));
+    for (i = 0U; i < count; i++) {
+      script[i].request_prefix = "GET /v1/models HTTP/";
+      script[i].content_type = "application/json";
+      script[i].body = i == 0U ? old_catalog : new_catalog;
+    }
+    script[failed].status = mode == 3 ? 200 : 503;
+    script[failed].request_id = "req_catalog_failure";
+    script[failed].body = mode == 3 ? "{bad json}"
+                                    : "{\"error\":{\"message\":\"catalog "
+                                      "unavailable\",\"code\":\"overloaded\"}}";
+    if (http_mock_server_open_script(state, "catalog_outage", script, count,
+                                     &server) != 0)
+      continue;
+    logger = test_log_open(&logs);
+    cai_error_init(&error);
+    cai_client_config_init(&config);
+    cai_client_config_use_berget(&config);
+    config.api_key = "mock-key";
+    config.base_url = server.base_url;
+    config.logger = logger;
+    config.http_2_disabled = 1;
+    config.timeout_ms = 500L;
+    if (mode != 1)
+      config.model_metadata_json =
+          "{\"models\":[{\"provider\":\"berget\",\"id\":\"zai-org/"
+          "GLM-5.3-Flash\",\"pricing\":{\"currency\":\"EUR\",\"input\":9,"
+          "\"output\":9}}]}";
+    rc = cai_client_open(&config, &client, &error);
+    expect_int(state, "catalog_outage_open", rc, CAI_OK);
+    if (rc == CAI_OK) {
+      CAI_CLIENT_IMPL(client)->catalog_policy_origin = CAI_BERGET_BASE_URL;
+      if (count == 3U) {
+        rc = cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_ONLINE,
+                                    &catalog, &error);
+        expect_int(state, "catalog_outage_initial", rc, CAI_OK);
+        if (catalog != NULL)
+          expect_int(state, "catalog_initial_fresh", catalog->is_stale, 0L);
+        cai_model_catalog_close(catalog);
+        catalog = NULL;
+        CAI_CLIENT_IMPL(client)->model_catalog_fetched_at = time(NULL) - 301;
+      }
+      rc = cai_client_list_models(
+          client,
+          mode == 3 ? CAI_MODEL_CATALOG_REFRESH_ONLINE
+                    : CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED,
+          &catalog, &error);
+      expect_int(state, "catalog_outage_result", rc,
+                 mode == 1   ? CAI_ERR_SERVER
+                 : mode == 3 ? CAI_ERR_PROTOCOL
+                             : CAI_OK);
+      if (mode == 0 && catalog != NULL) {
+        expect_int(state, "catalog_outage_stale", catalog->is_stale, 1L);
+        expect_int(state, "catalog_outage_live_context_retained",
+                   (long)catalog->entries[0].context_window_tokens, 5000L);
+        expect_int(state, "catalog_outage_live_price_retained",
+                   (long)catalog->entries[0].input_price, 1L);
+      }
+      cai_model_catalog_close(catalog);
+      catalog = NULL;
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+      /* Any accidental request here consumes the recovery response and makes
+       * the subsequent forced/expired refresh fail the wire script. */
+      for (i = 0U; i < 3U; i++) {
+        rc = cai_client_list_models(
+            client, CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED, &catalog,
+            &error);
+        expect_int(state, "catalog_cooldown_result", rc,
+                   mode == 1 ? CAI_ERR_SERVER : CAI_OK);
+        if (mode == 1) {
+          expect_str(state, "catalog_cooldown_request_id", error.request_id,
+                     "req_catalog_failure");
+          expect_str(state, "catalog_cooldown_server_code", error.server_code,
+                     "overloaded");
+        } else if (catalog != NULL) {
+          expect_int(state, "catalog_cooldown_stale_flag", catalog->is_stale,
+                     count == 3U);
+        }
+        cai_model_catalog_close(catalog);
+        catalog = NULL;
+        cai_error_cleanup(&error);
+        cai_error_init(&error);
+      }
+      if (mode == 1)
+        CAI_CLIENT_IMPL(client)->model_catalog_retry_at = 0.0;
+      rc = cai_client_list_models(
+          client,
+          mode == 1 ? CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED
+                    : CAI_MODEL_CATALOG_REFRESH_ONLINE,
+          &catalog, &error);
+      expect_int(state, "catalog_outage_recovered", rc, CAI_OK);
+      if (catalog != NULL) {
+        expect_int(state, "catalog_recovered_fresh", catalog->is_stale, 0L);
+        expect_int(state, "catalog_recovered_context",
+                   (long)catalog->entries[0].context_window_tokens, 8000L);
+        expect_int(state, "catalog_recovered_price",
+                   (long)catalog->entries[0].input_price, 2L);
+      }
+      expect_int(state, "catalog_failure_cleared",
+                 CAI_CLIENT_IMPL(client)->model_catalog_refresh_error.code,
+                 CAI_OK);
+    }
+    cai_model_catalog_close(catalog);
+    cai_client_close(client);
+    if (logger != NULL)
+      logger->destroy(logger);
+    cai_error_cleanup(&error);
+    expect_child_exit(state, "catalog_outage", server.pid,
+                      &server.child_status);
+  }
+}
+
+static void test_chat_transient_retries(test_state *state) {
+  static const char good[] =
+      "data: "
+      "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"recovered\"},"
+      "\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+  static const struct {
+    int status;
+    const char *body;
+    unsigned int attempts;
+    int failures;
+    const char *retry_after;
+    int expected;
+    int cancel;
+  } cases[] = {
+      {429, "{\"error\":{\"code\":\"rate_limit_exceeded\"}}", 0U, 1, NULL,
+       CAI_OK, 0},
+      {502, "bad gateway", 3U, 1, NULL, CAI_OK, 0},
+      {503, "overloaded", 3U, 2, NULL, CAI_OK, 0},
+      {-1, "", 3U, 1, NULL, CAI_OK, 0},
+      {503, "overloaded", 0U, 3, NULL, CAI_ERR_SERVER, 0},
+      {503, "overloaded", 1U, 1, NULL, CAI_ERR_SERVER, 0},
+      {401, "unauthorized", 3U, 1, NULL, CAI_ERR_SERVER, 0},
+      {400, "invalid option", 3U, 1, NULL, CAI_ERR_SERVER, 0},
+      {500, "inference failed", 3U, 1, NULL, CAI_ERR_SERVER, 0},
+      {429, "{\"error\":{\"code\":\"insufficient_quota\"}}", 3U, 1, NULL,
+       CAI_ERR_SERVER, 0},
+      {429, "{\"error\":{\"code\":\"insufficient_quota\"}}", 3U, 1, NULL,
+       CAI_ERR_SERVER, 2},
+      {429, "{\"error\":{\"type\":\"quota_exceeded\"}}", 3U, 1, NULL,
+       CAI_ERR_SERVER, 0},
+      {429, "{\"error\":{\"code\":\"billing_hard_limit_reached\"}}", 3U, 1,
+       NULL, CAI_ERR_SERVER, 0},
+      {429, "slow down", 3U, 1, "1", CAI_OK, 0},
+      {503, "slow down", 3U, 1, "date", CAI_OK, 0},
+      {503, "slow down", 3U, 1, "9999999999999999999999999999", CAI_ERR_SERVER,
+       0},
+      {503, "slow down", 3U, 1, "-1", CAI_OK, 0},
+      {503, "slow down", 3U, 1, "nonsense", CAI_OK, 0},
+      {503, "slow down", 3U, 1, "1", CAI_ERR_CANCELLED, 1},
+      {200, "data: {\"error\":{\"code\":\"rate_limit_exceeded\"}}\n\n", 3U, 1,
+       NULL, CAI_ERR_SERVER, 0},
+      {200,
+       "data: "
+       "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n",
+       3U, 1, NULL, CAI_ERR_PROTOCOL, 0}};
+  size_t i;
+  for (i = 0U; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    mock_http_expectation script[4];
+    size_t count =
+        (size_t)cases[i].failures + (cases[i].expected == CAI_OK ? 1U : 0U);
+    http_mock_server server;
+    cai_client_config config;
+    cai_client *client = NULL;
+    cai_response_create_params *params = NULL;
+    cai_stream_sinks sinks;
+    cai_sink *sink = NULL;
+    cai_sink_callbacks callbacks;
+    cai_stream_cancel_scope cancel;
+    write_state output;
+    test_log_capture logs;
+    pslog_logger *logger;
+    cai_error error;
+    char header[256];
+    double deadline, started;
+    size_t j;
+    int rc;
+    memset(script, 0, sizeof(script));
+    snprintf(header, sizeof(header), "req_retry");
+    if (cases[i].retry_after != NULL) {
+      char date[128];
+      const char *value = cases[i].retry_after;
+      if (strcmp(value, "date") == 0) {
+        time_t when = time(NULL) + 3;
+        struct tm utc;
+        gmtime_r(&when, &utc);
+        strftime(date, sizeof(date), "%a, %d %b %Y %H:%M:%S GMT", &utc);
+        value = date;
+      }
+      /* The raw fixture header string adds Retry-After on a separate line. */
+      snprintf(header, sizeof(header), "req_retry\r\nRetry-After: %s", value);
+    }
+    for (j = 0U; j < count; j++) {
+      script[j].request_prefix = "POST /v1/chat/completions HTTP/";
+      script[j].status = j < (size_t)cases[i].failures ? cases[i].status : 200;
+      script[j].body = j < (size_t)cases[i].failures ? cases[i].body : good;
+      script[j].request_id =
+          j < (size_t)cases[i].failures ? header : "req_recovered";
+      script[j].content_type =
+          script[j].status == 200 ? "text/event-stream" : "application/json";
+    }
+    if (http_mock_server_open_script(state, "chat_retry", script, count,
+                                     &server) != 0)
+      continue;
+    logger = test_log_open(&logs);
+    cai_error_init(&error);
+    cai_client_config_init(&config);
+    config.api_key = "mock-key";
+    config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
+    config.base_url = server.base_url;
+    config.http_2_disabled = 1;
+    config.timeout_ms = 500L;
+    config.logger = logger;
+    config.chat_max_attempts = cases[i].attempts;
+    config.chat_retry_initial_delay_ms = 10L;
+    config.chat_retry_max_delay_ms = 4000L;
+    memset(&callbacks, 0, sizeof(callbacks));
+    memset(&output, 0, sizeof(output));
+    callbacks.write = test_write;
+    callbacks.context = &output;
+    cai_stream_sinks_init(&sinks);
+    rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+    sinks.output_text = sink;
+    if (rc == CAI_OK)
+      rc = cai_client_open(&config, &client, &error);
+    if (rc == CAI_OK)
+      rc = cai_response_create_params_new(&params, &error);
+    if (rc == CAI_OK)
+      rc = params->set_model(params, "test-model", &error);
+    if (rc == CAI_OK)
+      rc = params->add_text(params, "user", "retry prompt", &error);
+    started = test_now_seconds();
+    deadline = started + 0.15;
+    cancel.check = test_chat_cancel_deadline;
+    cancel.context = &deadline;
+    if (cases[i].cancel == 1)
+      (void)cai_stream_set_thread_cancel_scope(&cancel);
+    if (rc == CAI_OK)
+      rc = cai_client_stream_response_with_id(
+          client, params, &sinks, NULL, NULL,
+          cases[i].cancel == 2 ? NULL : &error);
+    if (cases[i].cancel == 1)
+      (void)cai_stream_set_thread_cancel_scope(NULL);
+    expect_int(state, "chat_retry_result", rc, cases[i].expected);
+    if (rc == CAI_OK) {
+      expect_str(state, "chat_retry_output_once", output.buffer, "recovered");
+      test_expect_log(state, "chat_retry_logged", &logs, "cai.chat.retry",
+                      "info", NULL);
+      if (cases[i].retry_after != NULL &&
+          strcmp(cases[i].retry_after, "1") == 0)
+        expect_int(state, "chat_retry_after_seconds",
+                   test_now_seconds() - started >= 0.99, 1L);
+      if (cases[i].retry_after != NULL &&
+          strcmp(cases[i].retry_after, "date") == 0)
+        expect_int(state, "chat_retry_after_date",
+                   test_now_seconds() - started >= 1.9, 1L);
+    } else if (cases[i].cancel == 1) {
+      expect_int(state, "chat_retry_cancel_prompt",
+                 test_now_seconds() - started < 0.8, 1L);
+    }
+    if (cases[i].failures == 1 && cases[i].expected != CAI_OK &&
+        cases[i].cancel != 1)
+      expect_int(state, "chat_retry_no_unsafe_attempt",
+                 strstr(logs.buffer, "cai.chat.retry") == NULL, 1L);
+    if (cases[i].expected == CAI_ERR_SERVER && cases[i].status != 200) {
+      test_expect_log(state, "chat_retry_failure_metrics", &logs,
+                      "cai.chat.request.metrics", "debug",
+                      "\"has_usage\":false");
+      expect_int(state, "chat_retry_no_fabricated_metrics",
+                 strstr(logs.buffer, "first_token_ms") == NULL &&
+                     strstr(logs.buffer, "total_tokens") == NULL &&
+                     strstr(logs.buffer, "estimated_cost_") == NULL,
+                 1L);
+    }
+    cai_response_create_params_destroy(params);
+    cai_sink_close(sink);
+    cai_client_close(client);
+    if (logger != NULL)
+      logger->destroy(logger);
+    cai_error_cleanup(&error);
+    expect_child_exit(state, "chat_retry", server.pid, &server.child_status);
+  }
+}
+
+static void test_chat_request_metrics(test_state *state) {
+  static const char body[] =
+      "data: "
+      "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"reply\"},\"finish_"
+      "reason\":\"stop\"}]}\n\ndata: "
+      "{\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":"
+      "20,\"total_tokens\":120,\"prompt_tokens_details\":{\"cached_tokens\":10}"
+      ",\"completion_tokens_details\":{\"reasoning_tokens\":5}}}\n\ndata: "
+      "[DONE]\n\n";
+  int mode;
+  for (mode = 0; mode < 3; mode++) {
+    mock_http_expectation script;
+    http_mock_server server;
+    cai_client_config config;
+    cai_client *client = NULL;
+    cai_response *response = NULL;
+    cai_response_create_params *params = NULL;
+    cai_error error;
+    test_log_capture logs;
+    pslog_logger *logger;
+    int rc;
+    memset(&script, 0, sizeof(script));
+    script.request_prefix = "POST /v1/chat/completions HTTP/";
+    script.body = body;
+    script.content_type = "text/event-stream";
+    script.request_id = "req_metrics";
+    if (http_mock_server_open_script(state, "chat_metrics", &script, 1U,
+                                     &server) != 0)
+      continue;
+    logger = test_log_open(&logs);
+    cai_error_init(&error);
+    cai_client_config_init(&config);
+    config.api_key = "mock-key";
+    config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
+    config.metadata_provider = "custom";
+    config.base_url = server.base_url;
+    config.http_2_disabled = 1;
+    config.logger = logger;
+    if (mode == 0)
+      config.model_metadata_json =
+          "{\"models\":[{\"provider\":\"custom\",\"id\":\"test-model\","
+          "\"pricing\":{\"currency\":\"EUR\",\"input\":1,\"output\":2}}]}";
+    if (mode == 1)
+      config.model_metadata_json =
+          "{\"models\":[{\"provider\":\"custom\",\"id\":\"test-model\","
+          "\"pricing\":{\"currency\":\"USD\",\"input\":1,\"output\":2}}]}";
+    rc = cai_client_open(&config, &client, &error);
+    if (rc == CAI_OK)
+      rc = cai_response_create_params_new(&params, &error);
+    if (rc == CAI_OK)
+      rc = params->set_model(params, "test-model", &error);
+    if (rc == CAI_OK)
+      rc = params->add_text(params, "user", "metrics prompt", &error);
+    if (rc == CAI_OK)
+      rc = cai_client_create_response(client, params, &response, &error);
+    expect_int(state, "chat_metrics_result", rc, CAI_OK);
+    test_expect_log(state, "chat_metrics_usage", &logs,
+                    "cai.chat.request.metrics", "debug",
+                    "\"total_tokens\":120");
+    test_expect_log(state, "chat_metrics_ttft", &logs,
+                    "cai.chat.request.metrics", "debug", "\"first_token_ms\":");
+    test_expect_log(state, "chat_metrics_elapsed", &logs,
+                    "cai.chat.request.metrics", "debug", "\"elapsed_ms\":");
+    test_expect_log(state, "chat_metrics_id", &logs, "cai.chat.request.metrics",
+                    "debug", "\"request_id\":\"req_metrics\"");
+    if (mode != 2) {
+      const char *cost_key =
+          mode == 0 ? "\"estimated_cost_eur\":" : "\"estimated_cost_usd\":";
+      const char *cost = strstr(logs.buffer, cost_key);
+      test_expect_log(state, "chat_metrics_cost", &logs,
+                      "cai.chat.request.metrics", "debug", cost_key);
+      if (cost != NULL)
+        expect_int(
+            state, "chat_metrics_cost_value",
+            (long)(strtod(cost + strlen(cost_key), NULL) * 100000000.0 + 0.5),
+            14000L);
+    }
+    {
+      const char *elapsed = strstr(logs.buffer, "\"elapsed_ms\":");
+      const char *first = strstr(logs.buffer, "\"first_token_ms\":");
+      if (elapsed != NULL && first != NULL) {
+        double total = strtod(elapsed + strlen("\"elapsed_ms\":"), NULL);
+        double ttft = strtod(first + strlen("\"first_token_ms\":"), NULL);
+        expect_int(state, "chat_metrics_timing_order",
+                   total >= ttft && ttft >= 0.0, 1L);
+      }
+    }
+    expect_int(state, "chat_metrics_no_false_currency",
+               strstr(logs.buffer, mode == 0 ? "estimated_cost_usd"
+                                             : "estimated_cost_eur") == NULL,
+               1L);
+    if (mode == 2)
+      expect_int(state, "chat_metrics_unknown_cost",
+                 strstr(logs.buffer, "estimated_cost_") == NULL, 1L);
+    cai_response_destroy(response);
+    cai_response_create_params_destroy(params);
+    cai_client_close(client);
+    if (logger != NULL)
+      logger->destroy(logger);
+    cai_error_cleanup(&error);
+    expect_child_exit(state, "chat_metrics", server.pid, &server.child_status);
+  }
+}
+
 static void test_chat_connection_failure(test_state *state) {
   struct sockaddr_in addr;
   socklen_t addr_len = sizeof(addr);
@@ -41444,6 +42050,7 @@ static void test_chat_connection_failure(test_state *state) {
   snprintf(url, sizeof(url), "http://127.0.0.1:%d/v1", ntohs(addr.sin_port));
   cai_error_init(&error);
   cai_client_config_init(&config);
+  config.chat_max_attempts = 1U;
   cai_client_config_use_berget(&config);
   config.api_key = "fixture-key";
   config.base_url = url;
@@ -41595,6 +42202,7 @@ static void test_chat_completions_adapter(test_state *state) {
   }
   cai_error_init(&error);
   cai_client_config_init(&config);
+  config.chat_max_attempts = 1U;
   config.api_key = "mock-key";
   config.base_url = server.base_url;
   config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
@@ -47732,6 +48340,7 @@ static const test_entry test_entries[] = {
     {"chat_parallel_tool_roundtrip", test_chat_parallel_tool_roundtrip},
     {"berget_live_compaction", test_berget_live_compaction},
     {"berget_live_vision", test_berget_live_vision},
+    {"berget_live_canaries", test_berget_live_canaries},
     {"chat_length_continuation", test_chat_length_continuation},
     {"chat_length_unfinished_tool", test_chat_length_unfinished_tool},
     {"chat_runtime_overflow_recovery", test_chat_runtime_overflow_recovery},
@@ -47742,6 +48351,9 @@ static const test_entry test_entries[] = {
     {"chat_connection_failure", test_chat_connection_failure},
     {"chat_logging", test_chat_logging},
     {"model_catalog_logging", test_model_catalog_logging},
+    {"model_catalog_outage_recovery", test_model_catalog_outage_recovery},
+    {"chat_transient_retries", test_chat_transient_retries},
+    {"chat_request_metrics", test_chat_request_metrics},
     {"chat_transport_failure_modes", test_chat_transport_failure_modes},
     {"chat_failed_tool_stream_preserves_session",
      test_chat_failed_tool_stream_preserves_session},
