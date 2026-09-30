@@ -153,9 +153,16 @@ image input. Hosted image generation is disabled because Berget does not
 provide that API; file IDs and arbitrary file attachments return an explicit
 error. Berget API keys and session content are kept in the same
 locations as other `cai` providers; the key is read from `BERGET_API_KEY`.
-GLM currently emits thinking inside its content stream; cai keeps that content
-out of the final answer. Berget does not provide a concise reasoning summary
-for that model.
+GLM may emit reasoning separately or inside a tagged `<think>` section; cai
+keeps tagged thinking out of the final answer and streams plain answer text.
+Berget does not provide a concise reasoning summary for that model. A live
+Berget smoke test runs a first turn, forces client-side compaction, then checks
+that a second turn can use the compacted history:
+
+```sh
+CAI_RUN_BERGET_LIVE_TEST=1 BERGET_API_KEY=... \
+  build/debug/cai_tests --only berget_live_compaction
+```
 
 The softline prompt is `> `. Its status bar shows model and reasoning effort,
 the last measured context percentage, a shortened workspace path, available

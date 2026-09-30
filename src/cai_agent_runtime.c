@@ -3840,8 +3840,14 @@ static int cai_runtime_chat_context_overflow(const cai_error *error) {
          cai_runtime_contains_ci(detail, "context window") ||
          cai_runtime_contains_ci(detail, "context length") ||
          cai_runtime_contains_ci(detail, "context size") ||
+         cai_runtime_contains_ci(detail, "input is too long") ||
+         cai_runtime_contains_ci(detail, "input token count") ||
+         cai_runtime_contains_ci(detail, "maximum context") ||
          cai_runtime_contains_ci(detail, "maximum input length") ||
          cai_runtime_contains_ci(detail, "prompt is too long") ||
+         cai_runtime_contains_ci(detail, "reduce the length of the messages") ||
+         cai_runtime_contains_ci(detail, "request too large") ||
+         cai_runtime_contains_ci(detail, "request entity too large") ||
          cai_runtime_contains_ci(detail, "too many tokens") ||
          cai_runtime_contains_ci(detail, "token limit exceeded");
 }
@@ -5076,7 +5082,10 @@ static void *cai_runtime_worker(void *context) {
       if (persist_rc == CAI_OK && usage_limited_goal) {
         persist_rc = cai_runtime_refresh_goal_projection(runtime, &error);
       }
-      if (persist_rc == CAI_OK && usage_limited_goal) {
+      if (persist_rc == CAI_OK) {
+        /* A length-limited Chat stream may have committed partial assistant
+         * text even when no usage cap or goal is active. Persist that state
+         * before reporting the exhausted continuation attempt. */
         persist_rc = cai_runtime_checkpoint(runtime, 1, &error);
       }
       if (persist_rc != CAI_OK) {

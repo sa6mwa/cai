@@ -692,6 +692,7 @@ static double test_now_seconds(void) {
 
 static void run_test_group(test_state *state, const char *name, test_fn fn) {
   int failures_before;
+  unsigned int timeout_seconds;
   double started;
   double elapsed;
 
@@ -699,13 +700,14 @@ static void run_test_group(test_state *state, const char *name, test_fn fn) {
   g_current_test_name = name;
   fprintf(stderr, "TEST %-48s ... ", name);
   fflush(stderr);
-  alarm(3U);
+  timeout_seconds = strcmp(name, "berget_live_compaction") == 0 ? 180U : 3U;
+  alarm(timeout_seconds);
   started = test_now_seconds();
   fn(state);
   elapsed = test_now_seconds() - started;
   alarm(0U);
-  if (elapsed > 3.0) {
-    test_fail(state, name, "test exceeded three seconds");
+  if (elapsed > (double)timeout_seconds) {
+    test_fail(state, name, "test exceeded its time limit");
   }
   if (state->failures == failures_before) {
     fprintf(stderr, "ok %.3fs\n", elapsed);
@@ -39363,6 +39365,10 @@ static void test_chat_client_compaction(test_state *state) {
   client_config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
   client_config.http_2_disabled = 1;
   client_config.timeout_ms = 5000L;
+  client_config.metadata_provider = "custom";
+  client_config.model_metadata_json =
+      "{\"models\":[{\"provider\":\"custom\",\"id\":\"test-model\","
+      "\"context_window_tokens\":96000}]}";
   cai_agent_config_init(&agent_config);
   agent_config.model = "test-model";
   agent_config.disable_auto_compaction = 1;
@@ -39444,12 +39450,13 @@ static void test_chat_compaction_failure_preserves_history(test_state *state) {
       "data: {\"id\":\"first\",\"choices\":[{\"index\":0,\"delta\":{"
       "\"content\":\"original reply\"},\"finish_reason\":\"stop\"}]}\n\n"
       "data: [DONE]\n\n";
-  static const char *summary_required[] = {"Transcript fragment:",
-                                           "original objective"};
+  static const char *summary_required[] = {
+      "Transcript fragment:", "original objective",
+      "\"max_completion_tokens\":1000"};
   static const mock_http_expectation script[] = {
       {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
        "text/event-stream", NULL, first_body},
-      {"POST /v1/chat/completions HTTP/", summary_required, 2U, NULL, 0U, 500,
+      {"POST /v1/chat/completions HTTP/", summary_required, 3U, NULL, 0U, 500,
        "Internal Server Error", "application/json", NULL,
        "{\"error\":{\"message\":\"summary unavailable\"}}"}};
   http_mock_server server;
@@ -39475,6 +39482,10 @@ static void test_chat_compaction_failure_preserves_history(test_state *state) {
   client_config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
   client_config.http_2_disabled = 1;
   client_config.timeout_ms = 5000L;
+  client_config.metadata_provider = "custom";
+  client_config.model_metadata_json =
+      "{\"models\":[{\"provider\":\"custom\",\"id\":\"test-model\","
+      "\"context_window_tokens\":4000}]}";
   cai_agent_config_init(&agent_config);
   agent_config.model = "test-model";
   agent_config.disable_auto_compaction = 1;
@@ -39514,6 +39525,171 @@ static void test_chat_compaction_failure_preserves_history(test_state *state) {
   cai_error_cleanup(&error);
   expect_child_exit(state, "chat_compaction_failure", server.pid,
                     &server.child_status);
+}
+
+static void test_chat_compaction_tiny_context(test_state *state) {
+  static const char body[] =
+      "data: {\"id\":\"first\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"content\":\"reply\"},\"finish_reason\":\"stop\"}]}\n\n"
+      "data: [DONE]\n\n";
+  static const mock_http_expectation script[] = {
+      {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, body}};
+  http_mock_server server;
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client = NULL;
+  cai_agent *agent = NULL;
+  cai_session *session = NULL;
+  cai_response *response = NULL;
+  cai_source *history = NULL;
+  cai_error error;
+  char history_json[2048];
+  int rc;
+
+  if (http_mock_server_open_script(state, "chat_tiny_context", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0)
+    return;
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = server.base_url;
+  client_config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  client_config.metadata_provider = "custom";
+  client_config.model_metadata_json =
+      "{\"models\":[{\"provider\":\"custom\",\"id\":\"test-model\","
+      "\"context_window_tokens\":512}]}";
+  cai_agent_config_init(&agent_config);
+  agent_config.model = "test-model";
+  agent_config.disable_auto_compaction = 1;
+  rc = cai_client_open(&client_config, &client, &error);
+  if (rc == CAI_OK)
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  if (rc == CAI_OK)
+    rc = cai_agent_new_session(agent, &session, &error);
+  if (rc == CAI_OK)
+    rc = cai_session_send_text(session, "original prompt", &response, &error);
+  cai_response_destroy(response);
+  if (rc == CAI_OK) {
+    rc = cai_session_compact(session, &error);
+    expect_int(state, "chat_tiny_context_limit", rc, CAI_ERR_LIMIT);
+    expect_substr(state, "chat_tiny_context_detail", error.message,
+                  "too small");
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    rc = cai_session_export_history_source(session, &history, &error);
+    if (rc == CAI_OK &&
+        read_source_text(state, "chat_tiny_context_read", history, history_json,
+                         sizeof(history_json), &error)) {
+      expect_substr(state, "chat_tiny_context_original", history_json,
+                    "original prompt");
+    }
+  }
+  cai_source_close(history);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "chat_tiny_context", server.pid,
+                    &server.child_status);
+}
+
+/* Explicit live smoke: first turn, forced client-side compaction, then a
+ * second turn that can only answer by reading the replacement history. */
+static void test_berget_live_compaction(test_state *state) {
+  static const char marker[] = "CAI_BERGET_COMPACTION_B7F9";
+  const char *enabled = getenv("CAI_RUN_BERGET_LIVE_TEST");
+  const char *api_key = getenv("BERGET_API_KEY");
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client = NULL;
+  cai_agent *agent = NULL;
+  cai_session *session = NULL;
+  cai_response *response = NULL;
+  cai_source *history = NULL;
+  cai_error error;
+  char history_json[16384];
+  char failure[512];
+  const char *phase = "open";
+  int rc;
+
+  if (enabled == NULL || strcmp(enabled, "1") != 0)
+    return;
+  if (api_key == NULL || api_key[0] == '\0') {
+    test_fail(state, "berget_live_compaction", "BERGET_API_KEY is required");
+    return;
+  }
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  cai_client_config_use_berget(&client_config);
+  client_config.api_key = api_key;
+  client_config.timeout_ms = 120000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = "zai-org/GLM-5.3-Flash";
+  agent_config.max_output_tokens = 4096;
+  agent_config.disable_auto_compaction = 1;
+  rc = cai_client_open(&client_config, &client, &error);
+  if (rc == CAI_OK)
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  if (rc == CAI_OK)
+    rc = cai_agent_new_session(agent, &session, &error);
+  if (rc == CAI_OK) {
+    phase = "first turn";
+    rc = cai_session_send_text(
+        session,
+        "Remember this exact marker for my next question: "
+        "CAI_BERGET_COMPACTION_B7F9. Reply READY now.",
+        &response, &error);
+    if (rc == CAI_OK && (cai_response_output_text(response) == NULL ||
+                         cai_response_output_text(response)[0] == '\0')) {
+      test_fail(state, "berget_live_first_turn", "empty first response");
+      rc = CAI_ERR_PROTOCOL;
+    }
+  }
+  cai_response_destroy(response);
+  response = NULL;
+  if (rc == CAI_OK) {
+    phase = "compaction";
+    rc = cai_session_compact(session, &error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_session_export_history_source(session, &history, &error);
+    if (rc == CAI_OK &&
+        read_source_text(state, "berget_live_history", history, history_json,
+                         sizeof(history_json), &error)) {
+      expect_substr(state, "berget_live_summary_marker", history_json, marker);
+    }
+    cai_source_close(history);
+    history = NULL;
+  }
+  if (rc == CAI_OK) {
+    phase = "continuation";
+    rc = cai_session_send_text(
+        session,
+        "What exact marker did I ask you to remember? Reply only with that "
+        "marker.",
+        &response, &error);
+    if (rc == CAI_OK) {
+      expect_substr(state, "berget_live_continuation",
+                    cai_response_output_text(response), marker);
+    }
+  }
+  if (rc != CAI_OK) {
+    snprintf(failure, sizeof(failure), "%s: %s", phase,
+             error.detail != NULL    ? error.detail
+             : error.message != NULL ? error.message
+                                     : "request failed");
+    test_fail(state, "berget_live_compaction", failure);
+  }
+  cai_response_destroy(response);
+  cai_source_close(history);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
 }
 
 static void test_chat_length_continuation(test_state *state) {
@@ -39604,6 +39780,232 @@ static void test_chat_length_continuation(test_state *state) {
   cai_error_cleanup(&error);
   expect_child_exit(state, "chat_length_continuation", server.pid,
                     &server.child_status);
+}
+
+static void test_chat_length_unfinished_tool(test_state *state) {
+  static const char body[] =
+      "data: {\"id\":\"partial_tool\",\"choices\":[{\"index\":0,"
+      "\"delta\":{\"content\":\"partial answer\",\"tool_calls\":[{"
+      "\"index\":0,\"id\":\"call_unused\",\"type\":\"function\","
+      "\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"x\\\":1}\"}}]},"
+      "\"finish_reason\":\"length\"}]}\n\n"
+      "data: [DONE]\n\n";
+  static const mock_http_expectation script[] = {
+      {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, body}};
+  http_mock_server server;
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client = NULL;
+  cai_agent *agent = NULL;
+  cai_session *session = NULL;
+  cai_source *history = NULL;
+  cai_sink *sink = NULL;
+  cai_sink_callbacks callbacks;
+  cai_stream_sinks sinks;
+  write_state output;
+  cai_error error;
+  char history_json[4096];
+  int rc;
+
+  if (http_mock_server_open_script(state, "chat_length_unfinished_tool", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0)
+    return;
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = server.base_url;
+  client_config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = "test-model";
+  agent_config.disable_auto_compaction = 1;
+  memset(&output, 0, sizeof(output));
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = test_write;
+  callbacks.context = &output;
+  cai_stream_sinks_init(&sinks);
+  rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+  if (rc == CAI_OK)
+    sinks.output_text = sink;
+  if (rc == CAI_OK)
+    rc = cai_client_open(&client_config, &client, &error);
+  if (rc == CAI_OK)
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  if (rc == CAI_OK)
+    rc = cai_agent_new_session(agent, &session, &error);
+  if (rc == CAI_OK)
+    rc = cai_session_add_user_text(session, "work", &error);
+  if (rc == CAI_OK) {
+    rc = cai_session_stream_auto(session, NULL, &sinks, &error);
+    expect_int(state, "chat_unfinished_tool_result", rc, CAI_ERR_LIMIT);
+    expect_str(state, "chat_unfinished_tool_partial", output.buffer,
+               "partial answer");
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    rc = cai_session_export_history_source(session, &history, &error);
+    expect_int(state, "chat_unfinished_tool_history", rc, CAI_OK);
+    if (rc == CAI_OK &&
+        read_source_text(state, "chat_unfinished_tool_read", history,
+                         history_json, sizeof(history_json), &error)) {
+      expect_substr(state, "chat_unfinished_tool_text", history_json,
+                    "partial answer");
+      expect_int(state, "chat_unfinished_tool_no_call",
+                 strstr(history_json, "call_unused") == NULL, 1L);
+    }
+  }
+  cai_source_close(history);
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "chat_length_unfinished_tool", server.pid,
+                    &server.child_status);
+}
+
+static void test_chat_runtime_failure_case(test_state *state, const char *name,
+                                           const mock_http_expectation *script,
+                                           size_t script_count,
+                                           const char *prompt,
+                                           int expected_text_deltas,
+                                           int expect_partial_checkpoint) {
+  http_mock_server server;
+  cai_client_config client_config;
+  cai_agent_runtime_config runtime_config;
+  cai_agent_session_store store;
+  runtime_session_store_state store_state;
+  cai_client *client = NULL;
+  cai_agent_runtime *runtime = NULL;
+  runtime_event_state events;
+  cai_agent_run_state run_state = CAI_AGENT_IDLE;
+  cai_error error;
+  struct timespec delay;
+  int rc;
+  int i;
+
+  if (http_mock_server_open_script(state, name, script, script_count,
+                                   &server) != 0)
+    return;
+  cai_error_init(&error);
+  cai_client_config_init(&client_config);
+  client_config.api_key = "mock-key";
+  client_config.base_url = server.base_url;
+  client_config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
+  client_config.http_2_disabled = 1;
+  client_config.timeout_ms = 5000L;
+  rc = cai_client_open(&client_config, &client, &error);
+  memset(&events, 0, sizeof(events));
+  memset(&store, 0, sizeof(store));
+  memset(&store_state, 0, sizeof(store_state));
+  events.owner = pthread_self();
+  cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.workspace_directory = "/tmp";
+  runtime_config.model = "test-model";
+  runtime_config.disable_default_session_store = 1;
+  runtime_config.disable_terminal = 1;
+  runtime_config.event_callback = test_runtime_event;
+  runtime_config.event_context = &events;
+  if (expect_partial_checkpoint) {
+    store.checkpoint = test_runtime_session_store_checkpoint;
+    store.load_latest = test_runtime_session_store_load;
+    store.append_event = test_runtime_session_store_append_event;
+    store.load_events_after = test_runtime_session_store_load_events_after;
+    store.context = &store_state;
+    runtime_config.session_store = &store;
+  }
+  if (rc == CAI_OK)
+    rc = cai_agent_runtime_open(client, &runtime_config, &runtime, &error);
+  if (rc == CAI_OK)
+    rc = cai_agent_runtime_submit(runtime, prompt, &error);
+  delay.tv_sec = 0;
+  delay.tv_nsec = 10000000L;
+  for (i = 0; rc == CAI_OK && i < 80 && run_state != CAI_AGENT_COMPLETED &&
+              run_state != CAI_AGENT_FAILED;
+       i++) {
+    (void)nanosleep(&delay, NULL);
+    rc = cai_agent_runtime_pump(runtime, 100L, &error);
+    if (rc == CAI_OK)
+      rc = cai_agent_runtime_state(runtime, &run_state, &error);
+  }
+  expect_int(state, name, rc, CAI_OK);
+  expect_int(state, name, run_state, CAI_AGENT_FAILED);
+  expect_int(state, name, events.saw_failed, 1L);
+  expect_int(state, name, events.text_delta_count, expected_text_deltas);
+  if (expect_partial_checkpoint) {
+    expect_int(state, "chat_partial_checkpoint_written",
+               store_state.checkpoints > 0, 1L);
+    expect_substr(state, "chat_partial_checkpoint_text",
+                  store_state.saved_checkpoint, "partial text");
+  }
+  cai_agent_runtime_close(runtime);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, name, server.pid, &server.child_status);
+}
+
+static void test_chat_runtime_recovery_failure_modes(test_state *state) {
+  static const char *prompt_required[] = {"failure mode prompt"};
+  static const char *summary_required[] = {"Transcript fragment:",
+                                           "failure mode prompt"};
+  static const char *continuation_required[] = {"Do not repeat"};
+  static const char summary_body[] =
+      "data: {\"id\":\"summary\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"content\":\"saved objective\"},\"finish_reason\":\"stop\"}]}\n\n"
+      "data: [DONE]\n\n";
+  static const char length_body[] =
+      "data: {\"id\":\"cutoff\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"content\":\"partial text\"},\"finish_reason\":\"length\"}]}\n\n"
+      "data: [DONE]\n\n";
+  static const mock_http_expectation repeated_overflow[] = {
+      {"POST /v1/chat/completions HTTP/", prompt_required, 1U, NULL, 0U, 400,
+       "Bad Request", "application/json", NULL,
+       "{\"error\":{\"message\":\"input token count exceeds the maximum\"}}"},
+      {"POST /v1/chat/completions HTTP/", summary_required, 3U, NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, summary_body},
+      {"POST /v1/chat/completions HTTP/", continuation_required, 1U, NULL, 0U,
+       400, "Bad Request", "application/json", NULL,
+       "{\"error\":{\"message\":\"input token count exceeds the maximum\"}}"}};
+  static const mock_http_expectation invalid_request[] = {
+      {"POST /v1/chat/completions HTTP/", prompt_required, 1U, NULL, 0U, 400,
+       "Bad Request", "application/json", NULL,
+       "{\"error\":{\"message\":\"invalid model option\"}}"}};
+  static const mock_http_expectation summary_failure[] = {
+      {"POST /v1/chat/completions HTTP/", prompt_required, 1U, NULL, 0U, 400,
+       "Bad Request", "application/json", NULL,
+       "{\"error\":{\"code\":\"context_length_exceeded\","
+       "\"message\":\"context window exceeded\"}}"},
+      {"POST /v1/chat/completions HTTP/", summary_required, 2U, NULL, 0U, 500,
+       "Internal Server Error", "application/json", NULL,
+       "{\"error\":{\"message\":\"summarizer unavailable\"}}"}};
+  static const mock_http_expectation repeated_cutoff[] = {
+      {"POST /v1/chat/completions HTTP/", prompt_required, 1U, NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, length_body},
+      {"POST /v1/chat/completions HTTP/", continuation_required, 1U, NULL, 0U,
+       200, "OK", "text/event-stream", NULL, length_body},
+      {"POST /v1/chat/completions HTTP/", continuation_required, 1U, NULL, 0U,
+       200, "OK", "text/event-stream", NULL, length_body},
+      {"POST /v1/chat/completions HTTP/", continuation_required, 1U, NULL, 0U,
+       200, "OK", "text/event-stream", NULL, length_body}};
+
+  test_chat_runtime_failure_case(
+      state, "chat_repeated_overflow", repeated_overflow,
+      sizeof(repeated_overflow) / sizeof(repeated_overflow[0]),
+      "failure mode prompt", 0, 0);
+  test_chat_runtime_failure_case(state, "chat_invalid_request", invalid_request,
+                                 sizeof(invalid_request) /
+                                     sizeof(invalid_request[0]),
+                                 "failure mode prompt", 0, 0);
+  test_chat_runtime_failure_case(state, "chat_summary_failure", summary_failure,
+                                 sizeof(summary_failure) /
+                                     sizeof(summary_failure[0]),
+                                 "failure mode prompt", 0, 0);
+  test_chat_runtime_failure_case(state, "chat_repeated_cutoff", repeated_cutoff,
+                                 sizeof(repeated_cutoff) /
+                                     sizeof(repeated_cutoff[0]),
+                                 "failure mode prompt", 4, 1);
 }
 
 static void test_chat_runtime_overflow_recovery(test_state *state) {
@@ -39865,7 +40267,9 @@ static void test_chat_completions_adapter(test_state *state) {
       "data: [DONE]\n\n";
   static const char glm_body[] =
       "data: {\"id\":\"glm_one\",\"choices\":[{\"index\":0,\"delta\":{"
-      "\"content\":\"private thought</thi\"}}]}\n\n"
+      "\"content\":\"<thi\"}}]}\n\n"
+      "data: {\"id\":\"glm_one\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"content\":\"nk>private thought</thi\"}}]}\n\n"
       "data: {\"id\":\"glm_one\",\"choices\":[{\"index\":0,\"delta\":{"
       "\"content\":\"nk>OK\"},\"finish_reason\":\"stop\"}]}\n\n"
       "data: [DONE]\n\n";
@@ -39873,6 +40277,10 @@ static void test_chat_completions_adapter(test_state *state) {
       "data: {\"id\":\"glm_json\",\"choices\":[{\"index\":0,\"delta\":{"
       "\"content\":\"{\\\"answer\\\":\\\"OK\\\"}\"},"
       "\"finish_reason\":\"stop\"}]}\n\n"
+      "data: [DONE]\n\n";
+  static const char glm_plain_body[] =
+      "data: {\"id\":\"glm_plain\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"content\":\"READY\"},\"finish_reason\":\"stop\"}]}\n\n"
       "data: [DONE]\n\n";
   static const char second_body[] =
       "data: {\"id\":\"chat_two\",\"choices\":[{\"index\":0,\"delta\":{"
@@ -39918,7 +40326,9 @@ static void test_chat_completions_adapter(test_state *state) {
       {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
        "text/event-stream", NULL, glm_body},
       {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
-       "text/event-stream", NULL, glm_json_body}};
+       "text/event-stream", NULL, glm_json_body},
+      {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, glm_plain_body}};
   http_mock_server server;
   cai_client_config config;
   cai_client *client;
@@ -39996,7 +40406,7 @@ static void test_chat_completions_adapter(test_state *state) {
   sinks.output_item_done = test_stream_output_item_done;
   sinks.output_item_context = &item;
 
-  for (step = 0U; step < 10U; step++) {
+  for (step = 0U; step < 11U; step++) {
     cai_response_create_params_destroy(params);
     params = NULL;
     cai_error_cleanup(&error);
@@ -40129,6 +40539,9 @@ static void test_chat_completions_adapter(test_state *state) {
       expect_int(state, "chat_glm_json_stream", rc, CAI_OK);
       expect_str(state, "chat_glm_json_final", text.buffer,
                  "<{\"answer\":\"OK\"}>");
+    } else if (step == 10U) {
+      expect_int(state, "chat_glm_plain_stream", rc, CAI_OK);
+      expect_str(state, "chat_glm_plain_final", text.buffer, "<READY>");
     } else {
       expect_int(state, "chat_image_stream", rc, CAI_OK);
     }
@@ -46075,8 +46488,13 @@ static const test_entry test_entries[] = {
     {"chat_client_compaction", test_chat_client_compaction},
     {"chat_compaction_failure_preserves_history",
      test_chat_compaction_failure_preserves_history},
+    {"chat_compaction_tiny_context", test_chat_compaction_tiny_context},
+    {"berget_live_compaction", test_berget_live_compaction},
     {"chat_length_continuation", test_chat_length_continuation},
+    {"chat_length_unfinished_tool", test_chat_length_unfinished_tool},
     {"chat_runtime_overflow_recovery", test_chat_runtime_overflow_recovery},
+    {"chat_runtime_recovery_failure_modes",
+     test_chat_runtime_recovery_failure_modes},
     {"chat_completions_adapter", test_chat_completions_adapter},
     {"stream_response_text", test_stream_response_text},
     {"stream_compaction_progress_callback",

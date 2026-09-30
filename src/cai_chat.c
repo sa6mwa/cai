@@ -1034,8 +1034,9 @@ typedef struct cai_chat_stream_state {
   int reasoning_started;
   int saw_usage;
   int glm_thinking;
+  int glm_thinking_started;
   int glm_thinking_done;
-  int glm_content_seen;
+  size_t glm_start_match;
   size_t glm_end_match;
 } cai_chat_stream_state;
 
@@ -1211,10 +1212,12 @@ static int cai_chat_emit_text(cai_chat_stream_state *state,
   return cai_chat_emit_spool(sink, text, state->error);
 }
 
-/* Berget's GLM stream currently puts hidden thinking in content and ends it
- * with </think>. Keep only the final portion; no whole-response buffering. */
+/* Berget may send reasoning_content, a tagged <think> section in content,
+ * or plain final content. Detect the opening tag with a bounded prefix so
+ * plain answers can stream immediately without retaining the whole reply. */
 static int cai_chat_emit_glm_content(cai_chat_stream_state *state,
                                      const lonejson_spooled *text) {
+  static const char start_tag[] = "<think>";
   static const char end_tag[] = "</think>";
   lonejson_spooled cursor;
   lonejson_spooled visible;
@@ -1227,7 +1230,6 @@ static int cai_chat_emit_glm_content(cai_chat_stream_state *state,
   if (text->size_fn(text) == 0U) {
     return CAI_OK;
   }
-  state->glm_content_seen = 1;
   if (state->glm_thinking_done) {
     return cai_chat_emit_text(state, text, 0);
   }
@@ -1246,6 +1248,25 @@ static int cai_chat_emit_glm_content(cai_chat_stream_state *state,
                            "failed to read GLM content");
     }
     for (i = 0U; i < read_result.bytes_read; i++) {
+      if (!state->glm_thinking_started && !state->glm_thinking_done) {
+        if (buffer[i] == (unsigned char)start_tag[state->glm_start_match]) {
+          state->glm_start_match++;
+          if (state->glm_start_match == sizeof(start_tag) - 1U) {
+            state->glm_thinking_started = 1;
+            state->glm_start_match = 0U;
+          }
+          continue;
+        }
+        if (state->glm_start_match > 0U &&
+            visible.append(&visible, start_tag, state->glm_start_match,
+                           &json_error) != LONEJSON_STATUS_OK) {
+          visible.cleanup(&visible);
+          return cai_set_error(state->error, CAI_ERR_TRANSPORT,
+                               "failed to retain GLM final output");
+        }
+        state->glm_start_match = 0U;
+        state->glm_thinking_done = 1;
+      }
       if (!state->glm_thinking_done) {
         if (buffer[i] == (unsigned char)end_tag[state->glm_end_match]) {
           state->glm_end_match++;
@@ -1266,6 +1287,30 @@ static int cai_chat_emit_glm_content(cai_chat_stream_state *state,
   } while (!read_result.eof);
   rc = cai_chat_emit_text(state, &visible, 0);
   visible.cleanup(&visible);
+  return rc;
+}
+
+static int cai_chat_flush_glm_prefix(cai_chat_stream_state *state) {
+  static const char start_tag[] = "<think>";
+  lonejson_spooled visible;
+  lonejson_error json_error;
+  int rc;
+  if (!state->completed || !state->glm_thinking ||
+      state->glm_thinking_started || state->glm_thinking_done ||
+      state->glm_start_match == 0U)
+    return CAI_OK;
+  lonejson_error_init(&json_error);
+  CAI_LJ->spooled_init(CAI_LJ, &visible);
+  if (visible.append(&visible, start_tag, state->glm_start_match,
+                     &json_error) != LONEJSON_STATUS_OK) {
+    visible.cleanup(&visible);
+    return cai_set_error(state->error, CAI_ERR_TRANSPORT,
+                         "failed to retain GLM final output");
+  }
+  rc = cai_chat_emit_text(state, &visible, 0);
+  visible.cleanup(&visible);
+  if (rc == CAI_OK)
+    state->glm_thinking_done = 1;
   return rc;
 }
 
@@ -1585,7 +1630,7 @@ static int cai_chat_parse_event(cai_chat_stream_state *state) {
       if (strcmp(choices[i].finish_reason, "length") == 0) {
         state->length_finish = 1;
         state->completed = 1;
-      } else if (state->glm_thinking && state->glm_content_seen &&
+      } else if (state->glm_thinking && state->glm_thinking_started &&
                  !state->glm_thinking_done) {
         rc = cai_set_error(state->error, CAI_ERR_PROTOCOL,
                            "GLM ended before its thinking delimiter; final "
@@ -1601,6 +1646,8 @@ static int cai_chat_parse_event(cai_chat_stream_state *state) {
       }
     }
   }
+  if (rc == CAI_OK)
+    rc = cai_chat_flush_glm_prefix(state);
   if (rc == CAI_OK && chunk.usage.total_tokens > 0LL &&
       state->out_usage != NULL) {
     state->out_usage->input_tokens = chunk.usage.prompt_tokens;

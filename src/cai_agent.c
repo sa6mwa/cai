@@ -4686,8 +4686,25 @@ static int cai_chat_summarize_fragment(cai_session *session,
   lonejson_error json_error;
   cai_token_usage usage;
   char *response_id = NULL;
+  long long context_window;
+  int output_limit = 1024;
+  size_t summary_limit = 3072U;
   int rc;
 
+  context_window =
+      cai_client_model_context_window(CAI_SESSION_AGENT_IMPL(session)->client,
+                                      CAI_SESSION_AGENT_IMPL(session)->model);
+  if (context_window >= 32768LL) {
+    output_limit = 4096;
+    summary_limit = 8192U;
+  } else if (context_window >= 1024LL) {
+    output_limit = (int)(context_window / 4LL);
+    if (output_limit > 4096)
+      output_limit = 4096;
+    summary_limit = (size_t)(context_window / 4LL);
+    if (summary_limit > 8192U)
+      summary_limit = 8192U;
+  }
   cai_history_init_spooled(session, &prompt);
   cai_history_init_spooled(session, next);
   memset(&usage, 0, sizeof(usage));
@@ -4722,7 +4739,7 @@ static int cai_chat_summarize_fragment(cai_session *session,
   if (rc == CAI_OK)
     rc = params->set_instructions(params, instructions, error);
   if (rc == CAI_OK)
-    rc = params->set_max_output_tokens(params, 4096, error);
+    rc = params->set_max_output_tokens(params, output_limit, error);
   if (rc == CAI_OK) {
     rc = params->add_text_spooled(params, "user", &prompt, error);
   }
@@ -4745,7 +4762,7 @@ static int cai_chat_summarize_fragment(cai_session *session,
   if (rc == CAI_OK)
     rc = cai_session_record_usage(session, &usage, error);
   if (rc == CAI_OK &&
-      (next->size_fn(next) == 0U || next->size_fn(next) > 8192U)) {
+      (next->size_fn(next) == 0U || next->size_fn(next) > summary_limit)) {
     rc = cai_set_error(error, CAI_ERR_LIMIT,
                        "Chat Completions summary was empty or too large");
   }
@@ -4772,7 +4789,7 @@ static int cai_chat_split_history(cai_session *session, lonejson_spooled *head,
   size_t capacity = 0U;
   size_t start;
   size_t bytes = 0U;
-  size_t tail_limit = 32768U;
+  size_t tail_limit = 2048U;
   size_t i;
   unsigned long length;
   int have_record;
@@ -4786,10 +4803,11 @@ static int cai_chat_split_history(cai_session *session, lonejson_spooled *head,
     long long context_window =
         cai_client_model_context_window(CAI_SESSION_AGENT_IMPL(session)->client,
                                         CAI_SESSION_AGENT_IMPL(session)->model);
-    if (context_window > 0LL && context_window < 131072LL) {
+    if (context_window >= 131072LL) {
+      tail_limit = 32768U;
+    } else if (context_window > 0LL) {
       size_t quarter = (size_t)context_window / 4U;
-      if (quarter < tail_limit)
-        tail_limit = quarter;
+      tail_limit = quarter < 32768U ? quarter : 32768U;
     }
   }
   memset(&reader, 0, sizeof(reader));
@@ -4947,11 +4965,17 @@ static int cai_session_compact_chat(cai_session *session,
   context_window =
       cai_client_model_context_window(CAI_SESSION_AGENT_IMPL(session)->client,
                                       CAI_SESSION_AGENT_IMPL(session)->model);
-  fragment_limit = context_window > 0LL && context_window < 48000LL
-                       ? (size_t)context_window / 2U
-                       : 24000U;
-  if (fragment_limit < 2048U)
-    fragment_limit = 2048U;
+  if (context_window > 0LL && context_window < 1024LL) {
+    head.cleanup(&head);
+    tail.cleanup(&tail);
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "model context window is too small for Chat "
+                         "Completions compaction");
+  }
+  fragment_limit = context_window > 0LL && context_window < 96000LL
+                       ? (size_t)context_window / 4U
+                   : context_window == 0LL ? 3072U
+                                           : 24000U;
   cai_history_init_spooled(session, &summary);
   memset(&summary_item, 0, sizeof(summary_item));
   memset(&next_history, 0, sizeof(next_history));
@@ -6179,14 +6203,13 @@ static int cai_session_stream_once(cai_session *session,
       CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
           CAI_SESSION_CONTINUITY_CLIENT_HISTORY &&
       capture.output_items_count == 0U &&
-      (tool_calls == NULL || tool_calls->count == 0U) &&
       output_text.size_fn(&output_text) > 0U) {
     cai_error record_error;
     int record_rc;
     cai_error_init(&record_error);
     record_rc = cai_session_after_stream_tool_calls(
-        session, &pending_items, has_pending_items, response_id, &usage,
-        tool_calls, &output_text, NULL, 0U, &record_error);
+        session, &pending_items, has_pending_items, response_id, &usage, NULL,
+        &output_text, NULL, 0U, &record_error);
     if (record_rc == CAI_OK) {
       partial_recorded = 1;
       cai_session_clear_inputs(session);
