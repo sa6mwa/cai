@@ -379,12 +379,25 @@ cai_chat_write_tool_call(lonejson_writer *writer, const char *call_id,
 static lonejson_status
 cai_chat_write_history_item(lonejson_writer *writer,
                             const cai_chat_history_doc *item,
-                            lonejson_error *error) {
+                            int *tool_message_open, lonejson_error *error) {
   lonejson_status status;
   const cai_chat_content_doc *parts;
+  int is_tool;
 
   if (item->type != NULL && strcmp(item->type, "reasoning") == 0) {
     return LONEJSON_STATUS_OK;
+  }
+  is_tool = item->type != NULL && (strcmp(item->type, "function_call") == 0 ||
+                                   strcmp(item->type, "custom_tool_call") == 0);
+  if (*tool_message_open && !is_tool) {
+    status = writer->end_array(writer, error);
+    if (status == LONEJSON_STATUS_OK) {
+      status = writer->end_object(writer, error);
+    }
+    if (status != LONEJSON_STATUS_OK) {
+      return status;
+    }
+    *tool_message_open = 0;
   }
   if (item->type == NULL || strcmp(item->type, "message") == 0) {
     if (item->role == NULL) {
@@ -402,31 +415,31 @@ cai_chat_write_history_item(lonejson_writer *writer,
       status =
           cai_chat_write_content(writer, parts, item->content.count, error);
     }
-  } else if (strcmp(item->type, "function_call") == 0 ||
-             strcmp(item->type, "custom_tool_call") == 0) {
+  } else if (is_tool) {
     if (item->call_id == NULL || item->name == NULL) {
       return LONEJSON_STATUS_INVALID_ARGUMENT;
     }
-    status = writer->begin_object(writer, error);
-    if (status == LONEJSON_STATUS_OK) {
-      status = cai_chat_member(writer, "role", "assistant", error);
+    if (!*tool_message_open) {
+      status = writer->begin_object(writer, error);
+      if (status == LONEJSON_STATUS_OK) {
+        status = cai_chat_member(writer, "role", "assistant", error);
+      }
+      if (status == LONEJSON_STATUS_OK) {
+        status = cai_chat_key(writer, "tool_calls", error);
+      }
+      if (status == LONEJSON_STATUS_OK) {
+        status = writer->begin_array(writer, error);
+      }
+      if (status != LONEJSON_STATUS_OK) {
+        return status;
+      }
+      *tool_message_open = 1;
     }
-    if (status == LONEJSON_STATUS_OK) {
-      status = cai_chat_key(writer, "tool_calls", error);
-    }
-    if (status == LONEJSON_STATUS_OK) {
-      status = writer->begin_array(writer, error);
-    }
-    if (status == LONEJSON_STATUS_OK) {
-      status = cai_chat_write_tool_call(
-          writer, item->call_id, item->name,
-          strcmp(item->type, "custom_tool_call") == 0 ? &item->input
-                                                      : &item->arguments,
-          strcmp(item->type, "custom_tool_call") == 0, error);
-    }
-    if (status == LONEJSON_STATUS_OK) {
-      status = writer->end_array(writer, error);
-    }
+    return cai_chat_write_tool_call(
+        writer, item->call_id, item->name,
+        strcmp(item->type, "custom_tool_call") == 0 ? &item->input
+                                                    : &item->arguments,
+        strcmp(item->type, "custom_tool_call") == 0, error);
   } else if (strcmp(item->type, "function_call_output") == 0 ||
              strcmp(item->type, "custom_tool_call_output") == 0) {
     if (item->call_id == NULL) {
@@ -463,6 +476,7 @@ cai_chat_write_history(lonejson_writer *writer,
   cai_chat_reader reader;
   cai_chat_history_doc item;
   lonejson_status status;
+  int tool_message_open;
 
   if (!params->has_raw_input_spooled && params->raw_input_json == NULL) {
     return LONEJSON_STATUS_OK;
@@ -485,6 +499,7 @@ cai_chat_write_history(lonejson_writer *writer,
     return LONEJSON_STATUS_INVALID_JSON;
   }
   status = LONEJSON_STATUS_OK;
+  tool_message_open = 0;
   for (;;) {
     memset(&item, 0, sizeof(item));
     CAI_LJ->init(CAI_LJ, &cai_chat_history_map, &item);
@@ -498,13 +513,20 @@ cai_chat_write_history(lonejson_writer *writer,
       CAI_LJ->cleanup(CAI_LJ, &cai_chat_history_map, &item);
       break;
     }
-    status = cai_chat_write_history_item(writer, &item, error);
+    status =
+        cai_chat_write_history_item(writer, &item, &tool_message_open, error);
     CAI_LJ->cleanup(CAI_LJ, &cai_chat_history_map, &item);
     if (status != LONEJSON_STATUS_OK) {
       break;
     }
   }
   stream->close(stream);
+  if (status == LONEJSON_STATUS_OK && tool_message_open) {
+    status = writer->end_array(writer, error);
+    if (status == LONEJSON_STATUS_OK) {
+      status = writer->end_object(writer, error);
+    }
+  }
   return status;
 }
 
@@ -587,7 +609,8 @@ cai_chat_write_input(lonejson_writer *writer,
         status = cai_chat_write_input_parts(writer, parts,
                                             items[i].content.count, error);
       }
-    } else if (items[i].kind == CAI_INPUT_FUNCTION_CALL_OUTPUT) {
+    } else if (items[i].kind == CAI_INPUT_FUNCTION_CALL_OUTPUT ||
+               items[i].kind == CAI_INPUT_CUSTOM_TOOL_CALL_OUTPUT) {
       if (items[i].call_id == NULL) {
         return LONEJSON_STATUS_INVALID_ARGUMENT;
       }
@@ -999,10 +1022,17 @@ typedef struct cai_chat_usage_doc {
   cai_chat_usage_detail_doc completion_tokens_details;
 } cai_chat_usage_doc;
 
+typedef struct cai_chat_error_doc {
+  char *message;
+  char *code;
+  char *type;
+} cai_chat_error_doc;
+
 typedef struct cai_chat_chunk_doc {
   char *id;
   lonejson_object_array choices;
   cai_chat_usage_doc usage;
+  cai_chat_error_doc error;
 } cai_chat_chunk_doc;
 
 typedef struct cai_chat_tool_state {
@@ -1020,13 +1050,16 @@ typedef struct cai_chat_stream_state {
   cai_error *error;
   char **out_response_id;
   cai_token_usage *out_usage;
+  cai_token_usage usage;
+  char **request_id;
+  long http_status;
   lonejson_sse *sse;
   lonejson_spooled event;
   cai_chat_tool_state *tools;
   size_t tool_count;
   char *body;
   size_t body_length;
-  int failed;
+  int failure_code;
   int completed;
   int length_finish;
   int done_seen;
@@ -1117,13 +1150,23 @@ static const lonejson_field cai_chat_usage_fields[] = {
 LONEJSON_MAP_DEFINE(cai_chat_usage_map, cai_chat_usage_doc,
                     cai_chat_usage_fields);
 
+static const lonejson_field cai_chat_error_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_chat_error_doc, message,
+                                          "message"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_chat_error_doc, code, "code"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_chat_error_doc, type, "type")};
+LONEJSON_MAP_DEFINE(cai_chat_error_map, cai_chat_error_doc,
+                    cai_chat_error_fields);
+
 static const lonejson_field cai_chat_chunk_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_chat_chunk_doc, id, "id"),
     LONEJSON_FIELD_OBJECT_ARRAY_OMIT_EMPTY(
         cai_chat_chunk_doc, choices, "choices", cai_chat_chunk_choice_doc,
         &cai_chat_chunk_choice_map, LONEJSON_OVERFLOW_FAIL),
     LONEJSON_FIELD_OBJECT_OMIT_EMPTY(cai_chat_chunk_doc, usage, "usage",
-                                     &cai_chat_usage_map)};
+                                     &cai_chat_usage_map),
+    LONEJSON_FIELD_OBJECT_OMIT_EMPTY(cai_chat_chunk_doc, error, "error",
+                                     &cai_chat_error_map)};
 LONEJSON_MAP_DEFINE(cai_chat_chunk_map, cai_chat_chunk_doc,
                     cai_chat_chunk_fields);
 
@@ -1596,7 +1639,19 @@ static int cai_chat_parse_event(cai_chat_stream_state *state) {
                                 json_error.message);
   }
   rc = CAI_OK;
-  if (chunk.id != NULL && state->out_response_id != NULL &&
+  if (chunk.error.message != NULL || chunk.error.code != NULL ||
+      chunk.error.type != NULL) {
+    rc = cai_set_error_http(
+        state->error, CAI_ERR_SERVER, state->http_status,
+        "Chat Completions inference failed", chunk.error.message,
+        chunk.error.code != NULL ? chunk.error.code : chunk.error.type,
+        state->request_id != NULL ? *state->request_id : NULL);
+  }
+  if (rc == CAI_OK && state->completed && chunk.choices.count > 0U) {
+    rc = cai_set_error(state->error, CAI_ERR_PROTOCOL,
+                       "Chat Completions choice arrived after finish_reason");
+  }
+  if (rc == CAI_OK && chunk.id != NULL && state->out_response_id != NULL &&
       *state->out_response_id == NULL) {
     *state->out_response_id = cai_strdup(NULL, chunk.id);
     if (*state->out_response_id == NULL) {
@@ -1648,15 +1703,17 @@ static int cai_chat_parse_event(cai_chat_stream_state *state) {
   }
   if (rc == CAI_OK)
     rc = cai_chat_flush_glm_prefix(state);
-  if (rc == CAI_OK && chunk.usage.total_tokens > 0LL &&
-      state->out_usage != NULL) {
-    state->out_usage->input_tokens = chunk.usage.prompt_tokens;
-    state->out_usage->input_cached_tokens =
+  if (rc == CAI_OK && chunk.usage.total_tokens > 0LL) {
+    state->usage.input_tokens = chunk.usage.prompt_tokens;
+    state->usage.input_cached_tokens =
         chunk.usage.prompt_tokens_details.cached_tokens;
-    state->out_usage->output_tokens = chunk.usage.completion_tokens;
-    state->out_usage->output_reasoning_tokens =
+    state->usage.output_tokens = chunk.usage.completion_tokens;
+    state->usage.output_reasoning_tokens =
         chunk.usage.completion_tokens_details.reasoning_tokens;
-    state->out_usage->total_tokens = chunk.usage.total_tokens;
+    state->usage.total_tokens = chunk.usage.total_tokens;
+    if (state->out_usage != NULL) {
+      *state->out_usage = state->usage;
+    }
     state->saw_usage = 1;
   }
   CAI_LJ->cleanup(CAI_LJ, &cai_chat_chunk_map, &chunk);
@@ -1686,6 +1743,12 @@ static lonejson_status cai_chat_sse_end(void *user,
   if (state->event.size_fn(&state->event) == 0U) {
     return LONEJSON_STATUS_OK;
   }
+  if (state->done_seen) {
+    state->failure_code =
+        cai_set_error(state->error, CAI_ERR_PROTOCOL,
+                      "Chat Completions data arrived after [DONE]");
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
   cursor = state->event;
   if (cursor.rewind(&cursor, error) != LONEJSON_STATUS_OK) {
     return LONEJSON_STATUS_IO_ERROR;
@@ -1703,7 +1766,11 @@ static lonejson_status cai_chat_sse_end(void *user,
   rc = cai_chat_parse_event(state);
   state->event.reset(&state->event);
   if (rc != CAI_OK) {
-    state->failed = 1;
+    state->failure_code = rc;
+    if (state->error != NULL && state->error->code == CAI_OK) {
+      cai_set_error(state->error, rc,
+                    "Chat Completions stream callback failed");
+    }
     return LONEJSON_STATUS_CALLBACK_FAILED;
   }
   return LONEJSON_STATUS_OK;
@@ -1731,7 +1798,7 @@ static size_t cai_chat_curl_write(char *ptr, size_t size, size_t nmemb,
     if (grown == NULL) {
       cai_set_error(state->error, CAI_ERR_NOMEM,
                     "failed to retain Chat Completions error body");
-      state->failed = 1;
+      state->failure_code = CAI_ERR_NOMEM;
       return 0U;
     }
     state->body = grown;
@@ -1746,7 +1813,9 @@ static size_t cai_chat_curl_write(char *ptr, size_t size, size_t nmemb,
   status =
       lonejson_sse_push(state->sse, ptr, count, &handler, state, &json_error);
   if (status != LONEJSON_STATUS_OK) {
-    state->failed = 1;
+    if (state->failure_code == CAI_OK) {
+      state->failure_code = CAI_ERR_PROTOCOL;
+    }
     if (state->error == NULL || state->error->code == CAI_OK) {
       cai_set_error_detail(state->error, CAI_ERR_PROTOCOL,
                            "invalid Chat Completions SSE stream",
@@ -1755,6 +1824,24 @@ static size_t cai_chat_curl_write(char *ptr, size_t size, size_t nmemb,
     return 0U;
   }
   return count;
+}
+
+static size_t cai_chat_curl_header(char *ptr, size_t size, size_t nmemb,
+                                   void *user) {
+  cai_chat_stream_state *state = (cai_chat_stream_state *)user;
+  size_t count = size * nmemb;
+  long status;
+  char line[64];
+
+  if (count >= 5U && memcmp(ptr, "HTTP/", 5U) == 0) {
+    size_t copy = count < sizeof(line) - 1U ? count : sizeof(line) - 1U;
+    memcpy(line, ptr, copy);
+    line[copy] = '\0';
+    if (sscanf(line, "HTTP/%*s %ld", &status) == 1) {
+      state->http_status = status;
+    }
+  }
+  return cai_http_request_id_header_write(ptr, size, nmemb, state->request_id);
 }
 
 static int cai_chat_cancel_progress(void *context, curl_off_t down_total,
@@ -1804,6 +1891,7 @@ int cai_chat_stream_response(cai_client *client,
   lonejson_error json_error;
   char *url;
   char *request_id;
+  char curl_error[CURL_ERROR_SIZE];
   long http_status;
   size_t i;
   int rc;
@@ -1856,6 +1944,8 @@ int cai_chat_stream_response(cai_client *client,
   headers = NULL;
   url = NULL;
   request_id = NULL;
+  state.request_id = &request_id;
+  curl_error[0] = '\0';
   curl = NULL;
   rc = cai_chat_upload_open(params, &upload, error);
   if (rc == CAI_OK) {
@@ -1898,9 +1988,9 @@ int cai_chat_stream_response(cai_client *client,
                      cai_chat_upload_size(upload));
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, cai_chat_curl_write);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
-    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION,
-                     cai_http_request_id_header_write);
-    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &request_id);
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, cai_chat_curl_header);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &state);
+    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, curl_error);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, cai_chat_cancel_progress);
@@ -1928,32 +2018,35 @@ int cai_chat_stream_response(cai_client *client,
     upload_rc = cai_chat_upload_close(upload, &upload_error);
   }
   if (rc == CAI_OK && curl_rc == CURLE_OK && http_status >= 200L &&
-      http_status < 300L && !state.failed) {
+      http_status < 300L && state.failure_code == CAI_OK) {
     memset(&handler, 0, sizeof(handler));
     handler.data_chunk = cai_chat_sse_data;
     handler.end_event = cai_chat_sse_end;
     lonejson_error_init(&json_error);
     if (lonejson_sse_finish(state.sse, &handler, &state, &json_error) !=
         LONEJSON_STATUS_OK) {
-      rc = error != NULL && error->code != CAI_OK
-               ? error->code
+      rc = state.failure_code != CAI_OK
+               ? state.failure_code
                : cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                       "invalid Chat Completions SSE ending",
                                       json_error.message);
     }
   }
-  if (rc == CAI_OK && (http_status < 200L || http_status >= 300L)) {
+  if (rc == CAI_OK && http_status != 0L &&
+      (http_status < 200L || http_status >= 300L)) {
     rc = cai_set_openai_error(error, http_status,
                               state.body != NULL ? state.body : "", request_id);
   } else if (rc == CAI_OK && curl_rc != CURLE_OK) {
     if (cai_stream_thread_cancel_requested()) {
       rc = cai_set_error(error, CAI_ERR_CANCELLED, "agent turn was cancelled");
-    } else if (state.failed && error != NULL && error->code != CAI_OK) {
-      rc = error->code;
+    } else if (state.failure_code != CAI_OK) {
+      rc = state.failure_code;
     } else {
-      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                "Chat Completions HTTP request failed",
-                                curl_easy_strerror(curl_rc));
+      rc = cai_set_error_http(
+          error, CAI_ERR_TRANSPORT, http_status,
+          "Chat Completions HTTP request failed",
+          curl_error[0] != '\0' ? curl_error : curl_easy_strerror(curl_rc),
+          NULL, request_id);
     }
   }
   if (rc == CAI_OK && upload_rc != CAI_OK) {
@@ -1979,8 +2072,8 @@ int cai_chat_stream_response(cai_client *client,
   }
   if (rc == CAI_OK && state.length_finish) {
     long long window = cai_client_model_context_window(client, params->model);
-    int pressure = window > 0LL && state.saw_usage && state.out_usage != NULL &&
-                   state.out_usage->total_tokens >= (window * 9LL) / 10LL;
+    int pressure = window > 0LL && state.saw_usage &&
+                   state.usage.total_tokens >= (window * 9LL) / 10LL;
     rc = cai_set_error_http(
         error, CAI_ERR_LIMIT, 0L,
         pressure ? "Chat Completions context limit reached"

@@ -156,13 +156,25 @@ locations as other `cai` providers; the key is read from `BERGET_API_KEY`.
 GLM may emit reasoning separately or inside a tagged `<think>` section; cai
 keeps tagged thinking out of the final answer and streams plain answer text.
 Berget does not provide a concise reasoning summary for that model. A live
-Berget smoke test runs a first turn, forces client-side compaction, then checks
-that a second turn can use the compacted history:
+Berget compaction test runs a real function tool, forces client-side compaction,
+then checks that the next turn recalls the tool's result without executing it
+again. A separate vision test asks the live model to identify a deterministic
+red PNG:
 
 ```sh
 CAI_RUN_BERGET_LIVE_TEST=1 BERGET_API_KEY=... \
-  build/debug/cai_tests --only berget_live_compaction
+  ctest --test-dir build/debug -R 'cai_tests.berget_live_' --output-on-failure
 ```
+
+Deterministic local Chat Completions tests cover HTTP authentication, quota,
+and server failures; errors inside a successful HTTP stream; malformed and
+truncated streams; invalid completion order; callback failures; connection
+refusal, disconnect, timeout, and cancellation. They also verify overflow
+variants, bounded recovery, intact history after failed tool streams, and
+parallel function/custom tools across session export and restore. Run them with
+`ctest --test-dir build/debug -R 'cai_tests.chat_' --output-on-failure`. The
+fixtures exercise both the Berget preset with a local endpoint and generic
+Chat Completions clients; live tests use GLM.
 
 The softline prompt is `> `. Its status bar shows model and reasoning effort,
 the last measured context percentage, a shortened workspace path, available

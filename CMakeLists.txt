@@ -1585,11 +1585,18 @@ if(CAI_BUILD_TESTS)
     chat_client_compaction
     chat_compaction_failure_preserves_history
     chat_compaction_tiny_context
+    chat_parallel_tool_roundtrip
     berget_live_compaction
+    berget_live_vision
     chat_length_continuation
     chat_length_unfinished_tool
     chat_runtime_overflow_recovery
     chat_runtime_recovery_failure_modes
+    chat_runtime_overflow_variants
+    chat_stream_failure_modes
+    chat_connection_failure
+    chat_transport_failure_modes
+    chat_failed_tool_stream_preserves_session
     chat_completions_adapter
     stream_compaction_progress_callback
     stream_upload_setup_failure
@@ -1648,7 +1655,8 @@ if(CAI_BUILD_TESTS)
   # internal HTTP and pump bounds exceed the default short unit-test timeout.
   set_tests_properties(cai_tests.agent_runtime_queued_turns PROPERTIES
     TIMEOUT 30)
-  set_tests_properties(cai_tests.berget_live_compaction PROPERTIES
+  set_tests_properties(cai_tests.berget_live_compaction
+    cai_tests.berget_live_vision PROPERTIES
     LABELS "integration;live"
     TIMEOUT 180)
   set_tests_properties(cai_tests.lonejson_selected_array_rewrite PROPERTIES
