@@ -55,6 +55,26 @@ assert_ok(client:initialize(), nil, "initialize")
 assert_ok(client:ping(), nil, "ping")
 assert_ok(client:refresh_tools(), nil, "refresh_tools")
 
+if mode == "raw" then
+  local tool = client:tool_at(1)
+  if tool.raw_input.field ~= "input" or tool.raw_input.framing ~= "text" then fail("native raw metadata missing") end
+  local payload = string.rep('line "quote" \\ å🚀\n', 16000) .. "tail\n"
+  local result = assert_ok(client:call_tool_raw("echo_message", tool.raw_input, payload), nil, "large raw upload")
+  local json = result:read_all()
+  if json:find('"isError":true', 1, true) then fail("large raw tool error: " .. json:sub(1, 1000)) end
+  local quoted = '"' .. payload:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n') .. '"'
+  contains("large raw exact bytes", json, quoted)
+  local registry = assert_ok(cai.tool_registry())
+  assert_ok(client:register_tools(registry), nil, "server raw advertisement")
+  local chunks = {}
+  assert_ok(registry:run("echo_message", payload, function(chunk) chunks[#chunks + 1] = chunk; return true end), nil, "native raw import round trip")
+  contains("native raw import exact bytes", table.concat(chunks), quoted)
+  registry:close()
+  assert_ok(client:close())
+  print("Lua MCP native raw e2e passed at " .. url)
+  return
+end
+
 if mode == "empty" then
   if client:tool_count() ~= 0 then
     fail("empty MCP test server advertised tools")
@@ -201,6 +221,30 @@ contains("echo_message reentrant close output", table.concat(chunks),
 local missing = assert_ok(client:call_tool("missing_tool", "{}"),
   nil, "missing tool call")
 contains("missing tool output", missing:read_all(), "\"isError\":true")
+
+-- Explicit mappings work with ordinary servers that advertise no raw hint.
+local raw_payload = string.rep('line "quote" \\ å🚀\n', 500) .. "tail\n"
+local raw_result = assert_ok(client:call_tool_raw("echo_message", { field = "message" }, raw_payload), nil, "raw upload")
+local raw_json = raw_result:read_all()
+if raw_json:find('"isError":true', 1, true) then fail("raw tool error: " .. raw_json:sub(1, 1000)) end
+contains("raw upload tail", raw_json, "tail\\n")
+local quoted_payload = '"' .. raw_payload:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n') .. '"'
+contains("large raw exact bytes", raw_json, quoted_payload)
+local raw_header_result = assert_ok(client:call_tool_raw("echo_message",
+  { field = "message", framing = "json-header" }, '{}\nraw header body\n'), nil, "raw header upload")
+contains("raw header output", raw_header_result:read_all(), "raw header body\\n")
+local raw_registry = assert_ok(cai.tool_registry())
+assert_ok(client:register_tools(raw_registry, {
+  name_prefix = "raw_", raw_input_policy = "custom",
+  raw_input_overrides = {{ name = "echo_message", mapping = { field = "message" } }},
+}), nil, "raw override registration")
+local raw_chunks = {}
+assert_ok(raw_registry:run("raw_echo_message", 'unescaped "input"\n', function(chunk)
+  raw_chunks[#raw_chunks + 1] = chunk
+  return true
+end), nil, "raw override execution")
+contains("raw override output", table.concat(raw_chunks), 'unescaped \\"input\\"\\n')
+raw_registry:close()
 
 local registry = assert_ok(cai.tool_registry(), nil, "tool registry")
 assert_ok(client:register_tools(registry, { name_prefix = "remote_" }),

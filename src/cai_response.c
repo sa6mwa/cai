@@ -2318,13 +2318,13 @@ int cai_response_create_params_add_custom_tool(
   struct cai_function_tool *tool;
   int rc;
 
-  if (params == NULL || name == NULL || name[0] == '\0' || format == NULL ||
-      format->type == NULL || format->type[0] == '\0' ||
-      format->syntax == NULL || format->syntax[0] == '\0' ||
-      format->definition == NULL || format->definition[0] == '\0') {
+  if (params == NULL || name == NULL || name[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "custom tool name and grammar format are required");
+                         "custom tool name is required");
   }
+  rc = cai_custom_tool_format_validate(format, error);
+  if (rc != CAI_OK)
+    return rc;
   rc = cai_object_array_grow(&params->allocator, &params->tools,
                              sizeof(struct cai_function_tool), error);
   if (rc != CAI_OK) {
@@ -2335,15 +2335,19 @@ int cai_response_create_params_add_custom_tool(
   memset(tool, 0, sizeof(*tool));
   tool->name = cai_strdup(&params->allocator, name);
   tool->description = cai_strdup(&params->allocator, description);
-  tool->custom_format_type = cai_strdup(&params->allocator, format->type);
-  tool->custom_format_syntax = cai_strdup(&params->allocator, format->syntax);
-  tool->custom_format_definition =
-      cai_strdup(&params->allocator, format->definition);
+  if (format != NULL && format->type != NULL) {
+    tool->custom_format_type = cai_strdup(&params->allocator, format->type);
+    tool->custom_format_syntax = cai_strdup(&params->allocator, format->syntax);
+    tool->custom_format_definition =
+        cai_strdup(&params->allocator, format->definition);
+  }
   tool->is_custom = 1;
   if (tool->name == NULL ||
       (description != NULL && tool->description == NULL) ||
-      tool->custom_format_type == NULL || tool->custom_format_syntax == NULL ||
-      tool->custom_format_definition == NULL) {
+      (format != NULL && format->type != NULL &&
+       (tool->custom_format_type == NULL ||
+        tool->custom_format_syntax == NULL ||
+        tool->custom_format_definition == NULL))) {
     cai_function_tool_cleanup(&params->allocator, tool);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate custom tool");
@@ -3841,42 +3845,43 @@ static int cai_response_create_params_build_tools_json(
         status = writer.string(&writer, tools[i].description,
                                strlen(tools[i].description), &json_error);
       }
-      if (status == LONEJSON_STATUS_OK) {
-        status = writer.key(&writer, "format", 6U, &json_error);
+      if (tools[i].custom_format_type != NULL) {
+        if (status == LONEJSON_STATUS_OK) {
+          status = writer.key(&writer, "format", 6U, &json_error);
+        }
+        if (status == LONEJSON_STATUS_OK) {
+          status = writer.begin_object(&writer, &json_error);
+        }
+        if (status == LONEJSON_STATUS_OK) {
+          status = writer.key(&writer, "type", 4U, &json_error);
+        }
+        if (status == LONEJSON_STATUS_OK) {
+          status =
+              writer.string(&writer, tools[i].custom_format_type,
+                            strlen(tools[i].custom_format_type), &json_error);
+        }
+        if (status == LONEJSON_STATUS_OK) {
+          status = writer.key(&writer, "syntax", 6U, &json_error);
+        }
+        if (status == LONEJSON_STATUS_OK) {
+          status =
+              writer.string(&writer, tools[i].custom_format_syntax,
+                            strlen(tools[i].custom_format_syntax), &json_error);
+        }
+        if (status == LONEJSON_STATUS_OK) {
+          status = writer.key(&writer, "definition", 10U, &json_error);
+        }
+        if (status == LONEJSON_STATUS_OK) {
+          status = writer.string(&writer, tools[i].custom_format_definition,
+                                 strlen(tools[i].custom_format_definition),
+                                 &json_error);
+        }
+        if (status == LONEJSON_STATUS_OK) {
+          status = writer.end_object(&writer, &json_error);
+        }
       }
-      if (status == LONEJSON_STATUS_OK) {
-        status = writer.begin_object(&writer, &json_error);
-      }
-      if (status == LONEJSON_STATUS_OK) {
-        status = writer.key(&writer, "type", 4U, &json_error);
-      }
-      if (status == LONEJSON_STATUS_OK) {
-        status =
-            writer.string(&writer, tools[i].custom_format_type,
-                          strlen(tools[i].custom_format_type), &json_error);
-      }
-      if (status == LONEJSON_STATUS_OK) {
-        status = writer.key(&writer, "syntax", 6U, &json_error);
-      }
-      if (status == LONEJSON_STATUS_OK) {
-        status =
-            writer.string(&writer, tools[i].custom_format_syntax,
-                          strlen(tools[i].custom_format_syntax), &json_error);
-      }
-      if (status == LONEJSON_STATUS_OK) {
-        status = writer.key(&writer, "definition", 10U, &json_error);
-      }
-      if (status == LONEJSON_STATUS_OK) {
-        status = writer.string(&writer, tools[i].custom_format_definition,
-                               strlen(tools[i].custom_format_definition),
-                               &json_error);
-      }
-      if (status == LONEJSON_STATUS_OK) {
+      if (status == LONEJSON_STATUS_OK)
         status = writer.end_object(&writer, &json_error);
-      }
-      if (status == LONEJSON_STATUS_OK) {
-        status = writer.end_object(&writer, &json_error);
-      }
     } else {
       status = writer.begin_object(&writer, &json_error);
       if (status == LONEJSON_STATUS_OK) {

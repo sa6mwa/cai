@@ -37,6 +37,9 @@ typedef struct http_request_state {
   http_header headers[CAI_MCP_HTTP_MAX_HEADERS];
   size_t header_count;
   size_t remaining_body;
+  int chunked;
+  int chunk_end;
+  int body_done;
 } http_request_state;
 
 typedef struct http_response_state {
@@ -161,6 +164,9 @@ static int add_header(http_request_state *request, const char *line) {
   trim_ascii(header->value);
   lower_ascii(header->name);
   request->header_count++;
+  if (strcmp(header->name, "transfer-encoding") == 0 &&
+      strcmp(header->value, "chunked") == 0)
+    request->chunked = 1;
   if (strcmp(header->name, "content-length") == 0) {
     request->remaining_body = (size_t)strtoul(header->value, NULL, 10);
   }
@@ -304,12 +310,60 @@ static int send_response_headers(http_response_state *response,
   return CAI_OK;
 }
 
+static int read_chunk_line(int fd, char *line, size_t capacity) {
+  size_t len = 0U;
+  while (len + 1U < capacity) {
+    char ch;
+    ssize_t n;
+    do {
+      n = read(fd, &ch, 1U);
+    } while (n < 0 && errno == EINTR);
+    if (n != 1)
+      return -1;
+    if (ch == '\n') {
+      if (len == 0U || line[len - 1U] != '\r')
+        return -1;
+      line[len - 1U] = '\0';
+      return 0;
+    }
+    line[len++] = ch;
+  }
+  return -1;
+}
+
 static size_t body_source_read(void *context, void *buffer, size_t count,
                                cai_error *error) {
   http_request_state *request;
   ssize_t n;
 
   request = (http_request_state *)context;
+  if (count == 0U || request->body_done)
+    return 0U;
+  if (request->chunked && request->remaining_body == 0U) {
+    char line[128];
+    char *end;
+    unsigned long chunk_size;
+    if (request->chunk_end &&
+        (read_chunk_line(request->fd, line, sizeof(line)) != 0 ||
+         line[0] != '\0'))
+      return 0U;
+    if (read_chunk_line(request->fd, line, sizeof(line)) != 0)
+      return 0U;
+    errno = 0;
+    chunk_size = strtoul(line, &end, 16);
+    if (errno != 0 || end == line || (*end != '\0' && *end != ';'))
+      return 0U;
+    request->remaining_body = (size_t)chunk_size;
+    request->chunk_end = 1;
+    if (chunk_size == 0UL) {
+      do {
+        if (read_chunk_line(request->fd, line, sizeof(line)) != 0)
+          return 0U;
+      } while (line[0] != '\0');
+      request->body_done = 1;
+      return 0U;
+    }
+  }
   if (request->remaining_body == 0U) {
     return 0U;
   }
@@ -355,6 +409,53 @@ static int body_sink_write(void *context, const void *bytes, size_t count,
     return CAI_ERR_TRANSPORT;
   }
   return CAI_OK;
+}
+
+typedef struct test_raw_sink {
+  cai_sink *sink;
+  cai_error *error;
+} test_raw_sink;
+static lonejson_status test_raw_sink_write(void *user, const void *data,
+                                           size_t len, lonejson_error *error) {
+  test_raw_sink *sink = (test_raw_sink *)user;
+  (void)error;
+  return cai_sink_write(sink->sink, data, len, sink->error) == CAI_OK
+             ? LONEJSON_STATUS_OK
+             : LONEJSON_STATUS_CALLBACK_FAILED;
+}
+static int test_raw_echo(void *context, lonejson_spooled *input,
+                         cai_sink *output, cai_error *error) {
+  lonejson *runtime;
+  lonejson_config config;
+  lonejson_writer writer;
+  lonejson_error json_error;
+  lonejson_status status;
+  test_raw_sink sink;
+  (void)context;
+  config = lonejson_default_config();
+  config.json_value_max_string_bytes = 4U * 1024U * 1024U;
+  lonejson_error_init(&json_error);
+  runtime = lonejson_new(&config, &json_error);
+  if (runtime == NULL)
+    return CAI_ERR_NOMEM;
+  sink.sink = output;
+  sink.error = error;
+  status = lonejson_writer_init_sink(runtime, &writer, test_raw_sink_write,
+                                     &sink, &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = writer.begin_object(&writer, &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = writer.key(&writer, "echo", 4U, &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = writer.string_spooled(&writer, input, &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = writer.end_object(&writer, &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = writer.finish(&writer, &json_error);
+  if (writer.cleanup != NULL)
+    writer.cleanup(&writer);
+  lonejson_free(runtime);
+  return status == LONEJSON_STATUS_OK ? CAI_OK : CAI_ERR_PROTOCOL;
 }
 
 static int test_echo_tool(void *context, const void *params, void *result,
@@ -487,6 +588,7 @@ int main(int argc, char **argv) {
   long handled;
   int print_port;
   int no_tools;
+  int raw_input;
   int listener;
   int client;
   int i;
@@ -500,6 +602,7 @@ int main(int argc, char **argv) {
   handled = 0L;
   print_port = 0;
   no_tools = 0;
+  raw_input = 0;
   cai_error_init(&error);
   for (i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
@@ -507,6 +610,8 @@ int main(int argc, char **argv) {
       port = (unsigned short)strtoul(argv[i], NULL, 10);
     } else if (strcmp(argv[i], "--print-port") == 0) {
       print_port = 1;
+    } else if (strcmp(argv[i], "--raw-input") == 0) {
+      raw_input = 1;
     } else if (strcmp(argv[i], "--no-tools") == 0) {
       no_tools = 1;
     } else if (strcmp(argv[i], "--requests") == 0 && i + 1 < argc) {
@@ -518,7 +623,12 @@ int main(int argc, char **argv) {
     }
   }
   rc = cai_tool_registry_new(&registry, &error);
-  if (rc == CAI_OK && !no_tools) {
+  if (rc == CAI_OK && !no_tools && raw_input) {
+    rc = cai_tool_registry_register_custom_spooled(registry, "echo_message",
+                                                   "Echo raw input", NULL,
+                                                   test_raw_echo, NULL, &error);
+  }
+  if (rc == CAI_OK && !no_tools && !raw_input) {
     rc = cai_tool_registry_register_lonejson(
         registry, "echo_message", "Echo a message through the MCP test server",
         &test_echo_arg_map, &test_echo_result_map, test_echo_tool, NULL,

@@ -810,6 +810,7 @@ set(CAI_SOURCES
   src/cai_stream.c
   src/cai_chat.c
   src/cai_tool.c
+  src/cai_raw_input.c
   src/tools/exec.c
   src/tools/goal.c
   src/tools/patch.c
@@ -1206,6 +1207,12 @@ if(CAI_BUILD_TESTS)
       TIMEOUT 3)
   endif()
   set(CAI_UNIT_TEST_GROUPS
+    mcp_raw_input_failures
+    mcp_raw_input_metadata
+    mcp_raw_input_policy
+    mcp_raw_input_recovery
+    mcp_raw_input_server
+    mcp_raw_input_upload
     chatgpt_quota_parse
     chatgpt_quota_http
     model_capabilities

@@ -15,8 +15,7 @@ typedef struct cai_tool_entry {
   char *name;
   char *description;
   char *schema_json;
-  char *custom_format_type;
-  char *custom_format_syntax;
+  cai_tool_raw_input raw_input;
   int strict;
   cai_tool_kind kind;
   const lonejson_map *params_map;
@@ -362,8 +361,7 @@ static void cai_tool_entry_cleanup(cai_tool_entry *entry) {
   cai_free_mem(NULL, entry->name);
   cai_free_mem(NULL, entry->description);
   cai_free_mem(NULL, entry->schema_json);
-  cai_free_mem(NULL, entry->custom_format_type);
-  cai_free_mem(NULL, entry->custom_format_syntax);
+  cai_raw_input_cleanup(NULL, &entry->raw_input);
   if (entry->context_cleanup != NULL) {
     entry->context_cleanup(entry->context);
   }
@@ -1426,6 +1424,7 @@ int cai_tool_registry_new(cai_tool_registry **out, cai_error *error) {
   registry->register_raw_spooled = cai_tool_registry_register_raw_spooled;
   registry->register_custom = cai_tool_registry_register_custom;
   registry->register_custom_spooled = cai_tool_registry_register_custom_spooled;
+  registry->set_raw_input = cai_tool_registry_set_raw_input;
   registry->add_to_response_params = cai_tool_registry_add_to_response_params;
   registry->run = cai_tool_registry_run;
   registry->run_spooled = cai_tool_registry_run_spooled;
@@ -1574,14 +1573,14 @@ static int cai_tool_registry_register_custom_impl(
   cai_tool_entry *entry;
   int rc;
 
-  if (registry == NULL || name == NULL || name[0] == '\0' || format == NULL ||
-      format->type == NULL || format->type[0] == '\0' ||
-      format->syntax == NULL || format->syntax[0] == '\0' ||
-      format->definition == NULL || format->definition[0] == '\0' ||
+  if (registry == NULL || name == NULL || name[0] == '\0' ||
       (callback == NULL && spooled_callback == NULL)) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "custom tool name, format, and callback are required");
+                         "custom tool name and callback are required");
   }
+  rc = cai_custom_tool_format_validate(format, error);
+  if (rc != CAI_OK)
+    return rc;
   impl = cai_tool_registry_impl_from_public(registry);
   if (impl == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "tool registry is closed");
@@ -1597,16 +1596,24 @@ static int cai_tool_registry_register_custom_impl(
   memset(entry, 0, sizeof(*entry));
   entry->name = cai_strdup(NULL, name);
   entry->description = cai_strdup(NULL, description);
-  entry->schema_json = cai_strdup(NULL, format->definition);
-  entry->custom_format_type = cai_strdup(NULL, format->type);
-  entry->custom_format_syntax = cai_strdup(NULL, format->syntax);
+  entry->schema_json = cai_strdup(
+      NULL,
+      "{\"type\":\"object\",\"properties\":{\"input\":{\"type\":\"string\"}},"
+      "\"required\":[\"input\"],\"additionalProperties\":false}");
+  {
+    cai_tool_raw_input mapping;
+    memset(&mapping, 0, sizeof(mapping));
+    mapping.field = "input";
+    if (format != NULL)
+      mapping.format = *format;
+    rc = cai_raw_input_copy(NULL, &entry->raw_input, &mapping, error);
+  }
   entry->kind = CAI_TOOL_CUSTOM;
   entry->custom_callback = callback;
   entry->custom_spooled_callback = spooled_callback;
   if (entry->name == NULL ||
       (description != NULL && entry->description == NULL) ||
-      entry->schema_json == NULL || entry->custom_format_type == NULL ||
-      entry->custom_format_syntax == NULL) {
+      entry->schema_json == NULL || rc != CAI_OK) {
     cai_tool_entry_cleanup(entry);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate custom tool registration");
@@ -1641,6 +1648,149 @@ int cai_tool_registry_register_custom_spooled_owned(
   return cai_tool_registry_register_custom_impl(registry, name, description,
                                                 format, NULL, callback, context,
                                                 context_cleanup, error);
+}
+
+int cai_tool_registry_set_raw_input(cai_tool_registry *registry,
+                                    const char *name,
+                                    const cai_tool_raw_input *mapping,
+                                    cai_error *error) {
+  cai_tool_entry *entry;
+  cai_tool_raw_input copy;
+  int rc;
+  if (name == NULL || (entry = cai_tool_registry_find(registry, name)) == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "raw-input tool is not registered");
+  if (entry->kind == CAI_TOOL_CUSTOM)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "native custom tools use the automatic input mapping");
+  memset(&copy, 0, sizeof(copy));
+  if (mapping != NULL) {
+    rc = cai_raw_input_validate(entry->schema_json, mapping, error);
+    if (rc != CAI_OK)
+      return rc;
+    rc = cai_raw_input_copy(NULL, &copy, mapping, error);
+    if (rc != CAI_OK)
+      return rc;
+  }
+  cai_raw_input_cleanup(NULL, &entry->raw_input);
+  entry->raw_input = copy;
+  return CAI_OK;
+}
+const cai_tool_raw_input *
+cai_tool_registry_raw_input(const cai_tool_registry *registry,
+                            const char *name) {
+  const cai_tool_registry_impl *impl =
+      cai_tool_registry_impl_from_const_public(registry);
+  size_t i;
+  if (impl == NULL || name == NULL)
+    return NULL;
+  for (i = 0U; i < impl->count; i++)
+    if (strcmp(impl->entries[i].name, name) == 0)
+      return impl->entries[i].raw_input.field != NULL
+                 ? &impl->entries[i].raw_input
+                 : NULL;
+  return NULL;
+}
+const cai_tool_raw_input *
+cai_tool_registry_raw_input_at(const cai_tool_registry *registry,
+                               size_t index) {
+  const cai_tool_registry_impl *impl =
+      cai_tool_registry_impl_from_const_public(registry);
+  if (impl == NULL || index >= impl->count ||
+      impl->entries[index].raw_input.field == NULL)
+    return NULL;
+  return &impl->entries[index].raw_input;
+}
+
+static lonejson_status cai_tool_custom_invalid_value(void *user,
+                                                     lonejson_error *error) {
+  (void)user;
+  return cai_tool_argument_validator_error(
+      error, "MCP custom input must be a string in an object");
+}
+static lonejson_status cai_tool_custom_invalid_bool(void *user, int value,
+                                                    lonejson_error *error) {
+  (void)value;
+  return cai_tool_custom_invalid_value(user, error);
+}
+static lonejson_status cai_tool_custom_object_begin(void *user,
+                                                    lonejson_error *error) {
+  cai_tool_argument_validator *validator = (cai_tool_argument_validator *)user;
+  if (validator->depth != 0U)
+    return cai_tool_custom_invalid_value(user, error);
+  return cai_tool_argument_object_begin(user, error);
+}
+static lonejson_status cai_tool_custom_string_begin(void *user,
+                                                    lonejson_error *error) {
+  cai_tool_argument_validator *validator = (cai_tool_argument_validator *)user;
+  cai_tool_argument_frame *frame =
+      cai_tool_argument_validator_current(validator);
+  if (frame == NULL || validator->depth != 1U || frame->pending_field == NULL)
+    return cai_tool_custom_invalid_value(user, error);
+  return cai_tool_argument_scalar_event(user, error);
+}
+
+/* MCP's input is an object even when the local callback is native freeform.
+ * Decoding uses the existing explicit spooled callback boundary. */
+int cai_tool_registry_run_mcp(cai_tool_registry *registry, const char *name,
+                              lonejson_spooled *arguments, cai_sink *output,
+                              cai_error *error) {
+  cai_tool_entry *entry = cai_tool_registry_find(registry, name);
+  typedef struct {
+    lonejson_spooled input;
+  } input_doc;
+  static const lonejson_field field =
+      LONEJSON_FIELD_STRING_STREAM_REQ(input_doc, input, "input");
+  static const lonejson_map map = {
+      "mcp-custom-input", sizeof(input_doc), &field, 1U, NULL, 0U};
+  input_doc doc;
+  cai_tool_spooled_reader reader;
+  cai_tool_argument_validator validator;
+  lonejson_value_visitor visitor;
+  lonejson_error json_error;
+  int rc;
+  if (entry == NULL || entry->kind != CAI_TOOL_CUSTOM)
+    return cai_tool_registry_run_spooled(registry, name, arguments, output,
+                                         error);
+  memset(&doc, 0, sizeof(doc));
+  reader.cursor = *arguments;
+  lonejson_error_init(&json_error);
+  memset(&validator, 0, sizeof(validator));
+  validator.root_map = &map;
+  visitor = lonejson_default_value_visitor();
+  visitor.object_begin = cai_tool_custom_object_begin;
+  visitor.object_end = cai_tool_argument_object_end;
+  visitor.object_key_begin = cai_tool_argument_key_begin;
+  visitor.object_key_chunk = cai_tool_argument_key_chunk;
+  visitor.object_key_end = cai_tool_argument_key_end;
+  visitor.string_begin = cai_tool_custom_string_begin;
+  visitor.array_begin = cai_tool_custom_invalid_value;
+  visitor.number_begin = cai_tool_custom_invalid_value;
+  visitor.null_value = cai_tool_custom_invalid_value;
+  visitor.boolean_value = cai_tool_custom_invalid_bool;
+  rc = CAI_OK;
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK ||
+      CAI_LJ->visit_value_reader(CAI_LJ, cai_tool_spooled_read, &reader,
+                                 &visitor, &validator,
+                                 &json_error) != LONEJSON_STATUS_OK)
+    rc = cai_set_error_detail(error, CAI_ERR_INVALID,
+                              "invalid MCP custom tool arguments",
+                              json_error.message);
+  cai_free_mem(NULL, validator.key);
+  if (rc != CAI_OK)
+    return rc;
+  if (reader.cursor.rewind(&reader.cursor, &json_error) != LONEJSON_STATUS_OK ||
+      CAI_LJ->parse_reader(CAI_LJ, &map, &doc, cai_tool_spooled_read, &reader,
+                           &json_error) != LONEJSON_STATUS_OK) {
+    rc = cai_set_error_detail(
+        error, CAI_ERR_INVALID,
+        "MCP custom tool requires a string input argument", json_error.message);
+  } else {
+    rc = cai_tool_registry_run_spooled(registry, name, &doc.input, output,
+                                       error);
+  }
+  CAI_LJ->cleanup(CAI_LJ, &map, &doc);
+  return rc;
 }
 
 int cai_tool_registry_set_result_delivery(cai_tool_registry *registry,
@@ -1713,9 +1863,7 @@ int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,
     if (impl->entries[i].kind == CAI_TOOL_CUSTOM) {
       cai_custom_tool_format format;
 
-      format.type = impl->entries[i].custom_format_type;
-      format.syntax = impl->entries[i].custom_format_syntax;
-      format.definition = impl->entries[i].schema_json;
+      format = impl->entries[i].raw_input.format;
       rc =
           params->add_custom_tool(params, impl->entries[i].name,
                                   impl->entries[i].description, &format, error);
@@ -2007,6 +2155,12 @@ int cai_tool_registry_run_spooled(cai_tool_registry *registry, const char *name,
         offset += chunk.bytes_read;
       }
       raw_json[offset] = '\0';
+    }
+    if (memchr(raw_json, '\0', raw_len) != NULL) {
+      cai_free_mem(NULL, raw_json);
+      return cai_set_error(
+          error, CAI_ERR_INVALID,
+          "custom input contains NUL; register a spooled callback");
     }
     rc = entry->custom_callback(entry->context, raw_json, output, error);
     cai_free_mem(NULL, raw_json);

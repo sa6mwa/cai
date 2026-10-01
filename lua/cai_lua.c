@@ -8542,6 +8542,47 @@ static int cai_lua_keep_mcp_client_ref(lua_State *L, int client_index,
   return 0;
 }
 
+static void cai_lua_raw_input_config(lua_State *L, int index,
+                                     cai_tool_raw_input *mapping) {
+  const char *framing;
+  memset(mapping, 0, sizeof(*mapping));
+  index = lua_absindex(L, index);
+  luaL_checktype(L, index, LUA_TTABLE);
+  lua_getfield(L, index, "field");
+  mapping->field = luaL_checkstring(L, -1);
+  lua_pop(L, 1);
+  framing = cai_lua_opt_string_field(L, index, "framing", "text");
+  if (strcmp(framing, "json-header") == 0)
+    mapping->framing = CAI_TOOL_RAW_INPUT_JSON_HEADER;
+  else if (strcmp(framing, "text") != 0)
+    luaL_error(L, "raw-input framing must be text or json-header");
+  lua_getfield(L, index, "format");
+  if (!lua_isnil(L, -1)) {
+    luaL_checktype(L, -1, LUA_TTABLE);
+    mapping->format.type = cai_lua_opt_string_field(L, -1, "type", NULL);
+    mapping->format.syntax = cai_lua_opt_string_field(L, -1, "syntax", NULL);
+    mapping->format.definition =
+        cai_lua_opt_string_field(L, -1, "definition", NULL);
+  }
+  lua_pop(L, 1);
+}
+
+static int cai_lua_registry_set_raw_input(lua_State *L) {
+  cai_lua_registry *self = cai_lua_check_registry(L, 1);
+  const char *name = luaL_checkstring(L, 2);
+  cai_tool_raw_input mapping;
+  cai_error error;
+  int rc;
+  if (!cai_lua_none_or_nil(L, 3))
+    cai_lua_raw_input_config(L, 3, &mapping);
+  cai_error_init(&error);
+  cai_lua_registry_enter(self);
+  rc = cai_tool_registry_set_raw_input(
+      self->ptr, name, cai_lua_none_or_nil(L, 3) ? NULL : &mapping, &error);
+  cai_lua_registry_leave(self);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static void
 cai_lua_mcp_registration_config(lua_State *L, int index,
                                 cai_mcp_tool_registration_config *config) {
@@ -8553,6 +8594,54 @@ cai_lua_mcp_registration_config(lua_State *L, int index,
   config->name_prefix =
       cai_lua_opt_string_field(L, index, "name_prefix", config->name_prefix);
   config->strict = cai_lua_opt_bool_field(L, index, "strict", config->strict);
+  {
+    const char *policy =
+        cai_lua_opt_string_field(L, index, "raw_input_policy", "auto");
+    if (strcmp(policy, "json") == 0)
+      config->raw_input_policy = CAI_MCP_RAW_INPUT_JSON;
+    else if (strcmp(policy, "custom") == 0)
+      config->raw_input_policy = CAI_MCP_RAW_INPUT_CUSTOM;
+    else if (strcmp(policy, "auto") != 0)
+      luaL_error(L, "raw_input_policy must be auto, json, or custom");
+  }
+  index = lua_absindex(L, index);
+  lua_getfield(L, index, "raw_input_overrides");
+  if (!lua_isnil(L, -1)) {
+    cai_mcp_raw_input_override *overrides;
+    cai_tool_raw_input *mappings;
+    size_t count;
+    size_t i;
+    int list_index = lua_absindex(L, -1);
+    luaL_checktype(L, list_index, LUA_TTABLE);
+    count = lua_rawlen(L, list_index);
+    if (count > (size_t)-1 / sizeof(*overrides) ||
+        count > (size_t)-1 / sizeof(*mappings))
+      luaL_error(L, "too many raw-input overrides");
+    overrides = (cai_mcp_raw_input_override *)lua_newuserdatauv(
+        L, count * sizeof(*overrides), 0);
+    mappings = (cai_tool_raw_input *)lua_newuserdatauv(
+        L, count * sizeof(*mappings), 0);
+    memset(overrides, 0, count * sizeof(*overrides));
+    memset(mappings, 0, count * sizeof(*mappings));
+    for (i = 0U; i < count; i++) {
+      lua_rawgeti(L, list_index, (lua_Integer)i + 1);
+      luaL_checktype(L, -1, LUA_TTABLE);
+      lua_getfield(L, -1, "name");
+      overrides[i].name = luaL_checkstring(L, -1);
+      lua_pop(L, 1);
+      lua_getfield(L, -1, "mapping");
+      if (!lua_isnil(L, -1) &&
+          !(lua_isboolean(L, -1) && !lua_toboolean(L, -1))) {
+        cai_lua_raw_input_config(L, -1, &mappings[i]);
+        overrides[i].mapping = &mappings[i];
+      }
+      lua_pop(L, 2);
+    }
+    config->raw_input_overrides = overrides;
+    config->raw_input_override_count = count;
+    /* Scratch userdata remain on the call stack until registration returns. */
+  } else
+    lua_pop(L, 1);
 }
 
 static int cai_lua_runtime_mcp_clients_prepare(lua_State *L, int config_index,
@@ -8854,6 +8943,28 @@ static int cai_lua_push_mcp_tool(lua_State *L,
   lua_setfield(L, -2, "task_support");
   cai_lua_push_mcp_icons(L, tool->icons, tool->icon_count);
   lua_setfield(L, -2, "icons");
+  lua_pushstring(L, tool->input_schema_json);
+  lua_setfield(L, -2, "input_schema_json");
+  if (tool->raw_input != NULL) {
+    lua_newtable(L);
+    lua_pushstring(L, tool->raw_input->field);
+    lua_setfield(L, -2, "field");
+    lua_pushstring(L, tool->raw_input->framing == CAI_TOOL_RAW_INPUT_JSON_HEADER
+                          ? "json-header"
+                          : "text");
+    lua_setfield(L, -2, "framing");
+    if (tool->raw_input->format.type != NULL) {
+      lua_newtable(L);
+      lua_pushstring(L, tool->raw_input->format.type);
+      lua_setfield(L, -2, "type");
+      lua_pushstring(L, tool->raw_input->format.syntax);
+      lua_setfield(L, -2, "syntax");
+      lua_pushstring(L, tool->raw_input->format.definition);
+      lua_setfield(L, -2, "definition");
+      lua_setfield(L, -2, "format");
+    }
+    lua_setfield(L, -2, "raw_input");
+  }
   return 1;
 }
 
@@ -9182,6 +9293,32 @@ static int cai_lua_mcp_client_call_tool(lua_State *L) {
   if (have_arguments) {
     arguments.cleanup(&arguments);
   }
+  return cai_lua_mcp_client_output_finish(L, rc, &output, &error);
+}
+
+static int cai_lua_mcp_client_call_tool_raw(lua_State *L) {
+  cai_lua_mcp_client *self = cai_lua_check_mcp_client(L, 1);
+  const char *name = luaL_checkstring(L, 2);
+  cai_tool_raw_input mapping;
+  lonejson_spooled input;
+  cai_lua_mcp_client_output output;
+  cai_error error;
+  int rc;
+  cai_lua_raw_input_config(L, 3, &mapping);
+  cai_lua_mcp_client_output_check(L, 5);
+  cai_error_init(&error);
+  rc = cai_lua_spool_from_stack(L, 4, &input, &error);
+  memset(&output, 0, sizeof(output));
+  if (rc == CAI_OK)
+    rc = cai_lua_mcp_client_output_prepare(L, 5, &output, &error);
+  if (rc == CAI_OK) {
+    cai_lua_mcp_client_enter(self);
+    rc = cai_mcp_client_call_tool_raw(self->ptr, name, &mapping, &input,
+                                      output.sink, &error);
+    cai_lua_mcp_client_leave(self);
+  }
+  if (input.cleanup != NULL)
+    input.cleanup(&input);
   return cai_lua_mcp_client_output_finish(L, rc, &output, &error);
 }
 
@@ -11236,6 +11373,7 @@ static const luaL_Reg cai_lua_native_backend_methods[] = {
     {"close", cai_lua_native_backend_close}, {NULL, NULL}};
 
 static const luaL_Reg cai_lua_registry_methods[] = {
+    {"set_raw_input", cai_lua_registry_set_raw_input},
     {"register_raw_tool", cai_lua_registry_register_raw_tool},
     {"register_raw_spooled_tool", cai_lua_registry_register_raw_spooled_tool},
     {"register_exec_tool", cai_lua_registry_register_exec},
@@ -11255,6 +11393,7 @@ static const luaL_Reg cai_lua_mcp_methods[] = {
     {NULL, NULL}};
 
 static const luaL_Reg cai_lua_mcp_client_methods[] = {
+    {"call_tool_raw", cai_lua_mcp_client_call_tool_raw},
     {"initialize", cai_lua_mcp_client_initialize},
     {"ping", cai_lua_mcp_client_ping},
     {"refresh_tools", cai_lua_mcp_client_refresh_tools},

@@ -51,3 +51,7 @@ stop_server
 start_server --no-tools
 "$lua_bin" "$script" "http://127.0.0.1:$port/mcp" empty
 stop_server
+
+start_server --raw-input
+"$lua_bin" "$script" "http://127.0.0.1:$port/mcp" raw
+stop_server

@@ -42,6 +42,7 @@ typedef struct cai_mcp_client_tool_impl {
   char *annotations_title;
   char *input_schema_json;
   char *output_schema_json;
+  cai_tool_raw_input raw_input;
 } cai_mcp_client_tool_impl;
 
 typedef struct cai_mcp_client_resource_impl {
@@ -298,9 +299,38 @@ typedef struct cai_mcp_streaming_response_context {
   int pending_data_started;
 } cai_mcp_streaming_response_context;
 
+typedef struct cai_mcp_raw_request {
+  lonejson_spooled input;
+  lonejson_generator generator;
+  cai_buffer_builder prefix;
+  char suffix[96];
+  size_t prefix_offset;
+  size_t suffix_offset;
+  size_t body_offset;
+  long long id;
+  int string_accepted;
+  int finished;
+  int generator_initialized;
+  unsigned utf8_remaining;
+  unsigned utf8_lower;
+  unsigned utf8_upper;
+  int utf8_invalid;
+} cai_mcp_raw_request;
+
+static int cai_mcp_raw_request_rewind(cai_mcp_raw_request *request,
+                                      cai_error *error);
+static size_t cai_mcp_raw_upload_read(char *ptr, size_t size, size_t nmemb,
+                                      void *user);
+static int cai_mcp_streamable_call_tool_raw(cai_mcp_client *client,
+                                            const char *name,
+                                            const cai_tool_raw_input *mapping,
+                                            lonejson_spooled *input,
+                                            cai_sink *output, cai_error *error);
+
 typedef struct cai_mcp_streaming_post_context {
   cai_mcp_streamable_http_client_impl *impl;
   const lonejson_spooled *request;
+  cai_mcp_raw_request *raw_request;
   size_t request_len;
   cai_mcp_http_response_capture *response;
   const char *last_event_id;
@@ -457,6 +487,7 @@ typedef struct cai_mcp_list_tool_doc {
   lonejson_json_value annotations;
   lonejson_json_value icons;
   lonejson_json_value execution;
+  lonejson_json_value meta;
 } cai_mcp_list_tool_doc;
 
 typedef struct cai_mcp_tools_list_result_doc {
@@ -657,6 +688,7 @@ typedef struct cai_mcp_resource_updated_params_doc {
 typedef struct cai_mcp_registry_tool_context {
   cai_mcp_client *client;
   char *remote_name;
+  cai_tool_raw_input raw_input;
 } cai_mcp_registry_tool_context;
 
 static void
@@ -952,6 +984,10 @@ LONEJSON_MAP_DEFINE(cai_mcp_resource_updated_params_map,
                     cai_mcp_resource_updated_params_fields);
 
 static const lonejson_field cai_mcp_list_tool_fields[] = {
+    {"_meta", 5U, '_', 'a', offsetof(cai_mcp_list_tool_doc, meta),
+     LONEJSON_FIELD_KIND_JSON_VALUE, LONEJSON_STORAGE_FIXED,
+     LONEJSON_OVERFLOW_FAIL, LONEJSON__FIELD_JSON_VALUE_DEFAULT_CAPTURE, 0U, 0U,
+     NULL, NULL, 0U, LONEJSON_SPOOL_CLASS_DEFAULT},
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_mcp_list_tool_doc, name, "name"),
     LONEJSON_FIELD_STRING_ALLOC(cai_mcp_list_tool_doc, description,
                                 "description"),
@@ -3307,7 +3343,8 @@ static void *cai_mcp_streaming_post_thread(void *user) {
   context = (cai_mcp_streaming_post_context *)user;
   if (context == NULL || context->impl == NULL || context->response == NULL ||
       context->write_fd < 0 ||
-      (context->request == NULL && context->last_event_id == NULL)) {
+      (context->request == NULL && context->raw_request == NULL &&
+       context->last_event_id == NULL)) {
     if (context != NULL) {
       context->rc = CAI_ERR_INVALID;
       if (context->write_fd >= 0) {
@@ -3329,15 +3366,18 @@ static void *cai_mcp_streaming_post_thread(void *user) {
     return NULL;
   }
   rc = CAI_OK;
-  if (context->request != NULL) {
+  if ((context->request != NULL || context->raw_request != NULL)) {
     rc = cai_append_header(&headers, "Content-Type: application/json", NULL);
   }
-  if (rc == CAI_OK && context->request != NULL) {
+  if (rc == CAI_OK &&
+      (context->request != NULL || context->raw_request != NULL)) {
     rc = cai_append_header(&headers,
                            "Accept: application/json, text/event-stream", NULL);
   } else if (rc == CAI_OK) {
     rc = cai_append_header(&headers, "Accept: text/event-stream", NULL);
   }
+  if (rc == CAI_OK && context->raw_request != NULL)
+    rc = cai_append_header(&headers, "Expect:", NULL);
   if (rc == CAI_OK) {
     rc = cai_mcp_append_session_headers(context->impl, &headers,
                                         &context->error);
@@ -3379,12 +3419,28 @@ static void *cai_mcp_streaming_post_thread(void *user) {
 
   curl_easy_setopt(curl, CURLOPT_URL, context->impl->url);
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-  if (context->request != NULL) {
+  if ((context->request != NULL || context->raw_request != NULL)) {
     curl_easy_setopt(curl, CURLOPT_POST, 1L);
-    curl_easy_setopt(curl, CURLOPT_READFUNCTION, cai_mcp_upload_read);
-    curl_easy_setopt(curl, CURLOPT_READDATA, &upload);
+    if (context->raw_request != NULL) {
+      rc = cai_mcp_raw_request_rewind(context->raw_request, &context->error);
+      if (rc != CAI_OK) {
+        context->rc = rc;
+        curl_easy_cleanup(curl);
+        curl_slist_free_all(headers);
+        close(context->write_fd);
+        context->write_fd = -1;
+        return NULL;
+      }
+      curl_easy_setopt(curl, CURLOPT_READFUNCTION, cai_mcp_raw_upload_read);
+      curl_easy_setopt(curl, CURLOPT_READDATA, context->raw_request);
+    } else {
+      curl_easy_setopt(curl, CURLOPT_READFUNCTION, cai_mcp_upload_read);
+      curl_easy_setopt(curl, CURLOPT_READDATA, &upload);
+    }
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE,
-                     (curl_off_t)context->request_len);
+                     context->raw_request != NULL
+                         ? (curl_off_t)-1
+                         : (curl_off_t)context->request_len);
   } else {
     curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
   }
@@ -3394,9 +3450,11 @@ static void *cai_mcp_streaming_post_thread(void *user) {
   curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, cai_mcp_header_callback);
   curl_easy_setopt(curl, CURLOPT_HEADERDATA, context->response);
   cai_mcp_configure_curl_common(curl, context->impl);
-  cai_mcp_log_http_request_start(context->impl,
-                                 context->request != NULL ? "POST" : "GET", 1,
-                                 context->request_len);
+  cai_mcp_log_http_request_start(
+      context->impl,
+      (context->request != NULL || context->raw_request != NULL) ? "POST"
+                                                                 : "GET",
+      1, context->request_len);
   context->curl_rc = curl_easy_perform(curl);
   if (context->curl_rc == CURLE_OK && write_context.rc == 0 &&
       write_context.line.length != 0U && context->response != NULL &&
@@ -3405,9 +3463,11 @@ static void *cai_mcp_streaming_post_thread(void *user) {
         &write_context, write_context.line.data, write_context.line.length);
   }
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &context->response->status);
-  cai_mcp_log_http_request_done(context->impl,
-                                context->request != NULL ? "POST" : "GET",
-                                context->response->status, 1);
+  cai_mcp_log_http_request_done(
+      context->impl,
+      (context->request != NULL || context->raw_request != NULL) ? "POST"
+                                                                 : "GET",
+      context->response->status, 1);
   curl_easy_cleanup(curl);
   curl_slist_free_all(headers);
   cai_free_mem(NULL, write_context.line.data);
@@ -3418,8 +3478,19 @@ static void *cai_mcp_streaming_post_thread(void *user) {
   close(context->write_fd);
   context->write_fd = -1;
   if (context->curl_rc != CURLE_OK) {
-    context->rc = cai_set_error(&context->error, CAI_ERR_TRANSPORT,
-                                curl_easy_strerror(context->curl_rc));
+    if (context->raw_request != NULL && context->raw_request->utf8_invalid)
+      context->rc = cai_set_error_detail(
+          &context->error, CAI_ERR_INVALID, "MCP raw input is not valid UTF-8",
+          "invalid or incomplete UTF-8 sequence");
+    else if (context->raw_request != NULL &&
+             context->raw_request->generator_initialized &&
+             context->raw_request->generator.error.message[0] != '\0')
+      context->rc = cai_set_error_detail(
+          &context->error, CAI_ERR_TRANSPORT, "failed to encode MCP raw input",
+          context->raw_request->generator.error.message);
+    else
+      context->rc = cai_set_error(&context->error, CAI_ERR_TRANSPORT,
+                                  curl_easy_strerror(context->curl_rc));
   } else if (write_context.rc != 0) {
     context->rc = cai_set_error(&context->error, CAI_ERR_TRANSPORT,
                                 "failed to write MCP streaming response");
@@ -5425,6 +5496,7 @@ static void cai_mcp_client_tool_impl_cleanup(const cai_allocator *allocator,
     cai_free_mem(allocator, tool->annotations_title);
     cai_free_mem(allocator, tool->input_schema_json);
     cai_free_mem(allocator, tool->output_schema_json);
+    cai_raw_input_cleanup(allocator, &tool->raw_input);
     memset(tool, 0, sizeof(*tool));
   }
 }
@@ -5555,6 +5627,9 @@ cai_mcp_client_reserve_tools(cai_mcp_streamable_http_client_impl *impl,
   impl->tools = tools;
   impl->tool_capacity = count;
   for (i = 0U; i < impl->tool_count; i++) {
+    impl->tools[i].public_tool.raw_input =
+        impl->tools[i].raw_input.field != NULL ? &impl->tools[i].raw_input
+                                               : NULL;
     impl->tools[i].public_tool.input_schema = &impl->tools[i].input_schema;
     impl->tools[i].public_tool.output_schema =
         impl->tools[i].output_schema.type != NULL
@@ -7813,6 +7888,9 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
         rc = cai_mcp_copy_optional_tool_execution(
             &src_tools[i].execution, &dst->public_tool.task_support, error);
       }
+      if (rc == CAI_OK)
+        rc = cai_raw_input_parse_meta(&src_tools[i].meta, &impl->allocator,
+                                      &dst->raw_input, error);
       dst->input_schema_json = cai_mcp_json_value_to_cstr_with_allocator(
           &impl->allocator, &src_tools[i].input_schema, error);
       dst->output_schema_json = cai_mcp_optional_json_value_to_cstr(
@@ -7827,6 +7905,9 @@ cai_mcp_parse_tools_list_response(cai_mcp_streamable_http_client_impl *impl,
         cai_mcp_client_tool_impl_cleanup(&impl->allocator, dst);
         break;
       }
+      dst->public_tool.input_schema_json = dst->input_schema_json;
+      dst->public_tool.raw_input =
+          dst->raw_input.field != NULL ? &dst->raw_input : NULL;
       dst->public_tool.name = dst->name;
       dst->public_tool.title = dst->title;
       dst->public_tool.description = dst->description;
@@ -9333,7 +9414,8 @@ static void cai_mcp_drain_fd(int fd) {
 
 static int cai_mcp_stream_request_result_once(
     cai_mcp_streamable_http_client_impl *impl, const lonejson_spooled *request,
-    size_t request_len, int require_result_object, cai_sink *output,
+    size_t request_len, cai_mcp_raw_request *raw_request,
+    int require_result_object, cai_sink *output,
     cai_mcp_http_response_capture *response, cai_error *error) {
   cai_mcp_streaming_post_context context;
   cai_mcp_pipe_reader reader;
@@ -9345,12 +9427,17 @@ static int cai_mcp_stream_request_result_once(
   int resume_attempted;
   int rc;
 
-  if (impl == NULL || request == NULL || response == NULL || output == NULL) {
+  if (impl == NULL || (request == NULL && raw_request == NULL) ||
+      response == NULL || output == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "MCP client request and output sink are required");
   }
   request_id = 0LL;
-  rc = cai_mcp_request_id_i64(request, &request_id, error);
+  rc = raw_request != NULL
+           ? CAI_OK
+           : cai_mcp_request_id_i64(request, &request_id, error);
+  if (raw_request != NULL)
+    request_id = raw_request->id;
   if (rc != CAI_OK) {
     return rc;
   }
@@ -9362,6 +9449,7 @@ static int cai_mcp_stream_request_result_once(
   memset(&context, 0, sizeof(context));
   context.impl = impl;
   context.request = request;
+  context.raw_request = raw_request;
   context.request_len = request_len;
   context.response = response;
   context.write_fd = fds[1];
@@ -9463,10 +9551,18 @@ static int cai_mcp_stream_request_result_once(
   impl->has_active_progress = 0;
   if (context.rc != CAI_OK) {
     cai_mcp_log_http_transport_error(
-        impl, context.request != NULL ? "POST" : "GET",
-        context.curl_rc != CURLE_OK ? curl_easy_strerror(context.curl_rc)
-                                    : "streaming write failed");
+        impl,
+        (context.request != NULL || context.raw_request != NULL) ? "POST"
+                                                                 : "GET",
+        context.error.detail != NULL
+            ? context.error.detail
+            : (context.curl_rc != CURLE_OK ? curl_easy_strerror(context.curl_rc)
+                                           : "streaming write failed"));
     if (rc == CAI_OK ||
+        (context.raw_request != NULL &&
+         context.raw_request->generator_initialized &&
+         context.raw_request->generator.error.code != LONEJSON_STATUS_OK &&
+         response->status == 0L) ||
         (context.error.code != CAI_OK && context.curl_rc == CURLE_OK &&
          response->status == 0L)) {
       rc = cai_mcp_copy_or_set_error(
@@ -9489,15 +9585,16 @@ static int cai_mcp_stream_request_result_once(
 
 static int cai_mcp_stream_request_result_with_session_recovery(
     cai_mcp_streamable_http_client_impl *impl, const lonejson_spooled *request,
-    size_t request_len, int require_result_object, cai_sink *output,
+    size_t request_len, cai_mcp_raw_request *raw_request,
+    int require_result_object, cai_sink *output,
     cai_mcp_http_response_capture *response, cai_error *error) {
   int had_session;
   int rc;
 
   had_session = impl != NULL && impl->initialized && impl->session_id != NULL;
   rc = cai_mcp_stream_request_result_once(impl, request, request_len,
-                                          require_result_object, output,
-                                          response, error);
+                                          raw_request, require_result_object,
+                                          output, response, error);
   if (rc == CAI_OK || !had_session || response == NULL ||
       response->status != 404L) {
     return rc;
@@ -9510,8 +9607,8 @@ static int cai_mcp_stream_request_result_with_session_recovery(
     return rc;
   }
   return cai_mcp_stream_request_result_once(impl, request, request_len,
-                                            require_result_object, output,
-                                            response, error);
+                                            raw_request, require_result_object,
+                                            output, response, error);
 }
 
 static int cai_mcp_request_result_with_session_recovery(
@@ -9523,7 +9620,7 @@ static int cai_mcp_request_result_with_session_recovery(
                          "MCP client request and output sink are required");
   }
   return cai_mcp_stream_request_result_with_session_recovery(
-      impl, request, request_len, require_result_object, output, response,
+      impl, request, request_len, NULL, require_result_object, output, response,
       error);
 }
 
@@ -10204,6 +10301,7 @@ int cai_mcp_streamable_http_client_open(
   impl->public_client.tool_count = cai_mcp_streamable_tool_count;
   impl->public_client.tool_at = cai_mcp_streamable_tool_at;
   impl->public_client.call_tool = cai_mcp_streamable_call_tool;
+  impl->public_client.call_tool_raw = cai_mcp_streamable_call_tool_raw;
   impl->public_client.refresh_resources = cai_mcp_streamable_refresh_resources;
   impl->public_client.resource_count = cai_mcp_streamable_resource_count;
   impl->public_client.resource_at = cai_mcp_streamable_resource_at;
@@ -10410,33 +10508,25 @@ static int cai_mcp_registered_tool_callback(void *context,
                                   output, error);
 }
 
+static int cai_mcp_registered_custom_callback(void *context,
+                                              lonejson_spooled *input,
+                                              cai_sink *output,
+                                              cai_error *error) {
+  cai_mcp_registry_tool_context *tool =
+      (cai_mcp_registry_tool_context *)context;
+  return cai_mcp_client_call_tool_raw(tool->client, tool->remote_name,
+                                      &tool->raw_input, input, output, error);
+}
+
 static void cai_mcp_registered_tool_context_cleanup(void *context) {
   cai_mcp_registry_tool_context *tool_context;
 
   tool_context = (cai_mcp_registry_tool_context *)context;
   if (tool_context != NULL) {
     cai_free_mem(NULL, tool_context->remote_name);
+    cai_raw_input_cleanup(NULL, &tool_context->raw_input);
     cai_free_mem(NULL, tool_context);
   }
-}
-
-static const char *
-cai_mcp_streamable_tool_schema_json(cai_mcp_client *client,
-                                    const cai_mcp_client_tool *tool) {
-  cai_mcp_streamable_http_client_impl *impl;
-  size_t i;
-
-  if (client == NULL || tool == NULL || client->impl == NULL ||
-      client->tool_at != cai_mcp_streamable_tool_at) {
-    return NULL;
-  }
-  impl = (cai_mcp_streamable_http_client_impl *)client->impl;
-  for (i = 0U; i < impl->tool_count; i++) {
-    if (&impl->tools[i].public_tool == tool) {
-      return impl->tools[i].input_schema_json;
-    }
-  }
-  return NULL;
 }
 
 static int cai_mcp_append_json_string_literal(cai_buffer_builder *builder,
@@ -10489,6 +10579,459 @@ static int cai_mcp_append_json_string_literal(cai_buffer_builder *builder,
     p++;
   }
   return cai_buffer_append(builder, "\"", 1U, error);
+}
+
+/* Pull-based upload: the only retained framing bytes are the bounded header,
+ * JSON-RPC prefix, and suffix. The payload stays in the caller's input spool.
+ */
+static int cai_mcp_raw_utf8_check(cai_mcp_raw_request *request,
+                                  const unsigned char *buffer, size_t len,
+                                  int eof) {
+  size_t i;
+  for (i = 0U; i < len; i++) {
+    unsigned ch = buffer[i];
+    if (request->utf8_remaining != 0U) {
+      if (ch < request->utf8_lower || ch > request->utf8_upper)
+        break;
+      request->utf8_remaining--;
+      request->utf8_lower = 0x80U;
+      request->utf8_upper = 0xbfU;
+    } else if (ch >= 0x80U) {
+      request->utf8_lower = 0x80U;
+      request->utf8_upper = 0xbfU;
+      if (ch >= 0xc2U && ch <= 0xdfU)
+        request->utf8_remaining = 1U;
+      else if (ch >= 0xe0U && ch <= 0xefU) {
+        request->utf8_remaining = 2U;
+        if (ch == 0xe0U)
+          request->utf8_lower = 0xa0U;
+        if (ch == 0xedU)
+          request->utf8_upper = 0x9fU;
+      } else if (ch >= 0xf0U && ch <= 0xf4U) {
+        request->utf8_remaining = 3U;
+        if (ch == 0xf0U)
+          request->utf8_lower = 0x90U;
+        if (ch == 0xf4U)
+          request->utf8_upper = 0x8fU;
+      } else
+        break;
+    }
+  }
+  if (i != len || (eof && request->utf8_remaining != 0U)) {
+    request->utf8_invalid = 1;
+    return 0;
+  }
+  return 1;
+}
+static lonejson_read_result
+cai_mcp_raw_body_read(void *user, unsigned char *buffer, size_t capacity) {
+  cai_mcp_raw_request *request = (cai_mcp_raw_request *)user;
+  lonejson_read_result result =
+      request->input.read(&request->input, buffer, capacity);
+  if (result.error_code != 0)
+    return result;
+  if (!cai_mcp_raw_utf8_check(request, buffer, result.bytes_read, result.eof)) {
+    result.bytes_read = 0U;
+    result.error_code = EILSEQ;
+  }
+  return result;
+}
+static lonejson_status cai_mcp_raw_string_producer(lonejson_writer *writer,
+                                                   void *user,
+                                                   lonejson_error *error) {
+  cai_mcp_raw_request *request = (cai_mcp_raw_request *)user;
+  lonejson_status status;
+  if (!request->string_accepted) {
+    status =
+        writer->string_reader(writer, cai_mcp_raw_body_read, request, error);
+    if (status != LONEJSON_STATUS_OK)
+      return status;
+    request->string_accepted = 1;
+  }
+  if (!request->finished) {
+    status = writer->finish(writer, error);
+    if (status != LONEJSON_STATUS_OK)
+      return status;
+    request->finished = 1;
+  }
+  return LONEJSON_STATUS_OK;
+}
+static int cai_mcp_raw_request_rewind(cai_mcp_raw_request *request,
+                                      cai_error *error) {
+  unsigned char chunk[4096];
+  size_t skipped = 0U;
+  lonejson_error json_error;
+  lonejson_status status;
+  if (request->generator_initialized)
+    request->generator.cleanup(&request->generator);
+  request->generator_initialized = 0;
+  request->utf8_remaining = 0U;
+  request->utf8_invalid = 0;
+  request->string_accepted = 0;
+  request->finished = 0;
+  request->prefix_offset = 0U;
+  request->suffix_offset = 0U;
+  lonejson_error_init(&json_error);
+  if (request->input.rewind(&request->input, &json_error) != LONEJSON_STATUS_OK)
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to rewind MCP raw input",
+                                json_error.message);
+  while (skipped < request->body_offset) {
+    size_t capacity = request->body_offset - skipped;
+    lonejson_read_result result;
+    if (capacity > sizeof(chunk))
+      capacity = sizeof(chunk);
+    result = request->input.read(&request->input, chunk, capacity);
+    if (result.error_code != 0 || result.bytes_read == 0U)
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "failed to read MCP raw-input header");
+    skipped += result.bytes_read;
+  }
+  status = lonejson_writer_generator_init(CAI_LJ, &request->generator,
+                                          cai_mcp_raw_string_producer, request);
+  request->generator_initialized = request->generator.cleanup != NULL;
+  if (status != LONEJSON_STATUS_OK)
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to initialize MCP raw-input encoder",
+                                request->generator.error.message);
+  request->generator_initialized = 1;
+  return CAI_OK;
+}
+static size_t cai_mcp_raw_upload_read(char *ptr, size_t size, size_t nmemb,
+                                      void *user) {
+  cai_mcp_raw_request *request = (cai_mcp_raw_request *)user;
+  size_t capacity = size * nmemb;
+  size_t len;
+  int eof;
+  lonejson_status status;
+  if (capacity == 0U)
+    return 0U;
+  if (request->prefix_offset < request->prefix.length) {
+    len = request->prefix.length - request->prefix_offset;
+    if (len > capacity)
+      len = capacity;
+    memcpy(ptr, request->prefix.data + request->prefix_offset, len);
+    request->prefix_offset += len;
+    return len;
+  }
+  eof = 0;
+  len = 0U;
+  status = request->generator.read(&request->generator, (unsigned char *)ptr,
+                                   capacity, &len, &eof);
+  if (status != LONEJSON_STATUS_OK)
+    return CURL_READFUNC_ABORT;
+  if (len != 0U)
+    return len;
+  if (!eof)
+    return CURL_READFUNC_ABORT;
+  len = strlen(request->suffix) - request->suffix_offset;
+  if (len > capacity)
+    len = capacity;
+  memcpy(ptr, request->suffix + request->suffix_offset, len);
+  request->suffix_offset += len;
+  return len;
+}
+
+typedef struct cai_mcp_raw_header_validator {
+  const char *field;
+  cai_buffer_builder key;
+  size_t depth;
+  size_t key_count;
+  cai_buffer_builder keys;
+  int root_object;
+  int collision;
+} cai_mcp_raw_header_validator;
+static lonejson_status cai_mcp_raw_header_object_begin(void *user,
+                                                       lonejson_error *error) {
+  cai_mcp_raw_header_validator *validator =
+      (cai_mcp_raw_header_validator *)user;
+  (void)error;
+  if (validator->depth == 0U)
+    validator->root_object = 1;
+  validator->depth++;
+  return LONEJSON_STATUS_OK;
+}
+static lonejson_status cai_mcp_raw_header_array_begin(void *user,
+                                                      lonejson_error *error) {
+  cai_mcp_raw_header_validator *validator =
+      (cai_mcp_raw_header_validator *)user;
+  (void)error;
+  validator->depth++;
+  return LONEJSON_STATUS_OK;
+}
+static lonejson_status cai_mcp_raw_header_end(void *user,
+                                              lonejson_error *error) {
+  cai_mcp_raw_header_validator *validator =
+      (cai_mcp_raw_header_validator *)user;
+  (void)error;
+  if (validator->depth != 0U)
+    validator->depth--;
+  return LONEJSON_STATUS_OK;
+}
+static lonejson_status cai_mcp_raw_header_key_begin(void *user,
+                                                    lonejson_error *error) {
+  cai_mcp_raw_header_validator *validator =
+      (cai_mcp_raw_header_validator *)user;
+  (void)error;
+  if (validator->depth == 1U)
+    validator->key.length = 0U;
+  return LONEJSON_STATUS_OK;
+}
+static lonejson_status cai_mcp_raw_header_key_chunk(void *user,
+                                                    const char *data,
+                                                    size_t len,
+                                                    lonejson_error *error) {
+  cai_mcp_raw_header_validator *validator =
+      (cai_mcp_raw_header_validator *)user;
+  if (validator->depth != 1U)
+    return LONEJSON_STATUS_OK;
+  return cai_mcp_buffer_sink(&validator->key, data, len, error);
+}
+static lonejson_status cai_mcp_raw_header_key_end(void *user,
+                                                  lonejson_error *error) {
+  cai_mcp_raw_header_validator *validator =
+      (cai_mcp_raw_header_validator *)user;
+  (void)error;
+  if (validator->depth == 1U) {
+    size_t offset = 0U;
+    if (memchr(validator->key.data, 0, validator->key.length) != NULL)
+      return LONEJSON_STATUS_INVALID_ARGUMENT;
+    while (offset < validator->keys.length) {
+      size_t len = strlen(validator->keys.data + offset);
+      if (len == validator->key.length &&
+          memcmp(validator->keys.data + offset, validator->key.data, len) == 0)
+        return LONEJSON_STATUS_DUPLICATE_FIELD;
+      offset += len + 1U;
+    }
+    if (cai_mcp_buffer_sink(&validator->keys, validator->key.data,
+                            validator->key.length,
+                            error) != LONEJSON_STATUS_OK ||
+        cai_mcp_buffer_sink(&validator->keys, "", 1U, error) !=
+            LONEJSON_STATUS_OK)
+      return LONEJSON_STATUS_ALLOCATION_FAILED;
+    validator->key_count++;
+    if (validator->key.length == strlen(validator->field) &&
+        memcmp(validator->key.data, validator->field, validator->key.length) ==
+            0)
+      validator->collision = 1;
+  }
+  return LONEJSON_STATUS_OK;
+}
+static int cai_mcp_raw_header_required(const char *schema_json,
+                                       const cai_tool_raw_input *mapping,
+                                       const cai_buffer_builder *keys,
+                                       cai_error *error) {
+  typedef struct {
+    lonejson_string_array required;
+  } required_doc;
+  static const lonejson_field field = {"required",
+                                       8U,
+                                       'r',
+                                       'd',
+                                       offsetof(required_doc, required),
+                                       LONEJSON_FIELD_KIND_STRING_ARRAY,
+                                       LONEJSON_STORAGE_DYNAMIC,
+                                       LONEJSON_OVERFLOW_FAIL,
+                                       0U,
+                                       0U,
+                                       0U,
+                                       NULL,
+                                       NULL,
+                                       0U,
+                                       LONEJSON_SPOOL_CLASS_DEFAULT};
+  static const lonejson_map map = {
+      "raw-header-required", sizeof(required_doc), &field, 1U, NULL, 0U};
+  required_doc doc;
+  lonejson_error json_error;
+  size_t i;
+  int rc = CAI_OK;
+  memset(&doc, 0, sizeof(doc));
+  lonejson_error_init(&json_error);
+  if (CAI_LJ->parse_cstr(CAI_LJ, &map, &doc, schema_json, &json_error) !=
+      LONEJSON_STATUS_OK)
+    rc = cai_set_error_detail(error, CAI_ERR_INVALID,
+                              "invalid raw-input argument schema",
+                              json_error.message);
+  for (i = 0U; rc == CAI_OK && i < doc.required.count; i++) {
+    size_t offset = 0U;
+    if (strcmp(doc.required.items[i], mapping->field) == 0)
+      continue;
+    while (offset < keys->length &&
+           strcmp(doc.required.items[i], keys->data + offset) != 0)
+      offset += strlen(keys->data + offset) + 1U;
+    if (offset == keys->length)
+      rc =
+          cai_set_error_detail(error, CAI_ERR_INVALID,
+                               "MCP raw-input header omits a required argument",
+                               doc.required.items[i]);
+  }
+  CAI_LJ->cleanup(CAI_LJ, &map, &doc);
+  return rc;
+}
+static int
+cai_mcp_raw_request_prepare(cai_mcp_streamable_http_client_impl *impl,
+                            const char *name, const cai_tool_raw_input *mapping,
+                            const char *schema_json, lonejson_spooled *input,
+                            cai_mcp_raw_request *request, cai_error *error) {
+  char header[16384];
+  char id[64];
+  size_t header_len = 0U;
+  size_t header_keys = 0U;
+  lonejson_error json_error;
+  int rc;
+  request->input = *input;
+  lonejson_error_init(&json_error);
+  if (request->input.rewind(&request->input, &json_error) != LONEJSON_STATUS_OK)
+    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to rewind MCP raw input",
+                                json_error.message);
+  if (mapping->framing == CAI_TOOL_RAW_INPUT_JSON_HEADER) {
+    cai_mcp_raw_header_validator validator;
+    lonejson_value_visitor visitor = lonejson_default_value_visitor();
+    lonejson_status status;
+    for (;;) {
+      unsigned char ch;
+      lonejson_read_result result;
+      if (header_len == sizeof(header))
+        return cai_set_error(
+            error, CAI_ERR_INVALID,
+            "MCP raw-input JSON header exceeds 16 KiB or lacks LF delimiter");
+      result = request->input.read(&request->input, &ch, 1U);
+      if (result.error_code != 0 || result.bytes_read != 1U)
+        return cai_set_error(
+            error, CAI_ERR_INVALID,
+            "MCP raw-input JSON header requires an LF delimiter");
+      header[header_len++] = (char)ch;
+      if (ch == '\n')
+        break;
+    }
+    request->body_offset = header_len;
+    if (!cai_mcp_raw_utf8_check(request, (const unsigned char *)header,
+                                header_len, 1))
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "MCP raw-input header is not valid UTF-8");
+    memset(&validator, 0, sizeof(validator));
+    validator.field = mapping->field;
+    visitor.object_begin = cai_mcp_raw_header_object_begin;
+    visitor.object_end = cai_mcp_raw_header_end;
+    visitor.array_begin = cai_mcp_raw_header_array_begin;
+    visitor.array_end = cai_mcp_raw_header_end;
+    visitor.object_key_begin = cai_mcp_raw_header_key_begin;
+    visitor.object_key_chunk = cai_mcp_raw_header_key_chunk;
+    visitor.object_key_end = cai_mcp_raw_header_key_end;
+    status = CAI_LJ->visit_value_buffer(CAI_LJ, header, header_len, &visitor,
+                                        &validator, &json_error);
+    header_keys = validator.key_count;
+    cai_free_mem(NULL, validator.key.data);
+    rc = status == LONEJSON_STATUS_OK
+             ? cai_mcp_raw_header_required(schema_json, mapping,
+                                           &validator.keys, error)
+             : CAI_OK;
+    cai_free_mem(NULL, validator.keys.data);
+    if (rc != CAI_OK)
+      return rc;
+    if (status != LONEJSON_STATUS_OK)
+      return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                  "invalid MCP raw-input JSON header",
+                                  json_error.message);
+    if (!validator.root_object || validator.collision)
+      return cai_set_error(
+          error, CAI_ERR_INVALID,
+          "MCP raw-input header must be an object and omit the raw field");
+    while (header_len != 0U &&
+           (header[header_len - 1U] == ' ' || header[header_len - 1U] == '\t' ||
+            header[header_len - 1U] == '\r' || header[header_len - 1U] == '\n'))
+      header_len--;
+    if (header_len == 0U || header[header_len - 1U] != '}')
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "MCP raw-input header must be an object");
+    header_len--; /* omit the closing brace, preserving the header's argument
+                     values */
+  }
+  request->id = ++impl->next_id;
+  snprintf(id, sizeof(id), "%lld", request->id);
+  rc = cai_buffer_append_cstr(&request->prefix,
+                              "{\"jsonrpc\":\"2.0\",\"id\":", error);
+  if (rc == CAI_OK)
+    rc = cai_buffer_append_cstr(&request->prefix, id, error);
+  if (rc == CAI_OK)
+    rc = cai_buffer_append_cstr(
+        &request->prefix,
+        ",\"method\":\"tools/call\",\"params\":{\"name\":", error);
+  if (rc == CAI_OK)
+    rc = cai_mcp_append_json_string_literal(&request->prefix, name, error);
+  if (rc == CAI_OK)
+    rc = cai_buffer_append_cstr(&request->prefix, ",\"arguments\":", error);
+  if (rc == CAI_OK)
+    rc = header_len != 0U
+             ? cai_buffer_append(&request->prefix, header, header_len, error)
+             : cai_buffer_append_cstr(&request->prefix, "{", error);
+  if (rc == CAI_OK && header_keys != 0U)
+    rc = cai_buffer_append_cstr(&request->prefix, ",", error);
+  if (rc == CAI_OK)
+    rc = cai_mcp_append_json_string_literal(&request->prefix, mapping->field,
+                                            error);
+  if (rc == CAI_OK)
+    rc = cai_buffer_append_cstr(&request->prefix, ":", error);
+  snprintf(request->suffix, sizeof(request->suffix),
+           "},\"_meta\":{\"progressToken\":%lld}}}", request->id);
+  return rc;
+}
+static int cai_mcp_streamable_call_tool_raw(
+    cai_mcp_client *client, const char *name, const cai_tool_raw_input *mapping,
+    lonejson_spooled *input, cai_sink *output, cai_error *error) {
+  cai_mcp_streamable_http_client_impl *impl = cai_mcp_streamable_impl(client);
+  cai_mcp_http_response_capture response;
+  cai_mcp_raw_request request;
+  size_t i;
+  int rc;
+  if (impl == NULL || name == NULL || name[0] == '\0' || mapping == NULL ||
+      input == NULL || output == NULL)
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "MCP raw call requires client, tool, mapping, input, and output");
+  rc = cai_mcp_client_initialize(client, error);
+  if (rc != CAI_OK)
+    return rc;
+  for (i = 0U; i < impl->tool_count; i++)
+    if (strcmp(impl->tools[i].name, name) == 0)
+      break;
+  if (i == impl->tool_count) {
+    rc = cai_mcp_client_refresh_tools(client, error);
+    if (rc != CAI_OK)
+      return rc;
+    for (i = 0U; i < impl->tool_count; i++)
+      if (strcmp(impl->tools[i].name, name) == 0)
+        break;
+  }
+  if (i == impl->tool_count)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP raw call tool is not advertised");
+  rc = cai_raw_input_validate(impl->tools[i].input_schema_json, mapping, error);
+  if (rc != CAI_OK)
+    return rc;
+  memset(&request, 0, sizeof(request));
+  memset(&response, 0, sizeof(response));
+  rc = cai_mcp_raw_request_prepare(impl, name, mapping,
+                                   impl->tools[i].input_schema_json, input,
+                                   &request, error);
+  if (rc == CAI_OK)
+    rc = cai_mcp_stream_request_result_with_session_recovery(
+        impl, NULL, 0U, &request, 1, output, &response, error);
+  if (request.generator_initialized)
+    request.generator.cleanup(&request.generator);
+  cai_free_mem(NULL, request.prefix.data);
+  cai_mcp_http_response_capture_cleanup(&response);
+  return rc;
+}
+int cai_mcp_client_call_tool_raw(cai_mcp_client *client, const char *name,
+                                 const cai_tool_raw_input *mapping,
+                                 lonejson_spooled *input, cai_sink *output,
+                                 cai_error *error) {
+  if (client == NULL || client->call_tool_raw == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP client raw-input receiver is required");
+  return client->call_tool_raw(client, name, mapping, input, output, error);
 }
 
 static char *
@@ -10565,9 +11108,41 @@ int cai_mcp_client_register_tools(
   initial_tool_count = cai_tool_registry_count(registry);
   memset(&defaults, 0, sizeof(defaults));
   effective = config != NULL ? config : &defaults;
+  if (effective->raw_input_policy < CAI_MCP_RAW_INPUT_AUTO ||
+      effective->raw_input_policy > CAI_MCP_RAW_INPUT_CUSTOM ||
+      (effective->raw_input_override_count != 0U &&
+       effective->raw_input_overrides == NULL))
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "invalid MCP raw-input registration policy");
+  for (i = 0U; i < effective->raw_input_override_count; i++) {
+    size_t j;
+    const char *name = effective->raw_input_overrides[i].name;
+    if (name == NULL || name[0] == '\0')
+      return cai_set_error(
+          error, CAI_ERR_INVALID,
+          "MCP raw-input override requires a remote tool name");
+    for (j = 0U; j < i; j++)
+      if (strcmp(name, effective->raw_input_overrides[j].name) == 0)
+        return cai_set_error(error, CAI_ERR_INVALID,
+                             "duplicate MCP raw-input override");
+  }
   rc = cai_mcp_client_refresh_tools(client, error);
   if (rc != CAI_OK) {
     return rc;
+  }
+  for (i = 0U; i < effective->raw_input_override_count; i++) {
+    size_t j;
+    for (j = 0U; j < cai_mcp_client_tool_count(client); j++) {
+      const cai_mcp_client_tool *remote = cai_mcp_client_tool_at(client, j);
+      if (remote != NULL && remote->name != NULL &&
+          strcmp(remote->name, effective->raw_input_overrides[i].name) == 0)
+        break;
+    }
+    if (j == cai_mcp_client_tool_count(client))
+      return cai_set_error_detail(
+          error, CAI_ERR_INVALID,
+          "MCP raw-input override names an unadvertised tool",
+          effective->raw_input_overrides[i].name);
   }
   for (i = 0U; i < cai_mcp_client_tool_count(client); i++) {
     tool = cai_mcp_client_tool_at(client, i);
@@ -10576,7 +11151,7 @@ int cai_mcp_client_register_tools(
                          "MCP tool metadata is incomplete");
       goto fail;
     }
-    schema_json = cai_mcp_streamable_tool_schema_json(client, tool);
+    schema_json = tool->input_schema_json;
     generated_schema_json = NULL;
     if (schema_json == NULL) {
       generated_schema_json =
@@ -10626,10 +11201,84 @@ int cai_mcp_client_register_tools(
                          "failed to allocate MCP tool name");
       goto fail;
     }
-    rc = cai_tool_registry_register_raw_spooled_owned(
-        registry, name_builder.data, tool->description, schema_json,
-        effective->strict, cai_mcp_registered_tool_callback, context,
-        cai_mcp_registered_tool_context_cleanup, error);
+    {
+      const cai_tool_raw_input *mapping = tool->raw_input;
+      size_t j;
+      for (j = 0U; j < effective->raw_input_override_count; j++) {
+        if (strcmp(tool->name, effective->raw_input_overrides[j].name) == 0) {
+          mapping = effective->raw_input_overrides[j].mapping;
+          break;
+        }
+      }
+      if (effective->raw_input_policy == CAI_MCP_RAW_INPUT_JSON)
+        mapping = NULL;
+      if (mapping != NULL && client->call_tool_raw == NULL) {
+        if (effective->raw_input_policy == CAI_MCP_RAW_INPUT_CUSTOM)
+          rc = cai_set_error(error, CAI_ERR_INVALID,
+                             "MCP client does not support raw-input uploads");
+        else
+          mapping = NULL;
+      }
+      if (mapping != NULL && rc == CAI_OK) {
+        rc = cai_raw_input_validate(schema_json, mapping, error);
+        if (rc == CAI_OK)
+          rc = cai_raw_input_copy(NULL, &context->raw_input, mapping, error);
+        if (rc == CAI_OK) {
+          cai_buffer_builder description;
+          memset(&description, 0, sizeof(description));
+          rc = cai_buffer_append_cstr(
+              &description, tool->description != NULL ? tool->description : "",
+              error);
+          if (rc == CAI_OK &&
+              mapping->framing == CAI_TOOL_RAW_INPUT_JSON_HEADER)
+            rc = cai_buffer_append_cstr(
+                &description,
+                "\nInput: one JSON object header containing the other "
+                "arguments, followed by LF and the exact raw content for "
+                "field ",
+                error);
+          if (rc == CAI_OK &&
+              mapping->framing == CAI_TOOL_RAW_INPUT_JSON_HEADER)
+            rc = cai_buffer_append_cstr(&description, mapping->field, error);
+          if (rc == CAI_OK &&
+              mapping->framing == CAI_TOOL_RAW_INPUT_JSON_HEADER)
+            rc = cai_buffer_append_cstr(&description,
+                                        ". Header must omit this field and fit "
+                                        "within 16 KiB. Argument schema: ",
+                                        error);
+          if (rc == CAI_OK &&
+              mapping->framing == CAI_TOOL_RAW_INPUT_JSON_HEADER)
+            rc = cai_buffer_append_cstr(&description, schema_json, error);
+          if (rc == CAI_OK)
+            rc = cai_buffer_append(&description, "", 1U, error);
+          if (rc == CAI_OK)
+            rc = cai_tool_registry_register_custom_spooled_owned(
+                registry, name_builder.data, description.data, &mapping->format,
+                cai_mcp_registered_custom_callback, context,
+                cai_mcp_registered_tool_context_cleanup, error);
+          cai_free_mem(NULL, description.data);
+        }
+      } else if (rc == CAI_OK) {
+        rc = cai_tool_registry_register_raw_spooled_owned(
+            registry, name_builder.data, tool->description, schema_json,
+            effective->strict, cai_mcp_registered_tool_callback, context,
+            cai_mcp_registered_tool_context_cleanup, error);
+      }
+      if (client->tool_at == cai_mcp_streamable_tool_at) {
+        pslog_logger *log =
+            cai_mcp_logger((cai_mcp_streamable_http_client_impl *)client->impl);
+        if (rc == CAI_OK && log != NULL && log->debugf != NULL)
+          log->debugf(log, "cai.mcp.tool.registered",
+                      "tool=%s raw_input=%b field=%s", tool->name,
+                      mapping != NULL, mapping != NULL ? mapping->field : "");
+        else if (rc != CAI_OK && log != NULL && log->warnf != NULL)
+          log->warnf(log, "cai.mcp.tool.registration_failed",
+                     "tool=%s error=%s", tool->name,
+                     error != NULL && error->message != NULL
+                         ? error->message
+                         : "invalid mapping");
+      }
+    }
     cai_free_mem(NULL, name_builder.data);
     cai_free_mem(NULL, generated_schema_json);
     if (rc != CAI_OK) {
@@ -10657,7 +11306,22 @@ int cai_agent_register_mcp_client_tools(
   if (impl == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "agent is closed");
   }
-  return cai_mcp_client_register_tools(client, impl->tools, config, error);
+  {
+    cai_mcp_tool_registration_config effective;
+    memset(&effective, 0, sizeof(effective));
+    if (config != NULL)
+      effective = *config;
+    if (CAI_CLIENT_IMPL(impl->client)->api_protocol ==
+        CAI_API_PROTOCOL_CHAT_COMPLETIONS) {
+      if (effective.raw_input_policy == CAI_MCP_RAW_INPUT_CUSTOM)
+        return cai_set_error(
+            error, CAI_ERR_INVALID,
+            "Chat Completions requires ordinary MCP JSON tools");
+      effective.raw_input_policy = CAI_MCP_RAW_INPUT_JSON;
+    }
+    return cai_mcp_client_register_tools(client, impl->tools, &effective,
+                                         error);
+  }
 }
 
 void cai_mcp_client_destroy(cai_mcp_client *client) {

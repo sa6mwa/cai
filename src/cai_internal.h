@@ -543,6 +543,25 @@ const char *cai_tool_registry_description_at(const cai_tool_registry *registry,
                                              size_t index);
 const char *cai_tool_registry_schema_at(const cai_tool_registry *registry,
                                         size_t index);
+const cai_tool_raw_input *
+cai_tool_registry_raw_input_at(const cai_tool_registry *registry, size_t index);
+int cai_custom_tool_format_validate(const cai_custom_tool_format *format,
+                                    cai_error *error);
+int cai_raw_input_copy(const cai_allocator *allocator, cai_tool_raw_input *out,
+                       const cai_tool_raw_input *mapping, cai_error *error);
+void cai_raw_input_cleanup(const cai_allocator *allocator,
+                           cai_tool_raw_input *mapping);
+int cai_raw_input_validate(const char *schema_json,
+                           const cai_tool_raw_input *mapping, cai_error *error);
+int cai_raw_input_parse_meta(const lonejson_json_value *meta,
+                             const cai_allocator *allocator,
+                             cai_tool_raw_input *out, cai_error *error);
+lonejson_status cai_raw_input_write_meta(lonejson_writer *writer,
+                                         const cai_tool_raw_input *mapping,
+                                         lonejson_error *error);
+int cai_tool_registry_run_mcp(cai_tool_registry *registry, const char *name,
+                              lonejson_spooled *arguments, cai_sink *output,
+                              cai_error *error);
 int cai_set_openai_error(cai_error *error, long http_status, const char *body,
                          const char *request_id);
 void cai_configure_curl_tls(CURL *curl, int insecure_skip_verify,

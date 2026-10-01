@@ -182,6 +182,9 @@ typedef struct cai_mcp_client_prompt_argument {
   int required;
 } cai_mcp_client_prompt_argument;
 
+/** Vendor extension in tools/list Tool._meta; ordinary MCP remains JSON. */
+#define CAI_MCP_RAW_INPUT_META_KEY "systems.c89.cai/raw-input"
+
 /** One remote MCP tool descriptor discovered from tools/list. */
 typedef struct cai_mcp_client_tool {
   /** Tool name advertised by the MCP server. */
@@ -202,6 +205,10 @@ typedef struct cai_mcp_client_tool {
   const cai_mcp_client_icon *icons;
   /** Number of entries in `icons`. */
   size_t icon_count;
+  /** Optional server-advertised raw-input mapping; borrowed until refresh. */
+  const cai_tool_raw_input *raw_input;
+  /** Complete ordinary schema JSON, needed to validate raw-input mappings. */
+  const char *input_schema_json;
 } cai_mcp_client_tool;
 
 /** One remote MCP resource descriptor discovered from resources/list. */
@@ -353,12 +360,36 @@ typedef struct cai_mcp_streamable_http_client_config {
   long long oauth2_refresh_skew_seconds;
 } cai_mcp_streamable_http_client_config;
 
+/** Client policy for presenting mapped MCP tools to a model. */
+typedef enum cai_mcp_raw_input_policy {
+  /** Use valid hints when this client supports raw uploads. */
+  CAI_MCP_RAW_INPUT_AUTO = 0,
+  /** Keep ordinary JSON tools, ignoring server hints. */
+  CAI_MCP_RAW_INPUT_JSON = 1,
+  /** Require raw-upload support for mapped tools. */
+  CAI_MCP_RAW_INPUT_CUSTOM = 2
+} cai_mcp_raw_input_policy;
+
+/** Override one remote tool's hint. NULL mapping explicitly disables it. */
+typedef struct cai_mcp_raw_input_override {
+  /** Remote name, before name_prefix. */
+  const char *name;
+  /** Descriptor copied during registration; NULL disables raw presentation. */
+  const cai_tool_raw_input *mapping;
+} cai_mcp_raw_input_override;
+
 /** Options for registering remote MCP tools as local cai function tools. */
 struct cai_mcp_tool_registration_config {
   /** Optional prefix prepended to each registered local tool name. */
   const char *name_prefix;
   /** Non-zero marks generated local function schemas strict. */
   int strict;
+  /** AUTO by default; agent registration selects JSON for Chat Completions. */
+  cai_mcp_raw_input_policy raw_input_policy;
+  /** Explicit per-tool overrides take precedence over advertised hints. */
+  const cai_mcp_raw_input_override *raw_input_overrides;
+  /** Number of raw_input_overrides. */
+  size_t raw_input_override_count;
 };
 
 /** HTTP request view passed from an embedding route to cai MCP. */
@@ -416,6 +447,14 @@ struct cai_mcp_client {
   int (*call_tool)(cai_mcp_client *client, const char *name,
                    struct lonejson_spooled *arguments_json, cai_sink *output,
                    cai_error *error);
+  /** Serialize completed raw input directly to an ordinary MCP call upload.
+   * The supplied input is already spooled by the tool runtime; serialization
+   * uses bounded buffers without spooling a second complete JSON request.
+   */
+  int (*call_tool_raw)(cai_mcp_client *client, const char *name,
+                       const cai_tool_raw_input *mapping,
+                       struct lonejson_spooled *input, cai_sink *output,
+                       cai_error *error);
   /** Refresh the cached remote resources/list metadata. */
   int (*refresh_resources)(cai_mcp_client *client, cai_error *error);
   /** Return the number of cached resources. */
@@ -513,6 +552,11 @@ const cai_mcp_client_tool *cai_mcp_client_tool_at(const cai_mcp_client *client,
 int cai_mcp_client_call_tool(cai_mcp_client *client, const char *name,
                              struct lonejson_spooled *arguments_json,
                              cai_sink *output, cai_error *error);
+/** Call a mapped MCP tool using raw text or explicitly framed input. */
+int cai_mcp_client_call_tool_raw(cai_mcp_client *client, const char *name,
+                                 const cai_tool_raw_input *mapping,
+                                 struct lonejson_spooled *input,
+                                 cai_sink *output, cai_error *error);
 /** Refresh cached remote resources/list metadata. */
 int cai_mcp_client_refresh_resources(cai_mcp_client *client, cai_error *error);
 /** Return the number of cached MCP resources. */

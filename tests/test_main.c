@@ -8480,7 +8480,7 @@ static int mock_read_request(int fd, char *request, size_t capacity) {
       memmove(cursor, chunk_data, (size_t)chunk_len);
       cursor += chunk_len;
       memmove(cursor, after_chunk, length - (size_t)(after_chunk - request));
-      length -= (size_t)(after_chunk - request) - chunk_len;
+      length -= (size_t)(after_chunk - cursor);
       request[length] = '\0';
     }
   } else {
@@ -12229,7 +12229,9 @@ test_mcp_streamable_http_client_custom_allocator_metadata(test_state *state) {
       "\"properties\":{\"message\":{\"type\":\"string\"}}},\"outputSchema\":{"
       "\"type\":\"object\"},\"annotations\":{\"readOnlyHint\":true},"
       "\"icons\":[{\"src\":\"https://example.test/echo.svg\"}],"
-      "\"execution\":{\"taskSupport\":\"optional\"}}]}}";
+      "\"execution\":{\"taskSupport\":\"optional\"},\"_meta\":{"
+      "\"" CAI_MCP_RAW_INPUT_META_KEY "\":{\"field\":\"message\",\"format\":{"
+      "\"type\":\"grammar\",\"syntax\":\"regex\",\"definition\":\".+\"}}}}]}}";
   static const char resources_list_body[] =
       "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"resources\":[{\"uri\":"
       "\"resource://alpha\",\"name\":\"alpha\",\"icons\":[{\"src\":"
@@ -12319,6 +12321,11 @@ test_mcp_streamable_http_client_custom_allocator_metadata(test_state *state) {
              cai_mcp_client_refresh_resource_templates(client, &error), CAI_OK);
   expect_int(state, "mcp_streamable_custom_allocator_metadata_prompts",
              cai_mcp_client_refresh_prompts(client, &error), CAI_OK);
+  expect_str(state, "raw_custom_allocator_mapping",
+             cai_mcp_client_tool_at(client, 0U)->raw_input->field, "message");
+  expect_str(state, "raw_custom_allocator_grammar",
+             cai_mcp_client_tool_at(client, 0U)->raw_input->format.definition,
+             ".+");
   cai_mcp_client_destroy(client);
   client = NULL;
   expect_int(state, "mcp_streamable_custom_allocator_metadata_foreign_free",
@@ -47772,7 +47779,802 @@ static void test_chatgpt_quota_http(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+typedef struct test_raw_input_capture {
+  unsigned char bytes[256];
+  size_t size;
+  int calls;
+} test_raw_input_capture;
+static int test_raw_input_callback(void *context, lonejson_spooled *input,
+                                   cai_sink *output, cai_error *error) {
+  test_raw_input_capture *capture = (test_raw_input_capture *)context;
+  lonejson_spooled cursor;
+  lonejson_error json_error;
+  lonejson_read_result result;
+  capture->calls++;
+  capture->size = input->size_fn(input);
+  cursor = *input;
+  lonejson_error_init(&json_error);
+  if (cursor.rewind(&cursor, &json_error) != LONEJSON_STATUS_OK)
+    return CAI_ERR_INVALID;
+  result = cursor.read(&cursor, capture->bytes, sizeof(capture->bytes));
+  if (result.error_code != 0)
+    return CAI_ERR_INVALID;
+  return cai_sink_write(output, "{\"ok\":true}", 11U, error);
+}
+static void test_mcp_raw_input_server(test_state *state) {
+  static const mcp_header_pair headers[] = {
+      {"content-type", "application/json"},
+      {"accept", "application/json"},
+      {"mcp-protocol-version", CAI_MCP_PROTOCOL_VERSION}};
+  static const char *bad_args[] = {"{}", "{\"input\":42}", "{\"input\":null}",
+                                   "{\"input\":\"a\",\"extra\":true}"};
+  static const char plain_schema[] =
+      "{\"type\":\"object\",\"properties\":{\"patch\":{\"type\":\"string\"},"
+      "\"count\":{\"type\":\"integer\"}},\"required\":[\"patch\"]}";
+  static const char header_schema[] =
+      "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\"},"
+      "\"path\":{\"type\":\"string\"}},\"required\":[\"content\",\"path\"]}";
+  cai_tool_registry *registry = NULL;
+  cai_mcp_handler *handler = NULL;
+  cai_mcp_handler_config config;
+  cai_tool_raw_input mapping;
+  cai_response_create_params *params = NULL;
+  cai_error error;
+  raw_tool_state raw;
+  test_raw_input_capture capture;
+  write_state writer;
+  mcp_header_state header_state;
+  char *json = NULL;
+  char body[512];
+  size_t i;
+  int status;
+  memset(&capture, 0, sizeof(capture));
+  memset(&raw, 0, sizeof(raw));
+  memset(&mapping, 0, sizeof(mapping));
+  cai_error_init(&error);
+  expect_int(state, "raw_server_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  expect_int(state, "raw_server_native_text",
+             cai_tool_registry_register_custom_spooled(
+                 registry, "native", "Native raw tool", NULL,
+                 test_raw_input_callback, &capture, &error),
+             CAI_OK);
+  expect_int(state, "raw_server_json",
+             cai_tool_registry_register_raw(registry, "patcher", "Patch",
+                                            plain_schema, 0, test_raw_tool,
+                                            &raw, &error),
+             CAI_OK);
+  mapping.field = "patch";
+  expect_int(
+      state, "raw_server_set_hint",
+      cai_tool_registry_set_raw_input(registry, "patcher", &mapping, &error),
+      CAI_OK);
+  expect_int(state, "raw_server_header_json",
+             cai_tool_registry_register_raw(registry, "writer", "Write",
+                                            header_schema, 0, test_raw_tool,
+                                            &raw, &error),
+             CAI_OK);
+  mapping.field = "content";
+  expect_int(
+      state, "raw_requires_header",
+      cai_tool_registry_set_raw_input(registry, "writer", &mapping, &error),
+      CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  mapping.framing = CAI_TOOL_RAW_INPUT_JSON_HEADER;
+  expect_int(
+      state, "raw_header_hint",
+      cai_tool_registry_set_raw_input(registry, "writer", &mapping, &error),
+      CAI_OK);
+  mapping.field = "count";
+  mapping.framing = CAI_TOOL_RAW_INPUT_TEXT;
+  expect_int(
+      state, "raw_non_string_rejected",
+      cai_tool_registry_set_raw_input(registry, "patcher", &mapping, &error),
+      CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  mapping.field = "missing";
+  expect_int(
+      state, "raw_missing_field_rejected",
+      cai_tool_registry_set_raw_input(registry, "patcher", &mapping, &error),
+      CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_str(state, "raw_atomic_hint",
+             cai_tool_registry_raw_input_at(registry, 1U)->field, "patch");
+  expect_int(state, "raw_params_new",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  params->set_model(params, CAI_MODEL_GPT_5_NANO, &error);
+  params->add_text(params, "user", "test raw", &error);
+  expect_int(state, "raw_params_add",
+             cai_tool_registry_add_to_response_params(registry, params, &error),
+             CAI_OK);
+  expect_int(
+      state, "raw_params_json",
+      cai_response_create_params_serialize_json(params, &json, NULL, &error),
+      CAI_OK);
+  expect_substr(state, "raw_text_custom", json,
+                "\"type\":\"custom\",\"name\":\"native\"");
+  expect_substr(state, "raw_local_function", json,
+                "\"type\":\"function\",\"name\":\"patcher\"");
+  free(json);
+  cai_response_create_params_destroy(params);
+  cai_mcp_handler_config_init(&config);
+  config.tools = registry;
+  expect_int(state, "raw_handler",
+             cai_mcp_handler_new(&config, &handler, &error), CAI_OK);
+  expect_int(state, "raw_list",
+             test_mcp_handle(
+                 handler, headers, 3U,
+                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}",
+                 &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_valid_json(state, "raw_list_json", writer.buffer);
+  expect_substr(state, "raw_list_meta", writer.buffer,
+                CAI_MCP_RAW_INPUT_META_KEY);
+  expect_substr(state, "raw_list_native_schema", writer.buffer,
+                "\"input\":{\"type\":\"string\"}");
+  expect_substr(state, "raw_list_header", writer.buffer,
+                "\"framing\":\"json-header\"");
+  expect_int(
+      state, "raw_native_call",
+      test_mcp_handle(handler, headers, 3U,
+                      "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/"
+                      "call\",\"params\":{\"name\":\"native\",\"arguments\":{"
+                      "\"input\":\"\\\"\\\\\\n\\tå🚀\\u0000\\n\"}}}",
+                      &writer, &header_state, &status, &error),
+      CAI_OK);
+  expect_int(state, "raw_native_exact_size", (long)capture.size,
+             (long)(sizeof("\"\\\n\tå🚀\0\n") - 1U));
+  expect_int(state, "raw_native_exact_bytes",
+             memcmp(capture.bytes, "\"\\\n\tå🚀\0\n", capture.size), 0L);
+  for (i = 0U; i < sizeof(bad_args) / sizeof(bad_args[0]); i++) {
+    snprintf(body, sizeof(body),
+             "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/"
+             "call\",\"params\":{\"name\":\"native\",\"arguments\":%s}}",
+             bad_args[i]);
+    expect_int(state, "raw_bad_call_result",
+               test_mcp_handle(handler, headers, 3U, body, &writer,
+                               &header_state, &status, &error),
+               CAI_OK);
+    expect_substr(state, "raw_bad_call_is_error", writer.buffer,
+                  "\"isError\":true");
+  }
+  expect_int(state, "raw_bad_no_side_effects", capture.calls, 1L);
+  expect_int(state, "raw_native_empty",
+             test_mcp_handle(handler, headers, 3U,
+                             "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/"
+                             "call\",\"params\":{\"name\":\"native\","
+                             "\"arguments\":{\"input\":\"\"}}}",
+                             &writer, &header_state, &status, &error),
+             CAI_OK);
+  expect_int(state, "raw_empty_size", (long)capture.size, 0L);
+  expect_int(state, "raw_hint_remove",
+             cai_tool_registry_set_raw_input(registry, "patcher", NULL, &error),
+             CAI_OK);
+  expect_int(state, "raw_hint_absent",
+             cai_tool_registry_raw_input_at(registry, 1U) == NULL, 1L);
+  {
+    lonejson_spooled input;
+    lonejson_error json_error;
+    cai_sink *sink = NULL;
+    cai_sink_callbacks callbacks;
+    raw.seen[0] = '\0';
+    expect_int(state, "raw_small_register",
+               cai_tool_registry_register_custom(registry, "small", "Small",
+                                                 NULL, test_raw_tool, &raw,
+                                                 &error),
+               CAI_OK);
+    callbacks.write = test_write;
+    callbacks.close = NULL;
+    callbacks.context = &writer;
+    cai_sink_from_callbacks(&callbacks, &sink, &error);
+    CAI_LJ->spooled_init(CAI_LJ, &input);
+    lonejson_error_init(&json_error);
+    input.append(&input, "a\0b", 3U, &json_error);
+    expect_int(
+        state, "raw_small_nul_rejected",
+        cai_tool_registry_run_spooled(registry, "small", &input, sink, &error),
+        CAI_ERR_INVALID);
+    expect_str(state, "raw_small_no_truncation", raw.seen, "");
+    input.cleanup(&input);
+    cai_sink_close(sink);
+  }
+  cai_mcp_handler_destroy(handler);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+}
+
+static void test_mcp_raw_input_upload(test_state *state) {
+  static const char init[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"raw\","
+      "\"version\":\"1\"}}}";
+  static const char tools[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":"
+      "\"patcher\",\"inputSchema\":{\"type\":\"object\",\"properties\":{"
+      "\"patch\":{\"type\":\"string\"}},\"required\":[\"patch\"]},\"_meta\":{"
+      "\"" CAI_MCP_RAW_INPUT_META_KEY
+      "\":{\"field\":\"patch\"}}},{\"name\":\"writer\",\"inputSchema\":{"
+      "\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\"},"
+      "\"path\":{\"type\":\"string\"}},\"required\":[\"content\",\"path\"]},\"_"
+      "meta\":{\"" CAI_MCP_RAW_INPUT_META_KEY
+      "\":{\"field\":\"content\",\"framing\":\"json-header\"}}}]}}";
+  static const char result3[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"ok\":true}}";
+  static const char result4[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"ok\":true}}";
+  static const char result5[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"isError\":true,\"content\":["
+      "{\"type\":\"text\",\"text\":\"tool failed\"}]}}";
+  static const char *patch_req[] = {
+      "Transfer-Encoding: chunked", "\"name\":\"patcher\"",
+      "\"arguments\":{\"patch\":\"\\\"\\\\\\n\\tå🚀\\u0000\\n\"}"};
+  static const char *header_req[] = {
+      "\"arguments\":{\"path\":\"src/a.c\",\"content\":\"line one\\nline "
+      "two\\n\"}"};
+  static const char *empty_req[] = {"\"patch\":\"\""};
+  static const char *bad_headers[] = {"not json\nbody",
+                                      "{\"path\":\"\xff\"}\nbody",
+                                      "[]\nbody",
+                                      "{\"content\":null}\nbody",
+                                      "{\"con\\u0074ent\":\"bad\"}\nbody",
+                                      "{}",
+                                      "{}\nbody",
+                                      "{\"path\":\"a\",\"path\":\"b\"}\nbody"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 200, "OK", "application/json",
+       NULL, init},
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 202, "Accepted",
+       "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 200, "OK", "application/json",
+       NULL, tools},
+      {"POST /v1/mcp HTTP/", patch_req, 3U, NULL, 0U, 200, "OK",
+       "application/json", NULL, result3},
+      {"POST /v1/mcp HTTP/", header_req, 1U, NULL, 0U, 200, "OK",
+       "application/json", NULL, result4},
+      {"POST /v1/mcp HTTP/", empty_req, 1U, NULL, 0U, 200, "OK",
+       "application/json", NULL, result5}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client = NULL;
+  cai_tool_registry *registry = NULL;
+  cai_sink *sink = NULL;
+  cai_sink_callbacks callbacks;
+  cai_mcp_tool_registration_config registration;
+  cai_response_create_params *params = NULL;
+  lonejson_spooled input;
+  lonejson_error json_error;
+  cai_error error;
+  write_state writer;
+  char url[192];
+  char *json = NULL;
+  size_t i;
+  memset(&writer, 0, sizeof(writer));
+  memset(&registration, 0, sizeof(registration));
+  cai_error_init(&error);
+  if (http_mock_server_open_script(state, "raw_upload_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0)
+    return;
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 3000L;
+  expect_int(state, "raw_upload_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "raw_upload_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  registration.name_prefix = "remote__";
+  expect_int(
+      state, "raw_upload_register",
+      cai_mcp_client_register_tools(client, registry, &registration, &error),
+      CAI_OK);
+  expect_str(state, "raw_discovered_field",
+             cai_mcp_client_tool_at(client, 0U)->raw_input->field, "patch");
+  expect_int(state, "raw_discovered_header",
+             cai_mcp_client_tool_at(client, 1U)->raw_input->framing,
+             CAI_TOOL_RAW_INPUT_JSON_HEADER);
+  expect_int(state, "raw_upload_params",
+             cai_response_create_params_new(&params, &error), CAI_OK);
+  params->set_model(params, CAI_MODEL_GPT_5_NANO, &error);
+  params->add_text(params, "user", "test raw", &error);
+  expect_int(state, "raw_upload_tools",
+             cai_tool_registry_add_to_response_params(registry, params, &error),
+             CAI_OK);
+  expect_int(
+      state, "raw_upload_serialize",
+      cai_response_create_params_serialize_json(params, &json, NULL, &error),
+      CAI_OK);
+  expect_substr(state, "raw_upload_custom_type", json, "\"type\":\"custom\"");
+  expect_substr(state, "raw_upload_header_instructions", json,
+                "one JSON object header");
+  free(json);
+  cai_response_create_params_destroy(params);
+  callbacks.write = test_write;
+  callbacks.close = NULL;
+  callbacks.context = &writer;
+  expect_int(state, "raw_upload_sink",
+             cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  CAI_LJ->spooled_init(CAI_LJ, &input);
+  lonejson_error_init(&json_error);
+  expect_int(state, "raw_upload_input",
+             input.append(&input, "\"\\\n\tå🚀\0\n",
+                          sizeof("\"\\\n\tå🚀\0\n") - 1U, &json_error),
+             LONEJSON_STATUS_OK);
+  expect_int(state, "raw_upload_call",
+             cai_tool_registry_run_spooled(registry, "remote__patcher", &input,
+                                           sink, &error),
+             CAI_OK);
+  if (error.code != CAI_OK)
+    fprintf(stderr, "raw upload error: %s / %s\n",
+            error.message != NULL ? error.message : "",
+            error.detail != NULL ? error.detail : "");
+  expect_str(state, "raw_upload_output", writer.buffer, "{\"ok\":true}");
+  input.cleanup(&input);
+  memset(&writer, 0, sizeof(writer));
+  CAI_LJ->spooled_init(CAI_LJ, &input);
+  expect_int(
+      state, "raw_upload_header_input",
+      input.append(&input, "{\"path\":\"src/a.c\"}\nline one\nline two\n",
+                   sizeof("{\"path\":\"src/a.c\"}\nline one\nline two\n") - 1U,
+                   &json_error),
+      LONEJSON_STATUS_OK);
+  expect_int(state, "raw_upload_header_call",
+             cai_tool_registry_run_spooled(registry, "remote__writer", &input,
+                                           sink, &error),
+             CAI_OK);
+  input.cleanup(&input);
+  for (i = 0U; i < sizeof(bad_headers) / sizeof(bad_headers[0]); i++) {
+    CAI_LJ->spooled_init(CAI_LJ, &input);
+    input.append(&input, bad_headers[i], strlen(bad_headers[i]), &json_error);
+    expect_int(state, "raw_bad_header",
+               cai_tool_registry_run_spooled(registry, "remote__writer", &input,
+                                             sink, &error),
+               CAI_ERR_INVALID);
+    input.cleanup(&input);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+  }
+  {
+    char oversized[16385];
+    memset(oversized, ' ', sizeof(oversized));
+    oversized[sizeof(oversized) - 1U] = '\n';
+    CAI_LJ->spooled_init(CAI_LJ, &input);
+    input.append(&input, oversized, sizeof(oversized), &json_error);
+    expect_int(state, "raw_header_limit",
+               cai_tool_registry_run_spooled(registry, "remote__writer", &input,
+                                             sink, &error),
+               CAI_ERR_INVALID);
+    input.cleanup(&input);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+  }
+  CAI_LJ->spooled_init(CAI_LJ, &input);
+  memset(&writer, 0, sizeof(writer));
+  expect_int(state, "raw_empty_upload",
+             cai_tool_registry_run_spooled(registry, "remote__patcher", &input,
+                                           sink, &error),
+             CAI_OK);
+  expect_substr(state, "raw_remote_failure_passthrough", writer.buffer,
+                "\"isError\":true");
+  input.cleanup(&input);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "raw_upload_mock", server.pid, &server.child_status);
+}
+
+static int test_mcp_raw_receiver(cai_mcp_client *client, const char *name,
+                                 const cai_tool_raw_input *mapping,
+                                 lonejson_spooled *input, cai_sink *output,
+                                 cai_error *error) {
+  test_mcp_client_impl *fake = test_mcp_client_impl_from_public(client);
+  fake->call_count++;
+  snprintf(fake->last_name, sizeof(fake->last_name), "%s", name);
+  test_mcp_read_spooled_json(input, fake->last_arguments,
+                             sizeof(fake->last_arguments));
+  if (strcmp(mapping->field, "message") != 0)
+    return CAI_ERR_INVALID;
+  return cai_sink_write(output, "{\"ok\":true}", 11U, error);
+}
+static void test_mcp_raw_input_policy(test_state *state) {
+  static const char schema[] =
+      "{\"type\":\"object\",\"properties\":{\"message\":{\"type\":\"string\"}},"
+      "\"required\":[\"message\"]}";
+  test_mcp_client_impl fake;
+  cai_mcp_tool_registration_config config;
+  cai_mcp_raw_input_override overrides[2];
+  cai_tool_raw_input hint;
+  cai_tool_raw_input correct;
+  cai_tool_registry *registry;
+  cai_response_create_params *params;
+  cai_client_config client_config;
+  cai_agent_config agent_config;
+  cai_client *client = NULL;
+  cai_agent *agent = NULL;
+  cai_error error;
+  int which;
+  char *json;
+  cai_error_init(&error);
+  for (which = 0; which < 10; which++) {
+    int expected = CAI_OK;
+    int custom = which == 0 || which == 3;
+    memset(&config, 0, sizeof(config));
+    memset(&hint, 0, sizeof(hint));
+    memset(overrides, 0, sizeof(overrides));
+    hint.field = "message";
+    correct = hint;
+    test_mcp_fake_client_init(&fake);
+    fake.public_client.call_tool_raw = test_mcp_raw_receiver;
+    fake.tools[0].input_schema_json = schema;
+    fake.tools[0].raw_input = &hint;
+    registry = NULL;
+    params = NULL;
+    json = NULL;
+    expect_int(state, "raw_policy_registry",
+               cai_tool_registry_new(&registry, &error), CAI_OK);
+    if (which == 1)
+      config.raw_input_policy = CAI_MCP_RAW_INPUT_JSON;
+    if (which == 2 || which == 3 || which == 7 || which == 8) {
+      config.raw_input_overrides = overrides;
+      config.raw_input_override_count = 1U;
+      overrides[0].name = "echo";
+      if (which == 3) {
+        hint.field = "wrong";
+        overrides[0].mapping = &correct;
+      }
+      if (which == 7) {
+        overrides[0].name = "typo";
+        expected = CAI_ERR_INVALID;
+      }
+      if (which == 8) {
+        overrides[1] = overrides[0];
+        config.raw_input_override_count = 2U;
+        expected = CAI_ERR_INVALID;
+      }
+    }
+    if (which == 4 || which == 5)
+      fake.public_client.call_tool_raw = NULL;
+    if (which == 4) {
+      config.raw_input_policy = CAI_MCP_RAW_INPUT_CUSTOM;
+      expected = CAI_ERR_INVALID;
+    }
+    if (which == 6) {
+      hint.field = "missing";
+      expected = CAI_ERR_INVALID;
+    }
+    if (which == 9) {
+      config.raw_input_policy = (cai_mcp_raw_input_policy)99;
+      expected = CAI_ERR_INVALID;
+    }
+    expect_int(state, "raw_policy_register",
+               cai_mcp_client_register_tools(&fake.public_client, registry,
+                                             &config, &error),
+               expected);
+    if (expected == CAI_OK) {
+      cai_response_create_params_new(&params, &error);
+      params->set_model(params, CAI_MODEL_GPT_5_NANO, &error);
+      params->add_text(params, "user", "raw policy", &error);
+      expect_int(
+          state, "raw_policy_params",
+          cai_tool_registry_add_to_response_params(registry, params, &error),
+          CAI_OK);
+      expect_int(state, "raw_policy_serialize",
+                 cai_response_create_params_serialize_json(params, &json, NULL,
+                                                           &error),
+                 CAI_OK);
+      expect_substr(state, "raw_policy_presentation", json,
+                    custom ? "\"type\":\"custom\",\"name\":\"echo\""
+                           : "\"type\":\"function\",\"name\":\"echo\"");
+      if (!custom)
+        expect_substr(state, "raw_policy_original_schema", json,
+                      "\"message\":{\"type\":\"string\"}");
+      free(json);
+      cai_response_create_params_destroy(params);
+    } else
+      expect_int(state, "raw_policy_rollback",
+                 (long)cai_tool_registry_count(registry), 0L);
+    cai_tool_registry_destroy(registry);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+  }
+  /* A Chat Completions agent selects the original schema automatically. */
+  cai_client_config_init(&client_config);
+  client_config.api_key = "test-key";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = "test-model";
+  test_mcp_fake_client_init(&fake);
+  fake.public_client.call_tool_raw = test_mcp_raw_receiver;
+  fake.tools[0].input_schema_json = schema;
+  hint.field = "message";
+  fake.tools[0].raw_input = &hint;
+  memset(&config, 0, sizeof(config));
+  expect_int(state, "raw_chat_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  expect_int(state, "raw_chat_agent",
+             cai_client_new_agent(client, &agent_config, &agent, &error),
+             CAI_OK);
+  expect_int(state, "raw_chat_registration",
+             cai_agent_register_mcp_client_tools(agent, &fake.public_client,
+                                                 &config, &error),
+             CAI_OK);
+  params = NULL;
+  json = NULL;
+  cai_response_create_params_new(&params, &error);
+  params->set_model(params, "test-model", &error);
+  params->add_text(params, "user", "test", &error);
+  cai_tool_registry_add_to_response_params(CAI_AGENT_IMPL(agent)->tools, params,
+                                           &error);
+  expect_int(
+      state, "raw_chat_serialize",
+      cai_response_create_params_serialize_json(params, &json, NULL, &error),
+      CAI_OK);
+  expect_substr(state, "raw_chat_original", json,
+                "\"type\":\"function\",\"name\":\"echo\"");
+  free(json);
+  cai_response_create_params_destroy(params);
+  config.raw_input_policy = CAI_MCP_RAW_INPUT_CUSTOM;
+  expect_int(state, "raw_chat_force_rejected",
+             cai_agent_register_mcp_client_tools(agent, &fake.public_client,
+                                                 &config, &error),
+             CAI_ERR_INVALID);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+}
+static void test_mcp_raw_input_recovery(test_state *state) {
+  static const char init1[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"raw\","
+      "\"version\":\"1\"}}}";
+  static const char init4[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"raw\","
+      "\"version\":\"1\"}}}";
+  static const char tools[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"echo\","
+      "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"message\":{"
+      "\"type\":\"string\"}},\"required\":[\"message\"]},\"_meta\":{"
+      "\"" CAI_MCP_RAW_INPUT_META_KEY
+      "\":{\"field\":\"message\",\"format\":{\"type\":\"grammar\",\"syntax\":"
+      "\"lark\",\"definition\":\"start: /.+/\"}}}}]}}";
+  static const char *replay_required[] = {
+      "\"id\":3", "\"arguments\":{\"message\":\"retry \\\"raw\\\"\\n\"}"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 200, "OK", "application/json",
+       "raw-init\r\nMCP-Session-Id: old-session", init1},
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 202, "Accepted",
+       "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 200, "OK", "application/json",
+       NULL, tools},
+      {"POST /v1/mcp HTTP/", replay_required, 2U, NULL, 0U, 404, "Not Found",
+       "application/json", NULL, "{\"error\":\"expired\"}"},
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 200, "OK", "application/json",
+       "raw-init\r\nMCP-Session-Id: new-session", init4},
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 202, "Accepted",
+       "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", replay_required, 2U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL,
+       "event: message\ndata: "
+       "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"ok\":true}}\n\n"}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_tool_registry *registry = NULL;
+  cai_mcp_client *client = NULL;
+  cai_sink *sink = NULL;
+  cai_sink_callbacks callbacks;
+  write_state writer;
+  lonejson_spooled input;
+  lonejson_error json_error;
+  cai_error error;
+  char url[192];
+  cai_error_init(&error);
+  memset(&writer, 0, sizeof(writer));
+  if (http_mock_server_open_script(state, "raw_recovery_mock", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0)
+    return;
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  cai_mcp_streamable_http_client_config_init(&config);
+  config.url = url;
+  config.timeout_ms = 3000L;
+  expect_int(state, "raw_recovery_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  cai_tool_registry_new(&registry, &error);
+  expect_int(state, "raw_recovery_register",
+             cai_mcp_client_register_tools(client, registry, NULL, &error),
+             CAI_OK);
+  expect_str(state, "raw_recovery_grammar",
+             cai_mcp_client_tool_at(client, 0U)->raw_input->format.definition,
+             "start: /.+/");
+  callbacks.write = test_write;
+  callbacks.close = NULL;
+  callbacks.context = &writer;
+  cai_sink_from_callbacks(&callbacks, &sink, &error);
+  CAI_LJ->spooled_init(CAI_LJ, &input);
+  lonejson_error_init(&json_error);
+  input.append(&input, "retry \"raw\"\n", sizeof("retry \"raw\"\n") - 1U,
+               &json_error);
+  expect_int(
+      state, "raw_recovery_call",
+      cai_tool_registry_run_spooled(registry, "echo", &input, sink, &error),
+      CAI_OK);
+  expect_str(state, "raw_recovery_result", writer.buffer, "{\"ok\":true}");
+  input.cleanup(&input);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "raw_recovery_mock", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_raw_input_metadata(test_state *state) {
+  static const char *bad[] = {
+      "{\"" CAI_MCP_RAW_INPUT_META_KEY "\":null}",
+      "{\"" CAI_MCP_RAW_INPUT_META_KEY "\":{}}",
+      "{\"" CAI_MCP_RAW_INPUT_META_KEY "\":{\"field\":null}}",
+      "{\"" CAI_MCP_RAW_INPUT_META_KEY "\":{\"field\":\"\"}}",
+      "{\"" CAI_MCP_RAW_INPUT_META_KEY "\":{\"field\":9}}",
+      "{\"" CAI_MCP_RAW_INPUT_META_KEY
+      "\":{\"field\":\"patch\",\"framing\":\"guess\"}}",
+      "{\"" CAI_MCP_RAW_INPUT_META_KEY
+      "\":{\"field\":\"patch\",\"format\":{\"type\":\"grammar\",\"syntax\":"
+      "\"unknown\",\"definition\":\"x\"}}}",
+      "{\"" CAI_MCP_RAW_INPUT_META_KEY
+      "\":{\"field\":\"patch\"},\"" CAI_MCP_RAW_INPUT_META_KEY
+      "\":{\"field\":\"other\"}}"};
+  lonejson_json_value meta;
+  lonejson_error json_error;
+  cai_tool_raw_input mapping;
+  cai_error error;
+  size_t i;
+  cai_error_init(&error);
+  lonejson_error_init(&json_error);
+  CAI_LJ->json_value_init(CAI_LJ, &meta);
+  for (i = 0U; i < sizeof(bad) / sizeof(bad[0]); i++) {
+    meta.methods->set_buffer(&meta, bad[i], strlen(bad[i]), &json_error);
+    expect_int(state, "raw_invalid_metadata",
+               cai_raw_input_parse_meta(&meta, NULL, &mapping, &error),
+               CAI_ERR_PROTOCOL);
+    expect_int(state, "raw_invalid_metadata_no_mapping", mapping.field == NULL,
+               1L);
+    cai_raw_input_cleanup(NULL, &mapping);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+  }
+  meta.methods->set_buffer(&meta, "{\"other.example/meta\":{}}",
+                           sizeof("{\"other.example/meta\":{}}") - 1U,
+                           &json_error);
+  expect_int(state, "raw_unrelated_metadata",
+             cai_raw_input_parse_meta(&meta, NULL, &mapping, &error), CAI_OK);
+  expect_int(state, "raw_no_hint", mapping.field == NULL, 1L);
+  CAI_LJ->json_value_cleanup(CAI_LJ, &meta);
+  cai_error_cleanup(&error);
+}
+
+static lonejson_read_result test_mcp_raw_read_failure(lonejson_spooled *input,
+                                                      unsigned char *buffer,
+                                                      size_t capacity) {
+  lonejson_read_result result = lonejson_default_read_result();
+  (void)input;
+  (void)buffer;
+  (void)capacity;
+  result.error_code = EIO;
+  return result;
+}
+static lonejson_status test_mcp_raw_rewind_failure(lonejson_spooled *input,
+                                                   lonejson_error *error) {
+  (void)input;
+  lonejson_error_init(error);
+  error->code = LONEJSON_STATUS_IO_ERROR;
+  snprintf(error->message, sizeof(error->message),
+           "forced source rewind failure");
+  return LONEJSON_STATUS_IO_ERROR;
+}
+static void test_mcp_raw_input_failures(test_state *state) {
+  static const char init[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
+      "\"" CAI_MCP_PROTOCOL_VERSION
+      "\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"raw\","
+      "\"version\":\"1\"}}}";
+  static const char tools[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"echo\","
+      "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"message\":{"
+      "\"type\":\"string\"}},\"required\":[\"message\"]}}]}}";
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 200, "OK", "application/json",
+       NULL, init},
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 202, "Accepted",
+       "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 200, "OK", "application/json",
+       NULL, tools},
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 200, "OK", "application/json",
+       NULL, "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"ok\":true}}"}};
+  static const char *invalid_utf8[] = {"\xff", "\xc0\xaf", "\xe2\x82",
+                                       "\xed\xa0\x80", "\xf4\x90\x80\x80"};
+  int which;
+  for (which = 0; which < 7; which++) {
+    http_mock_server server;
+    cai_mcp_client *client = NULL;
+    cai_tool_raw_input mapping;
+    cai_mcp_streamable_http_client_config config;
+    cai_sink_callbacks callbacks;
+    cai_sink *sink = NULL;
+    write_state writer;
+    lonejson_spooled input;
+    lonejson_error json_error;
+    cai_error error;
+    char url[192];
+    int status;
+    memset(&mapping, 0, sizeof(mapping));
+    mapping.field = "message";
+    memset(&writer, 0, sizeof(writer));
+    cai_error_init(&error);
+    if (http_mock_server_open_script(state, "raw_source_failure", script,
+                                     which == 1 ? 3U : 4U, &server) != 0)
+      return;
+    snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+    cai_mcp_streamable_http_client_config_init(&config);
+    config.url = url;
+    config.timeout_ms = 3000L;
+    cai_mcp_streamable_http_client_open(&config, &client, &error);
+    expect_int(state, "raw_failure_discovery",
+               cai_mcp_client_refresh_tools(client, &error), CAI_OK);
+    CAI_LJ->spooled_init(CAI_LJ, &input);
+    lonejson_error_init(&json_error);
+    input.append(&input, which >= 2 ? invalid_utf8[which - 2] : "abc",
+                 which >= 2 ? strlen(invalid_utf8[which - 2]) : 3U,
+                 &json_error);
+    if (which == 0)
+      input.read = test_mcp_raw_read_failure;
+    if (which == 1)
+      input.rewind = test_mcp_raw_rewind_failure;
+    callbacks.write = test_write;
+    callbacks.close = NULL;
+    callbacks.context = &writer;
+    cai_sink_from_callbacks(&callbacks, &sink, &error);
+    expect_int(state, "raw_failure_status",
+               cai_mcp_client_call_tool_raw(client, "echo", &mapping, &input,
+                                            sink, &error),
+               which >= 2 ? CAI_ERR_INVALID : CAI_ERR_TRANSPORT);
+    expect_int(state, "raw_failure_no_output", (long)writer.length, 0L);
+    expect_int(state, "raw_failure_details",
+               error.detail != NULL && error.detail[0] != '\0', 1L);
+    input.cleanup(&input);
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    cai_error_cleanup(&error);
+    if (waitpid(server.pid, &status, 0) != server.pid)
+      test_fail(state, "raw_failure_child_wait", "wait failed");
+    else {
+      expect_int(state, "raw_failure_child_exited", WIFEXITED(status), 1L);
+      /* Failed uploads terminate before the fixture can read a complete call.
+       */
+      if (WIFEXITED(status))
+        expect_int(state, "raw_failure_child_status", WEXITSTATUS(status),
+                   which == 1 ? 0L : 8L);
+    }
+  }
+}
+
 static const test_entry test_entries[] = {
+    {"mcp_raw_input_failures", test_mcp_raw_input_failures},
+    {"mcp_raw_input_metadata", test_mcp_raw_input_metadata},
+    {"mcp_raw_input_policy", test_mcp_raw_input_policy},
+    {"mcp_raw_input_recovery", test_mcp_raw_input_recovery},
+    {"mcp_raw_input_server", test_mcp_raw_input_server},
+    {"mcp_raw_input_upload", test_mcp_raw_input_upload},
     {"chatgpt_quota_parse", test_chatgpt_quota_parse},
     {"chatgpt_quota_http", test_chatgpt_quota_http},
     {"model_capabilities", test_model_capabilities},

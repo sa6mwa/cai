@@ -155,6 +155,7 @@ cai_input_item_type
 cai_list_params_init
 cai_load_dotenv_api_key
 cai_mcp_client_call_tool
+cai_mcp_client_call_tool_raw
 cai_mcp_client_complete
 cai_mcp_client_destroy
 cai_mcp_client_get_prompt
@@ -343,6 +344,7 @@ cai_tool_event_write_output
 cai_tool_registry_add_to_response_params
 cai_tool_registry_destroy
 cai_tool_registry_new
+cai_tool_registry_raw_input
 cai_tool_registry_register_custom
 cai_tool_registry_register_custom_spooled
 cai_tool_registry_register_exec_tool
@@ -358,6 +360,7 @@ cai_tool_registry_register_terminal_tools
 cai_tool_registry_register_todo_tool
 cai_tool_registry_register_view_image_tool
 cai_tool_registry_run
+cai_tool_registry_set_raw_input
 cai_tool_result_set_source_path
 cai_tool_result_set_spooled
 cai_tool_result_strdup

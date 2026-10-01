@@ -2580,4 +2580,17 @@ os.remove("/tmp/cai-lua-test-todo.lock")
 
 dofile("tests/lua/smith_terminal_renderer_test.lua")
 
+
+do
+  local raw_registry = assert_ok(cai.tool_registry())
+  assert_ok(raw_registry:register_raw_tool("raw_hint", "Raw hint", [[{"type":"object","properties":{"content":{"type":"string"},"path":{"type":"string"}},"required":["content","path"]}]], function() return '{"ok":true}' end))
+  local ok, err = raw_registry:set_raw_input("raw_hint", {field="content"})
+  assert_not_ok(ok, err, "other required arguments need framing")
+  assert_ok(raw_registry:set_raw_input("raw_hint", {field="content", framing="json-header"}))
+  assert_not_ok(raw_registry:set_raw_input("raw_hint", {field="missing"}))
+  assert_throws(function() raw_registry:set_raw_input("raw_hint", {field="content", framing="guess"}) end)
+  assert_ok(raw_registry:set_raw_input("raw_hint", nil))
+  raw_registry:close()
+end
+
 print("cai lua tests passed")

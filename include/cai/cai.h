@@ -1008,7 +1008,8 @@ typedef int (*cai_tool_custom_spooled_fn)(void *context,
                                           struct lonejson_spooled *input,
                                           cai_sink *output, cai_error *error);
 
-/** Grammar format for a Responses custom/freeform tool. */
+/** Optional grammar format for a Responses custom/freeform tool. NULL selects
+ * freeform text. */
 typedef struct cai_custom_tool_format {
   /** Format type; currently Responses uses `grammar`. */
   const char *type;
@@ -1017,6 +1018,26 @@ typedef struct cai_custom_tool_format {
   /** Grammar definition sent verbatim to the Responses API. */
   const char *definition;
 } cai_custom_tool_format;
+
+/** Framing of model-produced raw tool input. */
+typedef enum cai_tool_raw_input_framing {
+  /** Entire input is the selected string field. */
+  CAI_TOOL_RAW_INPUT_TEXT = 0,
+  /** One JSON object header, LF, then the selected field's exact raw bytes.
+   * Header supplies other arguments and is limited to 16 KiB, including LF.
+   */
+  CAI_TOOL_RAW_INPUT_JSON_HEADER = 1
+} cai_tool_raw_input_framing;
+
+/** Shared raw-input mapping advertised by MCP servers and used by clients. */
+typedef struct cai_tool_raw_input {
+  /** Name of a top-level string property in the ordinary input schema. */
+  const char *field;
+  /** Zero selects plain raw text; JSON_HEADER supplies other arguments. */
+  cai_tool_raw_input_framing framing;
+  /** Optional grammar; an all-zero format selects unconstrained text. */
+  cai_custom_tool_format format;
+} cai_tool_raw_input;
 
 /** Duplicate a string using cai ownership for typed tool results. */
 char *cai_tool_result_strdup(const char *value, cai_error *error);
@@ -1953,6 +1974,9 @@ struct cai_tool_registry {
                                  const cai_custom_tool_format *format,
                                  cai_tool_custom_spooled_fn callback,
                                  void *context, cai_error *error);
+  /** Advertise or clear an ordinary JSON tool's MCP raw-input hint. */
+  int (*set_raw_input)(cai_tool_registry *registry, const char *name,
+                       const cai_tool_raw_input *mapping, cai_error *error);
   /** Add all registered tools to a Responses parameter builder. */
   int (*add_to_response_params)(const cai_tool_registry *registry,
                                 cai_response_create_params *params,
@@ -2001,6 +2025,20 @@ int cai_tool_registry_register_custom_spooled(
     cai_tool_registry *registry, const char *name, const char *description,
     const cai_custom_tool_format *format, cai_tool_custom_spooled_fn callback,
     void *context, cai_error *error);
+/** Advertise an MCP raw-input mapping for an ordinary JSON tool.
+ * Copies the descriptor. NULL removes the hint. Local JSON execution is
+ * unchanged. Native custom tools automatically advertise their raw input as
+ * `input`.
+ */
+int cai_tool_registry_set_raw_input(cai_tool_registry *registry,
+                                    const char *name,
+                                    const cai_tool_raw_input *mapping,
+                                    cai_error *error);
+/** Borrow a registered tool's raw-input descriptor, or NULL when absent. */
+const cai_tool_raw_input *
+cai_tool_registry_raw_input(const cai_tool_registry *registry,
+                            const char *name);
+
 /** Add all registered tools to a Responses parameter builder. */
 int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,
                                              cai_response_create_params *params,

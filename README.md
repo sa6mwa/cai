@@ -1074,6 +1074,102 @@ Remote MCP tools can be registered into a local `cai_tool_registry` with
 so callers must keep the MCP client alive for as long as those registered tools
 can run.
 
+### Raw input for MCP tools
+
+libcai bridges model-facing Responses `custom` tools to ordinary MCP JSON
+arguments. A server advertises the string field under the vendor metadata key
+`systems.c89.cai/raw-input`; this is a libcai extension, not a standard MCP
+custom-tool type. Other clients continue to use the original object schema.
+
+For an ordinary JSON tool, attach a copied descriptor after registration:
+
+```c
+cai_tool_raw_input raw;
+memset(&raw, 0, sizeof(raw));
+raw.field = "patch";
+cai_tool_registry_set_raw_input(registry, "apply_patch", &raw, &error);
+```
+
+The MCP handler adds this hint to `tools/list`:
+
+```json
+{
+  "_meta": {
+    "systems.c89.cai/raw-input": { "field": "patch", "framing": "text" }
+  }
+}
+```
+
+Native custom tools automatically export an ordinary object schema with a
+required string `input` property and the corresponding hint. The server
+unwraps that argument before invoking the raw callback. Custom registration
+and `cai_response_create_params_add_custom_tool` accept a NULL format for
+unconstrained text; a supplied grammar must specify `grammar`, `lark` or
+`regex`, and a nonempty definition. The same format is included in the hint.
+Use spooled callbacks when input can contain embedded NULs.
+
+`cai_mcp_tool_registration_config.raw_input_policy` defaults to
+`CAI_MCP_RAW_INPUT_AUTO`: use server hints when the MCP client implements
+`call_tool_raw`. `CAI_MCP_RAW_INPUT_JSON` keeps the original function schema.
+`CAI_MCP_RAW_INPUT_CUSTOM` requires raw-upload support for mapped tools.
+`cai_agent_register_mcp_client_tools` automatically selects JSON for Chat
+Completions agents; explicitly requesting CUSTOM there returns an error.
+When registering directly into a standalone registry for a Chat Completions
+provider, select JSON yourself.
+
+Per-tool `raw_input_overrides` take precedence over server hints. Each entry
+names the remote tool before `name_prefix` and supplies a descriptor; a NULL
+mapping disables the hint. Unknown or duplicate override names are errors.
+Mappings must select a declared top-level string property. Registration copies
+the selected mapping, preserves pre-existing tools on failure, and rolls back
+all additions from the failed registration. Custom MCP client implementations
+can supply `cai_mcp_client_tool.input_schema_json` for full schema validation.
+
+Plain `text` framing sends the entire input as the selected field. If other
+arguments are required, use `CAI_TOOL_RAW_INPUT_JSON_HEADER` (`json-header`
+in metadata): one JSON object on the first line, LF, then exact raw content.
+The header must omit the raw field, contain the other required arguments,
+have unique keys, and fit within 16 KiB including the LF. For example, mapping
+`content` with this framing accepts:
+
+```text
+{"path":"src/example.c"}
+#include <stdio.h>
+int main(void) { puts("hello"); }
+```
+
+Header/body instructions and the ordinary argument schema are added to the
+model-facing tool description. A supplied grammar constrains the entire
+framed input. The remote tool retains responsibility for its normal argument
+schema constraints; libcai validates the mapping and header structure.
+
+The HTTP adapter uses a pull generator and chunked requests to escape input
+incrementally, preserving quotes, backslashes, Unicode, embedded NULs, and
+trailing newlines without staging a complete serialized request. The embedding
+HTTP server must support chunked request bodies. Completed model input and
+server callback dispatch retain the existing **spooled** lifecycle: this does
+not execute a tool while the model is still producing its input. HTTP session
+recovery rewinds and re-encodes the same completed input.
+
+The equivalent Lua interfaces are:
+
+```lua
+registry:set_raw_input("apply_patch", { field = "patch" })
+client:register_tools(registry, {
+  raw_input_policy = "auto", -- "json" or "custom"
+  raw_input_overrides = {
+    { name = "write_file", mapping = { field = "content", framing = "json-header" } },
+    { name = "another_tool", mapping = false },
+  },
+})
+local result = client:call_tool_raw("apply_patch", { field = "patch" }, raw_patch)
+```
+
+Lua `call_tool_raw` accepts text or the existing spooled-input interfaces and
+an optional fifth output sink argument. Discovered tool tables expose
+`raw_input` and `input_schema_json`. Lua input is collected into the explicit
+input spool; HTTP serialization does not collect a second complete request.
+
 Result-producing MCP client methods stream the JSON-RPC `result` value to the
 caller sink as it is parsed from JSON or SSE response chunks once the response
 id has been validated. Server notifications and requests that arrive before

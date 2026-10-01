@@ -867,6 +867,22 @@ static int cai_mcp_write_tools_list(cai_mcp_handler_impl *handler,
           strlen(cai_tool_registry_schema_at(handler->tools, i)), &json_error);
     }
     if (status == LONEJSON_STATUS_OK) {
+      const cai_tool_raw_input *mapping =
+          cai_tool_registry_raw_input_at(handler->tools, i);
+      if (mapping != NULL) {
+        status = cai_mcp_writer_key(&writer, "_meta", &json_error);
+        if (status == LONEJSON_STATUS_OK)
+          status = writer.begin_object(&writer, &json_error);
+        if (status == LONEJSON_STATUS_OK)
+          status = cai_mcp_writer_key(&writer, CAI_MCP_RAW_INPUT_META_KEY,
+                                      &json_error);
+        if (status == LONEJSON_STATUS_OK)
+          status = cai_raw_input_write_meta(&writer, mapping, &json_error);
+        if (status == LONEJSON_STATUS_OK)
+          status = writer.end_object(&writer, &json_error);
+      }
+    }
+    if (status == LONEJSON_STATUS_OK) {
       status = writer.end_object(&writer, &json_error);
     }
   }
@@ -976,8 +992,8 @@ static int cai_mcp_run_tool(cai_mcp_handler_impl *handler, cai_sink *sink,
     callbacks.context = &stream_context;
     rc = cai_sink_from_callbacks(&callbacks, &output_sink, error);
     if (rc == CAI_OK) {
-      rc = cai_tool_registry_run_spooled(handler->tools, name, &arguments,
-                                         output_sink, error);
+      rc = cai_tool_registry_run_mcp(handler->tools, name, &arguments,
+                                     output_sink, error);
     }
     cai_sink_close(output_sink);
     if (rc != CAI_OK) {
@@ -1024,8 +1040,8 @@ static int cai_mcp_run_tool(cai_mcp_handler_impl *handler, cai_sink *sink,
   callbacks.context = &spool_sink_context;
   rc = cai_sink_from_callbacks(&callbacks, &output_sink, error);
   if (rc == CAI_OK) {
-    rc = cai_tool_registry_run_spooled(handler->tools, name, &arguments,
-                                       output_sink, error);
+    rc = cai_tool_registry_run_mcp(handler->tools, name, &arguments,
+                                   output_sink, error);
   }
   cai_sink_close(output_sink);
   if (rc != CAI_OK) {
