@@ -136,6 +136,10 @@ class ResponsePeer(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers["Content-Length"])
         self.server.requests.append(json.loads(self.rfile.read(length)))
+        if self.server.plan and self.server.plan[0] == "__transport_failure__":
+            self.server.plan.pop(0)
+            self.close_connection = True
+            return
         view_path = self.server.view_path
         self.server.view_path = None
         self.send_response(200)
@@ -268,7 +272,19 @@ def main():
                 api.pause = not fallback
                 api.release.clear()
                 terminal = Terminal(args, selected_env)
-                terminal.wait(lambda: terminal.contains("> "))
+                terminal.wait(lambda: terminal.contains("> ") and
+                              terminal.contains("Welcome to CAI. Send /help for usage."))
+                assert not terminal.contains("Cai Smith. Enter sends")
+                if not fallback:
+                    count = len(api.requests)
+                    terminal.send(b"/help\r")
+                    terminal.wait(lambda: terminal.contains("Run cai --help"))
+                    rendered = terminal.rendered()
+                    for text in (b"CAI help", b"Slash commands", b"Prompt keys",
+                                 b"/resume NUMBER", b"/export [ID]", b"Ctrl-V"):
+                        assert text in rendered, rendered
+                    assert b"| --- |" not in rendered, "help was not rendered as Markdown"
+                    assert len(api.requests) == count, "/help started an agent turn"
                 terminal.send(b"inspect this \x16")
                 terminal.wait(lambda: paste_dir.exists() and bool(list(paste_dir.iterdir())))
                 files = list(paste_dir.iterdir())
@@ -288,6 +304,12 @@ def main():
                     # This text must be visible before the server sends completion.
                     assert not terminal.contains("FINAL paragraph.")
                     terminal.wait(lambda: terminal.contains("Checking the pasted input"))
+                    count = len(api.requests)
+                    offset = len(terminal.output)
+                    terminal.send(b"/help\r")
+                    terminal.wait(lambda: b"Run cai --help" in re.sub(
+                        rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", terminal.output[offset:]))
+                    assert len(api.requests) == count, "/help steered a busy agent"
                     terminal.send(b"preserved-draft")
                     terminal.resize(48)
                     terminal.wait(lambda: terminal.contains("preserved-draft"))
@@ -312,9 +334,37 @@ def main():
                                       rb"\x1b\[[0-?]*[ -/]*[@-~]", b"",
                                       terminal.output[offset:]))
                     assert "preserved-draft" in json.dumps(api.requests[-1])
+                    assert "CAI help" not in json.dumps(api.requests[-1])
                 terminal.close()
                 terminal = None
                 assert image.exists(), "pasted file must persist after exit"
+
+            # Resuming replays the transcript but keeps startup guidance in
+            # the thinking bar. Help must not enter model history or usage.
+            count = len(api.requests)
+            terminal = Terminal([args[0]] + args[2:], env)
+            terminal.wait(lambda: terminal.contains("FINAL paragraph.") and
+                          terminal.contains("Welcome to CAI. Send /help for usage."))
+            assert not terminal.contains("Cai Smith. Enter sends")
+            assert len(api.requests) == count, "replay sent a model request"
+            terminal.send(b"/help\r")
+            terminal.wait(lambda: terminal.contains("Run cai --help"))
+            assert len(api.requests) == count
+            terminal.send(b"/new\r")
+            terminal.wait(lambda: terminal.contains("--- session ---"))
+            api.plan = ["__transport_failure__"]
+            terminal.send(b"trigger a transport failure\r")
+            terminal.wait(lambda: terminal.contains("HTTP transport failed") and
+                          terminal.contains("Worked for"))
+            rendered = terminal.rendered()
+            assert b"[error] HTTP transport failed: error:" in rendered, rendered
+            assert b"Empty reply from server" in rendered or b"Server returned nothing" in rendered
+            assert b"method: POST" in rendered and b"path: responses" in rendered, rendered
+            assert f"base_url: http://127.0.0.1:{api.server_port}/v1".encode() in rendered, rendered
+            assert b"cai.http.transport_error" not in rendered
+            assert b"CAI help" not in json.dumps(api.requests[-1]).encode()
+            terminal.close()
+            terminal = None
 
             # The additional root preserves workspace access and excludes
             # siblings, prefix matches, symlink escapes and hardlinks.

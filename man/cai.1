@@ -265,6 +265,10 @@ Show command-line help.
 Show the version.
 .SH PROMPT COMMANDS
 .TP
+.B /help
+Render help as Markdown tables of slash commands and prompt keys, with startup
+examples. This command is local and does not send a model request.
+.TP
 .B /resume
 List saved sessions for the current workspace, newest first.
 .TP
@@ -286,6 +290,9 @@ status line.
 .BR /quit , " " /exit
 Exit the agent.
 .SH STATUS LINE
+Before the first turn, the thinking line shows
+.RB \(lq "Welcome to CAI. Send /help for usage." \(rq,
+including after replaying a resumed conversation.
 The status line shows model and reasoning effort, context used as a percentage,
 the workspace, available ChatGPT subscription quota and credits or API cost estimate,
 the Git branch when available, and an active goal.
@@ -322,7 +329,10 @@ role and prompt_kind fields to distinguish normal prompts, queued turns,
 steering, developer instructions, and reasoning summaries. No app field is added.
 .PP
 In prompt mode, all levels append to the session cache log. Only warning and
-error diagnostics are surfaced in the UI. Startup records are moved into the
+error diagnostics are surfaced in the UI as readable notices with explanations
+and available request context, including HTTP status, provider code, and
+request ID. Full pslog records remain in the log file; truncated notices
+refer to that file. Startup records are moved into the
 selected session log; failed startup logs remain in a startup-* file.
 .PP
 With

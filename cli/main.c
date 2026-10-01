@@ -36,6 +36,8 @@
 
 typedef cai_cli_session cli_session;
 
+static const char cli_welcome[] = "Welcome to CAI. Send /help for usage.";
+
 typedef struct cli_state {
   cai_cli_options options;
   cai_agent_session_store store;
@@ -70,6 +72,7 @@ typedef struct cli_state {
   int exit_requested;
   int was_busy;
   int awaiting_turn;
+  int show_welcome;
   int automation_done;
   int automation_failed;
   int auto_goal;
@@ -464,6 +467,7 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
       state->automation_failed = 1;
     }
     if (event->type == CAI_AGENT_EVENT_RUN_STARTED) {
+      state->show_welcome = 0;
       state->reasoning_summary_length = 0U;
       state->reasoning_summary_raw[0] = '\0';
       cai_cli_response_boundary(&state->final_response);
@@ -598,6 +602,8 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
   if (cai_cli_turn_status_message(turn_message, sizeof(turn_message),
                                   state->reasoning_summary_raw, &metrics) != 0)
     return CAI_ERR_TRANSPORT;
+  if (state->show_welcome && !metrics.turn_active)
+    strcpy(turn_message, cli_welcome);
   rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
   if (rc != CAI_OK) {
     return rc;
@@ -720,6 +726,7 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   int wakeup_fd;
   int rc;
 
+  state->show_welcome = 1;
   cai_agent_runtime_config_init(&config);
   cai_skill_config_init(&skills);
   if (state->options.review)
@@ -898,6 +905,51 @@ static int cli_handle_command(cli_state *state, const char *line,
   unsigned long number;
   int rc;
   *handled = 1;
+  if (strcmp(line, "/help") == 0) {
+    static const char *const help[] = {
+        "# CAI help\n\n"
+        "Your coding agent for the current directory. Enter a prompt to "
+        "start a turn; send another while it works to steer the agent.\n\n"
+        "## Slash commands\n\n"
+        "| Command | Action |\n"
+        "| --- | --- |\n"
+        "| `/help` | Show this help. |\n"
+        "| `/status` | Show model, reasoning, context, and available cost or "
+        "quota metrics. Refresh ChatGPT quota immediately. |\n"
+        "| `/resume` | List conversations for the current directory. |\n",
+        "| `/resume NUMBER` | Resume a listed conversation and replay prompts "
+        "and assistant text. |\n"
+        "| `/new` | Start a fresh conversation in this directory. |\n"
+        "| `/export [ID]` | Export the current or selected conversation as "
+        "Markdown and resumable JSONL. |\n"
+        "| `/quit`, `/exit` | Exit CAI. |\n\n",
+        "## Prompt keys\n\n"
+        "| Key | Action |\n"
+        "| --- | --- |\n"
+        "| Enter | Send the prompt. |\n"
+        "| Ctrl-J | Insert a newline. |\n"
+        "| Up / Down | Recall prompts from this conversation. |\n"
+        "| Ctrl-R | Search prompt history. |\n"
+        "| Ctrl-V | Paste a PNG or JPEG image from the X11 clipboard. |\n"
+        "| Escape / Ctrl-C | Cancel the active turn. |\n"
+        "| Ctrl-D (empty prompt) | Exit. |\n\n",
+        "## Starting CAI\n\n"
+        "```sh\n"
+        "cai -N -C ./project                  # new conversation\n"
+        "cai -i 'Explain this project'        # send a prompt at startup\n"
+        "cai -Nni 'Fix the failing tests'     # run non-interactively\n"
+        "cai --review                        # review current changes\n"
+        "```\n\n"
+        "Run `cai --help` for all startup options or `man cai` for the "
+        "manual.\n"};
+    size_t i;
+    if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
+      return CAI_ERR_TRANSPORT;
+    for (i = 0U; i < sizeof(help) / sizeof(help[0]); i++)
+      if (cli_text(state, help[i], strlen(help[i])) != 0)
+        return CAI_ERR_TRANSPORT;
+    return cli_finish_response(state) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+  }
   if (strcmp(line, "/quit") == 0 || strcmp(line, "/exit") == 0) {
     state->exit_requested = 1;
     return CAI_OK;
@@ -1414,7 +1466,9 @@ int main(int argc, char **argv) {
   mdf_config.width = state.width;
   mdf_config.margin_left = state.width >= 5 ? 2 : 0;
   mdf_config.boring = !state.interactive;
-  if ((state.interactive && sl_set_statusline(state.sl, 1, 0) != SL_OK) ||
+  if ((state.interactive &&
+       (sl_set_statusline(state.sl, 1, 0) != SL_OK ||
+        sl_set_status_message(state.sl, cli_welcome) != SL_OK)) ||
       (!state.batch && sl_output_stream_begin(state.sl) != SL_OK) ||
       mdf_create(MDF_FORMAT_ANSI, &mdf_config, &state.renderer) != MDF_OK) {
     cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
@@ -1520,13 +1574,6 @@ int main(int argc, char **argv) {
                         state.options.new_session, &error);
   if (rc != CAI_OK) {
     cli_print_error(&state, "open agent session", &error);
-    goto cleanup;
-  }
-  if (state.interactive &&
-      cli_write(&state,
-                "\nCai Smith. Enter sends; /resume lists sessions; "
-                "/new starts fresh; /status shows usage; /quit exits.\n") !=
-          0) {
     goto cleanup;
   }
   if (state.options.review) {

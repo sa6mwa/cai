@@ -41407,7 +41407,7 @@ static void test_chat_transport_failure_modes(test_state *state) {
                       mode == 3 ? "debug" : "error", NULL);
       if (mode != 3)
         test_expect_log(state, names[mode], &logs, "cai.http.transport_error",
-                        "error", NULL);
+                        "error", url);
       else
         expect_int(state, names[mode],
                    strstr(logs.buffer, "cai.http.transport_error") == NULL, 1L);
@@ -41711,6 +41711,12 @@ static void test_model_catalog_logging(test_state *state) {
                     "cai.models.catalog", "warn", "\"source\":\"fallback\"");
     test_expect_log(state, "catalog_logging_original_error", &logs,
                     "cai.models.catalog", "warn", "catalog unavailable");
+    test_expect_log(state, "catalog_logging_endpoint", &logs,
+                    "cai.models.catalog", "warn", server.base_url);
+    test_expect_log(state, "catalog_logging_http_status", &logs,
+                    "cai.models.catalog", "warn", "\"http_status\":500");
+    test_expect_log(state, "catalog_logging_request_id", &logs,
+                    "cai.models.catalog", "warn", "req_catalog_outage");
     cai_model_catalog_close(catalog);
     catalog = NULL;
     rc = cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_ONLINE,

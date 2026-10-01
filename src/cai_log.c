@@ -92,9 +92,11 @@ void cai_log_http_transport_error(const cai_client_impl *client,
   if (log == NULL || log->errorf == NULL) {
     return;
   }
-  log->errorf(log, "cai.http.transport_error", "method=%s path=%s error=%s",
+  log->errorf(log, "cai.http.transport_error",
+              "method=%s path=%s error=%s base_url=%s",
               method != NULL ? method : "", path != NULL ? path : "",
-              detail != NULL ? detail : "");
+              detail != NULL ? detail : "",
+              client->base_url != NULL ? client->base_url : "");
 }
 
 void cai_log_http_response_limit(const cai_client_impl *client,
@@ -179,13 +181,22 @@ void cai_log_model_catalog(const cai_client_impl *client, const char *source,
   emit = rc != CAI_OK ? log->warnf : log->debugf;
   if (emit != NULL) {
     emit(log, "cai.models.catalog",
-         "source=%s models=%lu code=%d error=%s detail=%s",
+         "source=%s models=%lu code=%d error=%s detail=%s base_url=%s "
+         "http_status=%ld provider_code=%s request_id=%s",
          source != NULL ? source : "", (unsigned long)count, rc,
          rc != CAI_OK && error != NULL && error->message != NULL
              ? error->message
              : "",
          rc != CAI_OK && error != NULL && error->detail != NULL ? error->detail
-                                                                : "");
+                                                                : "",
+         client->base_url != NULL ? client->base_url : "",
+         rc != CAI_OK && error != NULL ? error->http_status : 0L,
+         rc != CAI_OK && error != NULL && error->server_code != NULL
+             ? error->server_code
+             : "",
+         rc != CAI_OK && error != NULL && error->request_id != NULL
+             ? error->request_id
+             : "");
   }
 }
 

@@ -12,23 +12,123 @@
 
 typedef struct notice_record {
   char level[16];
-  char verbose_level[16];
   char message[1024];
-  char verbose_message[1024];
   char operation[256];
+  char details[1600];
+  char context[1200];
+  char key[128];
+  char value[1024];
+  int truncated;
+  int value_open;
 } notice_record;
-static const lonejson_field notice_fields[] = {
-    LONEJSON_FIELD_STRING_FIXED(notice_record, level, "lvl",
-                                LONEJSON_OVERFLOW_TRUNCATE),
-    LONEJSON_FIELD_STRING_FIXED(notice_record, verbose_level, "level",
-                                LONEJSON_OVERFLOW_TRUNCATE),
-    LONEJSON_FIELD_STRING_FIXED(notice_record, message, "msg",
-                                LONEJSON_OVERFLOW_TRUNCATE),
-    LONEJSON_FIELD_STRING_FIXED(notice_record, verbose_message, "message",
-                                LONEJSON_OVERFLOW_TRUNCATE),
-    LONEJSON_FIELD_STRING_FIXED(notice_record, operation, "operation",
-                                LONEJSON_OVERFLOW_TRUNCATE)};
-LONEJSON_MAP_DEFINE(notice_map, notice_record, notice_fields);
+
+static void notice_append(notice_record *record, char *out, size_t capacity,
+                          const char *bytes, size_t count) {
+  size_t used = strlen(out);
+  if (count >= capacity - used) {
+    count = capacity - used - 1U;
+    record->truncated = 1;
+  }
+  memcpy(out + used, bytes, count);
+  out[used + count] = '\0';
+}
+
+static lonejson_status notice_value_begin(void *user,
+                                          const lonejson_value_path *path,
+                                          lonejson_error *error) {
+  notice_record *record = (notice_record *)user;
+  (void)error;
+  if (path->segment_count == 1U) {
+    record->value_open = 1;
+    record->key[0] = '\0';
+    record->value[0] = '\0';
+    notice_append(record, record->key, sizeof(record->key),
+                  path->segments[0].data, path->segments[0].len);
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status notice_value_chunk(void *user,
+                                          const lonejson_value_path *path,
+                                          const char *data, size_t len,
+                                          lonejson_error *error) {
+  notice_record *record = (notice_record *)user;
+  (void)error;
+  if (path->segment_count == 1U)
+    notice_append(record, record->value, sizeof(record->value), data, len);
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status notice_value_end(void *user,
+                                        const lonejson_value_path *path,
+                                        lonejson_error *error) {
+  notice_record *record = (notice_record *)user;
+  const char *key = record->key;
+  const char *value = record->value;
+  char *destination;
+  size_t capacity;
+  (void)error;
+  if (path->segment_count != 1U)
+    return LONEJSON_STATUS_OK;
+  record->value_open = 0;
+  if (value[0] == '\0')
+    return LONEJSON_STATUS_OK;
+  if (strcmp(key, "lvl") == 0 || strcmp(key, "level") == 0) {
+    notice_append(record, record->level, sizeof(record->level), value,
+                  strlen(value));
+  } else if (strcmp(key, "msg") == 0 || strcmp(key, "message") == 0) {
+    notice_append(record, record->message, sizeof(record->message), value,
+                  strlen(value));
+  } else if (strcmp(key, "operation") == 0) {
+    notice_append(record, record->operation, sizeof(record->operation), value,
+                  strlen(value));
+  } else {
+    /* Prioritize the explanation over transport and provider context. Keep
+     * arbitrary scalar fields so dependency diagnostics remain useful too. */
+    if (strcmp(key, "ts") == 0 || strcmp(key, "time") == 0 ||
+        strcmp(key, "timestamp") == 0 || strcmp(key, "role") == 0 ||
+        strcmp(key, "event") == 0 || strcmp(key, "offset") == 0 ||
+        ((strcmp(key, "http_status") == 0 || strcmp(key, "status") == 0) &&
+         strcmp(value, "0") == 0))
+      return LONEJSON_STATUS_OK;
+    if (strcmp(key, "error") == 0 || strcmp(key, "detail") == 0 ||
+        strcmp(key, "note") == 0) {
+      destination = record->details;
+      capacity = sizeof(record->details);
+    } else {
+      destination = record->context;
+      capacity = sizeof(record->context);
+    }
+    if (destination[0] != '\0')
+      notice_append(record, destination, capacity, "; ", 2U);
+    notice_append(record, destination, capacity, key, strlen(key));
+    notice_append(record, destination, capacity, ": ", 2U);
+    notice_append(record, destination, capacity, value, strlen(value));
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status notice_bool(void *user, const lonejson_value_path *path,
+                                   int value, lonejson_error *error) {
+  notice_value_begin(user, path, error);
+  notice_value_chunk(user, path, value ? "true" : "false", value ? 4U : 5U,
+                     error);
+  return notice_value_end(user, path, error);
+}
+
+static const char *notice_message(const char *event) {
+  if (strcmp(event, "cai.http.transport_error") == 0)
+    return "HTTP transport failed";
+  if (strcmp(event, "cai.http.request.done") == 0)
+    return "HTTP request failed";
+  if (strcmp(event, "cai.models.catalog") == 0)
+    return "Model catalog unavailable";
+  if (strcmp(event, "cai.http.response_limit") == 0)
+    return "HTTP response exceeded the configured limit";
+  if (strcmp(event, "cai.openrouter.server_side_continuity") == 0)
+    return "OpenRouter cannot preserve server-side conversation history";
+  return event[0] != '\0' ? event : "Log diagnostic";
+}
 
 static void notice(cai_cli_log *log) {
   notice_record record;
@@ -42,6 +142,7 @@ static void notice(cai_cli_log *log) {
   size_t slot;
   uint64_t signal;
   int escape;
+  int written;
   if (log->wakeup_fd < 0)
     return;
   used = 0U;
@@ -61,24 +162,34 @@ static void notice(cai_cli_log *log) {
   plain[used] = '\0';
   memset(&record, 0, sizeof(record));
   if (plain[0] == '{') {
+    lonejson_path_value_visitor visitor = lonejson_default_path_value_visitor();
+    lonejson_status status = LONEJSON_STATUS_INVALID_ARGUMENT;
+    visitor.string_begin = notice_value_begin;
+    visitor.string_chunk = notice_value_chunk;
+    visitor.string_end = notice_value_end;
+    visitor.number_begin = notice_value_begin;
+    visitor.number_chunk = notice_value_chunk;
+    visitor.number_end = notice_value_end;
+    visitor.boolean_value = notice_bool;
     json = lonejson_new(NULL, &error);
     if (json != NULL) {
-      (void)lonejson_parse_buffer(json, &notice_map, &record, plain, used,
-                                  &error);
+      status = lonejson_visit_path_value_buffer(json, plain, used, &visitor,
+                                                &record, &error);
       lonejson_free(json);
     }
-    if (record.level[0] == '\0')
-      strcpy(record.level, record.verbose_level);
-    if (record.message[0] == '\0')
-      strcpy(record.message, record.verbose_message);
+    if (status != LONEJSON_STATUS_OK) {
+      lonejson_value_path partial = {NULL, 1U};
+      record.truncated = 1;
+      if (record.value_open)
+        notice_value_end(&record, &partial, &error);
+    }
     if (strcmp(record.level, "warn") != 0 &&
         strcmp(record.level, "error") != 0 &&
         strcmp(record.level, "fatal") != 0 &&
         strcmp(record.level, "panic") != 0)
       return;
     label = record.level;
-    cursor = record.message[0] != '\0' ? record.message
-                                       : "log event (see session log)";
+    cursor = notice_message(record.message);
   } else {
     /* Find the first native severity token, before the message. Do not
      * surface an INFO message just because its text happens to say WRN. */
@@ -110,8 +221,25 @@ static void notice(cai_cli_log *log) {
     log->dropped++;
   }
   slot = (log->head + log->count++) % 32U;
-  snprintf(log->notices[slot], sizeof(log->notices[slot]), "[%s] %s%s%s", label,
-           record.operation, record.operation[0] != '\0' ? ": " : "", cursor);
+  written = snprintf(log->notices[slot], sizeof(log->notices[slot]),
+                     "[%s] %s%s%s%s%s%s%s%s", label, record.operation,
+                     record.operation[0] != '\0' ? ": " : "", cursor,
+                     record.details[0] != '\0' ? ": " : "", record.details,
+                     record.context[0] != '\0' ? " (" : "", record.context,
+                     record.context[0] != '\0' ? ")" : "");
+  if (record.truncated || written >= (int)sizeof(log->notices[slot])) {
+    static const char suffix[] = "... (more detail in the session log)";
+    size_t length = strlen(log->notices[slot]);
+    if (length + sizeof(suffix) > sizeof(log->notices[slot]))
+      length = sizeof(log->notices[slot]) - sizeof(suffix);
+    memcpy(log->notices[slot] + length, suffix, sizeof(suffix));
+  } else if (plain[0] == '{' && record.details[0] == '\0' &&
+             record.context[0] == '\0' &&
+             strncmp(record.message, "cai.", 4U) == 0) {
+    size_t length = strlen(log->notices[slot]);
+    snprintf(log->notices[slot] + length, sizeof(log->notices[slot]) - length,
+             ". See session log: %s", log->path);
+  }
   for (i = 0U; log->notices[slot][i] != '\0'; i++) {
     if ((unsigned char)log->notices[slot][i] < 32U ||
         log->notices[slot][i] == 127)

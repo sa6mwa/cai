@@ -65,6 +65,57 @@ static void *background_warning(void *context) {
   return NULL;
 }
 
+static int structured_notices(cai_cli_log *log) {
+  notices observed;
+  pslog_field fields[6];
+  char long_detail[6000];
+  log->logger->errorf(log->logger, "cai.http.transport_error",
+                      "method=%s path=%s error=%s", "POST", "/responses",
+                      "Connection refused: localhost:12345");
+  log->logger->warnf(log->logger, "cai.models.catalog",
+                     "source=%s models=%lu code=%d error=%s detail=%s",
+                     "fallback", 0UL, 5, "catalog unavailable",
+                     "HTTP 503: model discovery is temporarily unavailable");
+  fields[0] = pslog_str("detail", "quota exhausted\nTry again later");
+  fields[1] = pslog_i64("http_status", 429);
+  fields[2] = pslog_str("provider_code", "rate_limit_exceeded");
+  fields[3] = pslog_str("request_id", "req_notice_429");
+  fields[4] = pslog_str("backend", "fixture");
+  fields[5] = pslog_bool("retryable", 1);
+  log->logger->error(log->logger, "provider rejected the request", fields, 6U);
+  memset(&observed, 0, sizeof(observed));
+  CHECK(cai_cli_log_notices(log, collect, &observed) == 0 &&
+        observed.count == 3U);
+  CHECK(strstr(observed.text[0], "HTTP transport failed") != NULL);
+  CHECK(strstr(observed.text[0], "Connection refused: localhost:12345") !=
+        NULL);
+  CHECK(strstr(observed.text[0], "method: POST") != NULL &&
+        strstr(observed.text[0], "path: /responses") != NULL);
+  CHECK(strstr(observed.text[1], "Model catalog unavailable") != NULL);
+  CHECK(strstr(observed.text[1], "catalog unavailable") != NULL &&
+        strstr(observed.text[1], "HTTP 503") != NULL &&
+        strstr(observed.text[1], "source: fallback") != NULL);
+  CHECK(strstr(observed.text[2], "quota exhausted Try again later") != NULL);
+  CHECK(strstr(observed.text[2], "http_status: 429") != NULL &&
+        strstr(observed.text[2], "req_notice_429") != NULL &&
+        strstr(observed.text[2], "rate_limit_exceeded") != NULL);
+  CHECK(strstr(observed.text[2], "backend: fixture") != NULL &&
+        strstr(observed.text[2], "retryable: true") != NULL);
+  CHECK(strchr(observed.text[2], '\n') == NULL);
+
+  memset(long_detail, 'x', sizeof(long_detail) - 1U);
+  memcpy(long_detail, "failure detail: ", 16U);
+  long_detail[sizeof(long_detail) - 1U] = '\0';
+  fields[0] = pslog_str("detail", long_detail);
+  log->logger->error(log->logger, "cai.http.transport_error", fields, 1U);
+  memset(&observed, 0, sizeof(observed));
+  CHECK(cai_cli_log_notices(log, collect, &observed) == 0 &&
+        observed.count == 1U);
+  CHECK(strstr(observed.text[0], "failure detail: ") != NULL);
+  CHECK(strstr(observed.text[0], "more detail in the session log") != NULL);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   cai_cli_log log;
   cai_cli_response response;
@@ -143,6 +194,7 @@ int main(int argc, char **argv) {
         observed.count == 2U);
   CHECK(strstr(observed.text[0], "[warn] worker warning") != NULL);
   CHECK(strstr(observed.text[1], "fixture operation: host error") != NULL);
+  CHECK(structured_notices(&log) == 0);
   record = read_log(first_path);
   CHECK(record != NULL && strstr(record, "startup diagnostic") != NULL);
   CHECK(strstr(record, "native.fixture") != NULL);
@@ -187,6 +239,13 @@ int main(int argc, char **argv) {
         observed.count == 1U);
   CHECK(strstr(observed.text[0], "real console warning") != NULL &&
         strchr(observed.text[0], 27) == NULL);
+  log.logger->warnf(log.logger, "cai.models.catalog", "error=%s detail=%s",
+                    "catalog unavailable", "HTTP 503");
+  memset(&observed, 0, sizeof(observed));
+  CHECK(cai_cli_log_notices(&log, collect, &observed) == 0 &&
+        observed.count == 1U);
+  CHECK(strstr(observed.text[0], "catalog unavailable") != NULL &&
+        strstr(observed.text[0], "HTTP 503") != NULL);
   CHECK(cai_cli_log_close(&log) == 0);
 
   CHECK(setenv("LOG_MODE", "json", 1) == 0);
@@ -201,6 +260,7 @@ int main(int argc, char **argv) {
   CHECK(cai_cli_log_notices(&log, collect, &observed) == 0 &&
         observed.count == 1U);
   CHECK(strstr(observed.text[0], "verbose warning") != NULL);
+  CHECK(structured_notices(&log) == 0);
   record = read_log(log.path);
   CHECK(record != NULL && strstr(record, "filtered info") == NULL &&
         strstr(record, "\"level\":\"warn\"") != NULL);

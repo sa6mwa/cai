@@ -149,7 +149,11 @@ fallback JSON can override those limits. See
 [model metadata](docs/model-metadata.md) for the schema and precedence.
 `--help` lists the other
 user-facing model, review, instructions, skills, image, terminal, and session
-options. Cai requests concise provider reasoning summaries by default; the
+options. Interactive startup shows `Welcome to CAI. Send /help for usage.` in
+the status line, including after replaying a resumed conversation. `/help`
+renders Markdown tables of slash commands and prompt keys through libmdf;
+it is handled locally and does not send a model request. Cai requests concise
+provider reasoning summaries by default; the
 `--reasoning-summary` flag overrides that choice. Provider-issued summaries
 stream in the terminal as they arrive and appear above the status line with
 the active turn's elapsed time. Before a summary arrives, the bar says
@@ -312,8 +316,11 @@ In prompt mode, logs append to `$XDG_CACHE_HOME/cai/<sessionid>.log`, falling
 back to `~/.cache/cai/<sessionid>.log`. Files are private (0600), with a private
 cai cache directory (0700). Startup records are transferred to the selected
 session's log; failed startup records remain in a `startup-*` file. The UI
-surfaces warning and error diagnostics, while normal conversation rendering
-continues through softline and libmdf.
+surfaces readable warning and error notices, including their explanations and
+available request context (HTTP status, endpoint, provider code, and request
+ID). Full pslog records remain in the file; truncated notices direct you to
+the session log. Normal conversation rendering continues through softline
+and libmdf.
 
 With `-n`, `--review`, or `--review-and-fix`, the default log sink is stderr.
 Stdout contains only the latest top-level assistant response of the entire
