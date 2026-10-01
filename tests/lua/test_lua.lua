@@ -1046,6 +1046,23 @@ end
 
 local dummy_client = assert_ok(cai.open({ api_key = "test-key", timeout_ms = 1 }))
 do
+  for _, method in ipairs({ "new_smith_agent", "new_smith_runtime",
+                            "new_smith_review_runtime" }) do
+    local config = {
+      workspace_directory = ".",
+      model = cai.MODEL_GPT_5_6_LUNA,
+      disable_terminal = 1,
+      disable_default_session_store = true,
+      image_directory = "",
+    }
+    local object, err = dummy_client[method](dummy_client, config)
+    assert_not_ok(object, err, method .. " rejects an empty image directory")
+    config.image_directory = "."
+    object = assert_ok(dummy_client[method](dummy_client, config))
+    object:close()
+  end
+end
+do
   local function assert_runtime_argument_error_releases_activity(label, invoke)
     local client = assert_ok(cai.open({
       api_key = "test-key",

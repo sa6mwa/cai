@@ -25,6 +25,8 @@ typedef struct cai_cli_log {
   unsigned long dropped;
 } cai_cli_log;
 
+/* Create and verify cai's private XDG cache root. */
+int cai_cli_cache_directory(char *directory, size_t capacity, cai_error *error);
 int cai_cli_log_open(cai_cli_log *log, pslog_level default_level,
                      int interactive, cai_error *error);
 int cai_cli_log_interactive(cai_cli_log *log, cai_error *error);

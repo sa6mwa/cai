@@ -157,40 +157,41 @@ static int log_isatty(void *context) {
   return !log->interactive && isatty(log->fd >= 0 ? log->fd : STDERR_FILENO);
 }
 
-static int cache_directory(cai_cli_log *log, cai_error *error) {
+int cai_cli_cache_directory(char *directory, size_t capacity,
+                            cai_error *error) {
   const char *base;
   char *cursor;
   struct stat status;
   int n;
   base = getenv("XDG_CACHE_HOME");
   if (base != NULL && *base != '\0')
-    n = snprintf(log->directory, sizeof(log->directory), "%s/cai", base);
+    n = snprintf(directory, capacity, "%s/cai", base);
   else {
     base = getenv("HOME");
     if (base == NULL || *base == '\0')
       return cai_cli_error(error, CAI_ERR_INVALID,
-                           "set HOME or XDG_CACHE_HOME for cai logs");
-    n = snprintf(log->directory, sizeof(log->directory), "%s/.cache/cai", base);
+                           "set HOME or XDG_CACHE_HOME for cai cache");
+    n = snprintf(directory, capacity, "%s/.cache/cai", base);
   }
-  if (n < 0 || (size_t)n >= sizeof(log->directory) || log->directory[0] != '/')
+  if (n < 0 || (size_t)n >= capacity || directory[0] != '/')
     return cai_cli_error(error, CAI_ERR_INVALID,
                          "cai cache path must be absolute and fit PATH_MAX");
-  for (cursor = log->directory + 1;; cursor++) {
+  for (cursor = directory + 1;; cursor++) {
     if (*cursor == '/' || *cursor == '\0') {
       char saved;
       saved = *cursor;
       *cursor = '\0';
-      if (mkdir(log->directory, 0700) != 0 && errno != EEXIST) {
+      if (mkdir(directory, 0700) != 0 && errno != EEXIST) {
         *cursor = saved;
         return cai_cli_error(error, CAI_ERR_TRANSPORT,
-                             "create cai log directory");
+                             "create cai cache directory");
       }
       *cursor = saved;
       if (saved == '\0')
         break;
     }
   }
-  if (lstat(log->directory, &status) != 0 || !S_ISDIR(status.st_mode) ||
+  if (lstat(directory, &status) != 0 || !S_ISDIR(status.st_mode) ||
       status.st_uid != geteuid() || (status.st_mode & 077U) != 0U)
     return cai_cli_error(
         error, CAI_ERR_INVALID,
@@ -227,7 +228,7 @@ int cai_cli_log_open(cai_cli_log *log, pslog_level default_level,
 
 int cai_cli_log_interactive(cai_cli_log *log, cai_error *error) {
   int rc;
-  rc = cache_directory(log, error);
+  rc = cai_cli_cache_directory(log->directory, sizeof(log->directory), error);
   if (rc != CAI_OK)
     return rc;
   if (snprintf(log->path, sizeof(log->path), "%s/startup-XXXXXX",

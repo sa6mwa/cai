@@ -3011,6 +3011,8 @@ static int cai_lua_client_new_smith_agent(lua_State *L) {
   config.developer_instructions_extension =
       cai_lua_opt_string_field(L, 2, "developer_instructions_extension", NULL);
   config.disable_terminal = cai_lua_opt_int_field(L, 2, "disable_terminal", 0);
+  config.image_directory =
+      cai_lua_opt_string_field(L, 2, "image_directory", NULL);
   if (config.workspace_directory == NULL ||
       config.workspace_directory[0] == '\0') {
     return luaL_error(L, "new_smith_agent requires workspace_directory");
@@ -3670,6 +3672,8 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   config.enable_image_generation =
       cai_lua_opt_bool_field(L, 2, "enable_image_generation", 0);
   config.disable_terminal = cai_lua_opt_bool_field(L, 2, "disable_terminal", 0);
+  config.image_directory =
+      cai_lua_opt_string_field(L, 2, "image_directory", NULL);
   config.session_scope = cai_lua_opt_string_field(L, 2, "session_scope", NULL);
   config.session_id = cai_lua_opt_string_field(L, 2, "session_id", NULL);
   config.resume_latest = cai_lua_opt_bool_field(L, 2, "resume_latest", 0);

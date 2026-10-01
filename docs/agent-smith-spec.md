@@ -993,6 +993,16 @@ payload; CAI attaches the image as a typed input item during the next request
 and records a content hash/path/metadata in session history. It honors the
 model’s image-input capability and fails clearly when unsupported.
 
+The viewer normally permits only workspace images. Hosts can supply an
+additional existing image-only root using `image_directory` in C preset/runtime
+configuration or the corresponding Lua constructor table. It is inherited by
+subagents and does not widen file-reader or terminal access. Direct tool
+registration uses `cai_view_image_tool_config.additional_root_path`. Both
+resolved and opened image paths must remain inside either allowed root;
+relative paths still use the workspace working directory. Cai sets the extra
+root to its private `$XDG_CACHE_HOME/cai/clipboard` directory (or
+`$HOME/.cache/cai/clipboard`) for softline Ctrl-V images.
+
 ### 7.2 Image generation
 
 Codex’s current image-generation extension uses an image API, supports at most

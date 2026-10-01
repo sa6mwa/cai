@@ -14,6 +14,9 @@ test -f "$stage/share/doc/libcai/docs/model-metadata.md"
 for dependency in liblockdc liblql softline libmdf libpslog; do
   test -f "$stage/share/doc/libcai/third_party/$dependency/LICENSE"
 done
+for notice in LICENSE.md LICENSE.BSD-3-Clause AUTHORS README.softline.md provenance.json softline.patch; do
+  test -f "$stage/share/doc/libcai/third_party/softline/licenses/c-ares/$notice"
+done
 test ! -e "$stage/share/doc/cai"
 
 if command -v groff >/dev/null; then

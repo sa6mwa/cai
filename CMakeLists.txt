@@ -129,7 +129,7 @@ set(CAI_MINIMUM_CURL_VERSION "7.86.0")
 set(CAI_LONEJSON_VERSION "0.44.0")
 set(CAI_LONEJSON_ABI_VERSION "26")
 set(CAI_PSLOG_VERSION "0.12.0")
-set(CAI_SOFTLINE_VERSION "0.7.0")
+set(CAI_SOFTLINE_VERSION "0.8.0")
 set(CAI_LIBMDF_VERSION "0.13.0")
 
 if(CAI_BUILD_CLI AND (NOT CAI_TARGET_ID STREQUAL "x86_64-linux-musl" OR
@@ -471,13 +471,13 @@ if(CAI_BUILD_CLI)
   set(_cai_softline_prefix "${CAI_DEPS_DIR}/${_cai_softline_name}")
   cai_dependency_archive_path(
     "${_cai_softline_name}.tar.gz"
-    "c9379cfb6ba0d5a29846fa3954e837086989286ef12dfc18f78d6b9804aaf101"
+    "5b96d9e6c83fae30713c98332e750ed1a3858631b09b6b8d1b9b10056a3f470c"
     _cai_softline_archive)
   cai_download_tarball(
     "softline ${CAI_SOFTLINE_VERSION} x86_64-linux-musl"
     "https://github.com/sa6mwa/softline/releases/download/v${CAI_SOFTLINE_VERSION}/${_cai_softline_name}.tar.gz"
     "${_cai_softline_archive}" "${_cai_softline_prefix}"
-    "c9379cfb6ba0d5a29846fa3954e837086989286ef12dfc18f78d6b9804aaf101"
+    "5b96d9e6c83fae30713c98332e750ed1a3858631b09b6b8d1b9b10056a3f470c"
     "${_cai_softline_prefix}/include/softline/softline.h")
   set(_cai_libmdf_name "libmdf-${CAI_LIBMDF_VERSION}-x86_64-linux-musl")
   set(_cai_libmdf_prefix "${CAI_DEPS_DIR}/${_cai_libmdf_name}")
@@ -987,6 +987,10 @@ if(CAI_BUILD_CLI)
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/third_party/${_cai_cli_dep_name}"
         COMPONENT cai-cli)
     endforeach()
+    install(DIRECTORY
+      "${CAI_DEPS_DIR}/softline-${CAI_SOFTLINE_VERSION}-${CAI_TARGET_ID}/share/softline/licenses/"
+      DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/third_party/softline/licenses"
+      COMPONENT cai-cli)
     add_custom_target(cai_package_cli
       COMMAND "${CMAKE_COMMAND}"
         "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
@@ -1050,6 +1054,10 @@ if(CAI_BUILD_CLI)
     add_test(NAME cai_cli_modes
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_modes_test.py"
         "$<TARGET_FILE:cai_cli>")
+    add_test(NAME cai_cli_terminal
+      COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_test.py"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_terminal PROPERTIES TIMEOUT 60)
     add_test(NAME cai_cli_lockd_endpoint
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_lockd_endpoint_test.py"
         "$<TARGET_FILE:cai_cli>")

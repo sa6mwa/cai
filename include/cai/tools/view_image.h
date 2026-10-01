@@ -19,13 +19,18 @@ typedef struct cai_view_image_tool_config {
   const char *name;
   /** Optional model-facing tool-description override. */
   const char *description;
-  /** Required sandbox-root directory; resolved image paths remain below it. */
+  /** Required workspace root; image paths remain below an allowed root. */
   const char *root_path;
   /** Optional default working directory inside root_path; must be a directory.
    */
   const char *default_workdir;
   /** Largest accepted image in bytes; zero selects the secure default. */
   size_t max_image_bytes;
+  /** Optional additional image-only root; must be an existing directory.
+   * Both resolved and opened paths are checked against these two roots.
+   * Relative paths still resolve against default_workdir inside root_path.
+   */
+  const char *additional_root_path;
 } cai_view_image_tool_config;
 
 /**

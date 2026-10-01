@@ -131,6 +131,11 @@ C-backed `global_instruction_store` to select another global source. CAI does
 not search workspace ancestors unless `codex_compat_agents_md` is explicitly
 enabled.
 
+C and Lua preset/runtime configuration also accepts `image_directory`, an
+optional existing directory that `view_image` may read alongside workspace
+images. It does not grant file-reader or terminal access to that directory.
+Omit it to retain workspace-only image access.
+
 ```sh
 make -C examples run-smith-terminal
 make -C examples run-lua-smith-terminal

@@ -61,6 +61,8 @@ typedef struct test_entry {
 
 static const char *g_current_test_name = NULL;
 
+extern char *realpath(const char *path, char *resolved_path);
+
 void cai_mcp_test_set_sleep_ms_fn(void (*fn)(long ms));
 int cai_chatgpt_quota_parse_json(const char *json, cai_chatgpt_quota *out,
                                  cai_error *error);
@@ -9219,6 +9221,13 @@ static const char *mock_response_for_request(const char *request) {
       if (strstr(request, "view image stream tool turn") != NULL &&
           strstr(request, "\"type\":\"function_call_output\"") != NULL &&
           strstr(request, "\"call_id\":\"call_stream_view_image_1\"") != NULL &&
+          strstr(request, "failed to resolve image path") != NULL &&
+          strstr(request, "data:image") == NULL) {
+        return stream_view_image_tool_done_body;
+      }
+      if (strstr(request, "view image stream tool turn") != NULL &&
+          strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+          strstr(request, "\"call_id\":\"call_stream_view_image_1\"") != NULL &&
           strstr(request, "\"type\":\"input_image\"") != NULL &&
           strstr(request, "data:image/png;base64,iVBORw0KGgo") != NULL) {
         return stream_view_image_tool_done_body;
@@ -9579,6 +9588,13 @@ static const char *mock_response_for_request(const char *request) {
     if (strstr(request, "manual tool turn") != NULL &&
         strstr(request, "\"name\":\"raw_echo\"") != NULL) {
       return manual_tool_call_body;
+    }
+    if (strstr(request, "view image tool turn") != NULL &&
+        strstr(request, "\"type\":\"function_call_output\"") != NULL &&
+        strstr(request, "\"call_id\":\"call_view_image_1\"") != NULL &&
+        strstr(request, "failed to resolve image path") != NULL &&
+        strstr(request, "data:image") == NULL) {
+      return view_image_tool_done_body;
     }
     if (strstr(request, "view image tool turn") != NULL &&
         strstr(request, "\"name\":\"view_image\"") != NULL &&
@@ -33629,6 +33645,7 @@ static void test_agent_view_image_auto_run(test_state *state) {
   cai_stream_sinks stream_sinks;
   cai_error error;
   int durable_calls;
+  int failure_mode;
 
   if (mkdtemp(workspace) == NULL) {
     test_fail(state, "agent_view_image_workspace", "mkdtemp failed");
@@ -33653,7 +33670,7 @@ static void test_agent_view_image_auto_run(test_state *state) {
   }
   if (pid == 0) {
     close(pipe_fds[0]);
-    mock_openai_child(pipe_fds[1], 4);
+    mock_openai_child(pipe_fds[1], 8);
   }
   close(pipe_fds[1]);
   nread = read(pipe_fds[0], &port, sizeof(port));
@@ -33756,8 +33773,58 @@ static void test_agent_view_image_auto_run(test_state *state) {
   }
 
   cai_source_close(history_source);
+  history_source = NULL;
   cai_response_destroy(response);
+  response = NULL;
   cai_session_destroy(session);
+  session = NULL;
+
+  /* A missing image is a recoverable tool error, with no typed payload.
+   * Prove both buffered and streamed continuations reach the final reply. */
+  unlink(image_path);
+  for (failure_mode = 0; failure_mode < 2; failure_mode++) {
+    expect_int(state, "view_image_failure_session",
+               cai_agent_new_session(agent, &session, &error), CAI_OK);
+    expect_int(state, "view_image_failure_prompt",
+               cai_session_add_user_text(session,
+                                         failure_mode == 0
+                                             ? "view image tool turn"
+                                             : "view image stream tool turn",
+                                         &error),
+               CAI_OK);
+    if (failure_mode == 0) {
+      expect_int(state, "view_image_failure_buffered_continuation",
+                 cai_session_run_auto(session, &run_options, &response, &error),
+                 CAI_OK);
+      expect_str(state, "view_image_failure_final_reply",
+                 cai_response_output_text(response), "view image done");
+    } else {
+      expect_int(
+          state, "view_image_failure_stream_continuation",
+          cai_session_stream_auto(session, &run_options, &stream_sinks, &error),
+          CAI_OK);
+    }
+    expect_int(
+        state, "view_image_failure_history",
+        cai_session_export_history_source(session, &history_source, &error),
+        CAI_OK);
+    if (read_source_text(state, "view_image_failure_history_text",
+                         history_source, history_json, sizeof(history_json),
+                         &error)) {
+      expect_substr(state, "view_image_failure_error_preserved", history_json,
+                    "failed to resolve image path");
+      if (strstr(history_json, "data:image") != NULL) {
+        test_fail(state, "view_image_failure_no_image",
+                  "unexpected typed image");
+      }
+    }
+    cai_source_close(history_source);
+    history_source = NULL;
+    cai_response_destroy(response);
+    response = NULL;
+    cai_session_destroy(session);
+    session = NULL;
+  }
   cai_agent_destroy(agent);
   cai_client_close(client);
   cai_error_cleanup(&error);
@@ -34694,6 +34761,10 @@ static void test_view_image_tool(test_state *state) {
       0x05U, 0x00U, 0x01U, 0xffU, 0x89U, 0x99U, 0x07U, 0x00U, 0x00U, 0x00U,
       0x00U, 0x49U, 0x45U, 0x4eU, 0x44U, 0xaeU, 0x42U, 0x60U, 0x82U};
   char dir_template[] = "/tmp/cai-view-image-test-XXXXXX";
+  char extra_template[] = "cai-view-image-extra-XXXXXX";
+  char extra_root[PATH_MAX];
+  char extra_image[PATH_MAX];
+  char extra_args[PATH_MAX + 32];
   char image_path[PATH_MAX];
   char invalid_path[PATH_MAX];
   char alias_path[PATH_MAX];
@@ -34713,6 +34784,15 @@ static void test_view_image_tool(test_state *state) {
     test_fail(state, "view_image_mkdtemp", "mkdtemp failed");
     return;
   }
+  if (mkdtemp(extra_template) == NULL ||
+      realpath(extra_template, extra_root) == NULL) {
+    test_fail(state, "view_image_extra_root", "failed to create extra root");
+    rmdir(extra_template);
+    rmdir(dir_template);
+    return;
+  }
+  snprintf(extra_image, sizeof(extra_image), "%s/pasted.png", extra_template);
+  write_bytes_or_die(extra_image, png_bytes, sizeof(png_bytes));
   snprintf(image_path, sizeof(image_path), "%s/pixel.png", dir_template);
   snprintf(invalid_path, sizeof(invalid_path), "%s/not-image.bin",
            dir_template);
@@ -34859,11 +34939,59 @@ static void test_view_image_tool(test_state *state) {
   output_json.cleanup(&output_json);
   cai_sink_close(sink);
   cai_tool_registry_destroy(registry);
+  registry = NULL;
+  unlink(alias_path);
+  expect_int(state, "view_image_extra_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  config.additional_root_path = invalid_path;
+  expect_int(
+      state, "view_image_extra_file_root",
+      cai_tool_registry_register_view_image_tool(registry, &config, &error),
+      CAI_ERR_INVALID);
+  expect_substr(state, "view_image_extra_file_root_error", error.message,
+                "additional root must be a directory");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  config.additional_root_path = "";
+  expect_int(
+      state, "view_image_extra_empty_root",
+      cai_tool_registry_register_view_image_tool(registry, &config, &error),
+      CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  config.additional_root_path = extra_root;
+  expect_int(
+      state, "view_image_extra_register",
+      cai_tool_registry_register_view_image_tool(registry, &config, &error),
+      CAI_OK);
+  sink = NULL;
+  expect_int(state, "view_image_extra_sink",
+             cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "view_image_extra_preserves_workspace",
+             cai_tool_registry_run(registry, CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME,
+                                   "{\"path\":\"pixel.png\"}", sink, &error),
+             CAI_OK);
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  snprintf(extra_args, sizeof(extra_args), "{\"path\":\"%s/pasted.png\"}",
+           extra_root);
+  expect_int(state, "view_image_extra_allowed",
+             cai_tool_registry_run(registry, CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME,
+                                   extra_args, sink, &error),
+             CAI_OK);
+  expect_substr(state, "view_image_extra_metadata", writer.buffer,
+                "\"mime_type\":\"image/png\"");
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
   unlink(alias_path);
   unlink(invalid_path);
   unlink(image_path);
   rmdir(dir_template);
+  unlink(extra_image);
+  rmdir(extra_template);
 }
 
 static void test_exec_tool(test_state *state) {

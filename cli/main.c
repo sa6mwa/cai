@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/timerfd.h>
 #include <time.h>
 #include <unistd.h>
@@ -80,6 +81,7 @@ typedef struct cli_state {
   char reasoning_summary_raw[512];
   size_t reasoning_summary_length;
   char workspace[PATH_MAX];
+  char clipboard_directory[PATH_MAX];
 } cli_state;
 
 static int cli_advance_automation(cli_state *state, cai_error *error);
@@ -217,9 +219,7 @@ static int cli_geometry(cli_state *state) {
   if (width == state->width) {
     return 0;
   }
-  if (state->interactive && sl_set_bounds(state->sl, 0, 0, 0, 0) != SL_OK) {
-    return -1;
-  }
+  /* Softline owns native terminal sizing; only libmdf needs the new width. */
   if (state->renderer != NULL &&
       state->renderer->set_geometry(state->renderer, width, width >= 5 ? 2 : 0,
                                     0) != MDF_OK) {
@@ -727,6 +727,8 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   skills.skills_directory = state->options.skills_dir;
   config.logger = state->log.logger;
   config.workspace_directory = state->workspace;
+  config.image_directory =
+      state->clipboard_directory[0] != '\0' ? state->clipboard_directory : NULL;
   config.session_store = &state->store;
   config.resume_latest =
       !state->options.review && !new_session && resume_id == NULL;
@@ -785,6 +787,33 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
     rc = cli_sync_status(state, error);
   }
   return rc;
+}
+
+static int cli_prepare_clipboard(cli_state *state, cai_error *error) {
+  char cache[PATH_MAX];
+  char path[PATH_MAX];
+  struct stat status;
+  int length;
+  int rc;
+
+  rc = cai_cli_cache_directory(cache, sizeof(cache), error);
+  if (rc != CAI_OK)
+    return rc;
+  length = snprintf(path, sizeof(path), "%s/clipboard", cache);
+  if (length < 0 || (size_t)length >= sizeof(path))
+    return cai_cli_error(error, CAI_ERR_INVALID, "clipboard path is too long");
+  if (mkdir(path, 0700) != 0 && errno != EEXIST)
+    return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                         "cannot create cai clipboard directory");
+  if (lstat(path, &status) != 0 || !S_ISDIR(status.st_mode) ||
+      status.st_uid != geteuid() || (status.st_mode & 077U) != 0U)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "cai clipboard directory must be owned by you with "
+                         "mode 0700 and must not be a symlink");
+  if (realpath(path, state->clipboard_directory) == NULL)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "cannot resolve cai clipboard directory");
+  return CAI_OK;
 }
 
 static void cli_close_runtime(cli_state *state) {
@@ -1224,6 +1253,7 @@ int main(int argc, char **argv) {
   cai_chatgpt_auth_config auth_config;
   mdf_options mdf_config;
   mdf_sink sink;
+  sl_config_t prompt_config;
   cai_error error;
   sl_readline_status_t prompt_status;
   char auth_path[PATH_MAX];
@@ -1362,8 +1392,16 @@ int main(int argc, char **argv) {
 
   cai_cli_status_init(&state.status, state.workspace, getenv("HOME"));
   result = 1;
+  rc = cli_prepare_clipboard(&state, &error);
+  if (rc != CAI_OK) {
+    cli_print_error(&state, "initialize clipboard", &error);
+    goto cleanup;
+  }
   if (!state.batch) {
-    state.sl = sl_create();
+    sl_config_init(&prompt_config);
+    prompt_config.image_paste_path_template =
+        "{{XDG_CACHE_HOME}}/cai/clipboard/*";
+    state.sl = sl_create_with_config(&prompt_config);
     if (state.sl == NULL) {
       cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
                      "cai: failed to create softline prompt\n");
@@ -1376,8 +1414,7 @@ int main(int argc, char **argv) {
   mdf_config.width = state.width;
   mdf_config.margin_left = state.width >= 5 ? 2 : 0;
   mdf_config.boring = !state.interactive;
-  if ((state.interactive && (sl_set_bounds(state.sl, 0, 0, 0, 0) != SL_OK ||
-                             sl_set_statusline(state.sl, 1, 0) != SL_OK)) ||
+  if ((state.interactive && sl_set_statusline(state.sl, 1, 0) != SL_OK) ||
       (!state.batch && sl_output_stream_begin(state.sl) != SL_OK) ||
       mdf_create(MDF_FORMAT_ANSI, &mdf_config, &state.renderer) != MDF_OK) {
     cli_diagnostic(&state, PSLOG_LEVEL_ERROR,

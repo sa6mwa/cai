@@ -383,6 +383,14 @@ the authentication namespace is excluded.
 Private session activity log (mode 0600). Uses ~/.cache/cai/SESSIONID.log
 when XDG_CACHE_HOME is unset.
 .TP
+.I $XDG_CACHE_HOME/cai/clipboard/XID.png
+Ctrl-V X11 clipboard image cache (PNG or JPEG, mode 0600).
+Uses ~/.cache/cai/clipboard when XDG_CACHE_HOME is unset. Files remain after
+exit so they can be consumed later; remove them when no longer needed.
+The view_image tool can read workspace images and this directory, but cannot
+read unrelated cache files, follow symlinks outside those roots, or read
+hardlinked images.
+.TP
 .I $XDG_CONFIG_HOME/cai/AGENTS.md
 Default cai global instructions when
 .B XDG_CONFIG_HOME

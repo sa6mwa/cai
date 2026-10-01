@@ -29,6 +29,7 @@ extern char *realpath(const char *path, char *resolved_path);
 
 typedef struct cai_view_image_context {
   char *root_path;
+  char *additional_root_path;
   char *default_workdir;
   size_t max_image_bytes;
   char *pending_data_url;
@@ -86,7 +87,8 @@ static const char cai_view_image_default_description[] =
     "inspection is needed. Use this only for images already available on "
     "disk. The image is attached to the model as typed image content; it is "
     "not returned as text. detail defaults to high; use original to request "
-    "the source resolution. Paths must remain inside the configured root and "
+    "the source resolution. Paths must remain inside the configured workspace "
+    "or additional image root and "
     "must resolve to a private regular image file.";
 
 static int cai_view_image_path_is_under_root(const char *root,
@@ -110,6 +112,12 @@ static int cai_view_image_copy(char **out, const char *value,
                                const char *message, cai_error *error) {
   *out = cai_strdup(NULL, value);
   return *out != NULL ? CAI_OK : cai_set_error(error, CAI_ERR_NOMEM, message);
+}
+
+static int cai_view_image_path_allowed(const cai_view_image_context *context,
+                                       const char *path) {
+  return cai_view_image_path_is_under_root(context->root_path, path) ||
+         cai_view_image_path_is_under_root(context->additional_root_path, path);
 }
 
 static int cai_view_image_realpath_copy(const char *path, char **out,
@@ -186,8 +194,18 @@ static int cai_view_image_context_new(const cai_view_image_tool_config *config,
     rc = cai_set_error(error, CAI_ERR_INVALID,
                        "view_image working directory escapes configured root");
   }
+  if (rc == CAI_OK && config->additional_root_path != NULL) {
+    rc = cai_view_image_realpath_copy(config->additional_root_path,
+                                      &context->additional_root_path, error);
+    if (rc == CAI_OK) {
+      rc = cai_view_image_require_directory(
+          context->additional_root_path,
+          "view_image additional root must be a directory", error);
+    }
+  }
   if (rc != CAI_OK) {
     cai_free_mem(NULL, context->root_path);
+    cai_free_mem(NULL, context->additional_root_path);
     cai_free_mem(NULL, context->default_workdir);
     cai_free_mem(NULL, context);
     return rc;
@@ -207,6 +225,7 @@ static void cai_view_image_context_cleanup(void *value) {
     return;
   }
   cai_free_mem(NULL, context->root_path);
+  cai_free_mem(NULL, context->additional_root_path);
   cai_free_mem(NULL, context->default_workdir);
   cai_free_mem(NULL, context->pending_data_url);
   cai_free_mem(NULL, context->pending_detail);
@@ -280,7 +299,7 @@ static int cai_view_image_open(const cai_view_image_context *context,
   if (cai_view_image_realpath_copy(open_path, &resolved, error) != CAI_OK) {
     return error != NULL ? error->code : CAI_ERR_INVALID;
   }
-  if (!cai_view_image_path_is_under_root(context->root_path, resolved)) {
+  if (!cai_view_image_path_allowed(context, resolved)) {
     cai_free_mem(NULL, resolved);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "image path escapes configured root");
@@ -303,7 +322,7 @@ static int cai_view_image_open(const cai_view_image_context *context,
     cai_free_mem(NULL, resolved);
     return error != NULL ? error->code : CAI_ERR_INVALID;
   }
-  if (!cai_view_image_path_is_under_root(context->root_path, opened_path)) {
+  if (!cai_view_image_path_allowed(context, opened_path)) {
     close(fd);
     cai_free_mem(NULL, opened_path);
     cai_free_mem(NULL, resolved);

@@ -1002,6 +1002,7 @@ int cai_client_new_preset_agent(cai_client *client,
     memset(&view_image_config, 0, sizeof(view_image_config));
     view_image_config.root_path = config->workspace_directory;
     view_image_config.default_workdir = config->workspace_directory;
+    view_image_config.additional_root_path = config->image_directory;
     rc = cai_agent_register_view_image_tool(*out, &view_image_config, error);
   }
   if (rc == CAI_OK &&
@@ -1377,6 +1378,7 @@ review_instructions_ready:
     memset(&view_image_config, 0, sizeof(view_image_config));
     view_image_config.root_path = config->workspace_directory;
     view_image_config.default_workdir = config->workspace_directory;
+    view_image_config.additional_root_path = config->image_directory;
     rc = cai_agent_register_view_image_tool(*out, &view_image_config, error);
   }
   if (rc == CAI_OK &&

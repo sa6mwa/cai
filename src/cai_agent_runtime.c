@@ -627,6 +627,7 @@ struct cai_agent_runtime {
   char *smith_terminal_shell_path;
   int smith_has_terminal_config;
   int smith_disable_terminal;
+  char *smith_image_directory;
   int smith_disable_default_session_store;
   cai_agent_runtime_event_fn review_event_callback;
   void *review_event_context;
@@ -1932,6 +1933,7 @@ static void cai_runtime_clear_smith_profile(cai_agent_runtime *runtime) {
   cai_free_mem(NULL, runtime->preset_review_developer_instructions);
   cai_free_mem(NULL, runtime->smith_terminal_default_workdir);
   cai_free_mem(NULL, runtime->smith_terminal_shell_path);
+  cai_free_mem(NULL, runtime->smith_image_directory);
   runtime->smith_identity = NULL;
   runtime->smith_model = NULL;
   runtime->smith_reasoning_effort = NULL;
@@ -1966,6 +1968,7 @@ static void cai_runtime_clear_smith_profile(cai_agent_runtime *runtime) {
          sizeof(runtime->smith_terminal_config));
   runtime->smith_has_terminal_config = 0;
   runtime->smith_disable_terminal = 0;
+  runtime->smith_image_directory = NULL;
 }
 
 /* MCP clients themselves remain host-owned, but the array and registration
@@ -2142,6 +2145,10 @@ static int cai_runtime_capture_preset_profile(
           runtime->smith_terminal_shell_path;
       runtime->smith_has_terminal_config = 1;
     }
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_copy_optional_string(
+        config->image_directory, &runtime->smith_image_directory, error);
   }
   if (rc == CAI_OK) {
     runtime->smith_disable_terminal = config->disable_terminal ? 1 : 0;
@@ -6643,6 +6650,7 @@ int cai_agent_runtime_open(cai_client *client,
   terminal_config.event_context = runtime;
   smith.terminal_tool_config = &terminal_config;
   smith.disable_terminal = runtime->terminal_enabled ? 0 : 1;
+  smith.image_directory = runtime->smith_image_directory;
   if (combined_instructions != NULL) {
     smith.developer_instructions_extension = combined_instructions;
   }
@@ -8227,6 +8235,7 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
    * the host's explicit terminal policy; the child selects its own terminal
    * capability from the review profile when it opens. */
   config.disable_terminal = parent->smith_disable_terminal;
+  config.image_directory = parent->smith_image_directory;
   config.session_store =
       parent->owns_local_store ? NULL : parent->session_store;
   config.session_scope = parent->session_scope;
@@ -8785,6 +8794,7 @@ static int cai_runtime_open_tool_subagent(
   config.terminal_tool_config =
       parent->smith_has_terminal_config ? &parent->smith_terminal_config : NULL;
   config.disable_terminal = parent->smith_disable_terminal;
+  config.image_directory = parent->smith_image_directory;
   config.session_store =
       parent->owns_local_store ? NULL : parent->session_store;
   config.session_scope = scope;

@@ -5918,11 +5918,13 @@ static int cai_session_run_tool_round(cai_session *session,
           error);
     }
     if (rc == CAI_OK) {
-      rc = cai_tool_registry_deliver_result(
-          CAI_SESSION_AGENT_IMPL(session)->tools,
-          cai_response_tool_call_name(response, i),
-          cai_response_tool_call_id(response, i), params, &capture.output,
-          &output_delivered, error);
+      if (!tool_failed) {
+        rc = cai_tool_registry_deliver_result(
+            CAI_SESSION_AGENT_IMPL(session)->tools,
+            cai_response_tool_call_name(response, i),
+            cai_response_tool_call_id(response, i), params, &capture.output,
+            &output_delivered, error);
+      }
       if (rc == CAI_OK && output_delivered) {
         CAI_SESSION_IMPL(session)->request_only_tool_output_pending = 1;
       }
@@ -6363,10 +6365,12 @@ static int cai_session_add_stream_tool_outputs(
           calls->items[i].is_custom, &capture.output, error);
     }
     if (rc == CAI_OK) {
-      rc = cai_tool_registry_deliver_result(
-          CAI_SESSION_AGENT_IMPL(session)->tools, calls->items[i].name,
-          calls->items[i].call_id, params, &capture.output, &output_delivered,
-          error);
+      if (!tool_failed) {
+        rc = cai_tool_registry_deliver_result(
+            CAI_SESSION_AGENT_IMPL(session)->tools, calls->items[i].name,
+            calls->items[i].call_id, params, &capture.output, &output_delivered,
+            error);
+      }
       if (rc == CAI_OK && output_delivered) {
         CAI_SESSION_IMPL(session)->request_only_tool_output_pending = 1;
       }

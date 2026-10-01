@@ -149,6 +149,10 @@ typedef struct cai_agent_preset_config {
   const cai_terminal_tool_config *terminal_tool_config;
   /** Non-zero disables the preset's one-slot terminal tools. */
   int disable_terminal;
+  /** Optional additional directory allowed only by view_image, alongside the
+   * workspace. Must already exist; NULL keeps workspace-only access.
+   */
+  const char *image_directory;
 } cai_agent_preset_config;
 
 /** Initialize a zero-defaultable generic preset configuration. */
