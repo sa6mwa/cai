@@ -185,6 +185,7 @@ class Terminal:
         os.close(slave)
         self.output = bytearray()
         self.probe_tail = b""
+        self.cursor_probes = 0
 
     def read(self, timeout=0.1):
         if select.select([self.master], [], [], timeout)[0]:
@@ -193,10 +194,10 @@ class Terminal:
             except OSError:
                 return
             self.output.extend(data)
-            # Satisfy softline's cursor-position probes, including split writes.
+            # Count probes without answering: feeds must never wait for replies.
             probes = self.probe_tail + data
             for _ in range(probes.count(b"\x1b[6n")):
-                self.send(b"\x1b[1;1R")
+                self.cursor_probes += 1
             self.probe_tail = probes[-3:]
 
     def wait(self, predicate):
@@ -274,11 +275,18 @@ def main():
                 terminal = Terminal(args, selected_env)
                 terminal.wait(lambda: terminal.contains("> ") and
                               terminal.contains("Welcome to CAI. Send /help for usage."))
+                assert terminal.cursor_probes <= 1, "startup repeated its cursor probe"
                 assert not terminal.contains("Cai Smith. Enter sends")
                 if not fallback:
                     count = len(api.requests)
+                    probes = terminal.cursor_probes
+                    began = time.monotonic()
                     terminal.send(b"/help\r")
                     terminal.wait(lambda: terminal.contains("Run cai --help"))
+                    assert terminal.cursor_probes == probes, (
+                        "help queried the terminal cursor",
+                        terminal.cursor_probes - probes)
+                    assert time.monotonic() - began < 1.5, "local help was delayed"
                     rendered = terminal.rendered()
                     for text in (b"CAI help", b"Slash commands", b"Prompt keys",
                                  b"/resume NUMBER", b"/export [ID]", b"Ctrl-V"):
@@ -298,17 +306,25 @@ def main():
                 assert stat.S_IMODE(paste_dir.stat().st_mode) == 0o700
                 assert not (cache / "softline").exists()
                 api.view_path = image
+                probes = terminal.cursor_probes
                 terminal.send(b"\r")
                 terminal.wait(lambda: terminal.contains("EARLY paragraph."))
+                assert terminal.cursor_probes == probes, "live feed queried the cursor"
                 if api.pause:
                     # This text must be visible before the server sends completion.
                     assert not terminal.contains("FINAL paragraph.")
                     terminal.wait(lambda: terminal.contains("Checking the pasted input"))
                     count = len(api.requests)
+                    probes = terminal.cursor_probes
                     offset = len(terminal.output)
+                    began = time.monotonic()
                     terminal.send(b"/help\r")
                     terminal.wait(lambda: b"Run cai --help" in re.sub(
                         rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", terminal.output[offset:]))
+                    assert terminal.cursor_probes == probes, (
+                        "busy help queried the terminal cursor",
+                        terminal.cursor_probes - probes)
+                    assert time.monotonic() - began < 1.5, "busy help was delayed"
                     assert len(api.requests) == count, "/help steered a busy agent"
                     terminal.send(b"preserved-draft")
                     terminal.resize(48)
@@ -342,9 +358,12 @@ def main():
             # Resuming replays the transcript but keeps startup guidance in
             # the thinking bar. Help must not enter model history or usage.
             count = len(api.requests)
+            began = time.monotonic()
             terminal = Terminal([args[0]] + args[2:], env)
             terminal.wait(lambda: terminal.contains("FINAL paragraph.") and
                           terminal.contains("Welcome to CAI. Send /help for usage."))
+            assert time.monotonic() - began < 2.0, "local replay was delayed"
+            assert terminal.cursor_probes <= 1, "replay added feed-time cursor probes"
             assert not terminal.contains("Cai Smith. Enter sends")
             assert len(api.requests) == count, "replay sent a model request"
             terminal.send(b"/help\r")

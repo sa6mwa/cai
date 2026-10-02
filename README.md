@@ -93,7 +93,7 @@ runtime, review, storage, and presentation contracts.
 ## Cai terminal agent
 
 The `cai` preset builds the terminal coding agent as a statically linked
-Linux x86_64 musl executable. It adds pinned softline 0.8.0 for the prompt and
+Linux x86_64 musl executable. It adds pinned softline 0.9.0 for the prompt and
 libmdf 0.13.0 for streamed Markdown rendering, and liblockdc 0.18.0 with
 liblql 0.3.0 for durable storage. It uses libpslog 0.12.0 for logging.
 `libcai` itself has no dependency on the CLI prompt, rendering, or storage libraries.
@@ -102,7 +102,9 @@ worker executes model requests and tools, then wakes the UI thread to render
 events.
 
 The UI keeps one softline output session open and forwards each libmdf sink
-fragment directly to it. Softline owns prompt geometry and terminal scrollback;
+fragment directly to it, with no simulated typing delay or timed coalescing.
+Softline 0.9.0 accounts for feed geometry locally without waiting for terminal
+cursor replies. Softline owns prompt geometry and terminal scrollback;
 the UI updates libmdf's width before feeding further Markdown after a resize.
 Ctrl-V pastes X11 clipboard PNG/JPEG images as file paths in the editor.
 Images are saved as private files under `$XDG_CACHE_HOME/cai/clipboard/`,
