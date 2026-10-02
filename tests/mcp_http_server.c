@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -594,6 +595,12 @@ int main(int argc, char **argv) {
   int i;
   int rc;
 
+  /* An aborted upload may close before the protocol error is written. Treat
+   * that as a failed connection, keeping the server alive for the next call. */
+  if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+    perror("signal SIGPIPE");
+    return 1;
+  }
   registry = NULL;
   handler = NULL;
   port = CAI_MCP_HTTP_DEFAULT_PORT;

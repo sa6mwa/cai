@@ -1241,6 +1241,8 @@ if(CAI_BUILD_TESTS)
       TIMEOUT 3)
   endif()
   set(CAI_UNIT_TEST_GROUPS
+    mcp_raw_input_agent_round_trip
+    mcp_raw_input_transport_failures
     mcp_raw_input_failures
     mcp_raw_input_metadata
     mcp_raw_input_policy

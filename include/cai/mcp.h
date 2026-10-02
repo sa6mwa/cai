@@ -552,7 +552,12 @@ const cai_mcp_client_tool *cai_mcp_client_tool_at(const cai_mcp_client *client,
 int cai_mcp_client_call_tool(cai_mcp_client *client, const char *name,
                              struct lonejson_spooled *arguments_json,
                              cai_sink *output, cai_error *error);
-/** Call a mapped MCP tool using raw text or explicitly framed input. */
+/** Call a mapped MCP tool using raw text or explicitly framed input.
+ * `input` must supply readable, rewindable spooled input. Header source I/O
+ * failures return CAI_ERR_TRANSPORT; malformed framing returns CAI_ERR_INVALID.
+ * A failed call may already have reached the remote tool. Only an expired MCP
+ * session (HTTP 404) triggers automatic request replay, once.
+ */
 int cai_mcp_client_call_tool_raw(cai_mcp_client *client, const char *name,
                                  const cai_tool_raw_input *mapping,
                                  struct lonejson_spooled *input,

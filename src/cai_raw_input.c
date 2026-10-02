@@ -14,9 +14,12 @@ typedef struct cai_raw_meta_doc {
 typedef struct cai_raw_property_doc {
   char *type;
 } cai_raw_property_doc;
+typedef struct cai_raw_properties_doc {
+  cai_raw_property_doc property;
+} cai_raw_properties_doc;
 typedef struct cai_raw_schema_doc {
   char *type;
-  cai_raw_property_doc property;
+  cai_raw_properties_doc properties;
   lonejson_string_array required;
 } cai_raw_schema_doc;
 
@@ -42,7 +45,8 @@ LONEJSON_MAP_DEFINE(cai_raw_property_map, cai_raw_property_doc,
                     cai_raw_property_fields);
 static const lonejson_field cai_raw_schema_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_raw_schema_doc, type, "type"),
-    LONEJSON_FIELD_OBJECT_REQ(cai_raw_schema_doc, property, "properties", NULL),
+    LONEJSON_FIELD_OBJECT_REQ(cai_raw_schema_doc, properties, "properties",
+                              NULL),
     {"required", 8U, 'r', 'd', offsetof(cai_raw_schema_doc, required),
      LONEJSON_FIELD_KIND_STRING_ARRAY, LONEJSON_STORAGE_DYNAMIC,
      LONEJSON_OVERFLOW_FAIL, 0U, 0U, 0U, NULL, NULL, 0U,
@@ -113,7 +117,7 @@ int cai_raw_input_validate(const char *schema_json,
                            const cai_tool_raw_input *mapping,
                            cai_error *error) {
   static const lonejson_field property_template = LONEJSON_FIELD_OBJECT_REQ(
-      cai_raw_schema_doc, property, "field", &cai_raw_property_map);
+      cai_raw_properties_doc, property, "field", &cai_raw_property_map);
   lonejson_field property_field;
   lonejson_field fields[3];
   lonejson_map properties;
@@ -135,7 +139,7 @@ int cai_raw_input_validate(const char *schema_json,
   property_field = property_template;
   memset(&properties, 0, sizeof(properties));
   properties.name = "raw-properties";
-  properties.struct_size = sizeof(cai_raw_schema_doc);
+  properties.struct_size = sizeof(cai_raw_properties_doc);
   properties.fields = &property_field;
   properties.field_count = 1U;
   memset(&schema, 0, sizeof(schema));
@@ -149,9 +153,8 @@ int cai_raw_input_validate(const char *schema_json,
   property_field.json_key_last =
       (unsigned char)mapping->field[property_field.json_key_len - 1U];
   memcpy(fields, cai_raw_schema_fields, sizeof(fields));
-  /* The nested properties object has the same layout, but only property is
-   * populated. */
-  fields[1].struct_offset = 0U;
+  /* Keep the nested object distinct: cleanup clears its complete struct and
+   * must not erase the parent's owned required array before it is freed. */
   fields[1].submap = &properties;
   memset(&doc, 0, sizeof(doc));
   lonejson_error_init(&json_error);
@@ -161,9 +164,9 @@ int cai_raw_input_validate(const char *schema_json,
         error, CAI_ERR_INVALID,
         "raw-input field must name a declared string property",
         json_error.message);
-  } else if (doc.type == NULL || doc.property.type == NULL ||
+  } else if (doc.type == NULL || doc.properties.property.type == NULL ||
              strcmp(doc.type, "object") != 0 ||
-             strcmp(doc.property.type, "string") != 0) {
+             strcmp(doc.properties.property.type, "string") != 0) {
     rc = cai_set_error(error, CAI_ERR_INVALID,
                        "raw-input field must name a declared string property "
                        "in an object schema");

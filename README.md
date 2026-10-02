@@ -1180,6 +1180,24 @@ server callback dispatch retain the existing **spooled** lifecycle: this does
 not execute a tool while the model is still producing its input. HTTP session
 recovery rewinds and re-encodes the same completed input.
 
+Malformed input is rejected with `CAI_ERR_INVALID`; source read/rewind failures
+and dropped connections use `CAI_ERR_TRANSPORT`. Raw calls log the tool name,
+status, and error details through pslog, without logging raw payloads. A failed
+upload or response does not imply the remote tool had no side effects. Only
+HTTP 404 for an expired session triggers one automatic replay; other failures
+are returned to the caller.
+
+Deterministic tests cover buffered and streamed agent-to-MCP round trips,
+JSON-header framing, model continuation after tool errors, Chat Completions'
+JSON fallback, metadata and policy validation, atomic registration rollback,
+byte-split Unicode and embedded NULs, expired-session recovery, JSON/SSE remote
+errors, response ID mismatches, malformed responses, disconnects, HTTP errors,
+and output-sink failures followed by a successful call. Run the C cases with
+`ctest --test-dir build/debug --output-on-failure -j1 -R mcp_raw_input`.
+`make lua-test` also exercises the real libcai HTTP server with large raw
+uploads, malformed headers and UTF-8, failing Lua readers/writers, retained
+client lifetime, collection inside callbacks, and recovery after failures.
+
 The equivalent Lua interfaces are:
 
 ```lua

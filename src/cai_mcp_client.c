@@ -9559,6 +9559,8 @@ static int cai_mcp_stream_request_result_once(
             : (context.curl_rc != CURLE_OK ? curl_easy_strerror(context.curl_rc)
                                            : "streaming write failed"));
     if (rc == CAI_OK ||
+        (context.raw_request != NULL && context.curl_rc != CURLE_OK &&
+         response->status == 0L) ||
         (context.raw_request != NULL &&
          context.raw_request->generator_initialized &&
          context.raw_request->generator.error.code != LONEJSON_STATUS_OK &&
@@ -10897,7 +10899,11 @@ cai_mcp_raw_request_prepare(cai_mcp_streamable_http_client_impl *impl,
             error, CAI_ERR_INVALID,
             "MCP raw-input JSON header exceeds 16 KiB or lacks LF delimiter");
       result = request->input.read(&request->input, &ch, 1U);
-      if (result.error_code != 0 || result.bytes_read != 1U)
+      if (result.error_code != 0)
+        return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                    "failed to read MCP raw-input JSON header",
+                                    strerror(result.error_code));
+      if (result.bytes_read != 1U)
         return cai_set_error(
             error, CAI_ERR_INVALID,
             "MCP raw-input JSON header requires an LF delimiter");
@@ -10983,41 +10989,63 @@ static int cai_mcp_streamable_call_tool_raw(
   cai_mcp_streamable_http_client_impl *impl = cai_mcp_streamable_impl(client);
   cai_mcp_http_response_capture response;
   cai_mcp_raw_request request;
+  pslog_logger *log;
   size_t i;
   int rc;
   if (impl == NULL || name == NULL || name[0] == '\0' || mapping == NULL ||
-      input == NULL || output == NULL)
-    return cai_set_error(
-        error, CAI_ERR_INVALID,
-        "MCP raw call requires client, tool, mapping, input, and output");
+      input == NULL || input->read == NULL || input->rewind == NULL ||
+      output == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP raw call requires client, tool, mapping, "
+                         "readable rewindable input, and output");
+  memset(&request, 0, sizeof(request));
+  memset(&response, 0, sizeof(response));
+  log = cai_mcp_logger(impl);
+  if (log != NULL && log->debugf != NULL)
+    log->debugf(log, "cai.mcp.raw_call.start", "tool=%s field=%s framing=%d",
+                name, mapping->field != NULL ? mapping->field : "",
+                (int)mapping->framing);
   rc = cai_mcp_client_initialize(client, error);
   if (rc != CAI_OK)
-    return rc;
+    goto done;
   for (i = 0U; i < impl->tool_count; i++)
     if (strcmp(impl->tools[i].name, name) == 0)
       break;
   if (i == impl->tool_count) {
     rc = cai_mcp_client_refresh_tools(client, error);
     if (rc != CAI_OK)
-      return rc;
+      goto done;
     for (i = 0U; i < impl->tool_count; i++)
       if (strcmp(impl->tools[i].name, name) == 0)
         break;
   }
-  if (i == impl->tool_count)
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "MCP raw call tool is not advertised");
+  if (i == impl->tool_count) {
+    rc = cai_set_error_detail(error, CAI_ERR_INVALID,
+                              "MCP raw call tool is not advertised", name);
+    goto done;
+  }
   rc = cai_raw_input_validate(impl->tools[i].input_schema_json, mapping, error);
   if (rc != CAI_OK)
-    return rc;
-  memset(&request, 0, sizeof(request));
-  memset(&response, 0, sizeof(response));
+    goto done;
   rc = cai_mcp_raw_request_prepare(impl, name, mapping,
                                    impl->tools[i].input_schema_json, input,
                                    &request, error);
   if (rc == CAI_OK)
     rc = cai_mcp_stream_request_result_with_session_recovery(
         impl, NULL, 0U, &request, 1, output, &response, error);
+done:
+  if (log != NULL) {
+    if (rc == CAI_OK && log->debugf != NULL)
+      log->debugf(log, "cai.mcp.raw_call.done",
+                  "tool=%s status=%d http_status=%ld", name, rc,
+                  response.status);
+    else if (rc != CAI_OK && log->warnf != NULL)
+      log->warnf(log, "cai.mcp.raw_call.failed",
+                 "tool=%s status=%d http_status=%ld error=%s detail=%s", name,
+                 rc, response.status,
+                 error != NULL && error->message != NULL ? error->message : "",
+                 error != NULL && error->detail != NULL ? error->detail : "");
+  }
   if (request.generator_initialized)
     request.generator.cleanup(&request.generator);
   cai_free_mem(NULL, request.prefix.data);

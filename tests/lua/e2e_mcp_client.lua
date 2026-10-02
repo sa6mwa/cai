@@ -56,6 +56,9 @@ assert_ok(client:ping(), nil, "ping")
 assert_ok(client:refresh_tools(), nil, "refresh_tools")
 
 if mode == "raw" then
+  local function raw_failure(label, value, err)
+    return assert_not_ok(value, err, label)
+  end
   local tool = client:tool_at(1)
   if tool.raw_input.field ~= "input" or tool.raw_input.framing ~= "text" then fail("native raw metadata missing") end
   local payload = string.rep('line "quote" \\ å🚀\n', 16000) .. "tail\n"
@@ -65,10 +68,53 @@ if mode == "raw" then
   local quoted = '"' .. payload:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n') .. '"'
   contains("large raw exact bytes", json, quoted)
   local registry = assert_ok(cai.tool_registry())
+  raw_failure("invalid raw mapping", client:register_tools(registry, {
+    raw_input_overrides = {
+      { name = "echo_message", mapping = { field = "missing" } },
+    },
+  }))
+  -- A successful retry with the same name proves failure left no registration.
   assert_ok(client:register_tools(registry), nil, "server raw advertisement")
   local chunks = {}
   assert_ok(registry:run("echo_message", payload, function(chunk) chunks[#chunks + 1] = chunk; return true end), nil, "native raw import round trip")
   contains("native raw import exact bytes", table.concat(chunks), quoted)
+  raw_failure("raw registry retains client", client:close())
+  for _, input in ipairs({ "[]\nbody", '{"input":"collision"}\nbody',
+                           '{"input":null}\nbody', '{}',
+                           string.rep(" ", 16384) .. "\nbody" }) do
+    raw_failure("invalid raw header", client:call_tool_raw("echo_message",
+      { field = "input", framing = "json-header" }, input))
+  end
+  raw_failure("invalid raw UTF-8", client:call_tool_raw("echo_message", tool.raw_input,
+    "\255"))
+  local reader_calls = 0
+  raw_failure("raw reader failure", client:call_tool_raw("echo_message", tool.raw_input,
+    function()
+      reader_calls = reader_calls + 1
+      if reader_calls == 1 then return "partial" end
+      error("raw source failed deliberately")
+    end))
+  local writer_calls = 0
+  local writer_error = raw_failure("raw writer failure", client:call_tool_raw("echo_message", tool.raw_input,
+    "sink failure", function()
+      writer_calls = writer_calls + 1
+      return false, "raw sink failed deliberately"
+    end))
+  if writer_calls == 0 then
+    fail("raw writer was not reached: " .. tostring(writer_error.message))
+  end
+  local reentry = false
+  assert_ok(client:call_tool_raw("echo_message", tool.raw_input, "healthy",
+    function()
+      collectgarbage("collect")
+      raw_failure("raw active client close", client:close())
+      reentry = true
+      return true
+    end), nil, "raw call recovers after failures")
+  if not reentry then fail("raw recovery sink not reached") end
+  local binary = assert_ok(client:call_tool_raw("echo_message", tool.raw_input,
+    "a\0b\n"), nil, "embedded NUL raw upload")
+  contains("embedded NUL preserved", binary:read_all(), '"a\\u0000b\\n"')
   registry:close()
   assert_ok(client:close())
   print("Lua MCP native raw e2e passed at " .. url)
