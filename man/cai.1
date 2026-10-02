@@ -298,7 +298,8 @@ the workspace, available ChatGPT subscription quota and credits or API cost esti
 the Git branch when available, and an active goal.
 Quota windows are labeled by their returned duration, including weekly-only
 accounts and any shorter window returned by the backend. Quota is fetched at
-startup and after completed turns, with automatic requests limited to one
+startup and after completed turns in the background, without delaying prompt
+readiness. Idle sessions do not poll. Automatic requests are limited to one
 attempt every five minutes.
 Unavailable values are hidden.
 Credits follow the quota windows as
@@ -371,7 +372,9 @@ ordinary conversation messages.
 Preferred ChatGPT authentication file when present.
 .TP
 .I $XDG_STATE_HOME/cai/pouch
-Encrypted default Pouch root containing cai.sessions and cai.auth namespaces.
+Encrypted default Pouch root containing cai.sessions and cai.auth namespaces,
+plus a derived cai.scopes index for newest-session lookup. Missing or interrupted
+directory indexes are rebuilt from session metadata.
 Uses ~/.local/state/cai/pouch when XDG_STATE_HOME is unset.
 .TP
 .I $XDG_STATE_HOME/cai/pouch.key

@@ -4499,24 +4499,6 @@ cai_runtime_replay_consumed_input(cai_agent_runtime *runtime,
   return CAI_OK;
 }
 
-static int cai_runtime_find_journal_v2(void *context,
-                                       const cai_agent_session_event *event,
-                                       cai_error *error) {
-  cai_agent_runtime *runtime;
-
-  runtime = (cai_agent_runtime *)context;
-  if (runtime == NULL || event == NULL || event->type == NULL ||
-      event->sequence == 0U) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "invalid session journal migration event");
-  }
-  if (strcmp(event->type, "input_journal_v2") == 0 &&
-      event->sequence < runtime->journal_v2_start_sequence) {
-    runtime->journal_v2_start_sequence = event->sequence;
-  }
-  return CAI_OK;
-}
-
 static void cai_runtime_clear_resumed_subagent(cai_agent_runtime *runtime) {
   if (runtime == NULL) {
     return;
@@ -4587,12 +4569,20 @@ static int cai_runtime_replay_journal_event(
   int goal_kind;
 
   runtime = (cai_agent_runtime *)context;
-  if (runtime == NULL || event == NULL || event->type == NULL) {
+  if (runtime == NULL || event == NULL || event->type == NULL ||
+      event->sequence == 0U) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "invalid session journal replay event");
   }
   if (event->sequence > runtime->next_event_sequence) {
     runtime->next_event_sequence = event->sequence;
+  }
+  /* Stores replay in sequence order, so the first marker selects the new
+   * acknowledgement rule before any record that uses it arrives. */
+  if (strcmp(event->type, "input_journal_v2") == 0) {
+    if (event->sequence < runtime->journal_v2_start_sequence)
+      runtime->journal_v2_start_sequence = event->sequence;
+    return CAI_OK;
   }
   input_event = strcmp(event->type, "steering_queued") == 0 ||
                 strcmp(event->type, "turn_queued") == 0 ||
@@ -6820,13 +6810,8 @@ int cai_agent_runtime_open(cai_client *client,
       runtime->journal_v2_start_sequence = ULLONG_MAX;
       rc = runtime->session_store->load_events_after(
           runtime->session_store->context, runtime->session_scope,
-          runtime->session_id, 0U, cai_runtime_find_journal_v2, runtime, error);
-      if (rc == CAI_OK) {
-        rc = runtime->session_store->load_events_after(
-            runtime->session_store->context, runtime->session_scope,
-            runtime->session_id, 0U, cai_runtime_replay_journal_event, runtime,
-            error);
-      }
+          runtime->session_id, 0U, cai_runtime_replay_journal_event, runtime,
+          error);
       if (rc == CAI_OK) {
         cai_runtime_promote_resumed_steering(runtime);
       }

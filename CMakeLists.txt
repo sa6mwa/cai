@@ -957,7 +957,7 @@ endif()
 if(CAI_BUILD_CLI)
   find_package(lockdc CONFIG REQUIRED COMPONENTS static)
   add_executable(cai_cli cli/main.c cli/options.c cli/status.c cli/login.c
-    cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/session_commands.c
+    cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c
     cli/log.c cli/response.c)
   set_target_properties(cai_cli PROPERTIES OUTPUT_NAME cai SKIP_BUILD_RPATH ON)
   target_link_libraries(cai_cli PRIVATE cai_static
@@ -1019,7 +1019,7 @@ if(CAI_BUILD_CLI)
     set_tests_properties(cai_cli_storage_stream PROPERTIES TIMEOUT 30)
     add_executable(cai_cli_reasoning_test tests/cli_reasoning_test.c
       cli/options.c cli/status.c cli/login.c cli/review_report.c
-      cli/pouch.c cli/pouch_stream.c cli/session_commands.c cli/log.c cli/response.c)
+      cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c cli/log.c cli/response.c)
     target_link_libraries(cai_cli_reasoning_test PRIVATE cai_static
       softline::softline_static libmdf::mdf_static lockdc::static)
     target_link_options(cai_cli_reasoning_test PRIVATE -static)
@@ -1031,6 +1031,36 @@ if(CAI_BUILD_CLI)
     target_link_options(cai_cli_log_test PRIVATE -static)
     cai_configure_c_target(cai_cli_log_test)
     add_test(NAME cai_cli_log COMMAND cai_cli_log_test "${CMAKE_CURRENT_BINARY_DIR}")
+    add_executable(cai_cli_startup_fixture tests/cli_startup_fixture.c
+      cli/options.c cli/status.c cli/login.c cli/review_report.c cli/pouch.c
+      cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c cli/log.c
+      cli/response.c)
+    target_link_libraries(cai_cli_startup_fixture PRIVATE cai_static
+      softline::softline_static libmdf::mdf_static lockdc::static)
+    target_link_options(cai_cli_startup_fixture PRIVATE -static)
+    cai_configure_c_target(cai_cli_startup_fixture)
+    add_test(NAME cai_cli_startup
+      COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_startup_test.py"
+        "$<TARGET_FILE:cai_cli_startup_fixture>")
+    set_tests_properties(cai_cli_startup PROPERTIES TIMEOUT 30)
+    add_executable(cai_cli_quota_refresh_test tests/cli_quota_refresh_test.c
+      cli/quota_refresh.c cli/pouch_stream.c)
+    target_link_libraries(cai_cli_quota_refresh_test PRIVATE cai_static lockdc::static)
+    target_link_options(cai_cli_quota_refresh_test PRIVATE -static)
+    cai_configure_c_target(cai_cli_quota_refresh_test)
+    target_compile_options(cai_cli_quota_refresh_test PRIVATE -UNDEBUG)
+    add_test(NAME cai_cli_quota_refresh COMMAND cai_cli_quota_refresh_test)
+    set_tests_properties(cai_cli_quota_refresh PROPERTIES TIMEOUT 30)
+    add_executable(cai_cli_pouch_startup_test tests/cli_pouch_startup_test.c
+      cli/pouch_stream.c)
+    target_link_libraries(cai_cli_pouch_startup_test PRIVATE cai_static lockdc::static)
+    target_link_options(cai_cli_pouch_startup_test PRIVATE -static)
+    cai_configure_c_target(cai_cli_pouch_startup_test)
+    target_compile_options(cai_cli_pouch_startup_test PRIVATE -UNDEBUG)
+    add_test(NAME cai_cli_pouch_startup
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_pouch_startup_test.sh"
+        "$<TARGET_FILE:cai_cli_pouch_startup_test>" "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(cai_cli_pouch_startup PROPERTIES TIMEOUT 60)
     add_executable(cai_cli_status_test tests/cli_status_test.c cli/status.c)
     target_link_libraries(cai_cli_status_test PRIVATE cai_static
       softline::softline_static)

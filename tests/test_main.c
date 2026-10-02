@@ -244,6 +244,7 @@ typedef struct runtime_session_store_state {
   const char *checkpoint_json;
   read_state reader;
   int loads;
+  int journal_loads;
   int checkpoints;
   int load_only_saved_scope;
   int fail_checkpoint_once;
@@ -2535,6 +2536,7 @@ static int test_runtime_session_store_load_events_after(
     return cai_set_error(error, CAI_ERR_INVALID,
                          "runtime test replay callback is required");
   }
+  store->journal_loads++;
   if (store->replay_event_count > 0U) {
     for (index = 0U; index < store->replay_event_count; index++) {
       if (store->replay_event_sequences[index] <= after_sequence) {
@@ -31489,6 +31491,8 @@ static void test_agent_runtime_resume(test_state *state) {
              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
              CAI_OK);
   expect_int(state, "runtime_resume_load_count", store_state.loads, 1L);
+  expect_int(state, "runtime_resume_single_journal_pass",
+             store_state.journal_loads, 1L);
   expect_str(state, "runtime_resume_scope", store_state.scope, "/tmp");
   if (runtime != NULL) {
     expect_str(state, "runtime_resume_session_id",

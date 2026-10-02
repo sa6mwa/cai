@@ -5,6 +5,7 @@
 #include "login.h"
 #include "options.h"
 #include "pouch.h"
+#include "quota_refresh.h"
 #include "response.h"
 #include "review_report.h"
 #include "session_commands.h"
@@ -43,6 +44,9 @@ typedef struct cli_state {
   cai_agent_session_store store;
   cai_cli_pouch pouch;
   cai_chatgpt_auth *auth;
+  cai_chatgpt_auth shared_auth;
+  pthread_mutex_t auth_lock;
+  int has_auth_lock;
   cai_client *client;
   cai_client *quota_client;
   cai_agent_runtime *runtime;
@@ -78,8 +82,9 @@ typedef struct cli_state {
   int auto_goal;
   size_t next_instruction;
   cai_chatgpt_quota quota;
-  struct timespec quota_last_attempt;
-  int quota_attempted;
+  cai_cli_quota_refresh quota_refresh;
+  sl_watch_id_t quota_watch_id;
+  int has_quota_watch;
   cai_cli_status status;
   char reasoning_summary_raw[512];
   size_t reasoning_summary_length;
@@ -169,39 +174,35 @@ static void cli_diagnostic(cli_state *state, pslog_level level,
                       text, strlen(text), NULL, 0U);
 }
 
-static int cli_quota_due(int attempted, struct timespec last_attempt,
-                         struct timespec now, int force) {
-  time_t elapsed;
-  if (force || !attempted || now.tv_sec < last_attempt.tv_sec)
-    return 1;
-  elapsed = now.tv_sec - last_attempt.tv_sec;
-  return elapsed > 300 ||
-         (elapsed == 300 && now.tv_nsec >= last_attempt.tv_nsec);
+/* Both clients share credentials, while token refresh and token copies are
+ * serialized. Network requests use their own client and copied bearer token. */
+static int cli_auth_token(cai_chatgpt_auth *auth, char **out,
+                          cai_error *error) {
+  cli_state *state = auth->impl;
+  int rc;
+  pthread_mutex_lock(&state->auth_lock);
+  rc = state->auth->access_token(state->auth, out, error);
+  pthread_mutex_unlock(&state->auth_lock);
+  return rc;
+}
+
+static int cli_auth_refresh(cai_chatgpt_auth *auth, cai_error *error) {
+  cli_state *state = auth->impl;
+  int rc;
+  pthread_mutex_lock(&state->auth_lock);
+  rc = state->auth->refresh(state->auth, error);
+  pthread_mutex_unlock(&state->auth_lock);
+  return rc;
+}
+
+static int cli_fetch_quota(void *context, cai_chatgpt_quota *out,
+                           cai_error *error) {
+  return cai_client_chatgpt_quota((cai_client *)context, out, error);
 }
 
 static void cli_refresh_quota(cli_state *state, int force) {
-  struct timespec now;
-  cai_error optional_error;
-  cai_chatgpt_quota fresh;
-  if (state->quota_client == NULL ||
-      clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
-    return;
-  }
-  if (!cli_quota_due(state->quota_attempted, state->quota_last_attempt, now,
-                     force)) {
-    return;
-  }
-  state->quota_attempted = 1;
-  state->quota_last_attempt = now;
-  memset(&fresh, 0, sizeof(fresh));
-  cai_error_init(&optional_error);
-  if (cai_client_chatgpt_quota(state->quota_client, &fresh, &optional_error) ==
-      CAI_OK) {
-    state->quota = fresh;
-  } else {
-    memset(&state->quota, 0, sizeof(state->quota));
-  }
-  cai_error_cleanup(&optional_error);
+  cai_cli_quota_request(&state->quota_refresh, force, force);
+  (void)cai_cli_quota_take(&state->quota_refresh, &state->quota);
 }
 
 static int cli_sink(void *context, const char *bytes, size_t count) {
@@ -707,16 +708,27 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
   return CAI_OK;
 }
 
-static int cli_replay(cli_state *state, cai_error *error) {
-  int rc;
-  rc = state->store.load_events_after(
-      state->store.context, state->workspace,
-      cai_agent_runtime_session_id(state->runtime), 0U, cli_replay_event, state,
-      error);
-  if (rc == CAI_OK && cli_finish_response(state) != 0) {
-    rc = CAI_ERR_TRANSPORT;
-  }
-  return rc;
+static int cli_replay_begin(void *context, const char *id, cai_error *error) {
+  cli_state *state = context;
+  return cai_cli_log_session(&state->log, id, error);
+}
+
+static int cli_quota_wakeup(sl_t *sl, const sl_watch_event_t *event,
+                            void *context) {
+  cli_state *state = context;
+  cai_error error;
+  int rc = CAI_OK;
+  (void)sl;
+  (void)event;
+  if (!cai_cli_quota_take(&state->quota_refresh, &state->quota))
+    return SL_OK;
+  cai_error_init(&error);
+  if (state->runtime != NULL)
+    rc = cli_sync_status(state, &error);
+  if (rc != CAI_OK)
+    cli_print_error(state, "quota status", &error);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
 }
 
 static int cli_open_runtime(cli_state *state, const char *resume_id,
@@ -759,7 +771,17 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   config.disable_review_subagent = !state->options.review_subagent;
   config.event_callback = cli_event;
   config.event_context = state;
+  if (!state->options.review) {
+    state->pouch.replay_begin = cli_replay_begin;
+    state->pouch.replay_event = cli_replay_event;
+    state->pouch.replay_context = state;
+    state->pouch.replay_scope = state->workspace;
+  }
   rc = cai_agent_runtime_open(state->client, &config, &state->runtime, error);
+  state->pouch.replay_begin = NULL;
+  state->pouch.replay_event = NULL;
+  state->pouch.replay_context = NULL;
+  state->pouch.replay_scope = NULL;
   if (rc != CAI_OK) {
     return rc;
   }
@@ -789,7 +811,7 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
     }
     state->has_watch = 1;
   }
-  rc = state->options.review ? CAI_OK : cli_replay(state, error);
+  rc = cli_finish_response(state) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
   if (rc == CAI_OK) {
     rc = cli_sync_status(state, error);
   }
@@ -1523,7 +1545,16 @@ int main(int argc, char **argv) {
                      "cai: run cai --login to authenticate\n");
       goto cleanup;
     }
-    client_config.chatgpt_auth = state.auth;
+    if (pthread_mutex_init(&state.auth_lock, NULL) != 0) {
+      cai_cli_error(&error, CAI_ERR_TRANSPORT, "initialize shared auth lock");
+      cli_print_error(&state, "open ChatGPT auth", &error);
+      goto cleanup;
+    }
+    state.has_auth_lock = 1;
+    state.shared_auth.access_token = cli_auth_token;
+    state.shared_auth.refresh = cli_auth_refresh;
+    state.shared_auth.impl = &state;
+    client_config.chatgpt_auth = &state.shared_auth;
   } else if (strcmp(state.options.provider, "openrouter") == 0) {
     cai_client_config_use_openrouter(&client_config);
   } else if (strcmp(state.options.provider, "berget") == 0) {
@@ -1538,36 +1569,34 @@ int main(int argc, char **argv) {
     cli_print_error(&state, "open client", &error);
     goto cleanup;
   }
-  if (strcmp(state.options.provider, "berget") == 0) {
-    cai_model_catalog *catalog = NULL;
-    rc = cai_client_list_models(state.client,
-                                CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED,
-                                &catalog, &error);
-    cai_model_catalog_close(catalog);
-    if (rc != CAI_OK) {
-      char detail[512];
-      snprintf(detail, sizeof(detail),
-               "Berget model catalog unavailable: %s; context uses "
-               "compiled model-card limits until discovery succeeds",
-               error.message != NULL ? error.message : "unknown error");
-      cli_diagnostic(&state, PSLOG_LEVEL_WARN, detail);
-      cai_error_cleanup(&error);
-      cai_error_init(&error);
-    }
-  }
   if (state.auth != NULL) {
     cai_error quota_error;
     cai_client_config quota_config;
     cai_error_init(&quota_error);
     cai_client_config_init(&quota_config);
     quota_config.logger = state.log.logger;
-    quota_config.chatgpt_auth = state.auth;
+    quota_config.chatgpt_auth = &state.shared_auth;
     quota_config.timeout_ms = 1500L;
     if (cai_client_open(&quota_config, &state.quota_client, &quota_error) ==
         CAI_OK) {
-      if (state.interactive)
-        cli_refresh_quota(&state, 0);
+      if (state.interactive &&
+          cai_cli_quota_open(&state.quota_refresh, cli_fetch_quota,
+                             state.quota_client, &quota_error) == CAI_OK) {
+        if (sl_watch_add(state.sl, state.quota_refresh.fd,
+                         SL_WATCH_READ | SL_WATCH_ERROR, cli_quota_wakeup,
+                         &state, &state.quota_watch_id) == SL_OK)
+          state.has_quota_watch = 1;
+        else {
+          cai_cli_quota_close(&state.quota_refresh);
+          cli_diagnostic(
+              &state, PSLOG_LEVEL_WARN,
+              "quota updates unavailable: cannot watch quota worker");
+        }
+      }
     }
+    if (quota_error.code != CAI_OK)
+      cai_cli_log_error(state.log.logger, "initialize quota updates",
+                        &quota_error);
     cai_error_cleanup(&quota_error);
   }
   rc = cli_open_runtime(&state, state.options.resume_id,
@@ -1584,6 +1613,8 @@ int main(int argc, char **argv) {
       result = 0;
     goto cleanup;
   }
+  if (state.interactive)
+    cli_refresh_quota(&state, 0);
   rc = cli_start_automation(&state, &error);
   if (rc != CAI_OK) {
     cli_print_error(&state, "start work", &error);
@@ -1673,12 +1704,17 @@ cleanup:
     (void)sl_watch_remove(state.sl, state.timer_watch_id);
   if (state.timer_fd >= 0)
     close(state.timer_fd);
+  if (state.has_quota_watch)
+    (void)sl_watch_remove(state.sl, state.quota_watch_id);
+  cai_cli_quota_close(&state.quota_refresh);
   if (state.client != NULL)
     state.client->close(state.client);
   if (state.quota_client != NULL)
     state.quota_client->close(state.quota_client);
   if (state.auth != NULL)
     state.auth->close(state.auth);
+  if (state.has_auth_lock)
+    pthread_mutex_destroy(&state.auth_lock);
   cai_cli_pouch_close(&state.pouch);
   if (state.sl != NULL)
     (void)cai_cli_log_notices(&state.log, cli_notice, &state);

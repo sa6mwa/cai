@@ -31,6 +31,29 @@ static const lonejson_field session_fields[] = {
     LONEJSON_FIELD_I64(cai_cli_session, published, "published")};
 LONEJSON_MAP_DEFINE(session_map, cai_cli_session, session_fields);
 
+/* A derived directory index, kept separately from conversation documents.
+ * Dirty is durable before a checkpoint/publication changes; an interrupted
+ * writer therefore causes reconstruction from authoritative session metadata.
+ */
+typedef struct latest_index {
+  char workspace[PATH_MAX];
+  lonejson_int64 dirty;
+  cai_cli_session latest;
+} latest_index;
+static const lonejson_field latest_fields[] = {
+    LONEJSON_FIELD_STRING_FIXED_REQ(latest_index, workspace, "workspace",
+                                    LONEJSON_OVERFLOW_FAIL),
+    LONEJSON_FIELD_I64_REQ(latest_index, dirty, "dirty"),
+    LONEJSON_FIELD_OBJECT(latest_index, latest, "latest", &session_map)};
+LONEJSON_MAP_DEFINE(latest_map, latest_index, latest_fields);
+static int latest_open(cai_cli_pouch *, const char *, lc_lease **,
+                       latest_index *, cai_error *);
+static int latest_write(cai_cli_pouch *, lc_lease *, latest_index *,
+                        cai_error *);
+static int session_exists(cai_cli_pouch *, const char *, int *, cai_error *);
+static int latest_rebuild(cai_cli_pouch *, latest_index *, cai_error *);
+static int session_compare(const void *, const void *);
+
 typedef struct scope_predicate {
   char field[24];
   char value[PATH_MAX];
@@ -149,6 +172,7 @@ typedef struct download {
   lc_client *client;
   char *key;
   char *attachment;
+  const char *ns;
 } download;
 
 static void download_close(void *context) {
@@ -176,7 +200,7 @@ static int download_write(void *context, cai_sink *sink, cai_error *error) {
     if (request->attachment != NULL) {
       lc_attachment_get_op_init(&attachment);
       memset(&attached, 0, sizeof(attached));
-      attachment.lease.ns = request->client->default_namespace;
+      attachment.lease.ns = request->ns;
       attachment.lease.key = request->key;
       attachment.selector.name = request->attachment;
       attachment.public_read = 1;
@@ -187,8 +211,8 @@ static int download_write(void *context, cai_sink *sink, cai_error *error) {
       memset(&response, 0, sizeof(response));
       memset(&options, 0, sizeof(options));
       options.public_read = 1;
-      rc = request->client->get(request->client, request->key, &options,
-                                destination, &response, &local);
+      rc = lc_get_in_namespace(request->client, request->ns, request->key,
+                               &options, destination, &response, &local);
       lc_get_res_cleanup(&response);
     }
     if (rc != LC_OK)
@@ -199,15 +223,16 @@ static int download_write(void *context, cai_sink *sink, cai_error *error) {
   return rc;
 }
 
-static int download_source(lc_client *client, const char *key,
-                           const char *attachment, cai_source **out,
-                           cai_error *error) {
+static int download_source_ns(lc_client *client, const char *ns,
+                              const char *key, const char *attachment,
+                              cai_source **out, cai_error *error) {
   download *request;
   int rc;
   request = (download *)calloc(1U, sizeof(*request));
   if (request == NULL)
     return cai_cli_error(error, CAI_ERR_NOMEM, "allocate pouch download");
   request->client = client;
+  request->ns = ns;
   request->key = strdup(key);
   request->attachment = attachment != NULL ? strdup(attachment) : NULL;
   if (request->key == NULL ||
@@ -222,9 +247,17 @@ static int download_source(lc_client *client, const char *key,
   return rc;
 }
 
+static int download_source(lc_client *client, const char *key,
+                           const char *attachment, cai_source **out,
+                           cai_error *error) {
+  return download_source_ns(client, "cai.sessions", key, attachment, out,
+                            error);
+}
+
 typedef struct parse_input {
   cai_source *source;
   cai_error error;
+  size_t bytes_read;
 } parse_input;
 
 static lonejson_read_result parse_read(void *context, unsigned char *bytes,
@@ -235,25 +268,31 @@ static lonejson_read_result parse_read(void *context, unsigned char *bytes,
   result = lonejson_default_read_result();
   result.bytes_read =
       cai_source_read(input->source, bytes, capacity, &input->error);
+  input->bytes_read += result.bytes_read;
   result.eof = result.bytes_read == 0U && input->error.code == CAI_OK;
   result.error_code = input->error.code == CAI_OK ? 0 : EIO;
   return result;
 }
 
-static int parse_source(cai_source *source, const lonejson_map *map, void *doc,
-                        cai_error *error) {
+static int parse_source_optional(cai_source *source, const lonejson_map *map,
+                                 void *doc, int *has_body, cai_error *error) {
   lonejson *json;
   lonejson_error local;
   int rc;
+  lonejson_status status;
   char message[512];
   parse_input input;
   json = lonejson_new(NULL, &local);
   if (json == NULL)
     return cai_cli_lj_error(error, &local);
   input.source = source;
+  input.bytes_read = 0U;
   cai_error_init(&input.error);
-  rc = lonejson_parse_reader(json, map, doc, parse_read, &input, &local) ==
-               LONEJSON_STATUS_OK
+  status = lonejson_parse_reader(json, map, doc, parse_read, &input, &local);
+  if (has_body != NULL)
+    *has_body = input.bytes_read != 0U;
+  rc = status == LONEJSON_STATUS_OK ||
+               (has_body != NULL && !*has_body && input.error.code == CAI_OK)
            ? CAI_OK
            : cai_cli_lj_error(error, &local);
   if (rc != CAI_OK) {
@@ -267,15 +306,20 @@ static int parse_source(cai_source *source, const lonejson_map *map, void *doc,
   return rc;
 }
 
-int cai_cli_pouch_session(cai_cli_pouch *pouch, const char *id,
-                          cai_cli_session *out, cai_error *error) {
+static int parse_source(cai_source *source, const lonejson_map *map, void *doc,
+                        cai_error *error) {
+  return parse_source_optional(source, map, doc, NULL, error);
+}
+
+static int session_read(cai_cli_pouch *pouch, const char *id,
+                        cai_cli_session *out, int *has_body, cai_error *error) {
   cai_source *source;
   int rc;
   memset(out, 0, sizeof(*out));
   source = NULL;
   rc = download_source(pouch->sessions, id, NULL, &source, error);
   if (rc == CAI_OK)
-    rc = parse_source(source, &session_map, out, error);
+    rc = parse_source_optional(source, &session_map, out, has_body, error);
   if (rc != CAI_OK) {
     char message[640];
     long http_status;
@@ -289,22 +333,38 @@ int cai_cli_pouch_session(cai_cli_pouch *pouch, const char *id,
   return rc;
 }
 
-static int acquire(lc_client *client, const char *key, lc_lease **out,
-                   cai_error *error) {
+int cai_cli_pouch_session(cai_cli_pouch *pouch, const char *id,
+                          cai_cli_session *out, cai_error *error) {
+  return session_read(pouch, id, out, NULL, error);
+}
+
+static int acquire_wait(lc_client *client, const char *ns, const char *key,
+                        long wait_seconds, lc_lease **out, cai_error *error) {
   lc_acquire_req request;
   lc_error local;
   int rc;
   lc_acquire_req_init(&request);
   lc_error_init(&local);
+  request.ns = ns;
   request.key = key;
   request.owner = "cai";
   request.ttl_seconds = 3600;
-  request.block_seconds = 5;
+  request.block_seconds = wait_seconds;
   rc = client->acquire(client, &request, out, &local);
   if (rc != LC_OK)
     rc = cai_cli_lc_error(error, &local);
   lc_error_cleanup(&local);
   return rc;
+}
+
+static int acquire_ns(lc_client *client, const char *ns, const char *key,
+                      lc_lease **out, cai_error *error) {
+  return acquire_wait(client, ns, key, 5L, out, error);
+}
+
+static int acquire(lc_client *client, const char *key, lc_lease **out,
+                   cai_error *error) {
+  return acquire_ns(client, NULL, key, out, error);
 }
 
 static int release(lc_lease *lease, int rc, cai_error *error) {
@@ -416,11 +476,20 @@ static int checkpoint(void *context, const char *scope, const char *id,
   cai_cli_pouch *pouch;
   cai_cli_session session;
   lc_lease *lease;
+  lc_lease *directory;
+  latest_index index;
   struct timespec now;
   int rc;
   pouch = (cai_cli_pouch *)context;
   lease = NULL;
-  rc = acquire(pouch->sessions, id, &lease, error);
+  directory = NULL;
+  rc = latest_open(pouch, scope, &directory, &index, error);
+  if (rc == CAI_OK) {
+    index.dirty = 1;
+    rc = latest_write(pouch, directory, &index, error);
+  }
+  if (rc == CAI_OK)
+    rc = acquire(pouch->sessions, id, &lease, error);
   if (rc == CAI_OK)
     rc = get_session(lease, scope, id, &session, error);
   if (rc == CAI_OK && clock_gettime(CLOCK_REALTIME, &now) != 0)
@@ -436,7 +505,22 @@ static int checkpoint(void *context, const char *scope, const char *id,
     if (rc == CAI_OK)
       rc = update_session(lease, &session, error);
   }
-  return release(lease, rc, error);
+  rc = release(lease, rc, error);
+  if (rc == CAI_OK) {
+    if (session.published && strcmp(session.id, index.latest.id) == 0 &&
+        session.checkpoint_ns < index.latest.checkpoint_ns)
+      rc = latest_rebuild(pouch, &index, error);
+    else if (session.published &&
+             (index.latest.id[0] == '\0' ||
+              strcmp(session.id, index.latest.id) == 0 ||
+              session_compare(&session, &index.latest) < 0))
+      index.latest = session;
+    if (rc == CAI_OK) {
+      index.dirty = 0;
+      rc = latest_write(pouch, directory, &index, error);
+    }
+  }
+  return release(directory, rc, error);
 }
 
 static int load_id(void *context, const char *scope, const char *id,
@@ -507,7 +591,7 @@ int cai_cli_pouch_list(cai_cli_pouch *pouch, const char *scope,
   lc_query_res result;
   lc_query_key_handler handler;
   lc_error local;
-  key_page page;
+  key_page *page;
   cai_cli_session session;
   cai_cli_session *grown;
   char *cursor;
@@ -516,6 +600,7 @@ int cai_cli_pouch_list(cai_cli_pouch *pouch, const char *scope,
   lonejson_error json_error;
   size_t i;
   int rc;
+  int exists;
   *out = NULL;
   *count = 0U;
   cursor = NULL;
@@ -537,6 +622,12 @@ int cai_cli_pouch_list(cai_cli_pouch *pouch, const char *scope,
       return cai_cli_lj_error(error, &json_error);
     }
   }
+  page = (key_page *)calloc(1U, sizeof(*page));
+  if (page == NULL) {
+    free(selector);
+    lonejson_free(json);
+    return cai_cli_error(error, CAI_ERR_NOMEM, "allocate session query page");
+  }
   lc_error_init(&local);
   lc_query_req_init(&query);
   memset(&handler, 0, sizeof(handler));
@@ -550,10 +641,10 @@ int cai_cli_pouch_list(cai_cli_pouch *pouch, const char *scope,
   query.limit = 256;
   rc = CAI_OK;
   do {
-    memset(&page, 0, sizeof(page));
+    memset(page, 0, sizeof(*page));
     memset(&result, 0, sizeof(result));
     query.cursor = cursor;
-    if (lc_query_keys(pouch->sessions, &query, &handler, &page, &result,
+    if (lc_query_keys(pouch->sessions, &query, &handler, page, &result,
                       &local) != LC_OK)
       rc = cai_cli_lc_error(error, &local);
     free(cursor);
@@ -561,8 +652,12 @@ int cai_cli_pouch_list(cai_cli_pouch *pouch, const char *scope,
     if (result.cursor != NULL && cursor == NULL)
       rc = cai_cli_error(error, CAI_ERR_NOMEM, "allocate query cursor");
     lc_query_res_cleanup(&result);
-    for (i = 0U; rc == CAI_OK && i < page.count; i++) {
-      rc = cai_cli_pouch_session(pouch, page.keys[i], &session, error);
+    for (i = 0U; rc == CAI_OK && i < page->count; i++) {
+      /* Removed or uncommitted imports can have indexed keys but no public
+       * state body. Skip those; malformed nonempty metadata still fails. */
+      rc = session_read(pouch, page->keys[i], &session, &exists, error);
+      if (rc == CAI_OK && !exists)
+        continue;
       if (rc != CAI_OK)
         break;
       if (!session.published || session.checkpoint_name[0] == '\0' ||
@@ -579,6 +674,7 @@ int cai_cli_pouch_list(cai_cli_pouch *pouch, const char *scope,
   } while (rc == CAI_OK && cursor != NULL && cursor[0] != '\0');
   free(cursor);
   free(selector);
+  free(page);
   lonejson_free(json);
   lc_error_cleanup(&local);
   if (rc != CAI_OK) {
@@ -591,24 +687,168 @@ int cai_cli_pouch_list(cai_cli_pouch *pouch, const char *scope,
   return rc;
 }
 
+static int latest_write(cai_cli_pouch *pouch, lc_lease *guard,
+                        latest_index *index, cai_error *error) {
+  lc_lease *lease = NULL;
+  cai_source *source = NULL;
+  int rc =
+      acquire_ns(pouch->sessions, "cai.scopes", guard->key + 5U, &lease, error);
+  if (rc == CAI_OK)
+    rc = mapped_source(&latest_map, index, &source, error);
+  if (rc == CAI_OK)
+    rc = update(lease, source, error);
+  cai_source_close(source);
+  /* Lease updates are staged. Releasing this separate document lease commits
+   * dirty before any session mutation, while guard still serializes writers. */
+  return release(lease, rc, error);
+}
+
+static int latest_rebuild(cai_cli_pouch *pouch, latest_index *index,
+                          cai_error *error) {
+  cai_cli_session *sessions = NULL;
+  size_t count = 0U;
+  int rc =
+      cai_cli_pouch_list(pouch, index->workspace, &sessions, &count, error);
+  if (rc == CAI_OK) {
+    memset(&index->latest, 0, sizeof(index->latest));
+    if (count != 0U)
+      index->latest = sessions[0];
+    index->dirty = 0;
+  }
+  free(sessions);
+  return rc;
+}
+
+static int latest_key(const char *scope, char key[65], cai_error *error) {
+  unsigned char digest[32];
+  unsigned int length;
+  size_t i;
+  if (strlen(scope) >= PATH_MAX)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "directory index scope too long");
+  if (EVP_Digest(scope, strlen(scope), digest, &length, EVP_sha256(), NULL) !=
+          1 ||
+      length != sizeof(digest))
+    return cai_cli_error(error, CAI_ERR_TRANSPORT, "hash directory index key");
+  for (i = 0U; i < sizeof(digest); i++)
+    snprintf(key + i * 2U, 65U - i * 2U, "%02x", digest[i]);
+  return CAI_OK;
+}
+
+static int latest_open_wait(cai_cli_pouch *pouch, const char *scope,
+                            long wait_seconds, lc_lease **out,
+                            latest_index *index, cai_error *error) {
+  char key[70];
+  lc_lease *head = NULL;
+  lc_get_res response;
+  lc_error local;
+  int rc;
+  *out = NULL;
+  memset(index, 0, sizeof(*index));
+  memcpy(key, "lock-", 5U);
+  rc = latest_key(scope, key + 5U, error);
+  if (rc != CAI_OK)
+    return rc;
+  rc = acquire_wait(pouch->sessions, "cai.scopes", key, wait_seconds, out,
+                    error);
+  if (rc != CAI_OK)
+    return rc;
+  rc = acquire_ns(pouch->sessions, "cai.scopes", key + 5U, &head, error);
+  if (rc != CAI_OK)
+    return rc;
+  lc_error_init(&local);
+  memset(&response, 0, sizeof(response));
+  if (head->state_etag != NULL && head->state_etag[0] != '\0') {
+    rc = head->load(head, &latest_map, index, NULL, &response, &local);
+    if (rc != LC_OK)
+      rc = cai_cli_lc_error(error, &local);
+    else if (strcmp(scope, index->workspace) != 0)
+      rc = cai_cli_error(error, CAI_ERR_INVALID,
+                         "directory index scope mismatch");
+  } else {
+    strcpy(index->workspace, scope);
+    index->dirty = 1;
+  }
+  lc_get_res_cleanup(&response);
+  lc_error_cleanup(&local);
+  rc = release(head, rc, error);
+  if (rc == CAI_OK && index->dirty) {
+    pslog_field field = pslog_str("workspace", scope);
+    if (pouch->logger != NULL)
+      pouch->logger->info(pouch->logger, "Rebuilding directory session index",
+                          &field, 1U);
+    rc = latest_rebuild(pouch, index, error);
+    if (rc == CAI_OK)
+      rc = latest_write(pouch, *out, index, error);
+  }
+  return rc;
+}
+
+static int latest_open(cai_cli_pouch *pouch, const char *scope, lc_lease **out,
+                       latest_index *index, cai_error *error) {
+  return latest_open_wait(pouch, scope, 5L, out, index, error);
+}
+
 static int load_latest(void *context, const char *scope, char *id,
                        size_t capacity, cai_source **out,
                        unsigned long long *sequence, cai_error *error) {
-  cai_cli_session *sessions;
-  size_t count;
+  cai_cli_pouch *pouch = context;
+  lc_lease *directory = NULL;
+  cai_source *source = NULL;
+  latest_index index;
+  char key[65];
+  int has_body = 0;
   int rc;
   *out = NULL;
-  rc = cai_cli_pouch_list((cai_cli_pouch *)context, scope, &sessions, &count,
-                          error);
-  if (rc == CAI_OK && count > 0U) {
-    if (strlen(sessions[0].id) >= capacity)
+  memset(&index, 0, sizeof(index));
+  rc = latest_key(scope, key, error);
+  if (rc == CAI_OK)
+    rc = download_source_ns(pouch->sessions, "cai.scopes", key, NULL, &source,
+                            error);
+  if (rc == CAI_OK)
+    rc = parse_source_optional(source, &latest_map, &index, &has_body, error);
+  cai_source_close(source);
+  if (rc != CAI_OK && error->http_status == 404) {
+    cai_error_cleanup(error);
+    cai_error_init(error);
+    rc = CAI_OK;
+    has_body = 0;
+  }
+  if (rc == CAI_OK && has_body && strcmp(scope, index.workspace) != 0)
+    rc =
+        cai_cli_error(error, CAI_ERR_INVALID, "directory index scope mismatch");
+  if (rc == CAI_OK && (!has_body || index.dirty)) {
+    cai_error optional;
+    cai_error_init(&optional);
+    rc = latest_open_wait(pouch, scope, 0L, &directory, &index, &optional);
+    rc = release(directory, rc, &optional);
+    /* A concurrent/interrupted writer must not delay prompt readiness. If its
+     * guard is held, select authoritative committed metadata without changing
+     * that writer's dirty index. The next writer repairs it under the guard. */
+    if (rc != CAI_OK) {
+      pslog_field fields[2];
+      fields[0] = pslog_str("workspace", scope);
+      fields[1] =
+          pslog_str("reason", optional.message != NULL ? optional.message
+                                                       : "index unavailable");
+      if (pouch->logger != NULL)
+        pouch->logger->debug(pouch->logger,
+                             "Selecting newest session from metadata", fields,
+                             2U);
+      memset(&index, 0, sizeof(index));
+      strcpy(index.workspace, scope);
+      rc = latest_rebuild(pouch, &index, error);
+    }
+    cai_error_cleanup(&optional);
+  }
+  if (rc == CAI_OK && index.latest.id[0] != '\0') {
+    if (strlen(index.latest.id) >= capacity)
       rc = cai_cli_error(error, CAI_ERR_INVALID, "session ID output too small");
     else {
-      strcpy(id, sessions[0].id);
+      strcpy(id, index.latest.id);
       rc = load_id(context, scope, id, out, sequence, error);
     }
   }
-  free(sessions);
   return rc;
 }
 
@@ -740,7 +980,11 @@ static int load_events(void *context, const char *scope, const char *id,
   size_t i;
   int rc;
   int exists;
+  int observe;
   pouch = (cai_cli_pouch *)context;
+  observe = pthread_equal(pthread_self(), pouch->owner_thread) &&
+            pouch->replay_scope != NULL &&
+            strcmp(scope, pouch->replay_scope) == 0;
   memset(&attachments, 0, sizeof(attachments));
   rc = session_exists(pouch, id, &exists, error);
   if (rc != CAI_OK || !exists)
@@ -751,6 +995,8 @@ static int load_events(void *context, const char *scope, const char *id,
                        "session belongs to another directory");
   if (rc == CAI_OK)
     rc = event_attachments(pouch, id, &attachments, error);
+  if (rc == CAI_OK && observe && pouch->replay_begin != NULL)
+    rc = pouch->replay_begin(pouch->replay_context, id, error);
   for (i = 0U; rc == CAI_OK && i < attachments.count; i++) {
     if (strncmp(attachments.items[i].name, "event-", 6U) != 0)
       continue;
@@ -773,6 +1019,8 @@ static int load_events(void *context, const char *scope, const char *id,
       event.type = record.type;
       event.data = record.data;
       rc = visit(visitor, &event, error);
+      if (rc == CAI_OK && observe && pouch->replay_event != NULL)
+        rc = pouch->replay_event(pouch->replay_context, &event, error);
     }
     lonejson_cleanup(&event_map, &record);
   }
@@ -794,12 +1042,13 @@ static int auth_load(void *context, const char *key, cai_source **out,
   lc_error_init(&local);
   request.key = key;
   request.ns = "cai.auth";
-  rc = lc_describe(pouch->auth, &request, &response, &local);
+  rc = lc_describe(pouch->sessions, &request, &response, &local);
   if (rc != LC_OK && local.http_status != 404)
     rc = cai_cli_lc_error(error, &local);
   else {
     rc = response.state_etag != NULL && response.state_etag[0] != '\0'
-             ? download_source(pouch->auth, key, NULL, out, error)
+             ? download_source_ns(pouch->sessions, "cai.auth", key, NULL, out,
+                                  error)
              : CAI_OK;
   }
   lc_describe_res_cleanup(&response);
@@ -814,7 +1063,7 @@ static int auth_replace(void *context, const char *key, cai_source *source,
   int rc;
   pouch = (cai_cli_pouch *)context;
   lease = NULL;
-  rc = acquire(pouch->auth, key, &lease, error);
+  rc = acquire_ns(pouch->sessions, "cai.auth", key, &lease, error);
   if (rc == CAI_OK)
     rc = update(lease, source, error);
   return release(lease, rc, error);
@@ -967,11 +1216,6 @@ int cai_cli_pouch_open(cai_cli_pouch *pouch, const char *selected_endpoint,
   config.disable_mtls = client_pem == NULL;
   if (rc == LC_OK)
     rc = lc_client_open(&config, &pouch->sessions, &local);
-  if (rc == LC_OK) {
-    config.default_namespace = "cai.auth";
-    settings.crypto_generate_key_file = 0;
-    rc = lc_client_open(&config, &pouch->auth, &local);
-  }
   lc_pouch_endpoint_free(endpoint);
   if (rc != LC_OK)
     rc = cai_cli_lc_error(error, &local);
@@ -981,6 +1225,7 @@ int cai_cli_pouch_open(cai_cli_pouch *pouch, const char *selected_endpoint,
     cai_cli_pouch_close(pouch);
     return rc;
   }
+  pouch->owner_thread = pthread_self();
   pouch->store.context = pouch;
   pouch->store.checkpoint = checkpoint;
   pouch->store.load_latest = load_latest;
@@ -994,11 +1239,8 @@ int cai_cli_pouch_open(cai_cli_pouch *pouch, const char *selected_endpoint,
 }
 
 void cai_cli_pouch_close(cai_cli_pouch *pouch) {
-  if (pouch->auth != NULL)
-    pouch->auth->close(pouch->auth);
   if (pouch->sessions != NULL)
     pouch->sessions->close(pouch->sessions);
-  pouch->auth = NULL;
   pouch->sessions = NULL;
 }
 
@@ -1102,17 +1344,38 @@ int cai_cli_pouch_seed_auth(cai_cli_pouch *pouch, const char *path,
 int cai_cli_pouch_publish(cai_cli_pouch *pouch, const char *id, int published,
                           cai_error *error) {
   cai_cli_session session;
-  lc_lease *lease;
-  int rc;
-  lease = NULL;
-  rc = acquire(pouch->sessions, id, &lease, error);
+  latest_index index;
+  lc_lease *lease = NULL;
+  lc_lease *directory = NULL;
+  int rc = cai_cli_pouch_session(pouch, id, &session, error);
   if (rc == CAI_OK)
-    rc = cai_cli_pouch_session(pouch, id, &session, error);
+    rc = latest_open(pouch, session.workspace, &directory, &index, error);
+  if (rc == CAI_OK) {
+    index.dirty = 1;
+    rc = latest_write(pouch, directory, &index, error);
+  }
+  if (rc == CAI_OK)
+    rc = acquire(pouch->sessions, id, &lease, error);
+  if (rc == CAI_OK)
+    rc = get_session(lease, index.workspace, id, &session, error);
   if (rc == CAI_OK) {
     session.published = published;
     rc = update_session(lease, &session, error);
   }
-  return release(lease, rc, error);
+  rc = release(lease, rc, error);
+  if (rc == CAI_OK) {
+    if (!published && strcmp(index.latest.id, id) == 0)
+      rc = latest_rebuild(pouch, &index, error);
+    else if (published && session.checkpoint_name[0] != '\0' &&
+             (index.latest.id[0] == '\0' ||
+              session_compare(&session, &index.latest) < 0))
+      index.latest = session;
+    if (rc == CAI_OK) {
+      index.dirty = 0;
+      rc = latest_write(pouch, directory, &index, error);
+    }
+  }
+  return release(directory, rc, error);
 }
 
 int cai_cli_pouch_lock(cai_cli_pouch *pouch, const char *id, lc_lease **out,

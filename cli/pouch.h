@@ -5,6 +5,7 @@
 #include <cai/blob_store.h>
 #include <cai/session_store.h>
 #include <limits.h>
+#include <pthread.h>
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -22,10 +23,15 @@ typedef struct cai_cli_session {
 
 typedef struct cai_cli_pouch {
   lc_client *sessions;
-  lc_client *auth;
   cai_agent_session_store store;
   cai_blob_store credentials;
   pslog_logger *logger;
+  /* Borrowed, synchronous replay observer; installed only during CLI open. */
+  int (*replay_begin)(void *, const char *, cai_error *);
+  cai_agent_session_event_fn replay_event;
+  void *replay_context;
+  const char *replay_scope;
+  pthread_t owner_thread;
   char state_directory[PATH_MAX];
   char key_path[PATH_MAX];
 } cai_cli_pouch;

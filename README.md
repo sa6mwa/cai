@@ -228,8 +228,10 @@ identified by their returned duration. Available credits follow the quota as
 fractional balances. Missing credit values are hidden. `libcai` exposes windows
 and available credit balance through
 `cai_client_chatgpt_quota` in `<cai/quota.h>`. The status
-bar fetches quota at startup and after completed turns, at most once every five
-minutes automatically. `/status` fetches quota on every invocation, updates the
+bar requests quota in the background after session startup and after completed
+turns, at most once every five minutes automatically. Quota retrieval does not
+block prompt readiness, and idle sessions make no periodic quota requests.
+`/status` fetches quota on every invocation, updates the
 bar, and renders a Markdown table with model, effort, available context
 and usage, quota, and credits. API key providers show `cost ?$` in the status
 bar until a USD cost estimate is available. Berget shows `cost ?€` and EUR
@@ -237,6 +239,8 @@ estimates without a USD conversion. ChatGPT's cost estimate, when
 available, uses API prices as an equivalent estimate, not a subscription
 charge. The
 context percentage is unknown until response usage is available.
+Provider model discovery runs on the agent worker when a turn needs it;
+Berget startup does not wait for its models endpoint.
 The package target writes `dist/cai-cli-<version>-x86_64-linux-musl.tar.gz`.
 Its relocatable layout includes `bin/cai`, `share/man/man1/cai.1`, and
 `share/doc/libcai/{README.md,LICENSE}` plus the SDK's model metadata guide.
@@ -247,6 +251,15 @@ liblockdc Pouch root at `$XDG_STATE_HOME/cai/pouch`, or
 `~/.local/state/cai/pouch`. Session metadata is indexed in `cai.sessions`;
 checkpoints and journal events are immutable attachments streamed into and
 out of that namespace. Credentials are stored separately in `cai.auth`.
+One lockd client serves all namespaces. A derived `cai.scopes` index records the
+newest published session per directory, so normal auto-resume loads one session
+without enumerating the directory's conversations. Missing or dirty directory
+indexes are rebuilt from authoritative session metadata. Resume falls back to
+metadata when a writer holds the directory guard, rather than waiting for it.
+Writers durably mark an index dirty before changing a checkpoint or
+publication. Runtime recovery
+and transcript display consume each journal event together in one ordered
+streaming pass, without buffering the conversation or repeating tool effects.
 The root uses shared writer mode so cai can run in multiple directories.
 The generated plaintext key is `$XDG_STATE_HOME/cai/pouch.key` (mode 0600).
 **Back up the Pouch root and its original key together.** Losing the key

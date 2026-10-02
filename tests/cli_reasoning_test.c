@@ -118,6 +118,99 @@ static int test_event_logging(void) {
   return 0;
 }
 
+typedef struct auth_fixture {
+  pthread_mutex_t lock;
+  pthread_cond_t condition;
+  int calls;
+  int released;
+  int second_started;
+} auth_fixture;
+
+static int test_auth_call(cai_chatgpt_auth *auth, cai_error *error) {
+  auth_fixture *fixture = auth->impl;
+  int call;
+  (void)error;
+  pthread_mutex_lock(&fixture->lock);
+  call = ++fixture->calls;
+  pthread_cond_broadcast(&fixture->condition);
+  while (fixture->released < call)
+    pthread_cond_wait(&fixture->condition, &fixture->lock);
+  pthread_mutex_unlock(&fixture->lock);
+  return CAI_OK;
+}
+
+static int test_auth_token(cai_chatgpt_auth *auth, char **out,
+                           cai_error *error) {
+  *out = NULL;
+  return test_auth_call(auth, error);
+}
+
+static void *test_token_thread(void *context) {
+  cli_state *state = context;
+  cai_error error;
+  char *token;
+  cai_error_init(&error);
+  (void)cli_auth_token(&state->shared_auth, &token, &error);
+  cai_error_cleanup(&error);
+  return NULL;
+}
+
+static void *test_refresh_thread(void *context) {
+  cli_state *state = context;
+  auth_fixture *fixture = state->auth->impl;
+  cai_error error;
+  pthread_mutex_lock(&fixture->lock);
+  fixture->second_started = 1;
+  pthread_cond_broadcast(&fixture->condition);
+  pthread_mutex_unlock(&fixture->lock);
+  cai_error_init(&error);
+  (void)cli_auth_refresh(&state->shared_auth, &error);
+  cai_error_cleanup(&error);
+  return NULL;
+}
+
+static int test_shared_auth(void) {
+  cli_state state;
+  cai_chatgpt_auth auth;
+  auth_fixture fixture;
+  pthread_t token;
+  pthread_t refresh;
+  memset(&state, 0, sizeof(state));
+  memset(&auth, 0, sizeof(auth));
+  memset(&fixture, 0, sizeof(fixture));
+  if (pthread_mutex_init(&fixture.lock, NULL) != 0 ||
+      pthread_cond_init(&fixture.condition, NULL) != 0 ||
+      pthread_mutex_init(&state.auth_lock, NULL) != 0)
+    return 1;
+  auth.impl = &fixture;
+  auth.access_token = test_auth_token;
+  auth.refresh = test_auth_call;
+  state.auth = &auth;
+  state.shared_auth.impl = &state;
+  if (pthread_create(&token, NULL, test_token_thread, &state) != 0)
+    return 1;
+  pthread_mutex_lock(&fixture.lock);
+  while (fixture.calls == 0)
+    pthread_cond_wait(&fixture.condition, &fixture.lock);
+  pthread_mutex_unlock(&fixture.lock);
+  if (pthread_create(&refresh, NULL, test_refresh_thread, &state) != 0)
+    return 1;
+  pthread_mutex_lock(&fixture.lock);
+  while (!fixture.second_started)
+    pthread_cond_wait(&fixture.condition, &fixture.lock);
+  if (fixture.calls != 1)
+    return 1;
+  fixture.released = 2;
+  pthread_cond_broadcast(&fixture.condition);
+  pthread_mutex_unlock(&fixture.lock);
+  pthread_join(token, NULL);
+  pthread_join(refresh, NULL);
+  pthread_cond_destroy(&fixture.condition);
+  pthread_mutex_destroy(&fixture.lock);
+  pthread_mutex_destroy(&state.auth_lock);
+  return fixture.calls == 2 ? 0 : 1;
+}
+
 int main(void) {
   cli_state state;
   cai_agent_runtime_event event;
@@ -133,13 +226,13 @@ int main(void) {
   struct timespec before = {400, 499999999L};
   struct timespec boundary = {400, 500000000L};
 
-  if (test_event_logging() != 0)
+  if (test_shared_auth() != 0 || test_event_logging() != 0)
     return 1;
   memset(&state, 0, sizeof(state));
-  if (!cli_quota_due(0, start, start, 0) ||
-      cli_quota_due(1, start, before, 0) ||
-      !cli_quota_due(1, start, boundary, 0) ||
-      !cli_quota_due(1, start, before, 1)) {
+  if (!cai_cli_quota_due(0, start, start, 0) ||
+      cai_cli_quota_due(1, start, before, 0) ||
+      !cai_cli_quota_due(1, start, boundary, 0) ||
+      !cai_cli_quota_due(1, start, before, 1)) {
     fprintf(stderr, "quota refresh interval or forced refresh failed\n");
     return 1;
   }
