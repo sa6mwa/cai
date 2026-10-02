@@ -76,6 +76,8 @@ static const char *const cai_stream_json_event_names[] = {
     "response.in_progress",
     "response.completed",
     "response.incomplete",
+    "response.failed",
+    "error",
     "response.output_text.delta",
     "response.reasoning_summary_text.delta",
     "response.reasoning_summary.delta",
@@ -88,6 +90,58 @@ static const char *const cai_stream_json_event_names[] = {
     "response.function_call_arguments.done",
     "response.custom_tool_call_input.delta",
     "response.output_item.done"};
+
+/* Bound diagnostics independently of the event's other fields. The map reader
+ * consumes the existing event spool directly; no full JSON copy is made. */
+typedef struct cai_stream_error_detail_doc {
+  char message[1024];
+  char code[128];
+  char type[128];
+} cai_stream_error_detail_doc;
+
+typedef struct cai_stream_error_response_doc {
+  cai_stream_error_detail_doc error;
+} cai_stream_error_response_doc;
+
+typedef struct cai_stream_error_event_doc {
+  char message[1024];
+  char code[128];
+  char request_id[256];
+  long long status;
+  cai_stream_error_detail_doc error;
+  cai_stream_error_response_doc response;
+} cai_stream_error_event_doc;
+
+static const lonejson_field cai_stream_error_detail_fields[] = {
+    LONEJSON_FIELD_STRING_FIXED(cai_stream_error_detail_doc, message, "message",
+                                LONEJSON_OVERFLOW_TRUNCATE_SILENT),
+    LONEJSON_FIELD_STRING_FIXED(cai_stream_error_detail_doc, code, "code",
+                                LONEJSON_OVERFLOW_TRUNCATE_SILENT),
+    LONEJSON_FIELD_STRING_FIXED(cai_stream_error_detail_doc, type, "type",
+                                LONEJSON_OVERFLOW_TRUNCATE_SILENT)};
+LONEJSON_MAP_DEFINE(cai_stream_error_detail_map, cai_stream_error_detail_doc,
+                    cai_stream_error_detail_fields);
+static const lonejson_field cai_stream_error_response_fields[] = {
+    LONEJSON_FIELD_OBJECT(cai_stream_error_response_doc, error, "error",
+                          &cai_stream_error_detail_map)};
+LONEJSON_MAP_DEFINE(cai_stream_error_response_map,
+                    cai_stream_error_response_doc,
+                    cai_stream_error_response_fields);
+static const lonejson_field cai_stream_error_event_fields[] = {
+    LONEJSON_FIELD_STRING_FIXED(cai_stream_error_event_doc, message, "message",
+                                LONEJSON_OVERFLOW_TRUNCATE_SILENT),
+    LONEJSON_FIELD_STRING_FIXED(cai_stream_error_event_doc, code, "code",
+                                LONEJSON_OVERFLOW_TRUNCATE_SILENT),
+    LONEJSON_FIELD_STRING_FIXED(cai_stream_error_event_doc, request_id,
+                                "request_id",
+                                LONEJSON_OVERFLOW_TRUNCATE_SILENT),
+    LONEJSON_FIELD_I64(cai_stream_error_event_doc, status, "status"),
+    LONEJSON_FIELD_OBJECT(cai_stream_error_event_doc, error, "error",
+                          &cai_stream_error_detail_map),
+    LONEJSON_FIELD_OBJECT(cai_stream_error_event_doc, response, "response",
+                          &cai_stream_error_response_map)};
+LONEJSON_MAP_DEFINE(cai_stream_error_event_map, cai_stream_error_event_doc,
+                    cai_stream_error_event_fields);
 
 typedef struct cai_stream_input_tokens_details_doc {
   long long cached_tokens;
@@ -1718,6 +1772,68 @@ static int cai_sse_event_name_from_body(cai_sse_state *state, char **out) {
   return *out != NULL ? CAI_OK : CAI_ERR_NOMEM;
 }
 
+static int cai_sse_provider_error(cai_sse_state *state,
+                                  const char *event_name) {
+  cai_stream_error_event_doc doc;
+  const cai_stream_error_detail_doc *nested;
+  const char *message;
+  const char *code;
+  cai_stream_spooled_reader reader;
+  lonejson_error json_error;
+  lonejson_status status;
+  int rc;
+  memset(&doc, 0, sizeof(doc));
+  CAI_LJ_STREAM->init(CAI_LJ_STREAM, &cai_stream_error_event_map, &doc);
+  reader.cursor = state->event_json_storage;
+  lonejson_error_init(&json_error);
+  status = reader.cursor.rewind(&reader.cursor, &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = CAI_LJ_STREAM->parse_reader(
+        CAI_LJ_STREAM, &cai_stream_error_event_map, &doc,
+        cai_stream_spooled_read, &reader, &json_error);
+  rc = status == LONEJSON_STATUS_OK || status == LONEJSON_STATUS_TRUNCATED
+           ? CAI_OK
+           : cai_set_error_detail(
+                 state->error,
+                 status == LONEJSON_STATUS_ALLOCATION_FAILED ? CAI_ERR_NOMEM
+                                                             : CAI_ERR_PROTOCOL,
+                 "invalid provider error event", json_error.message);
+  if (rc == CAI_OK) {
+    nested = strcmp(event_name, "response.failed") == 0 ? &doc.response.error
+                                                        : &doc.error;
+    message = doc.message[0] != '\0' ? doc.message : nested->message;
+    code = doc.code[0] != '\0'       ? doc.code
+           : nested->code[0] != '\0' ? nested->code
+                                     : nested->type;
+    rc = cai_set_error_http(
+        state->error, CAI_ERR_SERVER,
+        doc.status >= 400LL && doc.status <= 599LL ? (long)doc.status : 200L,
+        "provider stream failed", message[0] != '\0' ? message : event_name,
+        code[0] != '\0' ? code : NULL,
+        doc.request_id[0] != '\0' ? doc.request_id : NULL);
+  }
+  CAI_LJ_STREAM->cleanup(CAI_LJ_STREAM, &cai_stream_error_event_map, &doc);
+  return rc;
+}
+
+/* Preserve the parser/provider/callback diagnostic when curl aborts its write
+ * callback. A transport wrapper must not replace it with a generic message. */
+static int cai_sse_failure(cai_sse_state *state, const char *request_id) {
+  cai_error *error = state->error;
+  if (error != NULL && error->code == state->failed_code &&
+      error->message != NULL) {
+    if (error->request_id == NULL && request_id != NULL) {
+      error->request_id = cai_strdup(NULL, request_id);
+      if (error->request_id == NULL)
+        return cai_set_error(error, CAI_ERR_NOMEM,
+                             "failed to allocate streaming request ID");
+    }
+    return state->failed_code;
+  }
+  return cai_set_error_http(error, state->failed_code, 0L,
+                            state->failed_message, NULL, NULL, request_id);
+}
+
 static int cai_sse_emit_event(cai_sse_state *state,
                               const lonejson_sse_event *event) {
   cai_stream_delta_event_doc delta_doc;
@@ -1750,6 +1866,13 @@ static int cai_sse_emit_event(cai_sse_state *state,
   if (event_name == NULL || event_name[0] == '\0') {
     cai_free_mem(NULL, owned_event_name);
     return CAI_OK;
+  }
+
+  if (strcmp(event_name, "error") == 0 ||
+      strcmp(event_name, "response.failed") == 0) {
+    rc = cai_sse_provider_error(state, event_name);
+    cai_free_mem(NULL, owned_event_name);
+    return rc;
   }
 
   memset(&delta_doc, 0, sizeof(delta_doc));
@@ -3334,12 +3457,17 @@ retry_request:
       return rc;
     }
     cai_free_mem(NULL, state.body);
-    cai_free_mem(NULL, request_id);
     if (state.failed) {
-      cai_log_http_transport_error(CAI_CLIENT_IMPL(client), "POST", "responses",
-                                   state.failed_message);
-      return cai_set_error(error, state.failed_code, state.failed_message);
+      rc = cai_sse_failure(&state, request_id);
+      cai_log_http_transport_error(
+          CAI_CLIENT_IMPL(client), "POST", "responses",
+          error != NULL && error->detail != NULL    ? error->detail
+          : error != NULL && error->message != NULL ? error->message
+                                                    : state.failed_message);
+      cai_free_mem(NULL, request_id);
+      return rc;
     }
+    cai_free_mem(NULL, request_id);
     cai_log_http_transport_error(CAI_CLIENT_IMPL(client), "POST", "responses",
                                  curl_easy_strerror(curl_rc));
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
@@ -3355,10 +3483,14 @@ retry_request:
   }
   if (state.failed) {
     cai_free_mem(NULL, state.body);
+    rc = cai_sse_failure(&state, request_id);
+    cai_log_http_transport_error(
+        CAI_CLIENT_IMPL(client), "POST", "responses",
+        error != NULL && error->detail != NULL    ? error->detail
+        : error != NULL && error->message != NULL ? error->message
+                                                  : state.failed_message);
     cai_free_mem(NULL, request_id);
-    cai_log_http_transport_error(CAI_CLIENT_IMPL(client), "POST", "responses",
-                                 state.failed_message);
-    return cai_set_error(error, state.failed_code, state.failed_message);
+    return rc;
   }
   if (state.response_incomplete_seen) {
     cai_free_mem(NULL, state.body);

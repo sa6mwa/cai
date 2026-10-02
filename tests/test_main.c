@@ -44697,6 +44697,158 @@ static void test_stream_output_suffix_segments(test_state *state) {
   }
 }
 
+/* HTTP 200 can carry terminal provider failures. Preserve their diagnostics
+ * through both callback and pull-source APIs, including any preceding text. */
+static void test_stream_provider_failure_details(test_state *state) {
+  static const struct {
+    const char *event;
+    const char *detail;
+    const char *code;
+    long status;
+    const char *request_id;
+    long detail_length;
+    int result;
+  } cases[] = {
+      {"event: error\ndata: {\"type\":\"error\",\"message\":\"stream "
+       "denied\",\"code\":\"fixture_code\",\"request_id\":\"event_request\"}"
+       "\n\n",
+       "stream denied", "fixture_code", 200L, "event_request", -1L,
+       CAI_ERR_SERVER},
+      {"event: error\ndata: "
+       "{\"type\":\"error\",\"status\":429,\"error\":{\"message\":\"quota "
+       "exhausted\",\"type\":\"rate_limit_error\"}}\n\n",
+       "quota exhausted", "rate_limit_error", 429L, "req_sse_error", -1L,
+       CAI_ERR_SERVER},
+      {"event: response.failed\ndata: "
+       "{\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":"
+       "\"generation failed\",\"code\":\"server_error\"}}}\n\n",
+       "generation failed", "server_error", 200L, "req_sse_error", -1L,
+       CAI_ERR_SERVER},
+      {"data: {\"type\":\"error\",\"error\":{\"message\":\"type "
+       "inferred\",\"code\":null}}\n\n",
+       "type inferred", NULL, 200L, "req_sse_error", -1L, CAI_ERR_SERVER},
+      {"event: error\ndata: {\"type\":\"error\"}\n\n", "error", NULL, 200L,
+       "req_sse_error", -1L, CAI_ERR_SERVER},
+      {NULL, NULL, "long_message", 200L, "req_sse_error", 1023L,
+       CAI_ERR_SERVER},
+      {"event: error\ndata: {\"type\":\"error\",\"code\":27}\n\n", NULL, NULL,
+       0L, "req_sse_error", -1L, CAI_ERR_PROTOCOL}};
+  size_t i;
+  int mode;
+  for (i = 0U; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    for (mode = 0; mode < 2; mode++) {
+      char body[4096];
+      char long_event[2300];
+      char long_message[2049];
+      const char *event = cases[i].event;
+      char output[64];
+      size_t length = 0U;
+      mock_http_expectation script;
+      http_mock_server server;
+      cai_client_config config;
+      cai_client *client = NULL;
+      cai_response_create_params *params = NULL;
+      cai_sink *sink = NULL;
+      cai_source *source = NULL;
+      cai_sink_callbacks callbacks;
+      cai_error error;
+      write_state writer;
+      int rc;
+      if (event == NULL) {
+        memset(long_message, 'x', sizeof(long_message) - 1U);
+        long_message[sizeof(long_message) - 1U] = '\0';
+        snprintf(long_event, sizeof(long_event),
+                 "event: error\ndata: {\"type\":\"error\",\"message\":\"%s\","
+                 "\"code\":\"long_message\"}\n\n",
+                 long_message);
+        event = long_event;
+      }
+      snprintf(body, sizeof(body),
+               "event: response.output_text.delta\n"
+               "data: "
+               "{\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}"
+               "\n\n%s",
+               event);
+      memset(&script, 0, sizeof(script));
+      memset(&writer, 0, sizeof(writer));
+      script.request_prefix = "POST /v1/responses HTTP/";
+      script.body = body;
+      script.content_type = "text/event-stream";
+      script.request_id = "req_sse_error";
+      if (http_mock_server_open_script(state, "stream_provider_error", &script,
+                                       1U, &server) != 0)
+        continue;
+      cai_error_init(&error);
+      cai_client_config_init(&config);
+      config.api_key = "fixture";
+      config.base_url = server.base_url;
+      config.http_2_disabled = 1;
+      config.timeout_ms = 1000L;
+      rc = cai_client_open(&config, &client, &error);
+      if (rc == CAI_OK)
+        rc = cai_response_create_params_new(&params, &error);
+      if (rc == CAI_OK)
+        rc = params->set_model(params, CAI_MODEL_GPT_5_NANO, &error);
+      if (rc == CAI_OK)
+        rc = params->add_text(params, "user", "exercise provider failure",
+                              &error);
+      if (rc == CAI_OK && mode == 0) {
+        callbacks.write = test_write;
+        callbacks.close = test_write_close;
+        callbacks.context = &writer;
+        rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+        if (rc == CAI_OK)
+          rc = cai_client_stream_response_text(client, params, sink, &error);
+        expect_str(state, "sse_error_partial_callback", writer.buffer,
+                   "partial");
+      } else if (rc == CAI_OK) {
+        rc = cai_client_open_response_text_source(client, params, &source,
+                                                  &error);
+        if (rc == CAI_OK) {
+          size_t count;
+          while ((count = cai_source_read(source, output + length,
+                                          sizeof(output) - length - 1U,
+                                          &error)) != 0U &&
+                 length + count < sizeof(output) - 1U)
+            length += count;
+          output[length] = '\0';
+          rc = error.code;
+          expect_str(state, "sse_error_partial_source", output, "partial");
+        }
+      }
+      expect_int(state, "sse_error_return", rc, cases[i].result);
+      expect_int(state, "sse_error_code", error.code, cases[i].result);
+      expect_int(state, "sse_error_http_status", error.http_status,
+                 cases[i].status);
+      expect_str(state, "sse_error_message", error.message,
+                 cases[i].result == CAI_ERR_SERVER
+                     ? "provider stream failed"
+                     : "invalid provider error event");
+      if (cases[i].detail_length < 0L && cases[i].detail != NULL)
+        expect_str(state, "sse_error_detail", error.detail, cases[i].detail);
+      else if (cases[i].detail_length >= 0L)
+        expect_int(state, "sse_error_bounded_detail",
+                   error.detail != NULL ? (long)strlen(error.detail) : -1L,
+                   cases[i].detail_length);
+      if (cases[i].code != NULL)
+        expect_str(state, "sse_error_server_code", error.server_code,
+                   cases[i].code);
+      else
+        expect_int(state, "sse_error_no_server_code", error.server_code == NULL,
+                   1);
+      expect_str(state, "sse_error_request_id", error.request_id,
+                 cases[i].request_id);
+      cai_source_close(source);
+      cai_sink_close(sink);
+      cai_response_create_params_destroy(params);
+      cai_client_close(client);
+      cai_error_cleanup(&error);
+      expect_child_exit(state, "stream_provider_error", server.pid,
+                        &server.child_status);
+    }
+  }
+}
+
 static void test_stream_http_error_preserves_openai_error(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -49331,6 +49483,7 @@ static const test_entry test_entries[] = {
     {"stream_output_delta_failure", test_stream_output_delta_failure},
     {"stream_output_item_failure", test_stream_output_item_failure},
     {"stream_output_suffix_segments", test_stream_output_suffix_segments},
+    {"stream_provider_failure_details", test_stream_provider_failure_details},
     {"stream_http_error_preserves_openai_error",
      test_stream_http_error_preserves_openai_error},
     {"stream_source_error_preserves_openai_error",

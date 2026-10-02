@@ -211,6 +211,84 @@ static int test_shared_auth(void) {
   return fixture.calls == 2 ? 0 : 1;
 }
 
+/* Use the production libmdf -> softline sink, then revoke its output fd.
+ * This verifies errors cross both renderer boundaries rather than substituting
+ * a renderer mock that always returns failure. */
+static int test_output_failure(int operation) {
+  cli_state state;
+  sl_config_t config;
+  mdf_options options;
+  mdf_sink sink;
+  cai_agent_runtime_event event;
+  cai_agent_session_event replay;
+  int pipe_fd[2];
+  int rc = -1;
+  int handled = 0;
+  memset(&state, 0, sizeof(state));
+  memset(&event, 0, sizeof(event));
+  memset(&replay, 0, sizeof(replay));
+  if (pipe(pipe_fd) != 0)
+    return 1;
+  sl_config_init(&config);
+  config.output_fd = pipe_fd[1];
+  state.sl = sl_create_with_config(&config);
+  state.width = 80;
+  mdf_options_init(&options);
+  options.width = state.width;
+  options.boring = 1;
+  if (state.sl == NULL || sl_output_stream_begin(state.sl) != SL_OK ||
+      mdf_create(MDF_FORMAT_ANSI, &options, &state.renderer) != MDF_OK)
+    goto cleanup;
+  sink.userdata = &state;
+  sink.write = cli_sink;
+  if (state.renderer->set_sink(state.renderer, &sink) != MDF_OK)
+    goto cleanup;
+  if (operation == 2) {
+    const char *table = "| Left | Right |\n| --- | --- |\n| a | b |\n";
+    if (cli_text(&state, table, strlen(table)) != 0)
+      goto cleanup;
+  }
+  close(pipe_fd[1]);
+  pipe_fd[1] = -1;
+  event.data = "Output unavailable.\n\n";
+  event.data_length = strlen(event.data);
+  if (operation == 0) {
+    event.type = CAI_AGENT_EVENT_TEXT_DELTA;
+    rc = cli_event(&state, &event, NULL);
+  } else if (operation == 1) {
+    event.type = CAI_AGENT_EVENT_REASONING_SUMMARY;
+    rc = cli_event(&state, &event, NULL);
+  } else if (operation == 2) {
+    event.type = CAI_AGENT_EVENT_RESPONSE_COMPLETED;
+    rc = cli_event(&state, &event, NULL);
+  } else if (operation == 3) {
+    rc = cli_prompt(&state, "literal prompt", 1) != 0 ? CAI_ERR_TRANSPORT
+                                                      : CAI_OK;
+  } else if (operation == 4) {
+    rc = cli_handle_command(&state, "/help", NULL, &handled);
+    if (!handled)
+      rc = CAI_OK;
+  } else {
+    replay.type = "assistant_text_delta";
+    replay.data = event.data;
+    rc = cli_replay_event(&state, &replay, NULL);
+  }
+cleanup:
+  if (state.renderer != NULL)
+    state.renderer->destroy(state.renderer);
+  if (state.sl != NULL)
+    sl_destroy(state.sl);
+  close(pipe_fd[0]);
+  if (pipe_fd[1] >= 0)
+    close(pipe_fd[1]);
+  if (rc != CAI_ERR_TRANSPORT) {
+    fprintf(stderr, "output failure operation %d was not propagated: %d\n",
+            operation, rc);
+    return 1;
+  }
+  return 0;
+}
+
 int main(void) {
   cli_state state;
   cai_agent_runtime_event event;
@@ -226,6 +304,9 @@ int main(void) {
   struct timespec before = {400, 499999999L};
   struct timespec boundary = {400, 500000000L};
 
+  for (rc = 0; rc < 6; rc++)
+    if (test_output_failure(rc) != 0)
+      return 1;
   if (test_shared_auth() != 0 || test_event_logging() != 0)
     return 1;
   memset(&state, 0, sizeof(state));

@@ -125,6 +125,13 @@ build/cai/cai --help
 build/cai/cai -N -C /path/to/project
 ```
 
+`ctest --preset cai` checks terminal feeds without cursor replies, failed-output
+propagation, recovery after provider errors, truncated and malformed streams,
+Ctrl-C/Escape cancellation, and clipboard failures. Cancellation keeps the
+interactive session open so another turn can start. Responses stream errors
+preserve the provider message, code, and request ID in both libcai streaming
+APIs and CAI diagnostics; diagnostic messages are bounded to 1023 bytes.
+
 The default `chatgpt` provider imports `~/.codex/auth.json` first when present,
 otherwise it loads credentials from cai's lockd store. `--auth-json` selects
 another import source. Unchanged source files preserve tokens refreshed in

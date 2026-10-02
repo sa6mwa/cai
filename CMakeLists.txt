@@ -1089,6 +1089,10 @@ if(CAI_BUILD_CLI)
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_test.py"
         "$<TARGET_FILE:cai_cli>")
     set_tests_properties(cai_cli_terminal PROPERTIES TIMEOUT 60)
+    add_test(NAME cai_cli_terminal_failures
+      COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_failures_test.py"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_terminal_failures PROPERTIES TIMEOUT 60)
     add_test(NAME cai_cli_lockd_endpoint
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_lockd_endpoint_test.py"
         "$<TARGET_FILE:cai_cli>")
@@ -1675,6 +1679,7 @@ if(CAI_BUILD_TESTS)
     stream_output_delta_failure
     stream_output_item_failure
     stream_output_suffix_segments
+    stream_provider_failure_details
     stream_http_error_preserves_openai_error
     stream_source_error_preserves_openai_error
     stream_openrouter_metadata_events

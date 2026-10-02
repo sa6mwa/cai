@@ -22,6 +22,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +39,19 @@
 typedef cai_cli_session cli_session;
 
 static const char cli_welcome[] = "Welcome to CAI. Send /help for usage.";
+
+/* Softline restores terminal input, raises SIGINT, then returns INTERRUPTED.
+ * Let the prompt loop cancel the turn and keep the interactive session open. */
+static void cli_keep_session_on_interrupt(int signo) { (void)signo; }
+
+static int cli_cancel_editor(sl_t *sl, sl_key_t key, void *context,
+                             sl_key_action_t *action) {
+  (void)sl;
+  (void)key;
+  (void)context;
+  *action = SL_KEY_ACTION_CANCEL;
+  return SL_OK;
+}
 
 typedef struct cli_state {
   cai_cli_options options;
@@ -1463,6 +1477,12 @@ int main(int argc, char **argv) {
   }
   state.interactive = !state.options.review && !state.options.non_interactive &&
                       isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
+  if (state.interactive &&
+      signal(SIGINT, cli_keep_session_on_interrupt) == SIG_ERR) {
+    cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
+                   "cai: failed to install interactive interrupt handler\n");
+    goto cleanup;
+  }
 
   cai_cli_status_init(&state.status, state.workspace, getenv("HOME"));
   result = 1;
@@ -1489,7 +1509,9 @@ int main(int argc, char **argv) {
   mdf_config.margin_left = state.width >= 5 ? 2 : 0;
   mdf_config.boring = !state.interactive;
   if ((state.interactive &&
-       (sl_set_statusline(state.sl, 1, 0) != SL_OK ||
+       (sl_bind_key(state.sl, SL_KEY_ESCAPE, cli_cancel_editor, NULL) !=
+            SL_OK ||
+        sl_set_statusline(state.sl, 1, 0) != SL_OK ||
         sl_set_status_message(state.sl, cli_welcome) != SL_OK)) ||
       (!state.batch && sl_output_stream_begin(state.sl) != SL_OK) ||
       mdf_create(MDF_FORMAT_ANSI, &mdf_config, &state.renderer) != MDF_OK) {
