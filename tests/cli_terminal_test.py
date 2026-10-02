@@ -150,10 +150,14 @@ class ResponsePeer(http.server.BaseHTTPRequestHandler):
             item = self.server.plan.pop(0)
             if isinstance(item, tuple):
                 name, arguments = item
-                self.event("response.output_item.done", output_index=0, item={
+                tool_item = {
                     "id": f"fc_{len(self.server.requests)}", "type": "function_call",
                     "call_id": f"call_{len(self.server.requests)}", "name": name,
-                    "arguments": json.dumps(arguments)})
+                    "arguments": json.dumps(arguments)}
+                if isinstance(arguments, str):
+                    tool_item.pop("arguments")
+                    tool_item.update(type="custom_tool_call", input=arguments)
+                self.event("response.output_item.done", output_index=0, item=tool_item)
             else:
                 self.event("response.output_text.delta", delta=item)
         elif view_path or not any(item.get("type") == "function_call_output"

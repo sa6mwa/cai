@@ -25,6 +25,7 @@ typedef struct cai_cli_options {
   const char *base;
   const char *out;
   const char *output_type;
+  const char *tool_output;
   const char *resume_id;
   const char *export_id;
   const char *export_dir;

@@ -3956,6 +3956,25 @@ static int cai_runtime_tool_action(const cai_agent_runtime *runtime,
   if (strcmp(name, "image_generation") == 0) {
     return CAI_AGENT_TOOL_ACTION_IMAGE_GENERATION;
   }
+  if (runtime != NULL) {
+    const char *prefix = runtime->mcp_tool_name_prefix != NULL
+                             ? runtime->mcp_tool_name_prefix
+                             : "";
+    size_t prefix_length = strlen(prefix);
+    if (strncmp(name, prefix, prefix_length) == 0) {
+      for (i = 0U; i < runtime->mcp_client_count; i++) {
+        size_t j;
+        for (j = 0U; j < cai_mcp_client_tool_count(runtime->mcp_clients[i]);
+             j++) {
+          const cai_mcp_client_tool *tool =
+              cai_mcp_client_tool_at(runtime->mcp_clients[i], j);
+          if (tool != NULL && tool->name != NULL &&
+              strcmp(name + prefix_length, tool->name) == 0)
+            return CAI_AGENT_TOOL_ACTION_MCP;
+        }
+      }
+    }
+  }
   return CAI_AGENT_TOOL_ACTION_EXTERNAL;
 }
 
@@ -4051,6 +4070,58 @@ static char *cai_runtime_patch_path_from_output(const char *data,
   return path;
 }
 
+typedef struct cai_runtime_patch_stream {
+  cai_agent_runtime *runtime;
+  const cai_tool_event *event;
+} cai_runtime_patch_stream;
+
+static int cai_runtime_patch_write(void *context, const void *bytes,
+                                   size_t count, cai_error *error) {
+  cai_runtime_patch_stream *stream = (cai_runtime_patch_stream *)context;
+  size_t length;
+  int rc = CAI_OK;
+  do {
+    length = count > 4096U ? 4096U : count;
+    pthread_mutex_lock(&stream->runtime->lock);
+    rc = cai_runtime_enqueue_tool_locked(
+        stream->runtime, CAI_AGENT_EVENT_TOOL_PATCH, (const char *)bytes,
+        length, stream->event->name, stream->event->call_id,
+        CAI_AGENT_TOOL_ACTION_PATCH, NULL, 0U, stream->runtime->state, error);
+    pthread_mutex_unlock(&stream->runtime->lock);
+    if (rc != CAI_OK)
+      return rc;
+    if (length == 0U)
+      break;
+    bytes = (const char *)bytes + length;
+    count -= length;
+  } while (count != 0U);
+  return rc;
+}
+/* Both providers hand native custom tools decoded raw input here. The Chat
+ * Completions adapter owns its JSON envelope, just as for tool execution. */
+static int cai_runtime_emit_patch(cai_agent_runtime *runtime,
+                                  const cai_tool_event *event,
+                                  cai_error *error) {
+  cai_runtime_patch_stream stream;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink = NULL;
+  int rc;
+  if (runtime->event_callback == NULL)
+    return CAI_OK;
+  stream.runtime = runtime;
+  stream.event = event;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = cai_runtime_patch_write;
+  callbacks.context = &stream;
+  rc = cai_sink_from_callbacks(&callbacks, &sink, error);
+  if (rc == CAI_OK)
+    rc = cai_tool_event_write_arguments(event, sink, error);
+  cai_sink_close(sink);
+  if (rc == CAI_OK)
+    rc = cai_runtime_patch_write(&stream, NULL, 0U, error);
+  return rc;
+}
+
 static int cai_runtime_tool_event(void *context, const cai_tool_event *event,
                                   cai_error *error) {
   cai_agent_runtime *runtime;
@@ -4141,6 +4212,9 @@ static int cai_runtime_tool_event(void *context, const cai_tool_event *event,
   pthread_mutex_unlock(&runtime->lock);
   cai_free_mem(NULL, data);
   cai_free_mem(NULL, tool_path);
+  if (rc == CAI_OK && event->type == CAI_TOOL_EVENT_OUTPUT &&
+      tool_action == CAI_AGENT_TOOL_ACTION_PATCH)
+    rc = cai_runtime_emit_patch(runtime, event, error);
   return rc;
 }
 

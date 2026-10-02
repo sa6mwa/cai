@@ -642,17 +642,9 @@ if(CAI_BUILD_LUA_RUNNER)
       "LUA_CPATH=${CMAKE_CURRENT_BINARY_DIR}/lua-test/?.so\;${CMAKE_CURRENT_BINARY_DIR}/lua-test/?.dylib\;${CMAKE_CURRENT_BINARY_DIR}/lua/?.so\;${CMAKE_CURRENT_BINARY_DIR}/lua/?.dylib\;${CAI_LUA_ROCK_LIB_DIR}/?.so\;\;")
   set(CAI_LUA_SMITH_E2E_ENV
       "CAI_LUA_SMITH_E2E=1")
-  if(CMAKE_C_FLAGS_DEBUG MATCHES "fsanitize=address" AND
-     CMAKE_C_COMPILER_ID MATCHES "Clang|GNU" AND
-     CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    execute_process(
-      COMMAND "${CMAKE_C_COMPILER}" -print-file-name=libasan.so
-      OUTPUT_VARIABLE CAI_ASAN_LIBRARY
-      OUTPUT_STRIP_TRAILING_WHITESPACE)
-    if(CAI_ASAN_LIBRARY AND EXISTS "${CAI_ASAN_LIBRARY}")
-      list(APPEND CAI_LUA_TEST_ENV "LD_PRELOAD=${CAI_ASAN_LIBRARY}")
-    endif()
-  endif()
+  # Lua tests use our sanitizer-linked runner. Preloading libasan here is
+  # redundant and would instrument unrelated host utilities spawned by Lua.
+
 endif()
 
 function(cai_configure_c_target target)
@@ -794,6 +786,7 @@ set(CAI_SOURCES
   src/cai_client.c
   src/cai_conversation.c
   src/cai_env.c
+  src/cai_display.c
   src/cai_error.c
   src/cai_http.c
   src/cai_input_item.c
@@ -1089,6 +1082,10 @@ if(CAI_BUILD_CLI)
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_test.py"
         "$<TARGET_FILE:cai_cli>")
     set_tests_properties(cai_cli_terminal PROPERTIES TIMEOUT 60)
+    add_test(NAME cai_cli_tool_display
+      COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_tool_display_test.py"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_tool_display PROPERTIES TIMEOUT 60)
     add_test(NAME cai_cli_terminal_failures
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_failures_test.py"
         "$<TARGET_FILE:cai_cli>")
@@ -1240,6 +1237,12 @@ if(CAI_BUILD_TESTS)
       LABELS "unit;local;example-smoke"
       TIMEOUT 3)
   endif()
+  add_executable(cai_display_test tests/display_test.c)
+  cai_link_internal_consumer(cai_display_test)
+  cai_configure_c_target(cai_display_test)
+  target_compile_options(cai_display_test PRIVATE -UNDEBUG)
+  add_test(NAME cai_display COMMAND cai_display_test)
+  set_tests_properties(cai_display PROPERTIES LABELS "unit;local" TIMEOUT 10)
   set(CAI_UNIT_TEST_GROUPS
     mcp_raw_input_cancellation
     mcp_raw_input_registration_ownership
@@ -1586,6 +1589,7 @@ if(CAI_BUILD_TESTS)
     agent_runtime_terminal_callback_close
     agent_runtime_queued_turns
     agent_runtime_semantic_events
+    agent_runtime_patch_events
     agent_runtime_poll_only
     agent_runtime_host_goal_controls
     agent_runtime_goal_checkpoint_watermark

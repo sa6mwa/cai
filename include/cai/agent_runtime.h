@@ -83,7 +83,9 @@ typedef enum cai_agent_tool_action {
   /** A configured MCP or other non-local tool ran. */
   CAI_AGENT_TOOL_ACTION_EXTERNAL = 12,
   /** A synchronous child agent was launched. */
-  CAI_AGENT_TOOL_ACTION_SUBAGENT = 13
+  CAI_AGENT_TOOL_ACTION_SUBAGENT = 13,
+  /** A tool registered from a configured MCP client ran. */
+  CAI_AGENT_TOOL_ACTION_MCP = 14
 } cai_agent_tool_action;
 
 /** Event emitted by an agent runtime. */
@@ -151,7 +153,12 @@ typedef enum cai_agent_runtime_event_type {
   /** Compacted history and its checkpoint were committed. */
   CAI_AGENT_EVENT_COMPACTION_COMPLETED = 28,
   /** Active turn stopped and its durable state was settled. */
-  CAI_AGENT_EVENT_RUN_CANCELLED = 29
+  CAI_AGENT_EVENT_RUN_CANCELLED = 29,
+  /** Submitted native patch bytes after a successful call, in bounded chunks.
+   * An empty chunk terminates the patch. This is the agent's input, not a
+   * filesystem/VCS comparison. Chat Completions' JSON input wrapper is decoded.
+   */
+  CAI_AGENT_EVENT_TOOL_PATCH = 30
 } cai_agent_runtime_event_type;
 
 /**

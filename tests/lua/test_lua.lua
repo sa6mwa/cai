@@ -2593,4 +2593,55 @@ do
   raw_registry:close()
 end
 
+do
+  local patch = "*** Begin Patch\n*** Update File: sample.c\n@@\n before0\n before1\n-old\n+new\n mid0\n mid1\n mid2\n mid3\n-old2\n+new2\n after0\n after1\n*** End Patch\n"
+  local output, offset, ended, observed = {}, 1, false, false
+  assert_ok(cai.patch_render(function()
+    if offset > #patch then ended = true; return nil end
+    local byte = patch:sub(offset, offset)
+    offset = offset + 1
+    return byte
+  end, {color = true}, function(chunk)
+    if not ended then observed = true end
+    output[#output + 1] = chunk
+    return true
+  end))
+  local rendered = table.concat(output)
+  assert(observed, "patch output must appear before source EOF")
+  assert(rendered:find("\27[41m-old\27[0m", 1, true))
+  assert(rendered:find("\27[42m+new\27[0m", 1, true))
+  assert(not rendered:find("mid1", 1, true) and rendered:find("⋮", 1, true))
+  assert_not_ok(cai.patch_render(function() error("source failed") end, {}, function() return true end))
+  assert_not_ok(cai.patch_render(patch, {}, function() return false end))
+  output = {}
+  local display, ev
+  display = assert_ok(cai.tool_display({}, function(chunk)
+    assert_not_ok(display:close())
+    ev.data = nil
+    ev.tool_path = nil
+    collectgarbage("collect")
+    output[#output+1] = chunk
+    return true
+  end))
+  local function emit(kind, data, action)
+    ev = {type = kind, tool_call_id = "patch", runtime_session_id = "lua", data = data,
+          tool_name = "apply_patch", tool_action = action or cai.AGENT_TOOL_ACTION_PATCH}
+    assert_ok(display:event(ev))
+  end
+  emit(cai.AGENT_EVENT_TOOL_CALL_STARTED)
+  assert_ok(display:set_mode("full"))
+  emit(cai.AGENT_EVENT_TOOL_CALL_COMPLETED)
+  emit(cai.AGENT_EVENT_TOOL_PATCH, patch)
+  emit(cai.AGENT_EVENT_TOOL_PATCH, "")
+  assert(not table.concat(output):find("mid1", 1, true), "active patch retains compact mode")
+  output = {}
+  emit(cai.AGENT_EVENT_TOOL_CALL_STARTED)
+  emit(cai.AGENT_EVENT_TOOL_CALL_COMPLETED)
+  emit(cai.AGENT_EVENT_TOOL_PATCH, patch)
+  emit(cai.AGENT_EVENT_TOOL_PATCH, "")
+  assert(table.concat(output):find("mid1", 1, true), "next patch uses full mode")
+  assert_ok(display:close())
+  assert_throws(function() display:event({}) end)
+end
+
 print("cai lua tests passed")

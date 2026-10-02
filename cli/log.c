@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "log.h"
+#include "../src/cai_utf8.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -531,6 +532,7 @@ void cai_cli_log_message(pslog_logger *logger, pslog_level level,
       if (message[i] == '\0')
         message[i] = '?';
     }
+    cai_utf8_repair_text(message, n);
     message[n] = '\0';
     fields[field_count] = pslog_u64("offset", (pslog_uint64)offset);
     logger->log(logger, level, message, fields, field_count + 1U);

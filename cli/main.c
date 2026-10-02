@@ -14,6 +14,7 @@
 
 #include <cai/agent_runtime.h>
 #include <cai/auth.h>
+#include <cai/display.h>
 #include <cai/quota.h>
 #include <cai/session_store.h>
 #include <libmdf/mdf.h>
@@ -66,6 +67,8 @@ typedef struct cli_state {
   cai_agent_runtime *runtime;
   sl_t *sl;
   mdf *renderer;
+  cai_tool_display *tool_display;
+  cai_sink *tool_sink;
   cai_cli_log log;
   cai_cli_response final_response;
   int batch;
@@ -231,6 +234,32 @@ static int cli_render_width(void) {
   return isatty(STDOUT_FILENO) ? mdf_terminal_width(STDOUT_FILENO, 80) : 80;
 }
 
+static int cli_tool_sink(void *context, const void *bytes, size_t count,
+                         cai_error *error) {
+  if (cli_sink(context, (const char *)bytes, count) == 0)
+    return CAI_OK;
+  return cai_cli_error(error, CAI_ERR_TRANSPORT, "cannot write tool activity");
+}
+static int cli_tool_display_init(cli_state *state, cai_error *error) {
+  cai_tool_display_config config;
+  cai_sink_callbacks callbacks;
+  int rc;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = cli_tool_sink;
+  callbacks.context = state;
+  rc = cai_sink_from_callbacks(&callbacks, &state->tool_sink, error);
+  if (rc != CAI_OK)
+    return rc;
+  memset(&config, 0, sizeof(config));
+  config.sink = state->tool_sink;
+  config.mode = state->options.tool_output != NULL &&
+                        strcmp(state->options.tool_output, "full") == 0
+                    ? CAI_TOOL_OUTPUT_FULL
+                    : CAI_TOOL_OUTPUT_COMPACT;
+  config.color = state->interactive && getenv("NO_COLOR") == NULL;
+  return cai_tool_display_new(&config, &state->tool_display, error);
+}
+
 static int cli_geometry(cli_state *state) {
   int width;
   width = cli_render_width();
@@ -368,7 +397,8 @@ static void cli_log_event(cli_state *state,
                                       "compaction_started",
                                       "compaction_progress",
                                       "compaction_completed",
-                                      "run_cancelled"};
+                                      "run_cancelled",
+                                      "tool_patch"};
   pslog_field fields[16];
   size_t count;
   const char *name;
@@ -454,8 +484,6 @@ static void cli_log_event(cli_state *state,
 static int cli_event(void *context, const cai_agent_runtime_event *event,
                      cai_error *error) {
   cli_state *state;
-  char message[320];
-  int n;
   state = (cli_state *)context;
   cli_log_event(state, event);
   if (event->type == CAI_AGENT_EVENT_REVIEW_REPORT &&
@@ -507,11 +535,16 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     return cli_finish_response(state) == 0 && cli_finish_reasoning(state) == 0
                ? CAI_OK
                : CAI_ERR_TRANSPORT;
-  if (event->type == CAI_AGENT_EVENT_TOOL_CALL_STARTED &&
-      event->tool_name != NULL) {
-    n = snprintf(message, sizeof(message), "\n[tool] %s\n", event->tool_name);
-    if (n < 0 || (size_t)n >= sizeof(message) || cli_write(state, message) != 0)
+  if ((event->type >= CAI_AGENT_EVENT_TOOL_CALL_STARTED &&
+       event->type <= CAI_AGENT_EVENT_TOOL_CALL_FAILED) ||
+      (event->type >= CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED &&
+       event->type <= CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED) ||
+      event->type == CAI_AGENT_EVENT_TOOL_PATCH ||
+      event->type == CAI_AGENT_EVENT_RUN_FAILED ||
+      event->type == CAI_AGENT_EVENT_RUN_CANCELLED) {
+    if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
       return CAI_ERR_TRANSPORT;
+    return cai_tool_display_event(state->tool_display, event, error);
   } else if (event->type == CAI_AGENT_EVENT_REASONING_SUMMARY &&
              event->data != NULL && event->data_length > 0U) {
     if (event->parent_tool_call_id == NULL)
@@ -941,6 +974,36 @@ static int cli_handle_command(cli_state *state, const char *line,
   unsigned long number;
   int rc;
   *handled = 1;
+  if (strcmp(line, "/output") == 0 || strncmp(line, "/output ", 8U) == 0) {
+    arg = strcmp(line, "/output") == 0 ? "" : line + 8;
+    if (*arg == '\0')
+      return cli_write(state,
+                       state->options.tool_output != NULL &&
+                               strcmp(state->options.tool_output, "full") == 0
+                           ? "Tool output: full. Use /output compact or "
+                             "/output full.\n"
+                           : "Tool output: compact. Use /output compact or "
+                             "/output full.\n") == 0
+                 ? CAI_OK
+                 : CAI_ERR_TRANSPORT;
+    if (strcmp(arg, "compact") != 0 && strcmp(arg, "full") != 0)
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "use /output compact or /output full");
+    rc = cai_tool_display_set_mode(state->tool_display,
+                                   strcmp(arg, "full") == 0
+                                       ? CAI_TOOL_OUTPUT_FULL
+                                       : CAI_TOOL_OUTPUT_COMPACT,
+                                   error);
+    if (rc == CAI_OK)
+      state->options.tool_output =
+          strcmp(arg, "full") == 0 ? "full" : "compact";
+    if (rc == CAI_OK &&
+        cli_write(state,
+                  "Tool output setting applies from the next tool call.\n") !=
+            0)
+      rc = CAI_ERR_TRANSPORT;
+    return rc;
+  }
   if (strcmp(line, "/help") == 0) {
     static const char *const help[] = {
         "# CAI help\n\n"
@@ -950,6 +1013,9 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| Command | Action |\n"
         "| --- | --- |\n"
         "| `/help` | Show this help. |\n"
+        "| `/output [compact\\|full]` | Show or change tool previews, starting "
+        "with the next tool call. Compact commands show five lines; patches "
+        "collapse unchanged context. |\n",
         "| `/status` | Show model, reasoning, context, and available cost or "
         "quota metrics. Refresh ChatGPT quota immediately. |\n"
         "| `/resume` | List conversations for the current directory. |\n",
@@ -1526,6 +1592,10 @@ int main(int argc, char **argv) {
                    "cai: failed to connect Markdown renderer\n");
     goto cleanup;
   }
+  if (!state.batch && cli_tool_display_init(&state, &error) != CAI_OK) {
+    cli_print_error(&state, "initialize tool renderer", &error);
+    goto cleanup;
+  }
   if (state.interactive) {
     state.timer_fd =
         timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
@@ -1745,6 +1815,8 @@ cleanup:
     (void)cli_finish_reasoning(&state);
     state.renderer->destroy(state.renderer);
   }
+  cai_tool_display_close(state.tool_display);
+  cai_sink_close(state.tool_sink);
   if (state.sl != NULL) {
     (void)sl_output_stream_end(state.sl);
     sl_destroy(state.sl);

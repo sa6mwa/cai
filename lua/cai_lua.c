@@ -1,6 +1,7 @@
 #include <cai/agent_runtime.h>
 #include <cai/auth.h>
 #include <cai/cai.h>
+#include <cai/display.h>
 #include <cai/mcp.h>
 #include <cai/smith.h>
 #include <cai/tools/exec.h>
@@ -11216,6 +11217,176 @@ static int cai_lua_conversation_params_add_file_url(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+typedef struct cai_lua_display {
+  cai_tool_display *ptr;
+  cai_sink *sink;
+  cai_lua_sink_ctx sink_ctx;
+  int active;
+} cai_lua_display;
+
+static int cai_lua_display_mode(lua_State *L, const char *mode) {
+  if (strcmp(mode, "compact") == 0)
+    return CAI_TOOL_OUTPUT_COMPACT;
+  if (strcmp(mode, "full") == 0)
+    return CAI_TOOL_OUTPUT_FULL;
+  return luaL_error(L, "tool output mode must be compact or full");
+}
+static void cai_lua_display_config(lua_State *L, int index,
+                                   cai_tool_display_config *config) {
+  memset(config, 0, sizeof(*config));
+  luaL_checktype(L, index, LUA_TTABLE);
+  config->mode = cai_lua_display_mode(
+      L, cai_lua_opt_string_field(L, index, "mode", "compact"));
+  config->color = cai_lua_opt_bool_field(L, index, "color", 0);
+  config->preview_lines = cai_lua_opt_size_field(L, index, "preview_lines", 0U);
+}
+static int cai_lua_display_close(lua_State *L) {
+  cai_lua_display *self =
+      (cai_lua_display *)luaL_checkudata(L, 1, "cai.tool_display");
+  cai_error error;
+  if (self->active) {
+    cai_error_init(&error);
+    return cai_lua_bool_result(
+        L,
+        cai_lua_set_error(&error, CAI_ERR_INVALID,
+                          "tool display has an active callback"),
+        &error);
+  }
+  cai_tool_display_close(self->ptr);
+  self->ptr = NULL;
+  cai_sink_close(self->sink);
+  self->sink = NULL;
+  if (self->sink_ctx.callback_ref != 0) {
+    luaL_unref(L, LUA_REGISTRYINDEX, self->sink_ctx.callback_ref);
+    self->sink_ctx.callback_ref = 0;
+  }
+  lua_pushboolean(L, 1);
+  return 1;
+}
+static int cai_lua_display_gc(lua_State *L) {
+  cai_lua_display *self =
+      (cai_lua_display *)luaL_checkudata(L, 1, "cai.tool_display");
+  if (!self->active)
+    (void)cai_lua_display_close(L);
+  return 0;
+}
+static int cai_lua_display_set_mode(lua_State *L) {
+  cai_lua_display *self =
+      (cai_lua_display *)luaL_checkudata(L, 1, "cai.tool_display");
+  cai_error error;
+  int mode = cai_lua_display_mode(L, luaL_checkstring(L, 2));
+  luaL_argcheck(L, self->ptr != NULL, 1, "closed tool display");
+  cai_error_init(&error);
+  return cai_lua_bool_result(
+      L, cai_tool_display_set_mode(self->ptr, mode, &error), &error);
+}
+static lua_Integer cai_lua_display_integer(lua_State *L, int index,
+                                           const char *key,
+                                           lua_Integer fallback) {
+  lua_Integer value;
+  lua_getfield(L, index, key);
+  value = luaL_optinteger(L, -1, fallback);
+  lua_pop(L, 1);
+  return value;
+}
+static int cai_lua_display_event(lua_State *L) {
+  cai_lua_display *self =
+      (cai_lua_display *)luaL_checkudata(L, 1, "cai.tool_display");
+  cai_agent_runtime_event event;
+  cai_error error;
+  int snapshot, rc;
+  luaL_argcheck(L, self->ptr != NULL, 1, "closed tool display");
+  luaL_argcheck(L, !self->active, 1,
+                "tool display cannot reenter its callback");
+  luaL_checktype(L, 2, LUA_TTABLE);
+  memset(&event, 0, sizeof(event));
+  lua_newtable(L);
+  snapshot = lua_gettop(L);
+  event.type = (int)cai_lua_display_integer(L, 2, "type", 0);
+  event.tool_action = (int)cai_lua_display_integer(L, 2, "tool_action", 0);
+  event.tool_call_id =
+      cai_lua_mcp_pinned_string(L, 2, "tool_call_id", snapshot, 0);
+  event.runtime_session_id =
+      cai_lua_mcp_pinned_string(L, 2, "runtime_session_id", snapshot, 0);
+  event.tool_name = cai_lua_mcp_pinned_string(L, 2, "tool_name", snapshot, 0);
+  event.tool_path = cai_lua_mcp_pinned_string(L, 2, "tool_path", snapshot, 0);
+  event.data = cai_lua_mcp_pinned_string(L, 2, "data", snapshot, 0);
+  lua_getfield(L, snapshot, "data");
+  if (event.data != NULL)
+    (void)lua_tolstring(L, -1, &event.data_length);
+  lua_pop(L, 1);
+  event.terminal_output_truncated =
+      cai_lua_opt_bool_field(L, 2, "terminal_output_truncated", 0);
+  event.terminal_has_exit_code =
+      cai_lua_opt_bool_field(L, 2, "terminal_has_exit_code", 0);
+  event.terminal_exit_code =
+      (long long)cai_lua_display_integer(L, 2, "terminal_exit_code", 0);
+  event.terminal_has_signal =
+      cai_lua_opt_bool_field(L, 2, "terminal_has_signal", 0);
+  event.terminal_signal =
+      (long long)cai_lua_display_integer(L, 2, "terminal_signal", 0);
+  cai_error_init(&error);
+  self->active++;
+  rc = cai_tool_display_event(self->ptr, &event, &error);
+  self->active--;
+  return cai_lua_bool_result(L, rc, &error);
+}
+static int cai_lua_display_new(lua_State *L) {
+  cai_lua_display *self;
+  cai_tool_display_config config;
+  cai_error error;
+  int rc;
+  cai_lua_display_config(L, 1, &config);
+  luaL_checktype(L, 2, LUA_TFUNCTION);
+  self = (cai_lua_display *)lua_newuserdatauv(L, sizeof(*self), 0);
+  memset(self, 0, sizeof(*self));
+  luaL_setmetatable(L, "cai.tool_display");
+  cai_error_init(&error);
+  rc = cai_lua_make_sink(L, 2, &self->sink_ctx, &self->sink, &error);
+  config.sink = self->sink;
+  if (rc == CAI_OK)
+    rc = cai_tool_display_new(&config, &self->ptr, &error);
+  if (rc != CAI_OK)
+    return cai_lua_fail(L, rc, &error);
+  cai_error_cleanup(&error);
+  return 1;
+}
+static int cai_lua_patch_render(lua_State *L) {
+  cai_tool_display_config config;
+  cai_lua_source_ctx source_ctx;
+  cai_lua_sink_ctx sink_ctx;
+  cai_source *source = NULL;
+  cai_sink *sink = NULL;
+  cai_error error;
+  int rc;
+  cai_lua_display_config(L, 2, &config);
+  luaL_argcheck(
+      L, lua_type(L, 1) == LUA_TSTRING || lua_type(L, 1) == LUA_TFUNCTION, 1,
+      "expected patch string or source callback");
+  luaL_checktype(L, 3, LUA_TFUNCTION);
+  memset(&source_ctx, 0, sizeof(source_ctx));
+  memset(&sink_ctx, 0, sizeof(sink_ctx));
+  cai_error_init(&error);
+  rc = cai_lua_make_source(L, 1, &source_ctx, &source, &error);
+  if (rc == CAI_OK)
+    rc = cai_lua_make_sink(L, 3, &sink_ctx, &sink, &error);
+  config.sink = sink;
+  if (rc == CAI_OK)
+    rc = cai_patch_render(source, &config, &error);
+  cai_source_close(source);
+  cai_sink_close(sink);
+  if (source_ctx.callback_ref != 0)
+    luaL_unref(L, LUA_REGISTRYINDEX, source_ctx.callback_ref);
+  if (sink_ctx.callback_ref != 0)
+    luaL_unref(L, LUA_REGISTRYINDEX, sink_ctx.callback_ref);
+  return cai_lua_bool_result(L, rc, &error);
+}
+static const luaL_Reg cai_lua_display_methods[] = {
+    {"event", cai_lua_display_event},
+    {"set_mode", cai_lua_display_set_mode},
+    {"close", cai_lua_display_close},
+    {NULL, NULL}};
+
 static const luaL_Reg cai_lua_client_methods[] = {
     {"new_agent", cai_lua_client_new_agent},
     {"list_models", cai_lua_client_list_models},
@@ -11582,6 +11753,8 @@ int luaopen_cai(lua_State *L) {
   } while (0)
   cai_lua_metatable(L, CAI_LUA_CLIENT, cai_lua_client_methods,
                     cai_lua_client_gc);
+  cai_lua_metatable(L, "cai.tool_display", cai_lua_display_methods,
+                    cai_lua_display_gc);
   cai_lua_metatable(L, CAI_LUA_AGENT, cai_lua_agent_methods, cai_lua_agent_gc);
   cai_lua_metatable(L, CAI_LUA_AGENT_RUNTIME, cai_lua_agent_runtime_methods,
                     cai_lua_agent_runtime_gc);
@@ -11623,6 +11796,10 @@ int luaopen_cai(lua_State *L) {
   lua_newtable(L);
   lua_pushcfunction(L, cai_lua_open);
   lua_setfield(L, -2, "open");
+  lua_pushcfunction(L, cai_lua_patch_render);
+  lua_setfield(L, -2, "patch_render");
+  lua_pushcfunction(L, cai_lua_display_new);
+  lua_setfield(L, -2, "tool_display");
   lua_pushcfunction(L, cai_lua_registry_new);
   lua_setfield(L, -2, "tool_registry");
   lua_pushcfunction(L, cai_lua_native_store_new);
@@ -11664,6 +11841,11 @@ int luaopen_cai(lua_State *L) {
                       CAI_SESSION_CONTINUITY_CLIENT_HISTORY);
   CAI_LUA_SET_INTEGER("CONTINUITY_AUTO", CAI_SESSION_CONTINUITY_AUTO);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TEXT_DELTA", CAI_AGENT_EVENT_TEXT_DELTA);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_TOOL_CALL_STARTED",
+                      CAI_AGENT_EVENT_TOOL_CALL_STARTED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_TOOL_CALL_FAILED",
+                      CAI_AGENT_EVENT_TOOL_CALL_FAILED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_RUN_FAILED", CAI_AGENT_EVENT_RUN_FAILED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TOOL_CALL_COMPLETED",
                       CAI_AGENT_EVENT_TOOL_CALL_COMPLETED);
   CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_READ", CAI_AGENT_TOOL_ACTION_READ);
@@ -11699,6 +11881,8 @@ int luaopen_cai(lua_State *L) {
                       CAI_AGENT_EVENT_RESPONSE_COMPLETED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_RUN_CANCELLED",
                       CAI_AGENT_EVENT_RUN_CANCELLED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_TOOL_PATCH", CAI_AGENT_EVENT_TOOL_PATCH);
+  CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_MCP", CAI_AGENT_TOOL_ACTION_MCP);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_COMPACTION_STARTED",
                       CAI_AGENT_EVENT_COMPACTION_STARTED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_COMPACTION_PROGRESS",

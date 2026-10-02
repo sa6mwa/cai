@@ -42242,6 +42242,266 @@ static void test_chat_connection_failure(test_state *state) {
   close(fd);
 }
 
+typedef struct runtime_patch_capture {
+  cai_buffer_builder bytes;
+  pthread_t owner;
+  size_t chunks;
+  size_t endings;
+  int completed;
+  int wrong_thread;
+  int invalid_chunk;
+  int failed;
+  char failure[512];
+} runtime_patch_capture;
+
+static int test_runtime_patch_event(void *context,
+                                    const cai_agent_runtime_event *event,
+                                    cai_error *error) {
+  runtime_patch_capture *capture = (runtime_patch_capture *)context;
+  if (!pthread_equal(capture->owner, pthread_self()))
+    capture->wrong_thread = 1;
+  if (event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED &&
+      event->tool_action == CAI_AGENT_TOOL_ACTION_PATCH)
+    capture->completed = 1;
+  if (event->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED)
+    capture->failed = 1;
+  if (event->type == CAI_AGENT_EVENT_RUN_FAILED && event->data != NULL)
+    snprintf(capture->failure, sizeof(capture->failure), "%.*s",
+             (int)(event->data_length < 511U ? event->data_length : 511U),
+             event->data);
+  if (event->type != CAI_AGENT_EVENT_TOOL_PATCH)
+    return CAI_OK;
+  if (!capture->completed || event->data_length > 4096U ||
+      event->tool_action != CAI_AGENT_TOOL_ACTION_PATCH ||
+      event->tool_call_id == NULL ||
+      strcmp(event->tool_call_id, "patch_call") != 0 ||
+      event->runtime_session_id == NULL)
+    capture->invalid_chunk = 1;
+  if (event->data_length == 0U) {
+    capture->endings++;
+    return CAI_OK;
+  }
+  capture->chunks++;
+  return cai_buffer_append(&capture->bytes, event->data, event->data_length,
+                           error);
+}
+
+static void test_agent_runtime_patch_events(test_state *state) {
+  int chat, rejected, i;
+  for (chat = 0; chat < 2; chat++) {
+    for (rejected = 0; rejected < 2; rejected++) {
+      cai_buffer_builder patch, argument, body;
+      cai_error error;
+      cai_client_config client_config;
+      cai_agent_runtime_config runtime_config;
+      cai_agent_run_state run_state;
+      cai_client *client = NULL;
+      cai_agent_runtime *runtime = NULL;
+      runtime_patch_capture capture;
+      http_mock_server server;
+      mock_http_expectation script[2];
+      char workspace[PATH_MAX], file[PATH_MAX], cwd[PATH_MAX];
+      FILE *created;
+      char row[80];
+      size_t rows;
+      int rc;
+      cai_error_init(&error);
+      memset(&patch, 0, sizeof(patch));
+      memset(&argument, 0, sizeof(argument));
+      memset(&body, 0, sizeof(body));
+      memset(&capture, 0, sizeof(capture));
+      capture.owner = pthread_self();
+      if (getcwd(cwd, sizeof(cwd)) == NULL ||
+          strlen(cwd) + 40U >= sizeof(workspace)) {
+        test_fail(state, "runtime_patch_workspace", "cwd unavailable");
+        cai_error_cleanup(&error);
+        return;
+      }
+      strcpy(workspace, cwd);
+      strcat(workspace, "/runtime-patch-XXXXXX");
+      if (mkdtemp(workspace) == NULL) {
+        test_fail(state, "runtime_patch_workspace", "mkdtemp failed");
+        cai_error_cleanup(&error);
+        return;
+      }
+      strcpy(file, workspace);
+      strcat(file, "/sample.c");
+      expect_int(state, "runtime_patch_header",
+                 cai_buffer_append_cstr(
+                     &patch,
+                     rejected ? "*** Begin Patch\n*** Update File: "
+                                "sample.c\n@@\n-missing\n+replacement\n"
+                              : "*** Begin Patch\n*** Add File: sample.c\n",
+                     &error),
+                 CAI_OK);
+      if (!rejected) {
+        for (i = 0; i < 200; i++)
+          expect_int(state, "runtime_patch_row",
+                     cai_buffer_append_cstr(
+                         &patch, "+row \"quoted\" \\ backslash å🚀\n", &error),
+                     CAI_OK);
+      }
+      expect_int(state, "runtime_patch_end",
+                 cai_buffer_append_cstr(&patch, "*** End Patch\n", &error),
+                 CAI_OK);
+      if (chat) {
+        expect_int(state, "runtime_patch_json_start",
+                   cai_buffer_append_cstr(&argument, "{\"input\":", &error),
+                   CAI_OK);
+        expect_int(state, "runtime_patch_json_value",
+                   cai_buffer_append_json_string(&argument, patch.data, &error),
+                   CAI_OK);
+        expect_int(state, "runtime_patch_json_end",
+                   cai_buffer_append_cstr(&argument, "}", &error), CAI_OK);
+        expect_int(state, "runtime_patch_sse_start",
+                   cai_buffer_append_cstr(
+                       &body,
+                       "data: "
+                       "{\"id\":\"chat_patch\",\"choices\":[{\"index\":0,"
+                       "\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"patch_"
+                       "call\",\"type\":\"function\",\"function\":{\"name\":"
+                       "\"apply_patch\",\"arguments\":",
+                       &error),
+                   CAI_OK);
+        expect_int(state, "runtime_patch_sse_value",
+                   cai_buffer_append_json_string(&body, argument.data, &error),
+                   CAI_OK);
+        expect_int(
+            state, "runtime_patch_sse_end",
+            cai_buffer_append_cstr(
+                &body,
+                "}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n",
+                &error),
+            CAI_OK);
+      } else {
+        expect_int(state, "runtime_patch_sse_start",
+                   cai_buffer_append_cstr(
+                       &body,
+                       "event: response.output_item.done\ndata: "
+                       "{\"type\":\"response.output_item.done\",\"output_"
+                       "index\":0,\"item\":{\"id\":\"patch_item\",\"type\":"
+                       "\"custom_tool_call\",\"call_id\":\"patch_call\","
+                       "\"name\":\"apply_patch\",\"input\":",
+                       &error),
+                   CAI_OK);
+        expect_int(state, "runtime_patch_sse_value",
+                   cai_buffer_append_json_string(&body, patch.data, &error),
+                   CAI_OK);
+        expect_int(
+            state, "runtime_patch_sse_end",
+            cai_buffer_append_cstr(&body,
+                                   "}}\n\nevent: response.completed\ndata: "
+                                   "{\"type\":\"response.completed\","
+                                   "\"response\":{\"id\":\"resp_patch\"}}\n\n",
+                                   &error),
+            CAI_OK);
+      }
+      memset(script, 0, sizeof(script));
+      script[0].request_prefix =
+          chat ? "POST /v1/chat/completions HTTP/" : "POST /v1/responses HTTP/";
+      script[0].status = 200;
+      script[0].status_text = "OK";
+      script[0].content_type = "text/event-stream";
+      script[0].body = body.data;
+      script[1] = script[0];
+      script[1].body = chat ? "data: "
+                              "{\"id\":\"chat_done\",\"choices\":[{\"index\":0,"
+                              "\"delta\":{\"content\":\"DONE\"},\"finish_"
+                              "reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+                            : "event: response.completed\ndata: "
+                              "{\"type\":\"response.completed\",\"response\":{"
+                              "\"id\":\"resp_done\"}}\n\n";
+      rc = http_mock_server_open_script(state, "runtime_patch_mock", script, 2U,
+                                        &server);
+      if (rc == 0) {
+        cai_client_config_init(&client_config);
+        client_config.api_key = "mock-key";
+        client_config.base_url = server.base_url;
+        client_config.api_protocol = chat ? CAI_API_PROTOCOL_CHAT_COMPLETIONS
+                                          : CAI_API_PROTOCOL_RESPONSES;
+        client_config.http_2_disabled = 1;
+        client_config.timeout_ms = 5000L;
+        expect_int(state, "runtime_patch_client",
+                   cai_client_open(&client_config, &client, &error), CAI_OK);
+        cai_agent_runtime_config_init(&runtime_config);
+        runtime_config.workspace_directory = workspace;
+        runtime_config.model = CAI_MODEL_GPT_5_NANO;
+        runtime_config.disable_terminal = 1;
+        runtime_config.disable_default_session_store = 1;
+        runtime_config.event_queue_limit = 1U;
+        runtime_config.event_callback = test_runtime_patch_event;
+        runtime_config.event_context = &capture;
+        if (client != NULL)
+          expect_int(
+              state, "runtime_patch_open",
+              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+              CAI_OK);
+        if (runtime != NULL) {
+          expect_int(
+              state, "runtime_patch_submit",
+              cai_agent_runtime_submit(runtime, "Apply supplied patch", &error),
+              CAI_OK);
+          run_state = CAI_AGENT_SAMPLING;
+          for (i = 0; i < 500 && run_state != CAI_AGENT_COMPLETED &&
+                      run_state != CAI_AGENT_FAILED;
+               i++) {
+            expect_int(state, "runtime_patch_pump",
+                       cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+            expect_int(state, "runtime_patch_state",
+                       cai_agent_runtime_state(runtime, &run_state, &error),
+                       CAI_OK);
+          }
+          if (run_state == CAI_AGENT_FAILED)
+            test_fail(state, "runtime_patch_failure", capture.failure);
+          expect_int(state, "runtime_patch_completed", run_state,
+                     CAI_AGENT_COMPLETED);
+          expect_int(state, "runtime_patch_owner_thread", capture.wrong_thread,
+                     0L);
+          expect_int(state, "runtime_patch_chunk_contract",
+                     capture.invalid_chunk, 0L);
+          expect_int(state, "runtime_patch_rejection", capture.failed,
+                     rejected);
+          expect_int(state, "runtime_patch_sentinel", (long)capture.endings,
+                     rejected ? 0L : 1L);
+          if (!rejected) {
+            expect_str(state, "runtime_patch_exact_input", capture.bytes.data,
+                       patch.data);
+            if (capture.chunks < 2U)
+              test_fail(state, "runtime_patch_bounded_chunks",
+                        "expected multiple chunks");
+            created = fopen(file, "r");
+            rows = 0U;
+            if (created == NULL)
+              test_fail(state, "runtime_patch_file", "file not created");
+            else {
+              while (fgets(row, sizeof(row), created) != NULL) {
+                expect_str(state, "runtime_patch_file_row", row,
+                           "row \"quoted\" \\ backslash å🚀\n");
+                rows++;
+              }
+              fclose(created);
+              expect_int(state, "runtime_patch_file_rows", (long)rows, 200L);
+            }
+          } else
+            expect_int(state, "runtime_patch_rejected_file_absent",
+                       access(file, F_OK), -1L);
+          cai_agent_runtime_close(runtime);
+        }
+        cai_client_close(client);
+        expect_child_exit(state, "runtime_patch_mock", server.pid,
+                          &server.child_status);
+      }
+      unlink(file);
+      rmdir(workspace);
+      cai_free_mem(NULL, patch.data);
+      cai_free_mem(NULL, argument.data);
+      cai_free_mem(NULL, body.data);
+      cai_free_mem(NULL, capture.bytes.data);
+      cai_error_cleanup(&error);
+    }
+  }
+}
+
 static void test_chat_completions_adapter(test_state *state) {
   static const char *first_required[] = {"Authorization: Bearer mock-key",
                                          "\"model\":\"test-model\"",
@@ -50122,6 +50382,7 @@ static const test_entry test_entries[] = {
      test_agent_runtime_terminal_callback_close},
     {"agent_runtime_queued_turns", test_agent_runtime_queued_turns},
     {"agent_runtime_semantic_events", test_agent_runtime_semantic_events},
+    {"agent_runtime_patch_events", test_agent_runtime_patch_events},
     {"agent_runtime_poll_only", test_agent_runtime_poll_only},
     {"agent_runtime_host_goal_controls", test_agent_runtime_host_goal_controls},
     {"agent_runtime_goal_checkpoint_watermark",

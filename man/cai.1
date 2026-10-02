@@ -255,6 +255,14 @@ Disable terminal tools.
 .B \-\-no-review-subagent
 Disable the built-in reviewer.
 .TP
+.BI \-\-tool-output " MODE"
+Select interactive tool previews: compact (default) or full.
+Compact previews show five command output lines and one surrounding patch
+context row, with a vertical ellipsis between separated changes.
+Full previews retain supplied command and MCP output and all patch context.
+Tool output limits still apply. Non-interactive activity remains complete
+pslog output on stderr, independent of this preview setting.
+.TP
 .BR \-v , " " \-\-verbose
 Print runtime events; repeat for event sequence numbers.
 .TP
@@ -281,6 +289,13 @@ Export the active session, or the supplied ID, as JSONL and Markdown.
 .TP
 .B /new
 Start a new session in the current workspace.
+.TP
+.BI /output " [compact|full]"
+Show or change the tool preview mode. The setting applies to future tool calls;
+active calls and past output retain their original presentation.
+Successful patches show the agent\(aqs submitted patch, with green backgrounds
+for additions and red backgrounds for removals. Unchanged rows have no
+background. No file or Git comparison is performed. NO_COLOR disables colors.
 .TP
 .B /status
 Show a Markdown table of provider, model, reasoning, context, and available

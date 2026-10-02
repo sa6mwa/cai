@@ -1,4 +1,5 @@
 #include "../cai_internal.h"
+#include "../cai_utf8.h"
 
 #include <cai/tools/terminal.h>
 
@@ -1477,6 +1478,8 @@ static int cai_terminal_exec_callback(void *value, const void *params,
                                    result, error);
     }
   }
+  if (rc == CAI_OK)
+    cai_utf8_repair_text(result->output, strlen(result->output));
   cai_terminal_operation_end(binding->manager);
   return rc;
 }
@@ -1679,6 +1682,8 @@ static int cai_terminal_write_callback(void *value, const void *params,
                                                    : CAI_TERMINAL_EVENT_WAITING,
                                                result, error);
   }
+  if (rc == CAI_OK)
+    cai_utf8_repair_text(result->output, strlen(result->output));
   cai_terminal_operation_end(binding->manager);
   return rc;
 }

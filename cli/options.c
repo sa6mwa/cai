@@ -54,15 +54,18 @@ static void cai_cli_help(void) {
         "      --review                 Run one isolated review and exit\n"
         "      --review-and-fix         Review and fix in a new goal session\n",
         stdout);
-  fputs("      --base REF               Review changes against REF\n"
-        "  -o, --out FILE               Write review findings to FILE\n"
-        "  -T, --output-type TYPE       Review findings: markdown|json\n"
-        "  -a, --auth-json PATH         ChatGPT auth file (default "
-        "~/.codex/auth.json, then encrypted cai store)\n"
-        "      --login                  Log in to ChatGPT and exit\n"
-        "      --lockd ENDPOINT         Storage endpoint (default "
-        "state/cai/pouch)\n",
-        stdout);
+  fputs(
+      "      --base REF               Review changes against REF\n"
+      "  -o, --out FILE               Write review findings to FILE\n"
+      "  -T, --output-type TYPE       Review findings: markdown|json\n"
+      "      --tool-output MODE       Tool previews: compact|full (interactive "
+      "default compact)\n"
+      "  -a, --auth-json PATH         ChatGPT auth file (default "
+      "~/.codex/auth.json, then encrypted cai store)\n"
+      "      --login                  Log in to ChatGPT and exit\n"
+      "      --lockd ENDPOINT         Storage endpoint (default "
+      "state/cai/pouch)\n",
+      stdout);
   fputs("      --lockd-client-pem FILE  Remote lockd mTLS PEM bundle\n"
         "  -p, --provider NAME          "
         "chatgpt|openai|openrouter|berget|custom\n",
@@ -252,6 +255,8 @@ int cai_cli_parse_options(int argc, char *const *argv,
       field = &options->out;
     else if (strcmp(flag, "-T") == 0 || strcmp(flag, "--output-type") == 0)
       field = &options->output_type;
+    else if (strcmp(flag, "--tool-output") == 0)
+      field = &options->tool_output;
     else if (strcmp(flag, "-p") == 0 || strcmp(flag, "--provider") == 0)
       field = &options->provider;
     else if (strcmp(flag, "--endpoint") == 0)
@@ -297,6 +302,12 @@ int cai_cli_parse_options(int argc, char *const *argv,
     }
     value = argv[i];
     *field = value;
+    if (field == &options->tool_output && strcmp(value, "compact") != 0 &&
+        strcmp(value, "full") != 0) {
+      cai_cli_option_error(options,
+                           "cai: --tool-output must be compact or full\n");
+      return -1;
+    }
     if (field == &options->model)
       model_explicit = 1;
     if ((field == &options->reasoning_effort ||
@@ -484,8 +495,9 @@ const char *cai_cli_instruction_at(const cai_cli_options *options,
         strcmp(flag, "--goal") == 0 || strcmp(flag, "--base") == 0 ||
         strcmp(flag, "-o") == 0 || strcmp(flag, "--out") == 0 ||
         strcmp(flag, "-T") == 0 || strcmp(flag, "--output-type") == 0 ||
-        strcmp(flag, "-p") == 0 || strcmp(flag, "--provider") == 0 ||
-        strcmp(flag, "--endpoint") == 0 || strcmp(flag, "--api-key-env") == 0 ||
+        strcmp(flag, "--tool-output") == 0 || strcmp(flag, "-p") == 0 ||
+        strcmp(flag, "--provider") == 0 || strcmp(flag, "--endpoint") == 0 ||
+        strcmp(flag, "--api-key-env") == 0 ||
         strcmp(flag, "--model-metadata") == 0 || strcmp(flag, "-C") == 0 ||
         strcmp(flag, "--directory") == 0 || strcmp(flag, "-a") == 0 ||
         strcmp(flag, "--auth-json") == 0 || strcmp(flag, "-m") == 0 ||

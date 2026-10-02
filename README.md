@@ -325,6 +325,53 @@ are `info` records. Conversation records include `role` and `prompt_kind`
 There is no added `app` field. Long text is logged as ordered bounded chunks
 with an `offset` field; activity reaches the sink as it arrives.
 
+Interactive tool activity uses bright green/red `*` receipts for success/failure,
+with command labels and separate MCP receipts. Commands show their first five
+logical output lines by default. `/output` shows the current setting;
+`/output compact|full` changes it, and `--tool-output compact|full` selects the
+startup setting. Each tool call captures its mode when it starts: active calls
+and already displayed output stay unchanged. Full mode retains supplied
+command and MCP output and all patch context. Any tool-level output limit is
+still reported explicitly.
+The UI escapes binary/control bytes. Terminal tool results and JSON logs preserve
+valid UTF-8 and replace malformed bytes with `?`.
+
+Successful `apply_patch` calls display the **agent's submitted patch**, without
+comparing files or querying Git. Added rows have a green background, removed
+rows a red background, and unchanged rows no background. Compact mode keeps
+one context row on either side of changes and uses `⋮` between separated change
+blocks; outer context is trimmed without an ellipsis. Full mode retains all
+supplied context. `NO_COLOR` disables these colors. Non-interactive invocations
+log the full submitted patch and tool activity as pslog records on stderr,
+regardless of the preview setting; stdout still contains only the final reply.
+
+SDK hosts can use `<cai/display.h>` without softline or libmdf. Create a
+`cai_tool_display` with a borrowed sink and zero-initialized
+`cai_tool_display_config` (compact, five preview lines, no colors), feed it
+owner-thread runtime events with `cai_tool_display_event`, then close it with
+`cai_tool_display_close`. `cai_tool_display_set_mode` affects future calls.
+Successful native patch calls emit bounded `CAI_AGENT_EVENT_TOOL_PATCH` chunks
+followed by an empty chunk; rejected patches do not emit patch bytes.
+`cai_patch_render(source, &config, &error)` also renders a patch directly from
+a source to a sink, with bounded line buffers and no rewind or full-body
+materialization. Changed rows flow in chunks; exceptionally long compact
+context rows are visibly clipped. Sources and sinks remain caller-owned.
+
+Lua exposes the same renderer:
+
+```lua
+local display = assert(cai.tool_display({mode = "compact", color = true},
+  function(chunk) io.write(chunk); return true end))
+-- Forward each runtime event from its owner-thread callback:
+-- assert(display:event(event))
+assert(display:set_mode("full")) -- future calls only
+assert(display:close())
+-- Direct rendering accepts a patch string or a source callback returning chunks.
+local patch = "*** Begin Patch\n*** Add File: example.txt\n+hello\n*** End Patch\n"
+assert(cai.patch_render(patch, {mode = "full"},
+  function(chunk) io.write(chunk); return true end))
+```
+
 Chat Completions emit `cai.chat.request.metrics` at debug level for each HTTP
 attempt: model, request ID, attempt number, elapsed milliseconds, and first-token
 milliseconds when a token or tool delta arrives. Available usage adds input,
