@@ -457,6 +457,7 @@ typedef struct cai_stream_cancel_scope {
   void *context;
 } cai_stream_cancel_scope;
 int cai_stream_set_thread_cancel_scope(cai_stream_cancel_scope *scope);
+cai_stream_cancel_scope *cai_stream_get_thread_cancel_scope(void);
 int cai_stream_thread_cancel_requested(void);
 void cai_client_close_responses_websocket(cai_client_impl *impl);
 #ifdef CAI_TESTING

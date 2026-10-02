@@ -709,6 +709,8 @@ static void run_test_group(test_state *state, const char *name, test_fn fn) {
     timeout_seconds = 900U;
   else if (strcmp(name, "chat_transient_retries") == 0)
     timeout_seconds = 15U;
+  else if (strcmp(name, "mcp_raw_input_cancellation") == 0)
+    timeout_seconds = 12U;
   alarm(timeout_seconds);
   started = test_now_seconds();
   fn(state);
@@ -8743,7 +8745,7 @@ typedef struct mock_http_expectation {
   size_t required_count;
   const char **forbidden;
   size_t forbidden_count;
-  int status; /* Zero selects 200; -1 drops the connection before a response. */
+  int status; /* Zero selects 200; -1 drops; -2 waits for caller disconnect. */
   const char *status_text;
   const char *content_type;
   const char *request_id;
@@ -10210,6 +10212,23 @@ mock_scripted_openai_child(int pipe_fd,
     }
     if (expectation->status == -1) {
       close(client_fd);
+      continue;
+    }
+    if (expectation->status == -2) {
+      struct timeval deadline;
+      char byte;
+      ssize_t got;
+      deadline.tv_sec = 4;
+      deadline.tv_usec = 0;
+      if (setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &deadline,
+                     sizeof(deadline)) != 0)
+        _exit(12);
+      do {
+        got = read(client_fd, &byte, 1U);
+      } while (got < 0 && errno == EINTR);
+      close(client_fd);
+      if (got != 0)
+        _exit(11);
       continue;
     }
     if (mock_write_status_response(
@@ -48744,6 +48763,17 @@ static lonejson_status test_mcp_raw_rewind_failure(lonejson_spooled *input,
            "forced source rewind failure");
   return LONEJSON_STATUS_IO_ERROR;
 }
+static lonejson_read_result test_mcp_raw_oversized_read(lonejson_spooled *input,
+                                                        unsigned char *buffer,
+                                                        size_t capacity) {
+  lonejson_read_result result = lonejson_default_read_result();
+  (void)input;
+  /* A faulty reader must not make the UTF-8 validator read beyond its buffer.
+   */
+  memset(buffer, 'a', capacity);
+  result.bytes_read = capacity + 1U;
+  return result;
+}
 static void test_mcp_raw_input_failures(test_state *state) {
   static const char init[] =
       "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":"
@@ -48766,7 +48796,7 @@ static void test_mcp_raw_input_failures(test_state *state) {
   static const char *invalid_utf8[] = {"\xff", "\xc0\xaf", "\xe2\x82",
                                        "\xed\xa0\x80", "\xf4\x90\x80\x80"};
   int which;
-  for (which = 0; which < 10; which++) {
+  for (which = 0; which < 11; which++) {
     http_mock_server server;
     cai_mcp_client *client = NULL;
     cai_tool_raw_input mapping;
@@ -48785,9 +48815,9 @@ static void test_mcp_raw_input_failures(test_state *state) {
     mapping.field = "message";
     memset(&writer, 0, sizeof(writer));
     cai_error_init(&error);
-    if (http_mock_server_open_script(state, "raw_source_failure", script,
-                                     which == 1 || which >= 7 ? 3U : 4U,
-                                     &server) != 0)
+    if (http_mock_server_open_script(
+            state, "raw_source_failure", script,
+            which == 1 || (which >= 7 && which < 10) ? 3U : 4U, &server) != 0)
       return;
     snprintf(url, sizeof(url), "%s/mcp", server.base_url);
     cai_mcp_streamable_http_client_config_init(&config);
@@ -48815,6 +48845,8 @@ static void test_mcp_raw_input_failures(test_state *state) {
       input.read = NULL;
     if (which == 9)
       input.rewind = NULL;
+    if (which == 10)
+      input.read = test_mcp_raw_oversized_read;
     callbacks.write = test_write;
     callbacks.close = NULL;
     callbacks.context = &writer;
@@ -48822,10 +48854,11 @@ static void test_mcp_raw_input_failures(test_state *state) {
     expect_int(state, "raw_failure_status",
                cai_mcp_client_call_tool_raw(client, "echo", &mapping, &input,
                                             sink, &error),
-               (which >= 2 && which < 7) || which >= 8 ? CAI_ERR_INVALID
-                                                       : CAI_ERR_TRANSPORT);
+               (which >= 2 && which < 7) || (which >= 8 && which < 10)
+                   ? CAI_ERR_INVALID
+                   : CAI_ERR_TRANSPORT);
     expect_int(state, "raw_failure_no_output", (long)writer.length, 0L);
-    if (which < 8) {
+    if (which < 8 || which == 10) {
       expect_int(state, "raw_failure_details",
                  error.detail != NULL && error.detail[0] != '\0', 1L);
       test_expect_log(state, "raw_failure_log", &logs,
@@ -48848,7 +48881,7 @@ static void test_mcp_raw_input_failures(test_state *state) {
        */
       if (WIFEXITED(status))
         expect_int(state, "raw_failure_child_status", WEXITSTATUS(status),
-                   which == 1 || which >= 7 ? 0L : 8L);
+                   which == 1 || (which >= 7 && which < 10) ? 0L : 8L);
     }
   }
 }
@@ -48868,6 +48901,257 @@ static const char test_mcp_raw_tools[] =
     "\"string\"}},"
     "\"required\":[\"patch\"]},\"_meta\":{\"" CAI_MCP_RAW_INPUT_META_KEY
     "\":{\"field\":\"patch\"}}}]}}";
+
+static void test_mcp_raw_input_refresh_ownership(test_state *state) {
+  static const char refreshed[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[{\"name\":"
+      "\"second\","
+      "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"patch\":{"
+      "\"type\":\"string\"}},"
+      "\"required\":[\"patch\"]}}]}}";
+  static const char *required[] = {
+      "\"name\":\"second\"", "\"arguments\":{\"patch\":\"retained input\"}"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 200, "OK", "application/json",
+       NULL, test_mcp_raw_init},
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 202, "Accepted",
+       "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 200, "OK", "application/json",
+       NULL, test_mcp_raw_tools},
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 200, "OK", "application/json",
+       NULL, refreshed},
+      {"POST /v1/mcp HTTP/", required, 2U, NULL, 0U, 200, "OK",
+       "application/json", NULL,
+       "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"ok\":true}}"}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_client *client = NULL;
+  const cai_tool_raw_input *borrowed;
+  cai_sink *sink = NULL;
+  cai_sink_callbacks callbacks;
+  lonejson_spooled input;
+  lonejson_error json_error;
+  cai_error error;
+  write_state output;
+  char url[192];
+  if (http_mock_server_open_script(state, "raw_refresh_ownership", script, 5U,
+                                   &server) != 0)
+    return;
+  cai_error_init(&error);
+  cai_mcp_streamable_http_client_config_init(&config);
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  config.url = url;
+  config.timeout_ms = 1500L;
+  memset(&output, 0, sizeof(output));
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = test_write;
+  callbacks.context = &output;
+  cai_sink_from_callbacks(&callbacks, &sink, &error);
+  CAI_LJ->spooled_init(CAI_LJ, &input);
+  lonejson_error_init(&json_error);
+  input.append(&input, "retained input", sizeof("retained input") - 1U,
+               &json_error);
+  expect_int(state, "raw_refresh_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "raw_refresh_initial_tools",
+             cai_mcp_client_refresh_tools(client, &error), CAI_OK);
+  borrowed = cai_mcp_client_tool_at(client, 0U)->raw_input;
+  /* The call itself refreshes discovery for this newly introduced tool. Its
+   * argument must remain valid even when that refresh invalidates old views. */
+  expect_int(state, "raw_refresh_borrowed_mapping",
+             cai_mcp_client_call_tool_raw(client, "second", borrowed, &input,
+                                          sink, &error),
+             CAI_OK);
+  expect_str(state, "raw_refresh_output", output.buffer, "{\"ok\":true}");
+  input.cleanup(&input);
+  cai_sink_close(sink);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "raw_refresh_ownership", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_raw_input_registration_ownership(test_state *state) {
+  static const char tools3[] =
+      "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"tools\":[{\"name\":"
+      "\"patcher\","
+      "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"patch\":{"
+      "\"type\":\"string\"}},"
+      "\"required\":[\"patch\"]}}]}}";
+  static const char *required[] = {
+      "\"name\":\"patcher\"", "\"arguments\":{\"patch\":\"raw override\"}"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 200, "OK", "application/json",
+       NULL, test_mcp_raw_init},
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 202, "Accepted",
+       "application/json", NULL, ""},
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 200, "OK", "application/json",
+       NULL, test_mcp_raw_tools},
+      {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 200, "OK", "application/json",
+       NULL, tools3},
+      {"POST /v1/mcp HTTP/", required, 2U, NULL, 0U, 200, "OK",
+       "application/json", NULL,
+       "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"ok\":true}}"}};
+  http_mock_server server;
+  cai_mcp_streamable_http_client_config config;
+  cai_mcp_tool_registration_config registration;
+  cai_mcp_raw_input_override override;
+  const cai_mcp_client_tool *borrowed;
+  cai_mcp_client *client = NULL;
+  cai_tool_registry *registry = NULL;
+  cai_sink *sink = NULL;
+  cai_sink_callbacks callbacks;
+  cai_error error;
+  write_state output;
+  char url[192];
+  int rc;
+  if (http_mock_server_open_script(state, "raw_registration_ownership", script,
+                                   5U, &server) != 0)
+    return;
+  cai_error_init(&error);
+  cai_mcp_streamable_http_client_config_init(&config);
+  snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+  config.url = url;
+  config.timeout_ms = 1500L;
+  memset(&output, 0, sizeof(output));
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = test_write;
+  callbacks.context = &output;
+  cai_sink_from_callbacks(&callbacks, &sink, &error);
+  cai_tool_registry_new(&registry, &error);
+  expect_int(state, "raw_registration_open",
+             cai_mcp_streamable_http_client_open(&config, &client, &error),
+             CAI_OK);
+  expect_int(state, "raw_registration_discover",
+             cai_mcp_client_refresh_tools(client, &error), CAI_OK);
+  borrowed = cai_mcp_client_tool_at(client, 0U);
+  memset(&registration, 0, sizeof(registration));
+  registration.name_prefix = borrowed->description;
+  override.name = borrowed->name;
+  override.mapping = borrowed->raw_input;
+  registration.raw_input_overrides = &override;
+  registration.raw_input_override_count = 1U;
+  rc = cai_mcp_client_register_tools(client, registry, &registration, &error);
+  expect_int(state, "raw_registration_snapshot", rc, CAI_OK);
+  if (rc == CAI_OK)
+    expect_int(state, "raw_registration_execute",
+               cai_tool_registry_run(registry, "patcher", "raw override", sink,
+                                     &error),
+               CAI_OK);
+  expect_str(state, "raw_registration_output", output.buffer, "{\"ok\":true}");
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_mcp_client_destroy(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "raw_registration_ownership", server.pid,
+                    &server.child_status);
+}
+
+static void test_mcp_raw_input_cancellation(test_state *state) {
+  int which;
+  for (which = 0; which < 2; which++) {
+    char response[128];
+    const char *required[] = {"\"id\":3"};
+    mock_http_expectation script[] = {
+        {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+         "application/json", NULL, test_mcp_raw_init},
+        {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 202, "Accepted",
+         "application/json", NULL, ""},
+        {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+         "application/json", NULL, test_mcp_raw_tools},
+        {"POST /v1/mcp HTTP/", NULL, 0U, NULL, 0U, -2, "Wait for cancellation",
+         "application/json", NULL, ""},
+        {"POST /v1/mcp HTTP/", NULL, 1U, NULL, 0U, 200, "OK",
+         "application/json", NULL, NULL}};
+    http_mock_server server;
+    cai_mcp_streamable_http_client_config config;
+    cai_mcp_client *client = NULL;
+    cai_tool_raw_input mapping;
+    cai_stream_cancel_scope cancel;
+    cai_sink *sink = NULL;
+    cai_sink_callbacks callbacks;
+    lonejson_spooled input;
+    lonejson_error json_error;
+    cai_error error;
+    write_state output;
+    test_log_capture logs;
+    pslog_logger *logger;
+    double deadline, started;
+    char url[192];
+    script[4].required = required;
+    script[4].body = response;
+    required[0] = which == 0 ? "\"id\":3" : "\"id\":4";
+    snprintf(response, sizeof(response),
+             "{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"ok\":true}}",
+             which == 0 ? 3 : 4);
+    if (which == 0)
+      script[3] = script[4];
+    if (http_mock_server_open_script(state, "raw_cancellation", script,
+                                     which == 0 ? 4U : 5U, &server) != 0)
+      return;
+    cai_error_init(&error);
+    logger = test_log_open(&logs);
+    cai_mcp_streamable_http_client_config_init(&config);
+    snprintf(url, sizeof(url), "%s/mcp", server.base_url);
+    config.url = url;
+    config.timeout_ms = 6000L;
+    config.logger = logger;
+    memset(&mapping, 0, sizeof(mapping));
+    mapping.field = "patch";
+    memset(&callbacks, 0, sizeof(callbacks));
+    memset(&output, 0, sizeof(output));
+    callbacks.write = test_write;
+    callbacks.context = &output;
+    cai_sink_from_callbacks(&callbacks, &sink, &error);
+    CAI_LJ->spooled_init(CAI_LJ, &input);
+    lonejson_error_init(&json_error);
+    input.append(&input, "cancelled raw input",
+                 sizeof("cancelled raw input") - 1U, &json_error);
+    expect_int(state, "raw_cancel_open",
+               cai_mcp_streamable_http_client_open(&config, &client, &error),
+               CAI_OK);
+    expect_int(state, "raw_cancel_discover",
+               cai_mcp_client_refresh_tools(client, &error), CAI_OK);
+    started = test_now_seconds();
+    deadline = started + (which == 0 ? -1.0 : 0.05);
+    cancel.check = test_chat_cancel_deadline;
+    cancel.context = &deadline;
+    expect_int(state, "raw_cancel_scope",
+               cai_stream_set_thread_cancel_scope(&cancel), CAI_OK);
+    expect_int(state, "raw_cancel_result",
+               cai_mcp_client_call_tool_raw(client, "patcher", &mapping, &input,
+                                            sink, &error),
+               CAI_ERR_CANCELLED);
+    expect_int(state, "raw_cancel_clear_scope",
+               cai_stream_set_thread_cancel_scope(NULL), CAI_OK);
+    expect_int(state, "raw_cancel_prompt", test_now_seconds() - started < 2.5,
+               1L);
+    expect_int(state, "raw_cancel_no_output", (long)output.length, 0L);
+    test_expect_log(state, "raw_cancel_log", &logs,
+                    "cai.mcp.raw_call.cancelled", "debug",
+                    "\"tool\":\"patcher\"");
+    expect_int(state, "raw_cancel_no_transport_error",
+               strstr(logs.buffer, "cai.mcp.http.transport_error") == NULL, 1L);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    memset(&output, 0, sizeof(output));
+    expect_int(state, "raw_cancel_reuse",
+               cai_mcp_client_call_tool_raw(client, "patcher", &mapping, &input,
+                                            sink, &error),
+               CAI_OK);
+    expect_str(state, "raw_cancel_reuse_output", output.buffer,
+               "{\"ok\":true}");
+    input.cleanup(&input);
+    cai_sink_close(sink);
+    cai_mcp_client_destroy(client);
+    cai_error_cleanup(&error);
+    if (logger != NULL)
+      logger->destroy(logger);
+    expect_child_exit(state, "raw_cancellation", server.pid,
+                      &server.child_status);
+  }
+}
 
 static void test_mcp_raw_input_agent_round_trip(test_state *state) {
   static const char header_tools[] =
@@ -49211,6 +49495,10 @@ static void test_mcp_raw_input_transport_failures(test_state *state) {
 }
 
 static const test_entry test_entries[] = {
+    {"mcp_raw_input_cancellation", test_mcp_raw_input_cancellation},
+    {"mcp_raw_input_registration_ownership",
+     test_mcp_raw_input_registration_ownership},
+    {"mcp_raw_input_refresh_ownership", test_mcp_raw_input_refresh_ownership},
     {"mcp_raw_input_agent_round_trip", test_mcp_raw_input_agent_round_trip},
     {"mcp_raw_input_transport_failures", test_mcp_raw_input_transport_failures},
     {"mcp_raw_input_failures", test_mcp_raw_input_failures},

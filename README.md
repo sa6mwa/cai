@@ -1150,8 +1150,10 @@ Per-tool `raw_input_overrides` take precedence over server hints. Each entry
 names the remote tool before `name_prefix` and supplies a descriptor; a NULL
 mapping disables the hint. Unknown or duplicate override names are errors.
 Mappings must select a declared top-level string property. Registration copies
-the selected mapping, preserves pre-existing tools on failure, and rolls back
-all additions from the failed registration. Custom MCP client implementations
+configuration strings and the selected mapping before refreshing discovery,
+so borrowed cached metadata can be used as overrides. It preserves pre-existing
+tools on failure and rolls back all additions from the failed registration.
+Custom MCP client implementations
 can supply `cai_mcp_client_tool.input_schema_json` for full schema validation.
 
 Plain `text` framing sends the entire input as the selected field. If other
@@ -1185,18 +1187,23 @@ and dropped connections use `CAI_ERR_TRANSPORT`. Raw calls log the tool name,
 status, and error details through pslog, without logging raw payloads. A failed
 upload or response does not imply the remote tool had no side effects. Only
 HTTP 404 for an expired session triggers one automatic replay; other failures
-are returned to the caller.
+are returned to the caller. Turn cancellation reaches the HTTP worker,
+returns `CAI_ERR_CANCELLED`, and never replays the cancelled request. Cancellation
+is logged at debug level and does not undo remote side effects.
 
 Deterministic tests cover buffered and streamed agent-to-MCP round trips,
 JSON-header framing, model continuation after tool errors, Chat Completions'
 JSON fallback, metadata and policy validation, atomic registration rollback,
 byte-split Unicode and embedded NULs, expired-session recovery, JSON/SSE remote
 errors, response ID mismatches, malformed responses, disconnects, HTTP errors,
-and output-sink failures followed by a successful call. Run the C cases with
+output-sink failures followed by a successful call, borrowed metadata across
+discovery refresh, oversized reader results, and cancellation before and during
+HTTP work with successful client reuse. Run the C cases with
 `ctest --test-dir build/debug --output-on-failure -j1 -R mcp_raw_input`.
 `make lua-test` also exercises the real libcai HTTP server with large raw
 uploads, malformed headers and UTF-8, failing Lua readers/writers, retained
-client lifetime, collection inside callbacks, and recovery after failures.
+client lifetime, configuration mutation and collection inside input callbacks,
+and recovery after failures.
 
 The equivalent Lua interfaces are:
 

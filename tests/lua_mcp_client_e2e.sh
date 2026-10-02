@@ -9,6 +9,10 @@ fi
 server=$1
 lua_bin=$2
 script=$3
+# Instrument the programs under test, not host shell utilities. Some host
+# coreutils implementations retain allocations that LeakSanitizer reports.
+test_preload=${LD_PRELOAD-}
+unset LD_PRELOAD
 tmpdir=${TMPDIR:-/tmp}/cai-lua-mcp-client-e2e-$$
 fifo=$tmpdir/port.fifo
 server_pid=
@@ -33,7 +37,7 @@ stop_server() {
 start_server() {
   rm -f "$fifo"
   mkfifo "$fifo"
-  "$server" --port 0 --print-port "$@" >"$fifo" &
+  LD_PRELOAD="$test_preload" "$server" --port 0 --print-port "$@" >"$fifo" &
   server_pid=$!
 
   if ! read -r port <"$fifo"; then
@@ -45,13 +49,13 @@ start_server() {
 mkdir -p "$tmpdir"
 
 start_server
-"$lua_bin" "$script" "http://127.0.0.1:$port/mcp" full
+LD_PRELOAD="$test_preload" "$lua_bin" "$script" "http://127.0.0.1:$port/mcp" full
 stop_server
 
 start_server --no-tools
-"$lua_bin" "$script" "http://127.0.0.1:$port/mcp" empty
+LD_PRELOAD="$test_preload" "$lua_bin" "$script" "http://127.0.0.1:$port/mcp" empty
 stop_server
 
 start_server --raw-input
-"$lua_bin" "$script" "http://127.0.0.1:$port/mcp" raw
+LD_PRELOAD="$test_preload" "$lua_bin" "$script" "http://127.0.0.1:$port/mcp" raw
 stop_server

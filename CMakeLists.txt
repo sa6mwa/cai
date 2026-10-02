@@ -1241,6 +1241,9 @@ if(CAI_BUILD_TESTS)
       TIMEOUT 3)
   endif()
   set(CAI_UNIT_TEST_GROUPS
+    mcp_raw_input_cancellation
+    mcp_raw_input_registration_ownership
+    mcp_raw_input_refresh_ownership
     mcp_raw_input_agent_round_trip
     mcp_raw_input_transport_failures
     mcp_raw_input_failures
@@ -1716,6 +1719,7 @@ if(CAI_BUILD_TESTS)
       LABELS "unit;local"
       TIMEOUT 3)
   endforeach()
+  set_tests_properties(cai_tests.mcp_raw_input_cancellation PROPERTIES TIMEOUT 12)
   # This test intentionally exercises two queued network-backed turns. Its
   # internal HTTP and pump bounds exceed the default short unit-test timeout.
   set_tests_properties(cai_tests.agent_runtime_queued_turns PROPERTIES
@@ -2207,7 +2211,7 @@ if(CAI_BUILD_TESTS)
       LABELS "smoke;local"
       ENVIRONMENT "${CAI_LUA_TEST_ENV}"
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-      TIMEOUT 5)
+      TIMEOUT 20)
   endif()
 
   if(CAI_BUILD_INTEGRATION_TESTS)

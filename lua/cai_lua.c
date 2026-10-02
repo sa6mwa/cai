@@ -8542,15 +8542,31 @@ static int cai_lua_keep_mcp_client_ref(lua_State *L, int client_index,
   return 0;
 }
 
+/* Keep converted strings in an immutable stack-rooted snapshot. Input and
+ * notification callbacks may edit the original configuration and collect it. */
+static const char *cai_lua_mcp_pinned_string(lua_State *L, int index,
+                                             const char *key, int snapshot,
+                                             int required) {
+  const char *value;
+  lua_getfield(L, index, key);
+  value = !required && lua_isnil(L, -1) ? NULL : luaL_checkstring(L, -1);
+  lua_pushvalue(L, -1);
+  lua_setfield(L, snapshot, key);
+  lua_pop(L, 1);
+  return value;
+}
+
 static void cai_lua_raw_input_config(lua_State *L, int index,
                                      cai_tool_raw_input *mapping) {
   const char *framing;
+  int snapshot;
+  int format;
   memset(mapping, 0, sizeof(*mapping));
   index = lua_absindex(L, index);
   luaL_checktype(L, index, LUA_TTABLE);
-  lua_getfield(L, index, "field");
-  mapping->field = luaL_checkstring(L, -1);
-  lua_pop(L, 1);
+  lua_newtable(L);
+  snapshot = lua_gettop(L);
+  mapping->field = cai_lua_mcp_pinned_string(L, index, "field", snapshot, 1);
   framing = cai_lua_opt_string_field(L, index, "framing", "text");
   if (strcmp(framing, "json-header") == 0)
     mapping->framing = CAI_TOOL_RAW_INPUT_JSON_HEADER;
@@ -8559,10 +8575,13 @@ static void cai_lua_raw_input_config(lua_State *L, int index,
   lua_getfield(L, index, "format");
   if (!lua_isnil(L, -1)) {
     luaL_checktype(L, -1, LUA_TTABLE);
-    mapping->format.type = cai_lua_opt_string_field(L, -1, "type", NULL);
-    mapping->format.syntax = cai_lua_opt_string_field(L, -1, "syntax", NULL);
+    format = lua_gettop(L);
+    mapping->format.type =
+        cai_lua_mcp_pinned_string(L, format, "type", snapshot, 0);
+    mapping->format.syntax =
+        cai_lua_mcp_pinned_string(L, format, "syntax", snapshot, 0);
     mapping->format.definition =
-        cai_lua_opt_string_field(L, -1, "definition", NULL);
+        cai_lua_mcp_pinned_string(L, format, "definition", snapshot, 0);
   }
   lua_pop(L, 1);
 }
@@ -8586,13 +8605,17 @@ static int cai_lua_registry_set_raw_input(lua_State *L) {
 static void
 cai_lua_mcp_registration_config(lua_State *L, int index,
                                 cai_mcp_tool_registration_config *config) {
+  int snapshot;
   memset(config, 0, sizeof(*config));
   if (cai_lua_none_or_nil(L, index)) {
     return;
   }
   luaL_checktype(L, index, LUA_TTABLE);
+  index = lua_absindex(L, index);
+  lua_newtable(L);
+  snapshot = lua_gettop(L);
   config->name_prefix =
-      cai_lua_opt_string_field(L, index, "name_prefix", config->name_prefix);
+      cai_lua_mcp_pinned_string(L, index, "name_prefix", snapshot, 0);
   config->strict = cai_lua_opt_bool_field(L, index, "strict", config->strict);
   {
     const char *policy =
@@ -8624,18 +8647,25 @@ cai_lua_mcp_registration_config(lua_State *L, int index,
     memset(overrides, 0, count * sizeof(*overrides));
     memset(mappings, 0, count * sizeof(*mappings));
     for (i = 0U; i < count; i++) {
+      int entry;
+      int pinned_entry;
       lua_rawgeti(L, list_index, (lua_Integer)i + 1);
       luaL_checktype(L, -1, LUA_TTABLE);
-      lua_getfield(L, -1, "name");
-      overrides[i].name = luaL_checkstring(L, -1);
-      lua_pop(L, 1);
-      lua_getfield(L, -1, "mapping");
+      entry = lua_gettop(L);
+      lua_newtable(L);
+      pinned_entry = lua_gettop(L);
+      overrides[i].name =
+          cai_lua_mcp_pinned_string(L, entry, "name", pinned_entry, 1);
+      lua_getfield(L, entry, "mapping");
       if (!lua_isnil(L, -1) &&
           !(lua_isboolean(L, -1) && !lua_toboolean(L, -1))) {
         cai_lua_raw_input_config(L, -1, &mappings[i]);
+        lua_setfield(L, pinned_entry, "mapping");
         overrides[i].mapping = &mappings[i];
       }
-      lua_pop(L, 2);
+      lua_pop(L, 1);
+      lua_rawseti(L, snapshot, (lua_Integer)i + 1);
+      lua_pop(L, 1);
     }
     config->raw_input_overrides = overrides;
     config->raw_input_override_count = count;
@@ -9304,21 +9334,22 @@ static int cai_lua_mcp_client_call_tool_raw(lua_State *L) {
   cai_lua_mcp_client_output output;
   cai_error error;
   int rc;
+  lua_settop(L, 5);
   cai_lua_raw_input_config(L, 3, &mapping);
   cai_lua_mcp_client_output_check(L, 5);
   cai_error_init(&error);
+  cai_lua_mcp_client_enter(self);
   rc = cai_lua_spool_from_stack(L, 4, &input, &error);
   memset(&output, 0, sizeof(output));
   if (rc == CAI_OK)
     rc = cai_lua_mcp_client_output_prepare(L, 5, &output, &error);
   if (rc == CAI_OK) {
-    cai_lua_mcp_client_enter(self);
     rc = cai_mcp_client_call_tool_raw(self->ptr, name, &mapping, &input,
                                       output.sink, &error);
-    cai_lua_mcp_client_leave(self);
   }
   if (input.cleanup != NULL)
     input.cleanup(&input);
+  cai_lua_mcp_client_leave(self);
   return cai_lua_mcp_client_output_finish(L, rc, &output, &error);
 }
 

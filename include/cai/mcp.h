@@ -553,10 +553,14 @@ int cai_mcp_client_call_tool(cai_mcp_client *client, const char *name,
                              struct lonejson_spooled *arguments_json,
                              cai_sink *output, cai_error *error);
 /** Call a mapped MCP tool using raw text or explicitly framed input.
- * `input` must supply readable, rewindable spooled input. Header source I/O
- * failures return CAI_ERR_TRANSPORT; malformed framing returns CAI_ERR_INVALID.
- * A failed call may already have reached the remote tool. Only an expired MCP
- * session (HTTP 404) triggers automatic request replay, once.
+ * The Streamable HTTP adapter copies the tool name and mapping before
+ * discovery, so they may refer to cached metadata even when the call refreshes
+ * that cache. `input` must supply readable, rewindable spooled input. Header
+ * source I/O failures return CAI_ERR_TRANSPORT; malformed framing returns
+ * CAI_ERR_INVALID. A failed call may already have reached the remote tool. Only
+ * an expired MCP session (HTTP 404) triggers automatic request replay, once.
+ * Turn cancellation aborts HTTP work with CAI_ERR_CANCELLED and never replays
+ * the cancelled request. It does not undo remote side effects.
  */
 int cai_mcp_client_call_tool_raw(cai_mcp_client *client, const char *name,
                                  const cai_tool_raw_input *mapping,
@@ -607,6 +611,9 @@ int cai_mcp_client_send_notification(cai_mcp_client *client, const char *method,
                                      struct lonejson_spooled *params_json,
                                      cai_error *error);
 /** Register all cached/discovered MCP client tools into a local tool registry.
+ *
+ * Configuration strings and mappings are copied before discovery refreshes
+ * cached metadata. Registration failure removes only this call's additions.
  *
  * The registry callbacks keep a non-owning pointer to `client`; callers must
  * keep the client alive for at least as long as the registered tools can run.

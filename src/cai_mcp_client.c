@@ -329,6 +329,7 @@ static int cai_mcp_streamable_call_tool_raw(cai_mcp_client *client,
 
 typedef struct cai_mcp_streaming_post_context {
   cai_mcp_streamable_http_client_impl *impl;
+  cai_stream_cancel_scope *cancel_scope;
   const lonejson_spooled *request;
   cai_mcp_raw_request *raw_request;
   size_t request_len;
@@ -1739,6 +1740,18 @@ static size_t cai_mcp_upload_read(char *ptr, size_t size, size_t nmemb,
   return result.bytes_read;
 }
 
+static int cai_mcp_curl_cancel_progress(void *user, curl_off_t down_total,
+                                        curl_off_t down_now,
+                                        curl_off_t up_total,
+                                        curl_off_t up_now) {
+  (void)user;
+  (void)down_total;
+  (void)down_now;
+  (void)up_total;
+  (void)up_now;
+  return cai_stream_thread_cancel_requested();
+}
+
 static void
 cai_mcp_configure_curl_common(CURL *curl,
                               const cai_mcp_streamable_http_client_impl *impl) {
@@ -1746,6 +1759,9 @@ cai_mcp_configure_curl_common(CURL *curl,
     return;
   }
   curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+  curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+  curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
+                   cai_mcp_curl_cancel_progress);
   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, impl->timeout_ms);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, impl->timeout_ms);
   cai_configure_curl_tls(curl, impl->insecure_skip_verify, impl->ca_bundle_path,
@@ -1997,6 +2013,9 @@ static int cai_mcp_oauth2_discover_token_endpoint(
   if (lonejson_oidc_fetch_discovery(impl->auth_runtime, impl->oidc_issuer,
                                     impl->oauth2_max_response_bytes, &discovery,
                                     &json_error) != LONEJSON_STATUS_OK) {
+    if (cai_stream_thread_cancel_requested())
+      return cai_set_error(error, CAI_ERR_CANCELLED,
+                           "MCP request was cancelled");
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "failed to fetch MCP OIDC discovery metadata",
                                 json_error.message);
@@ -2098,6 +2117,9 @@ static int cai_mcp_oauth2_fetch_client_credentials(
     lonejson_http_response_cleanup(&http_response);
     cai_mcp_clear_secret(body.data);
     lonejson_owned_buffer_free(&body);
+    if (cai_stream_thread_cancel_requested())
+      return cai_set_error(error, CAI_ERR_CANCELLED,
+                           "MCP request was cancelled");
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "MCP OAuth2 token request failed",
                                 json_error.message);
@@ -3298,13 +3320,16 @@ static int cai_mcp_post_ex(cai_mcp_streamable_http_client_impl *impl,
       impl->has_active_request = 0;
       impl->has_active_progress = 0;
     }
-    cai_mcp_log_http_transport_error(impl, "POST", curl_easy_strerror(curl_rc));
     response->body.cleanup(&response->body);
     memset(&response->body, 0, sizeof(response->body));
     cai_free_mem(NULL, response->content_type);
     response->content_type = NULL;
     cai_free_mem(NULL, response->session_id);
     response->session_id = NULL;
+    if (cai_stream_thread_cancel_requested())
+      return cai_set_error(error, CAI_ERR_CANCELLED,
+                           "MCP request was cancelled");
+    cai_mcp_log_http_transport_error(impl, "POST", curl_easy_strerror(curl_rc));
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "MCP HTTP request failed",
                                 curl_easy_strerror(curl_rc));
@@ -3355,6 +3380,13 @@ static void *cai_mcp_streaming_post_thread(void *user) {
     return NULL;
   }
 
+  if (cai_stream_set_thread_cancel_scope(context->cancel_scope) != CAI_OK) {
+    context->rc = cai_set_error(&context->error, CAI_ERR_TRANSPORT,
+                                "failed to attach MCP cancellation scope");
+    close(context->write_fd);
+    context->write_fd = -1;
+    return NULL;
+  }
   headers = NULL;
   curl = curl_easy_init();
   if (curl == NULL) {
@@ -3478,7 +3510,10 @@ static void *cai_mcp_streaming_post_thread(void *user) {
   close(context->write_fd);
   context->write_fd = -1;
   if (context->curl_rc != CURLE_OK) {
-    if (context->raw_request != NULL && context->raw_request->utf8_invalid)
+    if (cai_stream_thread_cancel_requested())
+      context->rc = cai_set_error(&context->error, CAI_ERR_CANCELLED,
+                                  "MCP request was cancelled");
+    else if (context->raw_request != NULL && context->raw_request->utf8_invalid)
       context->rc = cai_set_error_detail(
           &context->error, CAI_ERR_INVALID, "MCP raw input is not valid UTF-8",
           "invalid or incomplete UTF-8 sequence");
@@ -3578,13 +3613,16 @@ static int cai_mcp_get_resume_response(
   curl_easy_cleanup(curl);
   curl_slist_free_all(headers);
   if (curl_rc != CURLE_OK) {
-    cai_mcp_log_http_transport_error(impl, "GET", curl_easy_strerror(curl_rc));
     response->body.cleanup(&response->body);
     memset(&response->body, 0, sizeof(response->body));
     cai_free_mem(NULL, response->content_type);
     response->content_type = NULL;
     cai_free_mem(NULL, response->session_id);
     response->session_id = NULL;
+    if (cai_stream_thread_cancel_requested())
+      return cai_set_error(error, CAI_ERR_CANCELLED,
+                           "MCP request was cancelled");
+    cai_mcp_log_http_transport_error(impl, "GET", curl_easy_strerror(curl_rc));
     return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
                                 "MCP HTTP event stream resume failed",
                                 curl_easy_strerror(curl_rc));
@@ -9448,6 +9486,7 @@ static int cai_mcp_stream_request_result_once(
   memset(response, 0, sizeof(*response));
   memset(&context, 0, sizeof(context));
   context.impl = impl;
+  context.cancel_scope = cai_stream_get_thread_cancel_scope();
   context.request = request;
   context.raw_request = raw_request;
   context.request_len = request_len;
@@ -9520,6 +9559,7 @@ static int cai_mcp_stream_request_result_once(
     cai_error_cleanup(&context.error);
     memset(&context, 0, sizeof(context));
     context.impl = impl;
+    context.cancel_scope = cai_stream_get_thread_cancel_scope();
     context.response = response;
     context.last_event_id = resume_event_id;
     context.write_fd = fds[1];
@@ -9549,7 +9589,10 @@ static int cai_mcp_stream_request_result_once(
   }
   impl->has_active_request = 0;
   impl->has_active_progress = 0;
-  if (context.rc != CAI_OK) {
+  if (context.rc == CAI_ERR_CANCELLED) {
+    rc = cai_mcp_copy_or_set_error(error, &context.error, CAI_ERR_CANCELLED,
+                                   "MCP request was cancelled", NULL);
+  } else if (context.rc != CAI_OK) {
     cai_mcp_log_http_transport_error(
         impl,
         (context.request != NULL || context.raw_request != NULL) ? "POST"
@@ -9597,8 +9640,8 @@ static int cai_mcp_stream_request_result_with_session_recovery(
   rc = cai_mcp_stream_request_result_once(impl, request, request_len,
                                           raw_request, require_result_object,
                                           output, response, error);
-  if (rc == CAI_OK || !had_session || response == NULL ||
-      response->status != 404L) {
+  if (rc == CAI_OK || rc == CAI_ERR_CANCELLED || !had_session ||
+      response == NULL || response->status != 404L) {
     return rc;
   }
   cai_mcp_http_response_capture_cleanup(response);
@@ -10628,8 +10671,17 @@ static int cai_mcp_raw_utf8_check(cai_mcp_raw_request *request,
 static lonejson_read_result
 cai_mcp_raw_body_read(void *user, unsigned char *buffer, size_t capacity) {
   cai_mcp_raw_request *request = (cai_mcp_raw_request *)user;
-  lonejson_read_result result =
-      request->input.read(&request->input, buffer, capacity);
+  lonejson_read_result result;
+  memset(&result, 0, sizeof(result));
+  if (cai_stream_thread_cancel_requested()) {
+    result.error_code = ECANCELED;
+    return result;
+  }
+  result = request->input.read(&request->input, buffer, capacity);
+  if (result.bytes_read > capacity) {
+    result.bytes_read = 0U;
+    result.error_code = EIO;
+  }
   if (result.error_code != 0)
     return result;
   if (!cai_mcp_raw_utf8_check(request, buffer, result.bytes_read, result.eof)) {
@@ -10684,7 +10736,8 @@ static int cai_mcp_raw_request_rewind(cai_mcp_raw_request *request,
     if (capacity > sizeof(chunk))
       capacity = sizeof(chunk);
     result = request->input.read(&request->input, chunk, capacity);
-    if (result.error_code != 0 || result.bytes_read == 0U)
+    if (result.error_code != 0 || result.bytes_read == 0U ||
+        result.bytes_read > capacity)
       return cai_set_error(error, CAI_ERR_TRANSPORT,
                            "failed to read MCP raw-input header");
     skipped += result.bytes_read;
@@ -10989,6 +11042,8 @@ static int cai_mcp_streamable_call_tool_raw(
   cai_mcp_streamable_http_client_impl *impl = cai_mcp_streamable_impl(client);
   cai_mcp_http_response_capture response;
   cai_mcp_raw_request request;
+  cai_tool_raw_input owned_mapping;
+  char *owned_name;
   pslog_logger *log;
   size_t i;
   int rc;
@@ -11000,11 +11055,29 @@ static int cai_mcp_streamable_call_tool_raw(
                          "readable rewindable input, and output");
   memset(&request, 0, sizeof(request));
   memset(&response, 0, sizeof(response));
+  memset(&owned_mapping, 0, sizeof(owned_mapping));
+  owned_name = NULL;
   log = cai_mcp_logger(impl);
+  /* Discovery can invalidate borrowed tool views, including this mapping. */
+  owned_name = cai_strdup(NULL, name);
+  if (owned_name == NULL) {
+    rc =
+        cai_set_error(error, CAI_ERR_NOMEM, "failed to copy MCP raw tool name");
+    goto done;
+  }
+  name = owned_name;
+  rc = cai_raw_input_copy(NULL, &owned_mapping, mapping, error);
+  if (rc != CAI_OK)
+    goto done;
+  mapping = &owned_mapping;
   if (log != NULL && log->debugf != NULL)
     log->debugf(log, "cai.mcp.raw_call.start", "tool=%s field=%s framing=%d",
                 name, mapping->field != NULL ? mapping->field : "",
                 (int)mapping->framing);
+  if (cai_stream_thread_cancel_requested()) {
+    rc = cai_set_error(error, CAI_ERR_CANCELLED, "MCP request was cancelled");
+    goto done;
+  }
   rc = cai_mcp_client_initialize(client, error);
   if (rc != CAI_OK)
     goto done;
@@ -11039,7 +11112,10 @@ done:
       log->debugf(log, "cai.mcp.raw_call.done",
                   "tool=%s status=%d http_status=%ld", name, rc,
                   response.status);
-    else if (rc != CAI_OK && log->warnf != NULL)
+    else if (rc == CAI_ERR_CANCELLED && log->debugf != NULL)
+      log->debugf(log, "cai.mcp.raw_call.cancelled", "tool=%s status=%d", name,
+                  rc);
+    else if (rc != CAI_OK && rc != CAI_ERR_CANCELLED && log->warnf != NULL)
       log->warnf(log, "cai.mcp.raw_call.failed",
                  "tool=%s status=%d http_status=%ld error=%s detail=%s", name,
                  rc, response.status,
@@ -11050,6 +11126,8 @@ done:
     request.generator.cleanup(&request.generator);
   cai_free_mem(NULL, request.prefix.data);
   cai_mcp_http_response_capture_cleanup(&response);
+  cai_raw_input_cleanup(NULL, &owned_mapping);
+  cai_free_mem(NULL, owned_name);
   return rc;
 }
 int cai_mcp_client_call_tool_raw(cai_mcp_client *client, const char *name,
@@ -11115,10 +11193,89 @@ cai_mcp_generate_registry_schema_json(const cai_mcp_client_schema *schema,
   return builder.data;
 }
 
+typedef struct cai_mcp_registration_snapshot {
+  cai_mcp_tool_registration_config config;
+  cai_mcp_raw_input_override *overrides;
+  cai_tool_raw_input *mappings;
+  char *name_prefix;
+  size_t count;
+} cai_mcp_registration_snapshot;
+
+static void
+cai_mcp_registration_snapshot_cleanup(cai_mcp_registration_snapshot *snapshot) {
+  size_t i;
+  for (i = 0U; i < snapshot->count; i++) {
+    if (snapshot->overrides != NULL) {
+      void *owned_name;
+      memcpy(&owned_name, &snapshot->overrides[i].name, sizeof(owned_name));
+      cai_free_mem(NULL, owned_name);
+    }
+    if (snapshot->mappings != NULL)
+      cai_raw_input_cleanup(NULL, &snapshot->mappings[i]);
+  }
+  cai_free_mem(NULL, snapshot->overrides);
+  cai_free_mem(NULL, snapshot->mappings);
+  cai_free_mem(NULL, snapshot->name_prefix);
+}
+static int cai_mcp_registration_snapshot_copy(
+    cai_mcp_client *client, const cai_mcp_tool_registration_config *config,
+    cai_mcp_registration_snapshot *snapshot, cai_error *error) {
+  size_t i;
+  int rc;
+  memset(snapshot, 0, sizeof(*snapshot));
+  snapshot->config = *config;
+  snapshot->name_prefix = cai_strdup(NULL, config->name_prefix);
+  if (config->name_prefix != NULL && snapshot->name_prefix == NULL)
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to copy MCP tool prefix");
+  snapshot->config.name_prefix = snapshot->name_prefix;
+  if (config->raw_input_override_count >
+          (size_t)-1 / sizeof(*snapshot->overrides) ||
+      config->raw_input_override_count >
+          (size_t)-1 / sizeof(*snapshot->mappings))
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "too many MCP raw-input overrides");
+  if (config->raw_input_override_count == 0U)
+    return CAI_OK;
+  snapshot->overrides = (cai_mcp_raw_input_override *)cai_alloc(
+      NULL, config->raw_input_override_count * sizeof(*snapshot->overrides));
+  snapshot->mappings = (cai_tool_raw_input *)cai_alloc(
+      NULL, config->raw_input_override_count * sizeof(*snapshot->mappings));
+  if (snapshot->overrides == NULL || snapshot->mappings == NULL)
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to copy MCP raw-input overrides");
+  memset(snapshot->overrides, 0,
+         config->raw_input_override_count * sizeof(*snapshot->overrides));
+  memset(snapshot->mappings, 0,
+         config->raw_input_override_count * sizeof(*snapshot->mappings));
+  snapshot->config.raw_input_overrides = snapshot->overrides;
+  for (i = 0U; i < config->raw_input_override_count; i++) {
+    snapshot->count = i + 1U;
+    snapshot->overrides[i].name =
+        cai_strdup(NULL, config->raw_input_overrides[i].name);
+    if (snapshot->overrides[i].name == NULL)
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to copy MCP override name");
+    if (config->raw_input_overrides[i].mapping != NULL) {
+      snapshot->overrides[i].mapping = &snapshot->mappings[i];
+      /* Ignored mappings retain their presence without dereferencing fields. */
+      if (config->raw_input_policy != CAI_MCP_RAW_INPUT_JSON &&
+          client->call_tool_raw != NULL) {
+        rc = cai_raw_input_copy(NULL, &snapshot->mappings[i],
+                                config->raw_input_overrides[i].mapping, error);
+        if (rc != CAI_OK)
+          return rc;
+      }
+    }
+  }
+  return CAI_OK;
+}
+
 int cai_mcp_client_register_tools(
     cai_mcp_client *client, cai_tool_registry *registry,
     const cai_mcp_tool_registration_config *config, cai_error *error) {
   cai_mcp_tool_registration_config defaults;
+  cai_mcp_registration_snapshot snapshot;
   const cai_mcp_tool_registration_config *effective;
   const cai_mcp_client_tool *tool;
   cai_mcp_registry_tool_context *context;
@@ -11154,10 +11311,13 @@ int cai_mcp_client_register_tools(
         return cai_set_error(error, CAI_ERR_INVALID,
                              "duplicate MCP raw-input override");
   }
+  rc = cai_mcp_registration_snapshot_copy(client, effective, &snapshot, error);
+  if (rc != CAI_OK)
+    goto fail;
+  effective = &snapshot.config;
   rc = cai_mcp_client_refresh_tools(client, error);
-  if (rc != CAI_OK) {
-    return rc;
-  }
+  if (rc != CAI_OK)
+    goto fail;
   for (i = 0U; i < effective->raw_input_override_count; i++) {
     size_t j;
     for (j = 0U; j < cai_mcp_client_tool_count(client); j++) {
@@ -11166,11 +11326,13 @@ int cai_mcp_client_register_tools(
           strcmp(remote->name, effective->raw_input_overrides[i].name) == 0)
         break;
     }
-    if (j == cai_mcp_client_tool_count(client))
-      return cai_set_error_detail(
+    if (j == cai_mcp_client_tool_count(client)) {
+      rc = cai_set_error_detail(
           error, CAI_ERR_INVALID,
           "MCP raw-input override names an unadvertised tool",
           effective->raw_input_overrides[i].name);
+      goto fail;
+    }
   }
   for (i = 0U; i < cai_mcp_client_tool_count(client); i++) {
     tool = cai_mcp_client_tool_at(client, i);
@@ -11314,10 +11476,12 @@ int cai_mcp_client_register_tools(
       goto fail;
     }
   }
+  cai_mcp_registration_snapshot_cleanup(&snapshot);
   return CAI_OK;
 
 fail:
   cai_tool_registry_truncate(registry, initial_tool_count);
+  cai_mcp_registration_snapshot_cleanup(&snapshot);
   return rc;
 }
 

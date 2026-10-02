@@ -61,6 +61,25 @@ if mode == "raw" then
   end
   local tool = client:tool_at(1)
   if tool.raw_input.field ~= "input" or tool.raw_input.framing ~= "text" then fail("native raw metadata missing") end
+  local callback_mapping = {
+    field = "input",
+    format = { type = "grammar", syntax = "lark",
+               definition = "start: /.+/\n" .. string.rep("# retained grammar\n", 1024) },
+  }
+  local source_calls = 0
+  local callback_result = assert_ok(client:call_tool_raw("echo_message", callback_mapping,
+    function()
+      source_calls = source_calls + 1
+      raw_failure("raw input callback client close", client:close())
+      callback_mapping.field = nil
+      callback_mapping.format = nil
+      collectgarbage("collect")
+      local churn = {}
+      for i = 1, 128 do churn[i] = string.rep(tostring(i), 2048) end
+      if source_calls == 1 then return "callback input" end
+      return nil
+    end), nil, "raw input callback lifetime")
+  contains("raw callback exact input", callback_result:read_all(), '"callback input"')
   local payload = string.rep('line "quote" \\ å🚀\n', 16000) .. "tail\n"
   local result = assert_ok(client:call_tool_raw("echo_message", tool.raw_input, payload), nil, "large raw upload")
   local json = result:read_all()

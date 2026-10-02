@@ -33,14 +33,16 @@ int cai_stream_set_thread_cancel_scope(cai_stream_cancel_scope *scope) {
              : CAI_ERR_TRANSPORT;
 }
 
-int cai_stream_thread_cancel_requested(void) {
-  cai_stream_cancel_scope *scope;
-
+cai_stream_cancel_scope *cai_stream_get_thread_cancel_scope(void) {
   if (pthread_once(&cai_stream_cancel_once, cai_stream_cancel_key_init) != 0 ||
       !cai_stream_cancel_key_ready) {
-    return 0;
+    return NULL;
   }
-  scope = (cai_stream_cancel_scope *)pthread_getspecific(cai_stream_cancel_key);
+  return (cai_stream_cancel_scope *)pthread_getspecific(cai_stream_cancel_key);
+}
+
+int cai_stream_thread_cancel_requested(void) {
+  cai_stream_cancel_scope *scope = cai_stream_get_thread_cancel_scope();
   return scope != NULL && scope->check != NULL && scope->check(scope->context);
 }
 
