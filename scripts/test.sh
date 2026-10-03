@@ -10,19 +10,19 @@ cd "$repo_root"
 
 case "$mode" in
   debug)
-    cmake --build --preset debug
     ctest --preset debug "$@"
     ;;
+  debug-cai|cai)
+    ctest --preset "$mode" "$@"
+    ;;
   release|host)
-    cmake --build --preset release
     ctest --preset release "$@"
     ;;
   integration)
-    cmake --build --preset integration
     ctest --preset integration "$@"
     ;;
   *)
-    printf 'usage: %s [debug|release|host|integration]\n' "$0" >&2
+    printf 'usage: %s [debug|debug-cai|cai|release|host|integration]\n' "$0" >&2
     exit 2
     ;;
 esac

@@ -273,3 +273,22 @@ _cai_require_cache_value(${_cai_darwin_release_index}
   "${_cai_source_dir_literal}/cmake/toolchains/arm64-apple-darwin.cmake")
 _cai_reject_cache_key(${_cai_darwin_release_index}
   arm64-apple-darwin-release CPKT_TARGET_ID)
+
+_cai_find_configure_preset(debug-cai _cai_cli_native_index)
+_cai_require_inherits(${_cai_cli_native_index} debug-cai debug)
+_cai_require_cache_value(${_cai_cli_native_index} debug-cai CAI_BUILD_CLI ON)
+_cai_find_configure_preset(libcai _cai_library_index)
+_cai_require_cache_value(${_cai_library_index} libcai CAI_BUILD_CLI OFF)
+_cai_find_configure_preset(cai _cai_cli_release_index)
+_cai_require_inherits(${_cai_cli_release_index} cai x86_64-linux-musl-release)
+_cai_require_cache_value(${_cai_cli_release_index} cai CAI_BUILD_TESTS ON)
+foreach(_cai_cross IN ITEMS x86_64-linux-musl-release aarch64-linux-gnu-release
+    aarch64-linux-musl-release armhf-linux-gnu-release armhf-linux-musl-release
+    arm64-apple-darwin-release)
+  _cai_find_configure_preset(${_cai_cross} _cai_cross_index)
+  _cai_require_cache_value(${_cai_cross_index} ${_cai_cross} CAI_BUILD_TESTS OFF)
+endforeach()
+
+_cai_require_cache_value(${_cai_fuzz_index} fuzz CAI_BUILD_TESTS OFF)
+_cai_require_cache_value(${_cai_fuzz_index} fuzz CAI_BUILD_EXAMPLES OFF)
+_cai_require_cache_value(${_cai_fuzz_index} fuzz CAI_BUILD_SHARED OFF)

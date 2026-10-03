@@ -113,7 +113,7 @@ with tempfile.TemporaryDirectory(prefix="terminal-failures-", dir=cli.parent) as
                no_proxy="127.0.0.1,localhost")
     server = Server()
     clipboard = socketserver.TCPServer(("127.0.0.1", 0), BrokenClipboard)
-    threads = [threading.Thread(target=s.serve_forever, daemon=True)
+    threads = [threading.Thread(target=s.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
                for s in (server, clipboard)]
     for thread in threads:
         thread.start()

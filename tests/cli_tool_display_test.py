@@ -30,9 +30,9 @@ PATCH = """*** Begin Patch
 """
 ORIGINAL = "before0\nbefore1\nold\nbetween0\nbetween1\nbetween2\nbetween3\nold2\nafter0\nafter1\n"
 
-def finished(terminal, offset, response):
+def finished(terminal, offset, response, marker=None):
     text = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", terminal.output[offset:])
-    return response in text and b"Worked for" in text
+    return response in text and b"Worked for" in text and (marker is None or marker in text)
 
 
 def main():
@@ -101,7 +101,7 @@ def main():
             api.plan = [("exec_command", {"cmd": "sh binary.sh", "yield_time_ms": 1000}), "BINARY DONE"]
             offset = len(terminal.output)
             terminal.send(b"run binary output command\r")
-            terminal.wait(lambda: finished(terminal, offset, b"BINARY DONE"))
+            terminal.wait(lambda: finished(terminal, offset, b"BINARY DONE", b"Ran sh binary.sh"))
             later = bytes(terminal.output[offset:])
             plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", later)
             assert "UNICODEå".encode() in plain and b"BINARY\\xff?\\xc2\\x80TAIL\\xc3" in plain, plain

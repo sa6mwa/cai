@@ -132,11 +132,6 @@ set(CAI_PSLOG_VERSION "0.12.0")
 set(CAI_SOFTLINE_VERSION "0.9.0")
 set(CAI_LIBMDF_VERSION "0.13.0")
 
-if(CAI_BUILD_CLI AND (NOT CAI_TARGET_ID STREQUAL "x86_64-linux-musl" OR
-                      NOT CAI_DEPENDENCY_MODE STREQUAL "cpkt"))
-  message(FATAL_ERROR
-    "The cai CLI currently requires x86_64-linux-musl and cpkt dependencies")
-endif()
 if(CAI_BUILD_CLI AND NOT CAI_BUILD_STATIC)
   message(FATAL_ERROR "The cai CLI requires CAI_BUILD_STATIC=ON")
 endif()
@@ -191,6 +186,12 @@ if(CAI_TARGET_ID STREQUAL "")
   endif()
 endif()
 set(CAI_TARGET_ID "${CAI_TARGET_ID}" CACHE STRING "Release archive target id." FORCE)
+
+if(CAI_BUILD_CLI AND (NOT CAI_TARGET_ID MATCHES "^x86_64-linux-(gnu|musl)$" OR
+                      NOT CAI_DEPENDENCY_MODE STREQUAL "cpkt"))
+  message(FATAL_ERROR
+    "The cai CLI requires x86_64 Linux and cpkt dependencies (GNU for development, musl for distribution)")
+endif()
 
 function(cai_c_pkt_systems_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
@@ -440,25 +441,36 @@ function(cai_set_pslog_from_target)
 endfunction()
 
 if(CAI_BUILD_CLI)
-  set(_cai_liblql_name "liblql-0.3.0-x86_64-linux-musl")
+  if(CAI_TARGET_ID STREQUAL "x86_64-linux-gnu")
+    set(_cai_liblql_sha256 "fafb04f9af5d9610f77380ac1f848d1edd3d60dcf7ce6a098f6a04e30dd2b47a")
+    set(_cai_lockdc_sha256 "1e949887d613824716645dd5e9a85a1b89ad2d8d66431838c0a28c999b0e23da")
+    set(_cai_softline_sha256 "09612ec2cc3fc1ecdcefaf4afff4e5e80555d9618c13a7e6db3405d0ead835f5")
+    set(_cai_libmdf_sha256 "6be317bb232702cab5fb2f7f6041fa6b6cc0cb6d3676cb1230f80a3778c1c4b4")
+  else()
+    set(_cai_liblql_sha256 "e33a57e5d97337304c8541efaf8ab33bff9060cae600d1fe744a6734dca74ad4")
+    set(_cai_lockdc_sha256 "580b8f4b8dd87d77a3ef16f8a304ce3dc472e45e64e39ec1250a8582a8182c31")
+    set(_cai_softline_sha256 "4779f8950fc4abf29ea87dae2ab31e7a951ee760d3d62bce0b4ef199c6625e49")
+    set(_cai_libmdf_sha256 "1fd8758bed2eab39b84a6265dad32386531943c13ee400a0ab6663e98d2cd404")
+  endif()
+  set(_cai_liblql_name "liblql-0.3.0-${CAI_TARGET_ID}")
   set(_cai_liblql_prefix "${CAI_DEPS_DIR}/${_cai_liblql_name}")
   cai_dependency_archive_path("${_cai_liblql_name}.tar.gz"
-    "e33a57e5d97337304c8541efaf8ab33bff9060cae600d1fe744a6734dca74ad4"
+    "${_cai_liblql_sha256}"
     _cai_liblql_archive)
-  cai_download_tarball("liblql 0.3.0 x86_64-linux-musl"
+  cai_download_tarball("liblql 0.3.0 ${CAI_TARGET_ID}"
     "https://github.com/sa6mwa/liblql/releases/download/v0.3.0/${_cai_liblql_name}.tar.gz"
     "${_cai_liblql_archive}" "${_cai_liblql_prefix}"
-    "e33a57e5d97337304c8541efaf8ab33bff9060cae600d1fe744a6734dca74ad4"
+    "${_cai_liblql_sha256}"
     "${_cai_liblql_prefix}/include/lql/lql.h")
-  set(_cai_lockdc_name "liblockdc-0.18.0-x86_64-linux-musl")
+  set(_cai_lockdc_name "liblockdc-0.18.0-${CAI_TARGET_ID}")
   set(_cai_lockdc_prefix "${CAI_DEPS_DIR}/${_cai_lockdc_name}")
   cai_dependency_archive_path("${_cai_lockdc_name}.tar.gz"
-    "580b8f4b8dd87d77a3ef16f8a304ce3dc472e45e64e39ec1250a8582a8182c31"
+    "${_cai_lockdc_sha256}"
     _cai_lockdc_archive)
-  cai_download_tarball("liblockdc 0.18.0 x86_64-linux-musl"
+  cai_download_tarball("liblockdc 0.18.0 ${CAI_TARGET_ID}"
     "https://github.com/sa6mwa/liblockdc/releases/download/v0.18.0/${_cai_lockdc_name}.tar.gz"
     "${_cai_lockdc_archive}" "${_cai_lockdc_prefix}"
-    "580b8f4b8dd87d77a3ef16f8a304ce3dc472e45e64e39ec1250a8582a8182c31"
+    "${_cai_lockdc_sha256}"
     "${_cai_lockdc_prefix}/include/lc/lc.h")
   list(PREPEND CMAKE_PREFIX_PATH "${_cai_lockdc_prefix}" "${_cai_liblql_prefix}")
   list(APPEND CMAKE_FIND_ROOT_PATH "${_cai_lockdc_prefix}" "${_cai_liblql_prefix}")
@@ -467,29 +479,29 @@ if(CAI_BUILD_CLI)
   set(liblql_DIR "${_cai_liblql_prefix}/lib/cmake/liblql"
     CACHE PATH "liblql package directory" FORCE)
   set(_cai_softline_name
-      "softline-${CAI_SOFTLINE_VERSION}-x86_64-linux-musl")
+      "softline-${CAI_SOFTLINE_VERSION}-${CAI_TARGET_ID}")
   set(_cai_softline_prefix "${CAI_DEPS_DIR}/${_cai_softline_name}")
   cai_dependency_archive_path(
     "${_cai_softline_name}.tar.gz"
-    "4779f8950fc4abf29ea87dae2ab31e7a951ee760d3d62bce0b4ef199c6625e49"
+    "${_cai_softline_sha256}"
     _cai_softline_archive)
   cai_download_tarball(
-    "softline ${CAI_SOFTLINE_VERSION} x86_64-linux-musl"
+    "softline ${CAI_SOFTLINE_VERSION} ${CAI_TARGET_ID}"
     "https://github.com/sa6mwa/softline/releases/download/v${CAI_SOFTLINE_VERSION}/${_cai_softline_name}.tar.gz"
     "${_cai_softline_archive}" "${_cai_softline_prefix}"
-    "4779f8950fc4abf29ea87dae2ab31e7a951ee760d3d62bce0b4ef199c6625e49"
+    "${_cai_softline_sha256}"
     "${_cai_softline_prefix}/include/softline/softline.h")
-  set(_cai_libmdf_name "libmdf-${CAI_LIBMDF_VERSION}-x86_64-linux-musl")
+  set(_cai_libmdf_name "libmdf-${CAI_LIBMDF_VERSION}-${CAI_TARGET_ID}")
   set(_cai_libmdf_prefix "${CAI_DEPS_DIR}/${_cai_libmdf_name}")
   cai_dependency_archive_path(
     "${_cai_libmdf_name}.tar.gz"
-    "1fd8758bed2eab39b84a6265dad32386531943c13ee400a0ab6663e98d2cd404"
+    "${_cai_libmdf_sha256}"
     _cai_libmdf_archive)
   cai_download_tarball(
-    "libmdf ${CAI_LIBMDF_VERSION} x86_64-linux-musl"
+    "libmdf ${CAI_LIBMDF_VERSION} ${CAI_TARGET_ID}"
     "https://github.com/sa6mwa/libmdf/releases/download/v${CAI_LIBMDF_VERSION}/${_cai_libmdf_name}.tar.gz"
     "${_cai_libmdf_archive}" "${_cai_libmdf_prefix}"
-    "1fd8758bed2eab39b84a6265dad32386531943c13ee400a0ab6663e98d2cd404"
+    "${_cai_libmdf_sha256}"
     "${_cai_libmdf_prefix}/include/libmdf/mdf.h")
   list(PREPEND CMAKE_PREFIX_PATH "${_cai_softline_prefix}"
        "${_cai_libmdf_prefix}")
@@ -950,16 +962,25 @@ if(CAI_BUILD_EXAMPLES)
   endforeach()
 endif()
 
+function(cai_configure_cli_target target)
+  if(CAI_TARGET_ID STREQUAL "x86_64-linux-musl")
+    target_link_options(${target} PRIVATE -static)
+  endif()
+  cai_configure_c_target(${target})
+endfunction()
+
 if(CAI_BUILD_CLI)
   find_package(lockdc CONFIG REQUIRED COMPONENTS static)
   add_executable(cai_cli cli/main.c cli/options.c cli/status.c cli/login.c
     cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c
     cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
-  set_target_properties(cai_cli PROPERTIES OUTPUT_NAME cai SKIP_BUILD_RPATH ON)
+  set_target_properties(cai_cli PROPERTIES OUTPUT_NAME cai)
+  if(CAI_TARGET_ID STREQUAL "x86_64-linux-musl")
+    set_target_properties(cai_cli PROPERTIES SKIP_BUILD_RPATH ON)
+  endif()
   target_link_libraries(cai_cli PRIVATE cai_static
     softline::softline_static libmdf::mdf_static lockdc::static)
-  target_link_options(cai_cli PRIVATE -static)
-  cai_configure_c_target(cai_cli)
+  cai_configure_cli_target(cai_cli)
   if(CAI_INSTALL)
     install(TARGETS cai_cli RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
       COMPONENT cai-cli)
@@ -989,15 +1010,17 @@ if(CAI_BUILD_CLI)
       "${CAI_DEPS_DIR}/softline-${CAI_SOFTLINE_VERSION}-${CAI_TARGET_ID}/share/softline/licenses/"
       DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/third_party/softline/licenses"
       COMPONENT cai-cli)
-    add_custom_target(cai_package_cli
-      COMMAND "${CMAKE_COMMAND}"
-        "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
-        "-DCAI_DIST_DIR=${CAI_DIST_DIR}"
-        "-DCAI_VERSION=${CAI_PACKAGE_VERSION}"
-        "-DCAI_STRIP_BIN=${CMAKE_STRIP}"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_cli.cmake"
-      DEPENDS cai_cli
-      VERBATIM)
+    if(CAI_TARGET_ID STREQUAL "x86_64-linux-musl")
+      add_custom_target(cai_package_cli
+        COMMAND "${CMAKE_COMMAND}"
+          "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+          "-DCAI_DIST_DIR=${CAI_DIST_DIR}"
+          "-DCAI_VERSION=${CAI_PACKAGE_VERSION}"
+          "-DCAI_STRIP_BIN=${CMAKE_STRIP}"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_cli.cmake"
+        DEPENDS cai_cli
+        VERBATIM)
+    endif()
   endif()
   if(CAI_BUILD_TESTS)
     add_test(NAME cai_cli_help COMMAND cai_cli --help)
@@ -1010,14 +1033,12 @@ if(CAI_BUILD_CLI)
     add_executable(cai_cli_options_test tests/cli_options_test.c cli/options.c)
     target_include_directories(cai_cli_options_test PRIVATE
       "${CAI_PUBLIC_INCLUDE_DIR}" "${CAI_GENERATED_INCLUDE_DIR}")
-    target_link_options(cai_cli_options_test PRIVATE -static)
-    cai_configure_c_target(cai_cli_options_test)
+    cai_configure_cli_target(cai_cli_options_test)
     add_test(NAME cai_cli_options COMMAND cai_cli_options_test)
     add_executable(cai_cli_storage_stream_test
       tests/cli_storage_stream_test.c cli/pouch_stream.c)
     target_link_libraries(cai_cli_storage_stream_test PRIVATE cai_static lockdc::static)
-    target_link_options(cai_cli_storage_stream_test PRIVATE -static)
-    cai_configure_c_target(cai_cli_storage_stream_test)
+    cai_configure_cli_target(cai_cli_storage_stream_test)
     add_test(NAME cai_cli_storage_stream COMMAND cai_cli_storage_stream_test)
     set_tests_properties(cai_cli_storage_stream PROPERTIES TIMEOUT 30)
     add_executable(cai_cli_reasoning_test tests/cli_reasoning_test.c
@@ -1025,14 +1046,12 @@ if(CAI_BUILD_CLI)
       cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
     target_link_libraries(cai_cli_reasoning_test PRIVATE cai_static
       softline::softline_static libmdf::mdf_static lockdc::static)
-    target_link_options(cai_cli_reasoning_test PRIVATE -static)
-    cai_configure_c_target(cai_cli_reasoning_test)
+    cai_configure_cli_target(cai_cli_reasoning_test)
     add_test(NAME cai_cli_reasoning COMMAND cai_cli_reasoning_test)
     add_executable(cai_cli_log_test tests/cli_log_test.c
       cli/log.c cli/response.c cli/pouch_stream.c)
     target_link_libraries(cai_cli_log_test PRIVATE cai_static lockdc::static)
-    target_link_options(cai_cli_log_test PRIVATE -static)
-    cai_configure_c_target(cai_cli_log_test)
+    cai_configure_cli_target(cai_cli_log_test)
     add_test(NAME cai_cli_log COMMAND cai_cli_log_test "${CMAKE_CURRENT_BINARY_DIR}")
     add_executable(cai_cli_startup_fixture tests/cli_startup_fixture.c
       cli/options.c cli/status.c cli/login.c cli/review_report.c cli/pouch.c
@@ -1040,8 +1059,7 @@ if(CAI_BUILD_CLI)
       cli/response.c cli/chrome_host.c cli/chrome_setup.c)
     target_link_libraries(cai_cli_startup_fixture PRIVATE cai_static
       softline::softline_static libmdf::mdf_static lockdc::static)
-    target_link_options(cai_cli_startup_fixture PRIVATE -static)
-    cai_configure_c_target(cai_cli_startup_fixture)
+    cai_configure_cli_target(cai_cli_startup_fixture)
     add_test(NAME cai_cli_startup
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_startup_test.py"
         "$<TARGET_FILE:cai_cli_startup_fixture>")
@@ -1049,16 +1067,14 @@ if(CAI_BUILD_CLI)
     add_executable(cai_cli_quota_refresh_test tests/cli_quota_refresh_test.c
       cli/quota_refresh.c cli/pouch_stream.c)
     target_link_libraries(cai_cli_quota_refresh_test PRIVATE cai_static lockdc::static)
-    target_link_options(cai_cli_quota_refresh_test PRIVATE -static)
-    cai_configure_c_target(cai_cli_quota_refresh_test)
+    cai_configure_cli_target(cai_cli_quota_refresh_test)
     target_compile_options(cai_cli_quota_refresh_test PRIVATE -UNDEBUG)
     add_test(NAME cai_cli_quota_refresh COMMAND cai_cli_quota_refresh_test)
     set_tests_properties(cai_cli_quota_refresh PROPERTIES TIMEOUT 30)
     add_executable(cai_cli_pouch_startup_test tests/cli_pouch_startup_test.c
       cli/pouch_stream.c)
     target_link_libraries(cai_cli_pouch_startup_test PRIVATE cai_static lockdc::static)
-    target_link_options(cai_cli_pouch_startup_test PRIVATE -static)
-    cai_configure_c_target(cai_cli_pouch_startup_test)
+    cai_configure_cli_target(cai_cli_pouch_startup_test)
     target_compile_options(cai_cli_pouch_startup_test PRIVATE -UNDEBUG)
     add_test(NAME cai_cli_pouch_startup
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_pouch_startup_test.sh"
@@ -1067,14 +1083,12 @@ if(CAI_BUILD_CLI)
     add_executable(cai_cli_status_test tests/cli_status_test.c cli/status.c)
     target_link_libraries(cai_cli_status_test PRIVATE cai_static
       softline::softline_static)
-    target_link_options(cai_cli_status_test PRIVATE -static)
-    cai_configure_c_target(cai_cli_status_test)
+    cai_configure_cli_target(cai_cli_status_test)
     add_test(NAME cai_cli_status COMMAND cai_cli_status_test)
     add_executable(cai_cli_review_report_test
       tests/cli_review_report_test.c cli/review_report.c)
     target_link_libraries(cai_cli_review_report_test PRIVATE cai_static)
-    target_link_options(cai_cli_review_report_test PRIVATE -static)
-    cai_configure_c_target(cai_cli_review_report_test)
+    cai_configure_cli_target(cai_cli_review_report_test)
     add_test(NAME cai_cli_review_report COMMAND cai_cli_review_report_test)
     add_test(NAME cai_cli_sessions
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_sessions_test.sh"
@@ -1106,6 +1120,18 @@ if(CAI_BUILD_CLI)
     add_test(NAME cai_cli_package_layout
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_package_layout_test.sh"
         "${CMAKE_CURRENT_BINARY_DIR}")
+    get_property(_cai_cli_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    list(FILTER _cai_cli_targets INCLUDE REGEX "^cai_cli($|_)")
+    add_custom_target(cai_cli_tests DEPENDS ${_cai_cli_targets})
+    get_property(_cai_cli_tests DIRECTORY PROPERTY TESTS)
+    list(FILTER _cai_cli_tests INCLUDE REGEX "^cai_cli_")
+    set_tests_properties(${_cai_cli_tests} PROPERTIES LABELS "cli;local;offline")
+    foreach(_cai_cli_test IN LISTS _cai_cli_tests)
+      get_test_property(${_cai_cli_test} TIMEOUT _cai_cli_timeout)
+      if(NOT _cai_cli_timeout)
+        set_tests_properties(${_cai_cli_test} PROPERTIES TIMEOUT 90)
+      endif()
+    endforeach()
   endif()
 endif()
 
@@ -1838,6 +1864,11 @@ if(CAI_BUILD_TESTS)
       "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
   set_tests_properties(cai_build_toolchain_change_test PROPERTIES
     LABELS "local;packaging" TIMEOUT 10)
+  add_test(NAME cai_lifecycle_execution_test
+    COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/lifecycle_execution_test.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(cai_lifecycle_execution_test PROPERTIES
+    LABELS "local;packaging" TIMEOUT 30)
   add_test(NAME cai_makefile_targets_test
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/makefile_targets_test.sh"
       "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -2662,6 +2693,9 @@ if(CAI_BUILD_FUZZERS)
   cai_add_fuzzer(cai_session_fuzz tests/session_fuzz.c session)
   cai_add_fuzzer(cai_todo_fuzz tests/todo_fuzz.c todo)
   cai_add_fuzzer(cai_patch_fuzz tests/patch_fuzz.c patch)
+  get_property(_cai_fuzz_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+  list(FILTER _cai_fuzz_targets INCLUDE REGEX "^cai_.*_fuzz$")
+  add_custom_target(cai_fuzzers DEPENDS ${_cai_fuzz_targets})
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME cai_fuzz_crash_handling
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz_crash_handling_test.sh"

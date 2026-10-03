@@ -9,4 +9,4 @@ if [[ "$#" -ne 0 ]]; then
 fi
 
 "$repo_root/scripts/build.sh" host
-"$repo_root/scripts/test.sh" release
+"$repo_root/scripts/test.sh" release --stop-on-failure --parallel 1 -LE live

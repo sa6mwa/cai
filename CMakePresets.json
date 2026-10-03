@@ -59,6 +59,15 @@
       }
     },
     {
+      "name": "debug-cai",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CAI_BUILD_CLI": "ON",
+        "CAI_BUILD_SHARED": "OFF",
+        "CAI_BUILD_EXAMPLES": "OFF"
+      }
+    },
+    {
       "name": "libcai",
       "inherits": "debug",
       "cacheVariables": {
@@ -72,7 +81,8 @@
         "CAI_BUILD_CLI": "ON",
         "CAI_BUILD_SHARED": "OFF",
         "CAI_BUILD_EXAMPLES": "OFF",
-        "CAI_BUILD_LUA": "OFF"
+        "CAI_BUILD_LUA": "OFF",
+        "CAI_BUILD_TESTS": "ON"
       }
     },
     {
@@ -113,7 +123,8 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
         "CPKT_TARGET_ID": "x86_64-linux-musl",
-        "CAI_TARGET_ID": "x86_64-linux-musl"
+        "CAI_TARGET_ID": "x86_64-linux-musl",
+        "CAI_BUILD_TESTS": "OFF"
       }
     },
     {
@@ -122,7 +133,8 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
         "CPKT_TARGET_ID": "aarch64-linux-gnu",
-        "CAI_TARGET_ID": "aarch64-linux-gnu"
+        "CAI_TARGET_ID": "aarch64-linux-gnu",
+        "CAI_BUILD_TESTS": "OFF"
       }
     },
     {
@@ -131,7 +143,8 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
         "CPKT_TARGET_ID": "aarch64-linux-musl",
-        "CAI_TARGET_ID": "aarch64-linux-musl"
+        "CAI_TARGET_ID": "aarch64-linux-musl",
+        "CAI_BUILD_TESTS": "OFF"
       }
     },
     {
@@ -140,7 +153,8 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
         "CPKT_TARGET_ID": "armhf-linux-gnu",
-        "CAI_TARGET_ID": "armhf-linux-gnu"
+        "CAI_TARGET_ID": "armhf-linux-gnu",
+        "CAI_BUILD_TESTS": "OFF"
       }
     },
     {
@@ -149,7 +163,8 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
         "CPKT_TARGET_ID": "armhf-linux-musl",
-        "CAI_TARGET_ID": "armhf-linux-musl"
+        "CAI_TARGET_ID": "armhf-linux-musl",
+        "CAI_BUILD_TESTS": "OFF"
       }
     },
     {
@@ -157,7 +172,8 @@
       "inherits": "release-base",
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/arm64-apple-darwin.cmake",
-        "CAI_TARGET_ID": "arm64-apple-darwin"
+        "CAI_TARGET_ID": "arm64-apple-darwin",
+        "CAI_BUILD_TESTS": "OFF"
       }
     },
     {
@@ -173,7 +189,8 @@
       "inherits": "bootlin-native",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CAI_ENABLE_VALGRIND_TESTS": "ON"
+        "CAI_ENABLE_VALGRIND_TESTS": "ON",
+        "CAI_BUILD_EXAMPLES": "OFF"
       }
     },
     {
@@ -184,7 +201,10 @@
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-aflpp.cmake",
         "CPKT_TARGET_ID": "x86_64-linux-gnu",
         "CAI_TARGET_ID": "x86_64-linux-gnu",
-        "CAI_BUILD_FUZZERS": "ON"
+        "CAI_BUILD_FUZZERS": "ON",
+        "CAI_BUILD_TESTS": "OFF",
+        "CAI_BUILD_EXAMPLES": "OFF",
+        "CAI_BUILD_SHARED": "OFF"
       }
     },
     {
@@ -275,6 +295,10 @@
     {
       "name": "integration",
       "configurePreset": "integration"
+    },
+    {
+      "name": "debug-cai",
+      "configurePreset": "debug-cai"
     }
   ],
   "testPresets": [
@@ -282,7 +306,8 @@
       "name": "debug",
       "configurePreset": "debug",
       "execution": {
-        "stopOnFailure": true
+        "stopOnFailure": true,
+        "jobs": 1
       },
       "output": {
         "outputOnFailure": true
@@ -292,7 +317,8 @@
       "name": "libcai",
       "configurePreset": "libcai",
       "execution": {
-        "stopOnFailure": true
+        "stopOnFailure": true,
+        "jobs": 1
       },
       "output": {
         "outputOnFailure": true
@@ -307,7 +333,8 @@
         }
       },
       "execution": {
-        "stopOnFailure": true
+        "stopOnFailure": true,
+        "jobs": 1
       },
       "output": {
         "outputOnFailure": true
@@ -317,7 +344,8 @@
       "name": "debug-host-deps",
       "configurePreset": "debug-host-deps",
       "execution": {
-        "stopOnFailure": true
+        "stopOnFailure": true,
+        "jobs": 1
       },
       "output": {
         "outputOnFailure": true
@@ -327,7 +355,8 @@
       "name": "debug-lua",
       "configurePreset": "debug-lua",
       "execution": {
-        "stopOnFailure": true
+        "stopOnFailure": true,
+        "jobs": 1
       },
       "output": {
         "outputOnFailure": true
@@ -337,7 +366,8 @@
       "name": "release",
       "configurePreset": "release",
       "execution": {
-        "stopOnFailure": true
+        "stopOnFailure": true,
+        "jobs": 1
       },
       "output": {
         "outputOnFailure": true
@@ -347,7 +377,8 @@
       "name": "asan",
       "configurePreset": "asan",
       "execution": {
-        "stopOnFailure": true
+        "stopOnFailure": true,
+        "jobs": 1
       },
       "output": {
         "outputOnFailure": true
@@ -362,7 +393,8 @@
         }
       },
       "execution": {
-        "stopOnFailure": true
+        "stopOnFailure": true,
+        "jobs": 1
       },
       "output": {
         "outputOnFailure": true
@@ -372,7 +404,8 @@
       "name": "coverage",
       "configurePreset": "coverage",
       "execution": {
-        "stopOnFailure": true
+        "stopOnFailure": true,
+        "jobs": 1
       },
       "output": {
         "outputOnFailure": true
@@ -387,7 +420,24 @@
         }
       },
       "execution": {
-        "stopOnFailure": true
+        "stopOnFailure": true,
+        "jobs": 1
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "debug-cai",
+      "configurePreset": "debug-cai",
+      "filter": {
+        "include": {
+          "name": "^cai_cli_"
+        }
+      },
+      "execution": {
+        "stopOnFailure": true,
+        "jobs": 1
       },
       "output": {
         "outputOnFailure": true

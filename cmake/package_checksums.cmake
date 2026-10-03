@@ -10,6 +10,7 @@ file(GLOB artifacts LIST_DIRECTORIES false
   "${CAI_DIST_DIR}/cai-${CAI_VERSION}.tar.gz"
   "${CAI_DIST_DIR}/cai-${CAI_VERSION}-*.tar.gz"
   "${CAI_DIST_DIR}/cai-lua-${CAI_VERSION}.tar.gz"
+  "${CAI_DIST_DIR}/cai-cli-${CAI_VERSION}-x86_64-linux-musl.tar.gz"
   "${CAI_DIST_DIR}/cai-${CAI_VERSION}-*.rockspec"
   "${CAI_DIST_DIR}/cai-${CAI_VERSION}-*.src.rock")
 if(NOT artifacts)

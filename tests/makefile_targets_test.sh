@@ -55,7 +55,7 @@ require_script() {
 
 for target in \
   deps-debug deps-release deps-cross build-host cross-build chatgpt-login test-host \
-  test-cross cross-test test-all test-e2e test-install-tree coverage test-coverage valgrind fuzz-long \
+  build-cli test-cli test-offline test-cross cross-test test-all test-e2e test-install-tree coverage test-coverage valgrind fuzz-long \
   verify-release-archives verify-release-privacy require-prerelease-live \
   require-clean-worktree lifecycle-version-contract release-pipeline lua-runner dev-up dev-down dev-reset dev-ps dev-logs \
   mcp-inspector-e2e clean-dist clangd-check; do
@@ -297,16 +297,20 @@ test_all_body=$(awk '
     print
   }
 ' "$makefile")
-if ! printf '%s\n' "$test_all_body" | grep -F '$(MAKE) test-release' >/dev/null; then
-  printf 'test-all must include native release unit tests\n' >&2
+if printf '%s\n' "$test_all_body" | grep -E 'test-release|test-cross|cross-test|package-verify|release-matrix|example-smoke-local' >/dev/null; then
+  printf 'test-all must be native and avoid repeated core/example tests\n' >&2
   exit 1
 fi
-for command in '$(MAKE) lua-test' '$(MAKE) example-smoke-local'; do
+for command in '$(MAKE) test-debug' '$(MAKE) test-cli' '$(MAKE) lua-test' '$(MAKE) test-offline'; do
   if ! printf '%s\n' "$test_all_body" | grep -F "$command" >/dev/null; then
     printf 'test-all must include deterministic confidence command: %s\n' "$command" >&2
     exit 1
   fi
 done
+if ! grep -qx 'test-offline: lua-rock' "$makefile"; then
+  printf 'test-offline must acquire its Lua prerequisites when run alone\n' >&2
+  exit 1
+fi
 test_install_tree_body=$(awk '
   /^test-install-tree:/ {
     in_target = 1
@@ -406,24 +410,12 @@ release_pipeline_body=$(awk '
     print
   }
 ' "$makefile")
-for command in \
-  '$(MAKE) test-debug' \
-  '$(MAKE) valgrind' \
-  '$(MAKE) fuzz-smoke' \
-  '$(MAKE) lua-test' \
-  '$(MAKE) test-e2e' \
-  '$(MAKE) release-matrix'; do
-  if ! printf '%s\n' "$release_pipeline_body" | grep -F "$command" >/dev/null; then
-    printf 'release-pipeline is missing required command: %s\n' "$command" >&2
-    exit 1
-  fi
-done
-if printf '%s\n' "$release_pipeline_body" | grep -F 'clangd-check' >/dev/null; then
-  printf '%s\n' 'release-pipeline must not invoke the host-only clangd gate' >&2
+if ! printf '%s\n' "$release_pipeline_body" | grep -F '$(MAKE) release-matrix' >/dev/null; then
+  printf 'release-pipeline must use the matrix-owned proof graph\n' >&2
   exit 1
 fi
-if [ "$(printf '%s\n' "$release_pipeline_body" | grep -nF '$(MAKE) release-matrix' | cut -d: -f1)" -le "$(printf '%s\n' "$release_pipeline_body" | grep -nF '$(MAKE) test-debug' | cut -d: -f1)" ]; then
-  printf '%s\n' 'release-pipeline must run ordinary tests before release-matrix' >&2
+if printf '%s\n' "$release_pipeline_body" | grep -E 'test-debug|example-smoke-local|clangd-check|valgrind|fuzz-smoke|lua-test|test-e2e' >/dev/null; then
+  printf 'release-pipeline must not repeat matrix gates or run clangd\n' >&2
   exit 1
 fi
 

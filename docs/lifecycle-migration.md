@@ -35,3 +35,14 @@ decision is required for this cutover.
 
 `clangd-check` is deliberately a native-host editor gate. Release, packaging,
 and cross-target configurations do not invoke it.
+
+Development checks now use only native builds: `test-all` runs the Debug suite
+once, the native `debug-cai` CLI selection, Lua, offline integration and native
+hardening/service gates. Examples already covered by Debug are not replayed.
+The release matrix owns the complete deterministic proof: one native Release
+core/example suite, hardening, Lua, offline integration, services, and one musl
+CLI suite before packaging. `release-pipeline` delegates to that graph; the
+clean final `release` alone adds source reconstruction smoke. Cross targets
+without execution runners no longer build unused unit binaries, and matching
+compiler collections reuse configured builds. The CLI archive participates in
+the checksum manifest and static ELF/privacy verification.

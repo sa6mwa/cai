@@ -125,6 +125,8 @@ build/cai/cai --help
 build/cai/cai -N -C /path/to/project
 ```
 
+For native development, use `make build-cli` and `make test-cli` (the
+`debug-cai` preset); the musl `cai` preset is for release artifacts.
 `ctest --preset cai` checks terminal feeds without cursor replies, failed-output
 propagation, recovery after provider errors, truncated and malformed streams,
 Ctrl-C/Escape cancellation, and clipboard failures. Cancellation keeps the
@@ -484,18 +486,38 @@ The verification tiers are split intentionally:
 
 - Before committing any implementation slice, run `make format` and the
   relevant tests. `make finalize-slice` is the default local pre-commit path
-  for ordinary C changes: it runs clang-format and the debug test suite.
+  for ordinary C changes: it runs clang-format and native unit checks.
+  `CTEST_FLAGS='-R pattern --output-on-failure'` selects a smaller slice.
 - `make clangd-check` validates every native debug translation unit with the
   host `clangd` against `build/debug/compile_commands.json`. It is an editor
-  gate only and is not part of cross-target or release verification.
-- `make prerelease` runs the complete deterministic local release proof:
-  clang-format, debug tests, native Valgrind checks, AFL++ corpus replay, Lua
-  tests, deterministic local e2e and examples, then the release matrix.
+  gate only and is not part of cross-target or release verification. Each
+  clangd process has a 30-second timeout; a stalled check fails the gate.
+- `make test` runs native Debug unit checks once, excluding packaging and
+  live checks. `make test-all` includes the complete native suite, including
+  example and packaging checks, once. `make test-cli` checks the CLI on the
+  native GNU runtime.
+- `make test-all` adds native CLI, Valgrind, fuzz, Lua and local service checks.
+  It never builds the cross matrix or reruns the core suite in Release.
+  Fuzz builds only its harnesses; Valgrind builds only its checked executable.
+  `CTEST_FILTER='-LE live'` also selects all deterministic tests directly
+  with `make test-debug`.
+- `make prerelease` formats, asserts a clean worktree, then enters
+  `release-matrix`. That matrix owns all deterministic gates: the core and
+  example suite runs once on the native release target, followed by native
+  hardening, Lua, offline integration, local e2e and the shipped musl CLI
+  checks. Other cross targets
+  receive build/link and package verification; no execution runner is configured.
+  Every gate must pass before release archives are generated.
+- `make release` checks the exact lightweight-tag version contract, cleans,
+  follows the same matrix path, then reconstructs the source archive and runs
+  its smoke tests. It does not replay the full core suite in the extracted tree.
+  Builds remain incremental outside this final clean release path; testing is
+  serialized even if the caller supplies `make -j`.
 - `CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-live` runs the
   live-provider gate: integration tests plus a curated set of real
   non-interactive examples.
-- `make prerelease-hardening` runs both tiers, then long fuzz and the release
-  matrix.
+- `make prerelease-hardening` runs both tiers, then long fuzz. Its release
+  matrix runs once through `prerelease`.
 
 ## Design Bias
 

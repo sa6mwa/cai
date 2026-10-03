@@ -7,7 +7,7 @@ if [ "$#" -ne 1 ]; then
 fi
 
 repo_root=$1
-tmpdir=$(mktemp -d)
+tmpdir=$(mktemp -d "$repo_root/build/release-manifest-test.XXXXXX")
 trap 'rm -rf "$tmpdir"' EXIT
 
 run_gate() {
@@ -31,6 +31,7 @@ mkdir -p "$dist"
 write_manifest "$dist" \
   cai-1.2.3.tar.gz \
   cai-1.2.3-x86_64-linux-gnu.tar.gz \
+  cai-cli-1.2.3-x86_64-linux-musl.tar.gz \
   cai-lua-1.2.3.tar.gz \
   cai-1.2.3-1.rockspec \
   cai-1.2.3-1.src.rock
@@ -46,7 +47,7 @@ run_gate "
 dist="$tmpdir/missing/dist"
 mkdir -p "$dist"
 write_manifest "$dist" cai-1.2.3.tar.gz
-: >"$dist/cai-1.2.3-x86_64-linux-gnu.tar.gz"
+: >"$dist/cai-cli-1.2.3-x86_64-linux-musl.tar.gz"
 if run_gate "
   source '$repo_root/scripts/verify_release_artifacts.sh' --self-test
   dist_dir='$dist'
@@ -62,7 +63,7 @@ fi
 dist="$tmpdir/stale/dist"
 mkdir -p "$dist"
 write_manifest "$dist" cai-1.2.3.tar.gz
-: >"$dist/cai-9.9.9-x86_64-linux-gnu.tar.gz"
+: >"$dist/cai-cli-9.9.9-x86_64-linux-musl.tar.gz"
 if run_gate "
   source '$repo_root/scripts/verify_release_artifacts.sh' --self-test
   dist_dir='$dist'

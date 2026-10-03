@@ -81,6 +81,14 @@ case "$mode" in
     configure_preset debug "$native_toolchain_file" "$(native_target_id)"
     cmake --build --preset debug
     ;;
+  debug-cai)
+    configure_preset debug-cai "$native_toolchain_file" "$(native_target_id)"
+    cmake --build --preset debug-cai --target cai_cli_tests
+    ;;
+  cai)
+    configure_preset cai "$bootlin_toolchain_file" x86_64-linux-musl
+    cmake --build --preset cai --target cai_cli_tests
+    ;;
   configure-debug)
     configure_preset debug "$native_toolchain_file" "$(native_target_id)"
     ;;
@@ -120,12 +128,12 @@ case "$mode" in
     ;;
   valgrind)
     configure_preset valgrind "$bootlin_toolchain_file" x86_64-linux-gnu
-    cmake --build --preset valgrind
+    cmake --build --preset valgrind --target cai_tests
     ;;
   fuzz)
     "$repo_root/scripts/cpkt-aflpp.sh" ensure
     configure_preset fuzz "$aflpp_toolchain_file" x86_64-linux-gnu 0
-    cmake --build --preset fuzz
+    cmake --build --preset fuzz --target cai_fuzzers
     ;;
   integration)
     configure_preset integration "$native_toolchain_file" "$(native_target_id)"
@@ -151,12 +159,16 @@ case "$mode" in
         '[build] skipping arm64-apple-darwin-release: complete osxcross toolchain not available'
     fi
     for preset in "${presets[@]}"; do
-      cmake --fresh --preset "$preset"
+      if [[ "$preset" == arm64-apple-darwin-release ]]; then
+        configure_preset "$preset" "$repo_root/cmake/toolchains/arm64-apple-darwin.cmake" "" 0
+      else
+        configure_preset "$preset" "$bootlin_toolchain_file" "${preset%-release}"
+      fi
       cmake --build --preset "$preset"
     done
     ;;
   *)
-    printf 'usage: %s [debug|configure-debug|configure-release|configure-x86_64-linux-gnu-release|configure-asan|configure-valgrind|configure-fuzz|configure-integration|configure-coverage|host|release|package-source|asan|valgrind|fuzz|integration|coverage|release-matrix]\n' "$0" >&2
+    printf 'usage: %s [debug|debug-cai|cai|configure-debug|configure-release|configure-x86_64-linux-gnu-release|configure-asan|configure-valgrind|configure-fuzz|configure-integration|configure-coverage|host|release|package-source|asan|valgrind|fuzz|integration|coverage|release-matrix]\n' "$0" >&2
     exit 2
     ;;
 esac

@@ -5,6 +5,10 @@ if(NOT DEFINED CAI_BUILD_DIR OR CAI_BUILD_DIR STREQUAL "")
   message(FATAL_ERROR "CAI_BUILD_DIR is required")
 endif()
 
+if(NOT DEFINED CAI_CLANGD_TIMEOUT)
+  set(CAI_CLANGD_TIMEOUT 30)
+endif()
+
 set(_cai_compile_commands "${CAI_BUILD_DIR}/compile_commands.json")
 if(NOT EXISTS "${_cai_compile_commands}")
   message(FATAL_ERROR
@@ -43,6 +47,7 @@ foreach(_cai_entry RANGE 0 ${_cai_last_entry})
     COMMAND "${CAI_CLANGD_BIN}" --tweaks=
             "--compile-commands-dir=${CAI_BUILD_DIR}"
             "--check=${_cai_source_file}" --log=error
+    TIMEOUT "${CAI_CLANGD_TIMEOUT}"
     WORKING_DIRECTORY "${CAI_SOURCE_DIR}"
     RESULT_VARIABLE _cai_clangd_result
     OUTPUT_VARIABLE _cai_clangd_stdout

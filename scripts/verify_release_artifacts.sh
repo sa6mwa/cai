@@ -323,7 +323,7 @@ verify_manifest_artifacts() {
     artifact_path="$dist_dir/$artifact"
     require_file "$artifact_path"
     case "$artifact" in
-      cai-"$version".tar.gz | cai-"$version"-*.tar.gz | cai-lua-"$version".tar.gz | cai-"$version"-*.rockspec | cai-"$version"-*.src.rock)
+      cai-"$version".tar.gz | cai-"$version"-*.tar.gz | cai-lua-"$version".tar.gz | cai-cli-"$version"-x86_64-linux-musl.tar.gz | cai-"$version"-*.rockspec | cai-"$version"-*.src.rock)
         ;;
       *)
         fail "checksum manifest lists unexpected release artifact: $artifact"
@@ -341,6 +341,7 @@ verify_dist_manifest_closure() {
   for release_file in \
     "$dist_dir"/cai-*.tar.gz \
     "$dist_dir"/cai-lua-*.tar.gz \
+    "$dist_dir"/cai-cli-*.tar.gz \
     "$dist_dir"/cai-*.rockspec \
     "$dist_dir"/cai-*.src.rock \
     "$dist_dir"/cai-*-CHECKSUMS \
@@ -355,7 +356,7 @@ verify_dist_manifest_closure() {
       cai-*-SHA256SUMS)
         fail "deprecated checksum manifest remains in dist: $release_name"
         ;;
-      cai-"$version".tar.gz | cai-"$version"-*.tar.gz | cai-lua-"$version".tar.gz | cai-"$version"-*.rockspec | cai-"$version"-*.src.rock)
+      cai-"$version".tar.gz | cai-"$version"-*.tar.gz | cai-lua-"$version".tar.gz | cai-cli-"$version"-x86_64-linux-musl.tar.gz | cai-"$version"-*.rockspec | cai-"$version"-*.src.rock)
         if ! artifact_list_contains "$release_name" "${artifacts[@]}"; then
           fail "release artifact is not listed in checksum manifest: $release_name"
         fi
@@ -1154,6 +1155,32 @@ verify_src_rock() {
   rm -rf "$rock_workspace"
 }
 
+verify_cli_archive() {
+  local root_dir=$1
+  local binary="$root_dir/bin/cai"
+  local readelf header segments
+  require_file "$binary"
+  [[ -x "$binary" && ! -L "$binary" ]] || fail "CLI must be an executable regular file: $binary"
+  local doc
+  for doc in share/man/man1/cai.1 share/doc/libcai/README.md \
+      share/doc/libcai/LICENSE share/doc/libcai/docs/model-metadata.md \
+      share/doc/libcai/docs/chrome.md; do
+    require_file "$root_dir/$doc"
+  done
+  readelf=$(find_target_readelf x86_64-linux-musl) || fail "readelf required to verify static cai CLI"
+  header=$("$readelf" -h "$binary") || fail "failed to read cai CLI ELF header: $binary"
+  if ! grep -E 'Class:[[:space:]]+ELF64' <<<"$header" >/dev/null ||
+     ! grep -E 'Machine:.*X86-64' <<<"$header" >/dev/null; then
+    fail "CLI must be a Linux x86_64 ELF64 binary: $binary"
+  fi
+  segments=$("$readelf" -l "$binary") || fail "failed to read cai CLI program headers: $binary"
+  if grep -E '^[[:space:]]*(INTERP|DYNAMIC)[[:space:]]' <<<"$segments" >/dev/null; then
+    fail "CLI must be statically linked without a loader or dynamic segment: $binary"
+  fi
+  verify_no_host_paths "$root_dir"
+  verify_no_sanitizer_artifacts "$root_dir"
+}
+
 verify_archive() {
   local archive=$1
   local name
@@ -1180,7 +1207,9 @@ verify_archive() {
   verify_single_root "$archive" "$expected_root" "$listing"
   tar -xzf "$archive" -C "$extract_root"
 
-  if [[ "$root" == "cai-$version" ]]; then
+  if [[ "$root" == "cai-cli-$version-x86_64-linux-musl" ]]; then
+    verify_cli_archive "$extract_root/$root"
+  elif [[ "$root" == "cai-$version" ]]; then
     verify_source_archive "$root" "$listing"
   elif [[ "$root" == "cai-lua-$version" ]]; then
     verify_lua_source_archive "$expected_root" "$listing" "$extract_root"

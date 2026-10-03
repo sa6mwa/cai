@@ -121,7 +121,7 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
                     "initial"], check=True)
     (work / "tracked.txt").write_text("after\n")
     server = Server(("127.0.0.1", 0))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     env = {key: value for key, value in os.environ.items()
            if not key.startswith("LOG_")}

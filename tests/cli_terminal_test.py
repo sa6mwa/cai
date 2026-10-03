@@ -35,7 +35,7 @@ class Clipboard(socketserver.TCPServer):
         self.image_type = "image/png"
         self.payload = PNG
         self.errors = []
-        self.thread = threading.Thread(target=self.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         self.thread.start()
 
     @property
@@ -122,7 +122,7 @@ class Responses(http.server.HTTPServer):
         self.pause_script = False
         self.catalog_status = 200
         self.release = threading.Event()
-        self.thread = threading.Thread(target=self.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         self.thread.start()
 
 

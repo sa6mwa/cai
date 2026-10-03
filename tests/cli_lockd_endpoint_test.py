@@ -64,7 +64,7 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(cli).parent) as directory:
     env.update(HOME=str(root), XDG_STATE_HOME=str(root / "state"),
                NO_PROXY="127.0.0.1", no_proxy="127.0.0.1")
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     endpoint = f"http://127.0.0.1:{server.server_port}"
     try:
@@ -133,7 +133,7 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(cli).parent) as directory:
     Handler.failure = False
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
     server.socket = context.wrap_socket(server.socket, server_side=True)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     try:
         result = subprocess.run([cli, "--lockd", f"https://127.0.0.1:{server.server_port}",
