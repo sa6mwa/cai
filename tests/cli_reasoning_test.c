@@ -270,12 +270,21 @@ static int test_output_failure(int operation) {
     rc = cli_handle_command(&state, "/help", NULL, &handled);
     if (!handled)
       rc = CAI_OK;
+  } else if (operation == 6) {
+    rc = cli_notice(&state, "* WARN: Output unavailable") != 0
+             ? CAI_ERR_TRANSPORT
+             : CAI_OK;
+  } else if (operation == 7) {
+    rc = cli_write(&state, "Output unavailable") != 0 ? CAI_ERR_TRANSPORT
+                                                      : CAI_OK;
   } else {
     replay.type = "assistant_text_delta";
     replay.data = event.data;
     rc = cli_replay_event(&state, &replay, NULL);
   }
 cleanup:
+  if (state.notice_renderer != NULL)
+    state.notice_renderer->destroy(state.notice_renderer);
   if (state.renderer != NULL)
     state.renderer->destroy(state.renderer);
   if (state.sl != NULL)
@@ -387,6 +396,98 @@ static int test_reasoning_sections(void) {
   return 0;
 }
 
+static int literal_capture_write(void *context, const char *data,
+                                 size_t length) {
+  size_t written;
+  return event_log_write(context, data, length, &written);
+}
+static void without_spaces(char *out, const char *input) {
+  while (*input != '\0') {
+    if (*input != ' ' && *input != '\n' && *input != '\r' && *input != '\t')
+      *out++ = *input;
+    input++;
+  }
+  *out = '\0';
+}
+static int test_literal_tokens(void) {
+  static const char *inputs[] = {
+      "**stars** _path_ `tick` [name](url) <tag> {value} a+b-1.! \\path &amp;",
+      "café λ å🚀 **stars** _path_ `tick` &amp;",
+      "invalid \xff**stars** \xc3[_path_]",
+      "control \033[2J **stars**",
+      "first\nsecond\n\nlast",
+      ""};
+  static const char *expected[] = {
+      "**stars** _path_ `tick` [name](url) <tag> {value} a+b-1.! \\path &amp;",
+      "café λ å🚀 **stars** _path_ `tick` &amp;",
+      "invalid ?**stars** ?[_path_]",
+      "control [2J **stars**",
+      "first\nsecond\n\nlast",
+      ""};
+  event_log_capture capture;
+  char actual_text[16384];
+  char expected_text[16384];
+  char long_text[6001];
+  mdf_options options;
+  mdf_sink sink;
+  mdf *renderer;
+  size_t i, n, columns;
+  int rc = 0;
+  mdf_options_init(&options);
+  options.width = 40;
+  options.boring = 1;
+  options.ansi_mode = MDF_ANSI_OFF;
+  if (mdf_create(MDF_FORMAT_ANSI, &options, &renderer) != MDF_OK)
+    return 1;
+  memset(&capture, 0, sizeof(capture));
+  sink.userdata = &capture;
+  sink.write = literal_capture_write;
+  if (renderer->set_sink(renderer, &sink) != MDF_OK) {
+    renderer->destroy(renderer);
+    return 1;
+  }
+  for (i = 0U; i < sizeof(long_text) - 1U; i++)
+    long_text[i] = "a*\\_[x]&"[i % (sizeof("a*\\_[x]&") - 1U)];
+  long_text[i] = '\0';
+  for (n = 0U; n <= sizeof(inputs) / sizeof(inputs[0]); n++) {
+    const char *input =
+        n < sizeof(inputs) / sizeof(inputs[0]) ? inputs[n] : long_text;
+    const char *wanted =
+        n < sizeof(inputs) / sizeof(inputs[0]) ? expected[n] : long_text;
+    memset(&capture, 0, sizeof(capture));
+    if (cai_cli_literal_render(renderer, input) != 0) {
+      rc = 1;
+      break;
+    }
+    without_spaces(actual_text, capture.bytes);
+    without_spaces(expected_text, wanted);
+    if (strcmp(actual_text, expected_text) != 0 ||
+        strchr(capture.bytes, '\033') != NULL) {
+      fprintf(stderr, "literal token case %lu changed text\n",
+              (unsigned long)n);
+      rc = 1;
+      break;
+    }
+    if (n == 1U)
+      continue; /* Unicode display width is also checked by the PTY test. */
+    columns = 0U;
+    for (i = 0U; i < capture.length; i++) {
+      if (capture.bytes[i] == '\n')
+        columns = 0U;
+      else if (++columns > 40U) {
+        fprintf(stderr, "literal token case %lu exceeded wrap width\n",
+                (unsigned long)n);
+        rc = 1;
+        break;
+      }
+    }
+    if (rc != 0)
+      break;
+  }
+  renderer->destroy(renderer);
+  return rc;
+}
+
 int main(void) {
   cli_state state;
   cai_agent_runtime_event event;
@@ -394,7 +495,7 @@ int main(void) {
   mdf_sink sink;
   int pipe_fd[2];
   int saved_stdout;
-  char output[2048];
+  char output[4096];
   const char *title;
   ssize_t count;
   int rc;
@@ -402,11 +503,11 @@ int main(void) {
   struct timespec before = {400, 499999999L};
   struct timespec boundary = {400, 500000000L};
 
-  for (rc = 0; rc < 6; rc++)
+  for (rc = 0; rc < 8; rc++)
     if (test_output_failure(rc) != 0)
       return 1;
   if (test_shared_auth() != 0 || test_event_logging() != 0 ||
-      test_reasoning_sections() != 0)
+      test_reasoning_sections() != 0 || test_literal_tokens() != 0)
     return 1;
   memset(&state, 0, sizeof(state));
   if (!cai_cli_quota_due(0, start, start, 0) ||
@@ -456,6 +557,13 @@ int main(void) {
       cli_notice(&state, "* ERROR: no color") != 0 || unsetenv("NO_COLOR") != 0)
     return 1;
   state.interactive = 0;
+  if (cli_notice(&state,
+                 "* WARN: **literal** _file_ `tick` [name](url) "
+                 "word01 word02 word03 word04 word05 word06 word07 "
+                 "word08 word09 word10 word11 word12 word13 word14 "
+                 "word15 word16 word17 word18 word19 word20 END") != 0 ||
+      cli_write(&state, "Local **literal** _file_ `tick` [name](url)\n") != 0)
+    return 1;
   strcpy(state.reasoning.header, "Previous turn");
   state.reasoning.header_length = strlen(state.reasoning.header);
   event.type = CAI_AGENT_EVENT_RUN_STARTED;
@@ -515,12 +623,12 @@ int main(void) {
   if (rc == CAI_OK)
     rc = cli_event(&state, &event, NULL);
   /* A split SGR sequence and a reset-only blank row never receive markers. */
-  state.reasoning_line_start = 1;
-  state.reasoning_ansi = 0;
-  if (cli_reasoning_sink(&state, "\033[", 2U) != 0 ||
-      cli_reasoning_sink(&state, "1mDecorated\n\033[0",
-                         strlen("1mDecorated\n\033[0")) != 0 ||
-      cli_reasoning_sink(&state, "m\nPlain row\n", strlen("m\nPlain row\n")) !=
+  state.row_line_start = 1;
+  state.row_ansi = 0;
+  if (cli_prefixed_sink(&state, "\033[", 2U) != 0 ||
+      cli_prefixed_sink(&state, "1mDecorated\n\033[0",
+                        strlen("1mDecorated\n\033[0")) != 0 ||
+      cli_prefixed_sink(&state, "m\nPlain row\n", strlen("m\nPlain row\n")) !=
           0)
     return 1;
   state.timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
@@ -533,6 +641,8 @@ int main(void) {
     rc = CAI_ERR_TRANSPORT;
   }
   state.renderer->destroy(state.renderer);
+  if (state.notice_renderer != NULL)
+    state.notice_renderer->destroy(state.notice_renderer);
   sl_destroy(state.sl);
   if (dup2(saved_stdout, STDOUT_FILENO) < 0) {
     return 1;
@@ -550,7 +660,7 @@ int main(void) {
   output[count] = '\0';
   if (strstr(output, "\033[91m*\033[0m WARN: colored diagnostic") == NULL ||
       strstr(output, "\n\n* ERROR: no color\n\n") == NULL) {
-    fprintf(stderr, "interactive warning star was not red\n");
+    fprintf(stderr, "interactive warning star/spacing mismatch: %s\n", output);
     return 1;
   }
   if (strstr(output, "> Hello\n\n* WARN: useful diagnostic\n\n> Next\n\n") ==
@@ -565,7 +675,12 @@ int main(void) {
       strstr(output, "Assistant text") == NULL ||
       strstr(output, "? Assistant text") != NULL ||
       strstr(output, "\033[1m? Decorated\n\033[0m\n? Plain row\n") == NULL ||
-      strstr(output, "Thinking...") != NULL) {
+      strstr(output, "Thinking...") != NULL ||
+      strstr(output, "* WARN: **literal** _file_ `tick` [name](url)") == NULL ||
+      strstr(output, "\n  word") == NULL ||
+      strstr(output,
+             "Local **literal** _file_ `tick` [name](url)\n\n? First body") ==
+          NULL) {
     fprintf(stderr, "reasoning header/body routing failed: %s\n", output);
     return 1;
   }

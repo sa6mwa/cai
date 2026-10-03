@@ -406,7 +406,11 @@ steering, developer instructions, and reasoning summaries. No app field is added
 In prompt mode, all levels append to the session cache log. Only warning and
 error diagnostics are surfaced in the UI as readable notices with explanations
 and available request context, including HTTP status, provider code, and
-request ID. Full pslog records remain in the log file; truncated notices
+request ID. Warnings, errors, and local command confirmations wrap through
+libmdf as literal text. Diagnostic stars remain red, continuation rows align
+under the message, and paths and punctuation keep their original spelling.
+Notices have one blank row before and after; NO_COLOR disables star colors.
+Full pslog records remain in the log file; truncated notices
 refer to that file. Startup records are moved into the
 selected session log; failed startup logs remain in a startup-* file.
 .PP

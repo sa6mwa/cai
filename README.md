@@ -359,6 +359,11 @@ are `info` records. Conversation records include `role` and `prompt_kind`
 There is no added `app` field. Long text is logged as ordered bounded chunks
 with an `offset` field; activity reaches the sink as it arrives.
 
+Interactive warnings, errors, and local command confirmations wrap through
+libmdf as literal text. Diagnostic stars remain red, continuation rows align
+under the message, and paths and punctuation retain their original spelling.
+Notices keep one blank row before and after; `NO_COLOR` disables star colors.
+
 Interactive tool activity uses bright green/red `*` receipts for success/failure,
 with bold bright cyan activity headings and separate MCP and Chrome receipts.
 The heading color is independent of the green/red success/failure star.

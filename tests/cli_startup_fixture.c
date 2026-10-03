@@ -1,11 +1,13 @@
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
+#include "../cli/log.h"
 #include <cai/quota.h>
 #include <stdlib.h>
 #include <unistd.h>
 
-/* Replace only quota transport. The application, encrypted storage, runtime,
- * prompt, watch dispatch and renderer are the production implementations. */
+/* Replace quota/catalog transport and optionally inject a pslog warning. The
+ * application, encrypted storage, runtime, prompt, watch dispatch and renderer
+ * are the production implementations. */
 static int blocked_quota(cai_client *client, cai_chatgpt_quota *out,
                          cai_error *error) {
   int started = atoi(getenv("CAI_TEST_QUOTA_STARTED"));
@@ -39,6 +41,15 @@ int cai_test_list_models(cai_client *client,
   return CAI_ERR_TRANSPORT;
 }
 
+static int fixture_log_interactive(cai_cli_log *log, cai_error *error) {
+  int rc = cai_cli_log_interactive(log, error);
+  const char *message = getenv("CAI_TEST_NOTICE_MESSAGE");
+  if (rc == CAI_OK && message != NULL)
+    log->logger->warn(log->logger, message, NULL, 0U);
+  return rc;
+}
+
+#define cai_cli_log_interactive fixture_log_interactive
 #define cai_client_list_models cai_test_list_models
 #define cai_client_chatgpt_quota blocked_quota
 #define main cai_cli_app_main
@@ -47,6 +58,7 @@ int cai_cli_app_main(int argc, char **argv);
 #undef main
 #undef cai_client_chatgpt_quota
 #undef cai_client_list_models
+#undef cai_cli_log_interactive
 
 int main(int argc, char **argv) {
   if (argc == 3 && strcmp(argv[1], "--test-chrome-system") == 0) {

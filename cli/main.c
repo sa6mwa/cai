@@ -2,6 +2,7 @@
 #define _XOPEN_SOURCE 700
 
 #include "chrome.h"
+#include "literal.h"
 #include "log.h"
 #include "login.h"
 #include "options.h"
@@ -71,6 +72,7 @@ typedef struct cli_state {
   cai_agent_runtime *runtime;
   sl_t *sl;
   mdf *renderer;
+  mdf *notice_renderer;
   cai_tool_display *tool_display;
   cai_sink *tool_sink;
   cai_cli_log log;
@@ -111,8 +113,10 @@ typedef struct cli_state {
   int has_quota_watch;
   cai_cli_status status;
   cai_cli_reasoning reasoning;
-  int reasoning_line_start;
-  int reasoning_ansi;
+  int row_line_start;
+  int row_ansi;
+  int notice_open;
+  int notice_first_row;
   char workspace[PATH_MAX];
   char clipboard_directory[PATH_MAX];
 } cli_state;
@@ -273,36 +277,44 @@ static int cli_tool_sink(void *context, const void *bytes, size_t count,
 }
 /* Prefix visible renderer rows without retaining body text or inserting a
  * marker inside an ANSI sequence split across writes. Blank rows stay blank. */
-static int cli_reasoning_sink(void *context, const char *bytes, size_t count) {
+static int cli_prefixed_sink(void *context, const char *bytes, size_t count) {
   cli_state *state = context;
   size_t i;
   size_t start = 0U;
   for (i = 0U; i < count; i++) {
     unsigned char ch = (unsigned char)bytes[i];
-    if (state->reasoning_line_start && state->reasoning_ansi == 0 &&
-        ch != 27U && ch != '\n' && ch != '\r') {
+    if (state->row_line_start && state->row_ansi == 0 && ch != 27U &&
+        ch != '\n' && ch != '\r') {
+      const char *prefix = "? ";
+      if (state->notice_open)
+        prefix = state->notice_first_row
+                     ? (state->interactive && getenv("NO_COLOR") == NULL
+                            ? "\033[91m*\033[0m "
+                            : "* ")
+                     : "  ";
       if (cli_sink(state, bytes + start, i - start) != 0 ||
-          cli_sink(state, "? ", 2U) != 0)
+          cli_sink(state, prefix, strlen(prefix)) != 0)
         return -1;
       start = i;
-      state->reasoning_line_start = 0;
+      state->row_line_start = 0;
+      state->notice_first_row = 0;
     }
-    if (state->reasoning_ansi == 1) {
-      state->reasoning_ansi = ch == '[' ? 2 : ch == ']' ? 3 : 0;
-    } else if (state->reasoning_ansi == 2) {
+    if (state->row_ansi == 1) {
+      state->row_ansi = ch == '[' ? 2 : ch == ']' ? 3 : 0;
+    } else if (state->row_ansi == 2) {
       if (ch >= 0x40U && ch <= 0x7eU)
-        state->reasoning_ansi = 0;
-    } else if (state->reasoning_ansi == 3) {
+        state->row_ansi = 0;
+    } else if (state->row_ansi == 3) {
       if (ch == 7U)
-        state->reasoning_ansi = 0;
+        state->row_ansi = 0;
       else if (ch == 27U)
-        state->reasoning_ansi = 4;
-    } else if (state->reasoning_ansi == 4) {
-      state->reasoning_ansi = ch == '\\' ? 0 : 3;
+        state->row_ansi = 4;
+    } else if (state->row_ansi == 4) {
+      state->row_ansi = ch == '\\' ? 0 : 3;
     } else if (ch == 27U) {
-      state->reasoning_ansi = 1;
+      state->row_ansi = 1;
     } else if (ch == '\n') {
-      state->reasoning_line_start = 1;
+      state->row_line_start = 1;
     }
   }
   return cli_sink(state, bytes + start, count - start);
@@ -311,8 +323,9 @@ static int cli_reasoning_sink(void *context, const char *bytes, size_t count) {
  */
 static int cli_renderer_sink(void *context, const char *bytes, size_t count) {
   cli_state *state = context;
-  return state->reasoning_open ? cli_reasoning_sink(context, bytes, count)
-                               : cli_sink(context, bytes, count);
+  return state->reasoning_open || state->notice_open
+             ? cli_prefixed_sink(context, bytes, count)
+             : cli_sink(context, bytes, count);
 }
 static int cli_tool_display_init(cli_state *state, cai_error *error) {
   cai_tool_display_config config;
@@ -392,8 +405,8 @@ static int cli_reasoning_body(void *context, const char *data, size_t length) {
                                       0, 0) != MDF_OK)
       return -1;
     state->reasoning_open = 1;
-    state->reasoning_line_start = 1;
-    state->reasoning_ansi = 0;
+    state->row_line_start = 1;
+    state->row_ansi = 0;
   }
   return state->renderer->feed(state->renderer, data, length) == MDF_OK ? 0
                                                                         : -1;
@@ -417,15 +430,52 @@ static int cli_text(cli_state *state, const char *data, size_t length) {
                                                                         : -1;
 }
 
-static int cli_write(cli_state *state, const char *text) {
-  if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0) {
-    return -1;
+/* Manual text tokens have their own renderer, separate from model Markdown. */
+static int cli_literal_prepare(cli_state *state, int prefixed) {
+  mdf_options options;
+  mdf_sink sink;
+  if (state->notice_renderer == NULL) {
+    mdf_options_init(&options);
+    options.width = state->width;
+    options.boring = 1;
+    options.ansi_mode = MDF_ANSI_OFF;
+    if (mdf_create(MDF_FORMAT_ANSI, &options, &state->notice_renderer) !=
+        MDF_OK)
+      return -1;
+    sink.userdata = state;
+    sink.write = cli_renderer_sink;
+    if (state->notice_renderer->set_sink(state->notice_renderer, &sink) !=
+        MDF_OK)
+      return -1;
   }
+  return state->notice_renderer->set_geometry(
+             state->notice_renderer,
+             prefixed ? (state->width >= 5 ? state->width - 2 : 3)
+                      : state->width,
+             prefixed ? 0 : (state->width >= 5 ? 2 : 0), 0) == MDF_OK
+             ? 0
+             : -1;
+}
+static int cli_write(cli_state *state, const char *text) {
+  if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
+    return -1;
   if (state->batch) {
     cli_diagnostic(state, PSLOG_LEVEL_INFO, text);
     return 0;
   }
-  return cli_sink(state, text, strlen(text));
+  if (cli_geometry(state) != 0 || cli_literal_prepare(state, 0) != 0)
+    return -1;
+  while (state->feed_breaks < 2)
+    if (cli_sink(state, "\n", 1U) != 0)
+      return -1;
+  while (*text == '\n' || *text == '\r')
+    text++;
+  if (cai_cli_literal_render(state->notice_renderer, text) != 0)
+    return -1;
+  while (state->feed_breaks < 2)
+    if (cli_sink(state, "\n", 1U) != 0)
+      return -1;
+  return 0;
 }
 
 static int cli_prompt(cli_state *state, const char *text, int history) {
@@ -636,20 +686,31 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
 
 static int cli_notice(void *context, const char *text) {
   cli_state *state = (cli_state *)context;
-  if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
+  int rc;
+  if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0 ||
+      cli_geometry(state) != 0)
     return -1;
-  /* Normalize to one blank line, including after streamed Markdown. Quoted
-   * prompts already supply this separation. */
+  /* Keep one blank row around each notice; the renderer supplies its newline.
+   */
   while (state->feed_breaks < 2)
-    if (cli_write(state, "\n") != 0)
+    if (cli_sink(state, "\n", 1U) != 0)
       return -1;
-  return cli_write(state, state->interactive && getenv("NO_COLOR") == NULL
-                              ? "\033[91m*\033[0m"
-                              : "*") == 0 &&
-                 cli_write(state, text + 1) == 0 &&
-                 cli_write(state, "\n\n") == 0
-             ? 0
-             : -1;
+  if (cli_literal_prepare(state, 1) != 0)
+    return -1;
+  state->notice_open = 1;
+  state->notice_first_row = 1;
+  state->row_line_start = 1;
+  state->row_ansi = 0;
+  if (strncmp(text, "* ", 2U) == 0)
+    text += 2;
+  rc = cai_cli_literal_render(state->notice_renderer, text);
+  state->notice_open = 0;
+  if (rc != 0)
+    return -1;
+  while (state->feed_breaks < 2)
+    if (cli_sink(state, "\n", 1U) != 0)
+      return -1;
+  return 0;
 }
 
 static int cli_startup_notice(void *context, const char *text) {
@@ -2160,6 +2221,8 @@ cleanup:
     (void)cli_finish_reasoning(&state);
     state.renderer->destroy(state.renderer);
   }
+  if (state.notice_renderer != NULL)
+    state.notice_renderer->destroy(state.notice_renderer);
   cai_tool_display_close(state.tool_display);
   cai_sink_close(state.tool_sink);
   if (state.sl != NULL) {

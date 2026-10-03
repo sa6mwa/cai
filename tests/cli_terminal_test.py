@@ -196,9 +196,9 @@ class ResponsePeer(http.server.BaseHTTPRequestHandler):
 
 
 class Terminal:
-    def __init__(self, args, env):
+    def __init__(self, args, env, width=120):
         self.master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 120, 0, 0))
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, width, 0, 0))
         self.process = subprocess.Popen(args, env=env, stdin=slave, stdout=slave,
                                         stderr=subprocess.PIPE)
         os.close(slave)
