@@ -11320,6 +11320,16 @@ static int cai_lua_display_set_mode(lua_State *L) {
   return cai_lua_bool_result(
       L, cai_tool_display_set_mode(self->ptr, mode, &error), &error);
 }
+static int cai_lua_display_set_width(lua_State *L) {
+  cai_lua_display *self = luaL_checkudata(L, 1, "cai.tool_display");
+  lua_Integer width = luaL_checkinteger(L, 2);
+  cai_error error;
+  luaL_argcheck(L, self->ptr != NULL, 1, "closed tool display");
+  luaL_argcheck(L, width >= 0 && width <= 4096, 2, "invalid terminal width");
+  cai_error_init(&error);
+  return cai_lua_bool_result(
+      L, cai_tool_display_set_width(self->ptr, (size_t)width, &error), &error);
+}
 static lua_Integer cai_lua_display_integer(lua_State *L, int index,
                                            const char *key,
                                            lua_Integer fallback) {
@@ -11376,6 +11386,7 @@ static int cai_lua_display_new(lua_State *L) {
   cai_tool_display_config config;
   cai_error error;
   int rc;
+  size_t width = cai_lua_opt_size_field(L, 1, "width", 0U);
   cai_lua_display_config(L, 1, &config);
   luaL_checktype(L, 2, LUA_TFUNCTION);
   self = (cai_lua_display *)lua_newuserdatauv(L, sizeof(*self), 0);
@@ -11386,6 +11397,8 @@ static int cai_lua_display_new(lua_State *L) {
   config.sink = self->sink;
   if (rc == CAI_OK)
     rc = cai_tool_display_new(&config, &self->ptr, &error);
+  if (rc == CAI_OK)
+    rc = cai_tool_display_set_width(self->ptr, width, &error);
   if (rc != CAI_OK)
     return cai_lua_fail(L, rc, &error);
   cai_error_cleanup(&error);
@@ -11399,6 +11412,7 @@ static int cai_lua_patch_render(lua_State *L) {
   cai_sink *sink = NULL;
   cai_error error;
   int rc;
+  size_t width = cai_lua_opt_size_field(L, 2, "width", 0U);
   cai_lua_display_config(L, 2, &config);
   luaL_argcheck(
       L, lua_type(L, 1) == LUA_TSTRING || lua_type(L, 1) == LUA_TFUNCTION, 1,
@@ -11412,7 +11426,7 @@ static int cai_lua_patch_render(lua_State *L) {
     rc = cai_lua_make_sink(L, 3, &sink_ctx, &sink, &error);
   config.sink = sink;
   if (rc == CAI_OK)
-    rc = cai_patch_render(source, &config, &error);
+    rc = cai_patch_render_width(source, &config, width, &error);
   cai_source_close(source);
   cai_sink_close(sink);
   if (source_ctx.callback_ref != 0)
@@ -11424,6 +11438,7 @@ static int cai_lua_patch_render(lua_State *L) {
 static const luaL_Reg cai_lua_display_methods[] = {
     {"event", cai_lua_display_event},
     {"set_mode", cai_lua_display_set_mode},
+    {"set_width", cai_lua_display_set_width},
     {"close", cai_lua_display_close},
     {NULL, NULL}};
 
@@ -11923,6 +11938,8 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_INTEGER("AGENT_EVENT_RUN_CANCELLED",
                       CAI_AGENT_EVENT_RUN_CANCELLED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TOOL_PATCH", CAI_AGENT_EVENT_TOOL_PATCH);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_TOOL_PATCH_LOCATIONS",
+                      CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS);
   CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_MCP", CAI_AGENT_TOOL_ACTION_MCP);
   CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_CHROME", CAI_AGENT_TOOL_ACTION_CHROME);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_COMPACTION_STARTED",

@@ -378,8 +378,14 @@ The UI escapes binary/control bytes. Terminal tool results and JSON logs preserv
 valid UTF-8 and replace malformed bytes with `?`.
 
 Successful `apply_patch` calls display the **agent's submitted patch**, without
-comparing files or querying Git. Added rows have a green background, removed
-rows a red background, and unchanged rows no background. Compact mode keeps
+comparing files or querying Git. A gutter shows actual file line numbers:
+removed rows use the original file, while added and context rows use the result.
+Matched hunk starts come from the native patch application, including adjustments
+for earlier hunks. Added rows have a green background and removed rows a red
+background across the entire terminal row, including the gutter and aligned
+wrapped continuations. Context rows have no background. Tabs expand to spaces;
+UTF-8 glyphs wrap by terminal cell width. Terminals narrower than 32 columns use
+the unnumbered format. Compact mode keeps
 one context row on either side of changes and uses `⋮` between separated change
 blocks; outer context is trimmed without an ellipsis. Full mode retains all
 supplied context. `NO_COLOR` disables these colors. Non-interactive invocations
@@ -391,25 +397,38 @@ SDK hosts can use `<cai/display.h>` without softline or libmdf. Create a
 `cai_tool_display_config` (compact, five preview lines, no colors), feed it
 owner-thread runtime events with `cai_tool_display_event`, then close it with
 `cai_tool_display_close`. `cai_tool_display_set_mode` affects future calls.
-Successful native patch calls emit bounded `CAI_AGENT_EVENT_TOOL_PATCH` chunks
-followed by an empty chunk; rejected patches do not emit patch bytes.
+`cai_tool_display_set_width(display, columns, &error)` enables the numbered,
+wrapped layout (32..4096 columns; zero restores unwrapped output). Hosts set
+`LC_CTYPE` to their UTF-8 locale for glyph widths. Width changes apply to the
+next logical patch row, including within an active call.
+Successful native patch calls emit `CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS` first:
+bounded chunks of ASCII `old new\n` rows, one per update hunk in submitted order,
+then an empty chunk. These are one-based matched original/result file positions.
+Added files start at one. Next come bounded `CAI_AGENT_EVENT_TOOL_PATCH` chunks
+containing the exact submitted bytes, followed by an empty chunk. Rejected
+patches emit neither locations nor patch bytes.
 `cai_patch_render(source, &config, &error)` also renders a patch directly from
 a source to a sink, with bounded line buffers and no rewind or full-body
-materialization. Changed rows flow in chunks; exceptionally long compact
+materialization. `cai_patch_render_width(source, &config, columns, &error)`
+also accepts explicit columns. Direct sources have no matched file metadata:
+additions start at one; updates may specify `@@ -OLD +NEW @@`, otherwise the
+gutter stays blank. No file is opened to guess missing positions.
+Changed rows flow in chunks; exceptionally long compact
 context rows are visibly clipped. Sources and sinks remain caller-owned.
 
 Lua exposes the same renderer:
 
 ```lua
-local display = assert(cai.tool_display({mode = "compact", color = true},
+local display = assert(cai.tool_display({mode = "compact", color = true, width = 80},
   function(chunk) io.write(chunk); return true end))
 -- Forward each runtime event from its owner-thread callback:
 -- assert(display:event(event))
 assert(display:set_mode("full")) -- future calls only
+assert(display:set_width(100)) -- next logical patch row
 assert(display:close())
 -- Direct rendering accepts a patch string or a source callback returning chunks.
 local patch = "*** Begin Patch\n*** Add File: example.txt\n+hello\n*** End Patch\n"
-assert(cai.patch_render(patch, {mode = "full"},
+assert(cai.patch_render(patch, {mode = "full", width = 80},
   function(chunk) io.write(chunk); return true end))
 ```
 

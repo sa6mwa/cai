@@ -1935,6 +1935,16 @@ if(CAI_BUILD_TESTS)
   set_tests_properties(cai_byte_asset_generator_test PROPERTIES
     LABELS "unit;local"
     TIMEOUT 3)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+     CMAKE_SYSTEM_NAME STREQUAL CMAKE_HOST_SYSTEM_NAME AND
+     CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
+    add_test(NAME cai_export_policy_incremental_test
+      COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/export_policy_incremental_test.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}"
+        "${CMAKE_C_COMPILER}" "${CMAKE_NM}" "${CMAKE_COMMAND}")
+    set_tests_properties(cai_export_policy_incremental_test PROPERTIES
+      LABELS "unit;local" TIMEOUT 15)
+  endif()
   if(CAI_BUILD_SHARED)
     string(TOLOWER "${CMAKE_SYSTEM_NAME}" _cai_export_policy_platform)
     set(_cai_shared_export_policy_test_args

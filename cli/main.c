@@ -330,7 +330,7 @@ static int cli_renderer_sink(void *context, const char *bytes, size_t count) {
 static int cli_tool_display_init(cli_state *state, cai_error *error) {
   cai_tool_display_config config;
   cai_sink_callbacks callbacks;
-  int rc;
+  int rc, width;
   memset(&callbacks, 0, sizeof(callbacks));
   callbacks.write = cli_tool_sink;
   callbacks.context = state;
@@ -344,7 +344,15 @@ static int cli_tool_display_init(cli_state *state, cai_error *error) {
                     ? CAI_TOOL_OUTPUT_FULL
                     : CAI_TOOL_OUTPUT_COMPACT;
   config.color = state->interactive && getenv("NO_COLOR") == NULL;
-  return cai_tool_display_new(&config, &state->tool_display, error);
+  rc = cai_tool_display_new(&config, &state->tool_display, error);
+  width = cli_render_width();
+  if (rc == CAI_OK)
+    rc = cai_tool_display_set_width(state->tool_display,
+                                    (size_t)(width < 32     ? 0
+                                             : width > 4096 ? 4096
+                                                            : width),
+                                    error);
+  return rc;
 }
 
 static int cli_geometry(cli_state *state) {
@@ -525,7 +533,8 @@ static void cli_log_event(cli_state *state,
                                       "compaction_progress",
                                       "compaction_completed",
                                       "run_cancelled",
-                                      "tool_patch"};
+                                      "tool_patch",
+                                      "tool_patch_locations"};
   pslog_field fields[16];
   size_t count;
   const char *name;
@@ -669,11 +678,22 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
       (event->type >= CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED &&
        event->type <= CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED) ||
       event->type == CAI_AGENT_EVENT_TOOL_PATCH ||
+      event->type == CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS ||
       event->type == CAI_AGENT_EVENT_RUN_FAILED ||
       event->type == CAI_AGENT_EVENT_RUN_CANCELLED) {
     if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
       return CAI_ERR_TRANSPORT;
-    return cai_tool_display_event(state->tool_display, event, error);
+    {
+      int width = cli_render_width();
+      int rc = cai_tool_display_set_width(state->tool_display,
+                                          (size_t)(width < 32     ? 0
+                                                   : width > 4096 ? 4096
+                                                                  : width),
+                                          error);
+      return rc == CAI_OK
+                 ? cai_tool_display_event(state->tool_display, event, error)
+                 : rc;
+    }
   } else if (event->type == CAI_AGENT_EVENT_REASONING_SUMMARY &&
              event->data != NULL && event->data_length > 0U) {
     if (cai_cli_reasoning_feed(&state->reasoning, event->data,

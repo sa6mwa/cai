@@ -1,8 +1,14 @@
+#define _XOPEN_SOURCE 700
 #include "cai_internal.h"
 #include <cai/display.h>
+#include <wchar.h>
 
 #define CAI_DISPLAY_LINE_MAX 65536U
 
+typedef struct patch_location {
+  size_t old_line, new_line;
+  struct patch_location *next;
+} patch_location;
 typedef struct cai_display_call {
   char *id;
   char *session;
@@ -23,12 +29,22 @@ typedef struct cai_display_call {
   int changed;
   int long_line;
   int clipped;
+  patch_location *locations, *locations_tail;
+  char location_row[64];
+  size_t location_length;
+  int locations_done, patch_started;
+  size_t old_line, new_line, first_number, last_number;
+  size_t row_width, row_column, row_prefix;
+  int row_active, row_kind;
+  char row_bytes[512];
+  size_t row_length;
   struct cai_display_call *next;
 } cai_display_call;
 
 struct cai_tool_display {
   cai_tool_display_config config;
   cai_display_call *calls;
+  size_t width;
   unsigned char utf8[4];
   size_t utf8_length;
   size_t utf8_expected;
@@ -197,6 +213,11 @@ static int display_marker(cai_tool_display *d, int result, const char *verb,
   return rc;
 }
 static void display_call_free(cai_display_call *c) {
+  while (c->locations != NULL) {
+    patch_location *next = c->locations->next;
+    cai_free_mem(NULL, c->locations);
+    c->locations = next;
+  }
   cai_free_mem(NULL, c->id);
   cai_free_mem(NULL, c->session);
   cai_free_mem(NULL, c->command);
@@ -247,38 +268,176 @@ static void display_remove(cai_tool_display *d, cai_display_call *c) {
       return;
     }
 }
-static int patch_piece(cai_tool_display *d, int kind, const char *s, size_t n,
-                       int newline, cai_error *error) {
-  int rc, colored;
-  colored = d->config.color && (kind == '+' || kind == '-');
-  rc = colored ? display_text(d, kind == '+' ? "\033[42m" : "\033[41m", error)
-               : CAI_OK;
-  if (rc == CAI_OK)
-    rc = display_safe(d, s, n, error);
+/* Width-aware output retains at most one small byte chunk. In particular a
+ * long logical line never becomes a retained, reflowable whole value. */
+static int patch_output(cai_tool_display *d, cai_display_call *c, const char *s,
+                        size_t n, cai_error *error) {
+  int rc;
+  if (n > sizeof(c->row_bytes) - c->row_length) {
+    rc = display_write(d, c->row_bytes, c->row_length, error);
+    c->row_length = 0U;
+    if (rc != CAI_OK)
+      return rc;
+  }
+  memcpy(c->row_bytes + c->row_length, s, n);
+  c->row_length += n;
+  return CAI_OK;
+}
+static int patch_row_end(cai_tool_display *d, cai_display_call *c,
+                         cai_error *error) {
+  int rc = CAI_OK;
+  int colored = d->config.color && (c->row_kind == '+' || c->row_kind == '-');
+  while (colored && rc == CAI_OK && c->row_column < c->row_width) {
+    rc = patch_output(d, c, " ", 1U, error);
+    c->row_column++;
+  }
   if (rc == CAI_OK && colored)
-    rc = display_text(d, "\033[0m", error);
-  if (rc == CAI_OK && newline)
-    rc = display_text(d, "\n", error);
+    rc = patch_output(d, c, "\033[0m", 4U, error);
+  if (rc == CAI_OK)
+    rc = patch_output(d, c, "\n", 1U, error);
+  if (rc == CAI_OK)
+    rc = display_write(d, c->row_bytes, c->row_length, error);
+  c->row_length = 0U;
   return rc;
 }
-static int patch_row(cai_tool_display *d, const char *s, size_t n, int newline,
-                     cai_error *error) {
-  return patch_piece(d, n != 0U ? s[0] : 0, s, n, newline, error);
+static int patch_row_start(cai_tool_display *d, cai_display_call *c,
+                           size_t number, int continuation, cai_error *error) {
+  char prefix[64];
+  size_t n;
+  int rc = CAI_OK;
+  if (d->config.color && (c->row_kind == '+' || c->row_kind == '-'))
+    rc = patch_output(d, c, c->row_kind == '+' ? "\033[42m" : "\033[41m", 5U,
+                      error);
+  if (continuation) {
+    memset(prefix, ' ', c->row_prefix);
+    n = c->row_prefix;
+  } else {
+    if (number != 0U)
+      snprintf(prefix, sizeof(prefix), "%4lu %c", (unsigned long)number,
+               c->row_kind);
+    else
+      snprintf(prefix, sizeof(prefix), "     %c", c->row_kind);
+    n = strlen(prefix);
+    c->row_prefix = n;
+  }
+  c->row_column = n;
+  if (rc == CAI_OK)
+    rc = patch_output(d, c, prefix, n, error);
+  return rc;
+}
+static int patch_glyph(cai_tool_display *d, cai_display_call *c, const char *s,
+                       size_t n, size_t cells, cai_error *error) {
+  int rc = CAI_OK;
+  if (cells != 0U && c->row_column + cells > c->row_width) {
+    rc = patch_row_end(d, c, error);
+    if (rc == CAI_OK)
+      rc = patch_row_start(d, c, 0U, 1, error);
+  }
+  if (rc == CAI_OK)
+    rc = patch_output(d, c, s, n, error);
+  c->row_column += cells;
+  return rc;
+}
+static int patch_piece(cai_tool_display *d, cai_display_call *c, int kind,
+                       size_t number, const char *s, size_t n, int newline,
+                       cai_error *error) {
+  int rc = CAI_OK, colored;
+  size_t i = 0U;
+  if ((c->row_active ? c->row_width : d->width) == 0U) {
+    c->row_width = 0U;
+    c->row_active = !newline;
+    colored = d->config.color && (kind == '+' || kind == '-');
+    rc = colored ? display_text(d, kind == '+' ? "\033[42m" : "\033[41m", error)
+                 : CAI_OK;
+    if (rc == CAI_OK)
+      rc = display_safe(d, s, n, error);
+    if (rc == CAI_OK && colored)
+      rc = display_text(d, "\033[0m", error);
+    if (rc == CAI_OK && newline)
+      rc = display_text(d, "\n", error);
+    return rc;
+  }
+  if (!c->row_active) {
+    c->row_active = 1;
+    c->row_kind = kind;
+    c->row_width = d->width;
+    rc = patch_row_start(d, c, number, 0, error);
+    if (n != 0U)
+      i = 1U; /* marker already present in the gutter */
+  }
+  while (rc == CAI_OK && i < n) {
+    unsigned char lead = (unsigned char)s[i];
+    size_t need = lead < 128U                      ? 1U
+                  : lead >= 0xc2U && lead < 0xe0U  ? 2U
+                  : lead >= 0xe0U && lead < 0xf0U  ? 3U
+                  : lead >= 0xf0U && lead <= 0xf4U ? 4U
+                                                   : 0U;
+    size_t j;
+    unsigned long code = need == 1U ? lead : lead & (0x7fU >> need);
+    int valid = need != 0U && need <= n - i, cells;
+    for (j = 1U; valid && j < need; j++) {
+      unsigned char ch = (unsigned char)s[i + j];
+      if ((ch & 0xc0U) != 0x80U)
+        valid = 0;
+      code = (code << 6) | (ch & 0x3fU);
+    }
+    valid = valid && !(need == 2U && code < 128U) &&
+            !(need == 3U && code < 2048U) && !(need == 4U && code < 65536U) &&
+            !(code >= 0xd800U && code <= 0xdfffU) && code <= 0x10ffffU;
+    if (lead == '\t') {
+      size_t spaces = 8U - (c->row_column - c->row_prefix) % 8U;
+      for (j = 0U; rc == CAI_OK && j < spaces; j++)
+        rc = patch_glyph(d, c, " ", 1U, 1U, error);
+      i++;
+    } else if (!valid || code < 32U || (code >= 127U && code < 160U)) {
+      char escaped[5];
+      snprintf(escaped, sizeof(escaped), "\\x%02x", (unsigned)lead);
+      for (j = 0U; rc == CAI_OK && j < 4U; j++)
+        rc = patch_glyph(d, c, escaped + j, 1U, 1U, error);
+      i++;
+    } else {
+      cells = wcwidth((wchar_t)code);
+      if (cells < 0)
+        cells = 1;
+      rc = patch_glyph(d, c, s + i, need, (size_t)cells, error);
+      i += need;
+    }
+  }
+  if (rc == CAI_OK && newline) {
+    rc = patch_row_end(d, c, error);
+    c->row_active = 0;
+  } else if (rc == CAI_OK) {
+    rc = display_write(d, c->row_bytes, c->row_length, error);
+    c->row_length = 0U;
+  }
+  return rc;
+}
+static size_t patch_number(cai_display_call *c, int kind) {
+  size_t number = kind == '-' ? c->old_line : c->new_line;
+  if (kind != '+' && c->old_line != 0U && c->old_line < (size_t)-1)
+    c->old_line++;
+  if (kind != '-' && c->new_line != 0U && c->new_line < (size_t)-1)
+    c->new_line++;
+  return number;
+}
+static int patch_row(cai_tool_display *d, cai_display_call *c, const char *s,
+                     size_t n, size_t number, cai_error *error) {
+  return patch_piece(d, c, n != 0U ? s[0] : ' ', number, s, n, 1, error);
 }
 static int patch_context(cai_tool_display *d, cai_display_call *c, int tail,
                          cai_error *error) {
   int rc = CAI_OK;
   if (c->context_lines != 0U) {
     if (!c->changed && !tail)
-      rc = patch_row(d, c->last != NULL ? c->last : c->first,
-                     c->last != NULL ? c->last_length : c->first_length, 1,
-                     error);
+      rc = patch_row(d, c, c->last != NULL ? c->last : c->first,
+                     c->last != NULL ? c->last_length : c->first_length,
+                     c->last != NULL ? c->last_number : c->first_number, error);
     else {
-      rc = patch_row(d, c->first, c->first_length, 1, error);
+      rc = patch_row(d, c, c->first, c->first_length, c->first_number, error);
       if (rc == CAI_OK && !tail && c->context_lines > 2U)
-        rc = display_text(d, " ⋮\n", error);
+        rc = display_text(d, d->width != 0U ? "      ⋮\n" : " ⋮\n", error);
       if (rc == CAI_OK && !tail && c->context_lines > 1U)
-        rc = patch_row(d, c->last, c->last_length, 1, error);
+        rc = patch_row(d, c, c->last, c->last_length, c->last_number, error);
     }
   }
   cai_free_mem(NULL, c->first);
@@ -288,9 +447,37 @@ static int patch_context(cai_tool_display *d, cai_display_call *c, int tail,
   c->context_lines = 0U;
   return rc;
 }
+static void patch_header_location(cai_display_call *c, const char *s,
+                                  size_t n) {
+  size_t pos = 4U, field, values[2] = {0U, 0U};
+  c->old_line = c->new_line = 0U;
+  if (n < 4U || memcmp(s, "@@ -", 4U) != 0)
+    return;
+  for (field = 0U; field < 2U; field++) {
+    size_t start = pos;
+    while (pos < n && s[pos] >= '0' && s[pos] <= '9') {
+      size_t digit = (size_t)(s[pos++] - '0');
+      if (values[field] > ((size_t)-1 - digit) / 10U)
+        return;
+      values[field] = values[field] * 10U + digit;
+    }
+    if (start == pos || values[field] == 0U)
+      return;
+    if (field == 0U) {
+      if (n - pos < 2U || memcmp(s + pos, " +", 2U) != 0)
+        return;
+      pos += 2U;
+    }
+  }
+  if (n - pos != 3U || memcmp(s + pos, " @@", 3U) != 0)
+    return;
+  c->old_line = values[0];
+  c->new_line = values[1];
+}
 static int patch_line(cai_tool_display *d, cai_display_call *c, const char *s,
                       size_t n, cai_error *error) {
   const char *verb = NULL, *path = NULL;
+  size_t number;
   int rc;
   if (n >= 14U && strncmp(s, "*** Add File: ", 14U) == 0) {
     verb = "Added";
@@ -311,18 +498,35 @@ static int patch_line(cai_tool_display *d, cai_display_call *c, const char *s,
     c->changed = 0;
     if (rc != CAI_OK)
       return rc;
-    if (verb != NULL)
+    if (verb != NULL) {
+      if (strcmp(verb, "Added") == 0) {
+        c->old_line = 0U;
+        c->new_line = 1U;
+      } else if (strcmp(verb, "Moved to") != 0)
+        c->old_line = c->new_line = 0U;
       return display_marker(d, 1, verb, path, n - (size_t)(path - s), error);
+    }
     if (n >= 3U && strncmp(s, "***", 3U) == 0)
       return CAI_OK;
-    return patch_row(d, s, n, 1, error);
+    if (c->locations != NULL) {
+      patch_location *location = c->locations;
+      c->old_line = location->old_line;
+      c->new_line = location->new_line;
+      c->locations = location->next;
+      if (c->locations == NULL)
+        c->locations_tail = NULL;
+      cai_free_mem(NULL, location);
+    } else
+      patch_header_location(c, s, n);
+    return d->width != 0U ? CAI_OK : patch_piece(d, c, 0, 0U, s, n, 1, error);
   }
+  number = patch_number(c, n != 0U ? s[0] : ' ');
   if (c->mode == CAI_TOOL_OUTPUT_FULL)
-    return patch_row(d, s, n, 1, error);
+    return patch_row(d, c, s, n, number, error);
   if (n != 0U && (s[0] == '+' || s[0] == '-')) {
     rc = patch_context(d, c, 0, error);
     c->changed = 1;
-    return rc == CAI_OK ? patch_row(d, s, n, 1, error) : rc;
+    return rc == CAI_OK ? patch_row(d, c, s, n, number, error) : rc;
   }
   if (n != 0U && s[0] == ' ') {
     char *copy = cai_strndup(NULL, s, n);
@@ -333,15 +537,17 @@ static int patch_line(cai_tool_display *d, cai_display_call *c, const char *s,
     if (c->context_lines == 1U) {
       c->first = copy;
       c->first_length = n;
+      c->first_number = number;
     } else {
       cai_free_mem(NULL, c->last);
       c->last = copy;
       c->last_length = n;
+      c->last_number = number;
     }
     return CAI_OK;
   }
   rc = patch_context(d, c, 1, error);
-  return rc == CAI_OK ? patch_row(d, s, n, 1, error) : rc;
+  return rc == CAI_OK ? patch_row(d, c, s, n, number, error) : rc;
 }
 static int patch_feed(cai_tool_display *d, cai_display_call *c,
                       const char *data, size_t n, int finish,
@@ -357,7 +563,7 @@ static int patch_feed(cai_tool_display *d, cai_display_call *c,
   for (i = 0U; i < n; i++) {
     if (data[i] == '\n') {
       if (c->long_line)
-        rc = patch_piece(d, c->long_line, c->line, c->length, 1, error);
+        rc = patch_piece(d, c, c->long_line, 0U, c->line, c->length, 1, error);
       else {
         if (c->clipped) {
           memcpy(c->line + c->length, " … [line clipped]",
@@ -383,11 +589,14 @@ static int patch_feed(cai_tool_display *d, cai_display_call *c,
             if (rc != CAI_OK)
               return rc;
           }
-          if (!c->long_line)
+          if (!c->long_line) {
             c->long_line =
                 c->line[0] == '+' || c->line[0] == '-' ? c->line[0] : ' ';
+            c->first_number = patch_number(c, c->long_line);
+          }
           flush_length = patch_flush_length(c->line, c->length);
-          rc = patch_piece(d, c->long_line, c->line, flush_length, 0, error);
+          rc = patch_piece(d, c, c->long_line, c->first_number, c->line,
+                           flush_length, 0, error);
           if (rc != CAI_OK)
             return rc;
           memmove(c->line, c->line + flush_length, c->length - flush_length);
@@ -405,9 +614,9 @@ static int patch_feed(cai_tool_display *d, cai_display_call *c,
         c->length += sizeof(" … [line clipped]") - 1U;
       }
       c->line[c->length] = '\0';
-      rc = c->long_line
-               ? patch_piece(d, c->long_line, c->line, c->length, 1, error)
-               : patch_line(d, c, c->line, c->length, error);
+      rc = c->long_line ? patch_piece(d, c, c->long_line, 0U, c->line,
+                                      c->length, 1, error)
+                        : patch_line(d, c, c->line, c->length, error);
       if (rc != CAI_OK)
         return rc;
     }
@@ -476,6 +685,70 @@ static int command_feed(cai_tool_display *d, cai_display_call *c, const char *s,
   return command_output(d, c, s + start, n - start, error);
 }
 
+static int patch_locations(cai_display_call *c, const char *data, size_t n,
+                           cai_error *error) {
+  size_t i;
+  if (c->locations_done || c->patch_started)
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "patch locations arrived after their boundary");
+  for (i = 0U; i < n; i++) {
+    if (data[i] == '\n') {
+      patch_location *location;
+      size_t values[2] = {0U, 0U}, field, pos = 0U;
+      c->location_row[c->location_length] = '\0';
+      for (field = 0U; field < 2U; field++) {
+        size_t start = pos;
+        while (pos < c->location_length && c->location_row[pos] >= '0' &&
+               c->location_row[pos] <= '9') {
+          size_t digit = (size_t)(c->location_row[pos++] - '0');
+          if (values[field] > ((size_t)-1 - digit) / 10U)
+            return cai_set_error(error, CAI_ERR_PROTOCOL,
+                                 "patch hunk location overflows");
+          values[field] = values[field] * 10U + digit;
+        }
+        if (pos == start || values[field] == 0U ||
+            (field == 0U
+                 ? pos == c->location_length || c->location_row[pos++] != ' '
+                 : pos != c->location_length))
+          return cai_set_error(error, CAI_ERR_PROTOCOL,
+                               "invalid patch hunk locations");
+      }
+      location = cai_alloc(NULL, sizeof(*location));
+      if (location == NULL)
+        return cai_set_error(error, CAI_ERR_NOMEM,
+                             "cannot retain patch hunk location");
+      location->old_line = values[0];
+      location->new_line = values[1];
+      location->next = NULL;
+      if (c->locations_tail != NULL)
+        c->locations_tail->next = location;
+      else
+        c->locations = location;
+      c->locations_tail = location;
+      c->location_length = 0U;
+    } else {
+      if (c->location_length >= sizeof(c->location_row) - 1U ||
+          (data[i] != ' ' && (data[i] < '0' || data[i] > '9')))
+        return cai_set_error(error, CAI_ERR_PROTOCOL,
+                             "invalid patch hunk location bytes");
+      c->location_row[c->location_length++] = data[i];
+    }
+  }
+  if (n == 0U && c->location_length != 0U)
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "truncated patch hunk location");
+  if (n == 0U)
+    c->locations_done = 1;
+  return CAI_OK;
+}
+int cai_tool_display_set_width(cai_tool_display *d, size_t width,
+                               cai_error *error) {
+  if (d == NULL || (width != 0U && (width < 32U || width > 4096U)))
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "patch width must be zero or 32..4096 columns");
+  d->width = width;
+  return CAI_OK;
+}
 int cai_tool_display_new(const cai_tool_display_config *config,
                          cai_tool_display **out, cai_error *error) {
   cai_tool_display *d;
@@ -532,11 +805,25 @@ int cai_tool_display_event(cai_tool_display *d,
       return rc;
     return CAI_OK;
   }
+  if (e->type == CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS) {
+    if (c == NULL)
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "patch locations have no originating call");
+    return patch_locations(c, e->data, e->data_length, error);
+  }
   if (e->type == CAI_AGENT_EVENT_TOOL_PATCH) {
     if (c == NULL)
       return cai_set_error(error, CAI_ERR_INVALID,
                            "patch display has no originating call");
+    if (c->location_length != 0U ||
+        (c->locations != NULL && !c->locations_done))
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "patch arrived before hunk locations completed");
+    c->patch_started = 1;
     rc = patch_feed(d, c, e->data, e->data_length, e->data_length == 0U, error);
+    if (rc == CAI_OK && e->data_length == 0U && c->locations != NULL)
+      rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "patch has unused hunk locations");
     if (e->data_length == 0U)
       display_remove(d, c);
     return rc;
@@ -652,8 +939,9 @@ void cai_tool_display_close(cai_tool_display *d) {
   }
   cai_free_mem(NULL, d);
 }
-int cai_patch_render(cai_source *patch, const cai_tool_display_config *config,
-                     cai_error *error) {
+int cai_patch_render_width(cai_source *patch,
+                           const cai_tool_display_config *config, size_t width,
+                           cai_error *error) {
   cai_tool_display *d;
   cai_display_call c;
   cai_error local_error;
@@ -665,6 +953,11 @@ int cai_patch_render(cai_source *patch, const cai_tool_display_config *config,
   rc = cai_tool_display_new(config, &d, error);
   if (rc != CAI_OK)
     return rc;
+  rc = cai_tool_display_set_width(d, width, error);
+  if (rc != CAI_OK) {
+    cai_tool_display_close(d);
+    return rc;
+  }
   cai_error_init(&local_error);
   if (error == NULL)
     error = &local_error;
@@ -683,10 +976,20 @@ int cai_patch_render(cai_source *patch, const cai_tool_display_config *config,
     }
     rc = patch_feed(d, &c, bytes, n, n == 0U, error);
   } while (rc == CAI_OK && n != 0U);
+  while (c.locations != NULL) {
+    patch_location *next = c.locations->next;
+    cai_free_mem(NULL, c.locations);
+    c.locations = next;
+  }
   cai_free_mem(NULL, c.line);
   cai_free_mem(NULL, c.first);
   cai_free_mem(NULL, c.last);
   cai_tool_display_close(d);
   cai_error_cleanup(&local_error);
   return rc;
+}
+
+int cai_patch_render(cai_source *patch, const cai_tool_display_config *config,
+                     cai_error *error) {
+  return cai_patch_render_width(patch, config, 0U, error);
 }

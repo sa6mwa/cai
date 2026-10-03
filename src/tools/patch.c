@@ -37,11 +37,17 @@ extern char *realpath(const char *path, char *resolved_path);
 #define RENAME_EXCHANGE (1U << 1)
 #endif
 
+typedef struct cai_patch_location {
+  size_t old_line, new_line;
+} cai_patch_location;
+
 typedef struct cai_patch_context {
   char *root_path;
   int root_fd;
   size_t max_patch_bytes;
   size_t max_file_bytes;
+  cai_patch_location *locations;
+  size_t location_count;
 } cai_patch_context;
 
 typedef struct cai_patch_hunk {
@@ -51,6 +57,7 @@ typedef struct cai_patch_hunk {
   size_t new_length;
   char *context;
   int end_of_file;
+  size_t old_line, new_line;
 } cai_patch_hunk;
 
 typedef struct cai_patch_change {
@@ -75,6 +82,7 @@ typedef struct cai_patch_change {
   char *after;
   size_t after_length;
   size_t search_offset;
+  size_t removed_lines, added_lines;
   int target_published;
   struct stat published_stat;
   int published_stat_valid;
@@ -1399,8 +1407,8 @@ static char *cai_patch_find_context_line(char *text, size_t offset,
   }
 }
 
-static int cai_patch_apply_hunk(cai_patch_change *change,
-                                const cai_patch_hunk *hunk, cai_error *error) {
+static int cai_patch_apply_hunk(cai_patch_change *change, cai_patch_hunk *hunk,
+                                cai_error *error) {
   char *match;
   char *next_match;
   char *anchor;
@@ -1445,6 +1453,23 @@ static int cai_patch_apply_hunk(cai_patch_change *change,
       return cai_set_error(error, CAI_ERR_INVALID,
                            "update patch context is ambiguous");
     }
+  }
+  /* The match is in the evolving new file. Translate its line back to the
+   * original using the preceding hunks' inserted/deleted line counts. */
+  {
+    size_t i;
+    hunk->new_line = 1U;
+    for (i = 0U; i < (size_t)(match - change->after); i++)
+      if (change->after[i] == '\n')
+        hunk->new_line++;
+    hunk->old_line =
+        hunk->new_line + change->removed_lines - change->added_lines;
+    for (i = 0U; i < hunk->old_length; i++)
+      if (hunk->old_text[i] == '\n')
+        change->removed_lines++;
+    for (i = 0U; i < hunk->new_length; i++)
+      if (hunk->new_text[i] == '\n')
+        change->added_lines++;
   }
   prefix = (size_t)(match - change->after);
   suffix = change->after_length - prefix - hunk->old_length;
@@ -2059,6 +2084,7 @@ static void cai_patch_context_cleanup(void *context) {
     close(ctx->root_fd);
   }
   cai_free_mem(NULL, ctx->root_path);
+  cai_free_mem(NULL, ctx->locations);
   cai_free_mem(NULL, ctx);
 }
 
@@ -2127,16 +2153,44 @@ static int cai_patch_tool_spooled_callback(void *context,
   cai_patch_context *ctx;
   cai_patch_plan plan;
   int rc;
+  size_t i, j;
 
   ctx = (cai_patch_context *)context;
   if (ctx == NULL || input == NULL || result == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "apply_patch received invalid state");
   }
+  cai_free_mem(NULL, ctx->locations);
+  ctx->locations = NULL;
+  ctx->location_count = 0U;
   memset(&plan, 0, sizeof(plan));
   rc = cai_patch_parse_spooled(ctx, input, &plan, error);
   if (rc == CAI_OK) {
     rc = cai_patch_preflight(ctx, &plan, error);
+  }
+  /* Retain only positions, allocating before publication so allocation
+   * failure cannot turn a successfully applied edit into a reported failure. */
+  if (rc == CAI_OK) {
+    size_t count = 0U, index = 0U;
+    for (i = 0U; i < plan.count; i++)
+      count += plan.items[i].hunk_count;
+    if (count > (size_t)-1 / sizeof(*ctx->locations))
+      rc = cai_set_error(error, CAI_ERR_LIMIT, "too many patch hunk locations");
+    else if (count != 0U) {
+      ctx->locations = cai_alloc(NULL, count * sizeof(*ctx->locations));
+      if (ctx->locations == NULL)
+        rc = cai_set_error(error, CAI_ERR_NOMEM,
+                           "cannot allocate patch hunk locations");
+    }
+    if (rc == CAI_OK) {
+      for (i = 0U; i < plan.count; i++) {
+        for (j = 0U; j < plan.items[i].hunk_count; j++) {
+          ctx->locations[index].old_line = plan.items[i].hunks[j].old_line;
+          ctx->locations[index++].new_line = plan.items[i].hunks[j].new_line;
+        }
+      }
+      ctx->location_count = count;
+    }
   }
   if (rc == CAI_OK) {
     rc = cai_patch_commit(&plan, error);
@@ -2144,8 +2198,39 @@ static int cai_patch_tool_spooled_callback(void *context,
   if (rc == CAI_OK) {
     rc = cai_patch_write_result(result, &plan, error);
   }
+  if (rc != CAI_OK)
+    ctx->location_count = 0U;
   cai_patch_plan_cleanup(&plan);
   return rc;
+}
+
+int cai_patch_tool_write_locations(cai_tool_registry *registry,
+                                   const char *name, cai_sink *sink,
+                                   cai_error *error) {
+  cai_patch_context *ctx = cai_tool_registry_custom_context(
+      registry, name, cai_patch_tool_spooled_callback);
+  char bytes[4096];
+  size_t i, used = 0U;
+  int rc = CAI_OK;
+  /* Batch positions in a bounded chunk rather than waking the owner once per
+   * hunk. Encoding and delivery progress together; no whole payload is built.
+   */
+  for (i = 0U; ctx != NULL && rc == CAI_OK && i < ctx->location_count; i++) {
+    char row[64];
+    int n = snprintf(row, sizeof(row), "%lu %lu\n",
+                     (unsigned long)ctx->locations[i].old_line,
+                     (unsigned long)ctx->locations[i].new_line);
+    if ((size_t)n > sizeof(bytes) - used) {
+      rc = cai_sink_write(sink, bytes, used, error);
+      used = 0U;
+    }
+    if (rc == CAI_OK) {
+      memcpy(bytes + used, row, (size_t)n);
+      used += (size_t)n;
+    }
+  }
+  return rc == CAI_OK && used != 0U ? cai_sink_write(sink, bytes, used, error)
+                                    : rc;
 }
 
 int cai_tool_registry_register_patch_tool(cai_tool_registry *registry,

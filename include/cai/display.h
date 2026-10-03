@@ -35,6 +35,16 @@ int cai_tool_display_new(const cai_tool_display_config *config,
 /** Select the mode for future calls. Active calls keep their captured mode. */
 int cai_tool_display_set_mode(cai_tool_display *display, int mode,
                               cai_error *error);
+/** Set terminal columns for numbered, wrapped patch rows (32..4096).
+ * Zero selects the default unwrapped patch format. Colored changed rows fill
+ * the specified width; continuations align below the content. Width changes
+ * apply at the next logical patch row, including during an active tool call.
+ * Uses the host's LC_CTYPE for Unicode cell widths. No terminal I/O is queried.
+ * Native runtime location events provide real file numbers; unavailable
+ * positions leave a blank gutter. Sources/sinks remain borrowed.
+ */
+int cai_tool_display_set_width(cai_tool_display *display, size_t width,
+                               cai_error *error);
 /** Consume a borrowed owner-thread runtime event. Payloads are written as they
  * arrive; command output is never retained for later expansion. Sink failures
  * propagate to the caller. Control bytes are escaped before terminal output.
@@ -55,6 +65,14 @@ void cai_tool_display_close(cai_tool_display *display);
  */
 int cai_patch_render(cai_source *patch, const cai_tool_display_config *config,
                      cai_error *error);
+/** Direct patch rendering with explicit terminal columns; zero is unwrapped.
+ * Add-file rows start at one. Updates can use numeric "@@ -OLD +NEW @@"
+ * headers; bare/context-anchor headers leave the gutter blank because the
+ * source alone cannot identify matched file positions. No files are read.
+ */
+int cai_patch_render_width(cai_source *patch,
+                           const cai_tool_display_config *config, size_t width,
+                           cai_error *error);
 #ifdef __cplusplus
 }
 #endif

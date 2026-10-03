@@ -345,8 +345,12 @@ and missing new objectives are errors, never implicit goal instructions.
 Show or change the tool preview mode. The setting applies to future tool calls;
 active calls and past output retain their original presentation.
 Successful patches show the agent\(aqs submitted patch, with green backgrounds
-for additions and red backgrounds for removals. Unchanged rows have no
-background. Activity headings are bold bright cyan, independently of the
+for additions and red backgrounds for removals across full terminal rows.
+The gutter shows original file line numbers for removals and result file line
+numbers for additions and context. Wrapped continuations align below the
+content and retain the background. Tabs expand to spaces; UTF-8 glyphs wrap
+by terminal cell width. Terminals narrower than 32 columns omit the gutter.
+Unchanged rows have no background. Activity headings are bold bright cyan, independently of the
 bright green/red success/failure star. No file or Git comparison is performed.
 NO_COLOR disables colors.
 .TP

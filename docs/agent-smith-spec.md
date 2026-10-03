@@ -446,6 +446,13 @@ hosts do not need to parse model-visible output to render `Read <path>` or
 `Patched <path>`. Arbitrary tool/MCP output remains opaque bytes and is
 classified as `EXTERNAL` unless a future tool contract provides richer facts.
 
+Successful native patches also emit `TOOL_PATCH_LOCATIONS` before `TOOL_PATCH`.
+The locations stream contains ASCII `old new\n` rows in submitted update-hunk
+order, followed by an empty chunk; positions are one-based original/result file
+lines captured at preflight matches. Add-file numbering starts at one. The
+subsequent patch stream preserves the exact submitted bytes. Rejected patches
+emit neither stream. Renderers need no filesystem or VCS reads for this gutter.
+
 The C and Lua `smith-terminal` examples are compact reference presentations
 over this generic contract: render `$ <command>` on start, dim only the first
 ten physical output lines across the command's full lifetime, emit one omission

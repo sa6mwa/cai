@@ -42720,9 +42720,11 @@ static void test_chat_connection_failure(test_state *state) {
 
 typedef struct runtime_patch_capture {
   cai_buffer_builder bytes;
+  cai_buffer_builder locations;
   pthread_t owner;
   size_t chunks;
   size_t endings;
+  size_t location_endings;
   int completed;
   int wrong_thread;
   int invalid_chunk;
@@ -42745,8 +42747,18 @@ static int test_runtime_patch_event(void *context,
     snprintf(capture->failure, sizeof(capture->failure), "%.*s",
              (int)(event->data_length < 511U ? event->data_length : 511U),
              event->data);
+  if (event->type == CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS) {
+    if (!capture->completed || capture->chunks != 0U || capture->endings != 0U)
+      capture->invalid_chunk = 1;
+    if (event->data_length == 0U)
+      capture->location_endings++;
+    return cai_buffer_append(&capture->locations, event->data,
+                             event->data_length, error);
+  }
   if (event->type != CAI_AGENT_EVENT_TOOL_PATCH)
     return CAI_OK;
+  if (capture->location_endings != 1U)
+    capture->invalid_chunk = 1;
   if (!capture->completed || event->data_length > 4096U ||
       event->tool_action != CAI_AGENT_TOOL_ACTION_PATCH ||
       event->tool_call_id == NULL ||
@@ -42763,9 +42775,9 @@ static int test_runtime_patch_event(void *context,
 }
 
 static void test_agent_runtime_patch_events(test_state *state) {
-  int chat, rejected, i;
+  int chat, rejected, variant, update, i;
   for (chat = 0; chat < 2; chat++) {
-    for (rejected = 0; rejected < 2; rejected++) {
+    for (variant = 0; variant < 3; variant++) {
       cai_buffer_builder patch, argument, body;
       cai_error error;
       cai_client_config client_config;
@@ -42781,6 +42793,8 @@ static void test_agent_runtime_patch_events(test_state *state) {
       char row[80];
       size_t rows;
       int rc;
+      rejected = variant == 1;
+      update = variant == 2;
       cai_error_init(&error);
       memset(&patch, 0, sizeof(patch));
       memset(&argument, 0, sizeof(argument));
@@ -42807,9 +42821,13 @@ static void test_agent_runtime_patch_events(test_state *state) {
                      &patch,
                      rejected ? "*** Begin Patch\n*** Update File: "
                                 "sample.c\n@@\n-missing\n+replacement\n"
+                     : update ? "*** Begin Patch\n*** Update File: "
+                                "sample.c\n@@ header\n-old\n"
                               : "*** Begin Patch\n*** Add File: sample.c\n",
                      &error),
                  CAI_OK);
+      if (update)
+        write_file_or_die(file, "header\nold\n");
       if (!rejected) {
         for (i = 0; i < 200; i++)
           expect_int(state, "runtime_patch_row",
@@ -42937,9 +42955,15 @@ static void test_agent_runtime_patch_events(test_state *state) {
                      capture.invalid_chunk, 0L);
           expect_int(state, "runtime_patch_rejection", capture.failed,
                      rejected);
+          expect_int(state, "runtime_patch_location_sentinel",
+                     (long)capture.location_endings, rejected ? 0L : 1L);
           expect_int(state, "runtime_patch_sentinel", (long)capture.endings,
                      rejected ? 0L : 1L);
           if (!rejected) {
+            expect_str(state, "runtime_patch_locations",
+                       capture.locations.data != NULL ? capture.locations.data
+                                                      : "",
+                       update ? "2 2\n" : "");
             expect_str(state, "runtime_patch_exact_input", capture.bytes.data,
                        patch.data);
             if (capture.chunks < 2U)
@@ -42950,6 +42974,14 @@ static void test_agent_runtime_patch_events(test_state *state) {
             if (created == NULL)
               test_fail(state, "runtime_patch_file", "file not created");
             else {
+              if (update) {
+                if (fgets(row, sizeof(row), created) == NULL)
+                  test_fail(state, "runtime_patch_file_header",
+                            "missing header");
+                else
+                  expect_str(state, "runtime_patch_file_header", row,
+                             "header\n");
+              }
               while (fgets(row, sizeof(row), created) != NULL) {
                 expect_str(state, "runtime_patch_file_row", row,
                            "row \"quoted\" \\ backslash å🚀\n");
@@ -42973,6 +43005,7 @@ static void test_agent_runtime_patch_events(test_state *state) {
       cai_free_mem(NULL, argument.data);
       cai_free_mem(NULL, body.data);
       cai_free_mem(NULL, capture.bytes.data);
+      cai_free_mem(NULL, capture.locations.data);
       cai_error_cleanup(&error);
     }
   }

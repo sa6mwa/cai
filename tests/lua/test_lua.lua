@@ -2628,6 +2628,10 @@ do
   assert(rendered:find("\27[41m-old\27[0m", 1, true))
   assert(rendered:find("\27[42m+new\27[0m", 1, true))
   assert(not rendered:find("mid1", 1, true) and rendered:find("⋮", 1, true))
+  local numbered = {}
+  assert_ok(cai.patch_render("*** Add File: x\n+abcdefghijklmnopqrstuvwxyz0123456789\n", {width=32}, function(chunk) numbered[#numbered+1] = chunk; return true end))
+  assert(table.concat(numbered):find("   1 +abcdefghijklmnopqrstuvwxyz\n      0123456789\n", 1, true))
+  assert_not_ok(cai.patch_render(patch, {width=31}, function() return true end))
   assert_not_ok(cai.patch_render(function() error("source failed") end, {}, function() return true end))
   assert_not_ok(cai.patch_render(patch, {}, function() return false end))
   output = {}
@@ -2657,6 +2661,16 @@ do
   emit(cai.AGENT_EVENT_TOOL_PATCH, patch)
   emit(cai.AGENT_EVENT_TOOL_PATCH, "")
   assert(table.concat(output):find("mid1", 1, true), "next patch uses full mode")
+  output = {}
+  assert_ok(display:set_width(32))
+  assert_not_ok(display:set_width(31))
+  emit(cai.AGENT_EVENT_TOOL_CALL_STARTED)
+  emit(cai.AGENT_EVENT_TOOL_CALL_COMPLETED)
+  emit(cai.AGENT_EVENT_TOOL_PATCH_LOCATIONS, "280 290\n")
+  emit(cai.AGENT_EVENT_TOOL_PATCH_LOCATIONS, "")
+  emit(cai.AGENT_EVENT_TOOL_PATCH, "*** Update File: x\n@@\n-old\n+new\n")
+  emit(cai.AGENT_EVENT_TOOL_PATCH, "")
+  assert(table.concat(output):find(" 280 -old\n 290 +new\n", 1, true))
   assert_ok(display:close())
   assert_throws(function() display:event({}) end)
 end

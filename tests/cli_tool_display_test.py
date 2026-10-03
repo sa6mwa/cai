@@ -65,7 +65,8 @@ def main():
             assert b"* Edited file.c" in text, text
             assert re.search(rb"\x1b\[(?:0;)?1;96mEdited", terminal.output)
             assert re.search(rb"\x1b\[(?:0;)?1;96mfile.c", terminal.output)
-            assert b"-old" in text and b"+new" in text
+            assert b"   3 -old" in text and b"   3 +new" in text
+            assert b"   7  between3" in text and b"   8 +new2" in text
             assert b"between1" not in text and b"before0" not in text and b"after1" not in text, text
             assert "⋮".encode() in text
             assert b"\x1b[41m" in terminal.output and b"\x1b[42m" in terminal.output
@@ -83,6 +84,20 @@ def main():
             later = bytes(terminal.output[offset:])
             assert b"between1" in later and b"before0" in later and b"after1" in later, later
             terminal.send(b"/output compact\r")
+            terminal.read()
+            # Two anchored hunks: inserting in the first changes new-file
+            # positions in the second, while old-file numbers remain stable.
+            target.write_text("A\nold\nB\nC\ndead1\ndead2\nD\n")
+            anchored = "*** Begin Patch\n*** Update File: file.c\n@@ A\n-old\n+new1\n+new2\n B\n@@ C\n-dead1\n-dead2\n+replacement\n D\n*** End Patch\n"
+            api.plan = [("apply_patch", anchored), "ANCHORED DONE"]
+            offset = len(terminal.output)
+            terminal.send(b"apply anchored hunks\r")
+            terminal.wait(lambda: finished(terminal, offset, b"ANCHORED DONE"))
+            later = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", terminal.output[offset:])
+            for row in (b"   2 -old", b"   2 +new1", b"   3 +new2", b"   5 -dead1", b"   6 -dead2", b"   6 +replacement", b"   7  D"):
+                assert row in later, (row, later)
+            assert target.read_text() == "A\nnew1\nnew2\nB\nC\nreplacement\nD\n"
+
             terminal.read()
             command = "printf 'OUT01\\nOUT02\\nOUT03\\nOUT04\\nOUT05\\nOUT06\\nOUT07\\n'"
             # The command's own header contains the text OUT06; only the body
@@ -111,6 +126,20 @@ def main():
             assert "UNICODEå".encode() in plain and b"BINARY\\xff?\\xc2\\x80TAIL\\xc3" in plain, plain
             assert b"\x1b[92m*\x1b[0m" in later and b"Ran sh binary.sh" in plain, later
             plain.decode("utf-8")
+            terminal.close()
+            terminal = None
+
+            target.write_text("old\n")
+            narrow_patch = "*** Begin Patch\n*** Update File: file.c\n@@\n-old\n+abcdefghijklmnopqrstuvwxyz1234567890界é\n*** End Patch\n"
+            api.plan = [("apply_patch", narrow_patch), "NARROW DONE"]
+            terminal = Terminal(args, dict(env, NO_COLOR="1"), width=32)
+            terminal.wait(lambda: terminal.contains("> "))
+            terminal.send(b"wrap patch\r")
+            terminal.wait(lambda: terminal.contains("NARROW DONE") and terminal.contains("Worked for"))
+            text = terminal.rendered()
+            assert b"   1 +abcdefghijklmnopqrstuvwxyz" in text, text
+            assert "      1234567890界é".encode() in text, text
+            assert b"\x1b[42m" not in terminal.output and b"\x1b[41m" not in terminal.output
             terminal.close()
             terminal = None
 

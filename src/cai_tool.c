@@ -1793,6 +1793,18 @@ int cai_tool_registry_run_mcp(cai_tool_registry *registry, const char *name,
   return rc;
 }
 
+void *cai_tool_registry_custom_context(cai_tool_registry *registry,
+                                       const char *name,
+                                       cai_tool_custom_spooled_fn callback) {
+  cai_tool_entry *entry = registry != NULL && name != NULL
+                              ? cai_tool_registry_find(registry, name)
+                              : NULL;
+  return entry != NULL && entry->kind == CAI_TOOL_CUSTOM &&
+                 entry->custom_spooled_callback == callback
+             ? entry->context
+             : NULL;
+}
+
 int cai_tool_registry_set_result_delivery(cai_tool_registry *registry,
                                           const char *name,
                                           cai_tool_result_delivery_fn callback,

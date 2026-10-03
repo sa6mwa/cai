@@ -504,6 +504,14 @@ int cai_tool_registry_register_custom_spooled_owned(
     cai_tool_registry *registry, const char *name, const char *description,
     const cai_custom_tool_format *format, cai_tool_custom_spooled_fn callback,
     void *context, void (*context_cleanup)(void *context), cai_error *error);
+/* Worker-thread access to a native custom tool's last-call presentation data.
+ * The callback identity prevents interpreting an external tool's context. */
+void *cai_tool_registry_custom_context(cai_tool_registry *registry,
+                                       const char *name,
+                                       cai_tool_custom_spooled_fn callback);
+int cai_patch_tool_write_locations(cai_tool_registry *registry,
+                                   const char *name, cai_sink *sink,
+                                   cai_error *error);
 typedef struct cai_skill_catalog cai_skill_catalog;
 int cai_skills_prepare(const cai_skill_config *config,
                        const char *agent_config_directory,

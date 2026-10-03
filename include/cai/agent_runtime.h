@@ -161,7 +161,13 @@ typedef enum cai_agent_runtime_event_type {
    * An empty chunk terminates the patch. This is the agent's input, not a
    * filesystem/VCS comparison. Chat Completions' JSON input wrapper is decoded.
    */
-  CAI_AGENT_EVENT_TOOL_PATCH = 30
+  CAI_AGENT_EVENT_TOOL_PATCH = 30,
+  /** Matched update-hunk starts before TOOL_PATCH: ASCII "old new\n" rows,
+   * in submitted hunk order, using one-based original/result file lines.
+   * Bounded chunks may split rows; an empty chunk ends the locations stream.
+   * Adds start at line one. No file contents or VCS comparisons are included.
+   */
+  CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS = 31
 } cai_agent_runtime_event_type;
 
 /**

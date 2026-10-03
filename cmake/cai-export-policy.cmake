@@ -9,6 +9,7 @@ function(cai_apply_export_policy target allowlist)
     message(FATAL_ERROR "cai export allowlist does not exist: ${allowlist}")
   endif()
 
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${allowlist}")
   file(STRINGS "${allowlist}" _cai_export_symbols)
   if(NOT _cai_export_symbols)
     message(FATAL_ERROR "cai export allowlist is empty: ${allowlist}")
@@ -32,20 +33,19 @@ function(cai_apply_export_policy target allowlist)
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(_cai_export_linker_file
       "${CMAKE_CURRENT_BINARY_DIR}/${target}.export-map")
-    file(WRITE "${_cai_export_linker_file}" "{\n  global:\n")
+    set(_cai_export_content "{\n  global:\n")
     foreach(_cai_export_symbol IN LISTS _cai_export_symbols)
-      file(APPEND "${_cai_export_linker_file}"
-        "    ${_cai_export_symbol};\n")
+      string(APPEND _cai_export_content "    ${_cai_export_symbol};\n")
     endforeach()
-    file(APPEND "${_cai_export_linker_file}" "  local:\n    *;\n};\n")
+    string(APPEND _cai_export_content "  local:\n    *;\n};\n")
     target_link_options(${target} PRIVATE
       "-Wl,--version-script=${_cai_export_linker_file}")
   elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     set(_cai_export_linker_file
       "${CMAKE_CURRENT_BINARY_DIR}/${target}.exported-symbols")
-    file(WRITE "${_cai_export_linker_file}" "")
+    set(_cai_export_content "")
     foreach(_cai_export_symbol IN LISTS _cai_export_symbols)
-      file(APPEND "${_cai_export_linker_file}" "_${_cai_export_symbol}\n")
+      string(APPEND _cai_export_content "_${_cai_export_symbol}\n")
     endforeach()
     target_link_options(${target} PRIVATE
       "-Wl,-exported_symbols_list,${_cai_export_linker_file}")
@@ -53,4 +53,7 @@ function(cai_apply_export_policy target allowlist)
     message(FATAL_ERROR
       "cai export policy supports Linux and Darwin; got ${CMAKE_SYSTEM_NAME}")
   endif()
+  # Preserve unchanged map timestamps so routine configure does not relink.
+  file(GENERATE OUTPUT "${_cai_export_linker_file}" CONTENT "${_cai_export_content}")
+  set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS "${_cai_export_linker_file}")
 endfunction()

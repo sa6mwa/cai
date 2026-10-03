@@ -1,6 +1,7 @@
 #include "../src/cai_utf8.h"
 #include <assert.h>
 #include <cai/display.h>
+#include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +10,7 @@ typedef struct capture {
   char *bytes;
   size_t length;
   int fail;
+  size_t fail_after;
 } capture;
 typedef struct input {
   const char *bytes;
@@ -22,7 +24,7 @@ static int write_capture(void *context, const void *bytes, size_t n,
   capture *c = (capture *)context;
   char *next;
   (void)error;
-  if (c->fail)
+  if (c->fail || (c->fail_after != 0U && c->length >= c->fail_after))
     return CAI_ERR_TRANSPORT;
   next = (char *)realloc(c->bytes, c->length + n + 1U);
   assert(next != NULL);
@@ -55,8 +57,9 @@ static void reset(capture *c) {
   if (c->bytes != NULL)
     c->bytes[0] = '\0';
 }
-static int render(capture *c, const char *text, size_t length, size_t chunk,
-                  int mode, int color, int source_failure) {
+static int render_width(capture *c, const char *text, size_t length,
+                        size_t chunk, int mode, int color, int source_failure,
+                        size_t width) {
   cai_sink_callbacks sink_callbacks;
   cai_source_callbacks source_callbacks;
   cai_tool_display_config config;
@@ -85,13 +88,221 @@ static int render(capture *c, const char *text, size_t length, size_t chunk,
   config.sink = sink;
   config.mode = mode;
   config.color = color;
-  rc = cai_patch_render(source, &config, source_failure == 2 ? NULL : &error);
+  rc = cai_patch_render_width(source, &config, width,
+                              source_failure == 2 ? NULL : &error);
   if (rc == CAI_OK && length > 100U && chunk == 1U)
     assert(i.live);
   cai_source_close(source);
   cai_sink_close(sink);
   cai_error_cleanup(&error);
   return rc;
+}
+static int render(capture *c, const char *text, size_t length, size_t chunk,
+                  int mode, int color, int source_failure) {
+  return render_width(c, text, length, chunk, mode, color, source_failure, 0U);
+}
+static void numbered_patches(capture *c) {
+  static const char patch[] =
+      "*** Begin Patch\n*** Update File: file.c\n@@ -280 +280 @@\n "
+      "same\n-old\n+abcdefghijklmnopqrstuvwxyz1234567890\n+next\n tail\n*** "
+      "Add File: new.c\n+hello\n*** End Patch\n";
+  static const char expected[] =
+      "* Edited file.c\n 280  same\n 281 -old\n 281 "
+      "+abcdefghijklmnopqrstuvwxyz\n      1234567890\n 282 +next\n 283  "
+      "tail\n* Added new.c\n   1 +hello\n";
+  cai_sink *sink = NULL;
+  cai_sink_callbacks callbacks;
+  cai_tool_display_config config;
+  cai_tool_display *d = NULL;
+  cai_agent_runtime_event e;
+  cai_error error;
+  size_t i;
+  reset(c);
+  assert(render_width(c, patch, sizeof(patch) - 1U, 1U, 0, 0, 0, 32U) ==
+         CAI_OK);
+  assert(strcmp(c->bytes, expected) == 0);
+  reset(c);
+  assert(render_width(c, patch, sizeof(patch) - 1U, 1U, 0, 1, 0, 32U) ==
+         CAI_OK);
+  assert(strstr(c->bytes,
+                "\033[41m 281 -old                       \033[0m\n") != NULL);
+  assert(strstr(c->bytes,
+                "\033[42m 281 +abcdefghijklmnopqrstuvwxyz\033[0m\n\033[42m     "
+                " 1234567890                \033[0m\n") != NULL);
+  assert(
+      strstr(c->bytes,
+             "\033[42m 282 +next                      \033[0m\n 283  tail\n") !=
+      NULL);
+  reset(c);
+  assert(render_width(c, "*** Update File: x\n@@\n+x\n",
+                      strlen("*** Update File: x\n@@\n+x\n"), 1U, 0, 0, 0,
+                      32U) == CAI_OK);
+  assert(strstr(c->bytes, "     +x\n") != NULL); /* never invent positions */
+  {
+    static const char invalid_header[] =
+        "*** Update File: x\n@@ -99999999999999999999999999999999 +1 "
+        "@@\n+x\n@@ --1 +2 @@\n+y\n@@ -1 +2 missing\n+z\n";
+    reset(c);
+    assert(render_width(c, invalid_header, sizeof(invalid_header) - 1U, 1U, 0,
+                        0, 0, 32U) == CAI_OK);
+    assert(strstr(c->bytes, "     +x\n     +y\n     +z\n") != NULL);
+  }
+  reset(c);
+  assert(render_width(c, "+a\033[2J\0b", 9U, 1U, 0, 1, 0, 32U) == CAI_OK);
+  assert(strstr(c->bytes, "+a\\x1b[2J\\x00b") != NULL);
+  reset(c);
+  assert(render_width(c, "+1234567890123456789012345界é\n",
+                      strlen("+1234567890123456789012345界é\n"), 1U, 0, 0, 0,
+                      32U) == CAI_OK);
+  assert(strstr(c->bytes, "1234567890123456789012345\n      界é\n") != NULL);
+  reset(c);
+  assert(render_width(c, "+a\tb", 4U, 1U, 0, 0, 0, 32U) == CAI_OK);
+  assert(strcmp(c->bytes, "     +a       b\n") == 0);
+  {
+    char *long_line = malloc(150002U);
+    size_t j, added = 0U, plus = 0U, cell = 0U;
+    int ansi = 0;
+    assert(long_line != NULL);
+    long_line[0] = '+';
+    memset(long_line + 1U, 'a', 150000U);
+    long_line[150001U] = '\0';
+    reset(c);
+    assert(render_width(c, long_line, 150001U, 1U, 0, 1, 0, 32U) == CAI_OK);
+    for (j = 0U; j < c->length; j++) {
+      unsigned char ch = (unsigned char)c->bytes[j];
+      if (ch == 27U) {
+        ansi = 1;
+        continue;
+      }
+      if (ansi) {
+        if (ch == 'm')
+          ansi = 0;
+        continue;
+      }
+      if (ch == 'a')
+        added++;
+      if (ch == '+')
+        plus++;
+      if (ch == '\n') {
+        assert(cell == 32U);
+        cell = 0U;
+      } else
+        cell++;
+    }
+    assert(added == 150000U && plus == 1U && cell == 0U);
+    reset(c);
+    c->fail_after = 100U;
+    assert(render_width(c, long_line, 150001U, 1U, 0, 1, 0, 32U) ==
+           CAI_ERR_TRANSPORT);
+    c->fail_after = 0U;
+    long_line[65535U] = (char)0xc3;
+    long_line[65536U] = (char)0xa5;
+    reset(c);
+    assert(render_width(c, long_line, 150001U, 1U, 0, 1, 0, 32U) == CAI_OK);
+    assert(strstr(c->bytes, "å") != NULL && strstr(c->bytes, "\\xc3") == NULL);
+    free(long_line);
+  }
+  c->fail = 1;
+  assert(render_width(c, patch, sizeof(patch) - 1U, 1U, 0, 1, 0, 32U) ==
+         CAI_ERR_TRANSPORT);
+  c->fail = 0;
+  assert(render_width(c, patch, sizeof(patch) - 1U, 1U, 0, 1, 1, 32U) ==
+         CAI_ERR_TRANSPORT);
+  assert(render_width(c, patch, sizeof(patch) - 1U, 1U, 0, 0, 0, 31U) ==
+         CAI_ERR_INVALID);
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = write_capture;
+  callbacks.context = c;
+  cai_error_init(&error);
+  assert(cai_sink_from_callbacks(&callbacks, &sink, &error) == CAI_OK);
+  memset(&config, 0, sizeof(config));
+  config.sink = sink;
+  assert(cai_tool_display_new(&config, &d, &error) == CAI_OK);
+  assert(cai_tool_display_set_width(d, 40U, &error) == CAI_OK);
+  memset(&e, 0, sizeof(e));
+  e.tool_call_id = "positions";
+  e.type = CAI_AGENT_EVENT_TOOL_CALL_STARTED;
+  assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
+  e.type = CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS;
+  for (i = 0U; i < strlen("280 290\n900 910\n"); i++) {
+    e.data = "280 290\n900 910\n" + i;
+    e.data_length = 1U;
+    assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
+  }
+  e.data = NULL;
+  e.data_length = 0U;
+  assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
+  reset(c);
+  e.type = CAI_AGENT_EVENT_TOOL_PATCH;
+  e.data = "*** Update File: x\n@@\n before\n-old\n+new\n@@ "
+           "section\n-last\n+final\n";
+  e.data_length = strlen(e.data);
+  assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
+  e.data = NULL;
+  e.data_length = 0U;
+  assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
+  assert(
+      strstr(c->bytes,
+             " 290  before\n 281 -old\n 291 +new\n 900 -last\n 910 +final\n") !=
+      NULL);
+  e.type = CAI_AGENT_EVENT_TOOL_CALL_STARTED;
+  assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
+  e.type = CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS;
+  e.data = "0 0\n";
+  e.data_length = 4U;
+  assert(cai_tool_display_event(d, &e, &error) == CAI_ERR_PROTOCOL);
+  {
+    static const char *bad[] = {"9999999999999999999999999999999999999 1\n",
+                                "1 2 3\n", "1 2", "1 x\n"};
+    size_t j;
+    for (j = 0U; j < sizeof(bad) / sizeof(bad[0]); j++) {
+      e.type = CAI_AGENT_EVENT_RUN_CANCELLED;
+      e.data = NULL;
+      e.data_length = 0U;
+      assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+      e.type = CAI_AGENT_EVENT_TOOL_CALL_STARTED;
+      assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
+      e.type = CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS;
+      e.data = bad[j];
+      e.data_length = strlen(e.data);
+      if (j == 2U) {
+        assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
+        e.data = NULL;
+        e.data_length = 0U;
+      }
+      assert(cai_tool_display_event(d, &e, &error) == CAI_ERR_PROTOCOL);
+    }
+  }
+  e.type = CAI_AGENT_EVENT_RUN_CANCELLED;
+  e.data = NULL;
+  e.data_length = 0U;
+  assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  reset(c);
+  e.type = CAI_AGENT_EVENT_TOOL_CALL_STARTED;
+  assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
+  e.type = CAI_AGENT_EVENT_TOOL_PATCH;
+  e.data = "*** Add File: resize.c\n+x\n";
+  e.data_length = strlen(e.data);
+  assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
+  assert(cai_tool_display_set_width(d, 32U, &error) == CAI_OK);
+  e.data = "+abcdefghijklmnopqrstuvwxyz0123456789\n";
+  e.data_length = strlen(e.data);
+  assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
+  e.data = NULL;
+  e.data_length = 0U;
+  assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
+  assert(strstr(c->bytes,
+                "   2 +abcdefghijklmnopqrstuvwxyz\n      0123456789\n") !=
+         NULL);
+  assert(cai_tool_display_set_width(NULL, 80U, &error) == CAI_ERR_INVALID);
+  assert(cai_tool_display_set_width(d, 4097U, &error) == CAI_ERR_INVALID);
+  cai_tool_display_close(d);
+  cai_sink_close(sink);
+  cai_error_cleanup(&error);
 }
 static void patches(capture *c) {
   static const char patch[] =
@@ -405,6 +616,9 @@ int main(void) {
   capture c;
   memset(&c, 0, sizeof(c));
   utf8_text();
+  assert(setlocale(LC_CTYPE, "C.UTF-8") != NULL ||
+         setlocale(LC_CTYPE, "en_US.UTF-8") != NULL);
+  numbered_patches(&c);
   patches(&c);
   commands(&c);
   free(c.bytes);

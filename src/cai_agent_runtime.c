@@ -4109,6 +4109,7 @@ static char *cai_runtime_patch_path_from_output(const char *data,
 typedef struct cai_runtime_patch_stream {
   cai_agent_runtime *runtime;
   const cai_tool_event *event;
+  int type;
 } cai_runtime_patch_stream;
 
 static int cai_runtime_patch_write(void *context, const void *bytes,
@@ -4120,8 +4121,8 @@ static int cai_runtime_patch_write(void *context, const void *bytes,
     length = count > 4096U ? 4096U : count;
     pthread_mutex_lock(&stream->runtime->lock);
     rc = cai_runtime_enqueue_tool_locked(
-        stream->runtime, CAI_AGENT_EVENT_TOOL_PATCH, (const char *)bytes,
-        length, stream->event->name, stream->event->call_id,
+        stream->runtime, stream->type, (const char *)bytes, length,
+        stream->event->name, stream->event->call_id,
         CAI_AGENT_TOOL_ACTION_PATCH, NULL, 0U, stream->runtime->state, error);
     pthread_mutex_unlock(&stream->runtime->lock);
     if (rc != CAI_OK)
@@ -4146,10 +4147,17 @@ static int cai_runtime_emit_patch(cai_agent_runtime *runtime,
     return CAI_OK;
   stream.runtime = runtime;
   stream.event = event;
+  stream.type = CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS;
   memset(&callbacks, 0, sizeof(callbacks));
   callbacks.write = cai_runtime_patch_write;
   callbacks.context = &stream;
   rc = cai_sink_from_callbacks(&callbacks, &sink, error);
+  if (rc == CAI_OK)
+    rc = cai_patch_tool_write_locations(CAI_AGENT_IMPL(runtime->agent)->tools,
+                                        event->name, sink, error);
+  if (rc == CAI_OK)
+    rc = cai_runtime_patch_write(&stream, NULL, 0U, error);
+  stream.type = CAI_AGENT_EVENT_TOOL_PATCH;
   if (rc == CAI_OK)
     rc = cai_tool_event_write_arguments(event, sink, error);
   cai_sink_close(sink);
