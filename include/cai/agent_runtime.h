@@ -667,7 +667,7 @@ int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
  * are being applied or a snapshot could not be allocated. */
 const char *cai_agent_runtime_model(cai_agent_runtime *runtime);
 /**
- * Query effective request settings and changes waiting for a turn boundary.
+ * Query effective request settings and changes waiting for a safe boundary.
  * Owner-thread-only. Returned strings are borrowed snapshots valid until the
  * next settings query/update or runtime close, even if a pending change applies
  * on the worker in the meantime. Either output may be NULL.
@@ -679,7 +679,9 @@ int cai_agent_runtime_get_settings(cai_agent_runtime *runtime,
 /**
  * Atomically accept selected nonempty settings. Owner-thread-only. At a
  * stable boundary the update applies immediately; during a turn or with queued
- * input it remains pending until before the next turn. A failed application
+ * input it remains pending until the next durable tool-round boundary or turn
+ * boundary, before another model request. In-flight requests and tools finish
+ * with their original settings. A failed application
  * leaves the pending request visible and blocks later turns until replaced.
  * A pending request is discarded on close. Returned views have the same
  * lifetime as get_settings. result may be NULL.

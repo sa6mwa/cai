@@ -344,6 +344,19 @@ int main(void) {
   if (state.renderer->set_sink(state.renderer, &sink) != MDF_OK) {
     return 1;
   }
+  if (cli_prompt(&state, "Hello", 0) != 0 ||
+      cli_notice(&state, "* WARN: useful diagnostic") != 0 ||
+      cli_prompt(&state, "Next", 0) != 0)
+    return 1;
+  state.interactive = 1;
+  if (unsetenv("NO_COLOR") != 0)
+    return 1;
+  if (cli_notice(&state, "* WARN: colored diagnostic") != 0)
+    return 1;
+  if (setenv("NO_COLOR", "1", 1) != 0 ||
+      cli_notice(&state, "* ERROR: no color") != 0 || unsetenv("NO_COLOR") != 0)
+    return 1;
+  state.interactive = 0;
   strcpy(state.reasoning_summary_raw, "Previous turn");
   state.reasoning_summary_length = strlen(state.reasoning_summary_raw);
   event.type = CAI_AGENT_EVENT_RUN_STARTED;
@@ -396,6 +409,16 @@ int main(void) {
     return 1;
   }
   output[count] = '\0';
+  if (strstr(output, "\033[91m*\033[0m WARN: colored diagnostic") == NULL ||
+      strstr(output, "\n\n* ERROR: no color\n\n") == NULL) {
+    fprintf(stderr, "interactive warning star was not red\n");
+    return 1;
+  }
+  if (strstr(output, "> Hello\n\n* WARN: useful diagnostic\n\n> Next\n\n") ==
+      NULL) {
+    fprintf(stderr, "inconsistent prompt/notice spacing: %s\n", output);
+    return 1;
+  }
   label = strstr(output, "[reasoning]");
   if (label == NULL || strstr(label + 1, "[reasoning]") != NULL ||
       strstr(output, "Actual provider summary") == NULL ||

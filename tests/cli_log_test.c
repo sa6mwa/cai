@@ -87,11 +87,13 @@ static int structured_notices(cai_cli_log *log) {
   CHECK(cai_cli_log_notices(log, collect, &observed) == 0 &&
         observed.count == 3U);
   CHECK(strstr(observed.text[0], "HTTP transport failed") != NULL);
+  CHECK(strncmp(observed.text[0], "* ERROR: ", 9U) == 0);
   CHECK(strstr(observed.text[0], "Connection refused: localhost:12345") !=
         NULL);
   CHECK(strstr(observed.text[0], "method: POST") != NULL &&
         strstr(observed.text[0], "path: /responses") != NULL);
   CHECK(strstr(observed.text[1], "Model catalog unavailable") != NULL);
+  CHECK(strncmp(observed.text[1], "* WARN: ", 8U) == 0);
   CHECK(strstr(observed.text[1], "catalog unavailable") != NULL &&
         strstr(observed.text[1], "HTTP 503") != NULL &&
         strstr(observed.text[1], "source: fallback") != NULL);
@@ -192,7 +194,7 @@ int main(int argc, char **argv) {
   cai_error_init(&error);
   CHECK(cai_cli_log_notices(&log, collect, &observed) == 0 &&
         observed.count == 2U);
-  CHECK(strstr(observed.text[0], "[warn] worker warning") != NULL);
+  CHECK(strstr(observed.text[0], "* WARN: worker warning") != NULL);
   CHECK(strstr(observed.text[1], "fixture operation: host error") != NULL);
   CHECK(structured_notices(&log) == 0);
   record = read_log(first_path);

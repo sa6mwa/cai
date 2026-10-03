@@ -119,6 +119,8 @@ class Responses(http.server.HTTPServer):
         self.pause = False
         self.view_path = None
         self.plan = []
+        self.pause_script = False
+        self.catalog_status = 200
         self.release = threading.Event()
         self.thread = threading.Thread(target=self.serve_forever, daemon=True)
         self.thread.start()
@@ -132,6 +134,14 @@ class ResponsePeer(http.server.BaseHTTPRequestHandler):
         data = json.dumps(dict(type=kind, **fields))
         self.wfile.write(f"event: {kind}\ndata: {data}\n\n".encode())
         self.wfile.flush()
+
+    def do_GET(self):
+        self.send_response(self.server.catalog_status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps({"data": [
+            {"id": "gpt-5.6-luna", "name": "Luna"},
+            {"id": "gpt-6-astra", "name": "Astra"}]}).encode())
 
     def do_POST(self):
         length = int(self.headers["Content-Length"])
@@ -148,6 +158,10 @@ class ResponsePeer(http.server.BaseHTTPRequestHandler):
         scripted = bool(self.server.plan)
         if scripted:
             item = self.server.plan.pop(0)
+            if self.server.pause_script:
+                self.server.pause_script = False
+                self.event("response.output_text.delta", delta="STREAM in flight\n\n")
+                assert self.server.release.wait(10), "script stream not released"
             if isinstance(item, tuple):
                 name, arguments = item
                 tool_item = {
@@ -254,7 +268,7 @@ def main():
         api = Responses()
         env = {key: value for key, value in os.environ.items()
                if not key.startswith("LOG_") and key.lower() not in (
-                   "http_proxy", "https_proxy", "all_proxy")}
+                   "http_proxy", "https_proxy", "all_proxy", "no_color")}
         env.update(HOME=str(root), XDG_CACHE_HOME=str(root / "cache"),
                    XDG_STATE_HOME=str(root / "state"),
                    XDG_CONFIG_HOME=str(root / "config"),
@@ -380,12 +394,107 @@ def main():
             terminal.wait(lambda: terminal.contains("HTTP transport failed") and
                           terminal.contains("Worked for"))
             rendered = terminal.rendered()
-            assert b"[error] HTTP transport failed: error:" in rendered, rendered
+            assert b"* ERROR: HTTP transport failed: error:" in rendered, rendered
             assert b"Empty reply from server" in rendered or b"Server returned nothing" in rendered
             assert b"method: POST" in rendered and b"path: responses" in rendered, rendered
             assert f"base_url: http://127.0.0.1:{api.server_port}/v1".encode() in rendered, rendered
             assert b"cai.http.transport_error" not in rendered
             assert b"CAI help" not in json.dumps(api.requests[-1]).encode()
+            terminal.close()
+            terminal = None
+
+            # Model changes preserve this conversation. A selection during
+            # an in-flight request applies to the very next tool continuation.
+            model_logs_before = set((root / "cache" / "cai").glob("*.log"))
+            metadata = root / "models.json"
+            metadata.write_text(json.dumps({"models": [
+                {"provider": "custom", "id": "gpt-5.6-luna"},
+                {"provider": "custom", "id": "gpt-6-astra"}]}))
+            terminal = Terminal(args + ["--model-metadata", str(metadata)], env)
+            terminal.wait(lambda: terminal.contains("Welcome to CAI"))
+            count = len(api.requests)
+            terminal.send(b"/model\r")
+            terminal.wait(lambda: terminal.contains("Current:") and
+                          terminal.contains("gpt-6-astra"))
+            assert len(api.requests) == count
+            terminal.send(b"/model gpt-6-luna\r")
+            terminal.wait(lambda: terminal.contains("Model changed to gpt-6-luna"))
+            api.plan = ["IDLE switch complete"]
+            terminal.send(b"remember this conversation\r")
+            terminal.wait(lambda: terminal.contains("IDLE switch complete") and
+                          terminal.contains("Worked for"))
+            assert api.requests[-1]["model"] == "gpt-6-luna"
+            api.release.clear()
+            api.pause_script = True
+            switch_image = workspace / "switch.png"
+            switch_image.write_bytes(PNG)
+            api.plan = [("view_image", {"path": str(switch_image)}),
+                        "SWITCH continuation"]
+            terminal.send(b"inspect while switching\r")
+            terminal.wait(lambda: terminal.contains("STREAM in flight"))
+            count = len(api.requests)
+            assert api.requests[-1]["model"] == "gpt-6-luna"
+            terminal.send(b"/model gpt-5.6-luna\r")
+            terminal.wait(lambda: terminal.contains("Model gpt-5.6-luna queued"))
+            terminal.send(b"/model gpt-6-astra\r")
+            terminal.wait(lambda: terminal.contains("Model gpt-6-astra queued"))
+            terminal.send(b"/model\r")
+            terminal.wait(lambda: terminal.contains("Pending:"))
+            assert len(api.requests) == count
+            api.release.set()
+            terminal.wait(lambda: terminal.contains("SWITCH continuation"))
+            assert len(api.requests) == count + 1
+            assert api.requests[-1]["model"] == "gpt-6-astra"
+            assert "remember this conversation" in json.dumps(api.requests[-1])
+            assert any(item.get("type") == "function_call_output"
+                       for item in api.requests[-1].get("input", []))
+            assert "/model" not in json.dumps(api.requests[-1])
+            terminal.send(b"/model one two\r")
+            terminal.wait(lambda: terminal.contains("* ERROR: input: use /model MODEL"))
+            assert re.search(rb"\x1b\[(?:0;)?91m", terminal.output)
+            assert len(api.requests) == count + 1
+            terminal.close()
+            terminal = None
+
+            model_logs = set((root / "cache" / "cai").glob("*.log")) - model_logs_before
+            assert len(model_logs) == 1, model_logs
+            selections = [json.loads(line) for line in next(iter(model_logs)).read_text().splitlines()
+                          if json.loads(line).get("event") == "model_selection"]
+            assert len(selections) == 3, selections
+            assert all(record["lvl"] == "info" and record["role"] == "user"
+                       for record in selections), selections
+            assert [record["model"] for record in selections] == [
+                "gpt-6-luna", "gpt-5.6-luna", "gpt-6-astra"]
+            assert [record["applied"] for record in selections] == [True, False, False]
+
+            # Providers without a catalog still accept direct model selection.
+            terminal = Terminal(args, env)
+            terminal.wait(lambda: terminal.contains("Welcome to CAI"))
+            terminal.send(b"/model\r")
+            terminal.wait(lambda: terminal.contains("Model list unavailable; enter a model ID."))
+            terminal.send(b"/model gpt-6-luna\r")
+            terminal.wait(lambda: terminal.contains("Model changed to gpt-6-luna"))
+            # A steered response without tools is also a safe boundary: its
+            # continuation must use the queued model rather than wait for
+            # the entire steered turn to finish.
+            api.release.clear()
+            api.pause_script = True
+            api.plan = ["OLD response completed", "STEERED response completed"]
+            count = len(api.requests)
+            terminal.send(b"begin a steered turn\r")
+            terminal.wait(lambda: terminal.contains("STREAM in flight"))
+            assert api.requests[-1]["model"] == "gpt-6-luna"
+            terminal.send(b"/model gpt-6-astra\r")
+            terminal.wait(lambda: terminal.contains("Model gpt-6-astra queued"))
+            terminal.send(b"change course after response\r")
+            terminal.wait(lambda: terminal.contains("change course after response"))
+            api.release.set()
+            terminal.wait(lambda: terminal.contains("STEERED response completed") and
+                          terminal.contains("Worked for"))
+            assert len(api.requests) == count + 2
+            assert api.requests[-1]["model"] == "gpt-6-astra"
+            assert "change course after response" in json.dumps(api.requests[-1])
+            assert "OLD response completed" in json.dumps(api.requests[-1])
             terminal.close()
             terminal = None
 

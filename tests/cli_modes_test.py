@@ -407,7 +407,7 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
         error_code, error_terminal, error_stderr = run_interactive(
             "-N", "-i", "interactive failure")
         assert error_code == 0, (error_terminal, error_stderr)
-        assert "[error]" in error_terminal and "quota exhausted" in error_terminal
+        assert "* ERROR:" in error_terminal and "quota exhausted" in error_terminal
         assert "req_fixture_429" in error_terminal and error_stderr == ""
         assert "cai.client.opened" not in error_terminal
         server.requests.clear()
@@ -527,7 +527,7 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(CLI).parent) as directory:
         assert "req_fixture_429" in provider_failure.stderr
         assert "quota exhausted" in provider_failure.stderr
         assert "operation failed" not in provider_failure.stderr
-        assert "[error]" not in provider_failure.stdout
+        assert "* ERROR:" not in provider_failure.stdout
         server.requests.clear()
 
         server.responses[:] = [json.dumps(REPORT)]

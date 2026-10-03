@@ -1523,6 +1523,14 @@ Before every model request CAI evaluates:
 4. a model downshift where current retained history cannot fit the new usable
    context window.
 
+Runtime settings updates are accepted on the owner thread and applied by the
+worker at the next durable tool-round or turn boundary. In-flight requests and
+tools complete with their original settings. Completed tool results are
+checkpointed before a queued model change can compact history; the next
+continuation request refreshes its model and reasoning settings. Failed
+applications preserve the pending settings and block further turns until the
+host replaces them. cai exposes model selection through `/model [MODEL]`.
+
 The ChatGPT Codex catalog supplies `context_window`, optional
 `auto_compact_token_limit`, and `comp_hash`. A model switch with equal hashes
 does **not** compact solely because its name changed. A differing non-empty hash

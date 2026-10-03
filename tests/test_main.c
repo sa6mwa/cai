@@ -41685,6 +41685,205 @@ static void test_chat_logging(test_state *state) {
   free(body);
 }
 
+static void test_codex_catalog_large_fields(test_state *state) {
+  mock_http_expectation script[5];
+  http_mock_server server;
+  cai_client_config config;
+  cai_chatgpt_auth auth;
+  cai_client *client = NULL;
+  cai_model_catalog *catalog = NULL;
+  cai_error error;
+  char *body[3];
+  const char *prefix;
+  const char suffix[] = "\"}]}";
+  size_t length;
+  size_t offset;
+  int i;
+  int rc;
+  memset(script, 0, sizeof(script));
+  memset(body, 0, sizeof(body));
+  cai_error_init(&error);
+  for (i = 0; i < 3; i++) {
+    length = i == 2 ? 700U * 1024U : 256U * 1024U;
+    prefix = i == 1 ? "{\"models\":[{\"slug\":\"gpt-6-luna\",\"context_"
+                      "window\":1048576,\"description\":\""
+                    : "{\"models\":[{\"slug\":\"gpt-6-luna\",\"context_"
+                      "window\":1048576,\"base_instructions\":\"";
+    offset = strlen(prefix);
+    body[i] = (char *)malloc(offset + length + sizeof(suffix));
+    if (body[i] == NULL) {
+      test_fail(state, "catalog_large_allocate", "allocation failed");
+      goto done;
+    }
+    memcpy(body[i], prefix, offset);
+    memset(body[i] + offset, 'x', length);
+    memcpy(body[i] + offset + length, suffix, sizeof(suffix));
+  }
+  for (i = 0; i < 5; i++) {
+    script[i].request_prefix =
+        "GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/";
+    script[i].status = 200;
+    script[i].status_text = "OK";
+    script[i].content_type = "application/json";
+  }
+  script[0].body = body[0];
+  script[1].body = body[1];
+  script[2].body = "{\"models\":[{\"slug\":null}]}";
+  script[3].body = body[2];
+  script[4].body =
+      "{\"models\":[{\"slug\":\"gpt-6-luna\",\"context_window\":1048576}]}";
+  if (http_mock_server_open_script(state, "codex_catalog_large", script, 5U,
+                                   &server) != 0)
+    goto done;
+  memset(&auth, 0, sizeof(auth));
+  auth.access_token = test_chatgpt_auth_access_token;
+  cai_client_config_init(&config);
+  config.chatgpt_auth = &auth;
+  config.base_url = server.base_url;
+  config.http_2_disabled = 1;
+  config.json_response_limit_bytes = 600U * 1024U;
+  config.timeout_ms = 2000L;
+  rc = cai_client_open(&config, &client, &error);
+  expect_int(state, "catalog_large_open", rc, CAI_OK);
+  if (rc == CAI_OK) {
+    CAI_CLIENT_IMPL(client)->catalog_policy_origin = CAI_CHATGPT_CODEX_BASE_URL;
+    for (i = 0; i < 5; i++) {
+      rc = cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_ONLINE,
+                                  &catalog, &error);
+      if (rc != (i == 2   ? CAI_ERR_PROTOCOL
+                 : i == 3 ? CAI_ERR_TRANSPORT
+                          : CAI_OK))
+        fprintf(stderr, "catalog case %d: %s (%s)\n", i,
+                error.message != NULL ? error.message : "",
+                error.detail != NULL ? error.detail : "");
+      expect_int(state, "catalog_large_response", rc,
+                 i == 2   ? CAI_ERR_PROTOCOL
+                 : i == 3 ? CAI_ERR_TRANSPORT
+                          : CAI_OK);
+      if (catalog != NULL) {
+        expect_int(state, "catalog_large_count", catalog->count, 1L);
+        expect_str(state, "catalog_large_model", catalog->entries[0].slug,
+                   "gpt-6-luna");
+        expect_int(state, "catalog_large_context",
+                   catalog->entries[0].context_window_tokens, 1048576L);
+        if (i == 1)
+          expect_int(state, "catalog_large_description",
+                     strlen(catalog->entries[0].description), 256L * 1024L);
+      }
+      cai_model_catalog_close(catalog);
+      catalog = NULL;
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+    }
+  }
+  cai_client_close(client);
+  expect_child_exit(state, "catalog_large_mock", server.pid,
+                    &server.child_status);
+done:
+  for (i = 0; i < 3; i++)
+    free(body[i]);
+  cai_error_cleanup(&error);
+}
+
+static void test_codex_catalog_validation(test_state *state) {
+  static const char *const invalid[] = {
+      "[]",
+      "{}",
+      "{\"models\":{}}",
+      "{\"models\":[\"not an object\"]}",
+      "{\"models\":[{}]}",
+      "{\"models\":[{\"slug\":\"\"}]}",
+      "{\"models\":[{\"slug\":null}]}",
+      "{\"models\":[{\"slug\":\"m\",\"slug\":\"n\"}]}",
+      "{\"models\":[],\"models\":[]}",
+      "{\"models\":[{\"slug\":\"m\",\"context_window\":1.5}]}",
+      "{\"models\":[{\"slug\":\"m\",\"context_window\":-1}]}",
+      "{\"models\":[{\"slug\":\"m\",\"context_window\":9223372036854775808}]}",
+      "{\"models\":[{\"slug\":\"m\",\"context_window\":[]}]}",
+      "{\"models\":[{\"slug\":\"m\",\"context_window\":null}]}",
+      "{\"models\":[{\"slug\":\"m\",\"supported_in_api\":\"true\"}]}",
+      "{\"models\":[{\"slug\":\"m\",\"display_name\":{}}]}",
+      "{\"models\":[{\"slug\":\"m\\u0000n\"}]}",
+      "{\"models\":[{\"slug\":\"m\",\"ignored\":\"\\uD800\"}]}",
+      "{\"models\":[{\"slug\":\"m\"}] trailing}"};
+  static const char valid[] =
+      "{\"models\":[{\"slug\":\"m\",\"display_name\":null,\"description\":null,"
+      "\"comp_hash\":null,\"auto_compact_token_limit\":null,\"supported_in_"
+      "api\":true,"
+      "\"model_messages\":{\"slug\":false,\"context_window\":\"ignored\"}},"
+      "{\"slug\":\"m1\"},{\"slug\":\"m2\"},{\"slug\":\"m3\"},"
+      "{\"slug\":\"m4\"},{\"slug\":\"m5\"},{\"slug\":\"m6\"},"
+      "{\"slug\":\"m7\"},{\"slug\":\"m8\"}]}";
+  mock_http_expectation script[sizeof(invalid) / sizeof(invalid[0]) + 1U];
+  http_mock_server server;
+  cai_chatgpt_auth auth;
+  cai_client_config config;
+  cai_client *client = NULL;
+  cai_model_catalog *catalog = NULL;
+  cai_error error;
+  size_t i;
+  cai_error_init(&error);
+  memset(script, 0, sizeof(script));
+  for (i = 0U; i < sizeof(script) / sizeof(script[0]); i++) {
+    script[i].request_prefix =
+        "GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/";
+    script[i].status = 200;
+    script[i].status_text = "OK";
+    script[i].content_type = "application/json";
+    script[i].body =
+        i < sizeof(invalid) / sizeof(invalid[0]) ? invalid[i] : valid;
+  }
+  if (http_mock_server_open_script(state, "catalog_validation", script,
+                                   sizeof(script) / sizeof(script[0]),
+                                   &server) != 0)
+    return;
+  memset(&auth, 0, sizeof(auth));
+  auth.access_token = test_chatgpt_auth_access_token;
+  cai_client_config_init(&config);
+  config.chatgpt_auth = &auth;
+  config.base_url = server.base_url;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 1000L;
+  expect_int(state, "catalog_validation_open",
+             cai_client_open(&config, &client, &error), CAI_OK);
+  if (client != NULL) {
+    CAI_CLIENT_IMPL(client)->catalog_policy_origin = CAI_CHATGPT_CODEX_BASE_URL;
+    for (i = 0U; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+      expect_int(state, "catalog_validation_reject",
+                 cai_client_list_models(client,
+                                        CAI_MODEL_CATALOG_REFRESH_ONLINE,
+                                        &catalog, &error),
+                 CAI_ERR_PROTOCOL);
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+    }
+    expect_int(state, "catalog_validation_recovery",
+               cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_ONLINE,
+                                      &catalog, &error),
+               CAI_OK);
+    cai_model_catalog_close(catalog);
+    catalog = NULL;
+    expect_int(state, "catalog_validation_cached",
+               cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_OFFLINE,
+                                      &catalog, &error),
+               CAI_OK);
+    if (catalog != NULL) {
+      expect_int(state, "catalog_validation_growth", catalog->count, 9L);
+      expect_str(state, "catalog_validation_last", catalog->entries[8].slug,
+                 "m8");
+      expect_str(state, "catalog_validation_slug", catalog->entries[0].slug,
+                 "m");
+      expect_int(state, "catalog_validation_bool",
+                 catalog->entries[0].supported_in_api, 1L);
+    }
+  }
+  cai_model_catalog_close(catalog);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "catalog_validation_mock", server.pid,
+                    &server.child_status);
+}
+
 static void test_model_catalog_logging(test_state *state) {
   static const mock_http_expectation script[] = {
       {"GET /v1/models HTTP/", NULL, 0U, NULL, 0U, 500, "Internal Server Error",
@@ -50473,6 +50672,8 @@ static const test_entry test_entries[] = {
     {"chat_stream_failure_modes", test_chat_stream_failure_modes},
     {"chat_connection_failure", test_chat_connection_failure},
     {"chat_logging", test_chat_logging},
+    {"codex_catalog_large_fields", test_codex_catalog_large_fields},
+    {"codex_catalog_validation", test_codex_catalog_validation},
     {"model_catalog_logging", test_model_catalog_logging},
     {"model_catalog_outage_recovery", test_model_catalog_outage_recovery},
     {"chat_transient_retries", test_chat_transient_retries},

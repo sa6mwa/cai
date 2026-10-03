@@ -4415,6 +4415,12 @@ static int cai_runtime_checkpoint_durable_tool_round(void *context,
     rc = cai_set_error(error, CAI_ERR_CANCELLED, "agent turn was cancelled");
   }
   if (rc == CAI_OK) {
+    /* Completed tool outputs are durable; the next request has not started.
+     * Apply owner-queued settings here, including any model downshift
+     * compaction, without interrupting or repeating an executed tool. */
+    rc = cai_runtime_apply_pending_settings(runtime, error);
+  }
+  if (rc == CAI_OK) {
     rc = cai_runtime_compact_before_request(runtime, error);
   }
   return rc;
@@ -4426,6 +4432,7 @@ static int cai_runtime_checkpoint_durable_tool_round(void *context,
 static int
 cai_runtime_deliver_steering_after_response(cai_agent_runtime *runtime,
                                             cai_error *error) {
+  int has_pending;
   int rc;
 
   rc = cai_runtime_deliver_steering_after_tool_round(runtime, runtime->session,
@@ -4438,6 +4445,14 @@ cai_runtime_deliver_steering_after_response(cai_agent_runtime *runtime,
     if (commit_rc != CAI_OK) {
       return commit_rc;
     }
+  }
+  pthread_mutex_lock(&runtime->lock);
+  has_pending = runtime->pending_settings.present != 0U;
+  pthread_mutex_unlock(&runtime->lock);
+  if (rc == CAI_OK && has_pending) {
+    rc = cai_runtime_checkpoint(runtime, 1, error);
+    if (rc == CAI_OK)
+      rc = cai_runtime_apply_pending_settings(runtime, error);
   }
   return rc;
 }

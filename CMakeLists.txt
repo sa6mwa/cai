@@ -1696,6 +1696,8 @@ if(CAI_BUILD_TESTS)
     chat_stream_failure_modes
     chat_connection_failure
     chat_logging
+    codex_catalog_large_fields
+    codex_catalog_validation
     model_catalog_logging
     model_catalog_outage_recovery
     chat_transient_retries

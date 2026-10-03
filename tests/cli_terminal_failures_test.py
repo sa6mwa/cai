@@ -138,7 +138,7 @@ with tempfile.TemporaryDirectory(prefix="terminal-failures-", dir=cli.parent) as
             if mode in ("cancel", "escape"):
                 assert time.monotonic() - began < 3, "cancellation waited for the provider"
             if mode not in ("cancel", "escape"):
-                term.wait(lambda: term.contains("[error]"))
+                term.wait(lambda: term.contains("* ERROR:"))
             if mode == "provider_error":
                 term.wait(lambda: term.contains("fixture stream error"))
             if mode != "malformed":

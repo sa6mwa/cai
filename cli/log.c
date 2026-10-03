@@ -189,7 +189,7 @@ static void notice(cai_cli_log *log) {
         strcmp(record.level, "fatal") != 0 &&
         strcmp(record.level, "panic") != 0)
       return;
-    label = record.level;
+    label = strcmp(record.level, "warn") == 0 ? "WARN" : "ERROR";
     cursor = notice_message(record.message);
   } else {
     /* Find the first native severity token, before the message. Do not
@@ -208,10 +208,10 @@ static void notice(cai_cli_log *log) {
       cursor++;
     }
     if (strncmp(cursor, "WRN", 3U) == 0)
-      label = "warn";
+      label = "WARN";
     else if (strncmp(cursor, "ERR", 3U) == 0 ||
              strncmp(cursor, "FTL", 3U) == 0 || strncmp(cursor, "PNC", 3U) == 0)
-      label = "error";
+      label = "ERROR";
     else
       return;
     cursor += 4U;
@@ -223,7 +223,7 @@ static void notice(cai_cli_log *log) {
   }
   slot = (log->head + log->count++) % 32U;
   written = snprintf(log->notices[slot], sizeof(log->notices[slot]),
-                     "[%s] %s%s%s%s%s%s%s%s", label, record.operation,
+                     "* %s: %s%s%s%s%s%s%s%s", label, record.operation,
                      record.operation[0] != '\0' ? ": " : "", cursor,
                      record.details[0] != '\0' ? ": " : "", record.details,
                      record.context[0] != '\0' ? " (" : "", record.context,
@@ -462,7 +462,7 @@ int cai_cli_log_notices(cai_cli_log *log, int (*visit)(void *, const char *),
     pthread_mutex_lock(&log->lock);
     if (log->dropped != 0UL) {
       snprintf(text, sizeof(text),
-               "[warn] %lu additional notices are in the session log",
+               "* WARN: %lu additional notices are in the session log",
                log->dropped);
       log->dropped = 0UL;
     } else if (log->count != 0U) {

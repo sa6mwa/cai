@@ -240,6 +240,17 @@ and available credit balance through
 bar requests quota in the background after session startup and after completed
 turns, at most once every five minutes automatically. Quota retrieval does not
 block prompt readiness, and idle sessions make no periodic quota requests.
+
+`/model` shows the current and pending model plus the provider catalog.
+Use `/model MODEL` to change model within the same conversation: idle changes
+apply immediately; active requests and tools finish before the change applies
+at the next durable tool-round or turn boundary. The next model request uses
+it, including any required context compaction. Later selections replace a
+pending selection. Catalog browsing uses a separate client and a five-minute
+cache; it makes no additional startup request. Interactive warnings and errors
+use a red `*` with `WARN:` or `ERROR:` and readable details, with one blank
+line between feed blocks. Complete diagnostic records stay in the session log.
+
 `/status` fetches quota on every invocation, updates the
 bar, and renders a Markdown table with model, effort, available context
 and usage, quota, and credits. API key providers show `cost ?$` in the status

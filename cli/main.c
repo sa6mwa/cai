@@ -65,6 +65,7 @@ typedef struct cli_state {
   int has_auth_lock;
   cai_chrome *chrome;
   cai_client *client;
+  cai_client *model_client;
   cai_client *quota_client;
   cai_agent_runtime *runtime;
   sl_t *sl;
@@ -77,6 +78,7 @@ typedef struct cli_state {
   sl_watch_id_t log_watch_id;
   int has_log_watch;
   char *review_report;
+  char *selected_model;
   size_t review_report_length;
   char generated_goal[4096];
   cli_session *sessions;
@@ -92,6 +94,8 @@ typedef struct cli_state {
   int response_open;
   int documents_rendered;
   int reasoning_open;
+  int feed_breaks;
+  int feed_ansi;
   int exit_requested;
   int was_busy;
   int awaiting_turn;
@@ -226,10 +230,29 @@ static void cli_refresh_quota(cli_state *state, int force) {
 
 static int cli_sink(void *context, const char *bytes, size_t count) {
   cli_state *state;
+  size_t i;
   state = (cli_state *)context;
   if (state->batch)
     return fwrite(bytes, 1U, count, stdout) == count ? 0 : -1;
-  return sl_output_stream_write(state->sl, bytes, count) == SL_OK ? 0 : -1;
+  if (sl_output_stream_write(state->sl, bytes, count) != SL_OK)
+    return -1;
+  for (i = 0U; i < count; i++) {
+    unsigned char ch = (unsigned char)bytes[i];
+    if (state->feed_ansi == 1) {
+      state->feed_ansi = ch == '[' ? 2 : 0;
+    } else if (state->feed_ansi == 2) {
+      if (ch >= 0x40U && ch <= 0x7eU)
+        state->feed_ansi = 0;
+    } else if (ch == 27U) {
+      state->feed_ansi = 1;
+    } else if (ch == '\n') {
+      if (state->feed_breaks < 2)
+        state->feed_breaks++;
+    } else if (ch != '\r') {
+      state->feed_breaks = 0;
+    }
+  }
+  return 0;
 }
 
 static int cli_render_width(void) {
@@ -328,8 +351,7 @@ static int cli_write(cli_state *state, const char *text) {
     cli_diagnostic(state, PSLOG_LEVEL_INFO, text);
     return 0;
   }
-  return sl_output_stream_write(state->sl, text, strlen(text)) == SL_OK ? 0
-                                                                        : -1;
+  return cli_sink(state, text, strlen(text));
 }
 
 static int cli_prompt(cli_state *state, const char *text, int history) {
@@ -341,8 +363,10 @@ static int cli_prompt(cli_state *state, const char *text, int history) {
   if (history && sl_history_add(state->sl, text) != SL_OK) {
     return -1;
   }
-  return sl_output_stream_write_quoted_prompt(state->sl, text) == SL_OK ? 0
-                                                                        : -1;
+  if (sl_output_stream_write_quoted_prompt(state->sl, text) != SL_OK)
+    return -1;
+  state->feed_breaks = 2;
+  return 0;
 }
 
 static void cli_reasoning_append(cli_state *state, const char *data,
@@ -569,8 +593,18 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
 
 static int cli_notice(void *context, const char *text) {
   cli_state *state = (cli_state *)context;
-  return cli_write(state, "\n") == 0 && cli_write(state, text) == 0 &&
-                 cli_write(state, "\n") == 0
+  if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
+    return -1;
+  /* Normalize to one blank line, including after streamed Markdown. Quoted
+   * prompts already supply this separation. */
+  while (state->feed_breaks < 2)
+    if (cli_write(state, "\n") != 0)
+      return -1;
+  return cli_write(state, state->interactive && getenv("NO_COLOR") == NULL
+                              ? "\033[91m*\033[0m"
+                              : "*") == 0 &&
+                 cli_write(state, text + 1) == 0 &&
+                 cli_write(state, "\n\n") == 0
              ? 0
              : -1;
 }
@@ -995,6 +1029,91 @@ static int cli_handle_command(cli_state *state, const char *line,
   unsigned long number;
   int rc;
   *handled = 1;
+  if (strcmp(line, "/model") == 0 || strncmp(line, "/model ", 7U) == 0) {
+    cai_agent_runtime_settings effective;
+    cai_agent_runtime_settings pending;
+    cai_agent_runtime_settings requested;
+    cai_agent_runtime_control_result result;
+    cai_model_catalog *catalog = NULL;
+    pslog_field fields[2];
+    char message[1024];
+    char *selection;
+    size_t i;
+    arg = line + 6;
+    while (*arg == ' ')
+      arg++;
+    if (*arg == '\0') {
+      rc = cai_agent_runtime_get_settings(state->runtime, &effective, &pending,
+                                          error);
+      if (rc != CAI_OK)
+        return rc;
+      snprintf(message, sizeof(message),
+               "## Model\n\nCurrent: `%s`\n\n%s%s%s"
+               "Use `/model MODEL` to change model in this conversation. "
+               "Changes apply at the next safe model/tool boundary.\n\n",
+               effective.model, pending.model != NULL ? "Pending: `" : "",
+               pending.model != NULL ? pending.model : "",
+               pending.model != NULL ? "`\n\n" : "");
+      if (cli_text(state, message, strlen(message)) != 0)
+        return CAI_ERR_TRANSPORT;
+      /* Explicit catalog browsing uses its own HTTP client and cache, never
+       * the agent worker's client. Startup makes no extra catalog request. */
+      rc = cai_client_list_models(state->model_client,
+                                  CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED,
+                                  &catalog, error);
+      if (rc == CAI_OK) {
+        for (i = 0U; i < catalog->count; i++) {
+          snprintf(message, sizeof(message), "- `%s`%s%s\n",
+                   catalog->entries[i].slug,
+                   catalog->entries[i].display_name != NULL ? " — " : "",
+                   catalog->entries[i].display_name != NULL
+                       ? catalog->entries[i].display_name
+                       : "");
+          if (cli_text(state, message, strlen(message)) != 0) {
+            cai_model_catalog_close(catalog);
+            return CAI_ERR_TRANSPORT;
+          }
+        }
+      } else {
+        cai_error_cleanup(error);
+        cai_error_init(error);
+        if (cli_text(state, "Model list unavailable; enter a model ID.\n",
+                     strlen("Model list unavailable; enter a model ID.\n")) !=
+            0)
+          return CAI_ERR_TRANSPORT;
+      }
+      cai_model_catalog_close(catalog);
+      return cli_finish_response(state) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+    }
+    if (strlen(arg) > 256U || strpbrk(arg, " \t\r\n") != NULL)
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "use /model MODEL (one model ID)");
+    selection = strdup(arg);
+    if (selection == NULL)
+      return cai_cli_error(error, CAI_ERR_NOMEM, "allocate model selection");
+    memset(&requested, 0, sizeof(requested));
+    requested.present = CAI_AGENT_RUNTIME_SETTING_MODEL;
+    requested.model = selection;
+    rc = cai_agent_runtime_update_settings(state->runtime, &requested, &result,
+                                           error);
+    if (rc != CAI_OK) {
+      free(selection);
+      return rc;
+    }
+    free(state->selected_model);
+    state->selected_model = selection;
+    state->options.model = selection;
+    snprintf(message, sizeof(message),
+             result.applied
+                 ? "Model changed to %s.\n"
+                 : "Model %s queued for the next safe model/tool boundary.\n",
+             selection);
+    fields[0] = pslog_str("model", selection);
+    fields[1] = pslog_bool("applied", result.applied);
+    cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, "model_selection",
+                        "user", message, strlen(message), fields, 2U);
+    return cli_write(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+  }
   if (strcmp(line, "/output") == 0 || strncmp(line, "/output ", 8U) == 0) {
     arg = strcmp(line, "/output") == 0 ? "" : line + 8;
     if (*arg == '\0')
@@ -1034,6 +1153,8 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| Command | Action |\n"
         "| --- | --- |\n"
         "| `/help` | Show this help. |\n"
+        "| `/model [MODEL]` | Show models or change model at the next safe "
+        "model/tool boundary, keeping this conversation. |\n",
         "| `/output [compact\\|full]` | Show or change tool previews, starting "
         "with the next tool call. Compact commands show five lines; patches "
         "collapse unchanged context. |\n",
@@ -1711,6 +1832,12 @@ int main(int argc, char **argv) {
     cli_print_error(&state, "open client", &error);
     goto cleanup;
   }
+  client_config.timeout_ms = 1500L;
+  rc = cai_client_open(&client_config, &state.model_client, &error);
+  if (rc != CAI_OK) {
+    cli_print_error(&state, "open model catalog client", &error);
+    goto cleanup;
+  }
   if (state.auth != NULL) {
     cai_error quota_error;
     cai_client_config quota_config;
@@ -1852,6 +1979,8 @@ cleanup:
   cai_cli_quota_close(&state.quota_refresh);
   if (state.client != NULL)
     state.client->close(state.client);
+  if (state.model_client != NULL)
+    state.model_client->close(state.model_client);
   if (state.quota_client != NULL)
     state.quota_client->close(state.quota_client);
   if (state.auth != NULL)
@@ -1876,6 +2005,7 @@ cleanup:
     (void)cai_cli_log_notices(&state.log, cli_startup_notice, &state);
   free(state.sessions);
   free(state.review_report);
+  free(state.selected_model);
   free(metadata_json);
   cai_error_cleanup(&error);
   if (cai_cli_log_close(&state.log) != 0)

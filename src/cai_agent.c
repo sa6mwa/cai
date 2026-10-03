@@ -5795,6 +5795,20 @@ static int cai_session_clear_tool_choice_for_tool_continuation(
   return params->set_tool_choice(params, NULL, error);
 }
 
+/* A durable tool callback can change the agent's settings (and compact its
+ * history). The already-built continuation must use those settings too. */
+static int
+cai_session_refresh_request_settings(cai_session *session,
+                                     cai_response_create_params *params,
+                                     cai_error *error) {
+  cai_agent_impl *agent = CAI_SESSION_AGENT_IMPL(session);
+  int rc = params->set_model(params, agent->model, error);
+  if (rc == CAI_OK)
+    rc = params->set_reasoning(params, agent->reasoning_effort,
+                               agent->reasoning_summary, error);
+  return rc;
+}
+
 static int cai_session_run_tool_round(cai_session *session,
                                       const cai_response *response,
                                       const cai_run_options *options,
@@ -5995,6 +6009,8 @@ static int cai_session_run_tool_round(cai_session *session,
     rc = options->tool_round_durable(options->tool_round_durable_context,
                                      session, error);
   }
+  if (rc == CAI_OK)
+    rc = cai_session_refresh_request_settings(session, params, error);
   if (rc == CAI_OK && options->tool_round_durable != NULL &&
       CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
           CAI_SESSION_CONTINUITY_CLIENT_HISTORY &&
@@ -6497,6 +6513,8 @@ static int cai_session_stream_tool_round(
     rc = options->tool_round_durable(options->tool_round_durable_context,
                                      session, error);
   }
+  if (rc == CAI_OK)
+    rc = cai_session_refresh_request_settings(session, params, error);
   if (rc == CAI_OK && options->tool_round_durable != NULL &&
       CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
           CAI_SESSION_CONTINUITY_CLIENT_HISTORY &&

@@ -1,6 +1,8 @@
 #include "cai_internal.h"
 #include "cai_model_contexts.h"
 
+#include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <time.h>
@@ -95,48 +97,6 @@ typedef struct cai_model_catalog_impl {
   cai_allocator allocator;
   cai_model_catalog_entry *entries;
 } cai_model_catalog_impl;
-
-typedef struct cai_model_catalog_item_doc {
-  char *slug;
-  char *display_name;
-  char *description;
-  long long context_window;
-  int has_context_window;
-  long long auto_compact_token_limit;
-  int has_auto_compact_token_limit;
-  char *comp_hash;
-  int supported_in_api;
-  int has_supported_in_api;
-} cai_model_catalog_item_doc;
-
-typedef struct cai_model_catalog_doc {
-  lonejson_object_array models;
-} cai_model_catalog_doc;
-
-static const lonejson_field cai_model_catalog_item_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_model_catalog_item_doc, slug, "slug"),
-    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_model_catalog_item_doc,
-                                          display_name, "display_name"),
-    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_model_catalog_item_doc,
-                                          description, "description"),
-    LONEJSON_FIELD_I64_PRESENT(cai_model_catalog_item_doc, context_window,
-                               has_context_window, "context_window"),
-    LONEJSON_FIELD_I64_PRESENT_NULLABLE(
-        cai_model_catalog_item_doc, auto_compact_token_limit,
-        has_auto_compact_token_limit, "auto_compact_token_limit"),
-    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_model_catalog_item_doc, comp_hash,
-                                          "comp_hash"),
-    LONEJSON_FIELD_BOOL_PRESENT(cai_model_catalog_item_doc, supported_in_api,
-                                has_supported_in_api, "supported_in_api")};
-LONEJSON_MAP_DEFINE(cai_model_catalog_item_map, cai_model_catalog_item_doc,
-                    cai_model_catalog_item_fields);
-
-static const lonejson_field cai_model_catalog_fields[] = {
-    LONEJSON_FIELD_OBJECT_ARRAY(
-        cai_model_catalog_doc, models, "models", cai_model_catalog_item_doc,
-        &cai_model_catalog_item_map, LONEJSON_OVERFLOW_FAIL)};
-LONEJSON_MAP_DEFINE(cai_model_catalog_map, cai_model_catalog_doc,
-                    cai_model_catalog_fields);
 
 typedef struct cai_provider_capabilities_doc {
   int streaming;
@@ -749,57 +709,295 @@ static int cai_model_catalog_merge_fallback(cai_client *client,
   return CAI_OK;
 }
 
+/* The provider response is HTTP-bounded and buffered. Visit it directly:
+ * unmapped prompt/template values are validated and discarded chunk by chunk,
+ * instead of going through the mapped parser's fixed token scratch buffer. */
+typedef struct cai_codex_catalog_reader {
+  cai_model_catalog *catalog;
+  cai_model_catalog_impl *impl;
+  size_t capacity;
+  unsigned int seen;
+  int models_seen;
+  int field;
+  int rc;
+  cai_error *error;
+  cai_buffer_builder text;
+} cai_codex_catalog_reader;
+
+static int cai_catalog_segment(const lonejson_value_path *path, size_t index,
+                               const char *name) {
+  return index < path->segment_count &&
+         path->segments[index].len == strlen(name) &&
+         memcmp(path->segments[index].data, name, strlen(name)) == 0;
+}
+
+static lonejson_status
+cai_codex_catalog_invalid(cai_codex_catalog_reader *reader,
+                          const char *message) {
+  reader->rc = cai_set_error(reader->error, CAI_ERR_PROTOCOL, message);
+  return LONEJSON_STATUS_INVALID_ARGUMENT;
+}
+
+static int cai_codex_catalog_field(const lonejson_value_path *path) {
+  static const char *const names[] = {"slug",
+                                      "display_name",
+                                      "description",
+                                      "comp_hash",
+                                      "context_window",
+                                      "auto_compact_token_limit",
+                                      "supported_in_api"};
+  size_t i;
+  if (path->segment_count != 3U || !cai_catalog_segment(path, 0U, "models"))
+    return 0;
+  for (i = 0U; i < sizeof(names) / sizeof(names[0]); i++)
+    if (cai_catalog_segment(path, 2U, names[i]))
+      return (int)i + 1;
+  return 0;
+}
+
+static lonejson_status cai_codex_catalog_begin(cai_codex_catalog_reader *reader,
+                                               const lonejson_value_path *path,
+                                               char type) {
+  unsigned int mask;
+  int field = cai_codex_catalog_field(path);
+  reader->field = field;
+  if (path->segment_count == 0U && type != 'o')
+    return cai_codex_catalog_invalid(reader,
+                                     "Codex model catalog must be an object");
+  if (cai_catalog_segment(path, 0U, "models")) {
+    if ((path->segment_count == 1U && type != 'a') ||
+        (path->segment_count == 2U && type != 'o'))
+      return cai_codex_catalog_invalid(
+          reader, "Codex models must be an array of objects");
+  }
+  if (field == 0)
+    return LONEJSON_STATUS_OK;
+  mask = 1U << (unsigned int)field;
+  if ((reader->seen & mask) != 0U)
+    return cai_codex_catalog_invalid(reader,
+                                     "duplicate Codex model catalog field");
+  reader->seen |= mask;
+  if ((field <= 4 && type == 's') ||
+      ((field == 5 || field == 6) && type == 'n') ||
+      (field == 7 && type == 'b') ||
+      (type == 'z' && (field == 2 || field == 3 || field == 4 || field == 6)))
+    return LONEJSON_STATUS_OK;
+  return cai_codex_catalog_invalid(reader,
+                                   "invalid Codex model catalog field type");
+}
+
+static lonejson_status cai_codex_catalog_object(void *context,
+                                                const lonejson_value_path *path,
+                                                lonejson_error *error) {
+  cai_codex_catalog_reader *reader = (cai_codex_catalog_reader *)context;
+  lonejson_status status = cai_codex_catalog_begin(reader, path, 'o');
+  cai_model_catalog_entry *entries;
+  size_t capacity;
+  (void)error;
+  if (status != LONEJSON_STATUS_OK || path->segment_count != 2U ||
+      !cai_catalog_segment(path, 0U, "models"))
+    return status;
+  if (reader->catalog->count == reader->capacity) {
+    capacity = reader->capacity == 0U ? 8U : reader->capacity * 2U;
+    if (capacity < reader->capacity || capacity > (size_t)-1 / sizeof(*entries))
+      return cai_codex_catalog_invalid(reader, "too many Codex models");
+    entries = (cai_model_catalog_entry *)cai_realloc_mem(
+        &reader->impl->allocator, reader->impl->entries,
+        capacity * sizeof(*entries));
+    if (entries == NULL) {
+      reader->rc = cai_set_error(reader->error, CAI_ERR_NOMEM,
+                                 "allocate Codex model catalog entries");
+      return LONEJSON_STATUS_ALLOCATION_FAILED;
+    }
+    memset(entries + reader->capacity, 0,
+           (capacity - reader->capacity) * sizeof(*entries));
+    reader->impl->entries = entries;
+    reader->catalog->entries = entries;
+    reader->capacity = capacity;
+  }
+  reader->catalog->count++;
+  reader->seen = 0U;
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status
+cai_codex_catalog_object_end(void *context, const lonejson_value_path *path,
+                             lonejson_error *error) {
+  cai_codex_catalog_reader *reader = (cai_codex_catalog_reader *)context;
+  const char *slug;
+  (void)error;
+  if (path->segment_count != 2U || !cai_catalog_segment(path, 0U, "models"))
+    return LONEJSON_STATUS_OK;
+  slug = reader->catalog->entries[reader->catalog->count - 1U].slug;
+  if (slug == NULL || *slug == '\0')
+    return cai_codex_catalog_invalid(
+        reader, "Codex model catalog entry requires a nonempty slug");
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_codex_catalog_array(void *context,
+                                               const lonejson_value_path *path,
+                                               lonejson_error *error) {
+  cai_codex_catalog_reader *reader = (cai_codex_catalog_reader *)context;
+  lonejson_status status = cai_codex_catalog_begin(reader, path, 'a');
+  (void)error;
+  if (status == LONEJSON_STATUS_OK && path->segment_count == 1U &&
+      cai_catalog_segment(path, 0U, "models")) {
+    if (reader->models_seen)
+      return cai_codex_catalog_invalid(reader, "duplicate Codex models array");
+    reader->models_seen = 1;
+  }
+  return status;
+}
+
+static lonejson_status cai_codex_catalog_string(void *context,
+                                                const lonejson_value_path *path,
+                                                lonejson_error *error) {
+  cai_codex_catalog_reader *reader = (cai_codex_catalog_reader *)context;
+  (void)error;
+  reader->text.length = 0U;
+  return cai_codex_catalog_begin(reader, path, 's');
+}
+
+static lonejson_status cai_codex_catalog_number(void *context,
+                                                const lonejson_value_path *path,
+                                                lonejson_error *error) {
+  cai_codex_catalog_reader *reader = (cai_codex_catalog_reader *)context;
+  (void)error;
+  reader->text.length = 0U;
+  return cai_codex_catalog_begin(reader, path, 'n');
+}
+
+static lonejson_status cai_codex_catalog_chunk(void *context,
+                                               const lonejson_value_path *path,
+                                               const char *bytes, size_t length,
+                                               lonejson_error *error) {
+  cai_codex_catalog_reader *reader = (cai_codex_catalog_reader *)context;
+  (void)path;
+  (void)error;
+  if (reader->field == 0)
+    return LONEJSON_STATUS_OK;
+  if (memchr(bytes, '\0', length) != NULL)
+    return cai_codex_catalog_invalid(reader,
+                                     "NUL in Codex model catalog field");
+  reader->rc = cai_buffer_append(&reader->text, bytes, length, reader->error);
+  return reader->rc == CAI_OK ? LONEJSON_STATUS_OK
+                              : LONEJSON_STATUS_ALLOCATION_FAILED;
+}
+
+static lonejson_status
+cai_codex_catalog_value_end(void *context, const lonejson_value_path *path,
+                            lonejson_error *error) {
+  cai_codex_catalog_reader *reader = (cai_codex_catalog_reader *)context;
+  cai_model_catalog_entry *entry;
+  char **destination;
+  char *end;
+  long long value;
+  int field = reader->field;
+  (void)path;
+  (void)error;
+  if (field == 0)
+    return LONEJSON_STATUS_OK;
+  entry = reader->impl->entries + reader->catalog->count - 1U;
+  if (field <= 4) {
+    destination = field == 1   ? &entry->slug
+                  : field == 2 ? &entry->display_name
+                  : field == 3 ? &entry->description
+                               : &entry->compaction_compatibility_hash;
+    *destination =
+        cai_strdup(&reader->impl->allocator,
+                   reader->text.length != 0U ? reader->text.data : "");
+    if (*destination == NULL) {
+      reader->rc = cai_set_error(reader->error, CAI_ERR_NOMEM,
+                                 "copy Codex model catalog string");
+      return LONEJSON_STATUS_ALLOCATION_FAILED;
+    }
+  } else {
+    errno = 0;
+    value = strtoll(reader->text.data, &end, 10);
+    if (errno != 0 || *end != '\0' || value < 0LL)
+      return cai_codex_catalog_invalid(
+          reader, "Codex context limits must be nonnegative integers");
+    if (field == 5)
+      entry->context_window_tokens = value;
+    else
+      entry->auto_compact_token_limit = value;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status cai_codex_catalog_bool(void *context,
+                                              const lonejson_value_path *path,
+                                              int value,
+                                              lonejson_error *error) {
+  cai_codex_catalog_reader *reader = (cai_codex_catalog_reader *)context;
+  lonejson_status status = cai_codex_catalog_begin(reader, path, 'b');
+  (void)error;
+  if (status == LONEJSON_STATUS_OK && reader->field == 7)
+    reader->impl->entries[reader->catalog->count - 1U].supported_in_api = value;
+  return status;
+}
+
+static lonejson_status cai_codex_catalog_null(void *context,
+                                              const lonejson_value_path *path,
+                                              lonejson_error *error) {
+  (void)error;
+  return cai_codex_catalog_begin((cai_codex_catalog_reader *)context, path,
+                                 'z');
+}
+
 static int cai_model_catalog_parse(cai_client *client, const char *json,
                                    cai_model_catalog **out, cai_error *error) {
-  cai_model_catalog_doc doc;
-  cai_model_catalog_item_doc *items;
-  cai_model_catalog *catalog;
-  cai_model_catalog_impl *catalog_impl;
+  cai_codex_catalog_reader reader;
+  lonejson_path_value_visitor visitor = lonejson_default_path_value_visitor();
+  lonejson_config config = lonejson_default_config();
+  lonejson *runtime = NULL;
   lonejson_error json_error;
   lonejson_status status;
-  size_t i;
   int rc;
-
-  memset(&doc, 0, sizeof(doc));
-  CAI_LJ->init(CAI_LJ, &cai_model_catalog_map, &doc);
-  status = CAI_LJ->parse_cstr(CAI_LJ, &cai_model_catalog_map, &doc, json,
-                              &json_error);
-  if (status != LONEJSON_STATUS_OK) {
-    CAI_LJ->cleanup(CAI_LJ, &cai_model_catalog_map, &doc);
-    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
-                                "failed to parse Codex model catalog",
-                                json_error.message);
-  }
-  rc = cai_model_catalog_allocate(&CAI_CLIENT_IMPL(client)->allocator,
-                                  doc.models.count, &catalog, error);
-  catalog_impl =
-      catalog != NULL ? (cai_model_catalog_impl *)catalog->impl : NULL;
-  items = (cai_model_catalog_item_doc *)doc.models.items;
-  for (i = 0U; rc == CAI_OK && i < doc.models.count; i++) {
-    cai_model_catalog_entry source;
-
-    memset(&source, 0, sizeof(source));
-    source.slug = items[i].slug;
-    source.display_name = items[i].display_name;
-    source.description = items[i].description;
-    source.context_window_tokens =
-        items[i].has_context_window ? items[i].context_window : 0LL;
-    source.auto_compact_token_limit = items[i].has_auto_compact_token_limit
-                                          ? items[i].auto_compact_token_limit
-                                          : 0LL;
-    source.compaction_compatibility_hash = items[i].comp_hash;
-    source.supported_in_api =
-        items[i].has_supported_in_api ? items[i].supported_in_api : 0;
-    rc =
-        cai_model_catalog_copy_entry(&CAI_CLIENT_IMPL(client)->allocator,
-                                     catalog_impl->entries + i, &source, error);
-  }
-  CAI_LJ->cleanup(CAI_LJ, &cai_model_catalog_map, &doc);
+  memset(&reader, 0, sizeof(reader));
+  reader.error = error;
+  config.json_value_max_string_bytes = strlen(json) + 1U;
+  config.json_value_max_total_bytes = strlen(json) + 1U;
+  rc = cai_lonejson_runtime_open(&config, &runtime, error);
+  if (rc != CAI_OK)
+    return rc;
+  rc = cai_model_catalog_allocate(&CAI_CLIENT_IMPL(client)->allocator, 0U,
+                                  &reader.catalog, error);
   if (rc != CAI_OK) {
-    cai_model_catalog_close(catalog);
+    cai_lonejson_runtime_close(&runtime);
     return rc;
   }
-  *out = catalog;
+  reader.impl = (cai_model_catalog_impl *)reader.catalog->impl;
+  reader.text.allocator = &reader.impl->allocator;
+  visitor.object_begin = cai_codex_catalog_object;
+  visitor.object_end = cai_codex_catalog_object_end;
+  visitor.array_begin = cai_codex_catalog_array;
+  visitor.string_begin = cai_codex_catalog_string;
+  visitor.string_chunk = cai_codex_catalog_chunk;
+  visitor.string_end = cai_codex_catalog_value_end;
+  visitor.number_begin = cai_codex_catalog_number;
+  visitor.number_chunk = cai_codex_catalog_chunk;
+  visitor.number_end = cai_codex_catalog_value_end;
+  visitor.boolean_value = cai_codex_catalog_bool;
+  visitor.null_value = cai_codex_catalog_null;
+  status = lonejson_visit_path_value_buffer(runtime, json, strlen(json),
+                                            &visitor, &reader, &json_error);
+  cai_lonejson_runtime_close(&runtime);
+  cai_free_mem(reader.text.allocator, reader.text.data);
+  rc = reader.rc;
+  if (rc == CAI_OK && status != LONEJSON_STATUS_OK)
+    rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                              "failed to parse Codex model catalog",
+                              json_error.message);
+  if (rc == CAI_OK && !reader.models_seen)
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "Codex model catalog requires a models array");
+  if (rc != CAI_OK) {
+    cai_model_catalog_close(reader.catalog);
+    return rc;
+  }
+  *out = reader.catalog;
   return CAI_OK;
 }
 

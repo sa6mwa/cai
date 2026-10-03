@@ -311,6 +311,13 @@ Export the active session, or the supplied ID, as JSONL and Markdown.
 .B /new
 Start a new session in the current workspace.
 .TP
+.BI /model " [MODEL]"
+Show the current and pending model and the provider catalog, or select MODEL
+in the same conversation. Idle changes apply immediately; an active request or
+tool finishes before the selection applies at the next durable tool-round or
+turn boundary, before the next model request. Later selections replace a
+pending selection. Catalog discovery uses a separate client and cache.
+.TP
 .BI /output " [compact|full]"
 Show or change the tool preview mode. The setting applies to future tool calls;
 active calls and past output retain their original presentation.
