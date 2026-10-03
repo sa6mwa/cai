@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
 
+#include "chrome.h"
 #include "log.h"
 #include "login.h"
 #include "options.h"
@@ -62,6 +63,7 @@ typedef struct cli_state {
   cai_chatgpt_auth shared_auth;
   pthread_mutex_t auth_lock;
   int has_auth_lock;
+  cai_chrome *chrome;
   cai_client *client;
   cai_client *quota_client;
   cai_agent_runtime *runtime;
@@ -785,12 +787,29 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   int wakeup_fd;
   int rc;
 
+  if (state->options.chrome && state->chrome == NULL) {
+    cai_chrome_config browser;
+    char directory[PATH_MAX];
+    memset(&browser, 0, sizeof(browser));
+    browser.socket_path = state->options.chrome_socket;
+    browser.logger = state->log.logger;
+    if (browser.socket_path == NULL) {
+      rc = cai_cli_chrome_directory(directory, sizeof(directory), 0, error);
+      if (rc != CAI_OK)
+        return rc;
+      browser.socket_directory = directory;
+    }
+    rc = cai_chrome_open(&browser, &state->chrome, error);
+    if (rc != CAI_OK)
+      return rc;
+  }
   state->show_welcome = 1;
   cai_agent_runtime_config_init(&config);
   cai_skill_config_init(&skills);
   if (state->options.review)
     config.preset = CAI_SMITH_REVIEW_PRESET;
   skills.skills_directory = state->options.skills_dir;
+  config.chrome = state->chrome;
   config.logger = state->log.logger;
   config.workspace_directory = state->workspace;
   config.image_directory =
@@ -905,6 +924,8 @@ static void cli_close_runtime(cli_state *state) {
   }
   cai_agent_runtime_close(state->runtime);
   state->runtime = NULL;
+  cai_chrome_close(state->chrome);
+  state->chrome = NULL;
   state->reasoning_summary_length = 0U;
   state->reasoning_summary_raw[0] = '\0';
 }
@@ -1428,6 +1449,25 @@ int main(int argc, char **argv) {
   result = 1;
   metadata_json = NULL;
   cai_error_init(&error);
+  if (argc > 1 && (strncmp(argv[1], "chrome-extension://", 19U) == 0 ||
+                   strcmp(argv[1], "--chrome-native-host") == 0)) {
+    int explicit_mode = strcmp(argv[1], "--chrome-native-host") == 0;
+    /* Native messaging owns stdout; LOG_OUTPUT cannot redirect diagnostics
+     * there. */
+    (void)unsetenv("LOG_OUTPUT");
+    if (cai_cli_log_open(&state.log, PSLOG_LEVEL_WARN, 0, &error) != CAI_OK)
+      goto cleanup;
+    if (argc != (explicit_mode ? 3 : 2))
+      rc = cai_cli_error(&error, CAI_ERR_INVALID,
+                         "Invalid Chrome native host arguments");
+    else
+      rc = cai_cli_chrome_host(argv[explicit_mode ? 2 : 1], state.log.logger,
+                               &error);
+    if (rc != CAI_OK)
+      cai_cli_log_error(state.log.logger, "Chrome native host", &error);
+    result = rc == CAI_OK ? 0 : 1;
+    goto cleanup;
+  }
   parsed = cai_cli_parse_options(argc, argv, &state.options);
   if (parsed <= 0) {
     if (parsed < 0 &&
@@ -1437,7 +1477,8 @@ int main(int argc, char **argv) {
     goto cleanup;
   }
   state.batch = state.options.review || state.options.non_interactive;
-  utility_mode = state.options.login || state.options.list ||
+  utility_mode = state.options.chrome_setup || state.options.chrome_remove ||
+                 state.options.login || state.options.list ||
                  state.options.resume_list || state.options.export_id != NULL ||
                  state.options.import_file != NULL;
   default_log_level = utility_mode ? PSLOG_LEVEL_WARN : PSLOG_LEVEL_TRACE;
@@ -1467,6 +1508,15 @@ int main(int argc, char **argv) {
       cli_print_error(&state, "open interactive log", &error);
       goto cleanup;
     }
+  }
+  if (state.options.chrome_setup || state.options.chrome_remove) {
+    rc = cai_cli_chrome_setup(state.options.chrome_manifest,
+                              state.options.chrome_remove, state.log.logger,
+                              &error);
+    if (rc != CAI_OK)
+      cli_print_error(&state, "Chrome registration", &error);
+    result = rc == CAI_OK ? 0 : 1;
+    goto cleanup;
   }
   rc = cai_cli_pouch_open(&state.pouch, state.options.lockd,
                           state.options.lockd_client_pem, state.log.logger,
@@ -1790,6 +1840,7 @@ cleanup:
   cai_cli_response_close(&state.final_response);
   if (state.runtime != NULL)
     cli_close_runtime(&state);
+  cai_chrome_close(state.chrome);
   if (state.has_log_watch)
     (void)sl_watch_remove(state.sl, state.log_watch_id);
   if (state.has_timer_watch)

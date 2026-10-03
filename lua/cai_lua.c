@@ -108,6 +108,7 @@ typedef struct cai_lua_session {
 
 typedef struct cai_lua_agent_runtime {
   cai_agent_runtime *ptr;
+  cai_chrome *chrome;
   lua_State *L;
   cai_lua_client *parent_client;
   pslog_lua_logger_ref logger_ref;
@@ -3516,6 +3517,8 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   cai_lua_native_store *native_skill_store;
   cai_lua_native_store *native_instruction_store;
   cai_agent_runtime_config config;
+  cai_chrome_config chrome_config;
+  int has_chrome;
   cai_skill_config skills;
   cai_agent_preset preset;
   cai_mcp_client **mcp_clients;
@@ -3537,6 +3540,25 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
                                     : (review_mode ? "new_smith_review_runtime"
                                                    : "new_smith_runtime"));
   }
+  memset(&chrome_config, 0, sizeof(chrome_config));
+  lua_getfield(L, 2, "chrome");
+  has_chrome = !lua_isnil(L, -1);
+  if (has_chrome) {
+    luaL_checktype(L, -1, LUA_TTABLE);
+    if (review_mode) {
+      lua_pop(L, 1);
+      return luaL_error(L, "isolated review runtimes do not support Chrome");
+    }
+    chrome_config.socket_path =
+        cai_lua_opt_string_field(L, -1, "socket_path", NULL);
+    chrome_config.socket_directory =
+        cai_lua_opt_string_field(L, -1, "socket_directory", NULL);
+    chrome_config.timeout_ms =
+        (long)cai_lua_opt_size_field(L, -1, "timeout_ms", 0U);
+    chrome_config.max_response_bytes =
+        cai_lua_opt_size_field(L, -1, "max_response_bytes", 0U);
+  }
+  lua_pop(L, 1);
   if (custom_preset) {
     lua_getfield(L, 2, "preset");
     if (!lua_istable(L, -1)) {
@@ -3764,6 +3786,13 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
       cai_lua_logger_field(L, 2, &logger_ref, &has_logger_ref, &logger, &error);
   if (rc == CAI_OK) {
     config.logger = logger;
+    if (has_chrome) {
+      chrome_config.logger = logger;
+      rc = cai_chrome_open(&chrome_config, &runtime->chrome, &error);
+      config.chrome = runtime->chrome;
+    }
+  }
+  if (rc == CAI_OK) {
     cai_lua_client_enter(client);
     rc = cai_agent_runtime_open(client->ptr, &config, &runtime->ptr, &error);
     cai_lua_client_leave(client);
@@ -3796,6 +3825,8 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   cai_lua_subagent_config_cleanup(&subagent_config);
   free(mcp_clients);
   if (rc != CAI_OK) {
+    cai_chrome_close(runtime->chrome);
+    runtime->chrome = NULL;
     cai_lua_unref_pslog_logger(&logger_ref, &has_logger_ref);
     if (runtime->callback_ref != LUA_NOREF) {
       luaL_unref(L, LUA_REGISTRYINDEX, runtime->callback_ref);
@@ -4362,6 +4393,8 @@ static const char *cai_lua_agent_runtime_state_name(cai_agent_run_state state) {
 
 static void cai_lua_agent_runtime_release(lua_State *L,
                                           cai_lua_agent_runtime *self) {
+  cai_chrome_close(self->chrome);
+  self->chrome = NULL;
   cai_lua_runtime_mcp_clients_release(L, self);
   if (self->callback_ref != LUA_NOREF) {
     luaL_unref(L, LUA_REGISTRYINDEX, self->callback_ref);
@@ -11883,6 +11916,7 @@ int luaopen_cai(lua_State *L) {
                       CAI_AGENT_EVENT_RUN_CANCELLED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TOOL_PATCH", CAI_AGENT_EVENT_TOOL_PATCH);
   CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_MCP", CAI_AGENT_TOOL_ACTION_MCP);
+  CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_CHROME", CAI_AGENT_TOOL_ACTION_CHROME);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_COMPACTION_STARTED",
                       CAI_AGENT_EVENT_COMPACTION_STARTED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_COMPACTION_PROGRESS",

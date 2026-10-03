@@ -612,11 +612,12 @@ int cai_tool_display_event(cai_tool_display *d,
   }
   verb = !ok ? (e->tool_action == CAI_AGENT_TOOL_ACTION_MCP ? "MCP failed"
                                                             : "Failed")
-         : e->tool_action == CAI_AGENT_TOOL_ACTION_READ ? "Read"
-         : e->tool_action == CAI_AGENT_TOOL_ACTION_LIST ? "Listed"
-         : e->tool_action == CAI_AGENT_TOOL_ACTION_VIEW ? "Viewed"
-         : e->tool_action == CAI_AGENT_TOOL_ACTION_MCP  ? "MCP"
-                                                        : "Completed";
+         : e->tool_action == CAI_AGENT_TOOL_ACTION_READ   ? "Read"
+         : e->tool_action == CAI_AGENT_TOOL_ACTION_LIST   ? "Listed"
+         : e->tool_action == CAI_AGENT_TOOL_ACTION_VIEW   ? "Viewed"
+         : e->tool_action == CAI_AGENT_TOOL_ACTION_CHROME ? "Used Chrome"
+         : e->tool_action == CAI_AGENT_TOOL_ACTION_MCP    ? "MCP"
+                                                          : "Completed";
   text = e->tool_path != NULL   ? e->tool_path
          : e->tool_name != NULL ? e->tool_name
                                 : "tool";

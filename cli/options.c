@@ -74,6 +74,14 @@ static void cai_cli_help(void) {
         "      --api-key-env NAME       Custom API key variable (default "
         "CAI_API_KEY)\n",
         stdout);
+  fputs(
+      "      --chrome                Enable ChatGPT Chrome extension tools\n"
+      "      --chrome-socket PATH    Select a connected CAI Chrome host\n"
+      "      --chrome-setup          Register CAI as Chrome native host and "
+      "exit\n"
+      "      --chrome-remove         Remove CAI's own registration and exit\n"
+      "      --chrome-manifest FILE  Alternate native-host registration path\n",
+      stdout);
   fputs("      --model-metadata FILE    Provider model metadata JSON\n",
         stdout);
   fputs("  -m, --model ID               Model (provider default if omitted)\n"
@@ -137,6 +145,19 @@ int cai_cli_parse_options(int argc, char *const *argv,
     char short_flag[3];
 
     flag = argv[i];
+    if (strcmp(flag, "--chrome") == 0) {
+      options->chrome = 1;
+      continue;
+    }
+    if (strcmp(flag, "--chrome-setup") == 0) {
+      options->chrome_setup = 1;
+      continue;
+    }
+    if (strcmp(flag, "--chrome-remove") == 0) {
+      options->chrome_remove = 1;
+      continue;
+    }
+
     if (flag[0] == '-' && flag[1] != '-' && flag[2] != '\0' &&
         strcmp(flag, "-vv") != 0) {
       for (j = 1U; flag[j] != '\0'; j++) {
@@ -259,6 +280,11 @@ int cai_cli_parse_options(int argc, char *const *argv,
       field = &options->tool_output;
     else if (strcmp(flag, "-p") == 0 || strcmp(flag, "--provider") == 0)
       field = &options->provider;
+    else if (strcmp(flag, "--chrome-socket") == 0) {
+      field = &options->chrome_socket;
+      options->chrome = 1;
+    } else if (strcmp(flag, "--chrome-manifest") == 0)
+      field = &options->chrome_manifest;
     else if (strcmp(flag, "--endpoint") == 0)
       field = &options->endpoint;
     else if (strcmp(flag, "--api-key-env") == 0)
@@ -325,7 +351,29 @@ int cai_cli_parse_options(int argc, char *const *argv,
       return -1;
     }
   }
+  if (options->chrome_manifest != NULL && !options->chrome_setup &&
+      !options->chrome_remove) {
+    cai_cli_option_error(
+        options,
+        "cai: --chrome-manifest requires --chrome-setup or --chrome-remove");
+    return -1;
+  }
+  if ((options->chrome_setup || options->chrome_remove) &&
+      (options->chrome || options->new_session || options->resume_id != NULL ||
+       options->review || options->review_and_fix || options->goal != NULL ||
+       options->instruction_count != 0U || options->non_interactive)) {
+    cai_cli_option_error(
+        options,
+        "cai: Chrome setup/removal cannot be combined with agent work");
+    return -1;
+  }
+  if (options->review && options->chrome) {
+    cai_cli_option_error(
+        options, "cai: isolated --review does not support Chrome tools");
+    return -1;
+  }
   if ((options->list + options->resume_list + options->login +
+       options->chrome_setup + options->chrome_remove +
        (options->export_id != NULL) + (options->import_file != NULL)) > 1) {
     cai_cli_option_error(
         options, "%s",

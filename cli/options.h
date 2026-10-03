@@ -5,6 +5,11 @@
 
 typedef struct cai_cli_options {
   const char *provider;
+  const char *chrome_socket;
+  const char *chrome_manifest;
+  int chrome;
+  int chrome_setup;
+  int chrome_remove;
   const char *endpoint;
   const char *api_key_env;
   const char *model_metadata;

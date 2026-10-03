@@ -5,6 +5,7 @@
 #define CAI_AGENT_RUNTIME_H
 
 #include <cai/cai.h>
+#include <cai/chrome.h>
 #include <cai/session_store.h>
 #include <cai/skills.h>
 #include <cai/smith.h>
@@ -85,7 +86,9 @@ typedef enum cai_agent_tool_action {
   /** A synchronous child agent was launched. */
   CAI_AGENT_TOOL_ACTION_SUBAGENT = 13,
   /** A tool registered from a configured MCP client ran. */
-  CAI_AGENT_TOOL_ACTION_MCP = 14
+  CAI_AGENT_TOOL_ACTION_MCP = 14,
+  /** A Chrome extension browser tool ran. */
+  CAI_AGENT_TOOL_ACTION_CHROME = 15
 } cai_agent_tool_action;
 
 /** Event emitted by an agent runtime. */
@@ -627,6 +630,12 @@ typedef struct cai_agent_runtime_config {
   cai_agent_runtime_event_fn review_event_callback;
   /** Context passed to review_event_callback; NULL uses event_context. */
   void *review_event_context;
+  /** Optional browser connection, borrowed exclusively until runtime close.
+   * Registers the chrome tool for Smith; rejected by isolated review runtimes.
+   * Children do not inherit browser access. Runtime workers set turn identity
+   * and release tab/debugger leases after success, failure or cancellation.
+   */
+  cai_chrome *chrome;
 } cai_agent_runtime_config;
 
 /** Initialize a zero-defaultable runtime configuration. */

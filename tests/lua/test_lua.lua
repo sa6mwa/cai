@@ -2644,4 +2644,23 @@ do
   assert_throws(function() display:event({}) end)
 end
 
+-- Browser configuration is explicit, checked before opening a runtime, and
+-- unavailable endpoints return useful errors without retaining the client.
+do
+  local browser_client = assert_ok(cai.open({ api_key = "fixture" }))
+  local runtime, err = browser_client:new_smith_runtime({
+    workspace_directory = ".",
+    chrome = { socket_path = "/cai-test-nonexistent/chrome.sock" },
+    disable_default_session_store = true,
+  })
+  assert(runtime == nil and err, "missing Chrome endpoint should fail")
+  assert(tostring(err.message):find("Chrome"), "Chrome error should name the integration")
+  assert(not pcall(function()
+    browser_client:new_smith_review_runtime({ workspace_directory = ".", chrome = {} })
+  end), "isolated reviewers must reject browser access")
+  local _, close_error = browser_client:close()
+  assert(close_error == nil, "failed browser setup must release the client")
+  assert(cai.AGENT_TOOL_ACTION_CHROME == 15)
+end
+
 print("cai lua tests passed")

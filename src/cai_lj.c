@@ -19,12 +19,15 @@ static cai_lj_global_runtime cai_lj_preserve_runtime = {
     PTHREAD_ONCE_INIT, NULL, {0}};
 static cai_lj_global_runtime cai_lj_stream_runtime = {
     PTHREAD_ONCE_INIT, NULL, {0}};
+static cai_lj_global_runtime cai_lj_chrome_runtime = {
+    PTHREAD_ONCE_INIT, NULL, {0}};
 static pthread_once_t cai_lj_cleanup_once = PTHREAD_ONCE_INIT;
 
 static void cai_lj_cleanup_all(void) {
   cai_lonejson_runtime_close(&cai_lj_default_runtime.runtime);
   cai_lonejson_runtime_close(&cai_lj_preserve_runtime.runtime);
   cai_lonejson_runtime_close(&cai_lj_stream_runtime.runtime);
+  cai_lonejson_runtime_close(&cai_lj_chrome_runtime.runtime);
 }
 
 static void cai_lj_register_cleanup(void) { (void)atexit(cai_lj_cleanup_all); }
@@ -119,4 +122,22 @@ void cai_lonejson_runtime_close(lonejson **runtime) {
     (*runtime)->free(*runtime);
     *runtime = NULL;
   }
+}
+
+static void cai_lj_init_runtime_chrome(void) {
+  lonejson_config config;
+  config = lonejson_default_config();
+  config.clear_destination_by_default = 0;
+  config.max_alloc_bytes = 64U * 1024U * 1024U;
+  config.max_dynamic_string_bytes = 64U * 1024U * 1024U;
+  config.json_value_max_total_bytes = 64U * 1024U * 1024U;
+  config.json_value_max_string_bytes = 64U * 1024U * 1024U;
+  lonejson_error_init(&cai_lj_chrome_runtime.error);
+  cai_lj_chrome_runtime.runtime =
+      lonejson_new(&config, &cai_lj_chrome_runtime.error);
+}
+lonejson *cai_lonejson_runtime_chrome(void) {
+  pthread_once(&cai_lj_cleanup_once, cai_lj_register_cleanup);
+  pthread_once(&cai_lj_chrome_runtime.once, cai_lj_init_runtime_chrome);
+  return cai_lj_require_runtime(&cai_lj_chrome_runtime);
 }

@@ -169,11 +169,19 @@ typedef struct cai_runtime_settings_owned {
 } cai_runtime_settings_owned;
 
 typedef struct cai_runtime_path_doc {
+  char *action;
+  char *url;
+  char *method;
   char *path;
 } cai_runtime_path_doc;
 
 static const lonejson_field cai_runtime_path_fields[] = {
-    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_runtime_path_doc, path, "path")};
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_runtime_path_doc, path, "path"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_runtime_path_doc, action,
+                                          "action"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_runtime_path_doc, url, "url"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_runtime_path_doc, method,
+                                          "method")};
 LONEJSON_MAP_DEFINE(cai_runtime_path_map, cai_runtime_path_doc,
                     cai_runtime_path_fields);
 
@@ -669,6 +677,8 @@ struct cai_agent_runtime {
   int review_submitted;
   int terminal_enabled;
   int image_generation_enabled;
+  cai_chrome *chrome;
+  unsigned long chrome_turn_sequence;
   cai_mcp_client **mcp_clients;
   size_t mcp_client_count;
   cai_mcp_tool_registration_config mcp_tool_config;
@@ -3917,6 +3927,8 @@ static int cai_runtime_tool_action(const cai_agent_runtime *runtime,
   if (strcmp(name, CAI_LIST_FILES_DEFAULT_TOOL_NAME) == 0) {
     return CAI_AGENT_TOOL_ACTION_LIST;
   }
+  if (runtime != NULL && runtime->chrome != NULL && strcmp(name, "chrome") == 0)
+    return CAI_AGENT_TOOL_ACTION_CHROME;
   if (strcmp(name, CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME) == 0) {
     return CAI_AGENT_TOOL_ACTION_VIEW;
   }
@@ -4014,6 +4026,17 @@ static char *cai_runtime_tool_path_from_arguments(const cai_tool_event *event) {
   lonejson_error_init(&json_error);
   status = CAI_LJ->parse_cstr(CAI_LJ, &cai_runtime_path_map, &doc, arguments,
                               &json_error);
+  if (status == LONEJSON_STATUS_OK && event->name != NULL &&
+      strcmp(event->name, "chrome") == 0 && doc.action != NULL) {
+    char label[512];
+    const char *extra = doc.url != NULL ? doc.url : doc.method;
+    snprintf(label, sizeof(label), "%s%s%s", doc.action,
+             extra != NULL ? " " : "", extra != NULL ? extra : "");
+    path = cai_strdup(NULL, label);
+    CAI_LJ->cleanup(CAI_LJ, &cai_runtime_path_map, &doc);
+    cai_free_mem(NULL, arguments_copy);
+    return path;
+  }
   if (status != LONEJSON_STATUS_OK || doc.path == NULL || doc.path[0] == '\0') {
     CAI_LJ->cleanup(CAI_LJ, &cai_runtime_path_map, &doc);
     cai_free_mem(NULL, arguments_copy);
@@ -5041,9 +5064,16 @@ static void *cai_runtime_worker(void *context) {
       cai_error_cleanup(&error);
       continue;
     }
-    rc = runtime->history_compaction_pending
-             ? CAI_OK
-             : cai_runtime_capture_active_model_metadata(runtime, &error);
+    if (runtime->chrome != NULL) {
+      char turn[80];
+      snprintf(turn, sizeof(turn), "%lu", ++runtime->chrome_turn_sequence);
+      rc = cai_chrome_begin_turn(runtime->chrome, runtime->session_id, turn,
+                                 &error);
+    }
+    if (rc == CAI_OK)
+      rc = runtime->history_compaction_pending
+               ? CAI_OK
+               : cai_runtime_capture_active_model_metadata(runtime, &error);
     if (rc == CAI_OK) {
       rc = cai_runtime_compact_pending_history(runtime, &error);
     }
@@ -5167,6 +5197,19 @@ static void *cai_runtime_worker(void *context) {
             &error, CAI_ERR_LIMIT,
             "goal token budget exhausted before another model request");
       }
+    }
+    if (runtime->chrome != NULL) {
+      cai_error cleanup_error;
+      int cleanup_rc;
+      cai_error_init(&cleanup_error);
+      cleanup_rc = cai_chrome_end_turn(runtime->chrome, &cleanup_error);
+      if (cleanup_rc != CAI_OK && rc == CAI_OK) {
+        cai_error_cleanup(&error);
+        error = cleanup_error;
+        cai_error_init(&cleanup_error);
+        rc = cleanup_rc;
+      }
+      cai_error_cleanup(&cleanup_error);
     }
     cancelled_turn = 0;
     pthread_mutex_lock(&runtime->lock);
@@ -6727,10 +6770,12 @@ int cai_agent_runtime_open(cai_client *client,
   cai_free_mem(NULL, combined_instructions);
   cai_free_mem(NULL, subagent_instructions);
   if (rc == CAI_OK && review_mode &&
-      (config->mcp_client_count > 0U || config->enable_image_generation)) {
-    rc = cai_set_error(error, CAI_ERR_INVALID,
-                       "isolated review runtime does not support MCP or image "
-                       "generation tools");
+      (config->mcp_client_count > 0U || config->enable_image_generation ||
+       config->chrome != NULL)) {
+    rc = cai_set_error(
+        error, CAI_ERR_INVALID,
+        "isolated review runtime does not support MCP, Chrome or image "
+        "generation tools");
   }
   if (rc == CAI_OK && runtime->mcp_client_count > 0U &&
       (preset->tool_capabilities & CAI_AGENT_PRESET_TOOL_MCP) == 0UL) {
@@ -6759,6 +6804,11 @@ int cai_agent_runtime_open(cai_client *client,
           0UL) {
     rc = cai_agent_add_simple_hosted_tool(
         runtime->agent, CAI_HOSTED_TOOL_IMAGE_GENERATION, error);
+  }
+  if (rc == CAI_OK && config->chrome != NULL) {
+    rc = cai_agent_register_chrome_tool(runtime->agent, config->chrome, error);
+    if (rc == CAI_OK)
+      runtime->chrome = config->chrome;
   }
   if (rc == CAI_OK) {
     rc = cai_agent_new_session(runtime->agent, &runtime->session, error);

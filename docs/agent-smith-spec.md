@@ -166,7 +166,7 @@ prompt.
 ### 3.2 Non-goals for the first Smith delivery
 
 - A CAI TUI, Markdown renderer, line editor, or dependency on libmdf/softline.
-- Codex Desktop plugins, browser automation, worktrees, collaboration agents,
+- Codex Desktop plugins, worktrees, collaboration agents,
   or `wait_agent`.
 - Recreating Codex’s sandbox/approval service. Smith exposes policy callbacks;
   the embedding application supplies enforcement.
@@ -1680,3 +1680,11 @@ true:
 report. It has no CAI file-mutation tools; terminal execution follows the
 host's normal sandbox policy.
 9. Deterministic tests and the opt-in luna live e2e proof pass.
+
+### Opt-in Chrome extension control
+
+The cai CLI supplies a native-messaging host for the official ChatGPT Chrome
+extension. Explicit setup/removal refuses fixed-name registration conflicts.
+`--chrome` enables the library's browser tools, typed screenshots and turn
+cleanup. Review subagents receive no browser connection. See
+[Chrome integration](chrome.md) for the protocol and verification boundary.

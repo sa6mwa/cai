@@ -292,6 +292,19 @@ static void commands(capture *c) {
         CAI_AGENT_TOOL_ACTION_MCP, 0);
   assert(strstr(c->bytes, "\033[92m*\033[0m MCP fixture") != NULL);
   reset(c);
+  event(d, CAI_AGENT_EVENT_TOOL_CALL_STARTED, "chrome", NULL,
+        CAI_AGENT_TOOL_ACTION_CHROME, 0);
+  event(d, CAI_AGENT_EVENT_TOOL_CALL_COMPLETED, "chrome", "page snapshot",
+        CAI_AGENT_TOOL_ACTION_CHROME, 0);
+  assert(strstr(c->bytes, "\033[92m*\033[0m Used Chrome fixture") != NULL);
+  reset(c);
+  event(d, CAI_AGENT_EVENT_TOOL_CALL_STARTED, "chromeerror", NULL,
+        CAI_AGENT_TOOL_ACTION_CHROME, 0);
+  event(d, CAI_AGENT_EVENT_TOOL_CALL_FAILED, "chromeerror", "Debugger detached",
+        CAI_AGENT_TOOL_ACTION_CHROME, 0);
+  assert(strstr(c->bytes, "\033[91m*\033[0m Failed fixture") != NULL);
+  assert(strstr(c->bytes, "Debugger detached") != NULL);
+  reset(c);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_STARTED, "badpatch", NULL,
         CAI_AGENT_TOOL_ACTION_PATCH, 0);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_FAILED, "badpatch", "context mismatch",

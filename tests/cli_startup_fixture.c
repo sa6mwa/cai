@@ -48,4 +48,18 @@ int cai_cli_app_main(int argc, char **argv);
 #undef cai_client_chatgpt_quota
 #undef cai_client_list_models
 
-int main(int argc, char **argv) { return cai_cli_app_main(argc, argv); }
+int main(int argc, char **argv) {
+  if (argc == 3 && strcmp(argv[1], "--test-chrome-system") == 0) {
+    const char *paths[1];
+    cai_error error;
+    int rc;
+    paths[0] = argv[2];
+    cai_error_init(&error);
+    rc = cai_cli_chrome_check_system_registration(paths, 1U, &error);
+    if (rc != CAI_OK)
+      fprintf(stderr, "%s: %s\n", error.message, error.detail);
+    cai_error_cleanup(&error);
+    return rc == CAI_OK ? 0 : 1;
+  }
+  return cai_cli_app_main(argc, argv);
+}

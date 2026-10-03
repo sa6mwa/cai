@@ -308,6 +308,12 @@ current directory, and exits. Failed imports never appear in the list.
 Existing cai JSONL files are not automatically migrated.
 MCP client configuration is planned for a later CLI release.
 
+Chrome control through the official ChatGPT extension is opt-in:
+`cai --chrome-setup` registers cai's own native host, then `cai --chrome`
+enables browser tools. Setup refuses conflicting registrations;
+`--chrome-remove` removes only cai's verified registration. No OpenAI native
+executable is required. See [Chrome setup, API, and compatibility](docs/chrome.md).
+
 `-C DIR`/`--directory DIR` changes directory before the agent opens its
 session. Repeat `-i TEXT`/`--instruction TEXT` to run prompts in order, after
 the saved conversation has replayed. `-g TEXT`/`--goal TEXT` starts or replaces
@@ -326,8 +332,8 @@ There is no added `app` field. Long text is logged as ordered bounded chunks
 with an `offset` field; activity reaches the sink as it arrives.
 
 Interactive tool activity uses bright green/red `*` receipts for success/failure,
-with command labels and separate MCP receipts. Commands show their first five
-logical output lines by default. `/output` shows the current setting;
+with command labels and separate MCP and Chrome receipts. Commands show their
+first five logical output lines by default. `/output` shows the current setting;
 `/output compact|full` changes it, and `--tool-output compact|full` selects the
 startup setting. Each tool call captures its mode when it starts: active calls
 and already displayed output stay unchanged. Full mode retains supplied
@@ -618,7 +624,10 @@ dependency resolution and Bootlin libc selection in either mode.
 The Lua binding targets Lua 5.5 and is exposed as `require("cai")`. It wraps
 the public C workflow facade: clients, agents, sessions, responses/outputs,
 streaming sinks, tool registries, tool presets, ChatGPT auth/login helpers, and
-the MCP Streamable HTTP handler and client.
+the MCP Streamable HTTP handler and client. Lua Smith runtimes also accept
+`chrome = { socket_path = path }` or `chrome = { socket_directory = dir }`,
+with optional timeout/frame limits. They own the connection until runtime close;
+see [Chrome integration](docs/chrome.md).
 
 Build and run the local LuaRock test:
 

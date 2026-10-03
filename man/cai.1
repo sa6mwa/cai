@@ -27,6 +27,27 @@ Use
 to start a new session.
 .SH OPTIONS
 .TP
+.B \-\-chrome
+Enable Chrome browser tools through the installed ChatGPT extension and CAI's
+native messaging host. Does not install or change a host registration.
+.TP
+.BI \-\-chrome-socket " PATH"
+Select a connected CAI Chrome host socket; also enables browser tools.
+Discovery otherwise requires exactly one live host in the private runtime
+or cache directory.
+.TP
+.B \-\-chrome-setup
+Register this executable as Chrome's com.openai.codexextension native host
+and exit. Never overwrites an existing foreign or unrecognized registration.
+No browser is launched and no provider authentication is required.
+.TP
+.B \-\-chrome-remove
+Remove only a registration verified to belong to this executable and exit.
+.TP
+.BI \-\-chrome-manifest " FILE"
+Override the setup/removal manifest path, for another native-host location.
+The file must be named com.openai.codexextension.json.
+.TP
 .BR \-N , " " \-\-new
 Start a new session in the workspace.
 .TP
@@ -435,5 +456,33 @@ and diagnostic detail. Non-interactive errors are written to standard error.
 in the installed
 .I share/doc/libcai
 directory.
+.SH CHROME
+Install the official ChatGPT Chrome extension, run
+.BR cai\ --chrome-setup ,
+then open the extension and run
+.BR cai\ --chrome .
+The registration points to this executable's permanent path. Chrome launches
+its native-host mode automatically; no OpenAI executable or Node runtime is
+required. The host supports browser control, not OpenAI's Codex side panel.
+.PP
+The fixed host name may conflict with OpenAI's registration. CAI refuses to
+replace it and reports the path. Removal likewise refuses foreign manifests.
+Setup also refuses to shadow standard system-wide Chrome or Chromium
+registrations.
+Setup uses CHROME_CONFIG_HOME, then XDG_CONFIG_HOME, then ~/.config as the
+base for google-chrome/NativeMessagingHosts/com.openai.codexextension.json.
+.PP
+Host sockets live under $XDG_RUNTIME_DIR/cai/chrome, or
+${XDG_CACHE_HOME:-$HOME/.cache}/cai/chrome when XDG_RUNTIME_DIR is unset.
+One client may use a host at a time; select a socket if multiple hosts exist.
+Browser access is opt-in, is not inherited by subagents, and is rejected by
+isolated review runtimes. Tabs are released after each turn; mark deliverable
+tabs with the chrome tool's keep action. Replaying history has no browser effects.
+.PP
+The browser protocol is internal to the extension and may change. Offline
+verification does not establish compatibility with a live installed version.
+Native-host diagnostics always use stderr; LOG_OUTPUT is ignored in that mode
+to protect framed stdout. JSON frames are buffered and bounded; requests
+are limited to 1 MiB, and responses default to 16 MiB.
 .SH COPYRIGHT
 cai and libcai Copyright (C) 2026 C89 Systems AB https://c89.systems

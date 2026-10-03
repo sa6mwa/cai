@@ -410,7 +410,7 @@ lua-env:
 
 lua-test: lua-runner
 	$(CMAKE) --build --preset debug-lua --target cai_lua cai_lua_native_todo_store_test cai_lua_runner
-	$(CTEST) --test-dir build/debug-lua --output-on-failure $(CTEST_FLAGS) -R '^cai_(shared|lua)_export_policy_test$$'
+	$(CTEST) --test-dir build/debug-lua --output-on-failure $(CTEST_FLAGS) -R '^cai_((shared|lua)_export_policy_test|lua_chrome)$$'
 	platform=linux; if [ "$$(uname -s)" = Darwin ]; then platform=darwin; fi; \
 	nm_tool="$$(command -v llvm-nm || command -v nm)"; \
 	lua_module="$$(find "$(LUA_ROCK_TREE)/lib/lua" -type f \( -name 'cai.so' -o -name 'cai.dylib' \) -print -quit)"; \
