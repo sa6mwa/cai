@@ -475,7 +475,7 @@ Linux compiler collections are pinned to Bootlin stable 2026.08-1 (GCC 15.3.0)
 for all six Linux targets. The AFL++ GCC plugin uses that same collection.
 Local tests, examples, fuzzers, and e2e helpers use the selected x86_64 GNU
 collection's loader and runtime directly; no shell-level library-path override
-is needed. c.pkt.systems 0.10.0 shared dependencies require glibc 2.43 or
+is needed. c.pkt.systems 0.11.0 shared dependencies require glibc 2.43 or
 newer on Linux. Deployments on older glibc must upgrade their runtime or use a
 fully static musl application and validate it.
 Fuzz harnesses disable their own core dumps so Apport and other host crash
@@ -671,9 +671,9 @@ make lua-test
 The LuaRock depends on the `lonejson` Lua rock and links against an installed
 `libcai` discovered through `pkg-config cai`; the local test target installs
 the current debug build into `build/luarocks/cai-prefix` first. `lonejson`
-0.44.0 is not assumed to exist on LuaRocks.org: `make lua-rock` installs it
+0.45.0 is not assumed to exist on LuaRocks.org: `make lua-rock` installs it
 from the official release source rock at
-`https://github.com/sa6mwa/lonejson/releases/download/v0.44.0/lonejson-0.44.0-1.src.rock`
+`https://github.com/sa6mwa/lonejson/releases/download/v0.45.0/lonejson-0.45.0-1.src.rock`
 when needed. Lua projects can use the rock as a facade over the C library,
 while Vectis can still call the C API directly where that fits its performance
 and integration needs better.
@@ -682,7 +682,7 @@ For manual LuaRock installation, install the matching lonejson source rock
 first because this version is served from the GitHub release, not LuaRocks.org:
 
 ```sh
-luarocks install https://github.com/sa6mwa/lonejson/releases/download/v0.44.0/lonejson-0.44.0-1.src.rock
+luarocks install https://github.com/sa6mwa/lonejson/releases/download/v0.45.0/lonejson-0.45.0-1.src.rock
 luarocks install cai-<version>-1.src.rock
 ```
 

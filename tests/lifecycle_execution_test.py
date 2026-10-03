@@ -54,7 +54,7 @@ if [ "${CAI_LIFECYCLE_FAIL:-}" = "$1" ]; then exit 7; fi
         assert count == 1, target
     fixture_makefile.write_text(source)
     env = {k: v for k, v in os.environ.items()
-           if k not in ("MAKEFLAGS", "MFLAGS", "MAKELEVEL")}
+           if k not in ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "CTEST_FILTER", "CTEST_FLAGS")}
     env.update(PATH=f'{root / "bin"}:{os.environ["PATH"]}',
                CAI_LIFECYCLE_LOG=str(log))
     # Recursive make uses the same fixture; production orchestration recipes execute.
