@@ -243,6 +243,17 @@ bar requests quota in the background after session startup and after completed
 turns, at most once every five minutes automatically. Quota retrieval does not
 block prompt readiness, and idle sessions make no periodic quota requests.
 
+`/goal` or `/goal status` shows the current durable goal and accounting.
+Prefer asking the agent to create and manage goals. For explicit control,
+`/goal new TEXT` replaces any current goal without confirmation, resets its
+accounting and token budget, and starts pursuit. `/goal pause` pauses at the
+next safe model/tool boundary; `/goal resume` resumes pursuit. `/goal clear`
+removes goal tracking while allowing the current user turn to finish.
+`/goal help` renders the command table. Unknown commands and missing objectives
+are errors; they never become goal instructions. Commands remain responsive
+during a turn, and goal state survives session replay. Completed or stopped
+pursuit leaves the interactive prompt open.
+
 `/model` shows the current and pending model plus the provider catalog.
 Use `/model MODEL` to change model within the same conversation: idle changes
 apply immediately; active requests and tools finish before the change applies

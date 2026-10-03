@@ -787,6 +787,8 @@ int cai_agent_runtime_get_goal(cai_agent_runtime *runtime,
  * Queue a host goal control. Controls are journaled before acceptance and
  * apply at the next model/tool safe boundary; when idle they apply promptly.
  * These functions are owner-thread-only. They may be called while sampling.
+ * Application failures emit RUN_FAILED when a callback exists and hold queued
+ * work until another goal control applies successfully.
  */
 /**
  * Queue a new durable goal. This is create-only: it fails while an unfinished
@@ -796,6 +798,14 @@ int cai_agent_runtime_get_goal(cai_agent_runtime *runtime,
 int cai_agent_runtime_create_goal(cai_agent_runtime *runtime,
                                   const cai_agent_goal_request *request,
                                   cai_error *error);
+/**
+ * Queue a fresh, unbudgeted goal, replacing any existing or pending goal at
+ * the next safe boundary. Resets accounting and resumes pursuit. The objective
+ * is required and copied before return. Owner-thread-only; may be called while
+ * sampling. Acceptance is journaled before return, without a separate clear.
+ */
+int cai_agent_runtime_replace_goal(cai_agent_runtime *runtime,
+                                   const char *objective, cai_error *error);
 /** Pause an active durable goal. */
 int cai_agent_runtime_pause_goal(cai_agent_runtime *runtime, cai_error *error);
 /**

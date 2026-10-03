@@ -49,6 +49,7 @@ cai_agent_runtime_model
 cai_agent_runtime_open
 cai_agent_runtime_pause_goal
 cai_agent_runtime_pump
+cai_agent_runtime_replace_goal
 cai_agent_runtime_resume_goal
 cai_agent_runtime_session_id
 cai_agent_runtime_set_goal_objective

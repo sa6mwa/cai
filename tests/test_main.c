@@ -255,6 +255,7 @@ typedef struct runtime_session_store_state {
   int saw_first_compaction_checkpoint;
   int first_compaction_checkpoint_matches;
   int appended_events;
+  int fail_append_once;
   unsigned long long load_applied_event_sequence;
   unsigned long long saved_applied_event_sequence;
   unsigned long long replay_event_sequence;
@@ -2499,6 +2500,11 @@ static int test_runtime_session_store_append_event(
   if (store == NULL || event == NULL || event->type == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "runtime test event is required");
+  }
+  if (store->fail_append_once) {
+    store->fail_append_once = 0;
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "injected journal write failure");
   }
   store->appended_events++;
   store->replay_event_sequence = event->sequence;
@@ -29957,6 +29963,277 @@ static void test_agent_runtime_host_goal_controls(test_state *state) {
   rmdir(workspace);
 }
 
+static void test_agent_runtime_goal_replace(test_state *state) {
+  char workspace[] = CAI_TEST_BINARY_DIR "/goal-replace-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_runtime_config config;
+  cai_agent_goal_request request;
+  cai_agent_goal_snapshot goal;
+  cai_agent_session_store store;
+  runtime_session_store_state storage;
+  runtime_event_state events;
+  cai_agent_session_event event;
+  cai_agent_runtime *runtime = NULL;
+  cai_client *client = NULL;
+  cai_error error;
+  int i;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "goal_replace_workspace", "mkdtemp failed");
+    return;
+  }
+  cai_error_init(&error);
+  memset(&storage, 0, sizeof(storage));
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  memset(&store, 0, sizeof(store));
+  store.context = &storage;
+  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.load_latest = test_runtime_session_store_load;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "fixture";
+  expect_int(state, "goal_replace_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = workspace;
+  config.session_store = &store;
+  config.disable_default_session_store = 1;
+  config.event_callback = test_runtime_event;
+  config.event_context = &events;
+  expect_int(state, "goal_replace_open",
+             cai_agent_runtime_open(client, &config, &runtime, &error), CAI_OK);
+  if (runtime != NULL) {
+    cai_agent_goal_request_init(&request);
+    request.objective = "budgeted old goal";
+    request.has_token_budget = 1;
+    request.token_budget = 123LL;
+    expect_int(state, "goal_replace_old",
+               cai_agent_runtime_create_goal(runtime, &request, &error),
+               CAI_OK);
+    for (i = 0; i < 20; i++) {
+      cai_agent_runtime_pump(runtime, 10L, &error);
+      cai_agent_runtime_get_goal(runtime, &goal, &error);
+      if (goal.has_goal)
+        break;
+    }
+    expect_int(state, "goal_replace_old_budget", goal.has_token_budget, 1);
+    expect_int(state, "goal_replace_invalid",
+               cai_agent_runtime_replace_goal(runtime, "", &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    storage.fail_append_once = 1;
+    expect_int(state, "goal_replace_journal_failure",
+               cai_agent_runtime_replace_goal(runtime, "not accepted", &error),
+               CAI_ERR_TRANSPORT);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    cai_agent_runtime_get_goal(runtime, &goal, &error);
+    expect_str(state, "goal_replace_journal_preserves", goal.objective,
+               "budgeted old goal");
+    cai_agent_runtime_test_set_fail_goal_status_replace(1);
+    expect_int(
+        state, "goal_replace_allocation_accept",
+        cai_agent_runtime_replace_goal(runtime, "allocation rejected", &error),
+        CAI_OK);
+    for (i = 0;
+         i < 20 && cai_agent_runtime_test_goal_status_replace_failures() == 0U;
+         i++)
+      cai_agent_runtime_pump(runtime, 10L, &error);
+    expect_int(state, "goal_replace_allocation_failure",
+               (long)cai_agent_runtime_test_goal_status_replace_failures(), 1);
+    cai_agent_runtime_test_set_fail_goal_status_replace(0);
+    for (i = 0; i < 20 && events.failed_count == 0; i++)
+      cai_agent_runtime_pump(runtime, 10L, &error);
+    expect_int(state, "goal_replace_failure_event", events.failed_count, 1);
+    expect_substr(state, "goal_replace_failure_detail", events.failure_message,
+                  "failed to preserve goal status");
+    expect_int(state, "goal_replace_failure_blocks_input",
+               cai_agent_runtime_submit(
+                   runtime, "must not run under the old goal", &error),
+               CAI_ERR_INVALID);
+    expect_substr(state, "goal_replace_failure_blocks_reason", error.message,
+                  "goal control failed");
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    cai_agent_runtime_get_goal(runtime, &goal, &error);
+    expect_str(state, "goal_replace_allocation_preserves", goal.objective,
+               "budgeted old goal");
+    expect_int(
+        state, "goal_replace_accept",
+        cai_agent_runtime_replace_goal(runtime, "fresh objective", &error),
+        CAI_OK);
+    for (i = 0; i < 20; i++) {
+      cai_agent_runtime_pump(runtime, 10L, &error);
+      cai_agent_runtime_get_goal(runtime, &goal, &error);
+      if (goal.objective != NULL &&
+          strcmp(goal.objective, "fresh objective") == 0)
+        break;
+    }
+    expect_str(state, "goal_replace_objective", goal.objective,
+               "fresh objective");
+    expect_str(state, "goal_replace_active", goal.status, "active");
+    expect_int(state, "goal_replace_unbudgeted", goal.has_token_budget, 0);
+    expect_int(state, "goal_replace_reset_usage", goal.tokens_used, 0);
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+
+    /* Simulate an accepted replacement beyond the checkpoint watermark. */
+    storage.checkpoint_json = storage.saved_checkpoint;
+    storage.load_applied_event_sequence = storage.saved_applied_event_sequence;
+    storage.replay_event_count = 0U;
+    event.sequence = storage.saved_applied_event_sequence + 1U;
+    event.type = "goal_replace";
+    event.data = "replayed replacement";
+    test_runtime_session_store_append_event(&storage, workspace,
+                                            storage.session_id, &event, &error);
+    config.resume_latest = 1;
+    expect_int(state, "goal_replace_reopen",
+               cai_agent_runtime_open(client, &config, &runtime, &error),
+               CAI_OK);
+    if (runtime != NULL) {
+      for (i = 0; i < 20; i++) {
+        cai_agent_runtime_pump(runtime, 10L, &error);
+        cai_agent_runtime_get_goal(runtime, &goal, &error);
+        if (goal.objective != NULL && strcmp(goal.objective, event.data) == 0)
+          break;
+      }
+      expect_str(state, "goal_replace_replayed", goal.objective, event.data);
+      expect_int(state, "goal_replace_replayed_unbounded",
+                 goal.has_token_budget, 0);
+      expect_int(state, "goal_replace_clear",
+                 cai_agent_runtime_clear_goal(runtime, &error), CAI_OK);
+      expect_int(state, "goal_replace_clear_twice",
+                 cai_agent_runtime_clear_goal(runtime, &error), CAI_OK);
+      for (i = 0; i < 20; i++) {
+        cai_agent_runtime_pump(runtime, 10L, &error);
+        cai_agent_runtime_get_goal(runtime, &goal, &error);
+        if (!goal.has_goal)
+          break;
+      }
+      expect_int(state, "goal_replace_cleared", goal.has_goal, 0);
+      cai_agent_runtime_close(runtime);
+      runtime = NULL;
+    }
+    storage.load_applied_event_sequence = storage.saved_applied_event_sequence;
+    storage.replay_event_count = 0U;
+    event.sequence = storage.saved_applied_event_sequence + 1U;
+    event.data = "";
+    test_runtime_session_store_append_event(&storage, workspace,
+                                            storage.session_id, &event, &error);
+    expect_int(state, "goal_replace_bad_replay",
+               cai_agent_runtime_open(client, &config, &runtime, &error),
+               CAI_ERR_INVALID);
+  }
+  cai_agent_runtime_test_set_fail_goal_status_replace(0);
+  cai_agent_runtime_close(runtime);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  rmdir(workspace);
+}
+
+static void test_agent_runtime_goal_replace_queued_failure(test_state *state) {
+  char workspace[] = CAI_TEST_BINARY_DIR "/goal-queued-failure-XXXXXX";
+  cai_client_config client_config;
+  cai_agent_runtime_config config;
+  cai_agent_session_store store;
+  runtime_goal_checkpoint_race_state race;
+  runtime_event_state events;
+  cai_agent_runtime *runtime = NULL;
+  cai_client *client = NULL;
+  cai_agent_run_state run_state;
+  cai_error error;
+  int waiting = 0;
+  int i;
+
+  if (mkdtemp(workspace) == NULL) {
+    test_fail(state, "goal_queued_failure_workspace", "mkdtemp failed");
+    return;
+  }
+  memset(&race, 0, sizeof(race));
+  memset(&store, 0, sizeof(store));
+  memset(&events, 0, sizeof(events));
+  events.owner = pthread_self();
+  pthread_mutex_init(&race.lock, NULL);
+  pthread_cond_init(&race.condition, NULL);
+  cai_error_init(&error);
+  store.context = &race;
+  store.checkpoint = test_runtime_goal_race_checkpoint;
+  store.append_event = test_runtime_session_store_append_event;
+  store.load_latest = test_runtime_session_store_load;
+  store.load_events_after = test_runtime_session_store_load_events_after;
+  cai_client_config_init(&client_config);
+  client_config.api_key = "fixture";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.timeout_ms = 50L;
+  expect_int(state, "goal_queued_failure_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_agent_runtime_config_init(&config);
+  config.workspace_directory = workspace;
+  config.session_store = &store;
+  config.disable_default_session_store = 1;
+  config.event_callback = test_runtime_event;
+  config.event_context = &events;
+  expect_int(state, "goal_queued_failure_open",
+             cai_agent_runtime_open(client, &config, &runtime, &error), CAI_OK);
+  if (runtime != NULL) {
+    pthread_mutex_lock(&race.lock);
+    race.block_checkpoint = 1;
+    pthread_mutex_unlock(&race.lock);
+    expect_int(state, "goal_queued_failure_hold",
+               cai_agent_runtime_clear_goal(runtime, &error), CAI_OK);
+    for (i = 0; i < 30 && !waiting; i++) {
+      cai_agent_runtime_pump(runtime, 10L, &error);
+      pthread_mutex_lock(&race.lock);
+      waiting = race.checkpoint_waiting;
+      pthread_mutex_unlock(&race.lock);
+    }
+    expect_int(state, "goal_queued_failure_checkpoint_waiting", waiting, 1);
+    cai_agent_runtime_test_set_fail_goal_status_replace(1);
+    expect_int(state, "goal_queued_failure_replace",
+               cai_agent_runtime_replace_goal(
+                   runtime, "must be applied before work", &error),
+               CAI_OK);
+    expect_int(state, "goal_queued_failure_turn",
+               cai_agent_runtime_submit_queued(
+                   runtime, "must stay queued if replacement fails", &error),
+               CAI_OK);
+    pthread_mutex_lock(&race.lock);
+    race.checkpoint_released = 1;
+    pthread_cond_broadcast(&race.condition);
+    pthread_mutex_unlock(&race.lock);
+    for (i = 0; i < 30 && events.failed_count == 0; i++)
+      cai_agent_runtime_pump(runtime, 10L, &error);
+    expect_int(state, "goal_queued_failure_reported", events.failed_count, 1);
+    expect_substr(state, "goal_queued_failure_reason", events.failure_message,
+                  "failed to preserve goal status");
+    cai_agent_runtime_test_set_fail_goal_status_replace(0);
+    cai_agent_runtime_pump(runtime, 100L, &error);
+    expect_int(state, "goal_queued_failure_not_run", events.failed_count, 1);
+    cai_agent_runtime_state(runtime, &run_state, &error);
+    expect_int(state, "goal_queued_failure_stays_failed", run_state,
+               CAI_AGENT_FAILED);
+    /* Explicit recovery releases the accepted turn. Its deliberately closed
+     * loopback endpoint then produces the expected transport failure. */
+    expect_int(state, "goal_queued_failure_recovery",
+               cai_agent_runtime_clear_goal(runtime, &error), CAI_OK);
+    for (i = 0; i < 30 && events.failed_count < 2; i++)
+      cai_agent_runtime_pump(runtime, 10L, &error);
+    expect_int(state, "goal_queued_failure_released", events.failed_count, 2);
+    expect_substr(state, "goal_queued_failure_transport",
+                  events.failure_message, "HTTP");
+    cai_agent_runtime_close(runtime);
+  }
+  cai_agent_runtime_test_set_fail_goal_status_replace(0);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  pthread_cond_destroy(&race.condition);
+  pthread_mutex_destroy(&race.lock);
+  rmdir(workspace);
+}
+
 static void test_agent_runtime_goal_checkpoint_watermark(test_state *state) {
   char workspace[] = "/tmp/cai-runtime-goal-watermark-XXXXXX";
   cai_client_config client_config;
@@ -50584,6 +50861,9 @@ static const test_entry test_entries[] = {
     {"agent_runtime_patch_events", test_agent_runtime_patch_events},
     {"agent_runtime_poll_only", test_agent_runtime_poll_only},
     {"agent_runtime_host_goal_controls", test_agent_runtime_host_goal_controls},
+    {"agent_runtime_goal_replace", test_agent_runtime_goal_replace},
+    {"agent_runtime_goal_replace_queued_failure",
+     test_agent_runtime_goal_replace_queued_failure},
     {"agent_runtime_goal_checkpoint_watermark",
      test_agent_runtime_goal_checkpoint_watermark},
     {"agent_runtime_goal_create_status_allocation_failure",

@@ -1110,6 +1110,9 @@ do
   assert_runtime_argument_error_releases_activity("runtime goal objective", function(runtime)
     runtime:set_goal_objective({})
   end)
+  assert_runtime_argument_error_releases_activity("runtime goal replacement", function(runtime)
+    runtime:replace_goal({})
+  end)
   assert_runtime_argument_error_releases_activity("runtime goal budget", function(runtime)
     runtime:set_goal_token_budget({})
   end)
@@ -1119,7 +1122,7 @@ do
 
   local runtime_meta = debug.getregistry()["cai.agent_runtime"]
   assert(type(runtime_meta) == "table", "missing agent runtime metatable")
-  for _, method in ipairs({ "submit", "submit_interactive", "set_model", "submit_review", "start_review", "finish_review", "submit_steering", "submit_queued", "goal", "create_goal", "pause_goal", "resume_goal", "set_goal_objective", "set_goal_token_budget", "clear_goal_token_budget", "clear_goal", "pump", "state",
+  for _, method in ipairs({ "submit", "submit_interactive", "set_model", "submit_review", "start_review", "finish_review", "submit_steering", "submit_queued", "goal", "create_goal", "replace_goal", "pause_goal", "resume_goal", "set_goal_objective", "set_goal_token_budget", "clear_goal_token_budget", "clear_goal", "pump", "state",
     "session_id", "model", "export_markdown", "export_markdown_file", "wakeup_fd", "close" }) do
     assert(type(runtime_meta.__index[method]) == "function",
       "missing agent runtime method " .. method)
@@ -1369,12 +1372,26 @@ do
     assert(goal.status == "active" and goal.objective == "Retargeted host goal",
       "Lua host goal resume and retarget")
     assert(not goal.has_token_budget, "Lua host goal budget removal")
+    assert_ok(goal_runtime:replace_goal("Fresh Lua goal"))
+    for _ = 1, 10 do
+      goal_runtime:pump(10)
+      goal = goal_runtime:goal()
+      if goal.objective == "Fresh Lua goal" then break end
+    end
+    assert(goal.objective == "Fresh Lua goal" and goal.status == "active",
+      "Lua atomic goal replacement")
+    assert(not goal.has_token_budget and goal.tokens_used == 0,
+      "Lua fresh goal resets budget and accounting")
+    assert_not_ok(goal_runtime:replace_goal(""))
     assert_ok(goal_runtime:clear_goal())
     for _ = 1, 10 do
       goal_runtime:pump(10)
       if not goal_runtime:goal().has_goal then break end
     end
     assert(not goal_runtime:goal().has_goal, "Lua host goal clear")
+    assert_ok(goal_runtime:clear_goal())
+    for _ = 1, 10 do goal_runtime:pump(10) end
+    assert(not goal_runtime:goal().has_goal, "Lua host goal clear is idempotent")
     goal_runtime:close()
   end
   do

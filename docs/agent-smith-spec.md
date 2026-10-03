@@ -1238,11 +1238,20 @@ and `budget_limited`. Only `active` is model-settable at creation and only
 `complete`/`blocked` at update. Hosts can create, pause, resume, replace an
 objective, set or remove a token budget, and clear a goal through the runtime.
 Host `create_goal` follows the same insert-only rule; `set_goal_objective` is
-the explicit update path, and a host that wants a fresh goal must clear first.
+the explicit objective update path. `cai_agent_runtime_replace_goal` atomically
+starts a fresh, unbudgeted goal, replacing any current or pending goal in queue
+order and resetting accounting. Lua exposes the same operation as
+`runtime:replace_goal(objective)`. The TUI uses it for `/goal new TEXT` and
+startup `--goal`; `/goal [status|help|pause|resume|clear]` exposes explicit
+controls. Prefer requesting goal lifecycle through the agent. Unknown slash
+subcommands are errors, rather than implicit objective text.
 Those controls are accepted during sampling, journaled before success, and
 applied at the next model/tool safe boundary. `cai_agent_runtime_get_goal`
 returns the UI-facing snapshot, including elapsed active seconds and a
 non-negative remaining-token count when a budget exists.
+Failed control applications report a detailed runtime failure and hold queued
+work until another goal control applies successfully, so a failed replacement
+cannot launch work under a superseded goal.
 CAI records at most one blocked assessment for each distinct user-turn
 boundary. A repeated `update_goal({"status":"blocked"})` in the same turn is
 rejected without advancing the count; an intervening active-goal turn that

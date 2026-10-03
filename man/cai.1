@@ -318,6 +318,28 @@ tool finishes before the selection applies at the next durable tool-round or
 turn boundary, before the next model request. Later selections replace a
 pending selection. Catalog discovery uses a separate client and cache.
 .TP
+.BI /goal " [COMMAND]"
+Show the current durable goal with status, token accounting, and active time.
+The status command also shows this view; help renders the command table.
+Prefer asking the agent to create and manage goals.
+.TP
+.BI /goal " new TEXT"
+Start and pursue a fresh, unbudgeted goal, replacing any current goal without
+confirmation and resetting accounting. During a turn, replacement applies at
+the next safe model/tool boundary. Completion leaves the interactive prompt open.
+.TP
+.B /goal pause
+Pause pursuit after the current request or tool round finishes.
+.TP
+.B /goal resume
+Resume pursuit of a paused, blocked, or limited goal. Existing session usage
+limits still apply.
+.TP
+.B /goal clear
+Remove goal tracking without cancelling the current user turn. Repeating clear
+is harmless. Goal state is persisted with the conversation. Unknown commands
+and missing new objectives are errors, never implicit goal instructions.
+.TP
 .BI /output " [compact|full]"
 Show or change the tool preview mode. The setting applies to future tool calls;
 active calls and past output retain their original presentation.

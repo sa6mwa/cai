@@ -1106,6 +1106,10 @@ if(CAI_BUILD_CLI)
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_test.py"
         "$<TARGET_FILE:cai_cli>")
     set_tests_properties(cai_cli_terminal PROPERTIES TIMEOUT 60)
+    add_test(NAME cai_cli_goal
+      COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_goal_test.py"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_goal PROPERTIES TIMEOUT 45)
     add_test(NAME cai_cli_tool_display
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_tool_display_test.py"
         "$<TARGET_FILE:cai_cli>")
@@ -1243,7 +1247,8 @@ if(CAI_BUILD_TESTS)
     "${CAI_PSLOG_INCLUDE_DIR}"
     ${CURL_INCLUDE_DIRS}
     "${CMAKE_CURRENT_SOURCE_DIR}/src")
-  target_compile_definitions(cai_tests PRIVATE CAI_TESTING)
+  target_compile_definitions(cai_tests PRIVATE CAI_TESTING
+    CAI_TEST_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}")
   cai_link_internal_consumer(cai_tests)
   if(CAI_PSLOG_LINK)
     target_link_libraries(cai_tests PRIVATE ${CAI_PSLOG_LINK})
@@ -1652,6 +1657,8 @@ if(CAI_BUILD_TESTS)
     agent_runtime_patch_events
     agent_runtime_poll_only
     agent_runtime_host_goal_controls
+    agent_runtime_goal_replace
+    agent_runtime_goal_replace_queued_failure
     agent_runtime_goal_checkpoint_watermark
     agent_runtime_goal_create_status_allocation_failure
     agent_runtime_goal_budget

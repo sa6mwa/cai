@@ -5014,7 +5014,8 @@ enum {
   CAI_LUA_GOAL_SET_OBJECTIVE = 4,
   CAI_LUA_GOAL_SET_BUDGET = 5,
   CAI_LUA_GOAL_CLEAR_BUDGET = 6,
-  CAI_LUA_GOAL_CLEAR = 7
+  CAI_LUA_GOAL_CLEAR = 7,
+  CAI_LUA_GOAL_REPLACE = 8
 };
 
 static int cai_lua_agent_runtime_goal_control(lua_State *L, int kind) {
@@ -5044,7 +5045,8 @@ static int cai_lua_agent_runtime_goal_control(lua_State *L, int kind) {
     }
     request.objective = objective;
     request.token_budget = token_budget;
-  } else if (kind == CAI_LUA_GOAL_SET_OBJECTIVE) {
+  } else if (kind == CAI_LUA_GOAL_SET_OBJECTIVE ||
+             kind == CAI_LUA_GOAL_REPLACE) {
     objective = luaL_checkstring(L, 2);
   } else if (kind == CAI_LUA_GOAL_SET_BUDGET) {
     token_budget = (long long)luaL_checkinteger(L, 2);
@@ -5053,7 +5055,9 @@ static int cai_lua_agent_runtime_goal_control(lua_State *L, int kind) {
   cai_lua_agent_runtime_enter(self);
   if (kind == CAI_LUA_GOAL_CREATE) {
     rc = cai_agent_runtime_create_goal(self->ptr, &request, &error);
-  } else if (kind == CAI_LUA_GOAL_PAUSE)
+  } else if (kind == CAI_LUA_GOAL_REPLACE)
+    rc = cai_agent_runtime_replace_goal(self->ptr, objective, &error);
+  else if (kind == CAI_LUA_GOAL_PAUSE)
     rc = cai_agent_runtime_pause_goal(self->ptr, &error);
   else if (kind == CAI_LUA_GOAL_RESUME)
     rc = cai_agent_runtime_resume_goal(self->ptr, &error);
@@ -5071,6 +5075,9 @@ static int cai_lua_agent_runtime_goal_control(lua_State *L, int kind) {
 }
 static int cai_lua_agent_runtime_create_goal(lua_State *L) {
   return cai_lua_agent_runtime_goal_control(L, CAI_LUA_GOAL_CREATE);
+}
+static int cai_lua_agent_runtime_replace_goal(lua_State *L) {
+  return cai_lua_agent_runtime_goal_control(L, CAI_LUA_GOAL_REPLACE);
 }
 static int cai_lua_agent_runtime_pause_goal(lua_State *L) {
   return cai_lua_agent_runtime_goal_control(L, CAI_LUA_GOAL_PAUSE);
@@ -11463,6 +11470,7 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"submit_queued", cai_lua_agent_runtime_submit_queued},
     {"goal", cai_lua_agent_runtime_goal},
     {"create_goal", cai_lua_agent_runtime_create_goal},
+    {"replace_goal", cai_lua_agent_runtime_replace_goal},
     {"pause_goal", cai_lua_agent_runtime_pause_goal},
     {"resume_goal", cai_lua_agent_runtime_resume_goal},
     {"set_goal_objective", cai_lua_agent_runtime_set_goal_objective},

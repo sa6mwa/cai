@@ -116,6 +116,8 @@ typedef struct cli_state {
 } cli_state;
 
 static int cli_advance_automation(cli_state *state, cai_error *error);
+static int cli_submit_automation(cli_state *state, const char *instruction,
+                                 cai_error *error);
 
 static int cli_load_model_metadata(const cai_cli_options *options, char **out,
                                    cai_error *error) {
@@ -1022,6 +1024,136 @@ static int cli_switch_session(cli_state *state, const char *id, int new_session,
   return cli_open_runtime(state, id, new_session, error);
 }
 
+static int cli_goal_command(cli_state *state, const char *arg,
+                            cai_error *error) {
+  static const char usage[] =
+      "Use /goal [status|help|pause|resume|clear] or /goal new TEXT. "
+      "Prefer asking the agent to create and manage goals.";
+  cai_agent_goal_snapshot goal;
+  cai_agent_run_state run_state;
+  pslog_field fields[2];
+  char metrics[256];
+  const char *objective = NULL;
+  const char *action;
+  int rc;
+
+  arg += strspn(arg, " \t\r\n");
+  if (strcmp(arg, "help") == 0) {
+    static const char *const help[] = {
+        "## Goal commands\n\n"
+        "Prefer asking the agent to create and manage goals. These explicit "
+        "controls apply at the next safe model/tool boundary.\n\n"
+        "| Command | Action |\n| --- | --- |\n"
+        "| `/goal`, `/goal status` | Show the current durable goal. |\n"
+        "| `/goal new TEXT` | Start a fresh, unbudgeted goal, replacing the "
+        "current goal without confirmation, and pursue it. |\n",
+        "| `/goal pause` | Pause pursuit after the current request/tool round. "
+        "|\n"
+        "| `/goal resume` | Resume pursuit of a paused or limited goal. |\n"
+        "| `/goal clear` | Remove goal tracking; the current user turn "
+        "continues. |\n"
+        "| `/goal help` | Show this help. |\n"};
+    size_t i;
+    for (i = 0U; i < sizeof(help) / sizeof(help[0]); i++)
+      if (cli_text(state, help[i], strlen(help[i])) != 0)
+        return CAI_ERR_TRANSPORT;
+    return cli_finish_response(state) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+  }
+  if (*arg == '\0' || strcmp(arg, "status") == 0) {
+    rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
+    if (rc != CAI_OK)
+      return rc;
+    if (!goal.has_goal)
+      return cli_write(state, "No goal. Use /goal new TEXT, or ask the agent "
+                              "to create and manage one.\n") == 0
+                 ? CAI_OK
+                 : CAI_ERR_TRANSPORT;
+    snprintf(metrics, sizeof(metrics), "## Goal\n\nStatus: **%s**\n\n",
+             goal.status);
+    if (cli_text(state, metrics, strlen(metrics)) != 0 ||
+        cli_text(state, goal.objective, strlen(goal.objective)) != 0)
+      return CAI_ERR_TRANSPORT;
+    snprintf(metrics, sizeof(metrics),
+             "\n\nTokens used: %lld. Active time: %lld seconds.\n\n",
+             goal.tokens_used, goal.elapsed_seconds);
+    if (cli_text(state, metrics, strlen(metrics)) != 0)
+      return CAI_ERR_TRANSPORT;
+    if (goal.has_token_budget)
+      snprintf(metrics, sizeof(metrics),
+               "Token budget: %lld; remaining: %lld.\n", goal.token_budget,
+               goal.remaining_tokens);
+    else
+      snprintf(metrics, sizeof(metrics), "Token budget: unbounded.\n");
+    return cli_text(state, metrics, strlen(metrics)) == 0 &&
+                   cli_finish_response(state) == 0
+               ? CAI_OK
+               : CAI_ERR_TRANSPORT;
+  }
+  if (strncmp(arg, "new", 3U) == 0 &&
+      (arg[3] == '\0' || strchr(" \t\r\n", arg[3]) != NULL)) {
+    objective = arg + 3U;
+    objective += strspn(objective, " \t\r\n");
+    if (*objective == '\0')
+      return cai_cli_error(error, CAI_ERR_INVALID, usage);
+    action = "new";
+    rc = cai_agent_runtime_replace_goal(state->runtime, objective, error);
+  } else if (strcmp(arg, "pause") == 0) {
+    rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
+    if (rc != CAI_OK)
+      return rc;
+    if (!goal.has_goal || strcmp(goal.status, "active") != 0)
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "only an active goal can pause");
+    action = "pause";
+    rc = cai_agent_runtime_pause_goal(state->runtime, error);
+  } else if (strcmp(arg, "resume") == 0) {
+    rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
+    if (rc != CAI_OK)
+      return rc;
+    if (!goal.has_goal || (strcmp(goal.status, "paused") != 0 &&
+                           strcmp(goal.status, "blocked") != 0 &&
+                           strcmp(goal.status, "budget_limited") != 0 &&
+                           strcmp(goal.status, "usage_limited") != 0))
+      return cai_cli_error(error, CAI_ERR_INVALID, "goal is not resumable");
+    action = "resume";
+    rc = cai_agent_runtime_resume_goal(state->runtime, error);
+  } else if (strcmp(arg, "clear") == 0) {
+    action = "clear";
+    rc = cai_agent_runtime_clear_goal(state->runtime, error);
+  } else {
+    return cai_cli_error(error, CAI_ERR_INVALID, usage);
+  }
+  if (rc != CAI_OK)
+    return rc;
+  fields[0] = pslog_str("command", action);
+  fields[1] = pslog_str("prompt_kind", "goal_control");
+  cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, "goal_control",
+                      "user", arg, strlen(arg), fields, 2U);
+  if (cli_write(state, "Goal control queued for the next safe model/tool "
+                       "boundary.\n") != 0)
+    return CAI_ERR_TRANSPORT;
+  if (objective == NULL && strcmp(action, "resume") != 0) {
+    state->auto_goal = 0;
+    state->automation_done = 1;
+    return CAI_OK;
+  }
+  state->auto_goal = 1;
+  state->automation_done = 0;
+  state->automation_failed = 0;
+  rc = cai_agent_runtime_state(state->runtime, &run_state, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (run_state == CAI_AGENT_SAMPLING ||
+      run_state == CAI_AGENT_DISPATCHING_TOOL) {
+    state->awaiting_turn = 1;
+    return CAI_OK;
+  }
+  return cli_submit_automation(
+      state,
+      objective != NULL ? objective : "Resume pursuing the current goal.",
+      error);
+}
+
 static int cli_handle_command(cli_state *state, const char *line,
                               cai_error *error, int *handled) {
   const char *arg;
@@ -1029,6 +1161,9 @@ static int cli_handle_command(cli_state *state, const char *line,
   unsigned long number;
   int rc;
   *handled = 1;
+  if (strcmp(line, "/goal") == 0 || strncmp(line, "/goal ", 6U) == 0 ||
+      strncmp(line, "/goal\t", 6U) == 0)
+    return cli_goal_command(state, line + 5U, error);
   if (strcmp(line, "/model") == 0 || strncmp(line, "/model ", 7U) == 0) {
     cai_agent_runtime_settings effective;
     cai_agent_runtime_settings pending;
@@ -1153,6 +1288,9 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| Command | Action |\n"
         "| --- | --- |\n"
         "| `/help` | Show this help. |\n"
+        "| `/goal [COMMAND]` | Show a goal; new TEXT replaces it, pause/resume "
+        "control pursuit, clear removes it, help explains commands. Prefer "
+        "asking the agent to manage goals. |\n",
         "| `/model [MODEL]` | Show models or change model at the next safe "
         "model/tool boundary, keeping this conversation. |\n",
         "| `/output [compact\\|full]` | Show or change tool previews, starting "
@@ -1293,34 +1431,19 @@ static int cli_submit_automation(cli_state *state, const char *instruction,
 static int cli_start_goal(cli_state *state, const char *objective,
                           cai_error *error) {
   cai_agent_goal_snapshot goal;
-  cai_agent_goal_request request;
   int rc;
 
-  rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
-  if (rc != CAI_OK)
-    return rc;
-  if (goal.has_goal && strcmp(goal.status, "complete") != 0) {
-    rc = cai_agent_runtime_clear_goal(state->runtime, error);
-    if (rc != CAI_OK)
-      return rc;
-    do {
-      rc = cai_agent_runtime_pump(state->runtime, 100L, error);
-      if (rc != CAI_OK)
-        return rc;
-      rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
-    } while (rc == CAI_OK && goal.has_goal);
-    if (rc != CAI_OK)
-      return rc;
-  }
-  cai_agent_goal_request_init(&request);
-  request.objective = objective;
-  rc = cai_agent_runtime_create_goal(state->runtime, &request, error);
+  rc = cai_agent_runtime_replace_goal(state->runtime, objective, error);
   if (rc != CAI_OK)
     return rc;
   do {
     rc = cai_agent_runtime_pump(state->runtime, 100L, error);
     if (rc != CAI_OK)
       return rc;
+    if (state->automation_failed)
+      return cai_cli_error(
+          error, CAI_ERR_TRANSPORT,
+          "goal could not be started; see the preceding error");
     rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
   } while (rc == CAI_OK &&
            (!goal.has_goal || strcmp(goal.objective, objective) != 0));
