@@ -7,6 +7,7 @@
 #include "options.h"
 #include "pouch.h"
 #include "quota_refresh.h"
+#include "reasoning.h"
 #include "response.h"
 #include "review_report.h"
 #include "session_commands.h"
@@ -109,8 +110,9 @@ typedef struct cli_state {
   sl_watch_id_t quota_watch_id;
   int has_quota_watch;
   cai_cli_status status;
-  char reasoning_summary_raw[512];
-  size_t reasoning_summary_length;
+  cai_cli_reasoning reasoning;
+  int reasoning_line_start;
+  int reasoning_ansi;
   char workspace[PATH_MAX];
   char clipboard_directory[PATH_MAX];
 } cli_state;
@@ -234,6 +236,8 @@ static int cli_sink(void *context, const char *bytes, size_t count) {
   cli_state *state;
   size_t i;
   state = (cli_state *)context;
+  if (count == 0U)
+    return 0;
   if (state->batch)
     return fwrite(bytes, 1U, count, stdout) == count ? 0 : -1;
   if (sl_output_stream_write(state->sl, bytes, count) != SL_OK)
@@ -267,6 +271,49 @@ static int cli_tool_sink(void *context, const void *bytes, size_t count,
     return CAI_OK;
   return cai_cli_error(error, CAI_ERR_TRANSPORT, "cannot write tool activity");
 }
+/* Prefix visible renderer rows without retaining body text or inserting a
+ * marker inside an ANSI sequence split across writes. Blank rows stay blank. */
+static int cli_reasoning_sink(void *context, const char *bytes, size_t count) {
+  cli_state *state = context;
+  size_t i;
+  size_t start = 0U;
+  for (i = 0U; i < count; i++) {
+    unsigned char ch = (unsigned char)bytes[i];
+    if (state->reasoning_line_start && state->reasoning_ansi == 0 &&
+        ch != 27U && ch != '\n' && ch != '\r') {
+      if (cli_sink(state, bytes + start, i - start) != 0 ||
+          cli_sink(state, "? ", 2U) != 0)
+        return -1;
+      start = i;
+      state->reasoning_line_start = 0;
+    }
+    if (state->reasoning_ansi == 1) {
+      state->reasoning_ansi = ch == '[' ? 2 : ch == ']' ? 3 : 0;
+    } else if (state->reasoning_ansi == 2) {
+      if (ch >= 0x40U && ch <= 0x7eU)
+        state->reasoning_ansi = 0;
+    } else if (state->reasoning_ansi == 3) {
+      if (ch == 7U)
+        state->reasoning_ansi = 0;
+      else if (ch == 27U)
+        state->reasoning_ansi = 4;
+    } else if (state->reasoning_ansi == 4) {
+      state->reasoning_ansi = ch == '\\' ? 0 : 3;
+    } else if (ch == 27U) {
+      state->reasoning_ansi = 1;
+    } else if (ch == '\n') {
+      state->reasoning_line_start = 1;
+    }
+  }
+  return cli_sink(state, bytes + start, count - start);
+}
+/* Keep a single libmdf binding: replacing a sink discards its document state.
+ */
+static int cli_renderer_sink(void *context, const char *bytes, size_t count) {
+  cli_state *state = context;
+  return state->reasoning_open ? cli_reasoning_sink(context, bytes, count)
+                               : cli_sink(context, bytes, count);
+}
 static int cli_tool_display_init(cli_state *state, cai_error *error) {
   cai_tool_display_config config;
   cai_sink_callbacks callbacks;
@@ -295,8 +342,10 @@ static int cli_geometry(cli_state *state) {
   }
   /* Softline owns native terminal sizing; only libmdf needs the new width. */
   if (state->renderer != NULL &&
-      state->renderer->set_geometry(state->renderer, width, width >= 5 ? 2 : 0,
-                                    0) != MDF_OK) {
+      state->renderer->set_geometry(
+          state->renderer,
+          state->reasoning_open ? (width >= 5 ? width - 2 : 3) : width,
+          state->reasoning_open ? 0 : (width >= 5 ? 2 : 0), 0) != MDF_OK) {
     return -1;
   }
   state->width = width;
@@ -324,7 +373,30 @@ static int cli_finish_reasoning(cli_state *state) {
   }
   state->documents_rendered++;
   state->reasoning_open = 0;
+  if (state->renderer->set_geometry(state->renderer, state->width,
+                                    state->width >= 5 ? 2 : 0, 0) != MDF_OK)
+    return -1;
   return 0;
+}
+
+static int cli_reasoning_body(void *context, const char *data, size_t length) {
+  cli_state *state = context;
+  if (cli_finish_response(state) != 0 || cli_geometry(state) != 0)
+    return -1;
+  if (!state->reasoning_open) {
+    if (state->documents_rendered > 0 &&
+        state->renderer->begin_document(state->renderer) != MDF_OK)
+      return -1;
+    if (state->renderer->set_geometry(state->renderer,
+                                      state->width >= 5 ? state->width - 2 : 3,
+                                      0, 0) != MDF_OK)
+      return -1;
+    state->reasoning_open = 1;
+    state->reasoning_line_start = 1;
+    state->reasoning_ansi = 0;
+  }
+  return state->renderer->feed(state->renderer, data, length) == MDF_OK ? 0
+                                                                        : -1;
 }
 
 static int cli_text(cli_state *state, const char *data, size_t length) {
@@ -369,29 +441,6 @@ static int cli_prompt(cli_state *state, const char *text, int history) {
     return -1;
   state->feed_breaks = 2;
   return 0;
-}
-
-static void cli_reasoning_append(cli_state *state, const char *data,
-                                 size_t length) {
-  size_t capacity = sizeof(state->reasoning_summary_raw) - 1U;
-  size_t shift;
-  size_t i;
-  if (length >= capacity) {
-    data += length - capacity;
-    length = capacity;
-    state->reasoning_summary_length = 0U;
-  } else if (state->reasoning_summary_length + length > capacity) {
-    shift = state->reasoning_summary_length + length - capacity;
-    memmove(state->reasoning_summary_raw, state->reasoning_summary_raw + shift,
-            state->reasoning_summary_length - shift);
-    state->reasoning_summary_length -= shift;
-  }
-  for (i = 0U; i < length; i++) {
-    state->reasoning_summary_raw[state->reasoning_summary_length + i] =
-        data[i] == '\0' ? ' ' : data[i];
-  }
-  state->reasoning_summary_length += length;
-  state->reasoning_summary_raw[state->reasoning_summary_length] = '\0';
 }
 
 static void cli_log_event(cli_state *state,
@@ -539,8 +588,7 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     }
     if (event->type == CAI_AGENT_EVENT_RUN_STARTED) {
       state->show_welcome = 0;
-      state->reasoning_summary_length = 0U;
-      state->reasoning_summary_raw[0] = '\0';
+      cai_cli_reasoning_reset(&state->reasoning);
       cai_cli_response_boundary(&state->final_response);
     }
   }
@@ -559,10 +607,13 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     return cli_text(state, event->data, event->data_length) == 0
                ? CAI_OK
                : CAI_ERR_TRANSPORT;
-  if (event->type == CAI_AGENT_EVENT_RESPONSE_COMPLETED)
-    return cli_finish_response(state) == 0 && cli_finish_reasoning(state) == 0
-               ? CAI_OK
-               : CAI_ERR_TRANSPORT;
+  if (event->type == CAI_AGENT_EVENT_RESPONSE_COMPLETED) {
+    int rc = cli_finish_response(state) == 0 && cli_finish_reasoning(state) == 0
+                 ? CAI_OK
+                 : CAI_ERR_TRANSPORT;
+    cai_cli_reasoning_end(&state->reasoning);
+    return rc;
+  }
   if ((event->type >= CAI_AGENT_EVENT_TOOL_CALL_STARTED &&
        event->type <= CAI_AGENT_EVENT_TOOL_CALL_FAILED) ||
       (event->type >= CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED &&
@@ -575,19 +626,9 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     return cai_tool_display_event(state->tool_display, event, error);
   } else if (event->type == CAI_AGENT_EVENT_REASONING_SUMMARY &&
              event->data != NULL && event->data_length > 0U) {
-    if (event->parent_tool_call_id == NULL)
-      cli_reasoning_append(state, event->data, event->data_length);
-    if (cli_geometry(state) != 0 || cli_finish_response(state) != 0)
-      return CAI_ERR_TRANSPORT;
-    if (!state->reasoning_open) {
-      if (cli_sink(state, "\n[reasoning]\n", 13U) != 0 ||
-          (state->documents_rendered > 0 &&
-           state->renderer->begin_document(state->renderer) != MDF_OK))
-        return CAI_ERR_TRANSPORT;
-    }
-    state->reasoning_open = 1;
-    if (state->renderer->feed(state->renderer, event->data,
-                              event->data_length) != MDF_OK)
+    if (cai_cli_reasoning_feed(&state->reasoning, event->data,
+                               event->data_length, cli_reasoning_body,
+                               state) != 0)
       return CAI_ERR_TRANSPORT;
   }
   return CAI_OK;
@@ -637,6 +678,7 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
   int has_context;
   const char *model;
   const char *effort;
+  const char *reasoning_title;
   int busy;
   int rc;
   if (!state->interactive) {
@@ -685,8 +727,9 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
       return CAI_ERR_TRANSPORT;
     state->timer_armed = metrics.turn_active;
   }
-  if (cai_cli_turn_status_message(turn_message, sizeof(turn_message),
-                                  state->reasoning_summary_raw, &metrics) != 0)
+  if (cai_cli_reasoning_title(&state->reasoning, &reasoning_title) != 0 ||
+      cai_cli_turn_status_message(turn_message, sizeof(turn_message),
+                                  reasoning_title, &metrics) != 0)
     return CAI_ERR_TRANSPORT;
   if (state->show_welcome && !metrics.turn_active)
     strcpy(turn_message, cli_welcome);
@@ -962,8 +1005,7 @@ static void cli_close_runtime(cli_state *state) {
   state->runtime = NULL;
   cai_chrome_close(state->chrome);
   state->chrome = NULL;
-  state->reasoning_summary_length = 0U;
-  state->reasoning_summary_raw[0] = '\0';
+  cai_cli_reasoning_reset(&state->reasoning);
 }
 
 static int cli_list_write(void *context, const void *bytes, size_t count,
@@ -1880,7 +1922,7 @@ int main(int argc, char **argv) {
     goto cleanup;
   }
   sink.userdata = &state;
-  sink.write = cli_sink;
+  sink.write = cli_renderer_sink;
   if (state.renderer->set_sink(state.renderer, &sink) != MDF_OK) {
     cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
                    "cai: failed to connect Markdown renderer\n");

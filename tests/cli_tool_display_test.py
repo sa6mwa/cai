@@ -63,6 +63,8 @@ def main():
             terminal.wait(lambda: terminal.contains("PATCH DONE") and terminal.contains("Worked for"))
             text = terminal.rendered()
             assert b"* Edited file.c" in text, text
+            assert re.search(rb"\x1b\[(?:0;)?1;96mEdited", terminal.output)
+            assert re.search(rb"\x1b\[(?:0;)?1;96mfile.c", terminal.output)
             assert b"-old" in text and b"+new" in text
             assert b"between1" not in text and b"before0" not in text and b"after1" not in text, text
             assert "⋮".encode() in text
@@ -94,6 +96,8 @@ def main():
             terminal.read()
             later = bytes(terminal.output[offset:])
             assert b"OUT05" in later and b"OUT06" not in later, later
+            assert re.search(rb"\x1b\[(?:0;)?1;96mRan", later)
+            assert re.search(rb"\x1b\[(?:0;)?1;96msh command.sh", later)
             plain = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", later)
             assert b"\x1b[91m*\x1b[0m" in later and b"Ran sh command.sh" in plain and b"exit=3" in plain, later
             binary_script = workspace / "binary.sh"

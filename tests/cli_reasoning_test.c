@@ -240,7 +240,7 @@ static int test_output_failure(int operation) {
       mdf_create(MDF_FORMAT_ANSI, &options, &state.renderer) != MDF_OK)
     goto cleanup;
   sink.userdata = &state;
-  sink.write = cli_sink;
+  sink.write = cli_renderer_sink;
   if (state.renderer->set_sink(state.renderer, &sink) != MDF_OK)
     goto cleanup;
   if (operation == 2) {
@@ -256,6 +256,8 @@ static int test_output_failure(int operation) {
     event.type = CAI_AGENT_EVENT_TEXT_DELTA;
     rc = cli_event(&state, &event, NULL);
   } else if (operation == 1) {
+    event.data = "Heading\n\nOutput unavailable.\n\n";
+    event.data_length = strlen(event.data);
     event.type = CAI_AGENT_EVENT_REASONING_SUMMARY;
     rc = cli_event(&state, &event, NULL);
   } else if (operation == 2) {
@@ -289,6 +291,102 @@ cleanup:
   return 0;
 }
 
+typedef struct reasoning_capture {
+  char bytes[2048];
+  size_t length;
+  int fail;
+} reasoning_capture;
+static int reasoning_capture_body(void *context, const char *data,
+                                  size_t length) {
+  reasoning_capture *capture = context;
+  if (capture->fail || length >= sizeof(capture->bytes) - capture->length)
+    return -1;
+  memcpy(capture->bytes + capture->length, data, length);
+  capture->length += length;
+  capture->bytes[capture->length] = '\0';
+  return 0;
+}
+static int test_reasoning_sections(void) {
+  static const char *inputs[] = {"**Applying patch**",
+                                 "**Applying patch**\n\n",
+                                 "\n  **Applying patch**\r\n\n",
+                                 "**Applying patch**\n\nBody å🚀\nNext",
+                                 "**Applying patch**\r\n  Body å🚀\nNext",
+                                 "**Å🚀 title**\nbody"};
+  static const char *bodies[] = {
+      "", "", "", "Body å🚀\nNext", "  Body å🚀\nNext", "body"};
+  static const char *titles[] = {"Applying patch", "Applying patch",
+                                 "Applying patch", "Applying patch",
+                                 "Applying patch", "Å🚀 title"};
+  cai_cli_reasoning reasoning;
+  reasoning_capture capture;
+  const char *title;
+  char long_header[1024];
+  size_t n, chunk, offset, count;
+  for (n = 0U; n < sizeof(inputs) / sizeof(inputs[0]); n++) {
+    for (chunk = 1U; chunk <= strlen(inputs[n]); chunk++) {
+      cai_cli_reasoning_reset(&reasoning);
+      memset(&capture, 0, sizeof(capture));
+      for (offset = 0U; offset < strlen(inputs[n]); offset += count) {
+        count = strlen(inputs[n]) - offset;
+        if (count > chunk)
+          count = chunk;
+        if (cai_cli_reasoning_feed(&reasoning, inputs[n] + offset, count,
+                                   reasoning_capture_body, &capture) != 0 ||
+            cai_cli_reasoning_title(&reasoning, &title) != 0) {
+          fprintf(stderr,
+                  "fragmented heading failed at section %lu offset %lu\n",
+                  (unsigned long)n, (unsigned long)offset);
+          return 1;
+        }
+      }
+      if (cai_cli_reasoning_title(&reasoning, &title) != 0 ||
+          strcmp(title, titles[n]) != 0 ||
+          strcmp(capture.bytes, bodies[n]) != 0) {
+        fprintf(stderr, "section %lu chunk %lu: title=%s body=%s\n",
+                (unsigned long)n, (unsigned long)chunk, title, capture.bytes);
+        return 1;
+      }
+      cai_cli_reasoning_end(&reasoning);
+      if (cai_cli_reasoning_title(&reasoning, &title) != 0 ||
+          strcmp(title, titles[n]) != 0)
+        return 1;
+      if (cai_cli_reasoning_feed(&reasoning, "# Fresh", 7U,
+                                 reasoning_capture_body, &capture) != 0 ||
+          cai_cli_reasoning_title(&reasoning, &title) != 0 ||
+          strcmp(title, "# Fresh") != 0) {
+        fprintf(stderr, "fresh heading: %s\n", title);
+        return 1;
+      }
+    }
+  }
+  memset(long_header, 'x', sizeof(long_header));
+  cai_cli_reasoning_reset(&reasoning);
+  memset(&capture, 0, sizeof(capture));
+  if (cai_cli_reasoning_feed(&reasoning, long_header, sizeof(long_header),
+                             reasoning_capture_body, &capture) != 0 ||
+      reasoning.header_length != sizeof(reasoning.header) - 1U ||
+      capture.length != 0U ||
+      cai_cli_reasoning_feed(&reasoning, "\nbody", 5U, reasoning_capture_body,
+                             &capture) != 0 ||
+      strcmp(capture.bytes, "body") != 0)
+    return 1;
+  /* The body is delivered before section completion; sink failures propagate.
+   */
+  capture.fail = 1;
+  if (cai_cli_reasoning_feed(&reasoning, "more", 4U, reasoning_capture_body,
+                             &capture) != -1)
+    return 1;
+  cai_cli_reasoning_reset(&reasoning);
+  if (cai_cli_reasoning_feed(&reasoning, "title\n  body", 12U,
+                             reasoning_capture_body, &capture) != -1)
+    return 1;
+  cai_cli_reasoning_reset(&reasoning);
+  if (cai_cli_reasoning_title(&reasoning, &title) != 0 || title[0] != '\0')
+    return 1;
+  return 0;
+}
+
 int main(void) {
   cli_state state;
   cai_agent_runtime_event event;
@@ -296,8 +394,8 @@ int main(void) {
   mdf_sink sink;
   int pipe_fd[2];
   int saved_stdout;
-  char output[512];
-  char *label;
+  char output[2048];
+  const char *title;
   ssize_t count;
   int rc;
   struct timespec start = {100, 500000000L};
@@ -307,7 +405,8 @@ int main(void) {
   for (rc = 0; rc < 6; rc++)
     if (test_output_failure(rc) != 0)
       return 1;
-  if (test_shared_auth() != 0 || test_event_logging() != 0)
+  if (test_shared_auth() != 0 || test_event_logging() != 0 ||
+      test_reasoning_sections() != 0)
     return 1;
   memset(&state, 0, sizeof(state));
   if (!cai_cli_quota_due(0, start, start, 0) ||
@@ -340,7 +439,7 @@ int main(void) {
     return 1;
   }
   sink.userdata = &state;
-  sink.write = cli_sink;
+  sink.write = cli_renderer_sink;
   if (state.renderer->set_sink(state.renderer, &sink) != MDF_OK) {
     return 1;
   }
@@ -357,14 +456,14 @@ int main(void) {
       cli_notice(&state, "* ERROR: no color") != 0 || unsetenv("NO_COLOR") != 0)
     return 1;
   state.interactive = 0;
-  strcpy(state.reasoning_summary_raw, "Previous turn");
-  state.reasoning_summary_length = strlen(state.reasoning_summary_raw);
+  strcpy(state.reasoning.header, "Previous turn");
+  state.reasoning.header_length = strlen(state.reasoning.header);
   event.type = CAI_AGENT_EVENT_RUN_STARTED;
   rc = cli_event(&state, &event, NULL);
-  if (state.reasoning_summary_length != 0U)
+  if (state.reasoning.header_length != 0U)
     return 1;
   event.type = CAI_AGENT_EVENT_REASONING_SUMMARY;
-  event.data = "Actual provider ";
+  event.data = "**Actual provider ";
   event.data_length = strlen(event.data);
   if (rc == CAI_OK)
     rc = cli_event(&state, &event, NULL);
@@ -372,11 +471,11 @@ int main(void) {
   event.parent_tool_call_id = "child-tool";
   if (rc == CAI_OK)
     rc = cli_event(&state, &event, NULL);
-  if (strcmp(state.reasoning_summary_raw, "Actual provider ") != 0)
+  if (strcmp(state.reasoning.header, "**Actual provider ") != 0)
     return 1;
   event.parent_tool_call_id = NULL;
   event.type = CAI_AGENT_EVENT_REASONING_SUMMARY;
-  event.data = "summary";
+  event.data = "summary**";
   event.data_length = strlen(event.data);
   if (rc == CAI_OK) {
     rc = cli_event(&state, &event, NULL);
@@ -387,6 +486,43 @@ int main(void) {
   if (rc == CAI_OK) {
     rc = cli_event(&state, &event, NULL);
   }
+  if (cai_cli_reasoning_title(&state.reasoning, &title) != 0 ||
+      strcmp(title, "Actual provider summary") != 0 || state.reasoning_open) {
+    fprintf(stderr, "single header: %s open=%d\n", title, state.reasoning_open);
+    return 1;
+  }
+  event.type = CAI_AGENT_EVENT_REASONING_SUMMARY;
+  event.data = "**Next header**\r";
+  event.data_length = strlen(event.data);
+  if (rc == CAI_OK)
+    rc = cli_event(&state, &event, NULL);
+  event.data = "\n\nFirst body line\nSecond body ";
+  event.data_length = strlen(event.data);
+  if (rc == CAI_OK)
+    rc = cli_event(&state, &event, NULL);
+  event.data = "line\n";
+  event.data_length = strlen(event.data);
+  if (rc == CAI_OK)
+    rc = cli_event(&state, &event, NULL);
+  event.type = CAI_AGENT_EVENT_TEXT_DELTA;
+  event.data = "Assistant text\n";
+  event.data_length = strlen(event.data);
+  if (rc == CAI_OK)
+    rc = cli_event(&state, &event, NULL);
+  event.type = CAI_AGENT_EVENT_RESPONSE_COMPLETED;
+  event.data = NULL;
+  event.data_length = 0U;
+  if (rc == CAI_OK)
+    rc = cli_event(&state, &event, NULL);
+  /* A split SGR sequence and a reset-only blank row never receive markers. */
+  state.reasoning_line_start = 1;
+  state.reasoning_ansi = 0;
+  if (cli_reasoning_sink(&state, "\033[", 2U) != 0 ||
+      cli_reasoning_sink(&state, "1mDecorated\n\033[0",
+                         strlen("1mDecorated\n\033[0")) != 0 ||
+      cli_reasoning_sink(&state, "m\nPlain row\n", strlen("m\nPlain row\n")) !=
+          0)
+    return 1;
   state.timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
   if (state.timer_fd < 0 || cli_timer_wakeup(state.sl, NULL, &state) != SL_OK) {
     return 1;
@@ -405,7 +541,10 @@ int main(void) {
   count = read(pipe_fd[0], output, sizeof(output) - 1U);
   close(pipe_fd[0]);
   if (count < 0 || rc != CAI_OK || state.reasoning_open ||
-      strcmp(state.reasoning_summary_raw, "Actual provider summary") != 0) {
+      cai_cli_reasoning_title(&state.reasoning, &title) != 0 ||
+      strcmp(title, "Next header") != 0) {
+    fprintf(stderr, "finished reasoning: rc=%d title=%s open=%d\n", rc, title,
+            state.reasoning_open);
     return 1;
   }
   output[count] = '\0';
@@ -419,11 +558,15 @@ int main(void) {
     fprintf(stderr, "inconsistent prompt/notice spacing: %s\n", output);
     return 1;
   }
-  label = strstr(output, "[reasoning]");
-  if (label == NULL || strstr(label + 1, "[reasoning]") != NULL ||
-      strstr(output, "Actual provider summary") == NULL ||
+  if (strstr(output, "[reasoning]") != NULL ||
+      strstr(output, "Actual provider") != NULL ||
+      strstr(output, "Next header") != NULL ||
+      strstr(output, "? First body line Second body line") == NULL ||
+      strstr(output, "Assistant text") == NULL ||
+      strstr(output, "? Assistant text") != NULL ||
+      strstr(output, "\033[1m? Decorated\n\033[0m\n? Plain row\n") == NULL ||
       strstr(output, "Thinking...") != NULL) {
-    fprintf(stderr, "provider reasoning was not streamed once: %s\n", output);
+    fprintf(stderr, "reasoning header/body routing failed: %s\n", output);
     return 1;
   }
   return 0;

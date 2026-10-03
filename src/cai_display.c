@@ -182,12 +182,16 @@ static int display_marker(cai_tool_display *d, int result, const char *verb,
                      : result                       ? "\033[92m*\033[0m "
                                                     : "\033[91m*\033[0m ";
   rc = display_text(d, star, error);
+  if (rc == CAI_OK && d->config.color)
+    rc = display_text(d, "\033[1;96m", error);
   if (rc == CAI_OK)
     rc = display_text(d, verb, error);
   if (rc == CAI_OK && n != 0U)
     rc = display_text(d, " ", error);
   if (rc == CAI_OK)
     rc = display_safe(d, text, n, error);
+  if (rc == CAI_OK && d->config.color)
+    rc = display_text(d, "\033[0m", error);
   if (rc == CAI_OK)
     rc = display_text(d, "\n", error);
   return rc;

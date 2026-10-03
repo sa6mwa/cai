@@ -17,7 +17,8 @@ typedef enum cai_tool_output_mode {
 typedef struct cai_tool_display_config {
   /** Borrowed output sink. The renderer never closes it. */
   cai_sink *sink;
-  /** Enable ANSI background colors and bright success/failure markers. */
+  /** Enable patch backgrounds, bright success/failure markers and bold cyan
+   * activity headings. Heading color is independent of the result marker. */
   int color;
   /** Default captured by the next tool call; compact is the zero default. */
   int mode;

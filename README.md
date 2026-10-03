@@ -166,8 +166,12 @@ renders Markdown tables of slash commands and prompt keys through libmdf;
 it is handled locally and does not send a model request. Cai requests concise
 provider reasoning summaries by default; the
 `--reasoning-summary` flag overrides that choice. Provider-issued summaries
-stream in the terminal as they arrive and appear above the status line with
-the active turn's elapsed time. Before a summary arrives, the bar says
+put their first nonblank line in Softline's `!` message bar with the active
+turn's elapsed time. Libmdf renders that Markdown heading as plain text because
+Softline themes the message and accepts no ANSI styling. Single-line summaries
+do not enter the feed. Any remaining body streams through libmdf with a `? `
+prefix on each rendered row, without a separate reasoning label. Before a
+summary arrives, the bar says
 `Working` with elapsed time. At completion it shows `Worked for 13m 32s -
 252243`, where the final six digits are the local day, hour, and minute.
 The live timer advances while the turn is active and stops when it settles.
@@ -356,7 +360,9 @@ There is no added `app` field. Long text is logged as ordered bounded chunks
 with an `offset` field; activity reaches the sink as it arrives.
 
 Interactive tool activity uses bright green/red `*` receipts for success/failure,
-with command labels and separate MCP and Chrome receipts. Commands show their
+with bold bright cyan activity headings and separate MCP and Chrome receipts.
+The heading color is independent of the green/red success/failure star.
+Commands show their
 first five logical output lines by default. `/output` shows the current setting;
 `/output compact|full` changes it, and `--tool-output compact|full` selects the
 startup setting. Each tool call captures its mode when it starts: active calls

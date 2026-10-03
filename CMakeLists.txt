@@ -971,7 +971,7 @@ endfunction()
 
 if(CAI_BUILD_CLI)
   find_package(lockdc CONFIG REQUIRED COMPONENTS static)
-  add_executable(cai_cli cli/main.c cli/options.c cli/status.c cli/login.c
+  add_executable(cai_cli cli/main.c cli/options.c cli/status.c cli/reasoning.c cli/login.c
     cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c
     cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
   set_target_properties(cai_cli PROPERTIES OUTPUT_NAME cai)
@@ -1042,7 +1042,7 @@ if(CAI_BUILD_CLI)
     add_test(NAME cai_cli_storage_stream COMMAND cai_cli_storage_stream_test)
     set_tests_properties(cai_cli_storage_stream PROPERTIES TIMEOUT 30)
     add_executable(cai_cli_reasoning_test tests/cli_reasoning_test.c
-      cli/options.c cli/status.c cli/login.c cli/review_report.c
+      cli/options.c cli/status.c cli/reasoning.c cli/login.c cli/review_report.c
       cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
     target_link_libraries(cai_cli_reasoning_test PRIVATE cai_static
       softline::softline_static libmdf::mdf_static lockdc::static)
@@ -1054,7 +1054,7 @@ if(CAI_BUILD_CLI)
     cai_configure_cli_target(cai_cli_log_test)
     add_test(NAME cai_cli_log COMMAND cai_cli_log_test "${CMAKE_CURRENT_BINARY_DIR}")
     add_executable(cai_cli_startup_fixture tests/cli_startup_fixture.c
-      cli/options.c cli/status.c cli/login.c cli/review_report.c cli/pouch.c
+      cli/options.c cli/status.c cli/reasoning.c cli/login.c cli/review_report.c cli/pouch.c
       cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c cli/log.c
       cli/response.c cli/chrome_host.c cli/chrome_setup.c)
     target_link_libraries(cai_cli_startup_fixture PRIVATE cai_static
@@ -1106,6 +1106,10 @@ if(CAI_BUILD_CLI)
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_test.py"
         "$<TARGET_FILE:cai_cli>")
     set_tests_properties(cai_cli_terminal PROPERTIES TIMEOUT 60)
+    add_test(NAME cai_cli_reasoning_presentation
+      COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_reasoning_presentation_test.py"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_reasoning_presentation PROPERTIES TIMEOUT 45)
     add_test(NAME cai_cli_goal
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_goal_test.py"
         "$<TARGET_FILE:cai_cli>")

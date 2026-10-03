@@ -117,6 +117,7 @@ class Responses(http.server.HTTPServer):
         super().__init__(("127.0.0.1", 0), ResponsePeer)
         self.requests = []
         self.pause = False
+        self.reasoning = ["Checking the pasted input"]
         self.view_path = None
         self.plan = []
         self.pause_script = False
@@ -176,8 +177,8 @@ class ResponsePeer(http.server.BaseHTTPRequestHandler):
                 self.event("response.output_text.delta", delta=item)
         elif view_path or not any(item.get("type") == "function_call_output"
                                 for item in self.server.requests[-1].get("input", [])):
-            self.event("response.reasoning_summary_text.delta",
-                       delta="Checking the pasted input")
+            for delta in self.server.reasoning:
+                self.event("response.reasoning_summary_text.delta", delta=delta)
             self.event("response.output_text.delta", delta="EARLY paragraph.\n\n")
             if self.server.pause:
                 assert self.server.release.wait(10), "stream continuation not released"
