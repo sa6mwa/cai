@@ -16,6 +16,12 @@ from cli_terminal_test import ResponsePeer, Responses, Terminal
 class CatalogPeer(ResponsePeer):
     def do_GET(self):
         self.server.gets.append(self.path)
+        if self.path == '/wham/usage':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{}')
+            return
         assert self.path == '/v1/models?client_version=0.160.0', self.path
         self.send_response(self.server.catalog_status)
         self.send_header('Content-Type', 'application/json')
@@ -67,6 +73,13 @@ def main():
             work = root / 'work'
             work.mkdir()
             (work / 'data.txt').write_text('settings tool output\n')
+            (root / '.codex').mkdir()
+            jwt = 'eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA0MTAyNDQ0ODAwfQ.sig'
+            (root / '.codex' / 'auth.json').write_text(json.dumps({
+                'auth_mode': 'chatgpt', 'tokens': {
+                    'id_token': jwt, 'access_token': jwt,
+                    'refresh_token': 'fixture', 'account_id': 'fixture'},
+                'last_refresh': '2026-09-25T00:00:00Z'}))
             api = Responses()
             api.RequestHandlerClass = ChatPeer if chat else CatalogPeer
             api.gets = []
@@ -216,6 +229,25 @@ def main():
                 command('/model', 'Showing 50 of 70 models')
                 assert terminal.contains('catalog-model-49')
                 assert not terminal.contains('catalog-model-50'), 'large catalog flooded the feed'
+                terminal.close()
+                api.models.append(model('gpt-6.1-sol', ['low', 'high', 'ultra']))
+                future = model('future-account-only-model', ['high'])
+                future.update(supported_in_api=False, visibility='hide',
+                              minimum_client_version='999.0.0')
+                api.models.append(future)
+                # Subscription authentication always uses Responses, even in
+                # the Chat Completions iteration of the transport fixture.
+                chatgpt_env = env.copy()
+                chatgpt_env.pop('CAI_TEST_CHAT_COMPLETIONS', None)
+                terminal = Terminal([str(cli), '-N', '-p', 'chatgpt', '--no-terminal',
+                                     '--no-image-generation', '-C', str(work)], chatgpt_env)
+                terminal.wait(lambda: terminal.contains('Welcome to CAI'))
+                before = len(api.requests)
+                command('/model', 'future-account-only-model')
+                assert terminal.contains('catalog-model-69'), 'ChatGPT catalog was capped'
+                assert terminal.contains('gpt-6.1-sol'), 'remote model beyond row 50 was hidden'
+                assert not terminal.contains('Showing 50'), 'ChatGPT list was truncated'
+                assert len(api.requests) == before, 'catalog listing sent inference'
                 terminal.close()
                 api.catalog_status = 500
                 terminal = Terminal(args + ['-N'], env)

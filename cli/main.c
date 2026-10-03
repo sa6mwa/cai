@@ -1672,8 +1672,11 @@ static int cli_settings_command(cli_state *state, const char *arguments,
       rc =
           cli_text(state, note, strlen(note)) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
     } else {
+      size_t limit = catalog->count;
+      if (strcmp(state->options.provider, "chatgpt") != 0 && limit > 50U)
+        limit = 50U;
       rc = CAI_OK;
-      for (i = 0U; rc == CAI_OK && i < catalog->count && i < 50U; i++) {
+      for (i = 0U; rc == CAI_OK && i < limit; i++) {
         snprintf(message, sizeof(message), "- `%s`%s%s\n",
                  catalog->entries[i].slug,
                  catalog->entries[i].display_name != NULL ? " — " : "",
@@ -1683,10 +1686,10 @@ static int cli_settings_command(cli_state *state, const char *arguments,
         if (cli_text(state, message, strlen(message)) != 0)
           rc = CAI_ERR_TRANSPORT;
       }
-      if (rc == CAI_OK && catalog->count > 50U) {
+      if (rc == CAI_OK && catalog->count > limit) {
         snprintf(message, sizeof(message),
-                 "\nShowing 50 of %lu models. Enter any model ID directly.\n",
-                 (unsigned long)catalog->count);
+                 "\nShowing %lu of %lu models. Enter any model ID directly.\n",
+                 (unsigned long)limit, (unsigned long)catalog->count);
         if (cli_text(state, message, strlen(message)) != 0)
           rc = CAI_ERR_TRANSPORT;
       }

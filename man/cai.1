@@ -323,8 +323,10 @@ Start a new session in the current workspace.
 Show current and pending settings and the provider catalog, or select MODEL
 and optional reasoning EFFORT in the same conversation. A lone known effort
 (such as /model high) changes only effort. A model without an effort keeps
-the current effort. OpenRouter skips catalog listing; other lists show at most
-50 models. Explicit model IDs remain selectable. Idle changes apply immediately;
+the current effort. ChatGPT lists every model returned by the signed-in account
+catalog without local filtering, including unfamiliar IDs. OpenRouter skips
+catalog listing; other providers show at most 50 models. Explicit model IDs
+remain selectable. Idle changes apply immediately;
 an active request or tool finishes before selection applies at the next durable
 tool-round or turn boundary, before the next model request. Later changes merge
 into pending settings. Applied settings are checkpointed together and restored

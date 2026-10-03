@@ -307,8 +307,11 @@ provider catalog, or changes model and optionally reasoning effort.
 `/reasoning [EFFORT]` changes effort or lists the selected model’s advertised
 choices and provider default. If model-specific choices are unavailable, it
 says so rather than claiming support. Unsupported advertised choices are
-rejected. OpenRouter skips catalog listing; other lists show at most 50 models,
-and any model ID can still be selected explicitly.
+rejected. ChatGPT lists every model returned by the signed-in account catalog,
+including new IDs absent from CAI's compiled metadata; no local visibility,
+API-support, or minimum-version filtering is applied. OpenRouter skips catalog
+listing; other providers show at most 50 models, and any model ID can still be
+selected explicitly.
 
 Idle changes apply immediately; active requests and tools finish before the
 change applies at the next durable tool-round or turn boundary. Subsequent

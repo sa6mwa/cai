@@ -42193,6 +42193,12 @@ done:
 }
 
 static void test_codex_catalog_validation(test_state *state) {
+  static const char unfiltered[] =
+      "{\"models\":[{\"slug\":\"future-account-only-model\","
+      "\"supported_in_api\":false,\"visibility\":\"hide\","
+      "\"minimum_client_version\":\"999.0.0\"},"
+      "{\"slug\":\"gpt-6.1-sol\",\"supported_in_api\":true},"
+      "{\"slug\":\"unregistered-model\"}]}";
   static const char *const invalid[] = {
       "[]",
       "{}",
@@ -42239,7 +42245,7 @@ static void test_codex_catalog_validation(test_state *state) {
       "\"slug\":\"m3\"},"
       "{\"slug\":\"m4\"},{\"slug\":\"m5\"},{\"slug\":\"m6\"},"
       "{\"slug\":\"m7\"},{\"slug\":\"m8\"}]}";
-  mock_http_expectation script[sizeof(invalid) / sizeof(invalid[0]) + 1U];
+  mock_http_expectation script[sizeof(invalid) / sizeof(invalid[0]) + 2U];
   http_mock_server server;
   cai_chatgpt_auth auth;
   cai_client_config config;
@@ -42254,8 +42260,9 @@ static void test_codex_catalog_validation(test_state *state) {
     script[i].status = 200;
     script[i].status_text = "OK";
     script[i].content_type = "application/json";
-    script[i].body =
-        i < sizeof(invalid) / sizeof(invalid[0]) ? invalid[i] : valid;
+    script[i].body = i < sizeof(invalid) / sizeof(invalid[0])    ? invalid[i]
+                     : i == sizeof(invalid) / sizeof(invalid[0]) ? valid
+                                                                 : unfiltered;
   }
   if (http_mock_server_open_script(state, "catalog_validation", script,
                                    sizeof(script) / sizeof(script[0]),
@@ -42314,6 +42321,32 @@ static void test_codex_catalog_validation(test_state *state) {
                  catalog->entries[2].reasoning_efforts_known, 0L);
       expect_int(state, "catalog_validation_bool",
                  catalog->entries[0].supported_in_api, 1L);
+    }
+    cai_model_catalog_close(catalog);
+    catalog = NULL;
+    expect_int(state, "catalog_validation_unfiltered_fetch",
+               cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_ONLINE,
+                                      &catalog, &error),
+               CAI_OK);
+    cai_model_catalog_close(catalog);
+    catalog = NULL;
+    expect_int(state, "catalog_validation_unfiltered_cached",
+               cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_OFFLINE,
+                                      &catalog, &error),
+               CAI_OK);
+    if (catalog != NULL) {
+      expect_int(state, "catalog_validation_unfiltered_count", catalog->count,
+                 3L);
+      if (catalog->count == 3U) {
+        expect_str(state, "catalog_validation_unfiltered_order_first",
+                   catalog->entries[0].slug, "future-account-only-model");
+        expect_int(state, "catalog_validation_unsupported_retained",
+                   catalog->entries[0].supported_in_api, 0L);
+        expect_str(state, "catalog_validation_unfiltered_new_model",
+                   catalog->entries[1].slug, "gpt-6.1-sol");
+        expect_str(state, "catalog_validation_unregistered_retained",
+                   catalog->entries[2].slug, "unregistered-model");
+      }
     }
   }
   cai_model_catalog_close(catalog);

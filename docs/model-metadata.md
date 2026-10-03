@@ -18,6 +18,11 @@ version hides it on the server. Keep this baseline aligned with the supported
 Codex catalog/Responses protocol and verify the adapter when advancing it.
 CAI keeps its own originator and User-Agent. New advertised model IDs are
 accepted without requiring a bundled model metadata row.
+libcai preserves every returned entry in provider order: visibility,
+`supported_in_api`, and minimum-client-version metadata do not filter the
+account response locally. The server chooses the response for the signed-in
+account and advertised compatibility baseline. ChatGPT's `/model` display
+also lists the complete returned catalog without a row cap.
 
 The ChatGPT adapter reads `supported_reasoning_levels[].effort` and
 `default_reasoning_level` into `cai_model_catalog_entry.reasoning_efforts` and
