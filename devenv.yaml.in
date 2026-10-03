@@ -1,0 +1,91 @@
+# service: mcp-everything
+apiVersion: v1
+kind: Pod
+metadata:
+  name: @POD@
+  annotations:
+    io.podman.annotations.userns: keep-id
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsUser: @UID@
+    runAsGroup: @GID@
+  containers:
+    - name: mcp-everything
+      image: @IMAGE@
+      # Node's transport launcher spawns a child. Handle PID 1 termination so
+      # normal teardown does not spend ten seconds waiting for forced removal.
+      command: [node, -e, "process.on('SIGTERM', () => process.exit(0)); process.on('SIGINT', () => process.exit(0)); require('child_process').spawn('mcp-server-everything', ['streamableHttp'], {stdio: 'inherit'}).on('exit', code => process.exit(code === null ? 1 : code))"]
+      env:
+        - {name: PORT, value: "3001"}
+        - {name: HOME, value: /state}
+      ports:
+        - {containerPort: 3001, hostPort: @PORT@, hostIP: 127.0.0.1}
+      volumeMounts:
+        - {name: state, mountPath: /state}
+        - {name: tmp, mountPath: /tmp}
+  volumes:
+    - name: state
+      hostPath: {path: @STATE@, type: Directory}
+    - name: tmp
+      hostPath: {path: @TMP@, type: Directory}
+---
+# service: searxng
+apiVersion: v1
+kind: Pod
+metadata:
+  name: @POD@
+  annotations:
+    io.podman.annotations.userns: "keep-id:uid=977,gid=977"
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsUser: 977
+    runAsGroup: 977
+  containers:
+    - name: searxng
+      image: @IMAGE@
+      env:
+        - {name: SEARXNG_BASE_URL, value: @URL@}
+        - {name: SEARXNG_SECRET, value: @SECRET@}
+        - {name: FORCE_OWNERSHIP, value: "false"}
+      ports:
+        - {containerPort: 8080, hostPort: @PORT@, hostIP: 127.0.0.1}
+      volumeMounts:
+        - {name: config, mountPath: /etc/searxng, readOnly: true}
+        - {name: state, mountPath: /var/cache/searxng}
+        - {name: tmp, mountPath: /tmp}
+  volumes:
+    - name: config
+      hostPath: {path: @CONFIG@, type: Directory}
+    - name: state
+      hostPath: {path: @STATE@, type: Directory}
+    - name: tmp
+      hostPath: {path: @TMP@, type: Directory}
+---
+# service: inspector
+apiVersion: v1
+kind: Pod
+metadata:
+  name: @POD@
+  annotations:
+    io.podman.annotations.userns: keep-id
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsUser: @UID@
+    runAsGroup: @GID@
+  containers:
+    - name: inspector
+      image: @IMAGE@
+      command: [node, -e, "process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 60000)"]
+      env:
+        - {name: HOME, value: /state}
+      volumeMounts:
+        - {name: state, mountPath: /state}
+        - {name: tmp, mountPath: /tmp}
+  volumes:
+    - name: state
+      hostPath: {path: @STATE@, type: Directory}
+    - name: tmp
+      hostPath: {path: @TMP@, type: Directory}

@@ -9,12 +9,11 @@ CMAKE := cmake
 CTEST := ctest
 CTEST_FLAGS := --stop-on-failure --parallel 1
 CTEST_FILTER ?= -L unit -LE 'live|packaging'
-COMPOSE_FILE := docker-compose.yaml
-COMPOSE := bash ./scripts/compose.sh
-CAI_SEARXNG_BASE_URL ?= http://127.0.0.1:8888
+DEVENV := bash ./scripts/devenv.sh
+CAI_SEARXNG_BASE_URL ?= $(shell $(DEVENV) endpoint searxng)
 CAI_SEARXNG_TEST_ENGINE ?= wikipedia
 CAI_SEARXNG_TEST_QUERY ?= OpenAI
-CAI_MCP_EVERYTHING_BASE_URL ?= http://127.0.0.1:3001/mcp
+CAI_MCP_EVERYTHING_BASE_URL ?= $(shell $(DEVENV) endpoint mcp-everything)
 CAI_MCP_INSPECTOR_IMAGE ?= ghcr.io/modelcontextprotocol/inspector:1.0.1
 CAI_FUZZ_SECONDS ?= 10
 CAI_FUZZ_LONG_SECONDS ?= 120
@@ -52,7 +51,7 @@ RELEASE_LIVE_GATE_STAMP ?= .cache/release-gates/prerelease-live.stamp
 LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh scripts/build_lua_rock.sh scripts/render_release_rockspec.sh lua/cai_lua.c lua/cai_lua.exports cai.rockspec.in README.md LICENSE docs/model-metadata.md $(shell find include/cai -type f -name '*.h' | sort)
 LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
-.PHONY: build-cli test-cli test-offline help deps-debug deps-release deps-cross build build-debug build-host build-release cross-build integration-build chatgpt-login test test-debug test-host test-release test-cross cross-test test-all test-e2e test-integration test-lua-smith-e2e test-smith-goal-e2e test-install-tree asan test-asan valgrind fuzz fuzz-smoke fuzz-long coverage test-coverage example-smoke-local example-smoke-live finalize-slice clangd-check prerelease release-pipeline prerelease-live require-prerelease-live require-clean-worktree prerelease-hardening lifecycle-version-contract lua-rock lua-env lua-test lua-runner release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify verify-release-archives verify-release-privacy release-matrix release compose-check dev-up dev-down dev-reset dev-ps dev-logs searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test mcp-inspector-e2e format clean clean-dist
+.PHONY: build-cli test-cli test-offline help deps-debug deps-release deps-cross build build-debug build-host build-release cross-build integration-build chatgpt-login test test-debug test-host test-release test-cross cross-test test-all test-e2e test-integration test-lua-smith-e2e test-smith-goal-e2e test-install-tree asan test-asan valgrind fuzz fuzz-smoke fuzz-long coverage test-coverage example-smoke-local example-smoke-live finalize-slice clangd-check prerelease release-pipeline prerelease-live require-prerelease-live require-clean-worktree prerelease-hardening lifecycle-version-contract lua-rock lua-env lua-test lua-runner release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify verify-release-archives verify-release-privacy release-matrix release devenv-check dev-up dev-down dev-reset dev-ps dev-logs searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test mcp-inspector-e2e format clean clean-dist
 
 help:
 	@printf '%s\n' \
@@ -73,7 +72,7 @@ help:
 		'cmake --preset debug-host-deps -DCMAKE_PREFIX_PATH=... Configure installed-dependency verification; see README.' \
 		'make test-all     Run native checks once, Lua, hardening, and local e2e; no cross builds.' \
 		'make test-offline Run native integration fixtures without credentials.' \
-		'make test-e2e     Run deterministic compose-backed local e2e.' \
+		'make test-e2e     Run deterministic Podman Kube local e2e.' \
 		'make test-host    Build and run the pinned native release unit tests.' \
 		'make test-release Build and run the release unit tests.' \
 		'make test-cross   Build cross targets; execution is target/tooling dependent.' \
@@ -116,24 +115,27 @@ help:
 		'make verify-release-privacy Alias for package-verify privacy/relocatability gate.' \
 		'make release-matrix Build and run all deterministic gates once, then package and verify release artifacts.' \
 		'make release      Validate versioning, clean, then run the final release proof including source reconstruction.' \
-		'make dev-up       Start local compose-backed development services.' \
-		'make dev-down     Stop local compose-backed development services.' \
+		'make devenv-check Verify rootless Podman availability.' \
+		'make dev-up       Start local Podman Kube development services.' \
+		'make dev-down     Stop local Podman Kube development services.' \
 		'make dev-reset    Stop services and remove generated local service state.' \
-		'make dev-ps       Show local compose-backed service state.' \
-		'make dev-logs     Follow local compose-backed service logs.' \
+		'make dev-ps       Show local Podman Kube service state.' \
+		'make dev-logs     Print checkout-specific Podman pod logs.' \
+		'Ports: CAI_SEARXNG_PORT / CAI_MCP_EVERYTHING_PORT override checkout-specific loopback ports.' \
+		'CAI_E2E_KEEP_DEVSERVICES=1 retains pods started by test-e2e for diagnosis.' \
 		'make searxng-pull Pull the configured SearXNG container image.' \
-		'make searxng-up   Start local SearXNG via nerdctl compose or docker compose.' \
+		'make searxng-up   Start local SearXNG via rootless Podman Kube.' \
 		'make searxng-wait Wait for the local SearXNG endpoint to answer.' \
 		'make searxng-test Query local SearXNG JSON search endpoint.' \
-		'make searxng-down Stop local SearXNG compose service.' \
-		'make searxng-logs Follow local SearXNG logs.' \
+		'make searxng-down Stop local SearXNG Podman pod.' \
+		'make searxng-logs Print local SearXNG pod logs.' \
 		'make mcp-everything-up Start local MCP Everything reference server.' \
 		'make mcp-everything-wait Wait for local MCP Everything to initialize.' \
 		'make mcp-everything-test Run the MCP client Everything reference-server e2e matrix.' \
 		'make mcp-everything-live-test Run the live model MCP client tool integration test; requires CAI_ENABLE_INTEGRATION_TESTS=1.' \
 		'make mcp-inspector-e2e Run opt-in MCP Inspector container e2e; requires CAI_MCP_INSPECTOR_E2E=1.' \
-		'make mcp-everything-down Stop local MCP Everything compose service.' \
-		'make mcp-everything-logs Follow local MCP Everything logs.' \
+		'make mcp-everything-down Stop local MCP Everything Podman pod.' \
+		'make mcp-everything-logs Print local MCP Everything pod logs.' \
 		'make format       Run clang-format over repo C sources.' \
 		'make clean        Remove generated build outputs.' \
 		'make clean-dist   Remove dist release artifacts only.'
@@ -518,49 +520,38 @@ release:
 	$(CMAKE) -DCAI_DIST_DIR="$(ROOT)/dist" -DCAI_VERSION="$(RELEASE_VERSION)" -P cmake/package_checksums.cmake
 	bash ./scripts/package-verify.sh "$(ROOT)" "$$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h)"
 
-compose-check:
-	@$(COMPOSE) version >/dev/null
+devenv-check:
+	$(DEVENV) check
 
 dev-up:
-	bash ./scripts/dev-up.sh
+	$(DEVENV) up
 
 dev-down:
-	bash ./scripts/dev-down.sh
+	$(DEVENV) down
 
 dev-reset:
-	bash ./scripts/dev-reset.sh
+	$(DEVENV) reset
 
 dev-ps:
-	bash ./scripts/dev-ps.sh
+	$(DEVENV) ps
 
 dev-logs:
-	bash ./scripts/dev-logs.sh
+	$(DEVENV) logs
 
-searxng-pull: compose-check
-	$(COMPOSE) pull searxng
+searxng-pull:
+	$(DEVENV) pull searxng
 
-searxng-up: compose-check
-	$(COMPOSE) pull searxng
-	$(COMPOSE) up -d searxng
+searxng-up:
+	$(DEVENV) up searxng
 
 searxng-wait:
-	@url="$${CAI_SEARXNG_BASE_URL:-$(CAI_SEARXNG_BASE_URL)}/"; \
-	for attempt in {1..30}; do \
-		if curl -fsS "$$url" >/dev/null; then \
-			printf 'SearXNG is ready at %s\n' "$$url"; \
-			exit 0; \
-		fi; \
-		sleep 1; \
-	done; \
-	printf 'Timed out waiting for SearXNG at %s\n' "$$url" >&2; \
-	exit 1
+	$(DEVENV) wait searxng
 
-searxng-down: compose-check
-	$(COMPOSE) stop searxng
-	$(COMPOSE) rm -f searxng
+searxng-down:
+	$(DEVENV) down searxng
 
-searxng-logs: compose-check
-	$(COMPOSE) logs -f searxng
+searxng-logs:
+	$(DEVENV) logs searxng
 
 searxng-test:
 	@url="$${CAI_SEARXNG_BASE_URL:-$(CAI_SEARXNG_BASE_URL)}/search"; \
@@ -575,37 +566,17 @@ searxng-test:
 		--data-urlencode "language=en" | head -c "$${CAI_SEARXNG_TEST_BYTES:-2000}"; \
 	printf '\n'
 
-mcp-everything-up: compose-check
-	$(COMPOSE) up -d --build mcp-everything
+mcp-everything-up:
+	$(DEVENV) up mcp-everything
 
 mcp-everything-wait:
-	@url="$${CAI_MCP_EVERYTHING_BASE_URL:-$(CAI_MCP_EVERYTHING_BASE_URL)}"; \
-	mkdir -p "$(ROOT)/build"; \
-	tmpdir="$$(mktemp -d "$(ROOT)/build/mcp-everything-wait.XXXXXX")"; \
-	trap 'rm -rf "$$tmpdir"' EXIT; \
-	init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"cai-compose-wait","version":"0.0.0"}}}'; \
-	attempt=1; \
-	while [ "$$attempt" -le 30 ]; do \
-		if curl -fsS -D "$$tmpdir/headers" -o "$$tmpdir/body" \
-			-H 'content-type: application/json' \
-			-H 'accept: application/json, text/event-stream' \
-			-d "$$init" "$$url" >/dev/null 2>&1 && \
-			grep -q '"serverInfo"' "$$tmpdir/body"; then \
-			printf 'MCP Everything is ready at %s\n' "$$url"; \
-			exit 0; \
-		fi; \
-		attempt=$$((attempt + 1)); \
-		sleep 1; \
-	done; \
-	printf 'Timed out waiting for MCP Everything at %s\n' "$$url" >&2; \
-	exit 1
+	$(DEVENV) wait mcp-everything
 
-mcp-everything-down: compose-check
-	$(COMPOSE) stop mcp-everything
-	$(COMPOSE) rm -f mcp-everything
+mcp-everything-down:
+	$(DEVENV) down mcp-everything
 
-mcp-everything-logs: compose-check
-	$(COMPOSE) logs -f mcp-everything
+mcp-everything-logs:
+	$(DEVENV) logs mcp-everything
 
 mcp-everything-test: build-debug
 	$(CMAKE) --build build/debug --target cai_mcp_everything_e2e

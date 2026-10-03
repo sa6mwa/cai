@@ -1144,10 +1144,12 @@ CAI_MCP_INSPECTOR_E2E=1 make mcp-inspector-e2e
 ```
 
 The test uses `ghcr.io/modelcontextprotocol/inspector:1.0.1` through
-`nerdctl run` or `docker run` and covers `tools/list` and `tools/call` over
+rootless Podman Kube and covers `tools/list` and `tools/call` over
 Streamable HTTP. It is skipped by default so normal local test runs do not
 depend on container image availability. Override the image with
-`CAI_MCP_INSPECTOR_IMAGE`.
+`CAI_MCP_INSPECTOR_IMAGE`. Its container is declared in `devenv.yaml.in` and
+rendered only for the explicit opt-in. Pasta forwards only the local test
+fixture port into the pod; host networking is not used.
 
 The example MCP server can also be attached to an agent client for manual
 end-to-end testing of the production tool presets. Start it with an isolated
@@ -1489,11 +1491,48 @@ Relevant OpenAI documentation:
 - <https://platform.openai.com/docs/models/compare>
 - <https://platform.openai.com/docs/api-reference/responses>
 
+## Local development services
+
+Local service e2e uses rootless Podman and `podman kube play`. Install Podman
+with working user namespaces and Pasta networking; run these commands as your
+ordinary user. Python 3 renders the tracked `devenv.yaml.in` template. There is
+one orchestration entry point, `scripts/devenv.sh`.
+
+```sh
+make dev-up
+make dev-ps
+make dev-logs
+make test-e2e
+make dev-down
+make dev-reset
+```
+
+Each checkout has distinct pod names and deterministic high host ports derived
+from its canonical path. Published ports bind to `127.0.0.1`. `dev-up` prints
+the effective endpoints and polls HTTP/JSON-RPC readiness. Override ports with
+`CAI_SEARXNG_PORT` and `CAI_MCP_EVERYTHING_PORT`; stop a running pod before
+changing its port or image. A conflicting port fails with Podman's diagnostic.
+
+Generated manifests, credentials, bind-mounted state, temporary files, and
+captured failure logs live under `build/devenv/`. Manifests and generated local
+credentials are private files. User namespace mappings make all service writes
+host-owned; startup verifies this with representative state and temporary files.
+`dev-reset` stops pods using their original manifests before removing this tree
+as the same unprivileged user. Tracked configuration stays in `devenv/`.
+`make clean` also tears down these pods before deleting their manifests.
+
+`test-e2e` builds the native fixture and runs the deterministic MCP Everything
+matrix. It preserves a pre-existing pod and tears down only the pod it started,
+on success or failure. `CAI_E2E_KEEP_DEVSERVICES=1` retains owned pods for
+inspection. Failures print the endpoint, failed command, pod state, and recent
+logs; captured service logs are in `build/devenv/logs/`. An explicit
+`CAI_MCP_EVERYTHING_BASE_URL` uses an external service without invoking Podman.
+Readiness waits default to 60 seconds; `CAI_DEV_READY_TIMEOUT` overrides the
+bound (greater than zero, at most 600 seconds).
+
 ## Local SearXNG
 
-cai includes a local SearXNG compose service for developing and testing the
-web-search tool preset. The Makefile prefers `nerdctl compose` and falls
-back to `docker compose` when nerdctl is not installed.
+The SearXNG pod supports development and testing of the web-search tool preset.
 
 ```sh
 make searxng-up
@@ -1502,8 +1541,8 @@ make searxng-test
 make searxng-down
 ```
 
-The service listens on `http://127.0.0.1:8888` by default. Override the host
-port with `CAI_SEARXNG_PORT` and query a different running instance with
+The service uses a checkout-specific loopback port printed by `dev-up`. Override
+the host port with `CAI_SEARXNG_PORT` and query a different running instance with
 `CAI_SEARXNG_BASE_URL`. The local config enables SearXNG JSON output so cai can
 consume `/search?format=json`.
 
@@ -1523,11 +1562,13 @@ Mojeek, or Marginalia when credentials are configured.
 
 ## Local MCP Everything
 
-cai includes a local MCP Everything reference server compose service for
+cai includes a local MCP Everything reference server Podman pod for
 developing and testing MCP client behavior against a broad, spec-oriented
 server. The image is built locally from the pinned
 `@modelcontextprotocol/server-everything` npm package and runs the Streamable
-HTTP transport.
+HTTP transport. `CAI_MCP_EVERYTHING_VERSION` selects an exact npm package
+version for the local image; `CAI_MCP_EVERYTHING_IMAGE` selects a prebuilt
+pinned image. `CAI_SEARXNG_IMAGE` similarly overrides the SearXNG image.
 
 ```sh
 make mcp-everything-up
@@ -1538,8 +1579,8 @@ make mcp-everything-down
 
 `make mcp-everything-test` runs the MCP client against the pinned Everything
 server and asserts the expected tools, resources, resource templates, prompts,
-completions, and representative execution results. The service listens on
-`http://127.0.0.1:3001/mcp` by default. Override the host port with
+completions, and representative execution results. The checkout-specific
+loopback endpoint is printed by `dev-up`. Override the host port with
 `CAI_MCP_EVERYTHING_PORT` and query a different running instance with
 `CAI_MCP_EVERYTHING_BASE_URL`. The live MCP client-tool integration test used
 by `make test-integration`, `make prerelease-live`, and

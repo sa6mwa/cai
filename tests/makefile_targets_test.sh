@@ -8,7 +8,7 @@ fi
 
 repo_root=$1
 makefile=$repo_root/Makefile
-compose_file=$repo_root/docker-compose.yaml
+kube_file=$repo_root/devenv.yaml.in
 readme=$repo_root/README.md
 
 if [ ! -f "$makefile" ]; then
@@ -88,8 +88,7 @@ for script in \
   scripts/osxcross_available.sh \
   scripts/cpkt-toolchains.sh scripts/cpkt-aflpp.sh \
   scripts/fuzz.sh scripts/run_valgrind.sh \
-  scripts/compose.sh scripts/dev-up.sh scripts/dev-down.sh \
-  scripts/dev-reset.sh scripts/dev-ps.sh scripts/dev-logs.sh \
+  scripts/devenv.sh \
   scripts/test-e2e.sh; do
   require_script "$script"
 done
@@ -117,8 +116,8 @@ if ! grep -F 'CAI_PSLOG_VERSION ?= 0.12.0' "$makefile" >/dev/null; then
   exit 1
 fi
 
-if ! grep -F 'COMPOSE := bash ./scripts/compose.sh' "$makefile" >/dev/null; then
-  printf 'Makefile compose operations must route through scripts/compose.sh\n' >&2
+if ! grep -F 'DEVENV := bash ./scripts/devenv.sh' "$makefile" >/dev/null; then
+  printf 'Makefile service operations must route through scripts/devenv.sh\n' >&2
   exit 1
 fi
 for route in \
@@ -175,7 +174,7 @@ if ! grep -F 'CAI_MCP_INSPECTOR_IMAGE ?= ghcr.io/modelcontextprotocol/inspector:
 fi
 if grep -R -n 'ghcr.io/modelcontextprotocol/inspector:[l]atest' \
   "$repo_root/README.md" "$repo_root/examples" "$repo_root/tests/mcp_inspector_e2e.sh" \
-  "$repo_root/docker-compose.yaml" >/dev/null; then
+  "$kube_file" >/dev/null; then
   printf 'MCP Inspector e2e must not default to a floating latest image tag\n' >&2
   exit 1
 fi
@@ -278,7 +277,7 @@ if ! grep -F 'make asan' "$readme" >/dev/null ||
 fi
 
 if ! grep -F '$(MAKE) test-e2e' "$makefile" >/dev/null; then
-  printf 'prerelease must include deterministic compose-backed test-e2e\n' >&2
+  printf 'prerelease must include deterministic Podman Kube test-e2e\n' >&2
   exit 1
 fi
 if ! grep -F '$(MAKE) valgrind' "$makefile" >/dev/null; then
@@ -653,20 +652,16 @@ if [ "$release_pipeline_second_command" != '$(MAKE) require-clean-worktree' ]; t
   exit 1
 fi
 
-if [ ! -f "$compose_file" ]; then
-  printf 'docker-compose.yaml not found: %s\n' "$compose_file" >&2
+if [ ! -f "$kube_file" ]; then
+  printf 'devenv.yaml.in is required\n' >&2
   exit 1
 fi
-if ! grep -F 'name: cai-e2e' "$compose_file" >/dev/null; then
-  printf 'docker-compose.yaml must set the lifecycle project name\n' >&2
+if grep -E 'image:.*:latest|hostNetwork: *true|privileged: *true|persistentVolumeClaim:' "$kube_file" >/dev/null; then
+  printf 'development pods must use pinned images, isolated networks, and host-removable state\n' >&2
   exit 1
 fi
-if grep -E '^[[:space:]]*container_name:' "$compose_file" >/dev/null; then
-  printf 'docker-compose.yaml must not pin fixed container names\n' >&2
-  exit 1
-fi
-if grep -E 'image:.*:latest' "$compose_file" >/dev/null; then
-  printf 'docker-compose.yaml must not use latest image tags\n' >&2
+if [ -e "$repo_root/docker-compose.yaml" ] || [ -e "$repo_root/scripts/compose.sh" ]; then
+  printf 'the obsolete Compose lifecycle must be removed\n' >&2
   exit 1
 fi
 
@@ -702,26 +697,7 @@ if ! grep -F '$(CMAKE) --build build/debug --target cai_mcp_everything_e2e' \
   exit 1
 fi
 
-wait_body=$(awk '
-  /^mcp-everything-wait:/ {
-    in_target = 1
-    next
-  }
-  in_target && /^[^	][^:]*:/ {
-    exit
-  }
-  in_target {
-    print
-  }
-' "$makefile")
-
-if printf '%s\n' "$wait_body" | grep -F '{1..30}' >/dev/null; then
-  printf 'mcp-everything-wait must not use shell-specific brace expansion\n' >&2
-  exit 1
-fi
-
-if ! printf '%s\n' "$wait_body" | grep -F 'while [ "$$attempt" -le 30 ]; do' \
-  >/dev/null; then
-  printf 'mcp-everything-wait must use a POSIX retry loop\n' >&2
+if ! grep -F '$(DEVENV) wait mcp-everything' "$makefile" >/dev/null; then
+  printf 'MCP readiness must route through the Podman Kube controller\n' >&2
   exit 1
 fi

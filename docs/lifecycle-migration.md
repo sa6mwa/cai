@@ -46,3 +46,11 @@ clean final `release` alone adds source reconstruction smoke. Cross targets
 without execution runners no longer build unused unit binaries, and matching
 compiler collections reuse configured builds. The CLI archive participates in
 the checksum manifest and static ELF/privacy verification.
+
+## Rootless Podman Kube cutover
+
+| Previous behavior | Lifecycle surface | Preserved behavior | Verification | Status |
+| --- | --- | --- | --- | --- |
+| Compose selected nerdctl/containerd or Docker, with a separate Inspector `run` path. | `devenv.yaml.in`, static `devenv/` configuration, and one `scripts/devenv.sh` controller using rootless Podman Kube. | SearXNG, MCP Everything, optional Inspector, public Make targets, external MCP URLs, and explicit live opt-ins. | Controller and ownership failure fixtures, real service readiness, Everything matrix, and Inspector tools/list and tools/call. | Replaced; old manifests and wrappers removed. |
+| Fixed ports and local state outside the build tree. | Checkout-specific pod names and high loopback ports; all disposable data under `build/devenv/`. | Port/image overrides and the keep-services flag. | Quoted-path rendering, port-change rejection, writable-state UID probes, and unprivileged dev-down/dev-reset. | Replaced. |
+| Cleanup suppressed orchestration errors and clean could delete live teardown manifests. | Ownership-aware teardown; cleanup errors fail the gate; clean stops pods before deleting manifests. | Pre-existing services remain running after e2e. | Partial startup, failed readiness/tests/teardown, kept and reused pods, external endpoint bypass, and clean/reset fixtures. | Replaced. |

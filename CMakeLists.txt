@@ -1875,18 +1875,23 @@ if(CAI_BUILD_TESTS)
   set_tests_properties(cai_makefile_targets_test PROPERTIES
     LABELS "unit;local"
     TIMEOUT 3)
+  add_test(NAME cai_devenv_test
+    COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/devenv_test.py"
+      "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(cai_devenv_test PROPERTIES
+    LABELS "unit;local" TIMEOUT 30)
   add_test(NAME cai_e2e_service_ownership_test
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/e2e_service_ownership_test.sh"
       "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(cai_e2e_service_ownership_test PROPERTIES
     LABELS "unit;local"
-    TIMEOUT 3)
+    TIMEOUT 20)
   add_test(NAME cai_mcp_everything_live_wrapper_test
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/mcp_everything_live_wrapper_test.sh"
       "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(cai_mcp_everything_live_wrapper_test PROPERTIES
     LABELS "unit;local"
-    TIMEOUT 3)
+    TIMEOUT 20)
   add_test(NAME cai_release_live_gate_test
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_live_gate_test.sh"
       "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1998,7 +2003,7 @@ if(CAI_BUILD_TESTS)
       TIMEOUT 3)
   endif()
   add_test(NAME cai_mcp_inspector_e2e
-    COMMAND /bin/sh
+    COMMAND /bin/bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/mcp_inspector_e2e.sh"
       $<TARGET_FILE:cai_mcp_http_server>)
   set_tests_properties(cai_mcp_inspector_e2e PROPERTIES

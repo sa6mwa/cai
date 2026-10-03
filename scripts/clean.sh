@@ -38,6 +38,10 @@ fi
 
 case "${1:-all}" in
   all)
+    # Keep the generated teardown manifests until their pods are stopped.
+    if compgen -G "$repo_root/build/devenv/*.yaml" >/dev/null; then
+      "$repo_root/scripts/devenv.sh" down
+    fi
     remove_generated_path build
     remove_generated_path dist
     remove_generated_path .cache
