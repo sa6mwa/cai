@@ -4606,6 +4606,55 @@ static int cai_lua_agent_runtime_submit(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_agent_runtime_user_shell_begin(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  cai_error error;
+  size_t length;
+  const char *command = luaL_checklstring(L, 2, &length);
+  int shared = lua_isnoneornil(L, 3) ? 1 : lua_toboolean(L, 3);
+  int rc;
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = strlen(command) != length
+           ? cai_lua_set_error(&error, CAI_ERR_INVALID,
+                               "shell command contains NUL")
+           : cai_agent_runtime_user_shell_begin(self->ptr, command, shared,
+                                                &error);
+  cai_lua_agent_runtime_leave(self);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_agent_runtime_user_shell_write(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  cai_error error;
+  size_t length;
+  const char *bytes = luaL_checklstring(L, 2, &length);
+  int rc;
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_user_shell_write(self->ptr, bytes, length, &error);
+  cai_lua_agent_runtime_leave(self);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_agent_runtime_user_shell_finish(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  cai_error error;
+  lua_Integer exit_code = luaL_checkinteger(L, 2);
+  lua_Integer duration_ms = luaL_checkinteger(L, 3);
+  int rc;
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = exit_code < INT_MIN || exit_code > INT_MAX || duration_ms < 0
+           ? cai_lua_set_error(&error, CAI_ERR_INVALID,
+                               "invalid shell result metrics")
+           : cai_agent_runtime_user_shell_finish(
+                 self->ptr, (int)exit_code, (unsigned long long)duration_ms,
+                 &error);
+  cai_lua_agent_runtime_leave(self);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_agent_runtime_set_model(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_error error;
@@ -11473,6 +11522,9 @@ static const luaL_Reg cai_lua_client_methods[] = {
 
 static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"submit", cai_lua_agent_runtime_submit},
+    {"user_shell_begin", cai_lua_agent_runtime_user_shell_begin},
+    {"user_shell_write", cai_lua_agent_runtime_user_shell_write},
+    {"user_shell_finish", cai_lua_agent_runtime_user_shell_finish},
     {"submit_interactive", cai_lua_agent_runtime_submit_interactive},
     {"set_model", cai_lua_agent_runtime_set_model},
     {"settings", cai_lua_agent_runtime_settings},

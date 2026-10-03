@@ -1151,6 +1151,22 @@ continue as a hidden detached CAI thread.
 
 ## 9. Agent turn, tool loop, and steering
 
+The cai host supports explicitly user-run `!COMMAND` invocations independently
+of the sandboxed agent exec tool. Execution uses normal user permissions and
+pipes, with closed stdin and no PTY. Literal output is streamed to the UI and
+the libcai journal; malformed/control bytes are escaped only for presentation.
+Raw journal records are lossless. Completed shared results are tagged
+user-role context at a safe boundary, without inference, steering or goal-turn
+accounting. Model output retention is bounded to 32 KiB with explicit
+truncation. Queued normal prompts wait durably for completion. The startup
+`--no-shell-context` flag and `/shell-context [on|off]` select sharing for future
+commands, without disabling execution or altering earlier context/history.
+Recordings that do not finish retain acknowledged journal output, never rerun
+on recovery, and do not become model context. The C owner-thread begin/write/
+finish APIs and their Lua equivalents let hosts supply their own execution.
+Slash commands echo as plain `$ ` input rows. Reasoning titles use ANSI-free
+libmdf output in Softline's gray `! ` message line.
+
 ### 9.1 Turn lifecycle
 
 One submitted user message creates one logical turn. The runtime:

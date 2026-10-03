@@ -161,6 +161,11 @@ Each conversation writes ID/ID.jsonl and ID/ID.md beneath this root.
 Validate a JSONL export, assign a new ID in the current directory, and exit.
 Failed imports are not published in conversation lists.
 .TP
+.B \-\-no-shell-context
+Keep future !COMMAND results out of model context. Commands still execute with
+normal user permissions, display literal output and save full raw history.
+Earlier shared results remain in context.
+.TP
 .BR \-p , " " \-\-provider " " NAME
 Select
 .BR chatgpt ,
@@ -318,6 +323,27 @@ in the same conversation. Idle changes apply immediately; an active request or
 tool finishes before the selection applies at the next durable tool-round or
 turn boundary, before the next model request. Later selections replace a
 pending selection. Catalog discovery uses a separate client and cache.
+.TP
+.BI /shell-context " [on|off]"
+Show or change model sharing for future explicit shell commands. Each command
+captures the setting at start. Disabling sharing does not disable execution,
+erase history or remove earlier model context.
+.TP
+.BI ! COMMAND
+Run $SHELL (or /bin/sh) with -c in the workspace using normal user permissions,
+outside the agent sandbox. Stdin is closed; stdout and stderr use one pipe,
+without a PTY. Output is literal, without Markdown parsing. Printable UTF-8,
+newlines and tabs are preserved; invalid bytes and other controls appear as
+\\xNN. Ctrl-C or Escape cancels the shell first, and quit cancels it too.
+The timeout is one hour. Background descendants are terminated at completion.
+Ordinary prompts entered while it runs are durably queued until completion.
+Full raw output is journaled in bounded chunks. Resume replays it without
+execution. Shared results become tagged user-role context, with exit code and
+duration, at a safe model/tool boundary without starting a model turn. At most
+32 KiB of output is retained for inference, with an explicit truncation marker;
+JSONL exports preserve the complete raw stream. Markdown exports use retained
+model context. Slash commands echo as plain $ input rows; normal user prompts
+keep their > prefix. The gray ! message line receives ANSI-free libmdf text.
 .TP
 .BI /goal " [COMMAND]"
 Show the current durable goal with status, token accounting, and active time.

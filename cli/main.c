@@ -12,6 +12,7 @@
 #include "response.h"
 #include "review_report.h"
 #include "session_commands.h"
+#include "shell.h"
 #include "status.h"
 #include <locale.h>
 
@@ -117,6 +118,10 @@ typedef struct cli_state {
   int row_ansi;
   int notice_open;
   int notice_first_row;
+  int command_input;
+  cai_cli_shell shell;
+  sl_watch_id_t shell_watches[3];
+  int shell_watched[3];
   char workspace[PATH_MAX];
   char clipboard_directory[PATH_MAX];
 } cli_state;
@@ -287,7 +292,8 @@ static int cli_prefixed_sink(void *context, const char *bytes, size_t count) {
         ch != '\n' && ch != '\r') {
       const char *prefix = "? ";
       if (state->notice_open)
-        prefix = state->notice_first_row
+        prefix = state->command_input ? (state->notice_first_row ? "$ " : "  ")
+                 : state->notice_first_row
                      ? (state->interactive && getenv("NO_COLOR") == NULL
                             ? "\033[91m*\033[0m "
                             : "* ")
@@ -499,6 +505,174 @@ static int cli_prompt(cli_state *state, const char *text, int history) {
     return -1;
   state->feed_breaks = 2;
   return 0;
+}
+
+static int cli_command_input(cli_state *state, const char *text, int history) {
+  int rc;
+  pslog_field field =
+      pslog_str("prompt_kind", text[0] == '!' ? "shell_command" : "command");
+  if (history && sl_history_add(state->sl, text) != SL_OK)
+    return -1;
+  cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, "command_input",
+                      "user", text, strlen(text), &field, 1U);
+  if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0 ||
+      cli_geometry(state) != 0 || cli_literal_prepare(state, 1) != 0)
+    return -1;
+  while (state->feed_breaks < 2)
+    if (cli_sink(state, "\n", 1U) != 0)
+      return -1;
+  state->notice_open = 1;
+  state->notice_first_row = 1;
+  state->command_input = 1;
+  state->row_line_start = 1;
+  state->row_ansi = 0;
+  rc = cai_cli_literal_render(state->notice_renderer, text);
+  state->notice_open = 0;
+  state->command_input = 0;
+  while (rc == 0 && state->feed_breaks < 2)
+    rc = cli_sink(state, "\n", 1U);
+  return rc;
+}
+
+static int cli_shell_literal(void *context, const char *bytes, size_t length,
+                             cai_error *error) {
+  return cli_sink(context, bytes, length) == 0
+             ? CAI_OK
+             : cai_cli_error(error, CAI_ERR_TRANSPORT,
+                             "cannot display shell output");
+}
+
+static int cli_shell_output(void *context, const char *bytes, size_t length,
+                            cai_error *error) {
+  cli_state *state = context;
+  pslog_field field = pslog_str("prompt_kind", "shell_output");
+  int rc =
+      cai_agent_runtime_user_shell_write(state->runtime, bytes, length, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
+    return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                         "cannot finish output before shell text");
+  cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, "user_shell_output",
+                      "user", bytes, length, &field, 1U);
+  return cai_cli_shell_plain(&state->shell, bytes, length, 0, cli_shell_literal,
+                             state, error);
+}
+
+static void cli_shell_unwatch(cli_state *state) {
+  size_t i;
+  for (i = 0U; i < 3U; i++)
+    if (state->shell_watched[i]) {
+      (void)sl_watch_remove(state->sl, state->shell_watches[i]);
+      state->shell_watched[i] = 0;
+    }
+}
+
+static int cli_shell_pump(cli_state *state, cai_error *error) {
+  char message[160];
+  int rc = cai_cli_shell_pump(&state->shell, cli_shell_output, state, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (state->shell.exited && state->shell_watched[1]) {
+    (void)sl_watch_remove(state->sl, state->shell_watches[1]);
+    state->shell_watched[1] = 0;
+  }
+  if (state->shell.eof && state->shell_watched[0]) {
+    (void)sl_watch_remove(state->sl, state->shell_watches[0]);
+    state->shell_watched[0] = 0;
+  }
+  if (state->shell.exited && state->shell.eof) {
+    rc = cai_cli_shell_plain(&state->shell, NULL, 0U, 1, cli_shell_literal,
+                             state, error);
+    if (rc == CAI_OK)
+      rc = cai_agent_runtime_user_shell_finish(
+          state->runtime, state->shell.exit_code,
+          cai_cli_shell_elapsed(&state->shell), error);
+    if (rc != CAI_OK)
+      return rc;
+    snprintf(message, sizeof(message), "Shell command exited %d (%.3fs).",
+             state->shell.exit_code,
+             (double)cai_cli_shell_elapsed(&state->shell) / 1000.0);
+    cli_shell_unwatch(state);
+    cai_cli_shell_close(&state->shell);
+    if (cli_write(state, message) != 0)
+      return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                           "cannot display shell completion");
+  }
+  return CAI_OK;
+}
+
+static int cli_shell_stop(cli_state *state, cai_error *error) {
+  int rc;
+  cai_cli_shell_cancel(&state->shell);
+  while (state->shell.pid > 0) {
+    struct pollfd fd;
+    fd.fd = state->shell.output_fd;
+    fd.events = POLLIN | POLLHUP;
+    fd.revents = 0;
+    (void)poll(&fd, 1U, 50);
+    rc = cli_shell_pump(state, error);
+    if (rc != CAI_OK)
+      return rc;
+  }
+  return CAI_OK;
+}
+
+static int cli_shell_wakeup(sl_t *sl, const sl_watch_event_t *event,
+                            void *context) {
+  cli_state *state = context;
+  cai_error error;
+  int rc;
+  (void)sl;
+  (void)event;
+  cai_error_init(&error);
+  rc = cli_shell_pump(state, &error);
+  if (rc != CAI_OK)
+    cli_print_error(state, "user shell command", &error);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
+}
+
+static int cli_shell_start(cli_state *state, const char *command,
+                           cai_error *error) {
+  int fds[3], rc;
+  size_t i;
+  if (state->shell.pid > 0)
+    return cai_cli_error(
+        error, CAI_ERR_INVALID,
+        "a shell command is running; cancel it with Ctrl-C first");
+  while (*command == ' ' || *command == '\t')
+    command++;
+  rc = cai_agent_runtime_user_shell_begin(state->runtime, command,
+                                          state->options.shell_context, error);
+  if (rc != CAI_OK)
+    return rc;
+  rc = cai_cli_shell_start(&state->shell, command, state->workspace, error);
+  if (rc != CAI_OK) {
+    cai_error record_error;
+    cai_error_init(&record_error);
+    (void)cai_agent_runtime_user_shell_finish(state->runtime, 127, 0U,
+                                              &record_error);
+    cai_error_cleanup(&record_error);
+    return rc;
+  }
+  fds[0] = state->shell.output_fd;
+  fds[1] = state->shell.exit_fd;
+  fds[2] = state->shell.timer_fd;
+  for (i = 0U; i < 3U; i++) {
+    if (sl_watch_add(
+            state->sl, fds[i], SL_WATCH_READ | SL_WATCH_ERROR | SL_WATCH_HANGUP,
+            cli_shell_wakeup, state, &state->shell_watches[i]) != SL_OK) {
+      cli_shell_unwatch(state);
+      rc = cli_shell_stop(state, error);
+      if (rc != CAI_OK)
+        return rc;
+      return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                           "cannot watch user shell command");
+    }
+    state->shell_watched[i] = 1;
+  }
+  return CAI_OK;
 }
 
 static void cli_log_event(cli_state *state,
@@ -882,6 +1056,53 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
   cli_state *state;
   (void)error;
   state = (cli_state *)context;
+  if (!state->batch && event->data != NULL &&
+      strcmp(event->type, "user_shell_started") == 0) {
+    char command[8194];
+    if (strlen(event->data) > 8192U)
+      return cai_cli_error(error, CAI_ERR_PROTOCOL,
+                           "saved shell command is too long");
+    snprintf(command, sizeof(command), "!%s", event->data);
+    if (cai_cli_shell_plain(&state->shell, NULL, 0U, 1, cli_shell_literal,
+                            state, error) != CAI_OK)
+      return CAI_ERR_TRANSPORT;
+    return cli_command_input(state, command, 1) == 0 ? CAI_OK
+                                                     : CAI_ERR_TRANSPORT;
+  }
+  if (event->data != NULL &&
+      strcmp(event->type, "user_shell_output_hex") == 0) {
+    static const char hex[] = "0123456789abcdef";
+    char bytes[4096];
+    size_t i, n = strlen(event->data);
+    pslog_field fields[2];
+    if (n > 8192U || n % 2U != 0U)
+      return cai_cli_error(error, CAI_ERR_PROTOCOL,
+                           "invalid saved shell output");
+    for (i = 0U; i < n; i += 2U) {
+      const char *a = strchr(hex, event->data[i]);
+      const char *b = strchr(hex, event->data[i + 1U]);
+      if (a == NULL || b == NULL)
+        return cai_cli_error(error, CAI_ERR_PROTOCOL,
+                             "invalid saved shell output byte");
+      bytes[i / 2U] = (char)(((a - hex) << 4) | (b - hex));
+    }
+    fields[0] = pslog_bool("replay", 1);
+    fields[1] = pslog_str("prompt_kind", "shell_output");
+    cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO,
+                        "user_shell_output", "user", bytes, n / 2U, fields, 2U);
+    return state->batch ? CAI_OK
+                        : cai_cli_shell_plain(&state->shell, bytes, n / 2U, 0,
+                                              cli_shell_literal, state, error);
+  }
+  if (!state->batch && (strcmp(event->type, "user_shell_completed") == 0 ||
+                        strcmp(event->type, "user_shell_unshared") == 0)) {
+    int rc = cai_cli_shell_plain(&state->shell, NULL, 0U, 1, cli_shell_literal,
+                                 state, error);
+    return rc != CAI_OK ? rc
+           : cli_write(state, "Shell command finished.") == 0
+               ? CAI_OK
+               : CAI_ERR_TRANSPORT;
+  }
   if (event->data != NULL &&
       (strcmp(event->type, "turn_submitted") == 0 ||
        strcmp(event->type, "turn_queued") == 0 ||
@@ -1128,7 +1349,7 @@ static int cli_switch_session(cli_state *state, const char *id, int new_session,
   rc = cai_agent_runtime_state(state->runtime, &run_state, error);
   if (rc != CAI_OK)
     return rc;
-  if (run_state == CAI_AGENT_SAMPLING ||
+  if (state->shell.pid > 0 || run_state == CAI_AGENT_SAMPLING ||
       run_state == CAI_AGENT_DISPATCHING_TOOL) {
     return cli_write(state, "\nWait for the current turn to finish.\n") == 0
                ? CAI_OK
@@ -1284,6 +1505,29 @@ static int cli_handle_command(cli_state *state, const char *line,
   unsigned long number;
   int rc;
   *handled = 1;
+  if (line[0] == '!')
+    return cli_shell_start(state, line + 1U, error);
+  if (strcmp(line, "/shell-context") == 0 ||
+      strncmp(line, "/shell-context ", 15U) == 0) {
+    arg = line + 14U;
+    while (*arg == ' ')
+      arg++;
+    if (strcmp(arg, "on") == 0)
+      state->options.shell_context = 1;
+    else if (strcmp(arg, "off") == 0)
+      state->options.shell_context = 0;
+    else if (*arg != '\0')
+      return cli_write(state, "Usage: /shell-context [on|off]") == 0
+                 ? CAI_OK
+                 : CAI_ERR_TRANSPORT;
+    return cli_write(state, state->options.shell_context
+                                ? "Shell results will be shared with the model "
+                                  "for future commands."
+                                : "Shell results will stay out of model "
+                                  "context for future commands.") == 0
+               ? CAI_OK
+               : CAI_ERR_TRANSPORT;
+  }
   if (strcmp(line, "/goal") == 0 || strncmp(line, "/goal ", 6U) == 0 ||
       strncmp(line, "/goal\t", 6U) == 0)
     return cli_goal_command(state, line + 5U, error);
@@ -1433,6 +1677,10 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| --- | --- |\n"
         "| Enter | Send the prompt. |\n"
         "| Ctrl-J | Insert a newline. |\n"
+        "| `!COMMAND` | Run a user shell command without a PTY; save its "
+        "literal output. |\n",
+        "| `/shell-context [on\\|off]` | Share future shell results with the "
+        "model, or keep them local. |\n"
         "| Up / Down | Recall prompts from this conversation. |\n"
         "| Ctrl-R | Search prompt history. |\n"
         "| Ctrl-V | Paste a PNG or JPEG image from the X11 clipboard. |\n"
@@ -1535,6 +1783,10 @@ static int cli_handle_command(cli_state *state, const char *line,
     }
     return cli_switch_session(state, state->sessions[number - 1U].id, 0, error);
   }
+  if (line[0] == '/')
+    return cli_write(state, "Unknown command. Send /help for usage.") == 0
+               ? CAI_OK
+               : CAI_ERR_TRANSPORT;
   *handled = 0;
   return CAI_OK;
 }
@@ -1811,6 +2063,7 @@ int main(int argc, char **argv) {
 
   memset(&state, 0, sizeof(state));
   state.timer_fd = -1;
+  cai_cli_shell_init(&state.shell);
   state.log.fd = -1;
   state.log.wakeup_fd = -1;
   result = 1;
@@ -2153,6 +2406,10 @@ int main(int argc, char **argv) {
       prompt_status = sl_last_readline_status(state.sl);
       if (prompt_status == SL_READLINE_CANCELLED ||
           prompt_status == SL_READLINE_INTERRUPTED) {
+        if (state.shell.pid > 0) {
+          cai_cli_shell_cancel(&state.shell);
+          continue;
+        }
         rc = cai_agent_runtime_cancel_turn(state.runtime, &error);
         if (rc != CAI_OK) {
           cai_error_cleanup(&error);
@@ -2167,13 +2424,19 @@ int main(int argc, char **argv) {
       break;
     }
     if (line[0] != '\0') {
-      rc = cli_handle_command(&state, line, &error, &handled);
+      rc = (line[0] == '/' || line[0] == '!') &&
+                   cli_command_input(&state, line, 1) != 0
+               ? CAI_ERR_TRANSPORT
+               : cli_handle_command(&state, line, &error, &handled);
       if (rc == CAI_OK && !handled) {
         if (cli_prompt(&state, line, 1) != 0) {
           rc = CAI_ERR_TRANSPORT;
         } else {
-          rc =
-              cai_agent_runtime_submit_interactive(state.runtime, line, &error);
+          if (state.shell.pid > 0)
+            rc = cai_agent_runtime_submit_queued(state.runtime, line, &error);
+          else
+            rc = cai_agent_runtime_submit_interactive(state.runtime, line,
+                                                      &error);
         }
       }
       if (rc != CAI_OK) {
@@ -2192,6 +2455,10 @@ int main(int argc, char **argv) {
       goto cleanup;
     }
   }
+  if (state.shell.pid > 0 && cli_shell_stop(&state, &error) != CAI_OK) {
+    cli_print_error(&state, "finish user shell command", &error);
+    goto cleanup;
+  }
   if (state.runtime != NULL && !state.exit_requested) {
     rc = cli_drain(&state, &error);
     if (rc != CAI_OK) {
@@ -2201,6 +2468,8 @@ int main(int argc, char **argv) {
   }
   result = 0;
 cleanup:
+  cli_shell_unwatch(&state);
+  cai_cli_shell_close(&state.shell);
   if (state.batch && !state.options.review && state.renderer != NULL) {
     cai_error final_error;
     cai_error_init(&final_error);

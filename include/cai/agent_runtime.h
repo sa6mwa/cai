@@ -786,6 +786,33 @@ int cai_agent_runtime_submit_queued(cai_agent_runtime *runtime,
 int cai_agent_runtime_submit_queued_threadsafe(cai_agent_runtime *runtime,
                                                const char *text,
                                                cai_error *error);
+/** Begin recording an explicitly user-run shell command, without executing it
+ * or starting a model turn. Owner-thread-only; one recording may be open.
+ * command is copied (maximum 8192 bytes). share_with_model is snapshotted here.
+ * Newly submitted turns wait until finish; an existing turn continues normally.
+ * The host owns execution, cancellation and terminal rendering. */
+int cai_agent_runtime_user_shell_begin(cai_agent_runtime *runtime,
+                                       const char *command,
+                                       int share_with_model, cai_error *error);
+/** Stream raw command output into the durable journal, in bounded chunks.
+ * Binary bytes are preserved as hex journal records. No complete output is
+ * buffered: only the first 32768 bytes are retained for model context. A
+ * successful return durably acknowledges every supplied byte. On failure,
+ * an already acknowledged prefix may remain; do not retry the same chunk. */
+int cai_agent_runtime_user_shell_write(cai_agent_runtime *runtime,
+                                       const void *bytes, size_t length,
+                                       cai_error *error);
+/** Complete the recording. Shared results become tagged user-role context at
+ * the next safe boundary, including while idle, without a model request,
+ * steering event or goal turn. Invalid UTF-8/control bytes in the bounded
+ * model copy are escaped; truncation is explicit. Full raw output stays in
+ * the journal. Completion survives restart; execution is never replayed.
+ * A failed completion may be retried. Close discards an unfinished recording
+ * but retains its acknowledged journal bytes. duration_ms is monotonic time. */
+int cai_agent_runtime_user_shell_finish(cai_agent_runtime *runtime,
+                                        int exit_code,
+                                        unsigned long long duration_ms,
+                                        cai_error *error);
 /** Return the current durable goal projection on the owner thread. */
 int cai_agent_runtime_get_goal(cai_agent_runtime *runtime,
                                cai_agent_goal_snapshot *out, cai_error *error);

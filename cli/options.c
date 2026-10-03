@@ -25,6 +25,7 @@ void cai_cli_options_init(cai_cli_options *options) {
   options->reasoning_summary = "concise";
   options->image_generation = 1;
   options->terminal = 1;
+  options->shell_context = 1;
   options->review_subagent = 1;
 }
 
@@ -82,6 +83,9 @@ static void cai_cli_help(void) {
       "      --chrome-remove         Remove CAI's own registration and exit\n"
       "      --chrome-manifest FILE  Alternate native-host registration path\n",
       stdout);
+  fputs("      --no-shell-context       Keep !COMMAND results out of model "
+        "context\n",
+        stdout);
   fputs("      --model-metadata FILE    Provider model metadata JSON\n",
         stdout);
   fputs("  -m, --model ID               Model (provider default if omitted)\n"
@@ -229,6 +233,10 @@ int cai_cli_parse_options(int argc, char *const *argv,
     }
     if (strcmp(flag, "--no-terminal") == 0) {
       options->terminal = 0;
+      continue;
+    }
+    if (strcmp(flag, "--no-shell-context") == 0) {
+      options->shell_context = 0;
       continue;
     }
     if (strcmp(flag, "--no-review-subagent") == 0) {

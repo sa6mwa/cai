@@ -49,6 +49,7 @@ typedef struct cai_cli_options {
   int review_and_fix;
   int image_generation;
   int terminal;
+  int shell_context;
   int review_subagent;
   int codex_agents_md;
   int verbosity;

@@ -115,6 +115,47 @@ displays; ordinary bracketed text paste continues to work separately.
 directory; other cache files remain outside its access. Symlink escapes and
 hardlinked image files are rejected.
 
+Slash commands echo as plain `$ /command` input rows. The reasoning title is
+rendered through libmdf with ANSI disabled; Softline owns the gray `! ` line.
+
+Enter `!COMMAND` to run your shell (`$SHELL`, falling back to `/bin/sh`) with
+normal user permissions in the workspace, outside the agent sandbox. Each
+invocation uses `-c`, pipes and closed stdin, without a PTY or login profiles.
+Output appears literally, without Markdown parsing or preview truncation.
+UTF-8, newlines and tabs are preserved; other controls and invalid bytes are
+shown as `\xNN`. Stdout and stderr share one pipe. Ctrl-C/Escape cancels the
+shell first; quit also cancels it. Commands have a one-hour timeout, and their
+background descendants are terminated at completion. Ordinary prompts entered
+while a shell runs are durably queued until its result has been recorded.
+
+Commands and full raw output are journaled as they arrive. Replay displays them
+without executing commands. By default, a completed result becomes tagged
+user-role context, including exit code and elapsed time, at the next safe
+model/tool boundary. It does not start inference, steer the agent or advance a
+goal turn. The model copy retains at most 32 KiB of output, with an explicit
+truncation marker; JSONL retains the complete raw stream. Markdown export uses
+the existing libcai exporter of retained model context.
+
+`--no-shell-context` or `/shell-context off` keeps future shell results out of
+model context while still executing, displaying and saving them.
+`/shell-context on` enables sharing; `/shell-context` shows the setting.
+The setting is captured when each command starts. Earlier shared results stay
+in context. Unshared results replay locally and remain in JSONL exports.
+
+SDK hosts provide execution and call the owner-thread APIs
+`cai_agent_runtime_user_shell_begin(runtime, command, share, &error)`,
+`cai_agent_runtime_user_shell_write(runtime, bytes, length, &error)` for each
+chunk, and `cai_agent_runtime_user_shell_finish(runtime, exit_code, duration_ms,
+&error)`. Writing acknowledges bounded journal chunks without buffering the
+whole output. After a write failure, do not retry the same chunk: a prefix may
+already be durable. A failed finish can be retried. Newly submitted turns wait
+for finish; an existing model turn continues. Closing an unfinished recording
+retains its acknowledged output without scheduling execution or shared context
+on recovery. Lua exposes `runtime:user_shell_begin(command, share)` (sharing
+defaults to true), `runtime:user_shell_write(bytes)` (binary strings accepted),
+and `runtime:user_shell_finish(exit_code, duration_ms)`. libcai never executes
+these explicitly user-run commands itself.
+
 ```sh
 cmake --preset libcai
 cmake --build --preset libcai

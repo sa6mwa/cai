@@ -1122,7 +1122,7 @@ do
 
   local runtime_meta = debug.getregistry()["cai.agent_runtime"]
   assert(type(runtime_meta) == "table", "missing agent runtime metatable")
-  for _, method in ipairs({ "submit", "submit_interactive", "set_model", "submit_review", "start_review", "finish_review", "submit_steering", "submit_queued", "goal", "create_goal", "replace_goal", "pause_goal", "resume_goal", "set_goal_objective", "set_goal_token_budget", "clear_goal_token_budget", "clear_goal", "pump", "state",
+  for _, method in ipairs({ "user_shell_begin", "user_shell_write", "user_shell_finish", "submit", "submit_interactive", "set_model", "submit_review", "start_review", "finish_review", "submit_steering", "submit_queued", "goal", "create_goal", "replace_goal", "pause_goal", "resume_goal", "set_goal_objective", "set_goal_token_budget", "clear_goal_token_budget", "clear_goal", "pump", "state",
     "session_id", "model", "export_markdown", "export_markdown_file", "wakeup_fd", "close" }) do
     assert(type(runtime_meta.__index[method]) == "function",
       "missing agent runtime method " .. method)
@@ -1239,6 +1239,12 @@ do
     },
   }))
   assert_eq(custom_runtime:state(), "idle", "Lua custom preset initial state")
+  assert_ok(custom_runtime:user_shell_begin("lua-recorded-shell", false))
+  assert_ok(custom_runtime:user_shell_write("literal output\0\255"))
+  assert_ok(custom_runtime:user_shell_finish(7, 1250))
+  assert_eq(custom_runtime:state(), "idle", "Lua shell recording started a turn")
+  assert_not_ok(custom_runtime:user_shell_finish(0, 0))
+
   local custom_chunks = {}
   assert_ok(custom_runtime:export_markdown(function(chunk)
     custom_chunks[#custom_chunks + 1] = chunk

@@ -51,6 +51,19 @@ static int storage_options(void) {
   return 0;
 }
 
+static int shell_options(void) {
+  cai_cli_options options;
+  char arg0[] = "cai", arg1[] = "--no-shell-context", arg2[] = "--no-terminal";
+  char *args[3];
+  args[0] = arg0;
+  args[1] = arg1;
+  args[2] = arg2;
+  return cai_cli_parse_options(1, args, &options) != 1 ||
+         !options.shell_context ||
+         cai_cli_parse_options(3, args, &options) != 1 ||
+         options.shell_context || options.terminal;
+}
+
 int main(void) {
   cai_cli_options options;
   char defaults_raw[][32] = {"cai"};
@@ -324,5 +337,5 @@ int main(void) {
       cai_cli_parse_options(3, invalid_legacy_instructions, &options) != -1 ||
       cai_cli_parse_options(3, invalid_legacy_workspace, &options) != -1)
     return 1;
-  return storage_options();
+  return shell_options() || storage_options();
 }

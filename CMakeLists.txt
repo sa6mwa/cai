@@ -971,7 +971,7 @@ endfunction()
 
 if(CAI_BUILD_CLI)
   find_package(lockdc CONFIG REQUIRED COMPONENTS static)
-  add_executable(cai_cli cli/main.c cli/options.c cli/status.c cli/reasoning.c cli/literal.c cli/login.c
+  add_executable(cai_cli cli/main.c cli/options.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
     cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c
     cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
   set_target_properties(cai_cli PROPERTIES OUTPUT_NAME cai)
@@ -1030,6 +1030,23 @@ if(CAI_BUILD_CLI)
         "$<TARGET_FILE:cai_cli_startup_fixture>")
     set_tests_properties(cai_cli_chrome PROPERTIES LABELS "integration;local;offline" TIMEOUT 90)
 
+    add_executable(cai_cli_shell_fixture tests/cli_shell_fixture.c
+      cli/options.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
+      cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c
+      cli/session_commands.c cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
+    target_link_libraries(cai_cli_shell_fixture PRIVATE cai_static
+      softline::softline_static libmdf::mdf_static lockdc::static)
+    cai_configure_cli_target(cai_cli_shell_fixture)
+    add_test(NAME cai_cli_shell_context
+      COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_shell_context_test.py"
+        "$<TARGET_FILE:cai_cli>" "$<TARGET_FILE:cai_cli_shell_fixture>")
+    set_tests_properties(cai_cli_shell_context PROPERTIES TIMEOUT 30)
+    add_executable(cai_cli_shell_runner_test tests/cli_shell_runner_test.c cli/shell.c cli/pouch_stream.c)
+    target_link_libraries(cai_cli_shell_runner_test PRIVATE cai_static lockdc::static)
+    cai_configure_cli_target(cai_cli_shell_runner_test)
+    target_compile_options(cai_cli_shell_runner_test PRIVATE -UNDEBUG)
+    add_test(NAME cai_cli_shell_runner COMMAND cai_cli_shell_runner_test "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(cai_cli_shell_runner PROPERTIES TIMEOUT 15)
     add_executable(cai_cli_options_test tests/cli_options_test.c cli/options.c)
     target_include_directories(cai_cli_options_test PRIVATE
       "${CAI_PUBLIC_INCLUDE_DIR}" "${CAI_GENERATED_INCLUDE_DIR}")
@@ -1042,7 +1059,7 @@ if(CAI_BUILD_CLI)
     add_test(NAME cai_cli_storage_stream COMMAND cai_cli_storage_stream_test)
     set_tests_properties(cai_cli_storage_stream PROPERTIES TIMEOUT 30)
     add_executable(cai_cli_reasoning_test tests/cli_reasoning_test.c
-      cli/options.c cli/status.c cli/reasoning.c cli/literal.c cli/login.c cli/review_report.c
+      cli/options.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c cli/review_report.c
       cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
     target_link_libraries(cai_cli_reasoning_test PRIVATE cai_static
       softline::softline_static libmdf::mdf_static lockdc::static)
@@ -1054,7 +1071,7 @@ if(CAI_BUILD_CLI)
     cai_configure_cli_target(cai_cli_log_test)
     add_test(NAME cai_cli_log COMMAND cai_cli_log_test "${CMAKE_CURRENT_BINARY_DIR}")
     add_executable(cai_cli_startup_fixture tests/cli_startup_fixture.c
-      cli/options.c cli/status.c cli/reasoning.c cli/literal.c cli/login.c cli/review_report.c cli/pouch.c
+      cli/options.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c cli/review_report.c cli/pouch.c
       cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c cli/log.c
       cli/response.c cli/chrome_host.c cli/chrome_setup.c)
     target_link_libraries(cai_cli_startup_fixture PRIVATE cai_static
@@ -1118,6 +1135,10 @@ if(CAI_BUILD_CLI)
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_goal_test.py"
         "$<TARGET_FILE:cai_cli>")
     set_tests_properties(cai_cli_goal PROPERTIES TIMEOUT 45)
+    add_test(NAME cai_cli_shell
+      COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_shell_test.py"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_shell PROPERTIES TIMEOUT 45)
     add_test(NAME cai_cli_tool_display
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_tool_display_test.py"
         "$<TARGET_FILE:cai_cli>")
@@ -1310,6 +1331,12 @@ if(CAI_BUILD_TESTS)
         host "$<TARGET_FILE:cai_chrome_host_fixture>" "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(cai_chrome_host PROPERTIES LABELS "unit;local;offline" TIMEOUT 30)
   endif()
+  add_executable(cai_user_shell_test tests/user_shell_test.c)
+  cai_link_internal_consumer(cai_user_shell_test)
+  cai_configure_c_target(cai_user_shell_test)
+  target_compile_options(cai_user_shell_test PRIVATE -UNDEBUG)
+  add_test(NAME cai_user_shell COMMAND cai_user_shell_test "${CMAKE_CURRENT_BINARY_DIR}")
+  set_tests_properties(cai_user_shell PROPERTIES LABELS "unit;local;offline" TIMEOUT 15)
   add_executable(cai_display_test tests/display_test.c)
   cai_link_internal_consumer(cai_display_test)
   cai_configure_c_target(cai_display_test)
