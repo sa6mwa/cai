@@ -28043,7 +28043,7 @@ done:
 
 static void test_agent_runtime_model_switch(test_state *state) {
   static const char *catalog_required[] = {
-      "GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/",
+      "GET /v1/models?client_version=0.160.0 HTTP/",
       "Authorization: Bearer mock-chatgpt-token",
       ("originator: " CAI_CHATGPT_AUTH_DEFAULT_ORIGINATOR),
   };
@@ -28078,9 +28078,9 @@ static void test_agent_runtime_model_switch(test_state *state) {
   static const char *captured_turn_required[] = {"capture model metadata"};
   static const char *original_assistant_required[] = {"original assistant"};
   static const mock_http_expectation catalog_script[] = {
-      {"GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/",
-       catalog_required, sizeof(catalog_required) / sizeof(catalog_required[0]),
-       NULL, 0U, 200, "OK", "application/json", NULL, catalog_body},
+      {"GET /v1/models?client_version=0.160.0 HTTP/", catalog_required,
+       sizeof(catalog_required) / sizeof(catalog_required[0]), NULL, 0U, 200,
+       "OK", "application/json", NULL, catalog_body},
       {"POST /v1/responses HTTP/", captured_turn_required,
        sizeof(captured_turn_required) / sizeof(captured_turn_required[0]), NULL,
        0U, 200, "OK", "text/event-stream", NULL, captured_turn_body},
@@ -28423,11 +28423,10 @@ test_agent_runtime_model_switch_catalog_recovery(test_state *state) {
       "{\"error\":{\"message\":\"temporary failure\",\"type\":"
       "\"server_error\"}}";
   static const mock_http_expectation script[] = {
-      {"GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/", NULL, 0U,
-       NULL, 0U, 500, "Internal Server Error", "application/json", NULL,
-       error_body},
-      {"GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/", NULL, 0U,
-       NULL, 0U, 200, "OK", "application/json", NULL, catalog_body},
+      {"GET /v1/models?client_version=0.160.0 HTTP/", NULL, 0U, NULL, 0U, 500,
+       "Internal Server Error", "application/json", NULL, error_body},
+      {"GET /v1/models?client_version=0.160.0 HTTP/", NULL, 0U, NULL, 0U, 200,
+       "OK", "application/json", NULL, catalog_body},
       {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 500,
        "Internal Server Error", "application/json", NULL, error_body}};
   cai_client_config client_config;
@@ -28553,13 +28552,12 @@ test_agent_runtime_model_switch_live_catalog_outage(test_state *state) {
       "{\"error\":{\"message\":\"temporary failure\",\"type\":"
       "\"server_error\"}}";
   static const mock_http_expectation script[] = {
-      {"GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/", NULL, 0U,
-       NULL, 0U, 200, "OK", "application/json", NULL, catalog_body},
+      {"GET /v1/models?client_version=0.160.0 HTTP/", NULL, 0U, NULL, 0U, 200,
+       "OK", "application/json", NULL, catalog_body},
       {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
        "text/event-stream", NULL, response_body},
-      {"GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/", NULL, 0U,
-       NULL, 0U, 500, "Internal Server Error", "application/json", NULL,
-       error_body},
+      {"GET /v1/models?client_version=0.160.0 HTTP/", NULL, 0U, NULL, 0U, 500,
+       "Internal Server Error", "application/json", NULL, error_body},
       {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 500,
        "Internal Server Error", "application/json", NULL, error_body},
       {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 500,
@@ -41997,8 +41995,7 @@ static void test_codex_catalog_large_fields(test_state *state) {
     memcpy(body[i] + offset + length, suffix, sizeof(suffix));
   }
   for (i = 0; i < 5; i++) {
-    script[i].request_prefix =
-        "GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/";
+    script[i].request_prefix = "GET /v1/models?client_version=0.160.0 HTTP/";
     script[i].status = 200;
     script[i].status_text = "OK";
     script[i].content_type = "application/json";
@@ -42084,7 +42081,9 @@ static void test_codex_catalog_validation(test_state *state) {
       "{\"models\":[{\"slug\":\"m\",\"ignored\":\"\\uD800\"}]}",
       "{\"models\":[{\"slug\":\"m\"}] trailing}"};
   static const char valid[] =
-      "{\"models\":[{\"slug\":\"m\",\"display_name\":null,\"description\":null,"
+      "{\"models\":[{\"slug\":\"gpt-6.1-sol\",\"display_name\":null,"
+      "\"description\":null,"
+      "\"minimal_client_version\":\"0.153.0\",\"context_window\":272000,"
       "\"comp_hash\":null,\"auto_compact_token_limit\":null,\"supported_in_"
       "api\":true,"
       "\"model_messages\":{\"slug\":false,\"context_window\":\"ignored\"}},"
@@ -42102,8 +42101,7 @@ static void test_codex_catalog_validation(test_state *state) {
   cai_error_init(&error);
   memset(script, 0, sizeof(script));
   for (i = 0U; i < sizeof(script) / sizeof(script[0]); i++) {
-    script[i].request_prefix =
-        "GET /v1/models?client_version=" CAI_VERSION_STRING " HTTP/";
+    script[i].request_prefix = "GET /v1/models?client_version=0.160.0 HTTP/";
     script[i].status = 200;
     script[i].status_text = "OK";
     script[i].content_type = "application/json";
@@ -42149,7 +42147,9 @@ static void test_codex_catalog_validation(test_state *state) {
       expect_str(state, "catalog_validation_last", catalog->entries[8].slug,
                  "m8");
       expect_str(state, "catalog_validation_slug", catalog->entries[0].slug,
-                 "m");
+                 "gpt-6.1-sol");
+      expect_int(state, "catalog_validation_new_model_context",
+                 catalog->entries[0].context_window_tokens, 272000L);
       expect_int(state, "catalog_validation_bool",
                  catalog->entries[0].supported_in_api, 1L);
     }

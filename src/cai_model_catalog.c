@@ -8,6 +8,10 @@
 #include <time.h>
 
 #define CAI_MODEL_CATALOG_CACHE_SECONDS 300
+/* The Codex backend gates models by its client protocol version, not CAI's
+ * unrelated release number. Maintain this compatibility baseline alongside
+ * the catalog adapter; keep the HTTP originator and User-Agent CAI's own. */
+#define CAI_CODEX_CATALOG_CLIENT_VERSION "0.160.0"
 
 static double cai_catalog_retry_clock(void) {
   struct timespec now;
@@ -25,7 +29,8 @@ typedef struct cai_catalog_policy {
 } cai_catalog_policy;
 
 static const cai_catalog_policy cai_catalog_policies[] = {
-    {"chatgpt.com", "models?client_version=" CAI_VERSION_STRING, 0, NULL, 0U},
+    {"chatgpt.com", "models?client_version=" CAI_CODEX_CATALOG_CLIENT_VERSION,
+     0, NULL, 0U},
     {"api.berget.ai", "models", 1, cai_berget_contexts,
      sizeof(cai_berget_contexts) / sizeof(cai_berget_contexts[0])}};
 

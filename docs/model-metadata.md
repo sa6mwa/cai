@@ -10,6 +10,15 @@ returned model; `model_type` identifies which ones are usable for chat. The
 catalog is cached for five minutes per client. Other providers can use the
 JSON fallback catalog directly.
 
+ChatGPT's catalog filters models by Codex client compatibility. Its
+`client_version` query uses the independently maintained `0.160.0` baseline
+in `src/cai_model_catalog.c`, rather than CAI's release version. For example,
+`gpt-6.1-sol` requires at least `0.153.0`; sending CAI's `0.0.0` development
+version hides it on the server. Keep this baseline aligned with the supported
+Codex catalog/Responses protocol and verify the adapter when advancing it.
+CAI keeps its own originator and User-Agent. New advertised model IDs are
+accepted without requiring a bundled model metadata row.
+
 Automatic refresh (`CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED`) retains the
 last successful live catalog if a refresh fails and marks it `is_stale`. That
 catalog takes precedence over a configured fallback. Failed automatic refreshes
