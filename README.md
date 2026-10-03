@@ -77,7 +77,9 @@ account catalog, including the opaque compaction compatibility hash. CAI uses
 that metadata for switches: equal hashes preserve context, differing declared
 hashes compact retained local history before the selection changes, and missing
 metadata does not cause CAI to invent a compatibility decision. The selected
-model is checkpointed for durable resume.
+model, reasoning effort, and reasoning-summary mode are checkpointed together.
+Resume restores them unless explicit runtime configuration overrides the
+corresponding fields.
 
 Smith defaults to `gpt-5.6-terra` with medium reasoning and provider-directed
 `auto` reasoning summaries. The C and Lua Smith terminal examples intentionally
@@ -299,12 +301,21 @@ are errors; they never become goal instructions. Commands remain responsive
 during a turn, and goal state survives session replay. Completed or stopped
 pursuit leaves the interactive prompt open.
 
-`/model` shows the current and pending model plus the provider catalog.
-Use `/model MODEL` to change model within the same conversation: idle changes
-apply immediately; active requests and tools finish before the change applies
-at the next durable tool-round or turn boundary. The next model request uses
-it, including any required context compaction. Later selections replace a
-pending selection. Catalog browsing uses a separate client and a five-minute
+`/model [MODEL [EFFORT]]` shows the current and pending settings and the
+provider catalog, or changes model and optionally reasoning effort.
+`/model high` changes only effort; `/model MODEL` keeps the current effort.
+`/reasoning [EFFORT]` changes effort or lists the selected model’s advertised
+choices and provider default. If model-specific choices are unavailable, it
+says so rather than claiming support. Unsupported advertised choices are
+rejected. OpenRouter skips catalog listing; other lists show at most 50 models,
+and any model ID can still be selected explicitly.
+
+Idle changes apply immediately; active requests and tools finish before the
+change applies at the next durable tool-round or turn boundary. Subsequent
+changes merge into pending settings. Applied settings are checkpointed
+atomically and restored on automatic or explicit resume; explicit `-m`, `-r`,
+and `--reasoning-summary` independently override saved values. `/new` uses the
+startup defaults. Catalog browsing uses a separate client and a five-minute
 cache; it makes no additional startup request. Interactive warnings and errors
 use a red `*` with `WARN:` or `ERROR:` and readable details, with one blank
 line between feed blocks. Complete diagnostic records stay in the session log.

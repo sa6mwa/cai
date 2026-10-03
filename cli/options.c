@@ -89,7 +89,8 @@ static void cai_cli_help(void) {
   fputs("      --model-metadata FILE    Provider model metadata JSON\n",
         stdout);
   fputs("  -m, --model ID               Model (provider default if omitted)\n"
-        "  -r, --reasoning-effort LEVEL none|low|medium|high|xhigh|max\n"
+        "  -r, --reasoning-effort LEVEL "
+        "none|minimal|low|medium|high|xhigh|max|ultra\n"
         "      --reasoning-summary MODE none|auto|concise|detailed (default "
         "concise)\n",
         stdout);
@@ -126,13 +127,13 @@ static int cai_cli_one_of(const char *value, const char *const *values) {
 
 int cai_cli_parse_options(int argc, char *const *argv,
                           cai_cli_options *options) {
-  static const char *const efforts[] = {"none",  "low", "medium", "high",
-                                        "xhigh", "max", NULL};
+  static const char *const efforts[] = {"none",   "minimal", "low",
+                                        "medium", "high",    "xhigh",
+                                        "max",    "ultra",   NULL};
   static const char *const summaries[] = {"none", "auto", "concise", "detailed",
                                           NULL};
   static const char *const providers[] = {"chatgpt", "openai", "openrouter",
                                           "berget",  "custom", NULL};
-  int model_explicit = 0;
   int i;
   size_t j;
 
@@ -343,7 +344,11 @@ int cai_cli_parse_options(int argc, char *const *argv,
       return -1;
     }
     if (field == &options->model)
-      model_explicit = 1;
+      options->model_explicit = 1;
+    if (field == &options->reasoning_effort)
+      options->reasoning_effort_explicit = 1;
+    if (field == &options->reasoning_summary)
+      options->reasoning_summary_explicit = 1;
     if ((field == &options->reasoning_effort ||
          field == &options->review_reasoning_effort) &&
         !cai_cli_one_of(value, efforts)) {
@@ -494,7 +499,7 @@ int cai_cli_parse_options(int argc, char *const *argv,
       options->import_file != NULL)
     return 1;
   if (strcmp(options->provider, "custom") == 0) {
-    if (options->endpoint == NULL || !model_explicit) {
+    if (options->endpoint == NULL || !options->model_explicit) {
       cai_cli_option_error(
           options, "%s",
           "cai: custom provider requires --endpoint and --model\n");
@@ -515,10 +520,10 @@ int cai_cli_parse_options(int argc, char *const *argv,
         "cai: --endpoint and --api-key-env require --provider custom\n");
     return -1;
   }
-  if (strcmp(options->provider, "openrouter") == 0 && !model_explicit)
+  if (strcmp(options->provider, "openrouter") == 0 && !options->model_explicit)
     options->model = CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES;
   if (strcmp(options->provider, "berget") == 0) {
-    if (!model_explicit)
+    if (!options->model_explicit)
       options->model = "zai-org/GLM-5.3-Flash";
     options->image_generation = 0;
   }

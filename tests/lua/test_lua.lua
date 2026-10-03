@@ -253,6 +253,7 @@ assert_eq(cai.TOOL_CHOICE_NONE, "none", "tool choice none")
 assert_eq(cai.TOOL_CHOICE_REQUIRED, "required", "tool choice required")
 assert_eq(cai.REASONING_EFFORT_MINIMAL, "minimal", "reasoning effort minimal")
 assert_eq(cai.REASONING_EFFORT_MAX, "max", "reasoning effort max")
+assert_eq(cai.REASONING_EFFORT_ULTRA, "ultra", "reasoning effort ultra")
 assert_eq(cai.REASONING_SUMMARY_AUTO, "auto", "reasoning summary auto")
 assert_eq(cai.REASONING_SUMMARY_NONE, "none", "reasoning summary none")
 assert(type(cai.MODEL_GPT_5_NANO) == "string")
@@ -457,6 +458,7 @@ do
     model_metadata_json = '{"models":[{"provider":"berget",' ..
       '"id":"zai-org/GLM-5.3-Flash","model_type":"text",' ..
       '"context_window_tokens":131072,' ..
+      '"reasoning_efforts":["low","high"],"default_reasoning_effort":"low",' ..
       '"pricing":{"currency":"EUR","input":1,"output":2}}]}',
   }))
   local catalog = assert_ok(berget_client:list_models("offline"))
@@ -467,6 +469,9 @@ do
   assert_eq(catalog[1].pricing_unit, "M Token", "Lua provider price unit")
   assert_eq(catalog[1].context_window_tokens, 131072,
     "Lua provider context fallback")
+  assert_eq(#catalog[1].reasoning_efforts, 2, "Lua catalog reasoning choices")
+  assert_eq(catalog[1].reasoning_efforts[2], "high", "Lua catalog reasoning choice")
+  assert_eq(catalog[1].default_reasoning_effort, "low", "Lua catalog reasoning default")
   assert_eq(berget_client:usage().estimated_spend_eur, 0,
     "Lua provider EUR accounting")
   berget_client:close()

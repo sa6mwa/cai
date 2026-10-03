@@ -132,6 +132,10 @@ typedef struct cai_session_impl {
   char *state_model;
   /** Provider compaction hash recorded with state_model, when available. */
   char *state_model_compaction_hash;
+  /** Imported active request settings, independent of history provenance. */
+  char *state_request_model;
+  char *state_reasoning_effort;
+  char *state_reasoning_summary;
   /** Preset identity recorded in the imported/exported portable session state.
    */
   char *state_preset_name;

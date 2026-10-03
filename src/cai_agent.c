@@ -128,6 +128,9 @@ typedef struct cai_session_state_doc {
   long long version;
   char *model;
   char *model_compaction_hash;
+  char *request_model;
+  char *reasoning_effort;
+  char *reasoning_summary;
   char *preset_name;
   char *preset_prompt_version;
   char *previous_response_id;
@@ -177,6 +180,12 @@ static const lonejson_field cai_session_state_fields[] = {
                                           "model"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(
         cai_session_state_doc, model_compaction_hash, "model_compaction_hash"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc, request_model,
+                                          "request_model"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc,
+                                          reasoning_effort, "reasoning_effort"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(
+        cai_session_state_doc, reasoning_summary, "reasoning_summary"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc, preset_name,
                                           "preset_name"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(
@@ -2544,6 +2553,9 @@ void cai_session_destroy(cai_session *session) {
   cai_free_mem(allocator, impl->conversation_id);
   cai_free_mem(allocator, impl->state_model);
   cai_free_mem(allocator, impl->state_model_compaction_hash);
+  cai_free_mem(allocator, impl->state_request_model);
+  cai_free_mem(allocator, impl->state_reasoning_effort);
+  cai_free_mem(allocator, impl->state_reasoning_summary);
   cai_free_mem(allocator, impl->state_preset_name);
   cai_free_mem(allocator, impl->state_preset_prompt_version);
   cai_free_mem(allocator, impl->goal_objective);
@@ -7238,6 +7250,9 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
                   : CAI_SESSION_AGENT_IMPL(session)->model;
   doc.model_compaction_hash =
       CAI_SESSION_IMPL(session)->state_model_compaction_hash;
+  doc.request_model = CAI_SESSION_AGENT_IMPL(session)->model;
+  doc.reasoning_effort = CAI_SESSION_AGENT_IMPL(session)->reasoning_effort;
+  doc.reasoning_summary = CAI_SESSION_AGENT_IMPL(session)->reasoning_summary;
   doc.preset_name = CAI_SESSION_IMPL(session)->state_preset_name;
   doc.preset_prompt_version =
       CAI_SESSION_IMPL(session)->state_preset_prompt_version;
@@ -7376,6 +7391,9 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   int has_next_history;
   char *next_state_model;
   char *next_state_model_compaction_hash;
+  char *next_request_model = NULL;
+  char *next_reasoning_effort = NULL;
+  char *next_reasoning_summary = NULL;
   char *next_state_preset_name;
   char *next_state_preset_prompt_version;
   char *next_goal_objective;
@@ -7431,6 +7449,33 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   if (doc.previous_response_id != NULL && doc.conversation_id != NULL) {
     rc = cai_set_error(error, CAI_ERR_INVALID,
                        "session state has multiple continuation handles");
+    goto done;
+  }
+  if ((doc.request_model != NULL &&
+       (doc.request_model[0] == '\0' || strlen(doc.request_model) > 256U ||
+        strpbrk(doc.request_model, " \t\r\n") != NULL)) ||
+      (doc.reasoning_effort != NULL &&
+       (doc.reasoning_effort[0] == '\0' || strlen(doc.reasoning_effort) > 64U ||
+        strpbrk(doc.reasoning_effort, " \t\r\n") != NULL)) ||
+      (doc.reasoning_summary != NULL &&
+       (doc.reasoning_summary[0] == '\0' ||
+        strlen(doc.reasoning_summary) > 64U ||
+        strpbrk(doc.reasoning_summary, " \t\r\n") != NULL))) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "session state has invalid request settings");
+    goto done;
+  }
+  next_request_model = cai_strdup(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+                                  doc.request_model);
+  next_reasoning_effort = cai_strdup(
+      &CAI_SESSION_CLIENT_IMPL(session)->allocator, doc.reasoning_effort);
+  next_reasoning_summary = cai_strdup(
+      &CAI_SESSION_CLIENT_IMPL(session)->allocator, doc.reasoning_summary);
+  if ((doc.request_model != NULL && next_request_model == NULL) ||
+      (doc.reasoning_effort != NULL && next_reasoning_effort == NULL) ||
+      (doc.reasoning_summary != NULL && next_reasoning_summary == NULL)) {
+    rc = cai_set_error(error, CAI_ERR_NOMEM,
+                       "failed to preserve imported request settings");
     goto done;
   }
   if (doc.model != NULL) {
@@ -7577,6 +7622,16 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
         next_state_model_compaction_hash;
     next_state_model = NULL;
     next_state_model_compaction_hash = NULL;
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+                 CAI_SESSION_IMPL(session)->state_request_model);
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+                 CAI_SESSION_IMPL(session)->state_reasoning_effort);
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+                 CAI_SESSION_IMPL(session)->state_reasoning_summary);
+    CAI_SESSION_IMPL(session)->state_request_model = next_request_model;
+    CAI_SESSION_IMPL(session)->state_reasoning_effort = next_reasoning_effort;
+    CAI_SESSION_IMPL(session)->state_reasoning_summary = next_reasoning_summary;
+    next_request_model = next_reasoning_effort = next_reasoning_summary = NULL;
   }
   if (rc == CAI_OK) {
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
@@ -7673,6 +7728,12 @@ done:
     next_history.cleanup(&next_history);
   }
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator, next_state_model);
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+               next_request_model);
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+               next_reasoning_effort);
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+               next_reasoning_summary);
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
                next_state_model_compaction_hash);
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,

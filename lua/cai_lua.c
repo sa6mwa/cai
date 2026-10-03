@@ -2939,6 +2939,19 @@ static int cai_lua_client_list_models(lua_State *L) {
     lua_setfield(L, -2, "output_price");
     lua_pushboolean(L, entry->has_pricing);
     lua_setfield(L, -2, "has_pricing");
+    if (entry->reasoning_efforts_known) {
+      size_t j;
+      lua_createtable(L, (int)entry->reasoning_effort_count, 0);
+      for (j = 0U; j < entry->reasoning_effort_count; j++) {
+        lua_pushstring(L, entry->reasoning_efforts[j]);
+        lua_rawseti(L, -2, (lua_Integer)j + 1);
+      }
+      lua_setfield(L, -2, "reasoning_efforts");
+    }
+    if (entry->default_reasoning_effort != NULL) {
+      lua_pushstring(L, entry->default_reasoning_effort);
+      lua_setfield(L, -2, "default_reasoning_effort");
+    }
     lua_rawseti(L, -2, (lua_Integer)i + 1);
   }
   cai_model_catalog_close(catalog);
@@ -12079,6 +12092,7 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_STRING("REASONING_EFFORT_HIGH", CAI_REASONING_EFFORT_HIGH);
   CAI_LUA_SET_STRING("REASONING_EFFORT_XHIGH", CAI_REASONING_EFFORT_XHIGH);
   CAI_LUA_SET_STRING("REASONING_EFFORT_MAX", CAI_REASONING_EFFORT_MAX);
+  CAI_LUA_SET_STRING("REASONING_EFFORT_ULTRA", CAI_REASONING_EFFORT_ULTRA);
   CAI_LUA_SET_STRING("REASONING_MODE_STANDARD", CAI_REASONING_MODE_STANDARD);
   CAI_LUA_SET_STRING("REASONING_MODE_PRO", CAI_REASONING_MODE_PRO);
   CAI_LUA_SET_STRING("REASONING_SUMMARY_AUTO", CAI_REASONING_SUMMARY_AUTO);

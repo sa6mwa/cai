@@ -82,7 +82,6 @@ typedef struct cli_state {
   sl_watch_id_t log_watch_id;
   int has_log_watch;
   char *review_report;
-  char *selected_model;
   size_t review_report_length;
   char generated_goal[4096];
   cli_session *sessions;
@@ -1164,6 +1163,7 @@ static int cli_quota_wakeup(sl_t *sl, const sl_watch_event_t *event,
 static int cli_open_runtime(cli_state *state, const char *resume_id,
                             int new_session, cai_error *error) {
   cai_agent_runtime_config config;
+  cai_agent_preset preset;
   cai_skill_config skills;
   int wakeup_fd;
   int rc;
@@ -1186,6 +1186,11 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   }
   state->show_welcome = 1;
   cai_agent_runtime_config_init(&config);
+  cai_agent_preset_from_smith(&preset);
+  preset.default_model = state->options.model;
+  preset.default_reasoning_effort = state->options.reasoning_effort;
+  preset.default_reasoning_summary = state->options.reasoning_summary;
+  config.preset_descriptor = &preset;
   cai_skill_config_init(&skills);
   if (state->options.review)
     config.preset = CAI_SMITH_REVIEW_PRESET;
@@ -1200,9 +1205,13 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
       !state->options.review && !new_session && resume_id == NULL;
   config.resume_session_id = state->options.review ? NULL : resume_id;
   config.record_transcript = 1;
-  config.model = state->options.model;
-  config.reasoning_effort = state->options.reasoning_effort;
-  config.reasoning_summary = state->options.reasoning_summary;
+  config.model = state->options.model_explicit ? state->options.model : NULL;
+  config.reasoning_effort = state->options.reasoning_effort_explicit
+                                ? state->options.reasoning_effort
+                                : NULL;
+  config.reasoning_summary = state->options.reasoning_summary_explicit
+                                 ? state->options.reasoning_summary
+                                 : NULL;
   config.review_model = state->options.review_model;
   config.review_reasoning_effort = state->options.review_reasoning_effort;
   config.review_reasoning_summary = state->options.review_reasoning_summary;
@@ -1498,6 +1507,226 @@ static int cli_goal_command(cli_state *state, const char *arg,
       error);
 }
 
+static const char *const cli_reasoning_efforts[] = {
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"};
+
+static int cli_effort_known(const char *value) {
+  size_t i;
+  for (i = 0U;
+       i < sizeof(cli_reasoning_efforts) / sizeof(cli_reasoning_efforts[0]);
+       i++)
+    if (strcmp(value, cli_reasoning_efforts[i]) == 0)
+      return 1;
+  return 0;
+}
+
+static int cli_settings_command(cli_state *state, const char *arguments,
+                                int reasoning_only, cai_error *error) {
+  cai_agent_runtime_settings effective, pending, requested;
+  cai_agent_runtime_control_result result;
+  cai_model_catalog *catalog = NULL;
+  const cai_model_catalog_entry *entry;
+  pslog_field fields[3];
+  char buffer[512], message[1024], target_model[257];
+  char *first, *second, *extra, *save = NULL;
+  const char *model, *effort;
+  size_t i;
+  int rc, listing;
+  while (*arguments == ' ' || *arguments == '\t')
+    arguments++;
+  if (strlen(arguments) >= sizeof(buffer))
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "model settings input is too long");
+  strcpy(buffer, arguments);
+  first = strtok_r(buffer, " \t\r\n", &save);
+  second = strtok_r(NULL, " \t\r\n", &save);
+  extra = strtok_r(NULL, " \t\r\n", &save);
+  if (extra != NULL || (reasoning_only && second != NULL) ||
+      (second != NULL && !cli_effort_known(second)))
+    return cai_cli_error(
+        error, CAI_ERR_INVALID,
+        reasoning_only ? "use /reasoning EFFORT (see /reasoning for choices)"
+                       : "use /model MODEL [EFFORT] or /model EFFORT (see "
+                         "/reasoning for choices)");
+  memset(&requested, 0, sizeof(requested));
+  if (first != NULL) {
+    if (reasoning_only || (second == NULL && cli_effort_known(first))) {
+      if (!cli_effort_known(first))
+        return cai_cli_error(
+            error, CAI_ERR_INVALID,
+            "unknown reasoning effort; use /reasoning for choices");
+      requested.present = CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT;
+      requested.reasoning_effort = first;
+    } else {
+      if (strlen(first) > 256U)
+        return cai_cli_error(error, CAI_ERR_INVALID,
+                             "model ID must contain at most 256 bytes");
+      requested.present = CAI_AGENT_RUNTIME_SETTING_MODEL;
+      requested.model = first;
+      if (second != NULL) {
+        requested.present |= CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT;
+        requested.reasoning_effort = second;
+      }
+    }
+  }
+  rc = cai_agent_runtime_get_settings(state->runtime, &effective, &pending,
+                                      error);
+  if (rc != CAI_OK)
+    return rc;
+  listing = first == NULL;
+  model = requested.model != NULL ? requested.model
+          : pending.model != NULL ? pending.model
+                                  : effective.model;
+  if (snprintf(target_model, sizeof(target_model), "%s", model) >=
+      (int)sizeof(target_model))
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "current model ID is too long");
+  if (listing) {
+    snprintf(message, sizeof(message),
+             "## %s\n\nCurrent: `%s`\n\nReasoning effort: `%s`\n\n%s%s%s%s%s%s",
+             reasoning_only ? "Reasoning" : "Model", effective.model,
+             effective.reasoning_effort != NULL ? effective.reasoning_effort
+                                                : "provider default",
+             pending.model != NULL ? "Pending: `" : "",
+             pending.model != NULL ? pending.model : "",
+             pending.model != NULL ? "`\n\n" : "",
+             pending.reasoning_effort != NULL ? "Pending reasoning: `" : "",
+             pending.reasoning_effort != NULL ? pending.reasoning_effort : "",
+             pending.reasoning_effort != NULL ? "`\n\n" : "");
+    if (cli_text(state, message, strlen(message)) != 0)
+      return CAI_ERR_TRANSPORT;
+    if (!reasoning_only && strcmp(state->options.provider, "openrouter") == 0) {
+      static const char note[] =
+          "OpenRouter's large catalog is not listed here. "
+          "Use `/model MODEL [EFFORT]` or `/reasoning EFFORT`.\n";
+      if (cli_text(state, note, strlen(note)) != 0)
+        return CAI_ERR_TRANSPORT;
+      return cli_finish_response(state) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+    }
+  }
+  /* A separate discovery client avoids touching the agent worker's transport.
+   */
+  if (listing || requested.reasoning_effort != NULL) {
+    rc = cai_client_list_models(state->model_client,
+                                CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED,
+                                &catalog, error);
+    if (rc != CAI_OK) {
+      cai_error_cleanup(error);
+      cai_error_init(error);
+    }
+  }
+  entry = cai_model_catalog_find(catalog, target_model);
+  if (!listing && requested.reasoning_effort != NULL && entry != NULL &&
+      entry->reasoning_efforts_known) {
+    for (i = 0U; i < entry->reasoning_effort_count; i++)
+      if (strcmp(requested.reasoning_effort, entry->reasoning_efforts[i]) == 0)
+        break;
+    if (i == entry->reasoning_effort_count) {
+      snprintf(message, sizeof(message),
+               "Model %s does not advertise reasoning effort %s; use "
+               "/reasoning for choices.",
+               target_model, requested.reasoning_effort);
+      cai_model_catalog_close(catalog);
+      return cai_cli_error(error, CAI_ERR_INVALID, message);
+    }
+  }
+  if (listing && reasoning_only) {
+    int known = entry != NULL && entry->reasoning_efforts_known;
+    size_t count = known ? entry->reasoning_effort_count
+                         : sizeof(cli_reasoning_efforts) /
+                               sizeof(cli_reasoning_efforts[0]);
+    const char *const *choices =
+        known ? (const char *const *)entry->reasoning_efforts
+              : cli_reasoning_efforts;
+    const char *note =
+        known ? "Provider-advertised choices:\n\n"
+              : "Model-specific reasoning choices are unavailable. CAI accepts "
+                "the "
+                "following values; support depends on the provider/model.\n\n";
+    snprintf(message, sizeof(message), "Choices for `%s`:\n\n", target_model);
+    rc = cli_text(state, message, strlen(message)) == 0 ? CAI_OK
+                                                        : CAI_ERR_TRANSPORT;
+    if (rc == CAI_OK)
+      rc =
+          cli_text(state, note, strlen(note)) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+    if (rc == CAI_OK && count == 0U)
+      rc =
+          cli_text(
+              state, "This model advertises no reasoning-effort choices.\n",
+              strlen("This model advertises no reasoning-effort choices.\n")) ==
+                  0
+              ? CAI_OK
+              : CAI_ERR_TRANSPORT;
+    for (i = 0U; rc == CAI_OK && i < count; i++) {
+      snprintf(message, sizeof(message), "- `%s`%s\n", choices[i],
+               entry != NULL && entry->default_reasoning_effort != NULL &&
+                       strcmp(choices[i], entry->default_reasoning_effort) == 0
+                   ? " (provider default)"
+                   : "");
+      if (cli_text(state, message, strlen(message)) != 0)
+        rc = CAI_ERR_TRANSPORT;
+    }
+  } else if (listing) {
+    if (catalog == NULL) {
+      const char *note = "Model list unavailable; enter a model ID.\n";
+      rc =
+          cli_text(state, note, strlen(note)) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+    } else {
+      rc = CAI_OK;
+      for (i = 0U; rc == CAI_OK && i < catalog->count && i < 50U; i++) {
+        snprintf(message, sizeof(message), "- `%s`%s%s\n",
+                 catalog->entries[i].slug,
+                 catalog->entries[i].display_name != NULL ? " — " : "",
+                 catalog->entries[i].display_name != NULL
+                     ? catalog->entries[i].display_name
+                     : "");
+        if (cli_text(state, message, strlen(message)) != 0)
+          rc = CAI_ERR_TRANSPORT;
+      }
+      if (rc == CAI_OK && catalog->count > 50U) {
+        snprintf(message, sizeof(message),
+                 "\nShowing 50 of %lu models. Enter any model ID directly.\n",
+                 (unsigned long)catalog->count);
+        if (cli_text(state, message, strlen(message)) != 0)
+          rc = CAI_ERR_TRANSPORT;
+      }
+    }
+  }
+  cai_model_catalog_close(catalog);
+  if (listing)
+    return rc == CAI_OK && cli_finish_response(state) == 0 ? CAI_OK
+                                                           : CAI_ERR_TRANSPORT;
+  rc = cai_agent_runtime_update_settings(state->runtime, &requested, &result,
+                                         error);
+  if (rc != CAI_OK)
+    return rc;
+  effort = requested.reasoning_effort;
+  if (requested.model != NULL)
+    snprintf(
+        message, sizeof(message),
+        result.applied
+            ? "Model changed to %s%s%s.\n"
+            : "Model %s%s%s queued for the next safe model/tool boundary.\n",
+        requested.model, effort != NULL ? "; reasoning effort " : "",
+        effort != NULL ? effort : "");
+  else
+    snprintf(message, sizeof(message),
+             result.applied ? "Reasoning effort changed to %s.\n"
+                            : "Reasoning effort %s queued for the next safe "
+                              "model/tool boundary.\n",
+             effort);
+  fields[0] = pslog_str("model", target_model);
+  fields[1] =
+      pslog_str("reasoning_effort",
+                effort != NULL ? effort : result.effective.reasoning_effort);
+  fields[2] = pslog_bool("applied", result.applied);
+  cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO,
+                      requested.model != NULL ? "model_selection"
+                                              : "reasoning_selection",
+                      "user", message, strlen(message), fields, 3U);
+  return cli_write(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+}
+
 static int cli_handle_command(cli_state *state, const char *line,
                               cai_error *error, int *handled) {
   const char *arg;
@@ -1531,91 +1760,13 @@ static int cli_handle_command(cli_state *state, const char *line,
   if (strcmp(line, "/goal") == 0 || strncmp(line, "/goal ", 6U) == 0 ||
       strncmp(line, "/goal\t", 6U) == 0)
     return cli_goal_command(state, line + 5U, error);
-  if (strcmp(line, "/model") == 0 || strncmp(line, "/model ", 7U) == 0) {
-    cai_agent_runtime_settings effective;
-    cai_agent_runtime_settings pending;
-    cai_agent_runtime_settings requested;
-    cai_agent_runtime_control_result result;
-    cai_model_catalog *catalog = NULL;
-    pslog_field fields[2];
-    char message[1024];
-    char *selection;
-    size_t i;
-    arg = line + 6;
-    while (*arg == ' ')
-      arg++;
-    if (*arg == '\0') {
-      rc = cai_agent_runtime_get_settings(state->runtime, &effective, &pending,
-                                          error);
-      if (rc != CAI_OK)
-        return rc;
-      snprintf(message, sizeof(message),
-               "## Model\n\nCurrent: `%s`\n\n%s%s%s"
-               "Use `/model MODEL` to change model in this conversation. "
-               "Changes apply at the next safe model/tool boundary.\n\n",
-               effective.model, pending.model != NULL ? "Pending: `" : "",
-               pending.model != NULL ? pending.model : "",
-               pending.model != NULL ? "`\n\n" : "");
-      if (cli_text(state, message, strlen(message)) != 0)
-        return CAI_ERR_TRANSPORT;
-      /* Explicit catalog browsing uses its own HTTP client and cache, never
-       * the agent worker's client. Startup makes no extra catalog request. */
-      rc = cai_client_list_models(state->model_client,
-                                  CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED,
-                                  &catalog, error);
-      if (rc == CAI_OK) {
-        for (i = 0U; i < catalog->count; i++) {
-          snprintf(message, sizeof(message), "- `%s`%s%s\n",
-                   catalog->entries[i].slug,
-                   catalog->entries[i].display_name != NULL ? " — " : "",
-                   catalog->entries[i].display_name != NULL
-                       ? catalog->entries[i].display_name
-                       : "");
-          if (cli_text(state, message, strlen(message)) != 0) {
-            cai_model_catalog_close(catalog);
-            return CAI_ERR_TRANSPORT;
-          }
-        }
-      } else {
-        cai_error_cleanup(error);
-        cai_error_init(error);
-        if (cli_text(state, "Model list unavailable; enter a model ID.\n",
-                     strlen("Model list unavailable; enter a model ID.\n")) !=
-            0)
-          return CAI_ERR_TRANSPORT;
-      }
-      cai_model_catalog_close(catalog);
-      return cli_finish_response(state) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
-    }
-    if (strlen(arg) > 256U || strpbrk(arg, " \t\r\n") != NULL)
-      return cai_cli_error(error, CAI_ERR_INVALID,
-                           "use /model MODEL (one model ID)");
-    selection = strdup(arg);
-    if (selection == NULL)
-      return cai_cli_error(error, CAI_ERR_NOMEM, "allocate model selection");
-    memset(&requested, 0, sizeof(requested));
-    requested.present = CAI_AGENT_RUNTIME_SETTING_MODEL;
-    requested.model = selection;
-    rc = cai_agent_runtime_update_settings(state->runtime, &requested, &result,
-                                           error);
-    if (rc != CAI_OK) {
-      free(selection);
-      return rc;
-    }
-    free(state->selected_model);
-    state->selected_model = selection;
-    state->options.model = selection;
-    snprintf(message, sizeof(message),
-             result.applied
-                 ? "Model changed to %s.\n"
-                 : "Model %s queued for the next safe model/tool boundary.\n",
-             selection);
-    fields[0] = pslog_str("model", selection);
-    fields[1] = pslog_bool("applied", result.applied);
-    cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, "model_selection",
-                        "user", message, strlen(message), fields, 2U);
-    return cli_write(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
-  }
+  if (strcmp(line, "/model") == 0 || strncmp(line, "/model ", 7U) == 0 ||
+      strncmp(line, "/model\t", 7U) == 0)
+    return cli_settings_command(state, line + 6U, 0, error);
+  if (strcmp(line, "/reasoning") == 0 ||
+      strncmp(line, "/reasoning ", 11U) == 0 ||
+      strncmp(line, "/reasoning\t", 11U) == 0)
+    return cli_settings_command(state, line + 10U, 1, error);
   if (strcmp(line, "/output") == 0 || strncmp(line, "/output ", 8U) == 0) {
     arg = strcmp(line, "/output") == 0 ? "" : line + 8;
     if (*arg == '\0')
@@ -1658,8 +1809,11 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| `/goal [COMMAND]` | Show a goal; new TEXT replaces it, pause/resume "
         "control pursuit, clear removes it, help explains commands. Prefer "
         "asking the agent to manage goals. |\n",
-        "| `/model [MODEL]` | Show models or change model at the next safe "
+        "| `/model [MODEL [EFFORT]]` | Show models or change model/effort at "
+        "the next safe "
         "model/tool boundary, keeping this conversation. |\n",
+        "| `/reasoning [EFFORT]` | Show model-specific reasoning choices or "
+        "change effort at the next safe model/tool boundary. |\n",
         "| `/output [compact\\|full]` | Show or change tool previews, starting "
         "with the next tool call. Compact commands show five lines; patches "
         "collapse unchanged context. |\n",
@@ -2522,7 +2676,6 @@ cleanup:
     (void)cai_cli_log_notices(&state.log, cli_startup_notice, &state);
   free(state.sessions);
   free(state.review_report);
-  free(state.selected_model);
   free(metadata_json);
   cai_error_cleanup(&error);
   if (cai_cli_log_close(&state.log) != 0)

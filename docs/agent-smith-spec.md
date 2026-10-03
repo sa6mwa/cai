@@ -354,6 +354,16 @@ different declared hashes compact non-empty local history, while equal or
 missing hashes retain it. The successful selection is checkpointed with the
 compacted history, if any.
 
+`update_settings` accepts model, reasoning effort, and reasoning-summary mode
+together. Applied selections are checkpointed atomically; a checkpoint failure
+restores the previous effective settings. During an active turn, changes merge
+into pending settings and apply at the next durable tool-round or turn boundary.
+Pending settings are discarded on close. Durable state records the active
+request model separately from the history model used for compatibility checks.
+Resume restores saved request settings when corresponding config fields are
+NULL; explicit fields override each saved setting independently. The CLI maps
+`/model [MODEL [EFFORT]]` and `/reasoning [EFFORT]` onto this receiver.
+
 `export_markdown` is the live-runtime-only handover projection receiver. It
 writes incrementally to the caller's `cai_sink`; it neither reopens a session
 from a store nor materializes the complete history or Markdown as an

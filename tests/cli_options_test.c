@@ -59,7 +59,9 @@ static int shell_options(void) {
   args[1] = arg1;
   args[2] = arg2;
   return cai_cli_parse_options(1, args, &options) != 1 ||
-         !options.shell_context ||
+         !options.shell_context || options.model_explicit ||
+         options.reasoning_effort_explicit ||
+         options.reasoning_summary_explicit ||
          cai_cli_parse_options(3, args, &options) != 1 ||
          options.shell_context || options.terminal;
 }
@@ -249,6 +251,8 @@ int main(void) {
       strcmp(options.directory, "/tmp/project") != 0 ||
       strcmp(options.model, "gpt-5.6-luna") != 0 ||
       strcmp(options.reasoning_effort, "high") != 0 ||
+      !options.model_explicit || !options.reasoning_effort_explicit ||
+      options.reasoning_summary_explicit ||
       strcmp(options.skills_dir, "/tmp/skills") != 0 || !options.new_session ||
       options.image_generation) {
     fputs("CLI configured options failed\n", stderr);
@@ -265,6 +269,7 @@ int main(void) {
       strcmp(options.resume_id, "session-id") != 0 ||
       strcmp(options.auth_json, "/tmp/auth.json") != 0 ||
       strcmp(options.reasoning_summary, "concise") != 0 ||
+      !options.reasoning_summary_explicit ||
       strcmp(options.review_model, "review-model") != 0 ||
       strcmp(options.review_reasoning_effort, "low") != 0 ||
       strcmp(options.review_reasoning_summary, "detailed") != 0 ||

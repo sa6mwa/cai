@@ -133,6 +133,8 @@ typedef struct cai_provider_model_doc {
   char *model_type;
   char *lifecycle_status;
   char *comp_hash;
+  lonejson_string_array reasoning_efforts;
+  char *default_reasoning_effort;
   long long context_window_tokens;
   int has_context_window_tokens;
   long long auto_compact_token_limit;
@@ -174,6 +176,16 @@ LONEJSON_MAP_DEFINE(cai_provider_pricing_map, cai_provider_pricing_doc,
                     cai_provider_pricing_fields);
 
 static const lonejson_field cai_provider_model_fields[] = {
+    {"reasoning_efforts", LONEJSON__KEY_LEN("reasoning_efforts"),
+     LONEJSON__KEY_FIRST("reasoning_efforts"),
+     LONEJSON__KEY_LAST("reasoning_efforts"),
+     offsetof(cai_provider_model_doc, reasoning_efforts),
+     LONEJSON_FIELD_KIND_STRING_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, 0U, 0U, 0U, NULL, NULL, 0U,
+     LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_provider_model_doc,
+                                          default_reasoning_effort,
+                                          "default_reasoning_effort"),
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_provider_model_doc, id, "id"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_provider_model_doc, provider,
                                           "provider"),
@@ -220,6 +232,11 @@ static void cai_model_catalog_destroy(cai_model_catalog *catalog) {
   impl = (cai_model_catalog_impl *)catalog->impl;
   if (impl != NULL) {
     for (i = 0U; i < catalog->count; i++) {
+      size_t j;
+      for (j = 0U; j < impl->entries[i].reasoning_effort_count; j++)
+        cai_free_mem(&impl->allocator, impl->entries[i].reasoning_efforts[j]);
+      cai_free_mem(&impl->allocator, impl->entries[i].reasoning_efforts);
+      cai_free_mem(&impl->allocator, impl->entries[i].default_reasoning_effort);
       cai_free_mem(&impl->allocator, impl->entries[i].slug);
       cai_free_mem(&impl->allocator, impl->entries[i].display_name);
       cai_free_mem(&impl->allocator, impl->entries[i].description);
@@ -299,6 +316,26 @@ static int cai_model_catalog_copy_entry(const cai_allocator *allocator,
                                         cai_model_catalog_entry *destination,
                                         const cai_model_catalog_entry *source,
                                         cai_error *error) {
+  size_t i;
+  destination->reasoning_efforts_known = source->reasoning_efforts_known;
+  destination->default_reasoning_effort =
+      cai_strdup(allocator, source->default_reasoning_effort);
+  if (source->reasoning_effort_count != 0U) {
+    destination->reasoning_efforts =
+        cai_alloc(allocator, source->reasoning_effort_count * sizeof(char *));
+    if (destination->reasoning_efforts == NULL)
+      return cai_set_error(error, CAI_ERR_NOMEM, "copy reasoning efforts");
+    for (i = 0U; i < source->reasoning_effort_count; i++) {
+      char *effort = cai_strdup(allocator, source->reasoning_efforts[i]);
+      if (effort == NULL)
+        return cai_set_error(error, CAI_ERR_NOMEM, "copy reasoning effort");
+      destination->reasoning_efforts[destination->reasoning_effort_count++] =
+          effort;
+    }
+  }
+  if (source->default_reasoning_effort != NULL &&
+      destination->default_reasoning_effort == NULL)
+    return cai_set_error(error, CAI_ERR_NOMEM, "copy default reasoning effort");
   destination->slug = cai_strdup(allocator, source->slug);
   destination->display_name = cai_strdup(allocator, source->display_name);
   destination->description = cai_strdup(allocator, source->description);
@@ -441,6 +478,27 @@ static int cai_model_catalog_parse_provider(cai_client *client,
   model_count = fallback ? doc.models.count : doc.data.count;
   selected_count = 0U;
   for (i = 0U; i < model_count; i++) {
+    size_t n, k;
+    if (models[i].reasoning_efforts.count > 64U) {
+      CAI_LJ->cleanup(CAI_LJ, &cai_provider_catalog_map, &doc);
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "too many reasoning efforts");
+    }
+    for (n = 0U; n < models[i].reasoning_efforts.count; n++) {
+      const char *effort = models[i].reasoning_efforts.items[n];
+      if (effort == NULL || effort[0] == '\0' || strlen(effort) > 64U ||
+          strpbrk(effort, " \t\r\n") != NULL) {
+        CAI_LJ->cleanup(CAI_LJ, &cai_provider_catalog_map, &doc);
+        return cai_set_error(error, CAI_ERR_INVALID,
+                             "invalid reasoning effort");
+      }
+      for (k = 0U; k < n; k++)
+        if (strcmp(effort, models[i].reasoning_efforts.items[k]) == 0) {
+          CAI_LJ->cleanup(CAI_LJ, &cai_provider_catalog_map, &doc);
+          return cai_set_error(error, CAI_ERR_INVALID,
+                               "duplicate reasoning effort");
+        }
+    }
     if (models[i].id == NULL || models[i].id[0] == '\0' ||
         (fallback &&
          (models[i].provider == NULL || models[i].provider[0] == '\0')) ||
@@ -478,6 +536,10 @@ static int cai_model_catalog_parse_provider(cai_client *client,
     }
     memset(&source, 0, sizeof(source));
     source.slug = models[i].id;
+    source.reasoning_efforts = models[i].reasoning_efforts.items;
+    source.reasoning_effort_count = models[i].reasoning_efforts.count;
+    source.reasoning_efforts_known = source.reasoning_effort_count != 0U;
+    source.default_reasoning_effort = models[i].default_reasoning_effort;
     source.display_name = models[i].name;
     source.description = models[i].description;
     source.model_type = models[i].model_type;
@@ -695,7 +757,26 @@ static int cai_model_catalog_merge_fallback(cai_client *client,
     CAI_FILL_CATALOG_STRING(model_type)
     CAI_FILL_CATALOG_STRING(lifecycle_status)
     CAI_FILL_CATALOG_STRING(compaction_compatibility_hash)
+    CAI_FILL_CATALOG_STRING(default_reasoning_effort)
 #undef CAI_FILL_CATALOG_STRING
+    if (!entries[i].reasoning_efforts_known &&
+        fallback->reasoning_efforts_known) {
+      size_t j;
+      entries[i].reasoning_efforts = cai_alloc(
+          &impl->allocator, fallback->reasoning_effort_count * sizeof(char *));
+      if (entries[i].reasoning_efforts == NULL &&
+          fallback->reasoning_effort_count != 0U)
+        return cai_set_error(error, CAI_ERR_NOMEM, "merge reasoning efforts");
+      for (j = 0U; j < fallback->reasoning_effort_count; j++) {
+        char *effort =
+            cai_strdup(&impl->allocator, fallback->reasoning_efforts[j]);
+        if (effort == NULL)
+          return cai_set_error(error, CAI_ERR_NOMEM, "merge reasoning effort");
+        entries[i].reasoning_efforts[entries[i].reasoning_effort_count++] =
+            effort;
+      }
+      entries[i].reasoning_efforts_known = 1;
+    }
     if (!entries[i].has_pricing && fallback->has_pricing) {
       entries[i].pricing_currency =
           cai_strdup(&impl->allocator, fallback->pricing_currency);
@@ -722,6 +803,7 @@ typedef struct cai_codex_catalog_reader {
   cai_model_catalog_impl *impl;
   size_t capacity;
   unsigned int seen;
+  int reasoning_seen;
   int models_seen;
   int field;
   int rc;
@@ -750,8 +832,14 @@ static int cai_codex_catalog_field(const lonejson_value_path *path) {
                                       "comp_hash",
                                       "context_window",
                                       "auto_compact_token_limit",
-                                      "supported_in_api"};
+                                      "supported_in_api",
+                                      "default_reasoning_level",
+                                      "supported_reasoning_levels"};
   size_t i;
+  if (path->segment_count == 5U && cai_catalog_segment(path, 0U, "models") &&
+      cai_catalog_segment(path, 2U, "supported_reasoning_levels") &&
+      cai_catalog_segment(path, 4U, "effort"))
+    return 10;
   if (path->segment_count != 3U || !cai_catalog_segment(path, 0U, "models"))
     return 0;
   for (i = 0U; i < sizeof(names) / sizeof(names[0]); i++)
@@ -774,18 +862,32 @@ static lonejson_status cai_codex_catalog_begin(cai_codex_catalog_reader *reader,
         (path->segment_count == 2U && type != 'o'))
       return cai_codex_catalog_invalid(
           reader, "Codex models must be an array of objects");
+    if (path->segment_count == 4U &&
+        cai_catalog_segment(path, 2U, "supported_reasoning_levels") &&
+        type != 'o')
+      return cai_codex_catalog_invalid(reader,
+                                       "reasoning levels must be objects");
   }
   if (field == 0)
     return LONEJSON_STATUS_OK;
+  if (field == 10) {
+    if (reader->reasoning_seen || type != 's')
+      return cai_codex_catalog_invalid(reader,
+                                       "invalid or duplicate reasoning effort");
+    reader->reasoning_seen = 1;
+    return LONEJSON_STATUS_OK;
+  }
   mask = 1U << (unsigned int)field;
   if ((reader->seen & mask) != 0U)
     return cai_codex_catalog_invalid(reader,
                                      "duplicate Codex model catalog field");
   reader->seen |= mask;
-  if ((field <= 4 && type == 's') ||
+  if (((field <= 4 || field == 8) && type == 's') ||
+      (field == 9 && type == 'a') ||
       ((field == 5 || field == 6) && type == 'n') ||
       (field == 7 && type == 'b') ||
-      (type == 'z' && (field == 2 || field == 3 || field == 4 || field == 6)))
+      (type == 'z' &&
+       (field == 2 || field == 3 || field == 4 || field == 6 || field == 8)))
     return LONEJSON_STATUS_OK;
   return cai_codex_catalog_invalid(reader,
                                    "invalid Codex model catalog field type");
@@ -799,6 +901,12 @@ static lonejson_status cai_codex_catalog_object(void *context,
   cai_model_catalog_entry *entries;
   size_t capacity;
   (void)error;
+  if (status == LONEJSON_STATUS_OK && path->segment_count == 4U &&
+      cai_catalog_segment(path, 0U, "models") &&
+      cai_catalog_segment(path, 2U, "supported_reasoning_levels")) {
+    reader->reasoning_seen = 0;
+    return status;
+  }
   if (status != LONEJSON_STATUS_OK || path->segment_count != 2U ||
       !cai_catalog_segment(path, 0U, "models"))
     return status;
@@ -831,6 +939,12 @@ cai_codex_catalog_object_end(void *context, const lonejson_value_path *path,
   cai_codex_catalog_reader *reader = (cai_codex_catalog_reader *)context;
   const char *slug;
   (void)error;
+  if (path->segment_count == 4U && cai_catalog_segment(path, 0U, "models") &&
+      cai_catalog_segment(path, 2U, "supported_reasoning_levels"))
+    return reader->reasoning_seen
+               ? LONEJSON_STATUS_OK
+               : cai_codex_catalog_invalid(
+                     reader, "reasoning level requires an effort");
   if (path->segment_count != 2U || !cai_catalog_segment(path, 0U, "models"))
     return LONEJSON_STATUS_OK;
   slug = reader->catalog->entries[reader->catalog->count - 1U].slug;
@@ -846,6 +960,9 @@ static lonejson_status cai_codex_catalog_array(void *context,
   cai_codex_catalog_reader *reader = (cai_codex_catalog_reader *)context;
   lonejson_status status = cai_codex_catalog_begin(reader, path, 'a');
   (void)error;
+  if (status == LONEJSON_STATUS_OK && reader->field == 9)
+    reader->impl->entries[reader->catalog->count - 1U].reasoning_efforts_known =
+        1;
   if (status == LONEJSON_STATUS_OK && path->segment_count == 1U &&
       cai_catalog_segment(path, 0U, "models")) {
     if (reader->models_seen)
@@ -904,11 +1021,37 @@ cai_codex_catalog_value_end(void *context, const lonejson_value_path *path,
   if (field == 0)
     return LONEJSON_STATUS_OK;
   entry = reader->impl->entries + reader->catalog->count - 1U;
-  if (field <= 4) {
+  if (field == 10) {
+    char **efforts;
+    char *effort;
+    size_t i;
+    if (reader->text.length == 0U || reader->text.length > 64U ||
+        strpbrk(reader->text.data, " \t\r\n") != NULL ||
+        entry->reasoning_effort_count >= 64U)
+      return cai_codex_catalog_invalid(reader,
+                                       "invalid reasoning effort value");
+    for (i = 0U; i < entry->reasoning_effort_count; i++)
+      if (strcmp(entry->reasoning_efforts[i], reader->text.data) == 0)
+        return cai_codex_catalog_invalid(reader,
+                                         "duplicate reasoning effort value");
+    effort = cai_strdup(&reader->impl->allocator, reader->text.data);
+    if (effort == NULL)
+      goto allocation_failed;
+    efforts =
+        cai_realloc_mem(&reader->impl->allocator, entry->reasoning_efforts,
+                        (entry->reasoning_effort_count + 1U) * sizeof(char *));
+    if (efforts == NULL) {
+      cai_free_mem(&reader->impl->allocator, effort);
+      goto allocation_failed;
+    }
+    entry->reasoning_efforts = efforts;
+    entry->reasoning_efforts[entry->reasoning_effort_count++] = effort;
+  } else if (field <= 4 || field == 8) {
     destination = field == 1   ? &entry->slug
                   : field == 2 ? &entry->display_name
                   : field == 3 ? &entry->description
-                               : &entry->compaction_compatibility_hash;
+                  : field == 4 ? &entry->compaction_compatibility_hash
+                               : &entry->default_reasoning_effort;
     *destination =
         cai_strdup(&reader->impl->allocator,
                    reader->text.length != 0U ? reader->text.data : "");
@@ -929,6 +1072,10 @@ cai_codex_catalog_value_end(void *context, const lonejson_value_path *path,
       entry->auto_compact_token_limit = value;
   }
   return LONEJSON_STATUS_OK;
+allocation_failed:
+  reader->rc =
+      cai_set_error(reader->error, CAI_ERR_NOMEM, "allocate reasoning efforts");
+  return LONEJSON_STATUS_ALLOCATION_FAILED;
 }
 
 static lonejson_status cai_codex_catalog_bool(void *context,

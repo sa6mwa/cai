@@ -27817,6 +27817,52 @@ static void test_agent_runtime_controls(test_state *state) {
              cai_agent_runtime_session_id(runtime), session_id);
   expect_int(state, "runtime_control_durable_checkpoints",
              store_state.checkpoints > 0, 1L);
+  expect_substr(state, "runtime_control_saved_request_model",
+                store_state.saved_checkpoint,
+                "\"request_model\":\"gpt-6-astra\"");
+  expect_substr(state, "runtime_control_saved_effort",
+                store_state.saved_checkpoint, "\"reasoning_effort\":\"high\"");
+  snprintf(store_state.fail_checkpoint_session_id,
+           sizeof(store_state.fail_checkpoint_session_id), "%s", session_id);
+  store_state.fail_checkpoint_once = 1;
+  memset(&requested, 0, sizeof(requested));
+  requested.present = CAI_AGENT_RUNTIME_SETTING_MODEL |
+                      CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT |
+                      CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY;
+  requested.model = CAI_MODEL_GPT_6_LUNA;
+  requested.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+  requested.reasoning_summary = CAI_REASONING_SUMMARY_DETAILED;
+  expect_int(
+      state, "runtime_control_checkpoint_failure_atomic",
+      cai_agent_runtime_update_settings(runtime, &requested, NULL, &error),
+      CAI_ERR_TRANSPORT);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(
+      state, "runtime_control_checkpoint_failure_query",
+      cai_agent_runtime_get_settings(runtime, &effective, &pending, &error),
+      CAI_OK);
+  expect_str(state, "runtime_control_checkpoint_keeps_model", effective.model,
+             CAI_MODEL_GPT_6_ASTRA);
+  expect_str(state, "runtime_control_checkpoint_keeps_effort",
+             effective.reasoning_effort, CAI_REASONING_EFFORT_HIGH);
+  expect_str(state, "runtime_control_checkpoint_keeps_summary",
+             effective.reasoning_summary, CAI_REASONING_SUMMARY_CONCISE);
+  requested.present = CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT;
+  requested.reasoning_effort = CAI_REASONING_EFFORT_XHIGH;
+  store_state.fail_checkpoint_once = 1;
+  expect_int(
+      state, "runtime_control_effort_checkpoint_failure",
+      cai_agent_runtime_update_settings(runtime, &requested, NULL, &error),
+      CAI_ERR_TRANSPORT);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  expect_int(
+      state, "runtime_control_effort_retry",
+      cai_agent_runtime_update_settings(runtime, &requested, NULL, &error),
+      CAI_OK);
+  expect_substr(state, "runtime_control_idle_effort_saved",
+                store_state.saved_checkpoint, "\"reasoning_effort\":\"xhigh\"");
   store_state.checkpoint_json = store_state.saved_checkpoint;
   store_state.load_applied_event_sequence =
       store_state.saved_applied_event_sequence;
@@ -27825,6 +27871,9 @@ static void test_agent_runtime_controls(test_state *state) {
   cai_agent_runtime_close(runtime);
   runtime = NULL;
   runtime_config.resume_latest = 1;
+  runtime_config.model = NULL;
+  runtime_config.reasoning_effort = NULL;
+  runtime_config.reasoning_summary = NULL;
   expect_int(state, "runtime_control_resume",
              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
              CAI_OK);
@@ -27833,6 +27882,36 @@ static void test_agent_runtime_controls(test_state *state) {
                cai_agent_runtime_session_id(runtime), session_id);
     expect_substr(state, "runtime_control_resume_history",
                   store_state.saved_checkpoint, "turn B");
+    expect_int(
+        state, "runtime_control_resume_settings",
+        cai_agent_runtime_get_settings(runtime, &effective, &pending, &error),
+        CAI_OK);
+    expect_str(state, "runtime_control_resume_model", effective.model,
+               CAI_MODEL_GPT_6_ASTRA);
+    expect_str(state, "runtime_control_resume_effort",
+               effective.reasoning_effort, CAI_REASONING_EFFORT_XHIGH);
+    expect_str(state, "runtime_control_resume_summary",
+               effective.reasoning_summary, CAI_REASONING_SUMMARY_CONCISE);
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+    runtime_config.model = CAI_MODEL_GPT_5_6_LUNA;
+    runtime_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+    expect_int(
+        state, "runtime_control_resume_override",
+        cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
+        CAI_OK);
+    if (runtime != NULL) {
+      expect_int(
+          state, "runtime_control_resume_override_settings",
+          cai_agent_runtime_get_settings(runtime, &effective, &pending, &error),
+          CAI_OK);
+      expect_str(state, "runtime_control_resume_override_model",
+                 effective.model, CAI_MODEL_GPT_5_6_LUNA);
+      expect_str(state, "runtime_control_resume_override_effort",
+                 effective.reasoning_effort, CAI_REASONING_EFFORT_LOW);
+      expect_str(state, "runtime_control_resume_override_retains_summary",
+                 effective.reasoning_summary, CAI_REASONING_SUMMARY_CONCISE);
+    }
   }
 done:
   if (runtime != NULL) {
@@ -39447,10 +39526,16 @@ static void test_provider_model_metadata(test_state *state) {
   static const char live_context_catalog[] =
       "{\"data\":[{\"id\":\"zai-org/GLM-5.3-Flash\","
       "\"context_window_tokens\":65536}]}";
+  static const char live_reasoning_catalog[] =
+      "{\"data\":[{\"id\":\"zai-org/GLM-5.3-Flash\","
+      "\"reasoning_efforts\":[\"medium\",\"high\"],"
+      "\"default_reasoning_effort\":\"medium\"}]}";
   static const char fallback[] =
       "{\"models\":[{\"provider\":\"berget\","
       "\"id\":\"zai-org/GLM-5.3-Flash\","
       "\"context_window_tokens\":131072,"
+      "\"reasoning_efforts\":[\"low\",\"high\"],"
+      "\"default_reasoning_effort\":\"low\","
       "\"pricing\":{\"currency\":\"EUR\",\"input\":9,\"output\":9}},"
       "{\"provider\":\"berget\",\"id\":\"BAAI/rerank\","
       "\"capabilities\":{\"vision\":true}},"
@@ -39610,6 +39695,40 @@ static void test_provider_model_metadata(test_state *state) {
                    entry->context_window_tokens, 131072LL);
         expect_int(state, "provider_metadata_override_live_price",
                    (long)(entry->input_price * 10.0 + 0.5), 2L);
+        expect_int(state, "provider_metadata_reasoning_fallback_known",
+                   entry->reasoning_efforts_known, 1L);
+        expect_int(state, "provider_metadata_reasoning_fallback_count",
+                   (long)entry->reasoning_effort_count, 2L);
+        if (entry->reasoning_effort_count == 2U)
+          expect_str(state, "provider_metadata_reasoning_fallback_first",
+                     entry->reasoning_efforts[0], "low");
+        expect_str(state, "provider_metadata_reasoning_fallback_default",
+                   entry->default_reasoning_effort, "low");
+      }
+      cai_model_catalog_close(catalog);
+      catalog = NULL;
+    }
+    expect_int(state, "provider_metadata_reasoning_live_import",
+               cai_model_catalog_import_provider_response(
+                   client, live_reasoning_catalog, &error),
+               CAI_OK);
+    expect_int(state, "provider_metadata_reasoning_live_catalog",
+               cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_OFFLINE,
+                                      &catalog, &error),
+               CAI_OK);
+    if (catalog != NULL) {
+      entry = cai_model_catalog_find(catalog, "zai-org/GLM-5.3-Flash");
+      if (entry != NULL) {
+        expect_int(state, "provider_metadata_reasoning_live_count",
+                   (long)entry->reasoning_effort_count, 2L);
+        if (entry->reasoning_effort_count == 2U)
+          expect_str(state, "provider_metadata_reasoning_live_first",
+                     entry->reasoning_efforts[0], "medium");
+        expect_str(state, "provider_metadata_reasoning_live_default",
+                   entry->default_reasoning_effort, "medium");
+      } else {
+        test_fail(state, "provider_metadata_reasoning_live_entry",
+                  "missing GLM");
       }
       cai_model_catalog_close(catalog);
       catalog = NULL;
@@ -39799,6 +39918,20 @@ static void test_provider_model_metadata(test_state *state) {
   client = NULL;
   expect_int(state, "provider_metadata_invalid_json_entry",
              cai_client_open(&config, &client, &error), CAI_ERR_PROTOCOL);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  config.model_metadata_json =
+      "{\"models\":[{\"provider\":\"custom\",\"id\":\"m\","
+      "\"reasoning_efforts\":[\"high\",\"high\"]}]}";
+  expect_int(state, "provider_metadata_duplicate_reasoning",
+             cai_client_open(&config, &client, &error), CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  config.model_metadata_json =
+      "{\"models\":[{\"provider\":\"custom\",\"id\":\"m\","
+      "\"reasoning_efforts\":[\"high effort\"]}]}";
+  expect_int(state, "provider_metadata_invalid_reasoning",
+             cai_client_open(&config, &client, &error), CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   live_key = getenv("BERGET_API_KEY");
@@ -42077,17 +42210,33 @@ static void test_codex_catalog_validation(test_state *state) {
       "{\"models\":[{\"slug\":\"m\",\"context_window\":null}]}",
       "{\"models\":[{\"slug\":\"m\",\"supported_in_api\":\"true\"}]}",
       "{\"models\":[{\"slug\":\"m\",\"display_name\":{}}]}",
+      "{\"models\":[{\"slug\":\"m\",\"supported_reasoning_levels\":null}]}",
+      "{\"models\":[{\"slug\":\"m\",\"supported_reasoning_levels\":[\"high\"]}]"
+      "}",
+      "{\"models\":[{\"slug\":\"m\",\"supported_reasoning_levels\":[{}]}]}",
+      "{\"models\":[{\"slug\":\"m\",\"supported_reasoning_levels\":[{"
+      "\"effort\":false}]}]}",
+      "{\"models\":[{\"slug\":\"m\",\"supported_reasoning_levels\":[{"
+      "\"effort\":\"\"}]}]}",
+      "{\"models\":[{\"slug\":\"m\",\"supported_reasoning_levels\":[{"
+      "\"effort\":\"high\",\"effort\":\"low\"}]}]}",
+      "{\"models\":[{\"slug\":\"m\",\"supported_reasoning_levels\":[{"
+      "\"effort\":\"high\"},{\"effort\":\"high\"}]}]}",
       "{\"models\":[{\"slug\":\"m\\u0000n\"}]}",
       "{\"models\":[{\"slug\":\"m\",\"ignored\":\"\\uD800\"}]}",
       "{\"models\":[{\"slug\":\"m\"}] trailing}"};
   static const char valid[] =
       "{\"models\":[{\"slug\":\"gpt-6.1-sol\",\"display_name\":null,"
       "\"description\":null,"
-      "\"minimal_client_version\":\"0.153.0\",\"context_window\":272000,"
+      "\"context_window\":272000,"
+      "\"default_reasoning_level\":\"low\",\"supported_reasoning_levels\":["
+      "{\"effort\":\"low\"},{\"effort\":\"high\"},"
+      "{\"effort\":\"ultra\"}],"
       "\"comp_hash\":null,\"auto_compact_token_limit\":null,\"supported_in_"
       "api\":true,"
       "\"model_messages\":{\"slug\":false,\"context_window\":\"ignored\"}},"
-      "{\"slug\":\"m1\"},{\"slug\":\"m2\"},{\"slug\":\"m3\"},"
+      "{\"slug\":\"m1\",\"supported_reasoning_levels\":[]},{\"slug\":\"m2\"},{"
+      "\"slug\":\"m3\"},"
       "{\"slug\":\"m4\"},{\"slug\":\"m5\"},{\"slug\":\"m6\"},"
       "{\"slug\":\"m7\"},{\"slug\":\"m8\"}]}";
   mock_http_expectation script[sizeof(invalid) / sizeof(invalid[0]) + 1U];
@@ -42150,6 +42299,19 @@ static void test_codex_catalog_validation(test_state *state) {
                  "gpt-6.1-sol");
       expect_int(state, "catalog_validation_new_model_context",
                  catalog->entries[0].context_window_tokens, 272000L);
+      expect_int(state, "catalog_validation_efforts_known",
+                 catalog->entries[0].reasoning_efforts_known, 1L);
+      expect_int(state, "catalog_validation_efforts_count",
+                 catalog->entries[0].reasoning_effort_count, 3L);
+      if (catalog->entries[0].reasoning_effort_count == 3U)
+        expect_str(state, "catalog_validation_effort_ultra",
+                   catalog->entries[0].reasoning_efforts[2], "ultra");
+      expect_str(state, "catalog_validation_effort_default",
+                 catalog->entries[0].default_reasoning_effort, "low");
+      expect_int(state, "catalog_validation_empty_efforts_known",
+                 catalog->entries[1].reasoning_efforts_known, 1L);
+      expect_int(state, "catalog_validation_missing_efforts_unknown",
+                 catalog->entries[2].reasoning_efforts_known, 0L);
       expect_int(state, "catalog_validation_bool",
                  catalog->entries[0].supported_in_api, 1L);
     }
@@ -48211,6 +48373,13 @@ static void test_session_resume_and_history_import(test_state *state) {
 }
 
 static void test_session_state_validation(test_state *state) {
+  static const char *const invalid_settings[] = {
+      "{\"version\":1,\"request_model\":\"\"}",
+      "{\"version\":1,\"request_model\":\"invalid model\"}",
+      "{\"version\":1,\"reasoning_effort\":\"\"}",
+      "{\"version\":1,\"reasoning_effort\":\"high effort\"}",
+      "{\"version\":1,\"reasoning_summary\":\"\"}",
+      "{\"version\":1,\"reasoning_summary\":\"invalid mode\"}"};
   cai_client_config client_config;
   cai_agent_config agent_config;
   cai_client *client;
@@ -48226,6 +48395,7 @@ static void test_session_state_validation(test_state *state) {
   cai_token_usage usage;
   char state_json[512];
   char history_json[512];
+  size_t i;
 
   cai_error_init(&error);
   cai_client_config_init(&client_config);
@@ -48298,6 +48468,26 @@ static void test_session_state_validation(test_state *state) {
              800020L);
   cai_source_close(source);
   source = NULL;
+  for (i = 0U; i < sizeof(invalid_settings) / sizeof(invalid_settings[0]);
+       i++) {
+    reader.text = invalid_settings[i];
+    reader.offset = 0U;
+    reader.closed = 0;
+    expect_int(state, "state_validation_settings_source",
+               cai_source_from_callbacks(&source_callbacks, &source, &error),
+               CAI_OK);
+    expect_int(state, "state_validation_invalid_settings",
+               cai_session_import_state_source(restored, source, &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "state_validation_settings_preserves_usage",
+               cai_session_last_usage(restored, &usage, &error), CAI_OK);
+    expect_int(state, "state_validation_settings_preserves_total",
+               usage.total_tokens, 800020L);
+    cai_source_close(source);
+    source = NULL;
+  }
   expect_int(state, "state_validation_last_usage_export",
              cai_session_export_state_source(restored, &source, &error),
              CAI_OK);

@@ -1037,6 +1037,17 @@ if(CAI_BUILD_CLI)
     target_link_libraries(cai_cli_shell_fixture PRIVATE cai_static
       softline::softline_static libmdf::mdf_static lockdc::static)
     cai_configure_cli_target(cai_cli_shell_fixture)
+    add_executable(cai_cli_settings_fixture tests/cli_settings_fixture.c
+      cli/options.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
+      cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c
+      cli/session_commands.c cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
+    target_link_libraries(cai_cli_settings_fixture PRIVATE cai_static
+      softline::softline_static libmdf::mdf_static lockdc::static)
+    cai_configure_cli_target(cai_cli_settings_fixture)
+    add_test(NAME cai_cli_settings
+      COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_settings_test.py"
+        "$<TARGET_FILE:cai_cli_settings_fixture>")
+    set_tests_properties(cai_cli_settings PROPERTIES TIMEOUT 45)
     add_test(NAME cai_cli_shell_context
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_shell_context_test.py"
         "$<TARGET_FILE:cai_cli>" "$<TARGET_FILE:cai_cli_shell_fixture>")

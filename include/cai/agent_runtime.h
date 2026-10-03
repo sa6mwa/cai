@@ -500,14 +500,17 @@ typedef struct cai_agent_runtime_config {
   int codex_compat_agents_md;
   /** Optional identity overriding Cai Smith. */
   const char *agent_identity;
-  /** Optional model override; Smith defaults to gpt-5.6-terra. */
+  /** Optional model override; NULL restores the saved request model on resume
+   * or uses the preset default (Smith: gpt-5.6-terra) for new sessions. */
   const char *model;
-  /** Optional reasoning-effort override; Smith defaults to medium. */
+  /** Optional reasoning-effort override; NULL restores saved effort on resume
+   * or uses the preset default (Smith: medium) for new sessions. */
   const char *reasoning_effort;
   /**
    * Optional provider reasoning-summary mode for this runtime. Accepted values
    * are CAI_REASONING_SUMMARY_NONE, _AUTO, _CONCISE, and _DETAILED. NULL
-   * selects the provider-directed CAI_REASONING_SUMMARY_AUTO default.
+   * restores saved mode on resume or selects the preset default
+   * (Smith: provider-directed CAI_REASONING_SUMMARY_AUTO) for new sessions.
    */
   const char *reasoning_summary;
   /**
@@ -687,8 +690,9 @@ int cai_agent_runtime_get_settings(cai_agent_runtime *runtime,
  * stable boundary the update applies immediately; during a turn or with queued
  * input it remains pending until the next durable tool-round boundary or turn
  * boundary, before another model request. In-flight requests and tools finish
- * with their original settings. A failed application
- * leaves the pending request visible and blocks later turns until replaced.
+ * with their original settings. Applied settings are checkpointed together.
+ * A failed application restores previous effective settings, leaves the pending
+ * request visible, and blocks later turns until replaced.
  * A pending request is discarded on close. Returned views have the same
  * lifetime as get_settings. result may be NULL.
  */

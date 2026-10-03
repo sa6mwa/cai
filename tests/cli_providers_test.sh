@@ -31,23 +31,23 @@ stored=$(printf '/status\n/quit\n' | "$cli" -C "$fixture/work")
 [[ "$stored" == *"chatgpt"* ]]
 test ! -f "$fixture/state/cai/auth.json"
 
-openai=$(printf '/status\n/quit\n' | OPENAI_API_KEY=fixture "$cli" -p openai -C "$fixture/work")
+openai=$(printf '/status\n/quit\n' | OPENAI_API_KEY=fixture "$cli" -N -p openai -C "$fixture/work")
 [[ "$openai" == *"Provider"* && "$openai" == *"openai"* ]]
 [[ "$openai" != *"Weekly limit"* && "$openai" != *"Credits left"* ]]
-router=$(printf '/status\n/quit\n' | OPENROUTER_API_KEY=fixture "$cli" -p openrouter -C "$fixture/work")
+router=$(printf '/status\n/quit\n' | OPENROUTER_API_KEY=fixture "$cli" -N -p openrouter -C "$fixture/work")
 [[ "$router" == *"Provider"* && "$router" == *"openrouter"* ]]
 [[ "$router" == *"Model"* && "$router" == *"openai/gpt-5.6-luna"* ]]
-berget=$(printf '/status\n/quit\n' | BERGET_API_KEY=fixture "$cli" -p berget -C "$fixture/work")
+berget=$(printf '/status\n/quit\n' | BERGET_API_KEY=fixture "$cli" -N -p berget -C "$fixture/work")
 [[ "$berget" == *"Provider"* && "$berget" == *"berget"* ]]
 [[ "$berget" == *"Model"* && "$berget" == *"zai-org/GLM-5.3-Flash"* ]]
 [[ "$berget" == *"Reasoning effort"* && "$berget" == *"medium"* ]]
 [[ "$berget" != *"Weekly limit"* && "$berget" != *"Credits left"* ]]
 mv "$XDG_CONFIG_HOME/cai/models.json" "$fixture/models.saved"
-berget_no_file=$(printf '/status\n/quit\n' | BERGET_API_KEY=fixture "$cli" -p berget -C "$fixture/work")
+berget_no_file=$(printf '/status\n/quit\n' | BERGET_API_KEY=fixture "$cli" -N -p berget -C "$fixture/work")
 [[ "$berget_no_file" == *"Context window"* && "$berget_no_file" == *"1048576"* ]]
 mv "$fixture/models.saved" "$XDG_CONFIG_HOME/cai/models.json"
 printf 'invalid\n' > "$fixture/invalid-models.json"
-if printf '/quit\n' | BERGET_API_KEY=fixture "$cli" -p berget -C "$fixture/work" \
+if printf '/quit\n' | BERGET_API_KEY=fixture "$cli" -N -p berget -C "$fixture/work" \
   --model-metadata "$fixture/invalid-models.json" >"$fixture/out" 2>"$fixture/err"; then
   echo 'invalid model metadata was accepted' >&2
   exit 1
@@ -63,13 +63,13 @@ custom=$(printf '/status\n/quit\n' | LOCAL_KEY=fixture "$cli" -p custom \
 default_key=$(printf '/status\n/quit\n' | CAI_API_KEY=fixture "$cli" -p custom \
   --endpoint https://example.test/v1 -m local-model -C "$fixture/work")
 [[ "$default_key" == *"custom"* ]]
-if printf '/quit\n' | env -u OPENAI_API_KEY "$cli" -p openai -C "$fixture/work" \
+if printf '/quit\n' | env -u OPENAI_API_KEY "$cli" -N -p openai -C "$fixture/work" \
   >"$fixture/out" 2>"$fixture/err"; then
   echo 'missing OpenAI key was accepted' >&2
   exit 1
 fi
 grep -q 'OPENAI_API_KEY' "$fixture/out"
-if printf '/quit\n' | env -u BERGET_API_KEY "$cli" -p berget -C "$fixture/work" \
+if printf '/quit\n' | env -u BERGET_API_KEY "$cli" -N -p berget -C "$fixture/work" \
   >"$fixture/out" 2>"$fixture/err"; then
   echo 'missing Berget key was accepted' >&2
   exit 1

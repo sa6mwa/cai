@@ -19,6 +19,15 @@ Codex catalog/Responses protocol and verify the adapter when advancing it.
 CAI keeps its own originator and User-Agent. New advertised model IDs are
 accepted without requiring a bundled model metadata row.
 
+The ChatGPT adapter reads `supported_reasoning_levels[].effort` and
+`default_reasoning_level` into `cai_model_catalog_entry.reasoning_efforts` and
+`default_reasoning_effort`. `reasoning_efforts_known` distinguishes an explicit
+empty list from missing metadata. Catalog entries own these strings until
+close. Lua `client:list_models()` exposes `reasoning_efforts` when known and
+`default_reasoning_effort` when supplied. The CLI uses these choices for
+`/reasoning` and validates effort changes against them, including `ultra` when
+advertised; it does not infer model support from the accepted vocabulary.
+
 Automatic refresh (`CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED`) retains the
 last successful live catalog if a refresh fails and marks it `is_stale`. That
 catalog takes precedence over a configured fallback. Failed automatic refreshes
@@ -71,7 +80,11 @@ drive token spend estimates. These example values illustrate the file
 format; verify actual limits and prices with the provider before using them.
 Each entry needs `provider` and `id`; other fields are optional. Optional
 string fields are `name`, `description`, `model_type`, `lifecycle_status`, and
-`comp_hash`. Optional capability booleans are `streaming`,
+`comp_hash`, and `default_reasoning_effort`. A nonempty optional
+`reasoning_efforts` array supplies distinct effort strings (for example,
+`["low", "medium", "high"]`). The generic live provider adapter accepts the
+same fields; live lists and defaults take precedence over fallback values.
+Optional capability booleans are `streaming`,
 `function_calling`, `vision`, `formatted_output`, and `json_mode`. Only `USD`
 and `EUR` token prices are used for estimates. Live provider fields take
 precedence; the file fills fields omitted by the provider, including a missing

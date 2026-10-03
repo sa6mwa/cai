@@ -18,6 +18,9 @@ typedef struct cai_cli_options {
   const char *model;
   const char *reasoning_effort;
   const char *reasoning_summary;
+  int model_explicit;
+  int reasoning_effort_explicit;
+  int reasoning_summary_explicit;
   const char *review_model;
   const char *review_reasoning_effort;
   const char *review_reasoning_summary;

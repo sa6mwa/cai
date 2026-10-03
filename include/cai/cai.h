@@ -288,6 +288,13 @@ typedef struct cai_model_catalog_entry {
   double output_price;
   /** Non-zero when both provider prices are known, including free models. */
   int has_pricing;
+  /** Provider-advertised reasoning efforts, owned by this catalog. */
+  char **reasoning_efforts;
+  size_t reasoning_effort_count;
+  /** Non-zero distinguishes an advertised empty list from missing metadata. */
+  int reasoning_efforts_known;
+  /** Provider's default reasoning effort, or NULL when omitted. */
+  char *default_reasoning_effort;
 } cai_model_catalog_entry;
 
 /** Owned model catalog returned by cai_client_list_models. */
@@ -417,6 +424,8 @@ typedef struct cai_agent_config {
 #define CAI_REASONING_EFFORT_XHIGH "xhigh"
 /** Maximum reasoning effort. */
 #define CAI_REASONING_EFFORT_MAX "max"
+/** Provider's ultra reasoning effort, where advertised. */
+#define CAI_REASONING_EFFORT_ULTRA "ultra"
 
 /** Default GPT-5.6 reasoning execution mode. */
 #define CAI_REASONING_MODE_STANDARD "standard"

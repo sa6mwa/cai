@@ -218,12 +218,14 @@ The custom provider requires an explicit model.
 .BR \-r , " " \-\-reasoning-effort " " LEVEL
 Set reasoning effort:
 .BR none ,
+.BR minimal ,
 .BR low ,
 .BR medium ,
 .BR high ,
 .BR xhigh ,
+.BR max ,
 or
-.BR max .
+.BR ultra .
 The default is
 .BR medium .
 .TP
@@ -317,12 +319,25 @@ Export the active session, or the supplied ID, as JSONL and Markdown.
 .B /new
 Start a new session in the current workspace.
 .TP
-.BI /model " [MODEL]"
-Show the current and pending model and the provider catalog, or select MODEL
-in the same conversation. Idle changes apply immediately; an active request or
-tool finishes before the selection applies at the next durable tool-round or
-turn boundary, before the next model request. Later selections replace a
-pending selection. Catalog discovery uses a separate client and cache.
+.BI /model " [MODEL [EFFORT]]"
+Show current and pending settings and the provider catalog, or select MODEL
+and optional reasoning EFFORT in the same conversation. A lone known effort
+(such as /model high) changes only effort. A model without an effort keeps
+the current effort. OpenRouter skips catalog listing; other lists show at most
+50 models. Explicit model IDs remain selectable. Idle changes apply immediately;
+an active request or tool finishes before selection applies at the next durable
+tool-round or turn boundary, before the next model request. Later changes merge
+into pending settings. Applied settings are checkpointed together and restored
+on resume. Explicit startup model, effort, and reasoning-summary flags override
+only their corresponding saved values. New sessions use startup defaults.
+Catalog discovery uses a separate client and cache.
+.TP
+.BI /reasoning " [EFFORT]"
+Set reasoning effort, or list provider-advertised choices and the default for
+the selected or pending model. When model-specific metadata is unavailable,
+show the accepted vocabulary with a notice that provider support is unknown.
+Reject choices outside a known provider list. Uses the same durable safe
+boundaries as /model.
 .TP
 .BI /shell-context " [on|off]"
 Show or change model sharing for future explicit shell commands. Each command

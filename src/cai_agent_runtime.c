@@ -7058,6 +7058,53 @@ int cai_agent_runtime_open(cai_client *client,
           rc = cai_runtime_validate_resumed_preset(runtime, error);
         }
         if (rc == CAI_OK) {
+          cai_session_impl *saved = CAI_SESSION_IMPL(runtime->session);
+          cai_agent_impl *agent = CAI_AGENT_IMPL(runtime->agent);
+          cai_agent_runtime_settings selected =
+              cai_runtime_effective_settings(runtime);
+          cai_runtime_settings_owned active_copy, smith_copy;
+          if (config->model == NULL && (saved->state_request_model != NULL ||
+                                        saved->state_model != NULL))
+            selected.model = saved->state_request_model != NULL
+                                 ? saved->state_request_model
+                                 : saved->state_model;
+          if (config->reasoning_effort == NULL &&
+              saved->state_reasoning_effort != NULL)
+            selected.reasoning_effort = saved->state_reasoning_effort;
+          if (config->reasoning_summary == NULL &&
+              saved->state_reasoning_summary != NULL)
+            selected.reasoning_summary = saved->state_reasoning_summary;
+          memset(&active_copy, 0, sizeof(active_copy));
+          memset(&smith_copy, 0, sizeof(smith_copy));
+          rc = cai_runtime_settings_copy(&active_copy, &selected,
+                                         &CAI_CLIENT_IMPL(client)->allocator,
+                                         error);
+          if (rc == CAI_OK)
+            rc = cai_runtime_settings_copy(&smith_copy, &selected, NULL, error);
+          if (rc == CAI_OK) {
+            cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, agent->model);
+            cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator,
+                         agent->reasoning_effort);
+            cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator,
+                         agent->reasoning_summary);
+            cai_free_mem(NULL, runtime->smith_model);
+            cai_free_mem(NULL, runtime->smith_reasoning_effort);
+            cai_free_mem(NULL, runtime->smith_reasoning_summary);
+            agent->model = active_copy.model;
+            agent->reasoning_effort = active_copy.reasoning_effort;
+            agent->reasoning_summary = active_copy.reasoning_summary;
+            runtime->smith_model = smith_copy.model;
+            runtime->smith_reasoning_effort = smith_copy.reasoning_effort;
+            runtime->smith_reasoning_summary = smith_copy.reasoning_summary;
+            active_copy.model = active_copy.reasoning_effort =
+                active_copy.reasoning_summary = NULL;
+            smith_copy.model = smith_copy.reasoning_effort =
+                smith_copy.reasoning_summary = NULL;
+          }
+          cai_runtime_settings_clear(&active_copy);
+          cai_runtime_settings_clear(&smith_copy);
+        }
+        if (rc == CAI_OK) {
           if (CAI_SESSION_IMPL(runtime->session)->goal_status != NULL) {
             CAI_SESSION_IMPL(runtime->session)->goal_token_usage_baseline =
                 CAI_SESSION_IMPL(runtime->session)->usage.usage.total_tokens;
@@ -7434,10 +7481,9 @@ const char *cai_agent_runtime_model(cai_agent_runtime *runtime) {
   return rc == CAI_OK ? effective.model : NULL;
 }
 
-static int cai_runtime_set_model_internal(cai_agent_runtime *runtime,
-                                          const char *model,
-                                          int worker_boundary,
-                                          cai_error *error) {
+static int cai_runtime_set_model_internal(
+    cai_agent_runtime *runtime, const char *model, int worker_boundary,
+    const cai_agent_runtime_settings *settings, cai_error *error) {
   cai_agent_impl *agent;
   cai_session_impl *session;
   char *next_model;
@@ -7448,6 +7494,10 @@ static int cai_runtime_set_model_internal(cai_agent_runtime *runtime,
   char *old_model;
   char *old_smith_model;
   char *old_compaction_hash;
+  cai_runtime_settings_owned next_reasoning, next_smith_reasoning;
+  cai_agent_runtime_settings reasoning;
+  char *old_effort, *old_summary, *old_smith_effort, *old_smith_summary;
+  int model_changed;
   int requires_compaction;
   long long next_context_window;
   long long next_compact_limit;
@@ -7469,11 +7519,19 @@ static int cai_runtime_set_model_internal(cai_agent_runtime *runtime,
   if (model == NULL || model[0] == '\0') {
     return cai_set_error(error, CAI_ERR_INVALID, "agent model is required");
   }
+  memset(&next_reasoning, 0, sizeof(next_reasoning));
+  memset(&next_smith_reasoning, 0, sizeof(next_smith_reasoning));
+  memset(&reasoning, 0, sizeof(reasoning));
+  if (settings != NULL) {
+    reasoning = *settings;
+    reasoning.present &= ~CAI_AGENT_RUNTIME_SETTING_MODEL;
+    reasoning.model = NULL;
+  }
   pthread_mutex_lock(&runtime->lock);
+  model_changed = strcmp(CAI_AGENT_IMPL(runtime->agent)->model, model) != 0;
   rc = worker_boundary ? CAI_OK
                        : cai_runtime_model_switch_ready_locked(runtime, error);
-  if (rc == CAI_OK &&
-      strcmp(CAI_AGENT_IMPL(runtime->agent)->model, model) == 0) {
+  if (rc == CAI_OK && !model_changed && reasoning.present == 0U) {
     pthread_mutex_unlock(&runtime->lock);
     return CAI_OK;
   }
@@ -7512,20 +7570,25 @@ static int cai_runtime_set_model_internal(cai_agent_runtime *runtime,
                          "failed to copy selected agent model");
   }
 
-  rc = cai_runtime_model_switch_metadata(
-      runtime, model, &next_compaction_hash, &next_context_window,
-      &next_compact_limit, &catalog_unavailable, error);
+  rc = model_changed
+           ? cai_runtime_model_switch_metadata(
+                 runtime, model, &next_compaction_hash, &next_context_window,
+                 &next_compact_limit, &catalog_unavailable, error)
+           : CAI_OK;
   if (rc == CAI_OK) {
     history_bytes =
         CAI_SESSION_IMPL(runtime->session)
             ->history.size_fn(&CAI_SESSION_IMPL(runtime->session)->history);
     preserve_history_compatibility =
-        catalog_unavailable &&
-        (runtime->history_compaction_pending ||
-         (history_bytes != 0U && runtime->model_compaction_hash != NULL));
+        !model_changed ||
+        (catalog_unavailable &&
+         (runtime->history_compaction_pending ||
+          (history_bytes != 0U && runtime->model_compaction_hash != NULL)));
     agent = CAI_AGENT_IMPL(runtime->agent);
-    requires_compaction = cai_runtime_model_switch_requires_compaction(
-        runtime, next_compaction_hash, next_context_window, next_compact_limit);
+    requires_compaction =
+        model_changed && cai_runtime_model_switch_requires_compaction(
+                             runtime, next_compaction_hash, next_context_window,
+                             next_compact_limit);
     if (requires_compaction) {
       if (cai_runtime_goal_budget_limited(runtime)) {
         rc = cai_set_error(
@@ -7597,6 +7660,47 @@ static int cai_runtime_set_model_internal(cai_agent_runtime *runtime,
                            "failed to preserve model compatibility hash");
     }
   }
+  rc = cai_runtime_settings_copy(&next_reasoning, &reasoning,
+                                 &CAI_CLIENT_IMPL(runtime->client)->allocator,
+                                 error);
+  if (rc == CAI_OK)
+    rc = cai_runtime_settings_copy(&next_smith_reasoning, &reasoning, NULL,
+                                   error);
+  if (rc != CAI_OK) {
+    cai_runtime_settings_clear(&next_reasoning);
+    cai_runtime_settings_clear(&next_smith_reasoning);
+    cai_free_mem(&CAI_CLIENT_IMPL(runtime->client)->allocator, next_model);
+    cai_free_mem(NULL, next_smith_model);
+    cai_free_mem(&CAI_CLIENT_IMPL(runtime->client)->allocator,
+                 next_compaction_hash);
+    cai_free_mem(&CAI_CLIENT_IMPL(runtime->client)->allocator,
+                 saved_state_model);
+    cai_free_mem(&CAI_CLIENT_IMPL(runtime->client)->allocator,
+                 saved_state_model_compaction_hash);
+    pthread_mutex_lock(&runtime->lock);
+    runtime->model_switching = 0;
+    pthread_cond_broadcast(&runtime->condition);
+    pthread_mutex_unlock(&runtime->lock);
+    return rc;
+  }
+  old_effort = agent->reasoning_effort;
+  old_summary = agent->reasoning_summary;
+  old_smith_effort = runtime->smith_reasoning_effort;
+  old_smith_summary = runtime->smith_reasoning_summary;
+  if ((reasoning.present & CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT) != 0U) {
+    agent->reasoning_effort = next_reasoning.reasoning_effort;
+    runtime->smith_reasoning_effort = next_smith_reasoning.reasoning_effort;
+    next_reasoning.reasoning_effort = next_smith_reasoning.reasoning_effort =
+        NULL;
+  }
+  if ((reasoning.present & CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY) != 0U) {
+    agent->reasoning_summary = next_reasoning.reasoning_summary;
+    runtime->smith_reasoning_summary = next_smith_reasoning.reasoning_summary;
+    next_reasoning.reasoning_summary = next_smith_reasoning.reasoning_summary =
+        NULL;
+  }
+  cai_runtime_settings_clear(&next_reasoning);
+  cai_runtime_settings_clear(&next_smith_reasoning);
   old_model = agent->model;
   old_smith_model = runtime->smith_model;
   old_compaction_hash = runtime->model_compaction_hash;
@@ -7613,7 +7717,8 @@ static int cai_runtime_set_model_internal(cai_agent_runtime *runtime,
   }
   /* Retain recorded history provenance until a later catalog refresh can
    * compare it with the selected model. */
-  runtime->history_compaction_pending = preserve_history_compatibility;
+  if (model_changed)
+    runtime->history_compaction_pending = preserve_history_compatibility;
   rc = cai_runtime_checkpoint(runtime, requires_compaction ? 0 : 1, error);
   if (rc != CAI_OK) {
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
@@ -7655,6 +7760,26 @@ static int cai_runtime_set_model_internal(cai_agent_runtime *runtime,
                saved_state_model_compaction_hash);
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                next_compaction_hash);
+  if ((reasoning.present & CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT) != 0U) {
+    cai_free_mem(&CAI_CLIENT_IMPL(runtime->client)->allocator,
+                 rc == CAI_OK ? old_effort : agent->reasoning_effort);
+    cai_free_mem(NULL, rc == CAI_OK ? old_smith_effort
+                                    : runtime->smith_reasoning_effort);
+    if (rc != CAI_OK) {
+      agent->reasoning_effort = old_effort;
+      runtime->smith_reasoning_effort = old_smith_effort;
+    }
+  }
+  if ((reasoning.present & CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY) != 0U) {
+    cai_free_mem(&CAI_CLIENT_IMPL(runtime->client)->allocator,
+                 rc == CAI_OK ? old_summary : agent->reasoning_summary);
+    cai_free_mem(NULL, rc == CAI_OK ? old_smith_summary
+                                    : runtime->smith_reasoning_summary);
+    if (rc != CAI_OK) {
+      agent->reasoning_summary = old_summary;
+      runtime->smith_reasoning_summary = old_smith_summary;
+    }
+  }
   pthread_mutex_lock(&runtime->lock);
   runtime->model_switching = 0;
   pthread_cond_broadcast(&runtime->condition);
@@ -7664,73 +7789,19 @@ static int cai_runtime_set_model_internal(cai_agent_runtime *runtime,
 
 int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
                                 cai_error *error) {
-  return cai_runtime_set_model_internal(runtime, model, 0, error);
+  return cai_runtime_set_model_internal(runtime, model, 0, NULL, error);
 }
 
 static int
 cai_runtime_apply_settings_now(cai_agent_runtime *runtime,
                                const cai_agent_runtime_settings *settings,
                                int worker_boundary, cai_error *error) {
-  cai_agent_impl *agent;
-  cai_allocator *allocator;
-  char *next_effort;
-  char *next_summary;
-  char *next_smith_effort;
-  char *next_smith_summary;
-  int rc;
-
-  agent = CAI_AGENT_IMPL(runtime->agent);
-  allocator = &CAI_CLIENT_IMPL(runtime->client)->allocator;
-  next_effort = NULL;
-  next_summary = NULL;
-  next_smith_effort = NULL;
-  next_smith_summary = NULL;
-  if ((settings->present & CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT) != 0U) {
-    next_effort = cai_strdup(allocator, settings->reasoning_effort);
-    next_smith_effort = cai_strdup(NULL, settings->reasoning_effort);
-  }
-  if ((settings->present & CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY) != 0U) {
-    next_summary = cai_strdup(allocator, settings->reasoning_summary);
-    next_smith_summary = cai_strdup(NULL, settings->reasoning_summary);
-  }
-  if (((settings->present & CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT) != 0U &&
-       (next_effort == NULL || next_smith_effort == NULL)) ||
-      ((settings->present & CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY) !=
-           0U &&
-       (next_summary == NULL || next_smith_summary == NULL))) {
-    rc = cai_set_error(error, CAI_ERR_NOMEM,
-                       "failed to copy selected reasoning settings");
-    goto done;
-  }
-  rc = CAI_OK;
-  if ((settings->present & CAI_AGENT_RUNTIME_SETTING_MODEL) != 0U) {
-    rc = cai_runtime_set_model_internal(runtime, settings->model,
-                                        worker_boundary, error);
-  }
-  if (rc == CAI_OK &&
-      (settings->present & CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT) != 0U) {
-    cai_free_mem(allocator, agent->reasoning_effort);
-    cai_free_mem(NULL, runtime->smith_reasoning_effort);
-    agent->reasoning_effort = next_effort;
-    runtime->smith_reasoning_effort = next_smith_effort;
-    next_effort = NULL;
-    next_smith_effort = NULL;
-  }
-  if (rc == CAI_OK &&
-      (settings->present & CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY) != 0U) {
-    cai_free_mem(allocator, agent->reasoning_summary);
-    cai_free_mem(NULL, runtime->smith_reasoning_summary);
-    agent->reasoning_summary = next_summary;
-    runtime->smith_reasoning_summary = next_smith_summary;
-    next_summary = NULL;
-    next_smith_summary = NULL;
-  }
-done:
-  cai_free_mem(allocator, next_effort);
-  cai_free_mem(allocator, next_summary);
-  cai_free_mem(NULL, next_smith_effort);
-  cai_free_mem(NULL, next_smith_summary);
-  return rc;
+  const char *model =
+      (settings->present & CAI_AGENT_RUNTIME_SETTING_MODEL) != 0U
+          ? settings->model
+          : CAI_AGENT_IMPL(runtime->agent)->model;
+  return cai_runtime_set_model_internal(runtime, model, worker_boundary,
+                                        settings, error);
 }
 
 static int cai_runtime_apply_pending_settings(cai_agent_runtime *runtime,
@@ -7771,7 +7842,8 @@ static int cai_runtime_settings_value_valid(unsigned int field,
            strcmp(value, CAI_REASONING_EFFORT_MEDIUM) == 0 ||
            strcmp(value, CAI_REASONING_EFFORT_HIGH) == 0 ||
            strcmp(value, CAI_REASONING_EFFORT_XHIGH) == 0 ||
-           strcmp(value, CAI_REASONING_EFFORT_MAX) == 0;
+           strcmp(value, CAI_REASONING_EFFORT_MAX) == 0 ||
+           strcmp(value, CAI_REASONING_EFFORT_ULTRA) == 0;
   }
   if (field == CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY) {
     return strcmp(value, CAI_REASONING_SUMMARY_NONE) == 0 ||
