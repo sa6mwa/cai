@@ -110,6 +110,31 @@ plain strings so callers can use new remote models before CAI knows about them,
 but known models should carry verified metadata when the data is available from
 official documentation.
 
+## Codex compatibility baseline maintenance
+
+Review upstream Codex releases and protocol changes during ChatGPT provider
+updates and before a release. The maintained baseline is currently `0.160.0`;
+the last live account-catalog check was 2026-10-04. That account returned 10
+models, including `gpt-6.1-sol`. This records observed account access, not a
+guarantee that every subscription returns the same models.
+
+When considering an update:
+
+1. Compare catalog responses for the existing and proposed `client_version`
+   using the same account, originator, and User-Agent. Check model IDs,
+   reasoning levels, context limits, and compaction compatibility metadata.
+2. Check catalog parsing and the Responses request/stream/tool protocol against
+   the proposed upstream baseline. Verify live provider behavior through the
+   authorized integration workflow before advertising higher compatibility.
+3. Update `CAI_CODEX_CATALOG_CLIENT_VERSION` in `src/cai_model_catalog.c`,
+   request-URL fixtures, this document, and the roadmap together. Run the
+   affected native catalog, model-switch, and CLI settings checks once.
+
+Model-preservation tests use fixture catalogs, including unfamiliar IDs and
+entries beyond row 50. Live account counts and entitlements can change, so they
+must not become universal offline assertions. The baseline is independent of
+CAI's release version and the `comp_hash` used for conversation switching.
+
 ## Sources
 
 Use official OpenAI documentation only:

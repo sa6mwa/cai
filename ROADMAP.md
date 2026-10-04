@@ -166,6 +166,29 @@ Before tagging the first C SDK prerelease:
 - Verify release builds do not contain sanitizer artifacts, host paths, or
   non-relocatable runpaths.
 
+## Ongoing: ChatGPT Catalog Compatibility
+
+Track upstream Codex client/protocol changes during provider maintenance and
+before a release. The catalog compatibility baseline is maintained separately
+from CAI's release version and conversation compaction hashes.
+
+- Current baseline: `0.160.0` in `CAI_CODEX_CATALOG_CLIENT_VERSION`
+  (`src/cai_model_catalog.c`). Last account-catalog verification: 2026-10-04;
+  the account returned `gpt-6.1-sol` among 10 models. Availability and counts
+  are account-specific evidence, not universal test expectations.
+- Compare the current and proposed baseline against the same signed-in
+  account, retaining CAI's own originator and User-Agent. Check returned model
+  IDs, reasoning choices, context limits, and compatibility metadata.
+- Verify the catalog adapter and Responses protocol before advancing the
+  advertised baseline. Update its constant, request-URL regression fixtures,
+  and maintenance documentation together.
+- Preserve every returned ChatGPT model, including unfamiliar IDs. Keep
+  regression coverage for visibility/API-support flags and catalogs exceeding
+  50 entries.
+
+The update and verification procedure is maintained in
+[Model Metadata Maintenance](docs/model-metadata.md#codex-compatibility-baseline-maintenance).
+
 ## Supported: Responses WebSocket
 
 Status: implemented for OpenAI API-key and ChatGPT subscription-auth streaming
