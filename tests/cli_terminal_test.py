@@ -173,6 +173,9 @@ class ResponsePeer(http.server.BaseHTTPRequestHandler):
                     tool_item.pop("arguments")
                     tool_item.update(type="custom_tool_call", input=arguments)
                 self.event("response.output_item.done", output_index=0, item=tool_item)
+            elif isinstance(item, list):
+                for delta in item:
+                    self.event("response.output_text.delta", delta=delta)
             else:
                 self.event("response.output_text.delta", delta=item)
         elif view_path or not any(item.get("type") == "function_call_output"
@@ -496,6 +499,28 @@ def main():
             assert api.requests[-1]["model"] == "gpt-6-astra"
             assert "change course after response" in json.dumps(api.requests[-1])
             assert "OLD response completed" in json.dumps(api.requests[-1])
+            terminal.close()
+            terminal = None
+
+            # Stream fragmented Markdown through the real CAI -> libmdf ->
+            # softline feed. Default links retain their label and visible URL,
+            # and table code spans unescape pipe separators.
+            markdown = [
+                "abcdefghijklmnopqrst ([la", "bel](https://", "x.test",
+                ")).\n\n", "| Left | Right |\n| --- | --- |\n| `a\\",
+                "|b` | ok |\n\n", "MARKDOWN DONE\n\n"]
+            api.plan = [markdown]
+            terminal = Terminal(args, env, width=24)
+            terminal.wait(lambda: terminal.contains("Welcome to CAI"))
+            terminal.output.clear()
+            terminal.send(b"render markdown\r")
+            terminal.wait(lambda: terminal.contains("MARKDOWN DONE") and
+                          terminal.contains("Worked for"))
+            rendered = terminal.rendered()
+            osc = rb"\x1b\]8;;[^\x07\x1b]*(?:\x07|\x1b\\)"
+            visible = re.sub(osc, b"", rendered)
+            assert b"label" in visible and b"(https://x.test))" in visible, visible
+            assert b"a|b" in visible and b"a\\|b" not in visible, visible
             terminal.close()
             terminal = None
 
