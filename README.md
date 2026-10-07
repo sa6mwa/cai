@@ -95,7 +95,7 @@ runtime, review, storage, and presentation contracts.
 ## Cai terminal agent
 
 The `cai` preset builds the terminal coding agent as a statically linked
-Linux x86_64 musl executable. It adds pinned softline 0.9.0 for the prompt and
+Linux x86_64 musl executable. It adds pinned softline 0.10.0 for the prompt and
 libmdf 0.14.0 for streamed Markdown rendering, and liblockdc 0.18.0 with
 liblql 0.3.0 for durable storage. It uses libpslog 0.12.0 for logging.
 `libcai` itself has no dependency on the CLI prompt, rendering, or storage libraries.
@@ -105,7 +105,7 @@ events.
 
 The UI keeps one softline output session open and forwards each libmdf sink
 fragment directly to it, with no simulated typing delay or timed coalescing.
-Softline 0.9.0 accounts for feed geometry locally without waiting for terminal
+Softline 0.10.0 accounts for feed geometry locally without waiting for terminal
 cursor replies. Softline owns prompt geometry and terminal scrollback;
 the UI updates libmdf's width before feeding further Markdown after a resize.
 Ctrl-V pastes X11 clipboard PNG/JPEG images as file paths in the editor.
@@ -119,6 +119,28 @@ hardlinked image files are rejected.
 
 Slash commands echo as plain `$ /command` input rows. The reasoning title is
 rendered through libmdf with ANSI disabled; Softline owns the gray `! ` line.
+
+Interactive prompt recall uses Softline's native store under
+`$XDG_STATE_HOME/cai/history/`, falling back to
+`$HOME/.local/state/cai/history/`. The canonical workspace path is the key;
+its SHA-256 determines the `.history` filename. Recall keeps the newest 1000
+entries for this directory, across conversations and restarts. Accepted prompts
+and local commands append immediately, including steering; replay and Ctrl-R
+selection do not append. `/new` preserves recall. These owner-only plaintext
+files are separate from encrypted conversation/auth storage: directories are
+0700, files and locks 0600. The store is append-only, without an exit-time save
+or per-prompt fsync. Ctrl-R Enter selects a match for editing; Enter again sends.
+
+Exact `!sh` and `/shell` commands hand the real terminal to `$SHELL -i`
+(`/bin/sh -i` when unset or empty) between turns. They require terminal input
+and output, cannot be queued or steered, and leave the draft editable if the
+agent is busy. The shell runs with normal user permissions in the workspace.
+On exit, CAI restores terminal ownership, prompt settings and current geometry,
+including after a screen clear or resize. Shell activity is not captured,
+replayed or sent to the model; the session log records launch and exit metadata.
+A failed launch or nonzero shell exit reports details and returns to CAI.
+
+Other `!COMMAND` inputs run captured commands as described below.
 
 Enter `!COMMAND` to run your shell (`$SHELL`, falling back to `/bin/sh`) with
 normal user permissions in the workspace, outside the agent sandbox. Each

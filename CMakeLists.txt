@@ -129,7 +129,7 @@ set(CAI_MINIMUM_CURL_VERSION "7.86.0")
 set(CAI_LONEJSON_VERSION "0.45.0")
 set(CAI_LONEJSON_ABI_VERSION "26")
 set(CAI_PSLOG_VERSION "0.12.0")
-set(CAI_SOFTLINE_VERSION "0.9.0")
+set(CAI_SOFTLINE_VERSION "0.10.0")
 set(CAI_LIBMDF_VERSION "0.14.0")
 
 if(CAI_BUILD_CLI AND NOT CAI_BUILD_STATIC)
@@ -444,12 +444,12 @@ if(CAI_BUILD_CLI)
   if(CAI_TARGET_ID STREQUAL "x86_64-linux-gnu")
     set(_cai_liblql_sha256 "fafb04f9af5d9610f77380ac1f848d1edd3d60dcf7ce6a098f6a04e30dd2b47a")
     set(_cai_lockdc_sha256 "1e949887d613824716645dd5e9a85a1b89ad2d8d66431838c0a28c999b0e23da")
-    set(_cai_softline_sha256 "09612ec2cc3fc1ecdcefaf4afff4e5e80555d9618c13a7e6db3405d0ead835f5")
+    set(_cai_softline_sha256 "dbe96138bb9fbbb40c2aaff1dc307568458180155d534656ff04e4a752e5d2d6")
     set(_cai_libmdf_sha256 "b250a82e2562897102aee69bca2c946e53eadffddd1d85131975eaea00651b65")
   else()
     set(_cai_liblql_sha256 "e33a57e5d97337304c8541efaf8ab33bff9060cae600d1fe744a6734dca74ad4")
     set(_cai_lockdc_sha256 "580b8f4b8dd87d77a3ef16f8a304ce3dc472e45e64e39ec1250a8582a8182c31")
-    set(_cai_softline_sha256 "4779f8950fc4abf29ea87dae2ab31e7a951ee760d3d62bce0b4ef199c6625e49")
+    set(_cai_softline_sha256 "1fbd56ec0006b06d3cd66c5ad7ef6f03f6bdde7a2dc187508d03e8b544335854")
     set(_cai_libmdf_sha256 "144827811d9e1477a6e0835b8a94492c2a1ba7eb7fa6d091ee0e0c73f2e7b2ee")
   endif()
   set(_cai_liblql_name "liblql-0.3.0-${CAI_TARGET_ID}")
@@ -1134,6 +1134,14 @@ if(CAI_BUILD_CLI)
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_test.py"
         "$<TARGET_FILE:cai_cli>")
     set_tests_properties(cai_cli_terminal PROPERTIES TIMEOUT 60)
+    add_test(NAME cai_cli_terminal_handoff
+      COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_handoff_test.py"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_terminal_handoff PROPERTIES TIMEOUT 45)
+    add_test(NAME cai_cli_history
+      COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_history_test.py"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_history PROPERTIES TIMEOUT 45)
     add_test(NAME cai_cli_reasoning_presentation
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_reasoning_presentation_test.py"
         "$<TARGET_FILE:cai_cli>")

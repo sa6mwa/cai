@@ -35,6 +35,25 @@ def finished(terminal, offset, response, marker=None):
     return response in text and b"Worked for" in text and (marker is None or marker in text)
 
 
+def terminal_completion(api, response):
+    polls = 0
+
+    def next_response(request):
+        nonlocal polls
+        output = next(item['output'] for item in reversed(request['input'])
+                      if item.get('type') == 'function_call_output')
+        result = json.loads(output)
+        if not result['running']:
+            return response
+        polls += 1
+        assert polls <= 10, result
+        api.plan.insert(0, next_response)
+        return ('write_stdin', {'session_id': result['session_id'],
+                                'chars': '', 'yield_time_ms': 1000})
+
+    return next_response
+
+
 def main():
     cli = pathlib.Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(dir=cli.parent, prefix="tool-display-") as temp:
@@ -104,7 +123,8 @@ def main():
             # must omit that line. Give the shell command a short script path.
             script = workspace / "command.sh"
             script.write_text(command + "\nexit 3\n")
-            api.plan = [("exec_command", {"cmd": "sh command.sh", "yield_time_ms": 1000}), "COMMAND DONE"]
+            api.plan = [("exec_command", {"cmd": "sh command.sh", "yield_time_ms": 1000}),
+                        terminal_completion(api, "COMMAND DONE")]
             offset = len(terminal.output)
             terminal.send(b"run failing command\r")
             terminal.wait(lambda: finished(terminal, offset, b"COMMAND DONE"))
@@ -117,7 +137,8 @@ def main():
             assert b"\x1b[91m*\x1b[0m" in later and b"Ran sh command.sh" in plain and b"exit=3" in plain, later
             binary_script = workspace / "binary.sh"
             binary_script.write_text("printf 'UNICODE\\303\\245 BINARY\\377\\000\\302\\200TAIL\\303'\n")
-            api.plan = [("exec_command", {"cmd": "sh binary.sh", "yield_time_ms": 1000}), "BINARY DONE"]
+            api.plan = [("exec_command", {"cmd": "sh binary.sh", "yield_time_ms": 1000}),
+                        terminal_completion(api, "BINARY DONE")]
             offset = len(terminal.output)
             terminal.send(b"run binary output command\r")
             terminal.wait(lambda: finished(terminal, offset, b"BINARY DONE", b"Ran sh binary.sh"))

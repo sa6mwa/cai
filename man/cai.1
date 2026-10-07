@@ -346,8 +346,18 @@ Show or change model sharing for future explicit shell commands. Each command
 captures the setting at start. Disabling sharing does not disable execution,
 erase history or remove earlier model context.
 .TP
+.BR /shell , " " !sh
+With no arguments, hand the real terminal to $SHELL -i, falling back to
+/bin/sh -i when SHELL is unset or empty. Requires terminal input and output
+and an idle agent. These commands cannot be queued or steered; a busy draft
+remains editable. The shell uses normal user permissions in the workspace.
+CAI restores terminal ownership, prompt state and geometry after exit, even
+following a screen clear or resize. Shell activity is not captured, replayed,
+or shared with the model. Logs record the executable and exit metadata.
+Launch failures and nonzero exits report details and return to CAI.
+.TP
 .BI ! COMMAND
-Run $SHELL (or /bin/sh) with -c in the workspace using normal user permissions,
+For other bang commands, run $SHELL (or /bin/sh) with -c in the workspace using normal user permissions,
 outside the agent sandbox. Stdin is closed; stdout and stderr use one pipe,
 without a PTY. Output is literal, without Markdown parsing. Printable UTF-8,
 newlines and tabs are preserved; invalid bytes and other controls appear as
@@ -491,6 +501,19 @@ LOG_TIME_FORMAT, LOG_UTC, LOG_OUTPUT, and LOG_OUTPUT_FILE_MODE.
 LOG_OUTPUT overrides the default sink; default+PATH retains the default sink
 and its UI warning notices while adding a file. LOG_LEVEL=warn filters out
 ordinary conversation messages.
+.SH PROMPT HISTORY
+Interactive recall uses $XDG_STATE_HOME/cai/history, falling back to
+$HOME/.local/state/cai/history. The canonical workspace path is hashed with
+SHA-256 into a .history filename. Recall retains the newest 1000 prompts and
+commands for this directory across conversations and restarts. Accepted input
+appends immediately, including steering; replay and Ctrl-R selection do not
+append. /new preserves recall. Ctrl-R Enter selects a match for editing;
+a subsequent Enter submits it.
+.PP
+Prompt history is stored in private plaintext files, separately from encrypted
+conversation and authentication storage. Directories use mode 0700; files and
+lock files use 0600. The native store appends without per-entry fsync or an
+exit-time save. Persistence failures stop acceptance and report native errors.
 .SH FILES
 .TP
 .I ~/.codex/auth.json

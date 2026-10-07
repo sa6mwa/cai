@@ -159,6 +159,8 @@ class ResponsePeer(http.server.BaseHTTPRequestHandler):
         scripted = bool(self.server.plan)
         if scripted:
             item = self.server.plan.pop(0)
+            if callable(item):
+                item = item(self.server.requests[-1])
             if self.server.pause_script:
                 self.server.pause_script = False
                 self.event("response.output_text.delta", delta="STREAM in flight\n\n")
@@ -199,11 +201,14 @@ class ResponsePeer(http.server.BaseHTTPRequestHandler):
 
 
 class Terminal:
-    def __init__(self, args, env, width=120):
+    def __init__(self, args, env, width=120, controlling_tty=False):
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, width, 0, 0))
         self.process = subprocess.Popen(args, env=env, stdin=slave, stdout=slave,
-                                        stderr=subprocess.PIPE)
+                                        stderr=slave if controlling_tty else subprocess.PIPE,
+                                        start_new_session=controlling_tty,
+                                        preexec_fn=(lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0))
+                                        if controlling_tty else None)
         os.close(slave)
         self.output = bytearray()
         self.probe_tail = b""

@@ -34,6 +34,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/timerfd.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -491,13 +492,10 @@ static int cli_write(cli_state *state, const char *text) {
   return 0;
 }
 
-static int cli_prompt(cli_state *state, const char *text, int history) {
+static int cli_prompt(cli_state *state, const char *text) {
   if (state->batch)
     return 0;
   if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0) {
-    return -1;
-  }
-  if (history && sl_history_add(state->sl, text) != SL_OK) {
     return -1;
   }
   if (sl_output_stream_write_quoted_prompt(state->sl, text) != SL_OK)
@@ -506,12 +504,10 @@ static int cli_prompt(cli_state *state, const char *text, int history) {
   return 0;
 }
 
-static int cli_command_input(cli_state *state, const char *text, int history) {
+static int cli_command_input(cli_state *state, const char *text) {
   int rc;
   pslog_field field =
       pslog_str("prompt_kind", text[0] == '!' ? "shell_command" : "command");
-  if (history && sl_history_add(state->sl, text) != SL_OK)
-    return -1;
   cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, "command_input",
                       "user", text, strlen(text), &field, 1U);
   if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0 ||
@@ -672,6 +668,140 @@ static int cli_shell_start(cli_state *state, const char *command,
     state->shell_watched[i] = 1;
   }
   return CAI_OK;
+}
+
+static int cli_is_terminal_shell(const char *line) {
+  return strcmp(line, "!sh") == 0 || strcmp(line, "/shell") == 0;
+}
+
+static int cli_terminal_shell_ready(cli_state *state, cai_error *error) {
+  cai_agent_run_state run_state;
+  cai_agent_runtime_metrics metrics;
+  int rc;
+  if (!state->interactive)
+    return cai_cli_error(
+        error, CAI_ERR_INVALID,
+        "interactive shell requires terminal input and output");
+  rc = cai_agent_runtime_state(state->runtime, &run_state, error);
+  if (rc == CAI_OK)
+    rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (state->shell.pid > 0 || metrics.turn_active || state->awaiting_turn ||
+      !state->automation_done || sl_prompt_queue_count(state->sl) > 0 ||
+      run_state == CAI_AGENT_SAMPLING ||
+      run_state == CAI_AGENT_DISPATCHING_TOOL)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "Shell is available only between turns.");
+  return CAI_OK;
+}
+
+/* Key callbacks only guard submission. Terminal handoff runs in the owner
+ * loop after next_prompt returns, outside every active editor callback. */
+static int cli_shell_editor_key(sl_t *sl, sl_key_t key, void *context,
+                                sl_key_action_t *action) {
+  cli_state *state = context;
+  cai_error error;
+  int rc = SL_OK;
+  *action = SL_KEY_ACTION_PASS;
+  if (sl_history_search_active(sl) || !cli_is_terminal_shell(sl_buffer(sl)))
+    return SL_OK;
+  cai_error_init(&error);
+  if (key == SL_KEY_TAB || cli_terminal_shell_ready(state, &error) != CAI_OK) {
+    *action = SL_KEY_ACTION_HANDLED;
+    rc = sl_set_status_message(
+        sl, key == SL_KEY_TAB
+                ? "Use Enter to open the shell; it cannot be queued."
+                : error.message);
+  }
+  cai_error_cleanup(&error);
+  return rc;
+}
+
+static int cli_shell_restore_foreground(pid_t foreground, cai_error *error) {
+  struct sigaction ignore, previous;
+  int rc, saved_errno;
+  char message[256];
+  if (foreground < 0)
+    return CAI_OK;
+  memset(&ignore, 0, sizeof(ignore));
+  ignore.sa_handler = SIG_IGN;
+  sigemptyset(&ignore.sa_mask);
+  if (sigaction(SIGTTOU, &ignore, &previous) != 0)
+    return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                         "protect terminal foreground restoration");
+  rc = tcsetpgrp(STDIN_FILENO, foreground);
+  saved_errno = errno;
+  if (sigaction(SIGTTOU, &previous, NULL) != 0 && rc == 0) {
+    rc = -1;
+    saved_errno = errno;
+  }
+  if (rc == 0)
+    return CAI_OK;
+  snprintf(message, sizeof(message), "restore terminal foreground: %s",
+           strerror(saved_errno));
+  return cai_cli_error(error, CAI_ERR_TRANSPORT, message);
+}
+
+static int cli_terminal_shell(cli_state *state, cai_error *error) {
+  pslog_field fields[3];
+  char message[256];
+  const char *shell = getenv("SHELL");
+  pid_t foreground;
+  int rc, status, saved_errno;
+  rc = cli_terminal_shell_ready(state, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (shell == NULL || shell[0] == '\0')
+    shell = "/bin/sh";
+  foreground = tcgetpgrp(STDIN_FILENO);
+  if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0 ||
+      sl_output_stream_end(state->sl) != SL_OK)
+    return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                         "release terminal for interactive shell");
+  fields[0] = pslog_str("shell", shell);
+  cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO,
+                      "terminal_shell_started", "user", "Interactive shell",
+                      strlen("Interactive shell"), fields, 1U);
+  /* Quoted SHELL is one executable; system handles parent SIGINT/SIGQUIT.
+   * The child inherits the real terminal and ordinary user permissions. */
+  status = system("exec \"${SHELL:-/bin/sh}\" -i");
+  saved_errno = errno;
+  /* Recover ownership before any logger or renderer can write to the TTY.
+   * A killed shell cannot restore its previous foreground process group. */
+  rc = cli_shell_restore_foreground(foreground, error);
+  if (rc != CAI_OK) {
+    state->exit_requested = 1;
+    return rc;
+  }
+  state->feed_breaks = 0;
+  state->feed_ansi = 0;
+  fields[1] = pslog_i64("exit_code", status == -1        ? -1
+                                     : WIFEXITED(status) ? WEXITSTATUS(status)
+                                                         : -1);
+  fields[2] = pslog_i64(
+      "signal", status != -1 && WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+  cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO,
+                      "terminal_shell_completed", "user", "Interactive shell",
+                      strlen("Interactive shell"), fields, 3U);
+  if (sl_output_stream_begin(state->sl) != SL_OK || cli_geometry(state) != 0) {
+    state->exit_requested = 1;
+    return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                         "restore CAI terminal after interactive shell");
+  }
+  cai_cli_status_refresh_branch(&state->status, state->workspace);
+  if (status == -1)
+    snprintf(message, sizeof(message), "launch interactive shell: %s",
+             strerror(saved_errno));
+  else if (WIFSIGNALED(status))
+    snprintf(message, sizeof(message),
+             "interactive shell terminated by signal %d", WTERMSIG(status));
+  else if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+    snprintf(message, sizeof(message), "interactive shell exited %d",
+             WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+  else
+    return CAI_OK;
+  return cai_cli_error(error, CAI_ERR_TRANSPORT, message);
 }
 
 static void cli_log_event(cli_state *state,
@@ -1065,8 +1195,7 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
     if (cai_cli_shell_plain(&state->shell, NULL, 0U, 1, cli_shell_literal,
                             state, error) != CAI_OK)
       return CAI_ERR_TRANSPORT;
-    return cli_command_input(state, command, 1) == 0 ? CAI_OK
-                                                     : CAI_ERR_TRANSPORT;
+    return cli_command_input(state, command) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
   }
   if (event->data != NULL &&
       strcmp(event->type, "user_shell_output_hex") == 0) {
@@ -1124,7 +1253,7 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
        strcmp(event->type, "turn_queued") == 0 ||
        strcmp(event->type, "steering_queued") == 0) &&
       event->data != NULL) {
-    return cli_prompt(state, event->data, 1) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+    return cli_prompt(state, event->data) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
   }
   if (strcmp(event->type, "assistant_text_delta") == 0 && event->data != NULL) {
     return cli_text(state, event->data, strlen(event->data)) == 0
@@ -1367,10 +1496,6 @@ static int cli_switch_session(cli_state *state, const char *id, int new_session,
   if (cli_finish_response(state) != 0)
     return CAI_ERR_TRANSPORT;
   cli_close_runtime(state);
-  if (sl_history_set_max_len(state->sl, 0) != SL_OK ||
-      sl_history_set_max_len(state->sl, 1000) != SL_OK) {
-    return CAI_ERR_TRANSPORT;
-  }
   if (cli_write(state, "\n--- session ---\n") != 0) {
     return CAI_ERR_TRANSPORT;
   }
@@ -1737,6 +1862,8 @@ static int cli_handle_command(cli_state *state, const char *line,
   unsigned long number;
   int rc;
   *handled = 1;
+  if (cli_is_terminal_shell(line))
+    return cli_terminal_shell(state, error);
   if (line[0] == '!')
     return cli_shell_start(state, line + 1U, error);
   if (strcmp(line, "/shell-context") == 0 ||
@@ -1812,6 +1939,8 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| `/goal [COMMAND]` | Show a goal; new TEXT replaces it, pause/resume "
         "control pursuit, clear removes it, help explains commands. Prefer "
         "asking the agent to manage goals. |\n",
+        "| `/shell`, `!sh` | Open your interactive shell between turns; return "
+        "to CAI when it exits. |\n",
         "| `/model [MODEL [EFFORT]]` | Show models or change model/effort at "
         "the next safe "
         "model/tool boundary, keeping this conversation. |\n",
@@ -1838,8 +1967,9 @@ static int cli_handle_command(cli_state *state, const char *line,
         "literal output. |\n",
         "| `/shell-context [on\\|off]` | Share future shell results with the "
         "model, or keep them local. |\n"
-        "| Up / Down | Recall prompts from this conversation. |\n"
-        "| Ctrl-R | Search prompt history. |\n"
+        "| Up / Down | Recall prompts for this directory. |\n"
+        "| Ctrl-R | Search history; Enter selects for editing, Enter again "
+        "sends. |\n"
         "| Ctrl-V | Paste a PNG or JPEG image from the X11 clipboard. |\n"
         "| Escape / Ctrl-C | Cancel the active turn. |\n"
         "| Ctrl-D (empty prompt) | Exit. |\n\n",
@@ -1951,7 +2081,10 @@ static int cli_handle_command(cli_state *state, const char *line,
 static int cli_submit_automation(cli_state *state, const char *instruction,
                                  cai_error *error) {
   int rc;
-  if (instruction == NULL || cli_prompt(state, instruction, 1) != 0)
+  if (state->interactive && instruction != NULL &&
+      sl_history_add(state->sl, instruction) != SL_OK)
+    return cai_cli_error(error, CAI_ERR_TRANSPORT, sl_last_error(state->sl));
+  if (instruction == NULL || cli_prompt(state, instruction) != 0)
     return CAI_ERR_TRANSPORT;
   state->awaiting_turn = 1;
   rc = cai_agent_runtime_submit_interactive(state->runtime, instruction, error);
@@ -2386,6 +2519,7 @@ int main(int argc, char **argv) {
   }
   if (!state.batch) {
     sl_config_init(&prompt_config);
+    prompt_config.history_max_len = 1000;
     prompt_config.image_paste_path_template =
         "{{XDG_CACHE_HOME}}/cai/clipboard/*";
     state.sl = sl_create_with_config(&prompt_config);
@@ -2424,6 +2558,33 @@ int main(int argc, char **argv) {
     goto cleanup;
   }
   if (state.interactive) {
+    char history_directory[PATH_MAX];
+    rc = snprintf(history_directory, sizeof(history_directory), "%s/history",
+                  state.pouch.state_directory);
+    if (rc < 0 || (size_t)rc >= sizeof(history_directory)) {
+      cai_cli_error(&error, CAI_ERR_INVALID, "prompt history path is too long");
+      cli_print_error(&state, "initialize prompt history", &error);
+      goto cleanup;
+    }
+    if (sl_history_open(state.sl, state.workspace, history_directory) !=
+            SL_OK ||
+        sl_history_set_auto_add(state.sl, 1) != SL_OK) {
+      cai_cli_error(&error, CAI_ERR_TRANSPORT, sl_last_error(state.sl));
+      cli_print_error(&state, "initialize prompt history", &error);
+      goto cleanup;
+    }
+  }
+  if (state.interactive) {
+    if (sl_bind_key(state.sl, SL_KEY_ENTER, cli_shell_editor_key, &state) !=
+            SL_OK ||
+        sl_bind_key(state.sl, SL_KEY_ALT_ENTER, cli_shell_editor_key, &state) !=
+            SL_OK ||
+        sl_bind_key(state.sl, SL_KEY_TAB, cli_shell_editor_key, &state) !=
+            SL_OK) {
+      cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
+                     "bind interactive shell submission guards");
+      goto cleanup;
+    }
     state.timer_fd =
         timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
     if (state.timer_fd < 0 ||
@@ -2575,18 +2736,19 @@ int main(int argc, char **argv) {
         continue;
       }
       if (prompt_status == SL_READLINE_ERROR) {
-        cli_diagnostic(&state, PSLOG_LEVEL_ERROR, "cai: prompt input failed\n");
+        cai_cli_error(&error, CAI_ERR_TRANSPORT, sl_last_error(state.sl));
+        cli_print_error(&state, "prompt input failed", &error);
         goto cleanup;
       }
       break;
     }
     if (line[0] != '\0') {
       rc = (line[0] == '/' || line[0] == '!') &&
-                   cli_command_input(&state, line, 1) != 0
+                   cli_command_input(&state, line) != 0
                ? CAI_ERR_TRANSPORT
                : cli_handle_command(&state, line, &error, &handled);
       if (rc == CAI_OK && !handled) {
-        if (cli_prompt(&state, line, 1) != 0) {
+        if (cli_prompt(&state, line) != 0) {
           rc = CAI_ERR_TRANSPORT;
         } else {
           if (state.shell.pid > 0)
@@ -2598,7 +2760,7 @@ int main(int argc, char **argv) {
       }
       if (rc != CAI_OK) {
         cli_print_error(&state, "input", &error);
-        if (state.runtime == NULL) {
+        if (state.runtime == NULL || state.exit_requested) {
           sl_free_string(state.sl, line);
           goto cleanup;
         }

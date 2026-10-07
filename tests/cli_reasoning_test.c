@@ -264,8 +264,7 @@ static int test_output_failure(int operation) {
     event.type = CAI_AGENT_EVENT_RESPONSE_COMPLETED;
     rc = cli_event(&state, &event, NULL);
   } else if (operation == 3) {
-    rc = cli_prompt(&state, "literal prompt", 1) != 0 ? CAI_ERR_TRANSPORT
-                                                      : CAI_OK;
+    rc = cli_prompt(&state, "literal prompt") != 0 ? CAI_ERR_TRANSPORT : CAI_OK;
   } else if (operation == 4) {
     rc = cli_handle_command(&state, "/help", NULL, &handled);
     if (!handled)
@@ -544,9 +543,9 @@ int main(void) {
   if (state.renderer->set_sink(state.renderer, &sink) != MDF_OK) {
     return 1;
   }
-  if (cli_prompt(&state, "Hello", 0) != 0 ||
+  if (cli_prompt(&state, "Hello") != 0 ||
       cli_notice(&state, "* WARN: useful diagnostic") != 0 ||
-      cli_prompt(&state, "Next", 0) != 0)
+      cli_prompt(&state, "Next") != 0)
     return 1;
   state.interactive = 1;
   if (unsetenv("NO_COLOR") != 0)
