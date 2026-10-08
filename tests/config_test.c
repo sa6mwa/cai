@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <cai/config.h>
+#include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,6 +57,27 @@ static void reset(cai_error *error) {
   cai_error_cleanup(error);
   cai_error_init(error);
 }
+static void uncomment_assignments(char *text) {
+  char *read = text, *write = text, *end;
+  size_t length;
+  int newline;
+  while (*read) {
+    end = strchr(read, '\n');
+    if (end == NULL)
+      end = read + strlen(read);
+    newline = *end != '\0';
+    if (end - read >= 2 && read[0] == '#' && read[1] == ' ' &&
+        memchr(read, '=', (size_t)(end - read)) != NULL)
+      read += 2;
+    length = (size_t)(end - read);
+    memmove(write, read, length);
+    write += length;
+    read = newline ? end + 1 : end;
+    if (newline)
+      *write++ = '\n';
+  }
+  *write = '\0';
+}
 static int reject_write(void *context, const void *bytes, size_t count,
                         cai_error *error) {
   (void)context;
@@ -63,6 +85,38 @@ static int reject_write(void *context, const void *bytes, size_t count,
   (void)count;
   error->code = CAI_ERR_TRANSPORT;
   return CAI_ERR_TRANSPORT;
+}
+static void numeric_locale_test(void) {
+  cai_config *config;
+  cai_config_field field;
+  cai_error error;
+  cai_client_config client;
+  const char *locale = getenv("CAI_TEST_CONFIG_LOCALE");
+  assert(setlocale(LC_NUMERIC, locale) != NULL);
+  assert(strcmp(localeconv()->decimal_point, ",") == 0);
+  memset(&field, 0, sizeof(field));
+  field.section = "host";
+  field.key = "amount";
+  field.type = CAI_CONFIG_REAL;
+  field.default_value = "1.5";
+  cai_error_init(&error);
+  assert(cai_config_open(&field, 1U, &config, &error) == CAI_OK);
+  assert(load(config, "[client_limits]\nmax_spend_usd=1.5\n", 1U, 0, &error) ==
+         CAI_OK);
+  assert(config->get_real(config, "client_limits", "max_spend_usd", 0.0) ==
+         1.5);
+  cai_client_config_init(&client);
+  assert(config->apply_client(config, &client, &error) == CAI_OK);
+  assert(client.usage_limits.max_spend_usd == 1.5);
+  assert(config->set(config, "client_limits", "max_spend_usd", "1,5", &error) ==
+         CAI_ERR_INVALID);
+  reset(&error);
+  assert(setlocale(LC_NUMERIC, "C") != NULL);
+  assert(config->get_real(config, "client_limits", "max_spend_usd", 0.0) ==
+         1.5);
+  assert(strcmp(localeconv()->decimal_point, ".") == 0);
+  config->close(config);
+  cai_error_cleanup(&error);
 }
 int main(int argc, char **argv) {
   cai_config *config, *again;
@@ -80,9 +134,11 @@ int main(int argc, char **argv) {
   const char *const *list;
   struct stat status;
   cai_config_field field;
+  cai_config_field selected_fields[2];
   cai_sink_callbacks rejected;
   pid_t children[3];
   int result;
+  mode_t mask;
   static const char valid[] =
       "config_env_has_precedence = false\r\n[client]\nprovider=berget\n"
       "timeout_ms=987\napi_protocol=chat_completions\n[agent]\nmodel=custom-"
@@ -114,6 +170,10 @@ int main(int argc, char **argv) {
       "[response]\ncompact_threshold_percent=101",
       "[env]\nCAI_TEST_CONFIG_VALUE=one\nCAI_TEST_CONFIG_VALUE=two"};
   assert(argc == 2);
+  if (getenv("CAI_TEST_CONFIG_LOCALE") != NULL) {
+    numeric_locale_test();
+    return 0;
+  }
   cai_error_init(&error);
   assert(cai_config_open(NULL, 0U, &config, &error) == CAI_OK);
   for (i = 1U; i <= 16U; i *= 2U) {
@@ -159,6 +219,10 @@ int main(int argc, char **argv) {
   oversized[1024U * 1024U + 62U] = '\0';
   assert(load(config, oversized, 4096U, 0, &error) == CAI_ERR_INVALID);
   assert(strstr(error.message, "line exceeds limit") != NULL);
+  reset(&error);
+  assert(config->set(config, "agent", "model", oversized, &error) ==
+         CAI_ERR_INVALID);
+  assert(strcmp(config->get(config, "agent", "model"), "custom-model") == 0);
   free(oversized);
   reset(&error);
   assert(unsetenv("CAI_TEST_CONFIG_VALUE") == 0);
@@ -197,7 +261,9 @@ int main(int argc, char **argv) {
          again->get(again, "client", "provider") == NULL);
   snprintf(path, sizeof(path), "%s/config-private.ini", argv[1]);
   unlink(path);
+  mask = umask(0222);
   assert(config->create_template_file(config, path, &error) == CAI_OK);
+  umask(mask);
   assert(stat(path, &status) == 0 && (status.st_mode & 0777) == 0600);
   file = fopen(path, "wb");
   assert(file != NULL);
@@ -321,6 +387,90 @@ int main(int argc, char **argv) {
   field.default_value = "2147483648";
   assert(cai_config_open_schema(&field, 1U, &again, &error) == CAI_ERR_INVALID);
   reset(&error);
+  field.section = "runtime";
+  field.key = "event_queue_limit";
+  field.flags = CAI_CONFIG_SIGNED;
+  field.default_value = "-1";
+  assert(cai_config_open_schema(&field, 1U, &again, &error) == CAI_ERR_INVALID);
+  reset(&error);
+  field.default_value = NULL;
+  assert(cai_config_open_schema(&field, 1U, &again, &error) == CAI_OK);
+  assert(again->set(again, "runtime", "event_queue_limit", "-1", &error) ==
+         CAI_ERR_INVALID);
+  reset(&error);
+  again->close(again);
+  field.section = "client";
+  field.key = "api_protocol";
+  field.type = CAI_CONFIG_STRING;
+  field.flags = 0U;
+  field.choices = "responses|invented";
+  assert(cai_config_open_schema(&field, 1U, &again, &error) == CAI_ERR_INVALID);
+  reset(&error);
+  field.choices = NULL;
+  assert(cai_config_open_schema(&field, 1U, &again, &error) == CAI_OK);
+  assert(strcmp(again->field_at(again, 0U)->choices,
+                "responses|chat_completions") == 0);
+  assert(again->set(again, "client", "api_protocol", "invented", &error) ==
+         CAI_ERR_INVALID);
+  reset(&error);
+  again->close(again);
+  field.choices = "responses";
+  assert(cai_config_open_schema(&field, 1U, &again, &error) == CAI_OK);
+  assert(again->set(again, "client", "api_protocol", "chat_completions",
+                    &error) == CAI_ERR_INVALID);
+  reset(&error);
+  assert(again->set(again, "client", "api_protocol", "responses", &error) ==
+         CAI_OK);
+  again->close(again);
+  field.section = "";
+  field.key = "config_env_has_precedence";
+  field.choices = NULL;
+  assert(cai_config_open_schema(&field, 1U, &again, &error) == CAI_ERR_INVALID);
+  reset(&error);
+  field.section = "review";
+  field.key = "allowed_models";
+  field.type = CAI_CONFIG_BOOL;
+  assert(cai_config_open_schema(&field, 1U, &again, &error) == CAI_ERR_INVALID);
+  reset(&error);
+  field.section = "host";
+  field.key = "signed_value";
+  field.type = CAI_CONFIG_INTEGER;
+  field.flags = CAI_CONFIG_SIGNED;
+  field.default_value = "-5";
+  assert(cai_config_open_schema(&field, 1U, &again, &error) == CAI_OK);
+  assert(again->set(again, "host", "signed_value", "-10", &error) == CAI_OK);
+  assert(again->get_integer(again, "host", "signed_value", 0LL) == -10LL);
+  again->close(again);
+  field.flags = 8U;
+  field.default_value = NULL;
+  assert(cai_config_open_schema(&field, 1U, &again, &error) == CAI_ERR_INVALID);
+  reset(&error);
+  memset(selected_fields, 0, sizeof(selected_fields));
+  selected_fields[0].section = "host";
+  selected_fields[0].key = "demo";
+  selected_fields[0].type = CAI_CONFIG_STRING;
+  selected_fields[0].default_value = "value";
+  selected_fields[1].section = "";
+  selected_fields[1].key = "config_env_has_precedence";
+  selected_fields[1].type = CAI_CONFIG_BOOL;
+  selected_fields[1].default_value = "false";
+  assert(cai_config_open_schema(selected_fields, 2U, &again, &error) == CAI_OK);
+  file = tmpfile();
+  assert(file != NULL);
+  assert(cai_sink_file(file, 0, &sink, &error) == CAI_OK);
+  assert(again->write_template(again, sink, &error) == CAI_OK);
+  cai_sink_close(sink);
+  rewind(file);
+  n = fread(bytes, 1, sizeof(bytes) - 1U, file);
+  bytes[n] = '\0';
+  fclose(file);
+  assert(strstr(bytes, "# config_env_has_precedence") <
+         strstr(bytes, "[host]"));
+  uncomment_assignments(bytes);
+  assert(load(again, bytes, 1U, 0, &error) == CAI_OK);
+  assert(again->get_bool(again, "", "config_env_has_precedence", 1) == 0);
+  assert(strcmp(again->get(again, "host", "demo"), "value") == 0);
+  again->close(again);
   config->close(config);
   cai_error_cleanup(&error);
   return 0;

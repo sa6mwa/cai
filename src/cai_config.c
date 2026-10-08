@@ -1,3 +1,6 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "cai_internal.h"
 #include <cai/config.h>
 #include <cai/smith.h>
@@ -6,11 +9,15 @@
 #include <fcntl.h>
 #include <float.h>
 #include <limits.h>
+#include <locale.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__APPLE__) || defined(__FreeBSD__)
+#include <xlocale.h>
+#endif
 
 #define CONFIG_LINE_MAX (1024U * 1024U)
 #define CONFIG_ENTRY_MAX 8192U
@@ -53,6 +60,18 @@ static const config_binding bindings[] = {
 #include "cai_config_fields.inc"
 };
 #undef F
+static const cai_config_field globals[] = {
+    {"", "config_env_has_precedence", CAI_CONFIG_BOOL, "false",
+     "Config [env] replaces existing process variables when true.", NULL, 0U},
+    {"client", "provider", CAI_CONFIG_STRING, "openai",
+     "Provider preset; host supplies auth objects.",
+     "chatgpt|openai|openrouter|berget|custom", 0U},
+    {"review", "allowed_models", CAI_CONFIG_STRINGS, NULL,
+     "Permitted reviewer model overrides; repeat the key.", NULL, 0U},
+    {"review", "allowed_reasoning_efforts", CAI_CONFIG_STRINGS, NULL,
+     "Permitted reviewer effort overrides; repeat the key.", NULL, 0U},
+    {"review", "allowed_reasoning_summaries", CAI_CONFIG_STRINGS, NULL,
+     "Permitted reviewer summary overrides; repeat the key.", NULL, 0U}};
 
 typedef struct config_entry {
   char *section, *key;
@@ -75,6 +94,7 @@ typedef struct config_impl {
   config_entry *entries;
   size_t count;
   char *origin;
+  locale_t numeric_locale;
 } config_impl;
 #define IMPL(c) ((config_impl *)(c)->impl)
 
@@ -116,6 +136,8 @@ void cai_config_close(cai_config *self) {
     for (i = 0U; i < impl->field_count; i++)
       field_cleanup(&impl->fields[i]);
     cai_free_mem(NULL, impl->fields);
+    if (impl->numeric_locale != (locale_t)0)
+      freelocale(impl->numeric_locale);
     cai_free_mem(NULL, impl);
   }
   cai_free_mem(NULL, self);
@@ -149,10 +171,9 @@ static int name_valid(const char *name, int env) {
       return 0;
   return 1;
 }
-static int choice_valid(const char *choices, const char *value) {
+static int choice_contains(const char *choices, const char *value, size_t n) {
   const char *p, *end;
-  size_t n = strlen(value);
-  if (choices == NULL || value[0] == '\0')
+  if (choices == NULL)
     return 1;
   p = choices;
   while (*p) {
@@ -165,7 +186,24 @@ static int choice_valid(const char *choices, const char *value) {
   }
   return 0;
 }
-static int validate_value(const cai_config_field *field, const char *value) {
+static int choice_valid(const char *choices, const char *value) {
+  return value[0] == '\0' || choice_contains(choices, value, strlen(value));
+}
+static int choices_subset(const char *native, const char *choices) {
+  const char *p, *end;
+  if (native == NULL || choices == NULL)
+    return 1;
+  for (p = choices; *p; p = *end ? end + 1 : end) {
+    end = strchr(p, '|');
+    if (end == NULL)
+      end = p + strlen(p);
+    if (end == p || !choice_contains(native, p, (size_t)(end - p)))
+      return 0;
+  }
+  return *choices != '\0' && choices[strlen(choices) - 1U] != '|';
+}
+static int validate_value(const config_impl *impl,
+                          const cai_config_field *field, const char *value) {
   char *end;
   long long integer;
   double real;
@@ -192,7 +230,7 @@ static int validate_value(const cai_config_field *field, const char *value) {
     if (*value == '\0' || isspace((unsigned char)*value))
       return 0;
     errno = 0;
-    real = strtod(value, &end);
+    real = strtod_l(value, &end, impl->numeric_locale);
     return errno == 0 && *end == '\0' && isfinite(real) && real >= 0.0;
   }
   return 1;
@@ -201,11 +239,22 @@ static int binding_value_valid(const char *section, const char *key,
                                const char *value) {
   size_t i;
   long long n;
+  for (i = 0U; i < sizeof(globals) / sizeof(globals[0]); i++)
+    if (strcmp(globals[i].section, section) == 0 &&
+        strcmp(globals[i].key, key) == 0 &&
+        !choice_valid(globals[i].choices, value))
+      return 0;
   for (i = 0U; i < sizeof(bindings) / sizeof(bindings[0]); i++) {
     const config_binding *b = &bindings[i];
     if (strcmp(b->section, section) != 0 || strcmp(b->key, key) != 0)
       continue;
+    if (!choice_valid(b->choices, value))
+      return 0;
     n = strtoll(value, NULL, 10);
+    if ((b->storage == S_INT || b->storage == S_LONG || b->storage == S_UINT ||
+         b->storage == S_SIZE || b->storage == S_I64) &&
+        n < 0LL && (b->flags & CAI_CONFIG_SIGNED) == 0U)
+      return 0;
     if (b->storage == S_INT && n > INT_MAX)
       return 0;
     if (b->storage == S_LONG && n > LONG_MAX)
@@ -243,7 +292,10 @@ static int put_value(config_impl *impl, const char *section, const char *key,
   if (field == NULL)
     return config_error(error, impl->origin, line, section, key,
                         "unknown setting");
-  if (!validate_value(field, value) ||
+  if (strlen(value) > CONFIG_LINE_MAX)
+    return config_error(error, impl->origin, line, section, key,
+                        "configuration value exceeds limit");
+  if (!validate_value(impl, field, value) ||
       !binding_value_valid(section, key, value))
     return config_error(error, impl->origin, line, section, key,
                         "invalid value for declared type or allowed range");
@@ -337,7 +389,8 @@ long long cai_config_get_integer(const cai_config *self, const char *section,
 double cai_config_get_real(const cai_config *self, const char *section,
                            const char *key, double fallback) {
   const char *value = cai_config_get(self, section, key);
-  return value != NULL ? strtod(value, NULL) : fallback;
+  return value != NULL ? strtod_l(value, NULL, IMPL(self)->numeric_locale)
+                       : fallback;
 }
 static char *trim(char *text) {
   char *end;
@@ -449,6 +502,7 @@ int cai_config_load(cai_config *self, cai_source *source, const char *origin,
   memset(&line, 0, sizeof(line));
   next.fields = impl->fields;
   next.field_count = impl->field_count;
+  next.numeric_locale = impl->numeric_locale;
   next.origin = cai_strdup(NULL, origin != NULL ? origin : "configuration");
   section = cai_strdup(NULL, "");
   if (next.origin == NULL || section == NULL)
@@ -560,20 +614,39 @@ static int add_field(config_impl *impl, const cai_config_field *field,
   config_owned_field copy, *fields;
   size_t index, i;
   const char *inputs[5];
+  const char *native_choices = NULL;
   if (field->section == NULL || field->key == NULL ||
       !name_valid(field->key, 0) ||
       (field->section[0] != '\0' && !name_valid(field->section, 0)) ||
       strcmp(field->section, "env") == 0 || field->type < CAI_CONFIG_STRING ||
-      field->type > CAI_CONFIG_STRINGS)
+      field->type > CAI_CONFIG_STRINGS ||
+      (field->flags &
+       ~(CAI_CONFIG_PATH | CAI_CONFIG_SECRET | CAI_CONFIG_SIGNED)) != 0U ||
+      ((field->flags & CAI_CONFIG_PATH) != 0U &&
+       field->type != CAI_CONFIG_STRING) ||
+      ((field->flags & CAI_CONFIG_SIGNED) != 0U &&
+       field->type != CAI_CONFIG_INTEGER) ||
+      ((field->flags & CAI_CONFIG_SECRET) != 0U &&
+       field->type != CAI_CONFIG_STRING && field->type != CAI_CONFIG_STRINGS))
     return cai_set_error(error, CAI_ERR_INVALID,
                          "invalid configuration schema field");
   if (field->default_value != NULL &&
-      (!validate_value(field, field->default_value) ||
+      (!validate_value(impl, field, field->default_value) ||
        !binding_value_valid(field->section, field->key, field->default_value)))
     return cai_set_error(error, CAI_ERR_INVALID,
                          "invalid configuration template default");
   memset(&copy, 0, sizeof(copy));
   copy.field = *field;
+  for (i = 0U; i < sizeof(globals) / sizeof(globals[0]); i++) {
+    if (strcmp(field->section, globals[i].section) == 0 &&
+        strcmp(field->key, globals[i].key) == 0) {
+      if (field->type != globals[i].type)
+        return cai_set_error(
+            error, CAI_ERR_INVALID,
+            "configuration schema changes a standard field type");
+      native_choices = globals[i].choices;
+    }
+  }
   for (i = 0U; i < sizeof(bindings) / sizeof(bindings[0]); i++) {
     const config_binding *b = &bindings[i];
     if (strcmp(field->section, b->section) == 0 &&
@@ -582,14 +655,18 @@ static int add_field(config_impl *impl, const cai_config_field *field,
         return cai_set_error(
             error, CAI_ERR_INVALID,
             "configuration schema changes a standard field type");
-      copy.field.flags |= b->flags;
+      copy.field.flags = (copy.field.flags & ~CAI_CONFIG_SIGNED) | b->flags;
+      native_choices = b->choices;
     }
   }
+  if (!choices_subset(native_choices, field->choices))
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "configuration schema widens standard field choices");
   inputs[0] = field->section;
   inputs[1] = field->key;
   inputs[2] = field->default_value;
   inputs[3] = field->description;
-  inputs[4] = field->choices;
+  inputs[4] = field->choices != NULL ? field->choices : native_choices;
   for (index = 0U; index < 5U; index++) {
     copy.strings[index] = cai_strdup(NULL, inputs[index]);
     if (inputs[index] != NULL && copy.strings[index] == NULL) {
@@ -667,18 +744,6 @@ static int config_open(const cai_config_field *extensions, size_t count,
   const unsigned char *ptr;
   size_t i;
   int rc;
-  static const cai_config_field globals[] = {
-      {"", "config_env_has_precedence", CAI_CONFIG_BOOL, "false",
-       "Config [env] replaces existing process variables when true.", NULL, 0U},
-      {"client", "provider", CAI_CONFIG_STRING, "openai",
-       "Provider preset; host supplies auth objects.",
-       "chatgpt|openai|openrouter|berget|custom", 0U},
-      {"review", "allowed_models", CAI_CONFIG_STRINGS, NULL,
-       "Permitted reviewer model overrides; repeat the key.", NULL, 0U},
-      {"review", "allowed_reasoning_efforts", CAI_CONFIG_STRINGS, NULL,
-       "Permitted reviewer effort overrides; repeat the key.", NULL, 0U},
-      {"review", "allowed_reasoning_summaries", CAI_CONFIG_STRINGS, NULL,
-       "Permitted reviewer summary overrides; repeat the key.", NULL, 0U}};
   if (out == NULL || (count != 0U && extensions == NULL))
     return cai_set_error(error, CAI_ERR_INVALID,
                          "configuration output/schema required");
@@ -693,6 +758,12 @@ static int config_open(const cai_config_field *extensions, size_t count,
   memset(self, 0, sizeof(*self));
   memset(impl, 0, sizeof(*impl));
   self->impl = impl;
+  impl->numeric_locale = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
+  if (impl->numeric_locale == (locale_t)0) {
+    cai_config_close(self);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "create configuration numeric locale");
+  }
   self->field_count = cai_config_field_count;
   self->field_at = cai_config_field_at;
   self->load = cai_config_load;
@@ -815,7 +886,7 @@ int cai_config_write_template(const cai_config *self, cai_sink *sink,
                               cai_error *error) {
   const config_impl *impl;
   const char *section = "";
-  size_t i, j;
+  size_t i, j, pass;
   int rc;
   if (self == NULL || sink == NULL)
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -831,56 +902,62 @@ int cai_config_write_template(const cai_config *self, cai_sink *sink,
       "limit. Paths support ~/\n# and file-relative paths. Existing "
       "environment wins unless changed below.\n\n",
       error);
-  for (i = 0U; rc == CAI_OK && i < impl->field_count; i++) {
-    const cai_config_field *f = &impl->fields[i].field;
-    /* Group declarations by first occurrence of section, not table adjacency.
-     */
-    for (j = 0U; j < i; j++)
-      if (strcmp(impl->fields[j].field.section, f->section) == 0)
-        break;
-    if (j < i)
-      continue;
-    section = f->section;
-    if (section[0] != '\0') {
-      rc = write_literal(sink, "\n[", error);
-      if (rc == CAI_OK)
-        rc = write_literal(sink, section, error);
-      if (rc == CAI_OK)
-        rc = write_literal(sink, "]\n", error);
-    }
-    for (j = i; rc == CAI_OK && j < impl->field_count; j++) {
-      const cai_config_field *entry = &impl->fields[j].field;
-      const char *value = entry->default_value;
-      if (strcmp(entry->section, section) != 0)
+  /* Global assignments must precede every section regardless of schema order.
+   */
+  for (pass = 0U; rc == CAI_OK && pass < 2U; pass++) {
+    for (i = 0U; rc == CAI_OK && i < impl->field_count; i++) {
+      const cai_config_field *f = &impl->fields[i].field;
+      if ((f->section[0] == '\0') != (pass == 0U))
         continue;
-      rc = write_literal(sink, "# ", error);
-      if (rc == CAI_OK)
-        rc = write_comment(sink,
-                           entry->description != NULL ? entry->description
-                                                      : "Optional setting.",
-                           error);
-      if (rc == CAI_OK && entry->choices != NULL) {
-        rc = write_literal(sink, " Choices: ", error);
+      /* Group declarations by first occurrence of section, not table adjacency.
+       */
+      for (j = 0U; j < i; j++)
+        if (strcmp(impl->fields[j].field.section, f->section) == 0)
+          break;
+      if (j < i)
+        continue;
+      section = f->section;
+      if (section[0] != '\0') {
+        rc = write_literal(sink, "\n[", error);
         if (rc == CAI_OK)
-          rc = write_comment(sink, entry->choices, error);
+          rc = write_literal(sink, section, error);
+        if (rc == CAI_OK)
+          rc = write_literal(sink, "]\n", error);
       }
-      if (rc == CAI_OK)
-        rc = write_literal(sink, "\n# ", error);
-      if (rc == CAI_OK)
-        rc = write_literal(sink, entry->key, error);
-      if (rc == CAI_OK)
-        rc = write_literal(sink, " = ", error);
-      if ((entry->flags & CAI_CONFIG_SECRET) != 0U)
-        value = NULL;
-      if (rc == CAI_OK) {
-        if (value == NULL || entry->type == CAI_CONFIG_STRING ||
-            entry->type == CAI_CONFIG_STRINGS)
-          rc = write_quoted(sink, value != NULL ? value : "", error);
-        else
-          rc = write_literal(sink, value, error);
+      for (j = i; rc == CAI_OK && j < impl->field_count; j++) {
+        const cai_config_field *entry = &impl->fields[j].field;
+        const char *value = entry->default_value;
+        if (strcmp(entry->section, section) != 0)
+          continue;
+        rc = write_literal(sink, "# ", error);
+        if (rc == CAI_OK)
+          rc = write_comment(sink,
+                             entry->description != NULL ? entry->description
+                                                        : "Optional setting.",
+                             error);
+        if (rc == CAI_OK && entry->choices != NULL) {
+          rc = write_literal(sink, " Choices: ", error);
+          if (rc == CAI_OK)
+            rc = write_comment(sink, entry->choices, error);
+        }
+        if (rc == CAI_OK)
+          rc = write_literal(sink, "\n# ", error);
+        if (rc == CAI_OK)
+          rc = write_literal(sink, entry->key, error);
+        if (rc == CAI_OK)
+          rc = write_literal(sink, " = ", error);
+        if ((entry->flags & CAI_CONFIG_SECRET) != 0U)
+          value = NULL;
+        if (rc == CAI_OK) {
+          if (value == NULL || entry->type == CAI_CONFIG_STRING ||
+              entry->type == CAI_CONFIG_STRINGS)
+            rc = write_quoted(sink, value != NULL ? value : "", error);
+          else
+            rc = write_literal(sink, value, error);
+        }
+        if (rc == CAI_OK)
+          rc = write_literal(sink, "\n", error);
       }
-      if (rc == CAI_OK)
-        rc = write_literal(sink, "\n", error);
     }
   }
   if (rc == CAI_OK)
@@ -1059,7 +1136,7 @@ static int apply_record(const cai_config *self, config_target target, void *out,
       *(long long *)ptr = strtoll(value, NULL, 10);
       break;
     case S_REAL:
-      *(double *)ptr = strtod(value, NULL);
+      *(double *)ptr = strtod_l(value, NULL, IMPL(self)->numeric_locale);
       break;
     case S_PROTOCOL:
       *(cai_api_protocol *)ptr = strcmp(value, "responses") == 0
@@ -1135,7 +1212,7 @@ int cai_config_create_template_file(const cai_config *self, const char *path,
   FILE *file;
   cai_sink *sink = NULL;
   struct stat status;
-  int fd, rc, saved_errno;
+  int fd, rc, saved_errno, created;
   if (self == NULL || path == NULL || path[0] != '/')
     return cai_set_error(error, CAI_ERR_INVALID,
                          "absolute configuration filename required");
@@ -1158,10 +1235,16 @@ int cai_config_create_template_file(const cai_config *self, const char *path,
     if (old != '/' && old != '\0')
       continue;
     *p = '\0';
-    if (mkdir(directory, 0700) != 0 && errno != EEXIST) {
+    created = mkdir(directory, 0700) == 0;
+    if (!created && errno != EEXIST) {
       cai_free_mem(NULL, directory);
       return config_error(error, path, 0UL, "", NULL,
                           "create configuration parent directory");
+    }
+    if (created && chmod(directory, 0700) != 0) {
+      cai_free_mem(NULL, directory);
+      return config_error(error, path, 0UL, "", NULL,
+                          "set private configuration directory permissions");
     }
     if (stat(directory, &status) != 0 || !S_ISDIR(status.st_mode)) {
       cai_free_mem(NULL, directory);
@@ -1186,6 +1269,13 @@ int cai_config_create_template_file(const cai_config *self, const char *path,
     cai_free_mem(NULL, temporary);
     return config_error(error, path, 0UL, "", NULL,
                         "create private configuration template");
+  }
+  if (fchmod(fd, 0600) != 0) {
+    close(fd);
+    unlink(temporary);
+    cai_free_mem(NULL, temporary);
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "set private configuration file permissions");
   }
   file = fdopen(fd, "wb");
   if (file == NULL) {

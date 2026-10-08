@@ -436,9 +436,15 @@ receiver alive while its borrowed strings are used. Hosts select their own
 schema with `cai_config_open_schema`, or use `cai_config_open` for the complete
 SDK schema plus extensions. CAI selects only settings its application can
 honor, retaining its directory-scoped encrypted session storage policy.
+Numeric settings use a dot decimal separator regardless of the application's
+locale. Schema extensions retain native field types and constraints, and
+templates place globals before named sections. An explicit `--config-dir`
+remains anchored to its original location when a configured workspace changes
+the working directory.
 Lua exposes `cai.config()` with `load(text_or_chunk_reader, origin)`,
 `load_file`, typed getters, `set`, `resolve_path`, `apply_environment`,
-`write_template(chunk_writer)` and `create_template_file`.
+`write_template(chunk_writer)` and `create_template_file`. Lua configuration
+strings reject embedded NUL bytes instead of silently truncating them.
 
 Chrome control through the official ChatGPT extension is opt-in:
 `cai --chrome-setup` registers cai's own native host, then `cai --chrome`

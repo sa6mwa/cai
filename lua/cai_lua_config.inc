@@ -3,6 +3,14 @@ typedef struct cai_lua_config_handle {
   cai_config *ptr;
   int busy;
 } cai_lua_config_handle;
+static const char *cai_lua_config_string(lua_State *L, int index) {
+  size_t size;
+  const char *value = luaL_checklstring(L, index, &size);
+  if (memchr(value, '\0', size) != NULL)
+    luaL_argerror(L, index,
+                  "embedded NUL is not supported in configuration strings");
+  return value;
+}
 static cai_config *cai_lua_config_check(lua_State *L) {
   cai_lua_config_handle *handle = luaL_checkudata(L, 1, CAI_LUA_CONFIG);
   if (handle->ptr == NULL)
@@ -38,7 +46,8 @@ static int cai_lua_config_new(lua_State *L) {
 static int cai_lua_config_load(lua_State *L) {
   cai_config *self = cai_lua_config_check(L);
   cai_lua_config_handle *handle = luaL_checkudata(L, 1, CAI_LUA_CONFIG);
-  const char *origin = luaL_optstring(L, 3, "configuration");
+  const char *origin =
+      lua_isnoneornil(L, 3) ? "configuration" : cai_lua_config_string(L, 3);
   cai_lua_source_ctx context;
   cai_source *source = NULL;
   cai_error error;
@@ -78,15 +87,20 @@ static int cai_lua_config_template(lua_State *L) {
   if (context.callback_ref != 0)
     luaL_unref(L, LUA_REGISTRYINDEX, context.callback_ref);
   lua_settop(L, top);
-  if (rc != CAI_OK)
+  if (rc != CAI_OK) {
+    if (error.message == NULL)
+      cai_lua_set_error(
+          &error, rc, "configuration template output failed or was cancelled");
     return cai_lua_fail(L, rc, &error);
+  }
   cai_lua_error_cleanup(&error);
   lua_pushboolean(L, 1);
   return 1;
 }
 static int cai_lua_config_path(lua_State *L) {
   cai_config *self = cai_lua_config_check(L);
-  const char *section = luaL_checkstring(L, 2), *key = luaL_checkstring(L, 3);
+  const char *section = cai_lua_config_string(L, 2),
+             *key = cai_lua_config_string(L, 3);
   const char *path = NULL;
   cai_error error;
   int rc;
@@ -102,7 +116,7 @@ static int cai_lua_config_load_file(lua_State *L) {
   cai_config *self = cai_lua_config_check(L);
   cai_error error;
   int rc;
-  const char *path = luaL_checkstring(L, 2);
+  const char *path = cai_lua_config_string(L, 2);
   cai_error_init(&error);
   rc = self->load_file(self, path, &error);
   if (rc != CAI_OK)
@@ -114,19 +128,21 @@ static int cai_lua_config_load_file(lua_State *L) {
 static int cai_lua_config_get(lua_State *L) {
   cai_config *self = cai_lua_config_check(L);
   const char *value =
-      self->get(self, luaL_checkstring(L, 2), luaL_checkstring(L, 3));
+      self->get(self, cai_lua_config_string(L, 2), cai_lua_config_string(L, 3));
   lua_pushstring(L, value);
   return 1;
 }
 static int cai_lua_config_bool(lua_State *L) {
   cai_config *self = cai_lua_config_check(L);
-  const char *section = luaL_checkstring(L, 2), *key = luaL_checkstring(L, 3);
+  const char *section = cai_lua_config_string(L, 2),
+             *key = cai_lua_config_string(L, 3);
   lua_pushboolean(L, self->get_bool(self, section, key, lua_toboolean(L, 4)));
   return 1;
 }
 static int cai_lua_config_integer(lua_State *L) {
   cai_config *self = cai_lua_config_check(L);
-  const char *section = luaL_checkstring(L, 2), *key = luaL_checkstring(L, 3);
+  const char *section = cai_lua_config_string(L, 2),
+             *key = cai_lua_config_string(L, 3);
   lua_pushinteger(
       L, (lua_Integer)self->get_integer(self, section, key,
                                         (long long)luaL_optinteger(L, 4, 0)));
@@ -134,14 +150,16 @@ static int cai_lua_config_integer(lua_State *L) {
 }
 static int cai_lua_config_real(lua_State *L) {
   cai_config *self = cai_lua_config_check(L);
-  const char *section = luaL_checkstring(L, 2), *key = luaL_checkstring(L, 3);
+  const char *section = cai_lua_config_string(L, 2),
+             *key = cai_lua_config_string(L, 3);
   lua_pushnumber(L,
                  self->get_real(self, section, key, luaL_optnumber(L, 4, 0)));
   return 1;
 }
 static int cai_lua_config_list(lua_State *L) {
   cai_config *self = cai_lua_config_check(L);
-  const char *section = luaL_checkstring(L, 2), *key = luaL_checkstring(L, 3);
+  const char *section = cai_lua_config_string(L, 2),
+             *key = cai_lua_config_string(L, 3);
   const char *const *values;
   size_t count, i;
   values = self->get_list(self, section, key, &count);
@@ -154,12 +172,12 @@ static int cai_lua_config_list(lua_State *L) {
 }
 static int cai_lua_config_set(lua_State *L) {
   cai_config *self = cai_lua_config_check(L);
-  const char *section = luaL_checkstring(L, 2), *key = luaL_checkstring(L, 3),
-             *value;
+  const char *section = cai_lua_config_string(L, 2),
+             *key = cai_lua_config_string(L, 3), *value;
   cai_error error;
   int rc;
   value = lua_isboolean(L, 4) ? (lua_toboolean(L, 4) ? "true" : "false")
-                              : luaL_checkstring(L, 4);
+                              : cai_lua_config_string(L, 4);
   cai_error_init(&error);
   rc = self->set(self, section, key, value, &error);
   if (rc != CAI_OK)
@@ -182,7 +200,7 @@ static int cai_lua_config_environment(lua_State *L) {
 }
 static int cai_lua_config_template_file(lua_State *L) {
   cai_config *self = cai_lua_config_check(L);
-  const char *path = luaL_checkstring(L, 2);
+  const char *path = cai_lua_config_string(L, 2);
   cai_error error;
   int rc;
   cai_error_init(&error);

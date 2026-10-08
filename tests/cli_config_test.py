@@ -58,6 +58,8 @@ def main():
             assert '# model = "gpt-6-luna"' in template and '[env]' in template
             assert '# config_env_has_precedence = false' in template
             assert '[response]' not in template and '[session_limits]' not in template
+            assert 'Choices: smith|smith-review' not in template
+            assert '# preset = "smith"' in template
             assert all(not line.strip() or line.startswith('#') or line.startswith('[')
                        for line in template.splitlines()), template
             path.write_text(contents())
@@ -118,6 +120,7 @@ def main():
                         '[env]\nCAI_API_KEY="config-key-secret\n',
                         '[client]\ntimeout_ms=-9\n',
                         '[client]\nprovider=""\n',
+                        '[agent]\npreset=smith-review\n',
                         '[response]\nmax_output_tokens=100\n',
                         '[runtime]\nrecord_transcript=false\n'):
                 path.write_text(bad)
@@ -167,6 +170,26 @@ def main():
             result = run(['--config-dir', str(custom_dir), '--list'])
             assert result.returncode == 0, result.stderr
             assert (custom_dir / 'config.ini').exists()
+            # Explicit relative --config-dir remains anchored to the directory
+            # in which it selected config.ini, even if that file changes cwd.
+            anchored = root / 'anchored-config'
+            anchored.mkdir()
+            (anchored / 'config.ini').write_text(contents() + '[paths]\ndirectory = "../work"\n')
+            (anchored / 'AGENTS.md').write_text('Follow REVIEW_CONFIG_ROOT_SENTINEL.\n')
+            api.plan = ['AnchoredInstructions']
+            result = subprocess.run([str(cli), '--config-dir', 'anchored-config', '-Nni', 'anchored instructions'],
+                                    cwd=root, env=env, capture_output=True, text=True, timeout=12)
+            assert result.returncode == 0, result.stderr
+            assert 'REVIEW_CONFIG_ROOT_SENTINEL' in json.dumps(api.requests[-1])
+            # Restrictive umask must not make new configuration directories or
+            # templates unusable; existing directories are left as they are.
+            strict = root / 'strict-config' / 'cai' / 'config.ini'
+            result = subprocess.run(['/bin/sh', '-c', 'umask 222; exec "$@"', 'config-test',
+                                     *args, '--config', str(strict), '--list'],
+                                    env=env, capture_output=True, text=True, timeout=12)
+            assert result.returncode == 0, result.stderr
+            assert stat.S_IMODE(strict.stat().st_mode) == 0o600
+            assert stat.S_IMODE(strict.parent.stat().st_mode) == 0o700
             result = run(['--no-config', '--config', str(alternate), '--list'])
             assert result.returncode == 2 and 'mutually exclusive' in result.stderr
         finally:

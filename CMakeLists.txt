@@ -1298,6 +1298,19 @@ if(CAI_BUILD_TESTS)
   target_compile_options(cai_config_test PRIVATE -UNDEBUG)
   add_test(NAME cai_config_test COMMAND cai_config_test "${CMAKE_CURRENT_BINARY_DIR}")
   set_tests_properties(cai_config_test PROPERTIES LABELS "unit;local" TIMEOUT 20)
+  find_program(CAI_LOCALEDEF NAMES localedef)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux"
+      AND CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR
+      AND CAI_TARGET_ID MATCHES "-linux-gnu$"
+      AND CAI_LOCALEDEF AND EXISTS "/usr/share/i18n/locales/sv_SE"
+      AND EXISTS "/usr/share/i18n/charmaps/UTF-8.gz")
+    add_test(NAME cai_config_numeric_locale
+      COMMAND "${CMAKE_COMMAND}" "-DCAI_CONFIG_TEST=$<TARGET_FILE:cai_config_test>"
+        "-DCAI_TEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        "-DCAI_LOCALEDEF=${CAI_LOCALEDEF}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/config_locale_test.cmake")
+    set_tests_properties(cai_config_numeric_locale PROPERTIES LABELS "unit;local" TIMEOUT 20)
+  endif()
   add_executable(cai_tests tests/test_main.c)
     target_include_directories(cai_tests PRIVATE
     "${CAI_PUBLIC_INCLUDE_DIR}"

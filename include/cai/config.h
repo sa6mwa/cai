@@ -25,7 +25,10 @@ typedef enum cai_config_type {
  * NULL default_value means optional/inherited; choices uses | separators.
  * Path values resolve ~ and file-relative paths only when resolved explicitly.
  * Integer defaults and values must fit signed 64-bit; unsigned fields reject
- * negatives. Secret values are never included in diagnostics or templates. */
+ * negatives. Real numbers use a dot decimal separator independently of the
+ * application's numeric locale. Native field types, choices and ranges
+ * remain enforced in extended/selected schemas. Secret values are never
+ * included in diagnostics or templates. */
 typedef struct cai_config_field {
   const char *section;
   const char *key;
@@ -80,7 +83,8 @@ struct cai_config {
 };
 
 /** Open with SDK schemas and optional host fields. An extension may override
- * a standard field's template default/description, retaining its type.
+ * a standard field's template default/description or narrow its choices,
+ * retaining its native type/range. NULL choices inherit native choices.
  * Empty open contains no explicit values. No configuration files are read. */
 int cai_config_open(const cai_config_field *extensions, size_t count,
                     cai_config **out, cai_error *error);
@@ -111,7 +115,8 @@ const char *cai_config_get(const cai_config *self, const char *section,
 const char *const *cai_config_get_list(const cai_config *self,
                                        const char *section, const char *key,
                                        size_t *count);
-/** Validated scalar replacement or list append; no environment changes. */
+/** Validated scalar replacement or list append; no environment changes.
+ * Values use the same 1 MiB bound as parsed configuration values. */
 int cai_config_set(cai_config *self, const char *section, const char *key,
                    const char *value, cai_error *error);
 /** Change only the documented template default, not an explicit setting. */
@@ -137,7 +142,8 @@ int cai_config_resolve_path(cai_config *self, const char *section,
  * environment mutation must be serialized by the embedding application. */
 int cai_config_apply_environment(const cai_config *self, cai_error *error);
 /** Emit documented sections and commented defaults, never explicit settings
- * or live environment/secret values. Caller owns sink. */
+ * or live environment/secret values. Globals precede sections even when
+ * declared later in the schema. Caller owns sink. */
 int cai_config_write_template(const cai_config *self, cai_sink *sink,
                               cai_error *error);
 /** Atomically create a missing absolute template filename, mode 0600,

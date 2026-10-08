@@ -138,7 +138,14 @@ static int open_schema(cai_config **out, cai_error *error) {
         strcmp(f->key, "turn_queue_limit") != 0 &&
         strcmp(f->key, "logger_disabled") != 0)
       continue;
-    selected[count++] = *f;
+    selected[count] = *f;
+    if (strcmp(f->section, "agent") == 0 && strcmp(f->key, "preset") == 0) {
+      selected[count].choices = "smith";
+      selected[count].default_value = "smith";
+      selected[count].description =
+          "Smith agent preset; --review selects isolated review mode.";
+    }
+    count++;
   }
   rc = cai_config_open_schema(selected, count, out, error);
   free(selected);
@@ -171,7 +178,8 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   cai_cli_options early, defaults;
   cai_config *cfg = NULL;
   const char *base, *value, *resolved;
-  char path[PATH_MAX], selected[PATH_MAX];
+  char selected[PATH_MAX];
+  char config_root[PATH_MAX];
   size_t i;
   int rc, n;
   *configuration = NULL;
@@ -182,6 +190,11 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   }
   if (early.directory != NULL && chdir(early.directory) != 0)
     return fail(error, early.directory, "cannot change workspace");
+  config_root[0] = '\0';
+  if (early.config_dir != NULL &&
+      absolute_path(config_root, sizeof(config_root), early.config_dir, error) <
+          0)
+    return -1;
   rc = open_schema(&cfg, error);
   if (rc < 0) {
     cai_config_close(cfg);
@@ -193,9 +206,7 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
       rc = absolute_path(selected, sizeof(selected), early.config_file, error);
     else {
       if (early.config_dir != NULL) {
-        if (absolute_path(path, sizeof(path), early.config_dir, error) < 0)
-          return -1;
-        n = snprintf(selected, sizeof(selected), "%s/config.ini", path);
+        n = snprintf(selected, sizeof(selected), "%s/config.ini", config_root);
       } else {
         base = getenv("XDG_CONFIG_HOME");
         if (base != NULL && base[0] == '/')
@@ -276,14 +287,16 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   rc = cai_cli_read_options(argc, argv, &defaults, options);
   if (rc <= 0)
     return rc;
+  if (config_root[0] != '\0') {
+    if (cfg->set(cfg, "paths", "config_dir", config_root, error) != CAI_OK)
+      return -1;
+    options->config_dir = cfg->get(cfg, "paths", "config_dir");
+  }
   if (early.directory == NULL && options->directory != NULL &&
       chdir(options->directory) != 0)
     return fail(error, options->directory,
                 "cannot change configured workspace");
   if (cai_cli_validate_options(options) < 0)
     return -1;
-  value = cai_config_get(cfg, "agent", "preset");
-  if (value != NULL && value[0] != '\0' && strcmp(value, "smith") != 0)
-    return fail(error, NULL, "use --review for isolated review mode");
   return 1;
 }

@@ -572,7 +572,10 @@ built-in defaults; CLI flags override configuration. Saved model and reasoning
 settings are restored on resume unless explicitly overridden by startup flags.
 Help and version do not create a configuration file. --config-dir DIR selects
 DIR/config.ini as well as the global instruction directory.
+An explicit --config-dir stays anchored to its original location when a
+configured workspace changes the working directory.
 .PP
+Numeric values use a dot decimal separator regardless of locale.
 Paths support ~/ and are relative to the configuration file. In [env], normal
 process variables (including empty values) take precedence by default. Set the
 global config_env_has_precedence = true to reverse that precedence. Environment
