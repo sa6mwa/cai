@@ -15,7 +15,7 @@ execute_process(
   ERROR_VARIABLE _cpkt_aflpp_error)
 if(NOT _cpkt_aflpp_result EQUAL 0)
   message(FATAL_ERROR
-    "failed to provision pinned native AFL++ instrumentation:\n"
+    "failed to inspect pinned native AFL++ instrumentation:\n"
     "${_cpkt_aflpp_error}")
 endif()
 

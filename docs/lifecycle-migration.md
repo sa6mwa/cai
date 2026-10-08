@@ -52,6 +52,9 @@ Lua staging requires its public headers and preserves existing staging when head
 enumeration fails.
 Toolchain discovery reads the exact status field. Missing optional Darwin tools
 omit that target; failed or malformed discovery stops target selection.
+Explicit build and source-smoke entrypoints prepare selected collections before
+configuration. CMake/try-compile and AFL++ discovery only inspect prepared tools;
+they never download or compile toolchains as a side effect.
 
 ## Removed controllers
 

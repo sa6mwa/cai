@@ -181,6 +181,8 @@ and `runtime:user_shell_finish(exit_code, duration_ms)`. libcai never executes
 these explicitly user-run commands itself.
 
 ```sh
+scripts/cpkt-toolchains.sh ensure x86_64-linux-gnu
+scripts/cpkt-toolchains.sh ensure x86_64-linux-musl
 cmake --preset libcai
 cmake --build --preset libcai
 cmake --preset cai
@@ -678,6 +680,11 @@ collectors cannot delay crash reporting; no host sysctl changes are required.
 The fuzz gate retains crashing or hanging inputs and fails when they are found.
 
 The verification tiers are split intentionally:
+
+Make/build entrypoints prepare their selected compiler collection. Direct CMake
+configuration and AFL++ `discover`/`env` only inspect prepared tools; missing tools
+fail with an explicit preparation command. Prepare fuzz tooling with
+`scripts/cpkt-aflpp.sh ensure` before configuring its preset directly.
 
 - Before committing any implementation slice, run `make format` and the
   relevant tests. `make finalize-slice` is the default local pre-commit path

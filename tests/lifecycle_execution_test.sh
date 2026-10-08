@@ -16,6 +16,11 @@ if [[ ${CAI_LIFECYCLE_FAIL:-} == "$1" && ( -z ${CAI_LIFECYCLE_FAIL_ARG:-} || ${C
 SH
 chmod +x "$scratch/bin/record"
 for command in cmake ctest make; do printf '#!/usr/bin/env bash\nexec "%s/bin/record" %s "$@"\n' "$scratch" "$command" >"$scratch/bin/$command"; chmod +x "$scratch/bin/$command"; done
+cat >"$scratch/bin/uname" <<'SH'
+#!/usr/bin/env bash
+case "$1" in -s) printf '%s\n' "${CAI_LIFECYCLE_SYSTEM:-Linux}" ;; -m) printf 'x86_64\n' ;; *) exit 2 ;; esac
+SH
+chmod +x "$scratch/bin/uname"
 for script in clean.sh test_release_from_source.sh package-verify.sh run_mcp_everything_service.sh fuzz.sh; do
   printf '#!/usr/bin/env bash\nexec "%s/bin/record" %s "$@"\n' "$scratch" "$script" >"$scratch/scripts/$script"; chmod +x "$scratch/scripts/$script"
 done
@@ -34,7 +39,18 @@ printf 'x86_64-linux-gnu\n'
 SH
 printf '#!/bin/sh\nprintf "http://127.0.0.1:3001/mcp\\n"\n' >"$scratch/scripts/devenv.sh"
 chmod +x "$scratch/scripts/"*.sh
-export PATH="$scratch/bin:$PATH" CAI_LIFECYCLE_LOG="$scratch/events" CAI_LIFECYCLE_TARGET_LOG="$scratch/targets"
+cat >"$scratch/scripts/cpkt-toolchains.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s %s\n' "$@" >>"$CAI_LIFECYCLE_PREP_LOG"
+[[ ${CAI_LIFECYCLE_FAIL:-} != tools ]] || exit 7
+SH
+cat >"$scratch/scripts/cpkt-aflpp.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'afl %s\n' "$*" >>"$CAI_LIFECYCLE_PREP_LOG"
+[[ ${CAI_LIFECYCLE_FAIL:-} != tools ]] || exit 7
+SH
+chmod +x "$scratch/scripts/"cpkt-*.sh
+export PATH="$scratch/bin:$PATH" CAI_LIFECYCLE_LOG="$scratch/events" CAI_LIFECYCLE_TARGET_LOG="$scratch/targets" CAI_LIFECYCLE_PREP_LOG="$scratch/preparation"
 export CAI_ENABLE_INTEGRATION_TESTS=0 CAI_MCP_INSPECTOR_E2E=0
 # Invalid actions/extra arguments do not provision targets or start producers.
 for arguments in 'unknown' 'prepare unexpected'; do
@@ -159,6 +175,26 @@ done
 : >"$CAI_LIFECYCLE_LOG"
 if CAI_LIFECYCLE_FAIL=targets run_make package-checksums; then exit 1; fi
 [[ ! -s "$CAI_LIFECYCLE_LOG" ]]
+# Preparation belongs before configure, selects one collection and stops on failure.
+for mode in debug cai aarch64-linux-musl-release fuzz; do
+  : >"$CAI_LIFECYCLE_LOG"; : >"$CAI_LIFECYCLE_PREP_LOG"
+  bash "$scratch/scripts/build.sh" "configure-$mode"
+  [[ $(wc -l <"$CAI_LIFECYCLE_PREP_LOG") == 1 ]]
+  case "$mode" in
+    debug) expected='ensure x86_64-linux-gnu' ;;
+    cai) expected='ensure x86_64-linux-musl' ;;
+    fuzz) expected='afl ensure' ;;
+    *) expected='ensure aarch64-linux-musl' ;;
+  esac
+  [[ $(cat "$CAI_LIFECYCLE_PREP_LOG") == "$expected" ]]
+  [[ $(wc -l <"$CAI_LIFECYCLE_LOG") == 1 ]]
+  : >"$CAI_LIFECYCLE_LOG"
+  if CAI_LIFECYCLE_FAIL=tools bash "$scratch/scripts/build.sh" "configure-$mode" >"$scratch/out" 2>"$scratch/err"; then exit 1; else [[ $? == 7 ]]; fi
+  [[ ! -s "$CAI_LIFECYCLE_LOG" ]]
+done
+: >"$CAI_LIFECYCLE_PREP_LOG"
+CAI_LIFECYCLE_SYSTEM=Darwin bash "$scratch/scripts/build.sh" configure-debug
+[[ ! -s "$CAI_LIFECYCLE_PREP_LOG" ]]
 : >"$CAI_LIFECYCLE_LOG"
 run_make package-checksums
 grep -q -- '-DCAI_TARGETS=x86_64-linux-gnu' "$CAI_LIFECYCLE_LOG"

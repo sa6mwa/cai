@@ -56,6 +56,7 @@ if [[ ! "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
   exit 1
 fi
 
+"$repo_root/scripts/cpkt-toolchains.sh" ensure x86_64-linux-gnu >/dev/null
 cmake -S "$source_root" -B "$build_root" -G Ninja \
   "-DCMAKE_TOOLCHAIN_FILE=$source_root/cmake/toolchains/linux-bootlin.cmake" \
   -DCPKT_TARGET_ID=x86_64-linux-gnu -DCAI_TARGET_ID=x86_64-linux-gnu \

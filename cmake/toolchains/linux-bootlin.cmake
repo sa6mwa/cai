@@ -12,14 +12,17 @@ if(NOT EXISTS "${_cpkt_toolchain_script}")
 endif()
 
 execute_process(
-  COMMAND "${_cpkt_toolchain_script}" ensure "${CPKT_TARGET_ID}"
+  COMMAND "${_cpkt_toolchain_script}" discover "${CPKT_TARGET_ID}"
   RESULT_VARIABLE _cpkt_toolchain_result
   OUTPUT_VARIABLE _cpkt_toolchain_description
   ERROR_VARIABLE _cpkt_toolchain_error)
 if(NOT _cpkt_toolchain_result EQUAL 0)
   message(FATAL_ERROR
-    "failed to provision pinned ${CPKT_TARGET_ID} toolchain:\n"
+    "failed to inspect pinned ${CPKT_TARGET_ID} toolchain:\n"
     "${_cpkt_toolchain_error}")
+endif()
+if(NOT _cpkt_toolchain_description MATCHES "(^|[\r\n])status=ready([\r\n]|$)")
+  message(FATAL_ERROR "Missing pinned ${CPKT_TARGET_ID} collection; prepare it with: ${_cpkt_toolchain_script} ensure ${CPKT_TARGET_ID}")
 endif()
 
 function(_cpkt_toolchain_value key out_var)

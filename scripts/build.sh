@@ -15,7 +15,15 @@ case "$mode" in
   debug|debug-cai|libcai|cai|debug-lua|debug-host-deps|release|x86_64-linux-gnu-release|x86_64-linux-musl-release|aarch64-linux-gnu-release|aarch64-linux-musl-release|armhf-linux-gnu-release|armhf-linux-musl-release|arm64-apple-darwin-release|asan|valgrind|coverage|integration|fuzz) ;;
   *) printf 'build: unknown preset %s; see CMakePresets.json\n' "$mode" >&2; exit 2 ;;
 esac
-[[ "$mode" != fuzz ]] || "$root/scripts/cpkt-aflpp.sh" ensure
+# Provision only at the explicit entrypoint; toolchain loading is read-only.
+case "$mode" in
+  fuzz) "$root/scripts/cpkt-aflpp.sh" ensure ;;
+  cai) "$root/scripts/cpkt-toolchains.sh" ensure x86_64-linux-musl >/dev/null ;;
+  *-linux-*-release) "$root/scripts/cpkt-toolchains.sh" ensure "${mode%-release}" >/dev/null ;;
+  arm64-apple-darwin-release) ;;
+  asan|release) "$root/scripts/cpkt-toolchains.sh" ensure x86_64-linux-gnu >/dev/null ;;
+  *) [[ "$(uname -s)" != Linux ]] || "$root/scripts/cpkt-toolchains.sh" ensure x86_64-linux-gnu >/dev/null ;;
+esac
 # Tool collections and compiler selection stay stable for the workspace. After
 # changing either, explicitly remove the affected owned build directory first.
 cmake --preset "$mode"
