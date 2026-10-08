@@ -25,6 +25,7 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(cli).parent) as root:
         env["PATH"] = str(root / "bin") + os.pathsep + env.get("PATH", "")
         env["XDG_STATE_HOME"] = str(root / ("state" if level is None else "debug-state"))
         env["HOME"] = str(root)
+        env["XDG_CONFIG_HOME"] = str(root / "config")
         if level:
             env["LOG_LEVEL"] = level
         proc = subprocess.Popen([cli, "--login"], stdin=subprocess.DEVNULL,

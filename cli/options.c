@@ -50,6 +50,8 @@ static void cai_cli_help(void) {
       "$XDG_DATA_HOME/cai/exports)\n",
       stdout);
   fputs("  -C, --directory DIR          Change to DIR before starting\n"
+        "      --config FILE            Select config.ini\n"
+        "      --no-config              Skip configuration and creation\n"
         "  -i, --instruction TEXT       Submit a prompt (repeatable)\n"
         "  -g, --goal TEXT              Start or replace a durable goal\n"
         "      --review                 Run one isolated review and exit\n"
@@ -125,22 +127,24 @@ static int cai_cli_one_of(const char *value, const char *const *values) {
   return 0;
 }
 
-int cai_cli_parse_options(int argc, char *const *argv,
-                          cai_cli_options *options) {
+int cai_cli_read_options(int argc, char *const *argv,
+                         const cai_cli_options *defaults,
+                         cai_cli_options *options) {
   static const char *const efforts[] = {"none",   "minimal", "low",
                                         "medium", "high",    "xhigh",
                                         "max",    "ultra",   NULL};
   static const char *const summaries[] = {"none", "auto", "concise", "detailed",
                                           NULL};
-  static const char *const providers[] = {"chatgpt", "openai", "openrouter",
-                                          "berget",  "custom", NULL};
   int i;
   size_t j;
 
   if (options == NULL) {
     return -1;
   }
-  cai_cli_options_init(options);
+  if (defaults != NULL)
+    *options = *defaults;
+  else
+    cai_cli_options_init(options);
   options->argc = argc;
   options->argv = argv;
   for (i = 1; i < argc; i++) {
@@ -150,6 +154,10 @@ int cai_cli_parse_options(int argc, char *const *argv,
     char short_flag[3];
 
     flag = argv[i];
+    if (strcmp(flag, "--no-config") == 0) {
+      options->no_config = 1;
+      continue;
+    }
     if (strcmp(flag, "--chrome") == 0) {
       options->chrome = 1;
       continue;
@@ -318,6 +326,8 @@ int cai_cli_parse_options(int argc, char *const *argv,
       field = &options->review_reasoning_summary;
     else if (strcmp(flag, "--agents-md") == 0)
       field = &options->agents_md;
+    else if (strcmp(flag, "--config") == 0)
+      field = &options->config_file;
     else if (strcmp(flag, "--config-dir") == 0)
       field = &options->config_dir;
     else if (strcmp(flag, "--skills-dir") == 0)
@@ -345,6 +355,8 @@ int cai_cli_parse_options(int argc, char *const *argv,
     }
     if (field == &options->model)
       options->model_explicit = 1;
+    if (field == &options->provider)
+      options->provider_explicit = 1;
     if (field == &options->reasoning_effort)
       options->reasoning_effort_explicit = 1;
     if (field == &options->reasoning_summary)
@@ -363,6 +375,18 @@ int cai_cli_parse_options(int argc, char *const *argv,
                            value);
       return -1;
     }
+  }
+  return 1;
+}
+
+int cai_cli_validate_options(cai_cli_options *options) {
+  static const char *const providers[] = {"chatgpt", "openai", "openrouter",
+                                          "berget",  "custom", NULL};
+
+  if (options->config_file != NULL && options->no_config) {
+    cai_cli_option_error(options,
+                         "--config and --no-config are mutually exclusive");
+    return -1;
   }
   if (options->chrome_manifest != NULL && !options->chrome_setup &&
       !options->chrome_remove) {
@@ -499,7 +523,8 @@ int cai_cli_parse_options(int argc, char *const *argv,
       options->import_file != NULL)
     return 1;
   if (strcmp(options->provider, "custom") == 0) {
-    if (options->endpoint == NULL || !options->model_explicit) {
+    if (options->endpoint == NULL ||
+        (!options->model_explicit && !options->model_configured)) {
       cai_cli_option_error(
           options, "%s",
           "cai: custom provider requires --endpoint and --model\n");
@@ -520,14 +545,21 @@ int cai_cli_parse_options(int argc, char *const *argv,
         "cai: --endpoint and --api-key-env require --provider custom\n");
     return -1;
   }
-  if (strcmp(options->provider, "openrouter") == 0 && !options->model_explicit)
+  if (strcmp(options->provider, "openrouter") == 0 &&
+      !options->model_explicit && !options->model_configured)
     options->model = CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES;
   if (strcmp(options->provider, "berget") == 0) {
-    if (!options->model_explicit)
+    if (!options->model_explicit && !options->model_configured)
       options->model = "zai-org/GLM-5.3-Flash";
     options->image_generation = 0;
   }
   return 1;
+}
+
+int cai_cli_parse_options(int argc, char *const *argv,
+                          cai_cli_options *options) {
+  int result = cai_cli_read_options(argc, argv, NULL, options);
+  return result > 0 ? cai_cli_validate_options(options) : result;
 }
 
 const char *cai_cli_instruction_at(const cai_cli_options *options,
@@ -569,8 +601,8 @@ const char *cai_cli_instruction_at(const cai_cli_options *options,
         strcmp(flag, "--review-reasoning-effort") == 0 ||
         strcmp(flag, "--review-reasoning-summary") == 0 ||
         strcmp(flag, "--agents-md") == 0 || strcmp(flag, "--config-dir") == 0 ||
-        strcmp(flag, "--skills-dir") == 0 || strcmp(flag, "--identity") == 0 ||
-        strcmp(flag, "-I") == 0 ||
+        strcmp(flag, "--config") == 0 || strcmp(flag, "--skills-dir") == 0 ||
+        strcmp(flag, "--identity") == 0 || strcmp(flag, "-I") == 0 ||
         strcmp(flag, "--developer-instructions") == 0;
     if (has_value && i + 1 < options->argc) {
       if (instruction && found++ == index)

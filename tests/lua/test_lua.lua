@@ -2705,4 +2705,55 @@ do
   assert(cai.AGENT_TOOL_ACTION_CHROME == 15)
 end
 
+-- The facade delegates INI parsing/environment policy to the shared C receiver.
+do
+  local config = assert_ok(cai.config())
+  assert_ok(config:set("agent", "model", "lua-config-model"))
+  assert_eq(config:get("agent", "model"), "lua-config-model", "config scalar")
+  assert_ok(config:set("", "config_env_has_precedence", true))
+  assert_eq(config:get_bool("", "config_env_has_precedence"), true, "config boolean")
+  assert_ok(config:set("client", "timeout_ms", 321))
+  assert_eq(config:get_integer("client", "timeout_ms"), 321, "config integer")
+  assert_ok(config:set("review", "allowed_models", "first"))
+  assert_ok(config:set("review", "allowed_models", "second"))
+  assert_eq(#config:get_list("review", "allowed_models"), 2, "config list")
+  local err = assert_not_ok(config:set("client", "timeout_ms", "secret-not-a-number"))
+  assert(not err.message:find("secret-not-a-number", 1, true), "config error leaked value")
+  assert_ok(config:apply_environment())
+  assert_ok(config:load('[client_limits]\nmax_spend_usd = 1.5\n[client]\nca_path = "certs"\n',
+    '/configuration/config.ini'))
+  assert_eq(config:get_real("client_limits", "max_spend_usd"), 1.5, "config real")
+  assert_eq(config:resolve_path("client", "ca_path"), "/configuration/certs", "relative path")
+  local pieces = {}
+  assert_ok(config:write_template(function(piece)
+    assert_throws(function() config:close() end, "callback cannot close config")
+    assert_throws(function() config:set("agent", "model", "busy") end, "callback cannot mutate config")
+    pieces[#pieces + 1] = piece
+    return true
+  end))
+  local template = table.concat(pieces)
+  assert(template:find('# config_env_has_precedence = false', 1, true))
+  assert_ok(config:load(template))
+  assert_eq(config:get("client", "provider"), nil, "template has no active defaults")
+  assert_not_ok(config:write_template(function() return false end))
+  local calls = 0
+  assert_ok(config:load(function()
+    assert_throws(function() config:close() end, "reader cannot close config")
+    calls = calls + 1
+    if calls == 1 then return "[agent]\nmodel = callback-model\n" end
+  end))
+  assert_eq(config:get("agent", "model"), "callback-model", "incremental Lua reader")
+  assert_not_ok(config:load(function() error("read failure") end))
+  assert_eq(config:get("agent", "model"), "callback-model", "failed reader preserves config")
+  local filename = assert(arg[1], "build scratch directory missing") .. "/lua-config.ini"
+  os.remove(filename)
+  assert_ok(config:create_template_file(filename))
+  assert_ok(config:load_file(filename))
+  assert_eq(config:get("agent", "model"), nil, "file template has no active defaults")
+  assert(os.remove(filename))
+  config:close()
+  config:close()
+  assert_throws(function() config:get("agent", "model") end, "closed config")
+end
+
 print("cai lua tests passed")

@@ -413,6 +413,33 @@ current directory, and exits. Failed imports never appear in the list.
 Existing cai JSONL files are not automatically migrated.
 MCP client configuration is planned for a later CLI release.
 
+CAI creates `${XDG_CONFIG_HOME:-$HOME/.config}/cai/config.ini` on first
+startup (help/version do not create it). The private file is the configuration
+reference: each supported setting includes its description and commented
+default. Uncomment a setting to select it explicitly. Existing files are
+never rewritten. `--config FILE` selects another file; `--no-config` skips
+creation and loading. `--config-dir DIR` also selects `DIR/config.ini`.
+Precedence is built-in defaults, configuration, then CLI options. Resuming
+restores the saved model and reasoning settings unless explicitly overridden
+by startup flags. Paths accept `~/` and are relative to the configuration file.
+The `[env]` section accepts literal environment assignments. Existing process
+variables, including empty ones, win unless the global
+`config_env_has_precedence = true` setting is uncommented. Environment values
+are applied before authentication, logging and worker startup; templates do
+not copy credentials or the current environment.
+
+The shared `<cai/config.h>` receiver provides incremental INI loading,
+schema validation, typed access, explicit environment/path handling, and
+`write_template`/`create_template_file`. Apply explicit fields to initialized
+client, low-level agent, runtime and terminal configuration records; keep the
+receiver alive while its borrowed strings are used. Hosts select their own
+schema with `cai_config_open_schema`, or use `cai_config_open` for the complete
+SDK schema plus extensions. CAI selects only settings its application can
+honor, retaining its directory-scoped encrypted session storage policy.
+Lua exposes `cai.config()` with `load(text_or_chunk_reader, origin)`,
+`load_file`, typed getters, `set`, `resolve_path`, `apply_environment`,
+`write_template(chunk_writer)` and `create_template_file`.
+
 Chrome control through the official ChatGPT extension is opt-in:
 `cai --chrome-setup` registers cai's own native host, then `cai --chrome`
 enables browser tools. Setup refuses conflicting registrations;

@@ -62,6 +62,7 @@ with tempfile.TemporaryDirectory(dir=pathlib.Path(cli).parent) as directory:
     env = {key: value for key, value in os.environ.items()
            if not key.startswith("LOG_")}
     env.update(HOME=str(root), XDG_STATE_HOME=str(root / "state"),
+               XDG_CONFIG_HOME=str(root / "config"),
                NO_PROXY="127.0.0.1", no_proxy="127.0.0.1")
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)

@@ -48,8 +48,8 @@ RELEASE_LUA_PACK_SOURCE_TARBALL := $(RELEASE_LUA_PACK_DIR)/cai-lua-$(RELEASE_VER
 RELEASE_LUA_PACK_ROCKSPEC := $(RELEASE_LUA_PACK_DIR)/cai-$(RELEASE_VERSION)-1.rockspec
 RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
 RELEASE_LIVE_GATE_STAMP ?= .cache/release-gates/prerelease-live.stamp
-LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh scripts/build_lua_rock.sh scripts/render_release_rockspec.sh lua/cai_lua.c lua/cai_lua.exports cai.rockspec.in README.md LICENSE docs/model-metadata.md $(shell find include/cai -type f -name '*.h' | sort)
-LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' \) | sort)
+LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh scripts/build_lua_rock.sh scripts/render_release_rockspec.sh lua/cai_lua.c lua/cai_lua_config.inc lua/cai_lua.exports cai.rockspec.in README.md LICENSE docs/model-metadata.md $(shell find include/cai -type f -name '*.h' | sort)
+LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' -o -name '*.inc' \) | sort)
 
 .PHONY: build-cli test-cli test-offline help deps-debug deps-release deps-cross build build-debug build-host build-release cross-build integration-build chatgpt-login test test-debug test-host test-release test-cross cross-test test-all test-e2e test-integration test-lua-smith-e2e test-smith-goal-e2e test-install-tree asan test-asan valgrind fuzz fuzz-smoke fuzz-long coverage test-coverage example-smoke-local example-smoke-live finalize-slice clangd-check prerelease release-pipeline prerelease-live require-prerelease-live require-clean-worktree prerelease-hardening lifecycle-version-contract lua-rock lua-env lua-test lua-runner release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify verify-release-archives verify-release-privacy release-matrix release devenv-check dev-up dev-down dev-reset dev-ps dev-logs searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test mcp-inspector-e2e format clean clean-dist
 
@@ -430,7 +430,7 @@ lua-test: lua-runner
 	bash tests/shared_export_policy_test.sh "$$nm_tool" "$$lua_module" lua/cai_lua.exports "$$platform"
 	eval "$$(luarocks path --tree $(LUA_ROCK_TREE))" && \
 	LUA_CPATH="$(ROOT)/build/debug-lua/lua-test/?.so;$(ROOT)/build/debug-lua/lua-test/?.dylib;$${LUA_CPATH:-}" \
-	build/debug-lua/cai_lua_runner tests/lua/test_lua.lua
+	build/debug-lua/cai_lua_runner tests/lua/test_lua.lua "$(ROOT)/build/debug-lua"
 	$(CMAKE) --build build/debug --target cai_mcp_http_server
 	eval "$$(luarocks path --tree $(LUA_ROCK_TREE))" && \
 	/bin/sh tests/lua_mcp_client_e2e.sh build/debug/cai_mcp_http_server build/debug-lua/cai_lua_runner tests/lua/e2e_mcp_client.lua

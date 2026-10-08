@@ -2,6 +2,7 @@
 #define _XOPEN_SOURCE 700
 
 #include "chrome.h"
+#include "config.h"
 #include "literal.h"
 #include "log.h"
 #include "login.h"
@@ -61,6 +62,7 @@ static int cli_cancel_editor(sl_t *sl, sl_key_t key, void *context,
 
 typedef struct cli_state {
   cai_cli_options options;
+  cai_config *configuration;
   cai_agent_session_store store;
   cai_cli_pouch pouch;
   cai_chatgpt_auth *auth;
@@ -1294,6 +1296,7 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   cai_agent_runtime_config config;
   cai_agent_preset preset;
   cai_skill_config skills;
+  cai_terminal_tool_config terminal;
   int wakeup_fd;
   int rc;
 
@@ -1315,6 +1318,16 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   }
   state->show_welcome = 1;
   cai_agent_runtime_config_init(&config);
+  if (state->configuration != NULL &&
+      state->configuration->apply_runtime(state->configuration, &config,
+                                          error) != CAI_OK)
+    return error->code;
+  memset(&terminal, 0, sizeof(terminal));
+  if (state->configuration != NULL &&
+      state->configuration->apply_terminal(state->configuration, &terminal,
+                                           error) != CAI_OK)
+    return error->code;
+  config.terminal_tool_config = &terminal;
   cai_agent_preset_from_smith(&preset);
   preset.default_model = state->options.model;
   preset.default_reasoning_effort = state->options.reasoning_effort;
@@ -1344,8 +1357,10 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   config.review_model = state->options.review_model;
   config.review_reasoning_effort = state->options.review_reasoning_effort;
   config.review_reasoning_summary = state->options.review_reasoning_summary;
-  config.agent_config_directory = state->options.config_dir;
-  config.global_agents_md_path = state->options.agents_md;
+  if (state->options.config_dir != NULL)
+    config.agent_config_directory = state->options.config_dir;
+  if (state->options.agents_md != NULL)
+    config.global_agents_md_path = state->options.agents_md;
   config.skills = state->options.skills_dir != NULL ? &skills : NULL;
   config.agent_identity = state->options.identity;
   config.developer_instructions_extension =
@@ -2378,11 +2393,14 @@ int main(int argc, char **argv) {
     result = rc == CAI_OK ? 0 : 1;
     goto cleanup;
   }
-  parsed = cai_cli_parse_options(argc, argv, &state.options);
+  parsed = cai_cli_configure(argc, argv, &state.options, &state.configuration,
+                             &error);
   if (parsed <= 0) {
     if (parsed < 0 &&
         cai_cli_log_open(&state.log, PSLOG_LEVEL_WARN, 0, &error) == CAI_OK)
-      cli_diagnostic(&state, PSLOG_LEVEL_ERROR, state.options.diagnostic);
+      cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
+                     error.message != NULL ? error.message
+                                           : state.options.diagnostic);
     result = parsed == 0 ? 0 : 2;
     goto cleanup;
   }
@@ -2392,16 +2410,6 @@ int main(int argc, char **argv) {
                  state.options.resume_list || state.options.export_id != NULL ||
                  state.options.import_file != NULL;
   default_log_level = utility_mode ? PSLOG_LEVEL_WARN : PSLOG_LEVEL_TRACE;
-  if (state.options.directory != NULL && chdir(state.options.directory) != 0) {
-    int change_error = errno;
-    pslog_field path = pslog_str("directory", state.options.directory);
-    if (cai_cli_log_open(&state.log, default_log_level, 0, &error) == CAI_OK)
-      cai_cli_log_message(state.log.logger, PSLOG_LEVEL_ERROR, "chdir",
-                          "diagnostic", strerror(change_error),
-                          strlen(strerror(change_error)), &path, 1U);
-    result = 2;
-    goto cleanup;
-  }
   if (cai_cli_log_open(&state.log, default_log_level,
                        !state.batch && !utility_mode, &error) != CAI_OK)
     goto cleanup;
@@ -2644,6 +2652,18 @@ int main(int argc, char **argv) {
     client_config.api_key_env = state.options.api_key_env;
   }
   client_config.metadata_provider = state.options.provider;
+  if (state.configuration != NULL &&
+      state.configuration->apply_client(state.configuration, &client_config,
+                                        &error) != CAI_OK) {
+    cli_print_error(&state, "apply client configuration", &error);
+    goto cleanup;
+  }
+  if (state.options.endpoint != NULL)
+    client_config.base_url = state.options.endpoint;
+  if (state.options.api_key_env != NULL)
+    client_config.api_key_env = state.options.api_key_env;
+  if (metadata_json != NULL)
+    client_config.model_metadata_json = metadata_json;
   rc = cai_client_open(&client_config, &state.client, &error);
   if (rc != CAI_OK) {
     cli_print_error(&state, "open client", &error);
@@ -2842,6 +2862,7 @@ cleanup:
   free(state.sessions);
   free(state.review_report);
   free(metadata_json);
+  cai_config_close(state.configuration);
   cai_error_cleanup(&error);
   if (cai_cli_log_close(&state.log) != 0)
     result = 1;

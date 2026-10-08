@@ -146,6 +146,8 @@ class ResponsePeer(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers["Content-Length"])
+        if hasattr(self.server, "headers"):
+            self.server.headers.append(dict(self.headers))
         self.server.requests.append(json.loads(self.rfile.read(length)))
         if self.server.plan and self.server.plan[0] == "__transport_failure__":
             self.server.plan.pop(0)

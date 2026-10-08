@@ -5,6 +5,9 @@
 
 typedef struct cai_cli_options {
   const char *provider;
+  const char *config_file;
+  int no_config;
+  int model_configured;
   const char *chrome_socket;
   const char *chrome_manifest;
   int chrome;
@@ -19,6 +22,7 @@ typedef struct cai_cli_options {
   const char *reasoning_effort;
   const char *reasoning_summary;
   int model_explicit;
+  int provider_explicit;
   int reasoning_effort_explicit;
   int reasoning_summary_explicit;
   const char *review_model;
@@ -63,6 +67,10 @@ void cai_cli_options_init(cai_cli_options *options);
 /* Returns 1 to start, 0 for help/version, -1 for an invalid command line. */
 int cai_cli_parse_options(int argc, char *const *argv,
                           cai_cli_options *options);
+int cai_cli_read_options(int argc, char *const *argv,
+                         const cai_cli_options *defaults,
+                         cai_cli_options *options);
+int cai_cli_validate_options(cai_cli_options *options);
 const char *cai_cli_instruction_at(const cai_cli_options *options,
                                    size_t index);
 

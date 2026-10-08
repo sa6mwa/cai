@@ -1,6 +1,7 @@
 #include <cai/agent_runtime.h>
 #include <cai/auth.h>
 #include <cai/cai.h>
+#include <cai/config.h>
 #include <cai/display.h>
 #include <cai/mcp.h>
 #include <cai/smith.h>
@@ -11850,6 +11851,8 @@ static const luaL_Reg cai_lua_conversation_params_methods[] = {
     {"close", cai_lua_conversation_params_close},
     {NULL, NULL}};
 
+#include "cai_lua_config.inc"
+
 static void cai_lua_metatable(lua_State *L, const char *name,
                               const luaL_Reg *methods, lua_CFunction gc) {
   luaL_newmetatable(L, name);
@@ -11872,6 +11875,8 @@ int luaopen_cai(lua_State *L) {
     lua_pushinteger(L, (lua_Integer)(value));                                  \
     lua_setfield(L, -2, (name));                                               \
   } while (0)
+  cai_lua_metatable(L, CAI_LUA_CONFIG, cai_lua_config_methods,
+                    cai_lua_config_close);
   cai_lua_metatable(L, CAI_LUA_CLIENT, cai_lua_client_methods,
                     cai_lua_client_gc);
   cai_lua_metatable(L, "cai.tool_display", cai_lua_display_methods,
@@ -11917,6 +11922,8 @@ int luaopen_cai(lua_State *L) {
   lua_newtable(L);
   lua_pushcfunction(L, cai_lua_open);
   lua_setfield(L, -2, "open");
+  lua_pushcfunction(L, cai_lua_config_new);
+  lua_setfield(L, -2, "config");
   lua_pushcfunction(L, cai_lua_patch_render);
   lua_setfield(L, -2, "patch_render");
   lua_pushcfunction(L, cai_lua_display_new);

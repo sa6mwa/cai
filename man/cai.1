@@ -28,6 +28,14 @@ Use
 to start a new session.
 .SH OPTIONS
 .TP
+.BI \-\-config " FILE"
+Load another INI configuration file, creating a documented, commented template
+if it is missing. Defaults to $XDG_CONFIG_HOME/cai/config.ini, or
+~/.config/cai/config.ini. Existing files are never rewritten.
+.TP
+.B \-\-no-config
+Skip configuration loading and template creation. Incompatible with --config.
+.TP
 .B \-\-chrome
 Enable Chrome browser tools through the installed ChatGPT extension and CAI's
 native messaging host. Does not install or change a host registration.
@@ -557,9 +565,23 @@ Default cai global instructions when
 .B XDG_CONFIG_HOME
 is set; otherwise
 .IR ~/.config/cai/AGENTS.md .
+.SH CONFIGURATION
+The generated template documents all supported settings with commented defaults.
+Uncomment an assignment to select it explicitly. Configuration overrides
+built-in defaults; CLI flags override configuration. Saved model and reasoning
+settings are restored on resume unless explicitly overridden by startup flags.
+Help and version do not create a configuration file. --config-dir DIR selects
+DIR/config.ini as well as the global instruction directory.
+.PP
+Paths support ~/ and are relative to the configuration file. In [env], normal
+process variables (including empty values) take precedence by default. Set the
+global config_env_has_precedence = true to reverse that precedence. Environment
+assignments are literal and apply before authentication, logging and workers.
+Generated files are private, mode 0600, and never copy live credentials.
 .SH EXIT STATUS
 Returns zero after a normal exit, a completed non-interactive goal, or a
-successful review. Returns two for invalid command-line arguments and one for
+successful review. Returns two for invalid command-line arguments or
+configuration and one for
 startup, runtime, review, or stopped-goal failure.
 Provider failures show the available HTTP status, provider code, request ID,
 and diagnostic detail. Non-interactive errors are written to standard error.
