@@ -60,18 +60,21 @@ bad() { [[ "$rc" != 0 ]] || fail 'CLI unexpectedly succeeded'; }
 stdout_text() { sed 's/^[[:space:]]*//;s/[[:space:]]*$//' "$root/stdout"; }
 terminal_launch() {
   send_offset=0
+  send_feed_offset=0
   term="$root/terminal-${terminal_sequence:-0}"
   terminal_sequence=$((${terminal_sequence:-0}+1))
   mkdir -p "$term"; mkfifo "$term/input"; exec 7<>"$term/input"
   "$CAI_TERMINAL_PEER" "$term" "${width:-120}" "${base[@]}" "$@" <"$term/input" & terminal_pid=$!
 }
 terminal_start() { terminal_launch "$@"; wait_for has "$term/text" 'Welcome to CAI'; }
-send() { send_offset=$(wc -c <"$term/text"); printf '%b' "$1" >&7; }
+send() { send_offset=$(wc -c <"$term/text"); send_feed_offset=$(wc -c <"$term/feed"); printf '%b' "$1" >&7; }
 has_since() {
   tail -c +$(($1+1)) "$term/text" | tr '\n\r\t' '   ' |
+    sed 's/[[:space:]][[:space:]]*/ /g' | grep -F -- "$2" >/dev/null ||
+    tail -c +$((${3:-0}+1)) "$term/feed" | tr '\n\r\t' '   ' |
     sed 's/[[:space:]][[:space:]]*/ /g' | grep -F -- "$2" >/dev/null
 }
-expect() { wait_for has_since "${send_offset:-0}" "$1"; }
+expect() { wait_for has_since "${send_offset:-0}" "$1" "${send_feed_offset:-0}"; }
 expect_prompt() { wait_for has "$term/prompt" "$1"; }
 assistant_logged() {
   logs
@@ -87,12 +90,15 @@ expect_assistant() {
   wait_for assistant_logged "$1"
 }
 turn_finished() {
+  tail -c +$((${3:-0}+1)) "$term/feed" | tr '\n\r\t' '   ' |
+    sed 's/[[:space:]][[:space:]]*/ /g' | grep -F -- "$2" >/dev/null || return 1
   tail -c +$(($1+1)) "$term/text" | awk -v marker="$2" '
-    !seen {position=index($0,marker); if(position) {seen=1; $0=substr($0,position+length(marker))}}
-    seen && index($0,"Worked for") {done=1}
+    BEGIN {count=split(marker,words,/[[:space:]]+/); word=1}
+    {while(word<=count) {position=index($0,words[word]); if(!position) break; $0=substr($0,position+length(words[word])); word++}}
+    word>count && index($0,"Worked for") {done=1}
     END {exit !done}'
 }
-expect_turn() { wait_for turn_finished "$1" "$2"; }
+expect_turn() { wait_for turn_finished "$1" "$2" "${send_feed_offset:-0}"; }
 prompt() { local offset=$(wc -c <"$term/text"); send "$1\r"; expect_turn "$offset" "$2"; }
 resize() { printf '%s\n' "$1" >"$term/width"; kill -USR1 "$terminal_pid"; }
 terminal_close() {

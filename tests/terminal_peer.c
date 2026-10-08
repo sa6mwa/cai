@@ -81,12 +81,13 @@ static void prompt_control(const char *csi, char *prompt, size_t capacity,
 }
 
 int main(int argc, char **argv) {
-  int master, slave, raw, text, diagnostics, status_fd, status, state = 0;
+  int master, slave, raw, text, feed, diagnostics, status_fd, status, state = 0;
   int alive = 1, input = 1, control, foreground, width;
   pid_t child;
-  char path[4096], state_path[4096], data[8192], plain[8192], *name;
+  char path[4096], state_path[4096], data[8192], plain[8192], feed_bytes[8192],
+      *name;
   ssize_t count;
-  size_t i, used;
+  size_t i, used, feed_used;
   fd_set reads;
   struct timeval timeout;
   struct winsize window;
@@ -129,6 +130,7 @@ int main(int argc, char **argv) {
   } while (0)
   OPEN_FILE(raw, "raw");
   OPEN_FILE(text, "text");
+  OPEN_FILE(feed, "feed");
   OPEN_FILE(diagnostics, "stderr");
   child = fork();
   if (child < 0)
@@ -144,6 +146,7 @@ int main(int argc, char **argv) {
       close(slave);
     close(raw);
     close(text);
+    close(feed);
     close(diagnostics);
     execvp(argv[3], argv + 3);
     perror(argv[3]);
@@ -191,6 +194,7 @@ int main(int argc, char **argv) {
       if (write_all(raw, data, (size_t)count))
         break;
       used = 0;
+      feed_used = 0U;
       for (i = 0; i < (size_t)count; i++) {
         unsigned char ch = (unsigned char)data[i];
         if (state == 1) {
@@ -223,6 +227,11 @@ int main(int argc, char **argv) {
         if (ch == 27)
           state = 1;
         else {
+          /* Softline's explicit scroll region owns feed output. Sticky and
+           * input rows are separate even when writes interleave mid-word. */
+          if (ch != '\r' && scroll_bottom < window.ws_row &&
+              cursor_row <= scroll_bottom)
+            feed_bytes[feed_used++] = (char)ch;
           if (ch == '\r')
             cursor_column = 1;
           else if (ch == '\n') {
@@ -243,6 +252,8 @@ int main(int argc, char **argv) {
         }
       }
       if (write_all(text, plain, used))
+        break;
+      if (write_all(feed, feed_bytes, feed_used))
         break;
       snprintf(path, sizeof(path), "%s/prompt.tmp", argv[1]);
       settings = fopen(path, "w");
@@ -280,6 +291,7 @@ int main(int argc, char **argv) {
   close(master);
   close(raw);
   close(text);
+  close(feed);
   while (waitpid(child, &status, 0) < 0) {
     if (errno != EINTR)
       return 2;

@@ -4,7 +4,7 @@ set -euo pipefail
 peer=$1
 scratch=$(mktemp -d "${TMPDIR:-$(dirname "$peer")}/terminal-peer.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
-mkdir "$scratch/preserve" "$scratch/erase"
+mkdir "$scratch/preserve" "$scratch/erase" "$scratch/feed"
 cat >"$scratch/preserve.sh" <<'SH'
 printf '\033[1;27r\033[65535;1H> preserv'
 printf '\033[65535;1H\033[1A\033[0KMODEL BAR'
@@ -23,3 +23,14 @@ printf '\033[65535;20H'
 SH
 "$peer" "$scratch/erase" 120 /bin/sh "$scratch/erase.sh" </dev/null
 [[ $(cat "$scratch/erase/prompt") == '> history-steering' ]]
+cat >"$scratch/feed.sh" <<'SH'
+printf '\033[1;27r\033[65535;3H\033[3ARESPONSE alpha'
+printf '\033[65535;1H\033[2A! Working'
+printf '\033[65535;17H\033[3A beta\r\n'
+printf '\033[65535;1H\033[2A! Worked for 1s'
+printf '\033[65535;1H\033[2K> draft'
+SH
+"$peer" "$scratch/feed" 120 /bin/sh "$scratch/feed.sh" </dev/null
+[[ $(cat "$scratch/feed/feed") == 'RESPONSE alpha beta' ]]
+[[ $(cat "$scratch/feed/prompt") == '> draft' ]]
+! grep -Fq 'RESPONSE alpha beta' "$scratch/feed/text"
