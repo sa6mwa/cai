@@ -59,6 +59,8 @@ Service selectors and inspector opt-in are validated before mutations. Live pods
 retain their original teardown manifests; startup does not recreate a missing one.
 Cleanup also checks cached borrowed tool roots in the native source-release lane,
 even when the original inline cache environment setting is no longer present.
+Formatting uses native filename-safe batches and propagates traversal failures as
+well as formatter failures; it does not start one process per source file.
 
 ## Removed controllers
 
