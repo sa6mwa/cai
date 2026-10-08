@@ -68,9 +68,11 @@ files=(
   lua/cai_lua.exports
 )
 
+headers=$(cd "$repo_root" && find include/cai -type f -name '*.h' -print | sort) || die 'failed to enumerate Lua rock public headers'
+[[ -n "$headers" ]] || die 'Lua rock public header directory is empty'
 while IFS= read -r header; do
   files+=("$header")
-done < <(cd "$repo_root" && find include/cai -type f -name '*.h' -print | sort)
+done <<<"$headers"
 
 rm -rf "$stage_dir"
 mkdir -p "$stage_dir"

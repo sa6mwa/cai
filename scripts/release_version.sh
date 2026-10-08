@@ -17,6 +17,7 @@ if [[ -n "$require" ]]; then
 fi
 if [[ -z "$version" && "$owned" == true ]]; then
   head=$(git -C "$root" rev-parse HEAD)
+  tag_lines=$(git -C "$root" for-each-ref --format='%(objecttype) %(objectname) %(*objectname) %(refname)' refs/tags | sed 's/  / - /') || fail 'cannot read release tags'
   tags=()
   while read -r type object peeled ref; do
     tag=${ref#refs/tags/}
@@ -26,7 +27,7 @@ if [[ -z "$version" && "$owned" == true ]]; then
       [[ "$type" == commit ]] || fail "exact release tag $tag is not lightweight"
       tags+=("$tag")
     fi
-  done < <(git -C "$root" for-each-ref --format='%(objecttype) %(objectname) %(*objectname) %(refname)' refs/tags | sed 's/  / - /')
+  done <<<"$tag_lines"
   [[ ${#tags[@]} -le 1 ]] || fail 'multiple exact release tags on HEAD'
   if [[ ${#tags[@]} == 1 ]]; then version=${tags[0]#v}; fi
 elif [[ -z "$version" && -f "$root/VERSION" && -f "$root/RELEASE_MANIFEST" ]]; then

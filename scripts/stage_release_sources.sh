@@ -82,8 +82,10 @@ if [[ -n "$git_root" && $(cd "$git_root" && pwd -P) == "$repo_root" ]]; then
   tmp_selected="$workspace_dir/selected"
   git -C "$repo_root" ls-files >"$tmp_manifest"
   git -C "$repo_root" ls-files --deleted >"$tmp_deleted"
+  ignored_status=0
   git -C "$repo_root" check-ignore --no-index --stdin <"$tmp_manifest" \
-    >"$tmp_ignored" 2>/dev/null || true
+    >"$tmp_ignored" || ignored_status=$?
+  [[ "$ignored_status" -le 1 ]] || die 'failed to classify ignored source paths'
   cat "$tmp_ignored" "$tmp_deleted" >"$tmp_filtered"
   if [[ -s "$tmp_filtered" ]]; then
     grep -F -x -v -f "$tmp_filtered" "$tmp_manifest" >"$tmp_selected" || true

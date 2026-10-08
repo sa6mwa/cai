@@ -45,8 +45,11 @@ CLI and Lua delivery. Binary-only rehearsals have their own manifest under
 release stops; it does not fix, retag, rebuild or publish in the same operation.
 Version and target discovery failures stop packaging before producers or checksum
 publication. Empty targets and unknown checksum scopes are rejected. Source archive
-staging belongs under `build/`; `dist/` contains only delivery artifacts. Released
+staging belongs under `build/`; finalized artifacts go to `dist/`. Released
 Lua rockspecs reference their public source archive, also embedded in the source rock.
+Failed Git tag and ignore queries are errors, distinct from valid empty lists.
+Lua staging requires its public headers and preserves existing staging when header
+enumeration fails.
 
 ## Removed controllers
 
