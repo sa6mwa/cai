@@ -35,6 +35,13 @@ CPKT_TOOLCHAIN_CACHE="$checkout/build/tools" reject all
 printf 'CPKT_DEPENDENCY_CACHE:PATH=%s\n' "$checkout/dist/shared" >"$checkout/build/debug/CMakeCache.txt"
 reject dist
 rm "$checkout/build/debug/CMakeCache.txt"
+# Inline cache environment settings may be gone; recorded tool roots still protect them.
+for cache in "$checkout/build/debug/CMakeCache.txt" "$checkout/build/release-source-smoke/build/CMakeCache.txt"; do
+  mkdir -p "$(dirname "$cache")"
+  printf 'CPKT_BOOTLIN_ROOT:PATH=%s\n' "$checkout/build/tools/roots/borrowed" >"$cache"
+  reject all
+  rm "$cache"
+done
 # An external alias to an owned cache is still an overlap.
 ln -s "$checkout/dist/shared" "$scratch/cache-alias"
 CPKT_DEPENDENCY_CACHE="$scratch/cache-alias" reject dist

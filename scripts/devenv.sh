@@ -11,6 +11,11 @@ if [[ ${#services[@]} == 0 ]]; then
   case "$action" in down|reset|ps|logs) services+=(inspector) ;; esac
 fi
 fail() { printf 'devenv: %s\n' "$*" >&2; exit 2; }
+case "$action" in check|render|up|down|reset|ps|logs|diagnostics|exists|endpoint|wait|pull|exec) ;; *) fail 'use check/render/up/down/reset/ps/logs/exists/endpoint/wait/pull/exec' ;; esac
+if [[ "$action" == exec ]]; then
+  [[ $# -ge 2 ]] || fail 'exec requires SERVICE COMMAND [ARG...]'
+  services=("$1")
+fi
 [[ "$action" != reset || $# == 0 ]] || fail 'reset stops all services; use down SERVICE to stop one service'
 [[ ! -L "$root/build" && ! -L "$state" ]] || fail 'generated service root must not be a symlink'
 checkout=$(printf %s "$root" | sha256sum | cut -c1-10)
@@ -47,7 +52,8 @@ require_podman() {
   [[ $(id -u) != 0 && $(podman info --format '{{.Host.Security.Rootless}}') == true ]] || fail 'run rootless Podman as your ordinary user'
 }
 render() {
-  if [[ -f "$manifest" ]] && exists; then
+  if exists; then
+    [[ -f "$manifest" ]] || fail "cannot render live pod $pod without its retained manifest: $manifest"
     name="${prefix}_PORT"; [[ -z ${!name:-} || ${!name} == "$port" ]] || fail 'stop the pod before changing its port'
     name="${prefix}_IMAGE"; [[ -z ${!name:-} || ${!name} == "$image" ]] || fail 'stop the pod before changing its image'
     return
@@ -96,6 +102,10 @@ down() {
     if exists; then fail "pod survived teardown; retained $manifest"; fi
   fi
 }
+for selected in "${services[@]}"; do
+  select_service "$selected"
+  if [[ "$service" == inspector && "$action" =~ ^(up|render|pull|exec)$ ]]; then [[ ${CAI_MCP_INSPECTOR_E2E:-0} == 1 ]] || fail 'inspector needs CAI_MCP_INSPECTOR_E2E=1'; fi
+done
 case "$action" in endpoint) for selected in "${services[@]}"; do select_service "$selected"; printf '%s\n' "$url"; done; exit ;; wait)
   # External loopback services don't require a Podman engine.
   for selected in "${services[@]}"; do select_service "$selected"; [[ "$selected" != inspector ]] || require_podman; wait_ready; done; exit ;;
@@ -112,7 +122,6 @@ cleanup_created() {
 trap cleanup_created EXIT
 for selected in "${services[@]}"; do
   select_service "$selected"
-  if [[ "$service" == inspector && "$action" =~ ^(up|render|pull|exec)$ ]]; then [[ ${CAI_MCP_INSPECTOR_E2E:-0} == 1 ]] || fail 'inspector needs CAI_MCP_INSPECTOR_E2E=1'; fi
   case "$action" in
     check) ;;
     render) render ;;

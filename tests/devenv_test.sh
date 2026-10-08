@@ -38,6 +38,13 @@ export PATH="$scratch/bin:$PATH" CAI_FAKE_ROOT="$scratch" CAI_FAKE_CHECKOUT="$ch
 controller="$checkout/scripts/devenv.sh"
 [[ $(bash "$controller" endpoint mcp-everything) == http://127.0.0.1:*/mcp ]]
 [[ ! -e "$checkout/build" ]]
+# Validate the entire selection and opt-in before any engine call or generated state.
+for action in 'unknown' 'up mcp-everything unknown' 'up mcp-everything inspector' 'exec inspector'; do
+  : >"$scratch/events"
+  read -r -a args <<<"$action"
+  if CAI_MCP_INSPECTOR_E2E=0 bash "$controller" "${args[@]}" >"$scratch/out" 2>"$scratch/err"; then exit 1; else [[ $? == 2 ]]; fi
+  [[ ! -s "$scratch/events" && ! -e "$checkout/build" ]]
+done
 bash "$controller" render mcp-everything
 manifest="$checkout/build/devenv/mcp-everything.yaml"
 grep -q 'kind: Pod' "$manifest"; grep -q 'keep-id' "$manifest"
@@ -69,6 +76,21 @@ for n in {1..100}; do [[ ! -s "$scratch/peer/port" ]] || break; sleep .01; done
 export CAI_MCP_EVERYTHING_BASE_URL="http://127.0.0.1:$(cat "$scratch/peer/port")/mcp"
 bash "$controller" up mcp-everything
 [[ $(stat -c %u "$checkout/build/devenv/state/mcp-everything/.cai-owner-check") == 1000 ]]
+# A live pod never grants permission to synthesize a lost teardown manifest.
+cp "$checkout/build/devenv/mcp-everything.settings" "$scratch/settings"
+cp "$scratch/pods" "$scratch/retained-pods"
+mv "$manifest" "$scratch/live.yaml"
+: >"$scratch/events"
+if bash "$controller" up mcp-everything >"$scratch/out" 2>"$scratch/err"; then exit 1; fi
+grep -q 'cannot render live pod' "$scratch/err"
+[[ ! -e "$manifest" ]]
+cmp "$scratch/settings" "$checkout/build/devenv/mcp-everything.settings"
+cmp "$scratch/retained-pods" "$scratch/pods"
+! grep -q $'kube\t' "$scratch/events"
+mv "$scratch/live.yaml" "$manifest"
+# Exec's command arguments are data, not additional service selectors.
+bash "$controller" exec mcp-everything node -e 'fixture argument with spaces'
+grep -q $'node\t-e\tfixture argument with spaces\t' "$scratch/events"
 for failure in down down-reported; do
   if CAI_FAKE_FAIL="$failure" bash "$controller" down mcp-everything >"$scratch/out" 2>"$scratch/err"; then exit 1; fi
   [[ -f "$manifest" ]]
