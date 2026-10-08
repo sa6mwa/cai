@@ -11,6 +11,18 @@ if(NOT EXISTS "${_cai_presets}")
 endif()
 
 file(READ "${_cai_presets}" _cai_presets_text)
+string(JSON _cai_preset_schema GET "${_cai_presets_text}" version)
+if(_cai_preset_schema GREATER 3)
+  message(FATAL_ERROR "presets must remain readable by the declared CMake 3.21 minimum")
+endif()
+execute_process(COMMAND "${CMAKE_COMMAND}" --list-presets=all
+  WORKING_DIRECTORY "${CAI_SOURCE_DIR}"
+  RESULT_VARIABLE _cai_preset_parse_result
+  OUTPUT_VARIABLE _cai_preset_parse_stdout
+  ERROR_VARIABLE _cai_preset_parse_stderr)
+if(NOT _cai_preset_parse_result EQUAL 0)
+  message(FATAL_ERROR "CMake rejected preset fields for their schema: ${_cai_preset_parse_stderr}")
+endif()
 set(_cai_source_dir_literal "\${sourceDir}")
 if(NOT _cai_presets_text MATCHES
    "\"CAI_DEPENDENCY_MODE\"[ \t\r\n]*:[ \t\r\n]*\"cpkt\"")

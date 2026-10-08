@@ -7,6 +7,8 @@ if(CAI_BUILD_TESTS)
   set_tests_properties(cai_acquisition_test PROPERTIES LABELS "host;local;lifecycle" TIMEOUT 15)
   add_test(NAME cai_package_inventory_test COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/package_inventory_test.sh" "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
   set_tests_properties(cai_package_inventory_test PROPERTIES LABELS "host;local;lifecycle" TIMEOUT 10)
+  add_test(NAME cai_clean_test COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/clean_test.sh" "${CMAKE_CURRENT_SOURCE_DIR}")
+  set_tests_properties(cai_clean_test PROPERTIES LABELS "host;local;lifecycle" TIMEOUT 10)
   if(CAI_INSTALL AND CAI_BUILD_STATIC AND CAI_BUILD_SHARED AND CAI_TARGET_ID STREQUAL "x86_64-linux-gnu")
     add_test(NAME cai_package_repro_test COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/package_repro_test.sh"
       "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}" "${CMAKE_STRIP}")

@@ -74,6 +74,24 @@ for failure in down down-reported; do
   [[ -f "$manifest" ]]
   # The first failed teardown leaves a live pod; the reported-error variant removes it.
 done
+# A scoped reset must never erase another service's teardown manifest or state.
+bash "$controller" render searxng
+searxng_manifest="$checkout/build/devenv/searxng.yaml"
+sed -n 's/^  name: "\([^"]*\)"$/\1/p' "$searxng_manifest" >>"$scratch/pods"
+printf retained >"$checkout/build/devenv/state/searxng/retained"
+: >"$scratch/events"
+if bash "$controller" reset mcp-everything >"$scratch/out" 2>"$scratch/err"; then exit 1; else [[ $? == 2 ]]; fi
+grep -q 'reset stops all services' "$scratch/err"
+[[ ! -s "$scratch/events" && -f "$searxng_manifest" ]]
+[[ $(cat "$checkout/build/devenv/state/searxng/retained") == retained ]]
+# Missing manifests and failed teardown retain all state and prevent reset.
+mv "$searxng_manifest" "$scratch/retained.yaml"
+if bash "$controller" reset >"$scratch/out" 2>"$scratch/err"; then exit 1; fi
+grep -q 'without its retained manifest' "$scratch/err"
+[[ -f "$checkout/build/devenv/state/searxng/retained" ]]
+mv "$scratch/retained.yaml" "$searxng_manifest"
+if CAI_FAKE_FAIL=down bash "$controller" reset >"$scratch/out" 2>"$scratch/err"; then exit 1; fi
+[[ -f "$searxng_manifest" && -f "$checkout/build/devenv/state/searxng/retained" ]]
 bash "$controller" reset
 [[ ! -e "$checkout/build/devenv" ]]
 # External readiness creates no pods; the supplied command receives its endpoint.

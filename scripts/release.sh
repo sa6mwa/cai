@@ -4,11 +4,17 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$root"
 action=${1:-prepare}
+if [[ $# -gt 1 ]]; then
+  printf 'release: expected one action\n' >&2
+  exit 2
+fi
 phase=identity
 trap 'printf "release phase %s failed at line %s: %s (status %s)\n" "$phase" "$LINENO" "$BASH_COMMAND" "$?" >&2' ERR
 case "$action" in
   identity) exec "$root/scripts/release_version.sh" "$root" --require-release ;;
   final) version=$("$root/scripts/release_version.sh" "$root" --require-release) ;;
+  prepare|build-matrix|configure-matrix) ;;
+  *) printf 'usage: %s {identity|configure-matrix|build-matrix|prepare|final}\n' "$0" >&2; exit 2 ;;
 esac
 target_text=$("$root/scripts/release_targets.sh")
 mapfile -t targets <<<"$target_text"
@@ -52,7 +58,6 @@ case "$action" in
     "$root/scripts/run_mcp_everything_service.sh" "$native/cai_mcp_everything_e2e" "$("$root/scripts/devenv.sh" endpoint mcp-everything)"
     build_matrix
     ;;
-  *) printf 'usage: %s {identity|configure-matrix|build-matrix|prepare|final}\n' "$0" >&2; exit 2 ;;
 esac
 if [[ ${CAI_ENABLE_INTEGRATION_TESTS:-0} == 1 ]]; then
   phase=live

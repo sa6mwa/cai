@@ -722,7 +722,9 @@ The verification tiers are split intentionally:
   SDKs, source, CLI and Lua artifacts; a missing member cannot silently shrink it.
 - `CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-live` selects live-provider
   coverage explicitly. It creates no reusable credentialed success receipt.
-  `make prerelease-hardening` adds this opt-in gate and extended fuzzing.
+  `CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-hardening` runs preparation
+  with live coverage once, then extended fuzzing without repeating fuzz smoke.
+  Live and inspector opt-in checks happen before their build prerequisites.
 - Release failures stop; repair requires a separate iteration. Local delivery
   never retags, pushes or publishes. Publication requires explicit engineer
   direction and uses the checksum inventory, not a `dist/` wildcard.
@@ -1703,7 +1705,7 @@ Relevant OpenAI documentation:
 
 Local service e2e uses rootless Podman and `podman kube play`. Install Podman
 with working user namespaces and Pasta networking; run these commands as your
-ordinary user. Python 3 renders the tracked `devenv.yaml.in` template. There is
+ordinary user. CMake renders the tracked `devenv.yaml.in` template. There is
 one orchestration entry point, `scripts/devenv.sh`.
 
 ```sh
@@ -1727,6 +1729,9 @@ credentials are private files. User namespace mappings make all service writes
 host-owned; startup verifies this with representative state and temporary files.
 `dev-reset` stops pods using their original manifests before removing this tree
 as the same unprivileged user. Tracked configuration stays in `devenv/`.
+Reset always covers all services; `scripts/devenv.sh down SERVICE` stops only
+one. Teardown fails if a live pod's original manifest is missing, preserving
+state for diagnosis.
 `make clean` also tears down these pods before deleting their manifests.
 
 `test-e2e` builds the native fixture and runs the deterministic MCP Everything
@@ -1948,6 +1953,7 @@ tokens and must be run explicitly through the lifecycle opt-in gate:
 CAI_ENABLE_INTEGRATION_TESTS=1 make test-integration
 CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-live
 # Run the Lua-owned Smith coding/review scenario through the installed LuaRock.
+# This target builds and installs that rock before starting its live check.
 CAI_ENABLE_INTEGRATION_TESTS=1 make test-lua-smith-e2e
 ```
 

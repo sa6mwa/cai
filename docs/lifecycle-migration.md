@@ -7,11 +7,16 @@ commands. CMake owns configuration, dependencies, compilation and install. CTest
 owns registered checks, their selections and native results. Compiler/tool
 collections and source inputs stay stable while one operation owns a workspace.
 Changing a compiler collection requires explicit invalidation of its build root.
+Opt-in live and inspector targets reject absent authorization before producers.
+The focused Lua Smith live target installs the local LuaRock before execution.
+Hardening preparation runs live checks and fuzz smoke once, then extends fuzzing.
 
 Library and CLI test registration live in `cmake/CaiTests.cmake` and
 `cmake/CaiCliTests.cmake`. Small shared host fixture and environment declarations
 live beside them. C89, public API, ABI, presets' product separation and published
 targets remain product contracts.
+Presets use schema 3, matching the declared CMake 3.21 minimum; they require no
+newer preset-only feature.
 
 ## Phase contract
 
@@ -52,6 +57,10 @@ Services use one rootless `podman kube play` helper and the tracked manifest.
 Checkout-specific pod names, loopback ports, user-owned state, private credentials,
 real readiness probes and teardown from retained manifests remain required.
 No Compose/containerd path, secondary dispatcher or process supervisor remains.
+Reset covers all services and requires retained manifests for every live pod;
+stopping a single service uses `down SERVICE` and retains the other services.
+Both full cleanup and dist-only cleanup reject shared caches under their deleted
+paths, including caches reached through external symlink aliases.
 
 The legacy dependency-cache alias and its competing cache interpretation are
 removed. `CPKT_DEPENDENCY_CACHE` resolves from explicit CMake input, environment,

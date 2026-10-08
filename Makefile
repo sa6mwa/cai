@@ -74,8 +74,8 @@ test-all:
 	$(MAKE) test-offline
 	$(MAKE) test-e2e
 
-test-e2e: build-debug
-	$(CMAKE) --build --preset debug --target cai_mcp_everything_e2e
+test-e2e:
+	bash scripts/build.sh debug cai_mcp_everything_e2e
 	bash scripts/run_mcp_everything_service.sh "$(ROOT)/build/debug/cai_mcp_everything_e2e" "$(CAI_MCP_EVERYTHING_BASE_URL)"
 integration-build: $(LUA_PSLOG_ROCK_STAMP) $(LUA_LONEJSON_ROCK_STAMP)
 	bash scripts/build.sh integration
@@ -87,9 +87,9 @@ test-integration:
 	$(MAKE) lua-rock integration-build
 	bash scripts/test.sh integration $(CTEST_FLAGS) -L live
 test-lua-smith-e2e:
-	@test "$${CAI_ENABLE_INTEGRATION_TESTS:-0}" = 1
-	$(MAKE) integration-build
-	bash scripts/test.sh integration -R '^cai_lua_smith_e2e$$'
+	@test "$${CAI_ENABLE_INTEGRATION_TESTS:-0}" = 1 || { printf 'Set CAI_ENABLE_INTEGRATION_TESTS=1 for live checks.\n' >&2; exit 2; }
+	$(MAKE) lua-rock integration-build
+	bash scripts/test.sh integration $(CTEST_FLAGS) -R '^cai_lua_smith_e2e$$'
 test-smith-goal-e2e:
 	@test "$${CAI_ENABLE_INTEGRATION_TESTS:-0}" = 1
 	$(MAKE) integration-build
@@ -134,9 +134,11 @@ prerelease:
 	bash scripts/release.sh prepare
 release-pipeline: prerelease
 prerelease-live: test-integration
-prerelease-hardening: prerelease
-	$(MAKE) prerelease-live
-	$(MAKE) fuzz-long
+prerelease-hardening:
+	@test "$${CAI_ENABLE_INTEGRATION_TESTS:-0}" = 1 || { printf 'Set CAI_ENABLE_INTEGRATION_TESTS=1 for prerelease-hardening.\n' >&2; exit 2; }
+	$(MAKE) prerelease
+	# Preparation already passed live coverage and fuzz smoke; extend only fuzzing.
+	bash scripts/fuzz.sh long
 release:
 	bash scripts/release.sh final
 release-matrix: release
@@ -203,16 +205,17 @@ dev-logs:
 	$(DEVENV) logs
 searxng-test:
 	curl -fsS --get "$(CAI_SEARXNG_BASE_URL)/search" --data-urlencode "q=$(CAI_SEARXNG_TEST_QUERY)" --data-urlencode format=json --data-urlencode "engines=$(CAI_SEARXNG_TEST_ENGINE)"
-mcp-everything-test: build-debug
-	$(CMAKE) --build --preset debug --target cai_mcp_everything_e2e
+mcp-everything-test:
+	bash scripts/build.sh debug cai_mcp_everything_e2e
 	build/debug/cai_mcp_everything_e2e "$(CAI_MCP_EVERYTHING_BASE_URL)"
 mcp-everything-live-test:
 	@test "$${CAI_ENABLE_INTEGRATION_TESTS:-0}" = 1
 	$(MAKE) integration-build
 	bash scripts/test.sh integration -R '^cai_integration_chatgpt_mcp_client_tool$$'
-mcp-inspector-e2e: build-debug
-	@test "$${CAI_MCP_INSPECTOR_E2E:-0}" = 1
-	bash scripts/test.sh debug -R '^cai_mcp_inspector_e2e$$'
+mcp-inspector-e2e:
+	@test "$${CAI_MCP_INSPECTOR_E2E:-0}" = 1 || { printf 'Set CAI_MCP_INSPECTOR_E2E=1 for inspector checks.\n' >&2; exit 2; }
+	bash scripts/build.sh debug cai_mcp_http_server
+	bash scripts/test.sh debug $(CTEST_FLAGS) -R '^cai_mcp_inspector_e2e$$'
 searxng-pull:
 	$(DEVENV) pull searxng
 searxng-up:

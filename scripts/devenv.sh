@@ -11,6 +11,7 @@ if [[ ${#services[@]} == 0 ]]; then
   case "$action" in down|reset|ps|logs) services+=(inspector) ;; esac
 fi
 fail() { printf 'devenv: %s\n' "$*" >&2; exit 2; }
+[[ "$action" != reset || $# == 0 ]] || fail 'reset stops all services; use down SERVICE to stop one service'
 [[ ! -L "$root/build" && ! -L "$state" ]] || fail 'generated service root must not be a symlink'
 checkout=$(printf %s "$root" | sha256sum | cut -c1-10)
 base=$((30000 + 16#${checkout:0:7} % 9000))
@@ -81,7 +82,8 @@ wait_ready() {
   fail "readiness timed out: $service ($url); $state/logs/$service-ready.log"
 }
 down() {
-  if [[ -f "$manifest" ]] && exists; then
+  if exists; then
+    [[ -f "$manifest" ]] || fail "cannot stop live pod $pod without its retained manifest: $manifest"
     mkdir -p "$state/logs"
     podman kube down "$manifest" >"$state/logs/$service-down.log" 2>&1 || {
       cat "$state/logs/$service-down.log" >&2
