@@ -71,7 +71,8 @@ trap cleanup EXIT INT TERM
 rm -rf "$stage_dir"
 mkdir -p "$stage_dir"
 
-if git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+git_root=$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null || true)
+if [[ -n "$git_root" && $(cd "$git_root" && pwd -P) == "$repo_root" ]]; then
   mkdir -p "$repo_root/build"
   workspace_dir=$(mktemp -d "$repo_root/build/release-source-stage.XXXXXX")
   tmp_manifest="$workspace_dir/manifest"
@@ -99,6 +100,7 @@ else
   exit 1
 fi
 
+find "$stage_dir" -type d -exec chmod 755 {} +
 if [[ -n "$release_version" ]]; then
   printf '%s\n' "$release_version" >"$stage_dir/VERSION"
   if ! grep -qx 'VERSION' "$stage_dir/RELEASE_MANIFEST" 2>/dev/null; then

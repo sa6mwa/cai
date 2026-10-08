@@ -69,22 +69,14 @@ if grep -q 'cai-lua-0\.0\.0\|cai-0\.0\.0-1' <<<"$dry_run"; then
   printf '%s\n' 'release-lua-artifacts dry run still references 0.0.0' >&2
   exit 1
 fi
-if ! grep -q "cai-lua-$expected\\.tar\\.gz" <<<"$dry_run"; then
-  printf '%s\n' 'release-lua-artifacts dry run does not reference override source tarball' >&2
-  exit 1
-fi
-if ! grep -q "cai-$expected-1\\.src\\.rock" <<<"$dry_run"; then
-  printf '%s\n' 'release-lua-artifacts dry run does not reference override src rock' >&2
+if ! grep -Fq "scripts/package_lua.sh \"$expected\"" <<<"$dry_run"; then
+  printf 'Lua package command did not select candidate version\n' >&2
   exit 1
 fi
 
 dry_run=$(CAI_VERSION_OVERRIDE=0.0.0 make -n -C "$repo_root" release-lua-artifacts)
-if ! grep -q 'cai-lua-0\.0\.0\.tar\.gz' <<<"$dry_run"; then
-  printf '%s\n' 'release-lua-artifacts dry run does not allow fallback source tarball' >&2
-  exit 1
-fi
-if ! grep -q 'cai-0\.0\.0-1\.src\.rock' <<<"$dry_run"; then
-  printf '%s\n' 'release-lua-artifacts dry run does not allow fallback src rock' >&2
+if ! grep -Fq 'scripts/package_lua.sh "0.0.0"' <<<"$dry_run"; then
+  printf 'Lua package command did not select untagged fallback\n' >&2
   exit 1
 fi
 
@@ -187,7 +179,7 @@ git -C "$tmpdir/repo" config user.name "cai test"
 git -C "$tmpdir/repo" config user.email "cai@example.invalid"
 printf 'fixture\n' >"$tmpdir/repo/fixture.txt"
 git -C "$tmpdir/repo" add fixture.txt
-git -C "$tmpdir/repo" commit -q -m 'fixture'
+git -C "$tmpdir/repo"  -c core.hooksPath=/dev/null -c commit.gpgSign=false commit -q -m 'test(lifecycle): seed version input'
 git -C "$tmpdir/repo" -c tag.gpgSign=false tag v1.2.3
 git -C "$tmpdir/repo" worktree add -q "$tmpdir/worktree" HEAD
 
@@ -208,7 +200,7 @@ git -C "$tmpdir/invalid-tag-repo" config user.name "cai test"
 git -C "$tmpdir/invalid-tag-repo" config user.email "cai@example.invalid"
 printf 'fixture\n' >"$tmpdir/invalid-tag-repo/fixture.txt"
 git -C "$tmpdir/invalid-tag-repo" add fixture.txt
-git -C "$tmpdir/invalid-tag-repo" commit -q -m 'fixture'
+git -C "$tmpdir/invalid-tag-repo"  -c core.hooksPath=/dev/null -c commit.gpgSign=false commit -q -m 'test(lifecycle): seed version input'
 git -C "$tmpdir/invalid-tag-repo" -c tag.gpgSign=false tag v1.2.3/foo
 if "$repo_root/scripts/release_version.sh" \
   "$tmpdir/invalid-tag-repo" >/dev/null 2>&1; then
@@ -217,6 +209,7 @@ if "$repo_root/scripts/release_version.sh" \
 fi
 
 mkdir -p "$tmpdir/repo/extracted-source"
+printf 'VERSION\nRELEASE_MANIFEST\n' >"$tmpdir/repo/extracted-source/RELEASE_MANIFEST"
 printf '7.8.9\n' >"$tmpdir/repo/extracted-source/VERSION"
 actual=$("$repo_root/scripts/release_version.sh" "$tmpdir/repo/extracted-source")
 if [[ "$actual" != "7.8.9" ]]; then

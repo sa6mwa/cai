@@ -1,198 +1,72 @@
 SHELL := bash
+.SHELLFLAGS := -e -o pipefail -c
 .DEFAULT_GOAL := help
 MAKEFLAGS += --no-builtin-rules
-# Lifecycle commands own service/build state; serialize even under make -j.
 .NOTPARALLEL:
-
 ROOT := $(CURDIR)
+ifneq ($(realpath $(dir $(firstword $(MAKEFILE_LIST)))),$(realpath $(CURDIR)))
+$(error run make -C $(dir $(firstword $(MAKEFILE_LIST))) so the checkout owns generated paths)
+endif
 CMAKE := cmake
 CTEST := ctest
-CTEST_FLAGS := --stop-on-failure --parallel 1
+CTEST_FLAGS ?=
 CTEST_FILTER ?= -L unit -LE 'live|packaging'
 DEVENV := bash ./scripts/devenv.sh
+RELEASE_VERSION ?= $(shell ./scripts/release_version.sh "$(ROOT)")
+ifeq ($(strip $(RELEASE_VERSION)),)
+$(error invalid release version; run scripts/release_version.sh)
+endif
 CAI_SEARXNG_BASE_URL ?= $(shell $(DEVENV) endpoint searxng)
 CAI_SEARXNG_TEST_ENGINE ?= wikipedia
 CAI_SEARXNG_TEST_QUERY ?= OpenAI
 CAI_MCP_EVERYTHING_BASE_URL ?= $(shell $(DEVENV) endpoint mcp-everything)
 CAI_MCP_INSPECTOR_IMAGE ?= ghcr.io/modelcontextprotocol/inspector:1.0.1
-CAI_FUZZ_SECONDS ?= 10
-CAI_FUZZ_LONG_SECONDS ?= 120
-RELEASE_VERSION ?= $(shell ./scripts/release_version.sh "$(CURDIR)")
-ifeq ($(strip $(RELEASE_VERSION)),)
-$(error release version resolver returned empty; run ./scripts/release_version.sh "$(CURDIR)")
-endif
-CAI_CPKT_TARGET ?= x86_64-linux-gnu
 CAI_C_PKT_SYSTEMS_VERSION ?= 0.11.0
 CAI_LONEJSON_VERSION ?= 0.45.0
 CAI_PSLOG_VERSION ?= 0.12.0
 LONEJSON_LUA_ROCK_URL ?= https://github.com/sa6mwa/lonejson/releases/download/v$(CAI_LONEJSON_VERSION)/lonejson-$(CAI_LONEJSON_VERSION)-1.src.rock
 PSLOG_LUA_ROCK_URL ?= https://github.com/sa6mwa/libpslog/releases/download/v$(CAI_PSLOG_VERSION)/lua-pslog-$(CAI_PSLOG_VERSION)-1.src.rock
-CAI_C_PKT_SYSTEMS_PREFIX := $(CURDIR)/.cache/deps/c.pkt.systems-$(CAI_C_PKT_SYSTEMS_VERSION)-$(CAI_CPKT_TARGET)
-CAI_LONEJSON_PREFIX := $(CURDIR)/.cache/deps/liblonejson-$(CAI_LONEJSON_VERSION)-$(CAI_CPKT_TARGET)
-CAI_PSLOG_PREFIX := $(CURDIR)/.cache/deps/libpslog-$(CAI_PSLOG_VERSION)-$(CAI_CPKT_TARGET)
 LUA_ROCK_TREE := build/luarocks
 LUA_ROCKSPEC := $(LUA_ROCK_TREE)/cai-$(RELEASE_VERSION)-1.rockspec
-LUA_ROCK_STAMP := $(LUA_ROCK_TREE)/.installed.stamp
-LUA_ROCK_BUILD_LOCK := $(LUA_ROCK_TREE)/.build.lock
 LUA_ROCK_EXTRA_CFLAGS ?= -O3 -DNDEBUG
 LUA_ROCK_PREFIX := $(LUA_ROCK_TREE)/cai-prefix
 LUA_LONEJSON_ROCK_STAMP := $(LUA_ROCK_TREE)/lib/luarocks/rocks-5.5/lonejson/$(CAI_LONEJSON_VERSION)-1/rock_manifest
 LUA_PSLOG_ROCK_STAMP := $(LUA_ROCK_TREE)/lib/luarocks/rocks-5.5/lua-pslog/$(CAI_PSLOG_VERSION)-1/rock_manifest
-RELEASE_LUA_ROCK_DIR := dist/lua-rock
-RELEASE_LUA_STAGE_DIR := $(RELEASE_LUA_ROCK_DIR)/cai-$(RELEASE_VERSION)
-RELEASE_LUA_SOURCE_TARBALL := dist/cai-lua-$(RELEASE_VERSION).tar.gz
-RELEASE_LUA_ROCKSPEC := dist/cai-$(RELEASE_VERSION)-1.rockspec
-RELEASE_LUA_PACK_DIR := dist/.lua-rock-pack
-RELEASE_LUA_PACK_STAGE_DIR := $(RELEASE_LUA_PACK_DIR)/cai-$(RELEASE_VERSION)
-RELEASE_LUA_PACK_SOURCE_TARBALL := $(RELEASE_LUA_PACK_DIR)/cai-lua-$(RELEASE_VERSION).tar.gz
-RELEASE_LUA_PACK_ROCKSPEC := $(RELEASE_LUA_PACK_DIR)/cai-$(RELEASE_VERSION)-1.rockspec
-RELEASE_LUA_SRC_ROCK := dist/cai-$(RELEASE_VERSION)-1.src.rock
-RELEASE_LIVE_GATE_STAMP ?= .cache/release-gates/prerelease-live.stamp
-LUA_ROCK_SOURCE_INPUTS := scripts/stage_lua_rock_sources.sh scripts/build_lua_rock.sh scripts/render_release_rockspec.sh lua/cai_lua.c lua/cai_lua_config.inc lua/cai_lua_skills.inc lua/cai_lua.exports cai.rockspec.in README.md LICENSE docs/model-metadata.md $(shell find include/cai -type f -name '*.h' | sort)
-LUA_ROCK_NATIVE_INPUTS := $(shell find src include -type f \( -name '*.c' -o -name '*.h' -o -name '*.inc' \) | sort)
 
-.PHONY: build-cli test-cli test-offline help deps-debug deps-release deps-cross build build-debug build-host build-release cross-build integration-build chatgpt-login test test-debug test-host test-release test-cross cross-test test-all test-e2e test-integration test-lua-smith-e2e test-smith-goal-e2e test-install-tree asan test-asan valgrind fuzz fuzz-smoke fuzz-long coverage test-coverage example-smoke-local example-smoke-live finalize-slice clangd-check prerelease release-pipeline prerelease-live require-prerelease-live require-clean-worktree prerelease-hardening lifecycle-version-contract lua-rock lua-env lua-test lua-runner release-lua-artifacts print-release-version package package-source package-source-smoke package-checksums package-verify verify-release-archives verify-release-privacy release-matrix release devenv-check dev-up dev-down dev-reset dev-ps dev-logs searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test mcp-inspector-e2e format clean clean-dist
-
+.PHONY: help build build-debug build-cli build-host build-release deps-debug deps-release deps-cross cross-build cross-test test-cross test test-debug test-cli test-host test-release test-all test-e2e test-offline test-integration integration-build test-install-tree valgrind asan test-asan fuzz fuzz-smoke fuzz-long coverage test-coverage lua-rock lua-runner lua-env lua-test format format-check finalize-slice clangd-check prerelease prerelease-live prerelease-hardening release-pipeline release release-matrix lifecycle-version-contract require-clean-worktree package package-source package-source-smoke package-checksums package-verify verify-release-archives verify-release-privacy release-lua-artifacts print-release-version chatgpt-login test-lua-smith-e2e test-smith-goal-e2e example-smoke-local clean clean-dist devenv-check dev-up dev-down dev-reset dev-ps dev-logs searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test mcp-inspector-e2e
 help:
-	@printf '%s\n' \
-		'make deps-debug  Configure the debug dependency/build root.' \
-		'make deps-release Configure the pinned native release build root.' \
-		'make deps-cross  Configure all available release cross dependency/build roots.' \
-		'make build        Configure and build the debug preset.' \
-		'make build-debug  Configure and build the debug preset.' \
-		'make build-cli    Build the native debug cai CLI and its fixtures.' \
-		'make test-cli     Run native CLI checks only; no cross builds.' \
-		'make build-host   Build the pinned native release preset.' \
-		'make build-release Configure and build the release target matrix.' \
-		'make cross-build  Run the standard release cross matrix build script.' \
-		'make integration-build  Configure and build the integration preset without running live tests.' \
-		'make chatgpt-login  Sign CAI into ChatGPT and persist CAI-owned XDG state auth.' \
-		'make test         Build and run the debug unit tests.' \
-		'make test-debug   Build and run the debug unit tests.' \
-		'cmake --preset debug-host-deps -DCMAKE_PREFIX_PATH=... Configure installed-dependency verification; see README.' \
-		'make test-all     Run native checks once, Lua, hardening, and local e2e; no cross builds.' \
-		'make test-offline Run native integration fixtures without credentials.' \
-		'make test-e2e     Run deterministic Podman Kube local e2e.' \
-		'make test-host    Build and run the pinned native release unit tests.' \
-		'make test-release Build and run the release unit tests.' \
-		'make test-cross   Build cross targets; execution is target/tooling dependent.' \
-		'make cross-test   Run the standard release cross matrix test script.' \
-		'make test-integration  Run opt-in ChatGPT-subscription integration tests; requires CAI_ENABLE_INTEGRATION_TESTS=1.' \
-		'make test-lua-smith-e2e Run the opt-in Lua Smith coding/review e2e.' \
-		'make test-smith-goal-e2e Run the opt-in short Smith goal e2e.' \
-		'make test-install-tree Verify installed SDK metadata and downstream consumers.' \
-		'make asan         Build and run optional Bootlin ASan/UBSan unit tests.' \
-		'make test-asan    Alias for asan.' \
-		'make valgrind     Run the native Bootlin Valgrind memory-check subset.' \
-		'make fuzz         Run bounded AFL++ fuzzing; CAI_FUZZ_SECONDS controls each target.' \
-		'make fuzz-smoke   Replay every checked-in corpus through AFL++ instrumented harnesses.' \
-		'make fuzz-long    Run extended AFL++ fuzzing; CAI_FUZZ_LONG_SECONDS controls each target.' \
-		'make coverage     Build the coverage preset.' \
-		'make test-coverage Run the coverage preset tests.' \
-		'make example-smoke-local  Run deterministic local example smoke checks.' \
-		'make example-smoke-live   Removed: use subscription-backed Smith e2e instead.' \
-		'make finalize-slice Run format and debug tests before committing a slice.' \
-		'make clangd-check Run host clangd validation against the native debug compile database.' \
-		'make release-pipeline Shared deterministic release proof without cleaning.' \
-		'make prerelease   Run the deterministic release matrix proof without cleaning first.' \
-		'make prerelease-live  Run required pre-release live-provider verification; requires CAI_ENABLE_INTEGRATION_TESTS=1.' \
-		'make require-prerelease-live Verify prerelease-live passed for the current commit.' \
-		'make require-clean-worktree Verify tracked and untracked source files are clean.' \
-		'make prerelease-hardening Run prerelease, live checks, long fuzz, and release matrix; requires CAI_ENABLE_INTEGRATION_TESTS=1.' \
-		'make lifecycle-version-contract Verify exact lightweight-tag release version behavior.' \
-		'make lua-rock     Build and install the LuaRock into build/luarocks.' \
-		'make lua-env      Print shell exports for running local Lua examples.' \
-		'make lua-test     Build the LuaRock and run the Lua binding tests.' \
-		'make lua-runner   Build the local Lua 5.5.1 verification interpreter.' \
-		'make release-lua-artifacts Generate dist LuaRock source artifacts.' \
-		'make print-release-version Print the exact packaging/release version.' \
-		'make package      Build binary SDK release archives.' \
-		'make package-source Build the source-only release tarball.' \
-		'make package-source-smoke Verify the source tarball builds from unpacked source.' \
-		'make package-checksums Generate the checksum manifest for current dist artifacts.' \
-		'make package-verify Verify release archive structure, privacy, and metadata.' \
-		'make verify-release-archives Alias for package-verify.' \
-		'make verify-release-privacy Alias for package-verify privacy/relocatability gate.' \
-		'make release-matrix Build and run all deterministic gates once, then package and verify release artifacts.' \
-		'make release      Validate versioning, clean, then run the final release proof including source reconstruction.' \
-		'make devenv-check Verify rootless Podman availability.' \
-		'make dev-up       Start local Podman Kube development services.' \
-		'make dev-down     Stop local Podman Kube development services.' \
-		'make dev-reset    Stop services and remove generated local service state.' \
-		'make dev-ps       Show local Podman Kube service state.' \
-		'make dev-logs     Print checkout-specific Podman pod logs.' \
-		'Ports: CAI_SEARXNG_PORT / CAI_MCP_EVERYTHING_PORT override checkout-specific loopback ports.' \
-		'CAI_E2E_KEEP_DEVSERVICES=1 retains pods started by test-e2e for diagnosis.' \
-		'make searxng-pull Pull the configured SearXNG container image.' \
-		'make searxng-up   Start local SearXNG via rootless Podman Kube.' \
-		'make searxng-wait Wait for the local SearXNG endpoint to answer.' \
-		'make searxng-test Query local SearXNG JSON search endpoint.' \
-		'make searxng-down Stop local SearXNG Podman pod.' \
-		'make searxng-logs Print local SearXNG pod logs.' \
-		'make mcp-everything-up Start local MCP Everything reference server.' \
-		'make mcp-everything-wait Wait for local MCP Everything to initialize.' \
-		'make mcp-everything-test Run the MCP client Everything reference-server e2e matrix.' \
-		'make mcp-everything-live-test Run the live model MCP client tool integration test; requires CAI_ENABLE_INTEGRATION_TESTS=1.' \
-		'make mcp-inspector-e2e Run opt-in MCP Inspector container e2e; requires CAI_MCP_INSPECTOR_E2E=1.' \
-		'make mcp-everything-down Stop local MCP Everything Podman pod.' \
-		'make mcp-everything-logs Print local MCP Everything pod logs.' \
-		'make format       Run clang-format over repo C sources.' \
-		'make clean        Remove generated build outputs.' \
-		'make clean-dist   Remove dist release artifacts only.'
-
-deps-debug:
-	bash ./scripts/deps.sh debug
-
-deps-release:
-	bash ./scripts/deps.sh release
-
-deps-cross: build-release
+	@printf '%s\n' 'make build / test       Native debug library and unit feedback.' 'make build-cli / test-cli Native CLI and fixtures; no cross builds.' 'make test-all           Native tests once per scope, Lua, memory, fuzz and local e2e.' 'make format / format-check Source formatting only; no configure or build.' 'make prerelease         Incremental native/matrix/package preparation.' 'make release / release-matrix Clean tagged final artifact gate; no publish or ref mutation.' 'make package            Warm binary matrix packaging.' 'make package-source / package-source-smoke Explicit source shipment and reconstruction.' 'make package-verify     Verify existing final bytes, without rebuilding producers.' 'make valgrind / asan / fuzz-smoke / fuzz-long / test-coverage Hardening.' 'make lua-rock / lua-test / lua-env Native Lua facade and source rock.' 'make test-offline / test-integration Local fixtures / opt-in credentialed tests.' 'make dev-up / dev-down / dev-reset / dev-ps / dev-logs Rootless Podman Kube services.' 'make clean / clean-dist Remove owned generated state / dist only.' 'See README and scripts for focused installed-SDK, service and model checks.'
 
 build: build-debug
-
 build-debug:
-	bash ./scripts/build.sh debug
-
+	bash scripts/build.sh debug
 build-cli:
-	bash ./scripts/build.sh debug-cai
-
-test-cli: build-cli
-	bash ./scripts/test.sh debug-cai $(CTEST_FLAGS)
-
-build-release:
-	bash ./scripts/build.sh release-matrix
-
+	bash scripts/build.sh debug-cai
 build-host:
-	bash ./scripts/build.sh host
-
-cross-build:
-	bash ./scripts/cross_build.sh
-
-integration-build: $(LUA_PSLOG_ROCK_STAMP)
-	bash ./scripts/build.sh integration
-
-chatgpt-login:
-	$(MAKE) -C examples run-chatgpt-login
-
-test: test-debug
-	@printf '%s\n' 'Reminder: run `make format` before committing each slice, or use `make finalize-slice`.'
-
-test-debug: build-debug
-	bash ./scripts/test.sh debug $(CTEST_FLAGS) $(CTEST_FILTER)
-
-test-host:
-	bash ./scripts/host_test.sh
-
-test-release: build-host
-	bash ./scripts/test.sh release $(CTEST_FLAGS) -LE live
-
+	bash scripts/build.sh release
+build-release:
+	bash scripts/release.sh build-matrix
+deps-debug:
+	bash scripts/build.sh configure-debug
+deps-release:
+	bash scripts/build.sh configure-release
+deps-cross:
+	bash scripts/release.sh configure-matrix
+cross-build: build-release
+cross-test:
+	bash scripts/cross_test.sh
 test-cross: cross-test
 
-cross-test:
-	bash ./scripts/cross_test.sh
-
+test: test-debug
+test-debug: build-debug
+	bash scripts/test.sh debug $(CTEST_FLAGS) $(CTEST_FILTER)
+test-cli: build-cli
+	bash scripts/test.sh debug-cai $(CTEST_FLAGS)
+test-host: test-release
+test-release: build-host
+	bash scripts/test.sh release $(CTEST_FLAGS) -L unit -LE 'live|host'
 test-all:
-	$(MAKE) test-debug CTEST_FILTER='-LE live'
+	$(MAKE) test-debug CTEST_FILTER="-LE 'live|valgrind'"
 	$(MAKE) test-cli
 	$(MAKE) valgrind
 	$(MAKE) fuzz-smoke
@@ -200,219 +74,107 @@ test-all:
 	$(MAKE) test-offline
 	$(MAKE) test-e2e
 
-test-offline: lua-rock
-	bash ./scripts/build.sh configure-integration
-	$(CMAKE) --build --preset integration --target cai_integration_tests cai_lua cai_lua_runner
-	$(CTEST) --test-dir build/integration --output-on-failure $(CTEST_FLAGS) -L offline -R '^cai_(integration_|lua_chatgpt_auth_)'
-
-test-e2e:
-	bash ./scripts/test-e2e.sh
-
+test-e2e: build-debug
+	$(CMAKE) --build --preset debug --target cai_mcp_everything_e2e
+	bash scripts/run_mcp_everything_service.sh "$(ROOT)/build/debug/cai_mcp_everything_e2e" "$(CAI_MCP_EVERYTHING_BASE_URL)"
+integration-build: $(LUA_PSLOG_ROCK_STAMP) $(LUA_LONEJSON_ROCK_STAMP)
+	bash scripts/build.sh integration
+test-offline: $(LUA_PSLOG_ROCK_STAMP) $(LUA_LONEJSON_ROCK_STAMP)
+	bash scripts/build.sh integration cai_integration_tests cai_lua cai_lua_runner
+	bash scripts/test.sh integration $(CTEST_FLAGS) -L offline -R '^cai_(integration_|lua_chatgpt_auth_)'
 test-integration:
-	@if [[ "$${CAI_ENABLE_INTEGRATION_TESTS:-}" != "1" ]]; then \
-		printf '%s\n' 'Refusing to run integration tests without CAI_ENABLE_INTEGRATION_TESTS=1'; \
-		exit 2; \
-	fi
-	$(MAKE) lua-rock
-	$(MAKE) integration-build
-	bash ./scripts/test.sh integration $(CTEST_FLAGS) -LE offline -R '^(cai_integration_chatgpt_.*|cai_integration_openrouter_.*|cai_lua_chatgpt_.*|cai_lua_smith_e2e|cai_lua_smith_mcp_e2e)$$'
-
+	@test "$${CAI_ENABLE_INTEGRATION_TESTS:-0}" = 1 || { printf 'Set CAI_ENABLE_INTEGRATION_TESTS=1 for live checks.\n' >&2; exit 2; }
+	$(MAKE) lua-rock integration-build
+	bash scripts/test.sh integration $(CTEST_FLAGS) -L live
 test-lua-smith-e2e:
-	@if [[ "$${CAI_ENABLE_INTEGRATION_TESTS:-}" != "1" ]]; then \
-		printf '%s\n' 'Refusing to run Lua Smith e2e without CAI_ENABLE_INTEGRATION_TESTS=1'; \
-		exit 2; \
-	fi
-	$(MAKE) lua-rock
+	@test "$${CAI_ENABLE_INTEGRATION_TESTS:-0}" = 1
 	$(MAKE) integration-build
-	$(CTEST) --preset integration --output-on-failure $(CTEST_FLAGS) -R '^cai_lua_smith_e2e$$'
-
+	bash scripts/test.sh integration -R '^cai_lua_smith_e2e$$'
 test-smith-goal-e2e:
-	@if [[ "$${CAI_ENABLE_INTEGRATION_TESTS:-}" != "1" ]]; then \
-		printf '%s\n' 'Refusing to run Smith goal e2e without CAI_ENABLE_INTEGRATION_TESTS=1'; \
-		exit 2; \
-	fi
+	@test "$${CAI_ENABLE_INTEGRATION_TESTS:-0}" = 1
 	$(MAKE) integration-build
-	$(CTEST) --preset integration --output-on-failure $(CTEST_FLAGS) -R '^cai_integration_chatgpt_smith_goal_e2e$$'
-
+	bash scripts/test.sh integration -R '^cai_integration_chatgpt_smith_goal_e2e$$'
 test-install-tree: build-debug
-	$(CTEST) --preset debug --output-on-failure $(CTEST_FLAGS) -R '^cai_install_metadata_test$$'
-
-asan:
-	bash ./scripts/build.sh asan
-	$(CTEST) --preset asan $(CTEST_FLAGS)
-
-test-asan: asan
-
+	bash scripts/test.sh debug $(CTEST_FLAGS) -R '^cai_install_metadata_test$$'
 valgrind:
-	bash ./scripts/build.sh valgrind
-	$(CTEST) --preset valgrind $(CTEST_FLAGS)
-
-fuzz:
-	bash ./scripts/build.sh fuzz
-	./scripts/fuzz.sh smoke
-
+	bash scripts/build.sh valgrind cai_tests
+	bash scripts/test.sh valgrind $(CTEST_FLAGS)
+asan:
+	bash scripts/build.sh asan
+	bash scripts/test.sh asan $(CTEST_FLAGS) -L unit -LE 'live|host|packaging'
+test-asan: asan
+fuzz: fuzz-smoke
 fuzz-smoke:
-	bash ./scripts/build.sh fuzz
-	$(CTEST) --test-dir build/fuzz --output-on-failure $(CTEST_FLAGS) -L fuzz
-
-fuzz-long:
-	bash ./scripts/build.sh fuzz
-	./scripts/fuzz.sh long
-
+	bash scripts/build.sh fuzz cai_fuzzers
+	bash scripts/test.sh fuzz $(CTEST_FLAGS) -L fuzz
+fuzz-long: fuzz-smoke
+	bash scripts/fuzz.sh long
 coverage:
-	bash ./scripts/build.sh coverage
-
+	bash scripts/build.sh coverage
 test-coverage: coverage
-	$(CTEST) --preset coverage $(CTEST_FLAGS)
-
+	bash scripts/test.sh coverage $(CTEST_FLAGS) -L unit -LE 'live|host|packaging'
 example-smoke-local: build-debug
-	$(CTEST) --preset debug --output-on-failure $(CTEST_FLAGS) -L example-smoke
-
-example-smoke-live:
-	@printf '%s\n' 'Live example smoke is disabled: it uses API-key authentication. Use make test-integration for subscription-backed coverage.' >&2
-	@exit 2
-
+	bash scripts/test.sh debug -L example-smoke
+chatgpt-login:
+	$(MAKE) -C examples run-chatgpt-login
+format:
+	bash scripts/format.sh
+format-check:
+	bash scripts/format.sh check
 finalize-slice:
 	$(MAKE) format
 	$(MAKE) test-debug
-
 clangd-check: build-debug
 	$(CMAKE) -DCAI_SOURCE_DIR="$(ROOT)" -DCAI_BUILD_DIR="$(ROOT)/build/debug" -P cmake/clangd_check.cmake
-
-release-pipeline:
-	$(MAKE) format
-	$(MAKE) require-clean-worktree
-	$(MAKE) release-matrix
-
-prerelease: release-pipeline
-
-prerelease-live:
-	@if [[ "$${CAI_ENABLE_INTEGRATION_TESTS:-}" != "1" ]]; then \
-		printf '%s\n' 'Refusing to run prerelease-live without CAI_ENABLE_INTEGRATION_TESTS=1' >&2; \
-		exit 2; \
-	fi
-	$(MAKE) require-clean-worktree
-	rm -f "$(RELEASE_LIVE_GATE_STAMP)"
-	$(MAKE) test-integration
-	$(MAKE) require-clean-worktree
-	@mkdir -p "$$(dirname "$(RELEASE_LIVE_GATE_STAMP)")"
-	@head="$$(git rev-parse HEAD 2>/dev/null || printf unknown)"; \
-	status_sha="$$(git status --porcelain=v1 --untracked-files=all 2>/dev/null | git hash-object --stdin 2>/dev/null || printf unknown)"; \
-	{ \
-		printf 'status=passed\n'; \
-		printf 'head=%s\n' "$$head"; \
-		printf 'worktree-status-sha=%s\n' "$$status_sha"; \
-		printf 'target=prerelease-live\n'; \
-		printf 'timestamp=%s\n' "$$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
-	} >"$(RELEASE_LIVE_GATE_STAMP)"
-
-require-prerelease-live:
-	@head="$$(git rev-parse HEAD 2>/dev/null || printf unknown)"; \
-	status_sha="$$(git status --porcelain=v1 --untracked-files=all 2>/dev/null | git hash-object --stdin 2>/dev/null || printf unknown)"; \
-	dirty="$$(git status --porcelain=v1 --untracked-files=all 2>/dev/null || true)"; \
-	if [[ ! -f "$(RELEASE_LIVE_GATE_STAMP)" ]]; then \
-		printf '%s\n' 'Refusing release: run make prerelease-live first.' >&2; \
-		exit 2; \
-	fi; \
-	if ! grep -qx 'status=passed' "$(RELEASE_LIVE_GATE_STAMP)"; then \
-		printf '%s\n' 'Refusing release: prerelease-live gate stamp is not successful.' >&2; \
-		exit 2; \
-	fi; \
-	stamp_head="$$(sed -n 's/^head=//p' "$(RELEASE_LIVE_GATE_STAMP)")"; \
-	if [[ "$$stamp_head" != "$$head" ]]; then \
-		printf 'Refusing release: prerelease-live passed for %s, not current HEAD %s.\n' "$$stamp_head" "$$head" >&2; \
-		exit 2; \
-	fi; \
-	stamp_status_sha="$$(sed -n 's/^worktree-status-sha=//p' "$(RELEASE_LIVE_GATE_STAMP)")"; \
-	if [[ "$$stamp_status_sha" != "$$status_sha" ]]; then \
-		printf '%s\n' 'Refusing release: worktree state changed since prerelease-live.' >&2; \
-		exit 2; \
-	fi; \
-	if [[ -n "$$dirty" ]]; then \
-		printf '%s\n' 'Refusing release: worktree has uncommitted source changes.' >&2; \
-		git status --short >&2; \
-		exit 2; \
-	fi
-
 require-clean-worktree:
-	@dirty="$$(git status --porcelain=v1 --untracked-files=all 2>/dev/null || true)"; \
-	if [[ -n "$$dirty" ]]; then \
-		printf '%s\n' 'Refusing release gate: worktree has uncommitted source changes.' >&2; \
-		git status --short >&2; \
-		exit 2; \
-	fi
-
-prerelease-hardening:
-	@if [[ "$${CAI_ENABLE_INTEGRATION_TESTS:-}" != "1" ]]; then \
-		printf '%s\n' 'Refusing to run prerelease-hardening without CAI_ENABLE_INTEGRATION_TESTS=1'; \
-		exit 2; \
-	fi
-	$(MAKE) prerelease
+	@test -z "$$(git status --porcelain=v1 --untracked-files=all)" || { git status --short >&2; exit 1; }
+lifecycle-version-contract:
+	bash scripts/release_version.sh "$(ROOT)" --require-release
+prerelease:
+	bash scripts/release.sh prepare
+release-pipeline: prerelease
+prerelease-live: test-integration
+prerelease-hardening: prerelease
 	$(MAKE) prerelease-live
 	$(MAKE) fuzz-long
-
-lifecycle-version-contract:
-	@set -euo pipefail; \
-	reserved_tag='v99.99.99'; \
-	cleanup() { git tag -d "$$reserved_tag" >/dev/null 2>&1 || true; }; \
-	trap cleanup EXIT HUP INT TERM; \
-	git tag -d "$$reserved_tag" >/dev/null 2>&1 || true; \
-	exact_tag="$$(git describe --tags --exact-match --match 'v[0-9]*' 2>/dev/null || true)"; \
-	if [[ -n "$$exact_tag" ]]; then \
-		tag_type="$$(git cat-file -t "refs/tags/$$exact_tag" 2>/dev/null || true)"; \
-		if [[ "$$tag_type" != 'commit' ]]; then \
-			printf 'release version contract: exact tag %s must be lightweight, got %s\n' "$$exact_tag" "${tag_type:-unknown}" >&2; \
-			exit 1; \
-		fi; \
-		expected_version="$${exact_tag#v}"; \
-	else \
-		untagged_version="$$(./scripts/release_version.sh "$(CURDIR)")"; \
-		if [[ "$$untagged_version" != '0.0.0' ]]; then \
-			printf 'release version contract: untagged HEAD resolved to %s, expected 0.0.0\n' "$$untagged_version" >&2; \
-			exit 1; \
-		fi; \
-		git -c tag.gpgSign=false tag "$$reserved_tag"; \
-		if [[ "$$(git cat-file -t "$$reserved_tag")" != 'commit' ]]; then \
-			printf 'release version contract: temporary tag must be lightweight\n' >&2; \
-			exit 1; \
-		fi; \
-		expected_version="$${reserved_tag#v}"; \
-	fi; \
-	script_version="$$(./scripts/release_version.sh "$(CURDIR)")"; \
-	make_version="$$(env -u MAKEFLAGS -u MFLAGS $(MAKE) -s print-release-version)"; \
-	if [[ "$$script_version" != "$$expected_version" || "$$make_version" != "$$expected_version" ]]; then \
-		printf 'release version contract: script=%s make=%s expected=%s\n' "$$script_version" "$$make_version" "$$expected_version" >&2; \
-		exit 1; \
-	fi
+release:
+	bash scripts/release.sh final
+release-matrix: release
+package: build-release
+	bash scripts/package.sh release-matrix
+package-source:
+	$(CMAKE) -DCAI_ROOT="$(ROOT)" -DCAI_DIST_DIR="$(ROOT)/dist" -DCAI_VERSION="$(RELEASE_VERSION)" -P cmake/package_source.cmake
+package-source-smoke: package-source
+	bash scripts/test_release_from_source.sh "$(ROOT)" "$(ROOT)/dist/cai-$(RELEASE_VERSION).tar.gz"
+package-checksums:
+	$(CMAKE) -DCAI_DIST_DIR="$(ROOT)/dist" -DCAI_VERSION="$(RELEASE_VERSION)" -DCAI_TARGETS="$$(bash scripts/release_targets.sh | paste -sd ';')" -P cmake/package_checksums.cmake
+package-verify:
+	bash scripts/package-verify.sh "$(ROOT)" "$(RELEASE_VERSION)"
+verify-release-archives: package-verify
+verify-release-privacy: package-verify
+print-release-version:
+	@bash scripts/release_version.sh "$(ROOT)"
+clean:
+	bash scripts/clean.sh
+clean-dist:
+	bash scripts/clean.sh dist
 
 $(LUA_ROCKSPEC): cai.rockspec.in scripts/render_release_rockspec.sh | deps-debug
 	mkdir -p "$(LUA_ROCK_TREE)"
 	lib_ext="$$(luarocks config variables.LIB_EXTENSION)"; ./scripts/render_release_rockspec.sh "$(RELEASE_VERSION)" "$(LUA_ROCKSPEC)" "git+file://$(CURDIR)" "" "$$lib_ext" ""
 
-$(LUA_LONEJSON_ROCK_STAMP): deps-debug
-	mkdir -p "$(LUA_ROCK_TREE)"
-	PKG_CONFIG_PATH="$(CAI_LONEJSON_PREFIX)/lib/pkgconfig:$${PKG_CONFIG_PATH:-}" \
-	CFLAGS="$${CFLAGS:+$$CFLAGS }-I$(CAI_LONEJSON_PREFIX)/include" \
-	LDFLAGS="$${LDFLAGS:+$$LDFLAGS }-L$(CAI_LONEJSON_PREFIX)/lib" \
-	LD_LIBRARY_PATH="$(CAI_LONEJSON_PREFIX)/lib:$${LD_LIBRARY_PATH:-}" \
-	luarocks install --tree "$(LUA_ROCK_TREE)" "$(LONEJSON_LUA_ROCK_URL)"
+$(LUA_LONEJSON_ROCK_STAMP): | deps-debug
+	bash scripts/lua_dependencies.sh lonejson "$(LONEJSON_LUA_ROCK_URL)"
 
-$(LUA_PSLOG_ROCK_STAMP): deps-debug
-	mkdir -p "$(LUA_ROCK_TREE)"
-	PKG_CONFIG_PATH="$(CAI_PSLOG_PREFIX)/lib/pkgconfig:$${PKG_CONFIG_PATH:-}" \
-	CFLAGS="$${CFLAGS:+$$CFLAGS }-fPIC -I$(CAI_PSLOG_PREFIX)/include" \
-	LDFLAGS="$${LDFLAGS:+$$LDFLAGS }-L$(CAI_PSLOG_PREFIX)/lib" \
-	LD_LIBRARY_PATH="$(CAI_PSLOG_PREFIX)/lib:$${LD_LIBRARY_PATH:-}" \
-	luarocks install --tree "$(LUA_ROCK_TREE)" "$(PSLOG_LUA_ROCK_URL)" LIBPSLOG_DIR="$(CAI_PSLOG_PREFIX)"
+$(LUA_PSLOG_ROCK_STAMP): | deps-debug
+	bash scripts/lua_dependencies.sh pslog "$(PSLOG_LUA_ROCK_URL)"
 
-$(LUA_ROCK_STAMP): $(LUA_ROCKSPEC) $(LUA_LONEJSON_ROCK_STAMP) $(LUA_PSLOG_ROCK_STAMP) lua/cai_lua.c scripts/build_lua_rock.sh $(LUA_ROCK_NATIVE_INPUTS)
+lua-rock: $(LUA_ROCKSPEC) $(LUA_LONEJSON_ROCK_STAMP) $(LUA_PSLOG_ROCK_STAMP)
 	$(CMAKE) --build --preset debug --target cai_static cai_shared
 	$(CMAKE) --install build/debug --prefix "$(LUA_ROCK_PREFIX)"
-	flock "$(LUA_ROCK_BUILD_LOCK)" bash -lc 'set -e; export PKG_CONFIG_PATH="$(LUA_ROCK_PREFIX)/lib/pkgconfig:$(CAI_LONEJSON_PREFIX)/lib/pkgconfig:$(CAI_PSLOG_PREFIX)/lib/pkgconfig:$(CAI_C_PKT_SYSTEMS_PREFIX)/lib/pkgconfig:$${PKG_CONFIG_PATH:-}"; export PSLOG_LUA_INCLUDE_DIR="$(ROOT)/$(LUA_ROCK_TREE)/share/lua/5.5"; CFLAGS="$${CFLAGS:+$$CFLAGS }$(LUA_ROCK_EXTRA_CFLAGS)" luarocks make --tree "$(LUA_ROCK_TREE)" "$(LUA_ROCKSPEC)"; rm -rf .luarocks-build; touch "$(LUA_ROCK_STAMP)"'
+	bash scripts/install_lua_rock.sh "$(LUA_ROCKSPEC)"
 
-lua-rock: $(LUA_ROCK_STAMP)
-
-lua-runner: lua-rock
+lua-runner: $(LUA_PSLOG_ROCK_STAMP) $(LUA_LONEJSON_ROCK_STAMP)
 	$(CMAKE) --preset debug-lua
 	$(CMAKE) --build --preset debug-lua --target cai_lua_runner
 
@@ -421,191 +183,51 @@ lua-env:
 	printf 'export CAI_LUA_EXECUTABLE="%s/build/debug-lua/cai_lua_runner"\n' "$(ROOT)"
 
 lua-test: lua-runner
-	$(CMAKE) --build --preset debug-lua --target cai_lua cai_lua_native_todo_store_test cai_lua_runner
-	$(CTEST) --test-dir build/debug-lua --output-on-failure $(CTEST_FLAGS) -R '^cai_(lua_export_policy_test|lua_chrome|lua_runner_test)$$'
-	platform=linux; if [ "$$(uname -s)" = Darwin ]; then platform=darwin; fi; \
-	nm_tool="$$(command -v llvm-nm || command -v nm)"; \
-	lua_module="$$(find "$(LUA_ROCK_TREE)/lib/lua" -type f \( -name 'cai.so' -o -name 'cai.dylib' \) -print -quit)"; \
-	[[ -n "$$lua_module" ]]; \
-	bash tests/shared_export_policy_test.sh "$$nm_tool" "$$lua_module" lua/cai_lua.exports "$$platform"
-	eval "$$(luarocks path --tree $(LUA_ROCK_TREE))" && \
-	LUA_CPATH="$(ROOT)/build/debug-lua/lua-test/?.so;$(ROOT)/build/debug-lua/lua-test/?.dylib;$${LUA_CPATH:-}" \
-	build/debug-lua/cai_lua_runner tests/lua/test_lua.lua "$(ROOT)/build/debug-lua"
-	$(CMAKE) --build build/debug --target cai_mcp_http_server
-	eval "$$(luarocks path --tree $(LUA_ROCK_TREE))" && \
-	/bin/sh tests/lua_mcp_client_e2e.sh build/debug/cai_mcp_http_server build/debug-lua/cai_lua_runner tests/lua/e2e_mcp_client.lua
+	$(CMAKE) --build --preset debug-lua --target cai_lua cai_lua_native_todo_store_test cai_lua_runner cai_mcp_http_server
+	bash ./scripts/test.sh debug-lua -R '^cai_lua_' -LE live
 
-$(RELEASE_LUA_SOURCE_TARBALL): $(LUA_ROCK_SOURCE_INPUTS)
-	rm -rf "$(RELEASE_LUA_ROCK_DIR)" "$(RELEASE_LUA_SOURCE_TARBALL)"
-	mkdir -p "$(RELEASE_LUA_ROCK_DIR)"
-	./scripts/stage_lua_rock_sources.sh "$(CURDIR)" "$(RELEASE_LUA_STAGE_DIR)" "$(RELEASE_VERSION)"
-	tar -C "$(RELEASE_LUA_ROCK_DIR)" --format=gnu --owner=0 --group=0 -cf "dist/cai-lua-$(RELEASE_VERSION).tar" "cai-$(RELEASE_VERSION)"
-	gzip -9 -f -n "dist/cai-lua-$(RELEASE_VERSION).tar"
-	rm -rf "$(RELEASE_LUA_ROCK_DIR)"
-
-$(RELEASE_LUA_ROCKSPEC): $(RELEASE_LUA_SOURCE_TARBALL) scripts/render_release_rockspec.sh
-	lib_ext="$$(luarocks config variables.LIB_EXTENSION)"; ./scripts/render_release_rockspec.sh "$(RELEASE_VERSION)" "$(RELEASE_LUA_ROCKSPEC)" "file://$(notdir $(RELEASE_LUA_SOURCE_TARBALL))" "" "$$lib_ext" "cai-$(RELEASE_VERSION)"
-
-$(RELEASE_LUA_PACK_SOURCE_TARBALL): $(LUA_ROCK_SOURCE_INPUTS)
-	rm -rf "$(RELEASE_LUA_PACK_DIR)"
-	mkdir -p "$(RELEASE_LUA_PACK_DIR)"
-	./scripts/stage_lua_rock_sources.sh "$(CURDIR)" "$(RELEASE_LUA_PACK_STAGE_DIR)" "$(RELEASE_VERSION)"
-	tar -C "$(RELEASE_LUA_PACK_DIR)" --format=gnu --owner=0 --group=0 -cf "$(RELEASE_LUA_PACK_DIR)/cai-lua-$(RELEASE_VERSION).tar" "cai-$(RELEASE_VERSION)"
-	gzip -9 -f -n "$(RELEASE_LUA_PACK_DIR)/cai-lua-$(RELEASE_VERSION).tar"
-
-$(RELEASE_LUA_PACK_ROCKSPEC): Makefile $(RELEASE_LUA_PACK_SOURCE_TARBALL) scripts/render_release_rockspec.sh
-	cd "$(RELEASE_LUA_PACK_STAGE_DIR)" && lib_ext="$$(luarocks config variables.LIB_EXTENSION)" && ./scripts/render_release_rockspec.sh "$(RELEASE_VERSION)" "../$(notdir $(RELEASE_LUA_PACK_ROCKSPEC))" "file://$(CURDIR)/$(RELEASE_LUA_PACK_SOURCE_TARBALL)" "" "$$lib_ext" "cai-$(RELEASE_VERSION)"
-
-$(RELEASE_LUA_SRC_ROCK): $(RELEASE_LUA_PACK_ROCKSPEC) $(RELEASE_LUA_ROCKSPEC)
-	rm -f "$(RELEASE_LUA_SRC_ROCK)"
-	cd "$(RELEASE_LUA_PACK_DIR)" && luarocks pack "$(notdir $(RELEASE_LUA_PACK_ROCKSPEC))"
-	mv "$(RELEASE_LUA_PACK_DIR)/$(notdir $(RELEASE_LUA_SRC_ROCK))" "$(RELEASE_LUA_SRC_ROCK)"
-	@mkdir -p "$(ROOT)/build"; \
-	tmp_dir="$$(mktemp -d "$(ROOT)/build/lua-rock-repack.XXXXXX")"; \
-	trap 'rm -rf "$$tmp_dir"' EXIT; \
-	lib_ext="$$(luarocks config variables.LIB_EXTENSION)"; \
-	./scripts/render_release_rockspec.sh "$(RELEASE_VERSION)" "$$tmp_dir/$(notdir $(RELEASE_LUA_PACK_ROCKSPEC))" "file://$(notdir $(RELEASE_LUA_SOURCE_TARBALL))" "" "$$lib_ext" "cai-$(RELEASE_VERSION)"; \
-	zip -q -d "$(RELEASE_LUA_SRC_ROCK)" "$(notdir $(RELEASE_LUA_PACK_ROCKSPEC))"; \
-	cd "$$tmp_dir" && zip -q "$(CURDIR)/$(RELEASE_LUA_SRC_ROCK)" "$(notdir $(RELEASE_LUA_PACK_ROCKSPEC))"
-	rm -rf "$(RELEASE_LUA_PACK_DIR)"
-
-release-lua-artifacts: $(RELEASE_LUA_ROCKSPEC) $(RELEASE_LUA_SRC_ROCK)
-
-print-release-version:
-	@printf '%s\n' "$(RELEASE_VERSION)"
-
-package:
-	$(MAKE) clean-dist
-	$(MAKE) build-release
-	bash ./scripts/package.sh release-matrix
-
-package-source:
-	bash ./scripts/build.sh package-source
-
-package-source-smoke: package-source
-	bash ./scripts/test_release_from_source.sh "$(ROOT)" "$(ROOT)/dist/cai-$(shell sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h).tar.gz"
-
-package-checksums: package release-lua-artifacts
-	$(CMAKE) -DCAI_DIST_DIR="$(ROOT)/dist" -DCAI_VERSION="$(RELEASE_VERSION)" -P cmake/package_checksums.cmake
-
-package-verify: package-checksums
-	bash ./scripts/package-verify.sh "$(ROOT)" "$$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h)"
-
-verify-release-archives: package-verify
-
-verify-release-privacy: package-verify
-
-release-matrix:
-	$(MAKE) clean-dist
-	$(MAKE) build-release
-	$(CTEST) --test-dir build/x86_64-linux-gnu-release --output-on-failure $(CTEST_FLAGS) -LE live
-	$(MAKE) valgrind
-	$(MAKE) fuzz-smoke
-	$(MAKE) lua-test
-	$(MAKE) test-offline
-	$(MAKE) test-e2e
-	bash ./scripts/build.sh cai
-	bash ./scripts/test.sh cai $(CTEST_FLAGS)
-	bash ./scripts/package.sh release-matrix
-	$(CMAKE) --build --preset cai --target cai_package_cli
-	$(MAKE) release-lua-artifacts
-	$(CMAKE) -DCAI_DIST_DIR="$(ROOT)/dist" -DCAI_VERSION="$(RELEASE_VERSION)" -P cmake/package_checksums.cmake
-	bash ./scripts/package-verify.sh "$(ROOT)" "$$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h)"
-
-release:
-	$(MAKE) lifecycle-version-contract
-	$(MAKE) clean
-	$(MAKE) release-pipeline
-	$(MAKE) package-source-smoke
-	$(CMAKE) -DCAI_DIST_DIR="$(ROOT)/dist" -DCAI_VERSION="$(RELEASE_VERSION)" -P cmake/package_checksums.cmake
-	bash ./scripts/package-verify.sh "$(ROOT)" "$$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' build/x86_64-linux-gnu-release/generated/include/cai/version.h)"
+release-lua-artifacts:
+	bash scripts/package_lua.sh "$(RELEASE_VERSION)"
 
 devenv-check:
 	$(DEVENV) check
-
 dev-up:
 	$(DEVENV) up
-
 dev-down:
 	$(DEVENV) down
-
 dev-reset:
 	$(DEVENV) reset
-
 dev-ps:
 	$(DEVENV) ps
-
 dev-logs:
 	$(DEVENV) logs
-
+searxng-test:
+	curl -fsS --get "$(CAI_SEARXNG_BASE_URL)/search" --data-urlencode "q=$(CAI_SEARXNG_TEST_QUERY)" --data-urlencode format=json --data-urlencode "engines=$(CAI_SEARXNG_TEST_ENGINE)"
+mcp-everything-test: build-debug
+	$(CMAKE) --build --preset debug --target cai_mcp_everything_e2e
+	build/debug/cai_mcp_everything_e2e "$(CAI_MCP_EVERYTHING_BASE_URL)"
+mcp-everything-live-test:
+	@test "$${CAI_ENABLE_INTEGRATION_TESTS:-0}" = 1
+	$(MAKE) integration-build
+	bash scripts/test.sh integration -R '^cai_integration_chatgpt_mcp_client_tool$$'
+mcp-inspector-e2e: build-debug
+	@test "$${CAI_MCP_INSPECTOR_E2E:-0}" = 1
+	bash scripts/test.sh debug -R '^cai_mcp_inspector_e2e$$'
 searxng-pull:
 	$(DEVENV) pull searxng
-
 searxng-up:
 	$(DEVENV) up searxng
-
 searxng-wait:
 	$(DEVENV) wait searxng
-
 searxng-down:
 	$(DEVENV) down searxng
-
 searxng-logs:
 	$(DEVENV) logs searxng
-
-searxng-test:
-	@url="$${CAI_SEARXNG_BASE_URL:-$(CAI_SEARXNG_BASE_URL)}/search"; \
-	engine="$${CAI_SEARXNG_TEST_ENGINE:-$(CAI_SEARXNG_TEST_ENGINE)}"; \
-	query="$${CAI_SEARXNG_TEST_QUERY:-$(CAI_SEARXNG_TEST_QUERY)}"; \
-	printf 'GET %s?q=%s&format=json&engines=%s\n' "$$url" "$$query" "$$engine"; \
-	curl -fsS --get "$$url" \
-		--data-urlencode "q=$$query" \
-		--data-urlencode "format=json" \
-		--data-urlencode "engines=$$engine" \
-		--data-urlencode "safesearch=0" \
-		--data-urlencode "language=en" | head -c "$${CAI_SEARXNG_TEST_BYTES:-2000}"; \
-	printf '\n'
-
 mcp-everything-up:
 	$(DEVENV) up mcp-everything
-
 mcp-everything-wait:
 	$(DEVENV) wait mcp-everything
-
 mcp-everything-down:
 	$(DEVENV) down mcp-everything
-
 mcp-everything-logs:
 	$(DEVENV) logs mcp-everything
-
-mcp-everything-test: build-debug
-	$(CMAKE) --build build/debug --target cai_mcp_everything_e2e
-	@url="$${CAI_MCP_EVERYTHING_BASE_URL:-$(CAI_MCP_EVERYTHING_BASE_URL)}"; \
-	build/debug/cai_mcp_everything_e2e "$$url"
-
-mcp-everything-live-test:
-	@if [[ "$${CAI_ENABLE_INTEGRATION_TESTS:-}" != "1" ]]; then \
-		printf '%s\n' 'Refusing to run live MCP Everything test without CAI_ENABLE_INTEGRATION_TESTS=1'; \
-		exit 2; \
-	fi
-	$(MAKE) integration-build
-	$(CTEST) --preset integration --output-on-failure $(CTEST_FLAGS) -R '^cai_integration_chatgpt_mcp_client_tool$$'
-
-mcp-inspector-e2e:
-	@if [[ "$${CAI_MCP_INSPECTOR_E2E:-}" != "1" ]]; then \
-		printf '%s\n' 'Refusing to run MCP Inspector e2e without CAI_MCP_INSPECTOR_E2E=1'; \
-		exit 2; \
-	fi
-	$(MAKE) build-debug
-	CAI_MCP_INSPECTOR_IMAGE="$(CAI_MCP_INSPECTOR_IMAGE)" \
-	$(CTEST) --preset debug --output-on-failure $(CTEST_FLAGS) -R '^cai_mcp_inspector_e2e$$'
-
-format:
-	bash ./scripts/build.sh configure-debug
-	$(CMAKE) --build build/debug --target clang-format
-
-clean:
-	bash ./scripts/clean.sh
-
-clean-dist:
-	bash ./scripts/clean.sh dist

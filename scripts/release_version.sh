@@ -1,51 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-if [[ $# -gt 1 ]]; then
-  printf 'usage: %s [repo-root]\n' "$0" >&2
-  exit 1
-fi
-
-repo_root=${1:-$(pwd)}
+if [[ $# -gt 2 ]]; then printf 'usage: %s [ROOT] [--require-release]\n' "$0" >&2; exit 2; fi
+root=$(cd "${1:-.}" && pwd -P)
+require=${2:-}
+[[ -z "$require" || "$require" == --require-release ]] || exit 2
+semver='(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)([.](0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+([0-9A-Za-z-]+([.][0-9A-Za-z-]+)*))?'
+fail() { printf 'release identity: %s\n' "$*" >&2; exit 1; }
+owned=false
+top=$(git -C "$root" rev-parse --show-toplevel 2>/dev/null || true)
+if [[ -n "$top" && $(cd "$top" && pwd -P) == "$root" ]]; then owned=true; fi
 version=${CAI_VERSION_OVERRIDE:-}
-semver_regex='(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)([.](0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?(\+([0-9A-Za-z-]+([.][0-9A-Za-z-]+)*))?'
-
-inside_git=false
-if [[ -z "$version" ]] && command -v git >/dev/null 2>&1; then
-  if git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    git_top=$(git -C "$repo_root" rev-parse --show-toplevel 2>/dev/null || true)
-    repo_top=$(cd "$repo_root" && pwd -P)
-    if [[ -n "$git_top" && "$(cd "$git_top" && pwd -P)" == "$repo_top" ]]; then
-      inside_git=true
-      tag=$(git -C "$repo_root" describe --tags --exact-match --match 'v[0-9]*' 2>/dev/null || true)
-      if [[ -n "$tag" ]]; then
-        tag_type=$(git -C "$repo_root" cat-file -t "refs/tags/$tag" 2>/dev/null || true)
-        if [[ "$tag_type" != "commit" ]]; then
-          printf 'cai release tag must be a lightweight tag: %s resolves to %s\n' \
-            "$tag" "${tag_type:-unknown}" >&2
-          exit 1
-        fi
-        if [[ ! "$tag" =~ ^v(${semver_regex})$ ]]; then
-          printf 'invalid cai release tag: %s\n' "$tag" >&2
-          exit 1
-        fi
-        version=${tag#v}
-      fi
+if [[ -n "$require" ]]; then
+  [[ "$owned" == true ]] || fail 'final release requires the owning Git checkout'
+  [[ -z "$version" ]] || fail 'candidate version overrides are forbidden for final release'
+  [[ -z $(git -C "$root" status --porcelain=v1 --untracked-files=all) ]] || fail 'final release requires a clean committed worktree'
+fi
+if [[ -z "$version" && "$owned" == true ]]; then
+  head=$(git -C "$root" rev-parse HEAD)
+  tags=()
+  while read -r type object peeled ref; do
+    tag=${ref#refs/tags/}
+    [[ "$tag" =~ ^v[0-9] ]] || continue
+    if [[ "$object" == "$head" || "$peeled" == "$head" ]]; then
+      [[ "$tag" =~ ^v${semver}$ ]] || fail "invalid exact release tag: $tag"
+      [[ "$type" == commit ]] || fail "exact release tag $tag is not lightweight"
+      tags+=("$tag")
     fi
-  fi
+  done < <(git -C "$root" for-each-ref --format='%(objecttype) %(objectname) %(*objectname) %(refname)' refs/tags | sed 's/  / - /')
+  [[ ${#tags[@]} -le 1 ]] || fail 'multiple exact release tags on HEAD'
+  if [[ ${#tags[@]} == 1 ]]; then version=${tags[0]#v}; fi
+elif [[ -z "$version" && -f "$root/VERSION" && -f "$root/RELEASE_MANIFEST" ]]; then
+  version=$(sed 's/^[[:space:]]*//;s/[[:space:]]*$//' "$root/VERSION")
 fi
-
-if [[ -z "$version" && "$inside_git" != true && -f "$repo_root/VERSION" ]]; then
-  version=$(sed 's/^[[:space:]]*//;s/[[:space:]]*$//' "$repo_root/VERSION")
-fi
-
-if [[ -z "$version" ]]; then
-  version=0.0.0
-fi
-
-if [[ ! "$version" =~ ^${semver_regex}$ ]]; then
-  printf 'invalid cai release version: %s\n' "$version" >&2
-  exit 1
-fi
-
+[[ -z "$require" || -n "$version" ]] || fail 'HEAD must have one exact lightweight vX.Y.Z release tag'
+version=${version:-0.0.0}
+[[ "$version" =~ ^${semver}$ ]] || fail "invalid version: $version"
 printf '%s\n' "$version"

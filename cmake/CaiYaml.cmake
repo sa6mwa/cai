@@ -27,10 +27,17 @@ elseif("${CMAKE_C_FLAGS} ${yaml_configuration_flags}" MATCHES "fsanitize")
 endif()
 set(CAI_LIBYAML_PREFIX "${CAI_DEPS_DIR}/libyaml-${CAI_LIBYAML_VERSION}-${CAI_TARGET_ID}-${yaml_profile}")
 set(CAI_LIBYAML_BUILD_DIR "${CAI_LIBYAML_PREFIX}/build")
+set(CAI_LIBYAML_ENTRYPOINT "${CAI_LIBYAML_PREFIX}/source")
+file(MAKE_DIRECTORY "${CAI_LIBYAML_ENTRYPOINT}")
+# Matching consumers may live in the checkout or the extracted source lane.
+# Keep CMake's owning source directory stable while tracking the actual wrapper.
+file(CONFIGURE OUTPUT "${CAI_LIBYAML_ENTRYPOINT}/CMakeLists.txt"
+  CONTENT "cmake_minimum_required(VERSION 3.21)\nproject(cai_private_yaml VERSION ${CAI_LIBYAML_VERSION} LANGUAGES C)\ninclude(\"\${CAI_YAML_WRAPPER}\")\n" @ONLY)
 function(cai_configure_yaml)
   file(MAKE_DIRECTORY "${CAI_LIBYAML_PREFIX}")
   file(LOCK "${CAI_LIBYAML_PREFIX}/build.lock" GUARD FUNCTION TIMEOUT 600)
   set(arguments -G Ninja "-DCAI_YAML_SOURCE=${CAI_LIBYAML_SOURCE}"
+    "-DCAI_YAML_WRAPPER=${CMAKE_CURRENT_FUNCTION_LIST_DIR}/libyaml/CMakeLists.txt"
     -DCMAKE_BUILD_TYPE=Release
     "-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}" "-DCMAKE_C_FLAGS=${yaml_flags}"
     "-DCMAKE_C_FLAGS_RELEASE=${yaml_release_flags}"
@@ -44,7 +51,7 @@ function(cai_configure_yaml)
     list(APPEND arguments "-DCMAKE_SYSROOT=${CMAKE_SYSROOT}")
   endif()
   execute_process(COMMAND "${CMAKE_COMMAND}"
-    -S "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/libyaml"
+    -S "${CAI_LIBYAML_ENTRYPOINT}"
     -B "${CAI_LIBYAML_BUILD_DIR}" ${arguments} RESULT_VARIABLE result)
   if(NOT result EQUAL 0)
     message(FATAL_ERROR "Cannot configure private libyaml producer")

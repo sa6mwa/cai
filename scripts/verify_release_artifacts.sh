@@ -302,6 +302,25 @@ read_checksum_artifacts() {
   done <"$checksums"
 }
 
+require_complete_manifest() {
+  local target_text target artifact
+  local expected=("cai-$version.tar.gz" "cai-lua-$version.tar.gz"
+    "cai-cli-$version-x86_64-linux-musl.tar.gz"
+    "cai-$version-1.rockspec" "cai-$version-1.src.rock")
+  target_text=${CAI_RELEASE_TARGETS:-}
+  if [[ -z "$target_text" ]]; then
+    target_text=$("$repo_root/scripts/release_targets.sh")
+  fi
+  while read -r target; do
+    [[ -z "$target" ]] || expected+=("cai-$version-$target.tar.gz")
+  done <<<"${target_text//;/$'\n'}"
+  # No partial release can become successful by omitting missing payloads.
+  [[ $# == ${#expected[@]} ]] || fail 'incomplete or duplicate release manifest inventory'
+  for artifact in "${expected[@]}"; do
+    artifact_list_contains "$artifact" "$@" || fail "release manifest omits $artifact"
+  done
+}
+
 artifact_list_contains() {
   local needle=$1
   shift
@@ -351,7 +370,7 @@ verify_dist_manifest_closure() {
       cai-"$version"-CHECKSUMS)
         ;;
       cai-*-CHECKSUMS)
-        fail "stale checksum manifest remains in dist: $release_name"
+        continue
         ;;
       cai-*-SHA256SUMS)
         fail "deprecated checksum manifest remains in dist: $release_name"
@@ -362,7 +381,7 @@ verify_dist_manifest_closure() {
         fi
         ;;
       *)
-        fail "stale release artifact remains in dist: $release_name"
+        continue
         ;;
     esac
   done
@@ -519,13 +538,22 @@ shell_value() {
   printf '%s\n' "${line#*=}" | xargs printf '%s\n'
 }
 
+release_build_dir() {
+  if [[ "$1" == x86_64-linux-gnu && -n ${CAI_NATIVE_RELEASE_BINARY_DIR:-} ]]; then
+    printf '%s\n' "$CAI_NATIVE_RELEASE_BINARY_DIR"
+  else
+    printf '%s\n' "$repo_root/build/$1-release"
+  fi
+}
+
+
 find_target_otool() {
   local target_id=$1
   local assignments
   local otool
 
   assignments=$("$repo_root/scripts/discover_target_tools.sh" \
-    "$repo_root/build/$target_id-release" "$target_id")
+    "$(release_build_dir "$target_id")" "$target_id")
   otool=$(shell_value "$assignments" OTOOL || true)
   if [[ -n "$otool" && -x "$otool" ]]; then
     printf '%s\n' "$otool"
@@ -540,7 +568,7 @@ find_target_readelf() {
   local readelf
 
   assignments=$("$repo_root/scripts/discover_target_tools.sh" \
-    "$repo_root/build/$target_id-release" "$target_id")
+    "$(release_build_dir "$target_id")" "$target_id")
   readelf=$(shell_value "$assignments" READELF || true)
   if [[ -n "$readelf" && -x "$readelf" ]]; then
     printf '%s\n' "$readelf"
@@ -555,7 +583,7 @@ find_target_nm() {
   local nm
 
   assignments=$("$repo_root/scripts/discover_target_tools.sh" \
-    "$repo_root/build/$target_id-release" "$target_id")
+    "$(release_build_dir "$target_id")" "$target_id")
   nm=$(shell_value "$assignments" NM || true)
   if [[ -n "$nm" && -x "$nm" ]]; then
     printf '%s\n' "$nm"
@@ -570,7 +598,7 @@ find_target_cc() {
   local cc
 
   assignments=$("$repo_root/scripts/discover_target_tools.sh" \
-    "$repo_root/build/$target_id-release" "$target_id")
+    "$(release_build_dir "$target_id")" "$target_id")
   cc=$(shell_value "$assignments" CC || true)
   if [[ -n "$cc" && -x "$cc" ]]; then
     printf '%s\n' "$cc"
@@ -582,7 +610,7 @@ find_target_cc() {
 build_cache_value() {
   local target_id=$1
   local key=$2
-  local cache="$repo_root/build/$target_id-release/CMakeCache.txt"
+  local cache="$(release_build_dir "$target_id")/CMakeCache.txt"
   local value
 
   [[ -f "$cache" ]] || return 1
@@ -1227,11 +1255,14 @@ fi
 
 verify_checksum_file
 
-mapfile -t artifacts < <(read_checksum_artifacts)
+new_workspace manifest-input
+read_checksum_artifacts >"$workspace_path/artifacts"
+mapfile -t artifacts <"$workspace_path/artifacts"
 if [[ ${#artifacts[@]} -eq 0 ]]; then
   fail "checksum manifest lists no release artifacts"
 fi
 verify_manifest_artifacts "${artifacts[@]}"
+require_complete_manifest "${artifacts[@]}"
 verify_dist_manifest_closure "${artifacts[@]}"
 
 archive_count=0

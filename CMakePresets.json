@@ -55,7 +55,8 @@
       "name": "debug",
       "inherits": "native-lifecycle",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CAI_ENABLE_VALGRIND_TESTS": "ON"
       }
     },
     {
@@ -186,12 +187,11 @@
     },
     {
       "name": "valgrind",
-      "inherits": "bootlin-native",
+      "inherits": "debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CAI_ENABLE_VALGRIND_TESTS": "ON",
-        "CAI_BUILD_EXAMPLES": "OFF"
-      }
+        "CAI_ENABLE_VALGRIND_TESTS": "ON"
+      },
+      "binaryDir": "${sourceDir}/build/debug"
     },
     {
       "name": "fuzz",
@@ -226,79 +226,98 @@
   "buildPresets": [
     {
       "name": "debug",
-      "configurePreset": "debug"
+      "configurePreset": "debug",
+      "jobs": 4
     },
     {
       "name": "libcai",
-      "configurePreset": "libcai"
+      "configurePreset": "libcai",
+      "jobs": 4
     },
     {
       "name": "cai",
-      "configurePreset": "cai"
+      "configurePreset": "cai",
+      "jobs": 4
     },
     {
       "name": "debug-host-deps",
-      "configurePreset": "debug-host-deps"
+      "configurePreset": "debug-host-deps",
+      "jobs": 4
     },
     {
       "name": "debug-lua",
-      "configurePreset": "debug-lua"
+      "configurePreset": "debug-lua",
+      "jobs": 4
     },
     {
       "name": "release",
-      "configurePreset": "release"
+      "configurePreset": "release",
+      "jobs": 4
     },
     {
       "name": "x86_64-linux-gnu-release",
-      "configurePreset": "x86_64-linux-gnu-release"
+      "configurePreset": "x86_64-linux-gnu-release",
+      "jobs": 4
     },
     {
       "name": "x86_64-linux-musl-release",
-      "configurePreset": "x86_64-linux-musl-release"
+      "configurePreset": "x86_64-linux-musl-release",
+      "jobs": 4
     },
     {
       "name": "aarch64-linux-gnu-release",
-      "configurePreset": "aarch64-linux-gnu-release"
+      "configurePreset": "aarch64-linux-gnu-release",
+      "jobs": 4
     },
     {
       "name": "aarch64-linux-musl-release",
-      "configurePreset": "aarch64-linux-musl-release"
+      "configurePreset": "aarch64-linux-musl-release",
+      "jobs": 4
     },
     {
       "name": "armhf-linux-gnu-release",
-      "configurePreset": "armhf-linux-gnu-release"
+      "configurePreset": "armhf-linux-gnu-release",
+      "jobs": 4
     },
     {
       "name": "armhf-linux-musl-release",
-      "configurePreset": "armhf-linux-musl-release"
+      "configurePreset": "armhf-linux-musl-release",
+      "jobs": 4
     },
     {
       "name": "arm64-apple-darwin-release",
-      "configurePreset": "arm64-apple-darwin-release"
+      "configurePreset": "arm64-apple-darwin-release",
+      "jobs": 4
     },
     {
       "name": "asan",
-      "configurePreset": "asan"
+      "configurePreset": "asan",
+      "jobs": 4
     },
     {
       "name": "valgrind",
-      "configurePreset": "valgrind"
+      "configurePreset": "valgrind",
+      "jobs": 4
     },
     {
       "name": "fuzz",
-      "configurePreset": "fuzz"
+      "configurePreset": "fuzz",
+      "jobs": 4
     },
     {
       "name": "coverage",
-      "configurePreset": "coverage"
+      "configurePreset": "coverage",
+      "jobs": 4
     },
     {
       "name": "integration",
-      "configurePreset": "integration"
+      "configurePreset": "integration",
+      "jobs": 4
     },
     {
       "name": "debug-cai",
-      "configurePreset": "debug-cai"
+      "configurePreset": "debug-cai",
+      "jobs": 4
     }
   ],
   "testPresets": [
@@ -307,7 +326,8 @@
       "configurePreset": "debug",
       "execution": {
         "stopOnFailure": true,
-        "jobs": 1
+        "jobs": 1,
+        "noTestsAction": "error"
       },
       "output": {
         "outputOnFailure": true
@@ -318,7 +338,8 @@
       "configurePreset": "libcai",
       "execution": {
         "stopOnFailure": true,
-        "jobs": 1
+        "jobs": 1,
+        "noTestsAction": "error"
       },
       "output": {
         "outputOnFailure": true
@@ -334,7 +355,8 @@
       },
       "execution": {
         "stopOnFailure": true,
-        "jobs": 1
+        "jobs": 1,
+        "noTestsAction": "error"
       },
       "output": {
         "outputOnFailure": true
@@ -345,7 +367,8 @@
       "configurePreset": "debug-host-deps",
       "execution": {
         "stopOnFailure": true,
-        "jobs": 1
+        "jobs": 1,
+        "noTestsAction": "error"
       },
       "output": {
         "outputOnFailure": true
@@ -356,7 +379,8 @@
       "configurePreset": "debug-lua",
       "execution": {
         "stopOnFailure": true,
-        "jobs": 1
+        "jobs": 1,
+        "noTestsAction": "error"
       },
       "output": {
         "outputOnFailure": true
@@ -367,7 +391,8 @@
       "configurePreset": "release",
       "execution": {
         "stopOnFailure": true,
-        "jobs": 1
+        "jobs": 1,
+        "noTestsAction": "error"
       },
       "output": {
         "outputOnFailure": true
@@ -378,7 +403,8 @@
       "configurePreset": "asan",
       "execution": {
         "stopOnFailure": true,
-        "jobs": 1
+        "jobs": 1,
+        "noTestsAction": "error"
       },
       "output": {
         "outputOnFailure": true
@@ -394,7 +420,8 @@
       },
       "execution": {
         "stopOnFailure": true,
-        "jobs": 1
+        "jobs": 1,
+        "noTestsAction": "error"
       },
       "output": {
         "outputOnFailure": true
@@ -405,7 +432,8 @@
       "configurePreset": "coverage",
       "execution": {
         "stopOnFailure": true,
-        "jobs": 1
+        "jobs": 1,
+        "noTestsAction": "error"
       },
       "output": {
         "outputOnFailure": true
@@ -421,7 +449,8 @@
       },
       "execution": {
         "stopOnFailure": true,
-        "jobs": 1
+        "jobs": 1,
+        "noTestsAction": "error"
       },
       "output": {
         "outputOnFailure": true
@@ -437,7 +466,25 @@
       },
       "execution": {
         "stopOnFailure": true,
-        "jobs": 1
+        "jobs": 1,
+        "noTestsAction": "error"
+      },
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz",
+      "filter": {
+        "include": {
+          "label": "^fuzz$"
+        }
+      },
+      "execution": {
+        "stopOnFailure": true,
+        "jobs": 1,
+        "noTestsAction": "error"
       },
       "output": {
         "outputOnFailure": true

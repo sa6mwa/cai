@@ -38,7 +38,9 @@ mkdir -p "$extract_root" "$build_root"
 
 tar -xzf "$source_tarball" -C "$extract_root"
 
-source_root=$(find "$extract_root" -mindepth 1 -maxdepth 1 -type d | sort | head -n 1)
+mapfile -t source_roots < <(find "$extract_root" -mindepth 1 -maxdepth 1 -type d -print)
+[[ ${#source_roots[@]} == 1 ]] || { printf 'source reconstruction requires one source root\n' >&2; exit 1; }
+source_root=${source_roots[0]}
 if [[ -z "$source_root" ]]; then
   printf 'test_release_from_source.sh: failed to locate extracted source tree\n' >&2
   exit 1
@@ -57,7 +59,8 @@ fi
 cmake -S "$source_root" -B "$build_root" -G Ninja \
   "-DCMAKE_TOOLCHAIN_FILE=$source_root/cmake/toolchains/linux-bootlin.cmake" \
   -DCPKT_TARGET_ID=x86_64-linux-gnu -DCAI_TARGET_ID=x86_64-linux-gnu \
-  -DCAI_BUILD_INTEGRATION_TESTS=OFF
+  "-DCAI_DEPS_DIR=$repo_root/.cache/deps" \
+  -DCMAKE_BUILD_TYPE=Release -DCAI_BUILD_INTEGRATION_TESTS=OFF
 configured_version=$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' \
   "$build_root/generated/include/cai/version.h")
 if [[ "$configured_version" != "$release_version" ]]; then
@@ -71,5 +74,5 @@ if [[ "$pc_version" != "$release_version" ]]; then
     "$pc_version" "$release_version" >&2
   exit 1
 fi
-cmake --build "$build_root"
-ctest --test-dir "$build_root" --output-on-failure --stop-on-failure --parallel 1 -L smoke -LE live
+cmake --build "$build_root" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-4}"
+ctest --test-dir "$build_root" --no-tests=error --output-on-failure --stop-on-failure --parallel 1 -LE live

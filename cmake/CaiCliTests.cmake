@@ -1,0 +1,175 @@
+  if(CAI_BUILD_TESTS)
+    add_executable(cai_terminal_peer tests/terminal_peer.c)
+    cai_configure_cli_target(cai_terminal_peer)
+    find_program(CAI_TEST_PYTHON python3 REQUIRED)
+    find_program(CAI_TEST_JQ jq REQUIRED)
+    add_test(NAME cai_cli_help COMMAND cai_cli --help)
+    add_test(NAME cai_cli_config
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_config_test.sh"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_config PROPERTIES TIMEOUT 45)
+    add_test(NAME cai_cli_skills
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_skills_test.sh" "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_skills PROPERTIES TIMEOUT 45)
+    add_test(NAME cai_cli_chrome
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/chrome_test.sh"
+        cli "$<TARGET_FILE:cai_cli>" "${CMAKE_CURRENT_BINARY_DIR}"
+        "$<TARGET_FILE:cai_cli_startup_fixture>")
+    set_tests_properties(cai_cli_chrome PROPERTIES LABELS "integration;local;offline" TIMEOUT 90)
+
+    add_executable(cai_cli_shell_fixture tests/cli_shell_fixture.c
+      cli/options.c cli/config.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
+      cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c
+      cli/session_commands.c cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
+    target_link_libraries(cai_cli_shell_fixture PRIVATE cai_static
+      softline::softline_static libmdf::mdf_static lockdc::static)
+    cai_configure_cli_target(cai_cli_shell_fixture)
+    add_executable(cai_cli_settings_fixture tests/cli_settings_fixture.c
+      cli/options.c cli/config.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
+      cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c
+      cli/session_commands.c cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
+    target_link_libraries(cai_cli_settings_fixture PRIVATE cai_static
+      softline::softline_static libmdf::mdf_static lockdc::static)
+    cai_configure_cli_target(cai_cli_settings_fixture)
+    add_test(NAME cai_cli_settings
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_settings_test.sh"
+        "$<TARGET_FILE:cai_cli_settings_fixture>")
+    set_tests_properties(cai_cli_settings PROPERTIES TIMEOUT 45)
+    add_test(NAME cai_cli_shell_context
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_shell_context_test.sh"
+        "$<TARGET_FILE:cai_cli>" "$<TARGET_FILE:cai_cli_shell_fixture>")
+    set_tests_properties(cai_cli_shell_context PROPERTIES TIMEOUT 30)
+    add_executable(cai_cli_shell_runner_test tests/cli_shell_runner_test.c cli/shell.c cli/pouch_stream.c)
+    target_link_libraries(cai_cli_shell_runner_test PRIVATE cai_static lockdc::static)
+    cai_configure_cli_target(cai_cli_shell_runner_test)
+    target_compile_options(cai_cli_shell_runner_test PRIVATE -UNDEBUG)
+    add_test(NAME cai_cli_shell_runner COMMAND cai_cli_shell_runner_test "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(cai_cli_shell_runner PROPERTIES TIMEOUT 15)
+    add_executable(cai_cli_options_test tests/cli_options_test.c cli/options.c)
+    target_include_directories(cai_cli_options_test PRIVATE
+      "${CAI_PUBLIC_INCLUDE_DIR}" "${CAI_GENERATED_INCLUDE_DIR}")
+    cai_configure_cli_target(cai_cli_options_test)
+    add_test(NAME cai_cli_options COMMAND cai_cli_options_test)
+    add_executable(cai_cli_storage_stream_test
+      tests/cli_storage_stream_test.c cli/pouch_stream.c)
+    target_link_libraries(cai_cli_storage_stream_test PRIVATE cai_static lockdc::static)
+    cai_configure_cli_target(cai_cli_storage_stream_test)
+    add_test(NAME cai_cli_storage_stream COMMAND cai_cli_storage_stream_test)
+    set_tests_properties(cai_cli_storage_stream PROPERTIES TIMEOUT 30)
+    add_executable(cai_cli_reasoning_test tests/cli_reasoning_test.c
+      cli/options.c cli/config.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c cli/review_report.c
+      cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
+    target_link_libraries(cai_cli_reasoning_test PRIVATE cai_static
+      softline::softline_static libmdf::mdf_static lockdc::static)
+    cai_configure_cli_target(cai_cli_reasoning_test)
+    add_test(NAME cai_cli_reasoning COMMAND cai_cli_reasoning_test)
+    add_executable(cai_cli_log_test tests/cli_log_test.c
+      cli/log.c cli/response.c cli/pouch_stream.c)
+    target_link_libraries(cai_cli_log_test PRIVATE cai_static lockdc::static)
+    cai_configure_cli_target(cai_cli_log_test)
+    add_test(NAME cai_cli_log COMMAND cai_cli_log_test "${CMAKE_CURRENT_BINARY_DIR}")
+    add_executable(cai_cli_startup_fixture tests/cli_startup_fixture.c
+      cli/options.c cli/config.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c cli/review_report.c cli/pouch.c
+      cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c cli/log.c
+      cli/response.c cli/chrome_host.c cli/chrome_setup.c)
+    target_link_libraries(cai_cli_startup_fixture PRIVATE cai_static
+      softline::softline_static libmdf::mdf_static lockdc::static)
+    cai_configure_cli_target(cai_cli_startup_fixture)
+    add_test(NAME cai_cli_startup
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_startup_test.sh"
+        "$<TARGET_FILE:cai_cli_startup_fixture>")
+    set_tests_properties(cai_cli_startup PROPERTIES TIMEOUT 30)
+    add_executable(cai_cli_quota_refresh_test tests/cli_quota_refresh_test.c
+      cli/quota_refresh.c cli/pouch_stream.c)
+    target_link_libraries(cai_cli_quota_refresh_test PRIVATE cai_static lockdc::static)
+    cai_configure_cli_target(cai_cli_quota_refresh_test)
+    target_compile_options(cai_cli_quota_refresh_test PRIVATE -UNDEBUG)
+    add_test(NAME cai_cli_quota_refresh COMMAND cai_cli_quota_refresh_test)
+    set_tests_properties(cai_cli_quota_refresh PROPERTIES TIMEOUT 30)
+    add_executable(cai_cli_pouch_startup_test tests/cli_pouch_startup_test.c
+      cli/pouch_stream.c)
+    target_link_libraries(cai_cli_pouch_startup_test PRIVATE cai_static lockdc::static)
+    cai_configure_cli_target(cai_cli_pouch_startup_test)
+    target_compile_options(cai_cli_pouch_startup_test PRIVATE -UNDEBUG)
+    add_test(NAME cai_cli_pouch_startup
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_pouch_startup_test.sh"
+        "$<TARGET_FILE:cai_cli_pouch_startup_test>" "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(cai_cli_pouch_startup PROPERTIES TIMEOUT 60)
+    add_executable(cai_cli_status_test tests/cli_status_test.c cli/status.c)
+    target_link_libraries(cai_cli_status_test PRIVATE cai_static
+      softline::softline_static)
+    cai_configure_cli_target(cai_cli_status_test)
+    add_test(NAME cai_cli_status COMMAND cai_cli_status_test)
+    add_executable(cai_cli_review_report_test
+      tests/cli_review_report_test.c cli/review_report.c)
+    target_link_libraries(cai_cli_review_report_test PRIVATE cai_static)
+    cai_configure_cli_target(cai_cli_review_report_test)
+    add_test(NAME cai_cli_review_report COMMAND cai_cli_review_report_test)
+    add_test(NAME cai_cli_sessions
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_sessions_test.sh"
+        "$<TARGET_FILE:cai_cli>" "${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME cai_cli_providers
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_providers_test.sh"
+        "$<TARGET_FILE:cai_cli>" "${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME cai_cli_login
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_login_test.sh"
+        "$<TARGET_FILE:cai_cli>")
+    add_test(NAME cai_cli_modes
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_modes_test.sh"
+        "$<TARGET_FILE:cai_cli>")
+    add_test(NAME cai_cli_terminal
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_test.sh"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_terminal PROPERTIES TIMEOUT 60)
+    add_test(NAME cai_cli_terminal_handoff
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_handoff_test.sh"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_terminal_handoff PROPERTIES TIMEOUT 45)
+    add_test(NAME cai_cli_history
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_history_test.sh"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_history PROPERTIES TIMEOUT 45)
+    add_test(NAME cai_cli_reasoning_presentation
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_reasoning_presentation_test.sh"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_reasoning_presentation PROPERTIES TIMEOUT 45)
+    add_test(NAME cai_cli_notices
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_notices_test.sh"
+        "$<TARGET_FILE:cai_cli_startup_fixture>")
+    set_tests_properties(cai_cli_notices PROPERTIES TIMEOUT 30)
+    add_test(NAME cai_cli_goal
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_goal_test.sh"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_goal PROPERTIES TIMEOUT 45)
+    add_test(NAME cai_cli_shell
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_shell_test.sh"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_shell PROPERTIES TIMEOUT 45)
+    add_test(NAME cai_cli_tool_display
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_tool_display_test.sh"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_tool_display PROPERTIES TIMEOUT 60)
+    add_test(NAME cai_cli_terminal_failures
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_failures_test.sh"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_terminal_failures PROPERTIES TIMEOUT 60)
+    add_test(NAME cai_cli_lockd_endpoint
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_lockd_endpoint_test.sh"
+        "$<TARGET_FILE:cai_cli>")
+    add_test(NAME cai_cli_package_layout
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_package_layout_test.sh"
+        "${CMAKE_CURRENT_BINARY_DIR}")
+    get_property(_cai_cli_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    list(FILTER _cai_cli_targets INCLUDE REGEX "^cai_cli($|_)|^cai_terminal_peer$")
+    add_custom_target(cai_cli_tests DEPENDS ${_cai_cli_targets})
+    get_property(_cai_cli_tests DIRECTORY PROPERTY TESTS)
+    list(FILTER _cai_cli_tests INCLUDE REGEX "^cai_cli_")
+    set_tests_properties(${_cai_cli_tests} PROPERTIES LABELS "cli;local;offline"
+      ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>;CAI_TEST_PYTHON=${CAI_TEST_PYTHON};CAI_TEST_JQ=${CAI_TEST_JQ}")
+    foreach(_cai_cli_test IN LISTS _cai_cli_tests)
+      get_test_property(${_cai_cli_test} TIMEOUT _cai_cli_timeout)
+      if(NOT _cai_cli_timeout)
+        set_tests_properties(${_cai_cli_test} PROPERTIES TIMEOUT 90)
+      endif()
+    endforeach()
+  endif()

@@ -479,7 +479,7 @@ Lua uses `cai.skill_metadata(text_or_chunk_reader, fallback_name)` and
 `metadata:name()`, `metadata:description()`, `metadata:close()`.
 
 Libyaml 0.2.5 is temporarily built from checksum-pinned source into reusable
-static/shared outputs per target under `.cache/deps`, with archives retained in
+static/shared outputs per target in the repo-local dependency cache, with archives retained in
 the shared dependency cache (`CPKT_DEPENDENCY_CACHE`, or
 `${XDG_CACHE_HOME:-$HOME/.cache}/cpkt/deps`). Configure only prepares its native
 build graph; normal builds invoke the shared incremental producer. ASan,
@@ -683,6 +683,9 @@ The verification tiers are split intentionally:
   relevant tests. `make finalize-slice` is the default local pre-commit path
   for ordinary C changes: it runs clang-format and native unit checks.
   `CTEST_FLAGS='-R pattern --output-on-failure'` selects a smaller slice.
+  `make format` and `make format-check` do not configure or compile anything.
+  Python is restricted to small wire/data fixtures under `tests/fixtures`;
+  Bash, CMake and compiled C89 tests own execution and assertions.
 - `make clangd-check` validates every native debug translation unit with the
   host `clangd` against `build/debug/compile_commands.json`. It is an editor
   gate only and is not part of cross-target or release verification. Each
@@ -696,23 +699,33 @@ The verification tiers are split intentionally:
   Fuzz builds only its harnesses; Valgrind builds only its checked executable.
   `CTEST_FILTER='-LE live'` also selects all deterministic tests directly
   with `make test-debug`.
-- `make prerelease` formats, asserts a clean worktree, then enters
-  `release-matrix`. That matrix owns all deterministic gates: the core and
-  example suite runs once on the native release target, followed by native
-  hardening, Lua, offline integration, local e2e and the shipped musl CLI
-  checks. Other cross targets
-  receive build/link and package verification; no execution runner is configured.
-  Every gate must pass before release archives are generated.
-- `make release` checks the exact lightweight-tag version contract, cleans,
-  follows the same matrix path, then reconstructs the source archive and runs
-  its smoke tests. It does not replay the full core suite in the extracted tree.
-  Builds remain incremental outside this final clean release path; testing is
-  serialized even if the caller supplies `make -j`.
-- `CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-live` runs the
-  live-provider gate: integration tests plus a curated set of real
-  non-interactive examples.
-- `make prerelease-hardening` runs both tiers, then long fuzz. Its release
-  matrix runs once through `prerelease`.
+- `make prerelease` is incremental preparation: native feedback, selected target
+  build/link coverage and binary package verification. It accepts an explicit
+  `CAI_VERSION_OVERRIDE` candidate and never cleans or changes release refs.
+- `make release` and `make release-matrix` are the same final local delivery gate.
+  Before cleaning or provisioning, HEAD must have one exact lightweight release
+  tag, the worktree must be clean, and no version override may be set. The gate
+  cleans owned generated state once, preserving shared verified caches.
+- The shipped source archive is reconstructed into the native Release lane and
+  runs its complete non-live CTest inventory. That exact output supplies the GNU
+  SDK package; the main checkout does not build or test a second equivalent lane.
+  Other target SDKs receive build/link and extracted-package proof. The shipped
+  x86_64 musl CLI receives its actual runtime checks. Cross execution is otherwise
+  deferred because no runner is configured.
+- Native Valgrind, AFL++ corpus smoke, Lua, offline integration and local Podman
+  e2e retain their distinct scopes. Source-only host fixtures run once; hardening
+  and facade selections do not replay them. Every required selection rejects an
+  empty inventory and stops at its first failure. All lifecycle commands serialize.
+- `make package` is warm SDK packaging; its binary-only manifest is under `build/`.
+  `make package-verify` verifies an existing complete final artifact set without
+  rebuilding producers. The final CHECKSUMS file explicitly selects all shipped
+  SDKs, source, CLI and Lua artifacts; a missing member cannot silently shrink it.
+- `CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-live` selects live-provider
+  coverage explicitly. It creates no reusable credentialed success receipt.
+  `make prerelease-hardening` adds this opt-in gate and extended fuzzing.
+- Release failures stop; repair requires a separate iteration. Local delivery
+  never retags, pushes or publishes. Publication requires explicit engineer
+  direction and uses the checksum inventory, not a `dist/` wildcard.
 
 ## Design Bias
 

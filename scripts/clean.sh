@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 remove_generated_path() {
   local path=$1
   local full_path="$repo_root/$path"
 
   case "$path" in
-    build|dist|.cache|.luarocks-build) ;;
+    build|dist|.cache) ;;
     *)
       printf 'clean.sh: refusing unexpected generated path: %s\n' "$path" >&2
       exit 1
@@ -38,6 +38,7 @@ fi
 
 case "${1:-all}" in
   all)
+    cmake "-DROOT=$repo_root" -P "$repo_root/cmake/clean_check.cmake"
     # Keep the generated teardown manifests until their pods are stopped.
     if compgen -G "$repo_root/build/devenv/*.yaml" >/dev/null; then
       "$repo_root/scripts/devenv.sh" down
@@ -45,7 +46,6 @@ case "${1:-all}" in
     remove_generated_path build
     remove_generated_path dist
     remove_generated_path .cache
-    remove_generated_path .luarocks-build
     ;;
   dist)
     remove_generated_path dist

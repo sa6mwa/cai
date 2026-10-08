@@ -28,7 +28,7 @@ for root in /pinned/old /pinned/new; do
     "$test_root" "$root" >"$test_root/build/fuzz/CMakeCache.txt"
   actual=$(PATH="$test_root/bin:$PATH" bash "$test_root/scripts/build.sh" configure-fuzz)
   expected='--preset fuzz'
-  [[ "$root" == /pinned/new ]] || expected='--fresh --preset fuzz'
+  # Changing collections requires explicit invalidation, not a wrapper preset interpreter.
   [[ "$actual" == "$expected" ]] || { printf 'Expected %s, got %s\n' "$expected" "$actual" >&2; exit 1; }
 done
-printf 'Compiler collection change forces a fresh preset configuration\n'
+printf 'Native CMake owns compiler configuration; explicit invalidation is required\n'

@@ -22,10 +22,10 @@ dependencies = {
 }
 build = {
   type = "command",
-  build_command = "sh scripts/build_lua_rock.sh \"$(CC)\" \"$(CFLAGS)\" \"$(LIBFLAG)\" \"$(OBJ_EXTENSION)\" \"$(LIB_EXTENSION)\" \"$(LUA_INCDIR)\" \"$(ROCKS_TREE)\"",
+  build_command = "bash scripts/build_lua_rock.sh \"$(CC)\" \"$(CFLAGS)\" \"$(LIBFLAG)\" \"$(OBJ_EXTENSION)\" \"$(LIB_EXTENSION)\" \"$(LUA_INCDIR)\" \"$(ROCKS_TREE)\"",
   install = {
     lib = {
-      ["cai"] = ".luarocks-build/cai.@LIB_EXTENSION@",
+      ["cai"] = "build/luarocks-build/cai.@LIB_EXTENSION@",
     },
   },
 }

@@ -14,8 +14,10 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
   endif()
   include("${CMAKE_CURRENT_LIST_DIR}/linux-bootlin.cmake")
 elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
-  # Developer-only host-native Darwin builds. Release Darwin artifacts use the
-  # explicit osxcross release preset and toolchain.
+  find_program(CPKT_XCRUN xcrun REQUIRED)
+  execute_process(COMMAND "${CPKT_XCRUN}" --find clang OUTPUT_VARIABLE apple_cc
+    OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+  set(CMAKE_C_COMPILER "${apple_cc}" CACHE FILEPATH "Selected Apple compiler" FORCE)
 else()
   message(FATAL_ERROR
     "unsupported host system for native lifecycle toolchain: "

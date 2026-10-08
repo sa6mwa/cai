@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${CAI_MCP_INSPECTOR_E2E:-0}" != 1 ]]; then
-  echo 'SKIP: set CAI_MCP_INSPECTOR_E2E=1 to run MCP Inspector e2e'
-  exit 0
+  echo 'Set CAI_MCP_INSPECTOR_E2E=1 before configuring the Inspector gate.' >&2
+  exit 2
 fi
 if [[ $# -ne 1 || ! -x "$1" ]]; then
   echo "usage: $0 /path/to/cai_mcp_http_server" >&2

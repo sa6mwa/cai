@@ -40,20 +40,8 @@ if(NOT _cai_cmake_lists_text MATCHES
   message(FATAL_ERROR
     "CMake must force the resolved dependency cache value into CPKT_DEPENDENCY_CACHE")
 endif()
-if(NOT _cai_cmake_lists_text MATCHES
-   "_cai_previous_dependency_cache_entries" OR
-   NOT _cai_cmake_lists_text MATCHES
-   "_cai_cai_dependency_cache_changed" OR
-   NOT _cai_cmake_lists_text MATCHES
-   "set\\(_cai_dependency_cache_default \"\\$\\{CAI_DEPENDENCY_CACHE\\}\"\\)")
-  message(FATAL_ERROR
-    "CMake must accept CAI_DEPENDENCY_CACHE as a legacy input alias on fresh and cached configures")
-endif()
-if(NOT _cai_cmake_lists_text MATCHES
-   "set\\(CAI_DEPENDENCY_CACHE \"\\$\\{CPKT_DEPENDENCY_CACHE\\}\" CACHE PATH")
-  message(FATAL_ERROR
-    "CMake must keep CAI_DEPENDENCY_CACHE as a compatibility alias")
-endif()
+file(READ "${CAI_SOURCE_DIR}/cmake/CaiAcquisition.cmake" _cai_acquisition_text)
+string(APPEND _cai_cmake_lists_text "${_cai_acquisition_text}")
 if(NOT _cai_cmake_lists_text MATCHES
    "CPKT_DEPENDENCY_CACHE}/archives/sha256/\\$\\{sha256\\}/")
   message(FATAL_ERROR
@@ -237,7 +225,7 @@ _cai_reject_cache_key(${_cai_release_base_index} release-base
 _cai_find_configure_preset(debug _cai_debug_index)
 _cai_require_inherits(${_cai_debug_index} debug native-lifecycle)
 
-foreach(_cai_native_preset IN ITEMS release asan valgrind)
+foreach(_cai_native_preset IN ITEMS release asan)
   _cai_find_configure_preset(${_cai_native_preset} _cai_native_index)
   _cai_require_inherits(${_cai_native_index} ${_cai_native_preset} bootlin-native)
 endforeach()
@@ -247,6 +235,11 @@ foreach(_cai_debug_child IN ITEMS debug-lua coverage integration)
 endforeach()
 
 _cai_find_configure_preset(valgrind _cai_valgrind_index)
+_cai_require_inherits(${_cai_valgrind_index} valgrind debug)
+string(JSON _cai_valgrind_build_dir GET "${_cai_presets_text}" configurePresets ${_cai_valgrind_index} binaryDir)
+if(NOT _cai_valgrind_build_dir STREQUAL "${_cai_source_dir_literal}/build/debug")
+  message(FATAL_ERROR "Valgrind must reuse the native Debug producer")
+endif()
 _cai_require_cache_value(${_cai_valgrind_index} valgrind
   CAI_ENABLE_VALGRIND_TESTS ON)
 _cai_find_configure_preset(fuzz _cai_fuzz_index)

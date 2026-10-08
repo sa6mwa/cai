@@ -1,174 +1,26 @@
 #!/usr/bin/env bash
+# CMake presets are authoritative. No preset interpreter or implicit cleaning.
 set -euo pipefail
-
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+cd "$root"
 mode=${1:-debug}
-cd "$repo_root"
-
-bootlin_toolchain_file="$repo_root/cmake/toolchains/linux-bootlin.cmake"
-native_toolchain_file="$repo_root/cmake/toolchains/native-lifecycle.cmake"
-aflpp_toolchain_file="$repo_root/cmake/toolchains/linux-aflpp.cmake"
-
-cache_value() {
-  local cache=$1
-  local key=$2
-  [[ -f "$cache" ]] || return 1
-  sed -n "s#^${key}:[^=]*=##p" "$cache" | tail -n 1
-}
-
-native_target_id() {
-  local system processor
-  system=$(uname -s)
-  processor=$(uname -m)
-  case "$system:$processor" in
-    Linux:x86_64 | Linux:amd64)
-      printf '%s\n' x86_64-linux-gnu
-      ;;
-    Linux:*)
-      printf 'native lifecycle Linux builds require an x86_64 host because the pinned Bootlin compiler collections are x86-hosted; got %s\n' \
-        "$processor" >&2
-      return 1
-      ;;
-    Darwin:*)
-      printf '\n'
-      ;;
-    *)
-      printf 'unsupported host for native lifecycle build: %s %s\n' \
-        "$system" "$processor" >&2
-      return 1
-      ;;
-  esac
-}
-
-configure_preset() {
-  local preset=$1
-  local expected_toolchain=${2:-}
-  local target_id=${3:-}
-  local require_bootlin_compiler=${4:-1}
-  local build_dir="$repo_root/build/$preset"
-  local cache="$build_dir/CMakeCache.txt"
-  local -a cmake_args=(--preset "$preset")
-
-  if [[ -n "$expected_toolchain" && -f "$cache" ]]; then
-    local cached_toolchain cached_target cached_bootlin_root cached_compiler
-    cached_toolchain=$(cache_value "$cache" CMAKE_TOOLCHAIN_FILE || true)
-    cached_target=$(cache_value "$cache" CPKT_TARGET_ID || true)
-    cached_bootlin_root=$(cache_value "$cache" CPKT_BOOTLIN_ROOT || true)
-    cached_compiler=$(cache_value "$cache" CMAKE_C_COMPILER || true)
-    local expected_bootlin_root=""
-    if [[ -n "$target_id" ]]; then
-      expected_bootlin_root=$("$repo_root/scripts/cpkt-toolchains.sh" discover "$target_id" | sed -n 's/^root=//p')
-    fi
-    if [[ "$cached_toolchain" != "$expected_toolchain" ]]; then
-      cmake_args=(--fresh "${cmake_args[@]}")
-    elif [[ -n "$target_id" && "$cached_target" != "$target_id" ]]; then
-      cmake_args=(--fresh "${cmake_args[@]}")
-    elif [[ -n "$expected_bootlin_root" && "$cached_bootlin_root" != "$expected_bootlin_root" ]]; then
-      cmake_args=(--fresh "${cmake_args[@]}")
-    elif [[ "$require_bootlin_compiler" = 1 &&
-            -n "$target_id" &&
-            ( -z "$cached_bootlin_root" ||
-              "$cached_compiler" != "$cached_bootlin_root"/* ) ]]; then
-      cmake_args=(--fresh "${cmake_args[@]}")
-    fi
-  fi
-
-  cmake "${cmake_args[@]}"
-}
-
+shift "$(( $# > 0 ? 1 : 0 ))"
 case "$mode" in
-  debug)
-    configure_preset debug "$native_toolchain_file" "$(native_target_id)"
-    cmake --build --preset debug
-    ;;
-  debug-cai)
-    configure_preset debug-cai "$native_toolchain_file" "$(native_target_id)"
-    cmake --build --preset debug-cai --target cai_cli_tests
-    ;;
-  cai)
-    configure_preset cai "$bootlin_toolchain_file" x86_64-linux-musl
-    cmake --build --preset cai --target cai_cli_tests
-    ;;
-  configure-debug)
-    configure_preset debug "$native_toolchain_file" "$(native_target_id)"
-    ;;
-  configure-release)
-    configure_preset release "$bootlin_toolchain_file" x86_64-linux-gnu
-    ;;
-  configure-x86_64-linux-gnu-release)
-    configure_preset x86_64-linux-gnu-release "$bootlin_toolchain_file" x86_64-linux-gnu
-    ;;
-  configure-asan)
-    configure_preset asan "$bootlin_toolchain_file" x86_64-linux-gnu
-    ;;
-  configure-valgrind)
-    configure_preset valgrind "$bootlin_toolchain_file" x86_64-linux-gnu
-    ;;
-  configure-fuzz)
-    "$repo_root/scripts/cpkt-aflpp.sh" ensure
-    configure_preset fuzz "$aflpp_toolchain_file" x86_64-linux-gnu 0
-    ;;
-  configure-integration)
-    configure_preset integration "$native_toolchain_file" "$(native_target_id)"
-    ;;
-  configure-coverage)
-    configure_preset coverage "$native_toolchain_file" "$(native_target_id)"
-    ;;
-  host|release)
-    configure_preset release "$bootlin_toolchain_file" x86_64-linux-gnu
-    cmake --build --preset release
-    ;;
-  package-source)
-    configure_preset x86_64-linux-gnu-release "$bootlin_toolchain_file" x86_64-linux-gnu
-    cmake --build --preset x86_64-linux-gnu-release --target cai_package_source
-    ;;
-  asan)
-    configure_preset asan "$bootlin_toolchain_file" x86_64-linux-gnu
-    cmake --build --preset asan
-    ;;
-  valgrind)
-    configure_preset valgrind "$bootlin_toolchain_file" x86_64-linux-gnu
-    cmake --build --preset valgrind --target cai_tests
-    ;;
-  fuzz)
-    "$repo_root/scripts/cpkt-aflpp.sh" ensure
-    configure_preset fuzz "$aflpp_toolchain_file" x86_64-linux-gnu 0
-    cmake --build --preset fuzz --target cai_fuzzers
-    ;;
-  integration)
-    configure_preset integration "$native_toolchain_file" "$(native_target_id)"
-    cmake --build --preset integration
-    ;;
-  coverage)
-    configure_preset coverage "$native_toolchain_file" "$(native_target_id)"
-    cmake --build --preset coverage
-    ;;
-  release-matrix)
-    presets=(
-      x86_64-linux-gnu-release
-      x86_64-linux-musl-release
-      aarch64-linux-gnu-release
-      aarch64-linux-musl-release
-      armhf-linux-gnu-release
-      armhf-linux-musl-release
-    )
-    if "$repo_root/scripts/osxcross_available.sh" --quiet; then
-      presets+=(arm64-apple-darwin-release)
-    else
-      printf '%s\n' \
-        '[build] skipping arm64-apple-darwin-release: complete osxcross toolchain not available'
-    fi
-    for preset in "${presets[@]}"; do
-      if [[ "$preset" == arm64-apple-darwin-release ]]; then
-        configure_preset "$preset" "$repo_root/cmake/toolchains/arm64-apple-darwin.cmake" "" 0
-      else
-        configure_preset "$preset" "$bootlin_toolchain_file" "${preset%-release}"
-      fi
-      cmake --build --preset "$preset"
-    done
-    ;;
-  *)
-    printf 'usage: %s [debug|debug-cai|cai|configure-debug|configure-release|configure-x86_64-linux-gnu-release|configure-asan|configure-valgrind|configure-fuzz|configure-integration|configure-coverage|host|release|package-source|asan|valgrind|fuzz|integration|coverage|release-matrix]\n' "$0" >&2
-    exit 2
-    ;;
+  release-matrix) exec "$root/scripts/release.sh" build-matrix "$@" ;;
+  host) mode=release ;;
 esac
+configure_only=0
+case "$mode" in configure-*) configure_only=1; mode=${mode#configure-} ;; esac
+case "$mode" in
+  debug|debug-cai|libcai|cai|debug-lua|debug-host-deps|release|x86_64-linux-gnu-release|x86_64-linux-musl-release|aarch64-linux-gnu-release|aarch64-linux-musl-release|armhf-linux-gnu-release|armhf-linux-musl-release|arm64-apple-darwin-release|asan|valgrind|coverage|integration|fuzz) ;;
+  *) printf 'build: unknown preset %s; see CMakePresets.json\n' "$mode" >&2; exit 2 ;;
+esac
+[[ "$mode" != fuzz ]] || "$root/scripts/cpkt-aflpp.sh" ensure
+# Tool collections and compiler selection stay stable for the workspace. After
+# changing either, explicitly remove the affected owned build directory first.
+cmake --preset "$mode"
+if [[ "$configure_only" == 0 ]]; then
+  if [[ $# -gt 0 ]]; then cmake --build --preset "$mode" --target "$@"
+  elif [[ "$mode" == debug-cai || "$mode" == cai ]]; then cmake --build --preset "$mode" --target cai_cli_tests
+  else cmake --build --preset "$mode"; fi
+fi

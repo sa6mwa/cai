@@ -1,42 +1,36 @@
-if(NOT DEFINED CAI_DIST_DIR OR CAI_DIST_DIR STREQUAL "")
-  set(CAI_DIST_DIR "${CMAKE_CURRENT_LIST_DIR}/../dist")
+if(NOT DEFINED CAI_DIST_DIR OR NOT DEFINED CAI_VERSION OR NOT DEFINED CAI_TARGETS)
+  message(FATAL_ERROR "CAI_DIST_DIR, CAI_VERSION and the selected CAI_TARGETS are required")
 endif()
-if(NOT DEFINED CAI_VERSION OR CAI_VERSION STREQUAL "")
-  set(CAI_VERSION "0.0.0")
-endif()
-
-find_program(CAI_SHA256SUM_BIN NAMES sha256sum shasum REQUIRED)
-file(GLOB artifacts LIST_DIRECTORIES false
-  "${CAI_DIST_DIR}/cai-${CAI_VERSION}.tar.gz"
-  "${CAI_DIST_DIR}/cai-${CAI_VERSION}-*.tar.gz"
-  "${CAI_DIST_DIR}/cai-lua-${CAI_VERSION}.tar.gz"
-  "${CAI_DIST_DIR}/cai-cli-${CAI_VERSION}-x86_64-linux-musl.tar.gz"
-  "${CAI_DIST_DIR}/cai-${CAI_VERSION}-*.rockspec"
-  "${CAI_DIST_DIR}/cai-${CAI_VERSION}-*.src.rock")
-if(NOT artifacts)
-  message(FATAL_ERROR "no cai release archives found in ${CAI_DIST_DIR}")
-endif()
-list(SORT artifacts)
-set(checksums_path "${CAI_DIST_DIR}/cai-${CAI_VERSION}-CHECKSUMS")
-file(WRITE "${checksums_path}" "")
-foreach(artifact IN LISTS artifacts)
-  get_filename_component(artifact_name "${artifact}" NAME)
-  if(CAI_SHA256SUM_BIN MATCHES "shasum$")
-    execute_process(
-      COMMAND "${CAI_SHA256SUM_BIN}" -a 256 "${artifact_name}"
-      WORKING_DIRECTORY "${CAI_DIST_DIR}"
-      OUTPUT_VARIABLE checksum_line
-      RESULT_VARIABLE checksum_result)
-  else()
-    execute_process(
-      COMMAND "${CAI_SHA256SUM_BIN}" "${artifact_name}"
-      WORKING_DIRECTORY "${CAI_DIST_DIR}"
-      OUTPUT_VARIABLE checksum_line
-      RESULT_VARIABLE checksum_result)
+set(artifacts "")
+foreach(target IN LISTS CAI_TARGETS)
+  if(NOT target MATCHES "^(x86_64|aarch64|armhf)-linux-(gnu|musl)$|^arm64-apple-darwin$")
+    message(FATAL_ERROR "Unsupported artifact target: ${target}")
   endif()
-  if(NOT checksum_result EQUAL 0)
-    message(FATAL_ERROR "failed to checksum ${artifact}")
-  endif()
-  file(APPEND "${checksums_path}" "${checksum_line}")
+  list(APPEND artifacts "cai-${CAI_VERSION}-${target}.tar.gz")
 endforeach()
-message(STATUS "Wrote ${checksums_path}")
+if(NOT CAI_PACKAGE_SCOPE STREQUAL "binary")
+  list(APPEND artifacts "cai-${CAI_VERSION}.tar.gz" "cai-lua-${CAI_VERSION}.tar.gz"
+    "cai-cli-${CAI_VERSION}-x86_64-linux-musl.tar.gz"
+    "cai-${CAI_VERSION}-1.rockspec" "cai-${CAI_VERSION}-1.src.rock")
+endif()
+if(NOT artifacts)
+  message(FATAL_ERROR "Empty artifact selection")
+endif()
+list(REMOVE_DUPLICATES artifacts)
+list(SORT artifacts)
+foreach(name IN LISTS artifacts)
+  if(NOT EXISTS "${CAI_DIST_DIR}/${name}" OR IS_DIRECTORY "${CAI_DIST_DIR}/${name}" OR IS_SYMLINK "${CAI_DIST_DIR}/${name}")
+    message(FATAL_ERROR "Missing/nonregular selected artifact: ${name}")
+  endif()
+endforeach()
+if(NOT DEFINED CAI_CHECKSUMS_PATH)
+  set(CAI_CHECKSUMS_PATH "${CAI_DIST_DIR}/cai-${CAI_VERSION}-CHECKSUMS")
+endif()
+set(contents "")
+foreach(name IN LISTS artifacts)
+  file(SHA256 "${CAI_DIST_DIR}/${name}" digest)
+  string(APPEND contents "${digest}  ${name}\n")
+endforeach()
+file(WRITE "${CAI_CHECKSUMS_PATH}.tmp" "${contents}")
+file(RENAME "${CAI_CHECKSUMS_PATH}.tmp" "${CAI_CHECKSUMS_PATH}")
+message(STATUS "Wrote ${CAI_CHECKSUMS_PATH}")

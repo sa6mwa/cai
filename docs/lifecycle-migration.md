@@ -1,56 +1,67 @@
-# Lifecycle Migration Ledger
+# Lifecycle cutover
 
-## Toolchain and hardening cutover
+## Ownership
 
-| Previous behavior | Lifecycle surface | Preserved behavior | Verification | Status |
-| --- | --- | --- | --- | --- |
-| Native debug, coverage, integration, and host-release builds used the ambient compiler. | `bootlin-native` preset and `linux-bootlin.cmake`. | Existing build/test targets and target IDs. | `tests/cmake_presets_test.cmake`, native configure/build/test gates. | Replaced. |
-| TSan and MSan selected the host Clang compiler. | Native Valgrind gate. | Deterministic memory-focused test subset. | `make valgrind`, `scripts/run_valgrind.sh`. | Removed; Valgrind is not claimed as an MSan substitute. |
-| libFuzzer/Clang harnesses used sanitizer link flags. | `linux-aflpp.cmake`, `scripts/cpkt-aflpp.sh`, `scripts/fuzz.sh`. | Existing fuzz targets and checked-in corpus. | Preset contract plus native AFL++ configure/build/smoke gates. | Replaced. |
-| Per-platform host-release presets inferred host ABI from `CC`. | Explicit Bootlin Linux release presets and osxcross Darwin release preset. | `build-host`/`test-host` commands remain available on native Linux. | Preset contract and release matrix. | Removed. |
-| Lua helper preloaded an ambient host ASan runtime. | Standard Bootlin debug/Lua flow. | Lua rock build and test commands. | Lua test gate. | Removed. |
-| Deprecated `lockdc` option and `lockdc`/`pkt` dependency-mode aliases kept legacy dependency selection alive. | `CAI_DEPENDENCY_MODE=cpkt`, `host`, or `auto`. | Explicit host and auto dependency modes. | CMake configuration contract. | Removed. |
-| No lifecycle-owned editor validation command. | `make clangd-check` against the native debug compile database. | Existing `.clangd` configuration. | Native host `clangd` check. | Added. |
-| Dependency archives were cached flat under `CPKT_DEPENDENCY_CACHE` with a private `.locks` directory. | Shared verified archive cache at `archives/sha256/<sha256>/<archive>` with `locks/<sha256>.lock`. | Existing pinned release-asset downloads and repo-local extracted dependency roots. | `tests/cmake_presets_test.cmake`, debug configure/build. | Replaced. |
-| Build, package, clean, package verification, and version resolution used project-specific script names directly. | Standard lifecycle script surfaces: `scripts/build.sh`, `scripts/package.sh`, `scripts/clean.sh`, `scripts/package-verify.sh`, and `scripts/release_version.sh`. | Compatibility wrappers for the previous script names. | `tests/makefile_targets_test.sh`, Make-driven gates. | Replaced. |
-| Source-smoke, release-matrix, privacy, and LuaRocks release validation were exposed only through older project-specific script names or embedded package verification. | Standard lifecycle script surfaces: `scripts/test_release_from_source.sh`, `scripts/run_linux_release_matrix.sh`, `scripts/verify_release_privacy.sh`, and `scripts/validate_luarocks.sh`. | Existing source-smoke, matrix, privacy, and LuaRocks verification behavior. | `tests/makefile_targets_test.sh`, package lifecycle tests. | Replaced. |
-| Project C targets advertised C90 through CMake standard properties, and Linux package verification inspected ELF metadata with ambient `readelf`. | C89 is enforced with explicit compiler flags; release metadata tools are discovered from configured target toolchains before PATH. | Existing project warning policy, package RUNPATH/sanitizer checks, and the `CAI_READELF` override. | `tests/cmake_presets_test.cmake`, `tests/target_tool_discovery_test.sh`. | Replaced. |
-| Darwin release inherited the Linux release preset and carried Linux-only `CPKT_TARGET_ID` cache state into osxcross configure. | Shared release defaults live in `release-base`; Darwin release inherits that non-Linux base directly. | Native Linux `release` remains Bootlin-based. | `tests/cmake_presets_test.cmake`. | Replaced. |
-| `clean-dist` removed `dist/` directly from Make. | Destructive generated-state removal routes through `scripts/clean.sh` safety checks. | `make clean` remains a full generated-state reset; `make clean-dist` removes only `dist/`. | `tests/makefile_targets_test.sh`, `bash -n scripts/clean.sh`. | Replaced. |
-| The standard `release_version.sh` script delegated to the old `detect_release_version.sh` name. | `scripts/release_version.sh` owns release version resolution; `detect_release_version.sh` is only a compatibility wrapper. | Existing override, lightweight-tag, git-worktree, and source-archive `VERSION` behavior. | `tests/release_lua_version_test.sh`, `tests/makefile_targets_test.sh`. | Replaced. |
-| Some local service log targets were omitted from `make help`, and the focused live MCP Everything test lacked an explicit live opt-in guard. | `make help` is the command index for service operations; live gates require `CAI_ENABLE_INTEGRATION_TESTS=1`. | Existing local service recipes and focused live MCP test selection. | `tests/makefile_targets_test.sh`, `make help`. | Replaced. |
-| Host and cross lifecycle behavior was exposed directly through Make aliases instead of the standard script names. | `scripts/host_test.sh`, `scripts/cross_build.sh`, and `scripts/cross_test.sh`. | Host tests still build and run the native release test preset; cross tests still provide build/link coverage and report that no execution runner is configured. | `tests/makefile_targets_test.sh`, `bash -n scripts/host_test.sh scripts/cross_build.sh scripts/cross_test.sh`. | Replaced. |
-| Installed SDK metadata and consumer verification existed only as a CTest name. | `make test-install-tree`. | Existing installed headers, CMake package, pkg-config, RPATH, and downstream consumer checks. | `tests/makefile_targets_test.sh`, `make test-install-tree`. | Added. |
-| README integration instructions described direct debug-preset CMake commands instead of the standard live opt-in Make surface. | `CAI_ENABLE_INTEGRATION_TESTS=1 make test-integration` and `CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-live`. | Direct scenario selectors remain documented for already-built integration presets. | `tests/makefile_targets_test.sh`. | Replaced. |
-| Build and package scripts checked Darwin osxcross availability independently and only by compiler path. | `scripts/osxcross_available.sh` backed by the lifecycle toolchain resolver. | Optional Darwin release target is still included only when the local osxcross collection is complete. | `tests/makefile_targets_test.sh`, `bash -n scripts/osxcross_available.sh`, `scripts/osxcross_available.sh --quiet`. | Replaced. |
-| Several standard or service root targets existed but were omitted from `make help`. | Expanded authoritative help index for debug, host, cross, ASan, service, package, and release targets. | Existing targets and aliases. | `tests/makefile_targets_test.sh`, `make help`. | Replaced. |
-| Tracked lonejson change-request notes lived under top-level `stash/`, which made them ambiguous source-archive inputs. | `docs/lonejson-change-requests/`. | The notes remain tracked and linked from README as documentation. | `tests/makefile_targets_test.sh`, source archive/package verification. | Moved. |
-| `prerelease` and `release-matrix` reconstructed the C source archive, and release helper scratch could escape the managed build tree. | `release-matrix` is binary-only; final clean `make release` runs `package-source-smoke`, refreshes checksums, and verifies the complete artifact set. Repository-owned release workspaces use `build/`. | Binary matrix coverage, Lua artifacts, source archive staging, and full final artifact verification. | `tests/makefile_targets_test.sh`, `tests/release_staging_safety_test.sh`, package lifecycle gates. | Replaced. |
+Make exposes public commands and serializes operations. Bash sequences readable
+commands. CMake owns configuration, dependencies, compilation and install. CTest
+owns registered checks, their selections and native results. Compiler/tool
+collections and source inputs stay stable while one operation owns a workspace.
+Changing a compiler collection requires explicit invalidation of its build root.
 
-For Linux builds, Clang remains a host development prerequisite only for
-`clang-format` and `clangd`; the pinned Bootlin GCC collection is the only
-Linux compiler path. The explicit `arm64-apple-darwin` osxcross exception uses
-its target Clang collection as required by the lifecycle. No further engineer
-decision is required for this cutover.
+Library and CLI test registration live in `cmake/CaiTests.cmake` and
+`cmake/CaiCliTests.cmake`. Small shared host fixture and environment declarations
+live beside them. C89, public API, ABI, presets' product separation and published
+targets remain product contracts.
 
-`clangd-check` is deliberately a native-host editor gate. Release, packaging,
-and cross-target configurations do not invoke it.
+## Phase contract
 
-Development checks now use only native builds: `test-all` runs the Debug suite
-once, the native `debug-cai` CLI selection, Lua, offline integration and native
-hardening/service gates. Examples already covered by Debug are not replayed.
-The release matrix owns the complete deterministic proof: one native Release
-core/example suite, hardening, Lua, offline integration, services, and one musl
-CLI suite before packaging. `release-pipeline` delegates to that graph; the
-clean final `release` alone adds source reconstruction smoke. Cross targets
-without execution runners no longer build unused unit binaries, and matching
-compiler collections reuse configured builds. The CLI archive participates in
-the checksum manifest and static ELF/privacy verification.
+| Command | Work | Cleaning / release identity |
+| --- | --- | --- |
+| `make test`, `make test-cli` | Selected native feedback | Incremental; no cross matrix |
+| `make test-all` | Native core once, CLI, memory, fuzz, Lua, offline and local e2e | Incremental; no cross matrix |
+| `make format`, `make format-check` | Source formatting | No configure/build |
+| `make prerelease` | Native checks, selected matrix, artifacts and consumers | Incremental; candidate override allowed |
+| `make package` | SDK staging and binary-scope checksum inventory | Warm; preserves other identified artifacts |
+| `make package-verify` | Existing complete shipped bytes and extracted consumers | Does not rebuild product producers |
+| `make package-source-smoke` | Explicit clean source reconstruction | Owns only source-smoke scratch |
+| `make release`, `make release-matrix` | One final local artifact set | Clean committed checkout and exact lightweight tag required first |
 
-## Rootless Podman Kube cutover
+Final release cleans local generated state once. Its source reconstruction is
+the native Release producer and full non-live test lane. Its GNU SDK is packaged
+from that output. Selected cross SDKs retain their target scope and the shipped
+musl CLI retains actual runtime proof. No other cross runtime runner is claimed.
+Equivalent prerequisites share `.cache/deps` and verified archives; distinct
+instrumentation remains separate. Host-only fixtures are labeled `host` and are
+not repeated under hardening or Lua selections.
 
-| Previous behavior | Lifecycle surface | Preserved behavior | Verification | Status |
-| --- | --- | --- | --- | --- |
-| Compose selected nerdctl/containerd or Docker, with a separate Inspector `run` path. | `devenv.yaml.in`, static `devenv/` configuration, and one `scripts/devenv.sh` controller using rootless Podman Kube. | SearXNG, MCP Everything, optional Inspector, public Make targets, external MCP URLs, and explicit live opt-ins. | Controller and ownership failure fixtures, real service readiness, Everything matrix, and Inspector tools/list and tools/call. | Replaced; old manifests and wrappers removed. |
-| Fixed ports and local state outside the build tree. | Checkout-specific pod names and high loopback ports; all disposable data under `build/devenv/`. | Port/image overrides and the keep-services flag. | Quoted-path rendering, port-change rejection, writable-state UID probes, and unprivileged dev-down/dev-reset. | Replaced. |
-| Cleanup suppressed orchestration errors and clean could delete live teardown manifests. | Ownership-aware teardown; cleanup errors fail the gate; clean stops pods before deleting manifests. | Pre-existing services remain running after e2e. | Partial startup, failed readiness/tests/teardown, kept and reused pods, external endpoint bypass, and clean/reset fixtures. | Replaced. |
+The final explicit checksum inventory requires every selected SDK plus source,
+CLI and Lua delivery. Binary-only rehearsals have their own manifest under
+`build/`. No release refs are mutated by local lifecycle commands. Failed final
+release stops; it does not fix, retag, rebuild or publish in the same operation.
+
+## Removed controllers
+
+Python test drivers and the Python service controller have been removed. Python
+is limited to small provider, clipboard, archive and Chrome protocol data peers.
+These peers do not launch product commands, make assertions or decide lifecycle
+outcomes. Bash/compiled tests own commands, expected failures and assertions.
+Existing corpus, protocol fixtures, installed-consumer checks and suppression
+policies are preserved.
+
+Services use one rootless `podman kube play` helper and the tracked manifest.
+Checkout-specific pod names, loopback ports, user-owned state, private credentials,
+real readiness probes and teardown from retained manifests remain required.
+No Compose/containerd path, secondary dispatcher or process supervisor remains.
+
+The legacy dependency-cache alias and its competing cache interpretation are
+removed. `CPKT_DEPENDENCY_CACHE` resolves from explicit CMake input, environment,
+XDG cache or HOME. Hash-verified archive hits make no acquisition requests. A
+small CMake helper verifies bytes before publication and extraction.
+
+## Verification
+
+The cutover and review precede any build/test execution, as instructed. Relevant
+regressions cover phase ordering/failures, acquisition miss/hit/corruption/request
+counts, source identity, artifact completeness, producer reuse, service ownership,
+CLI behavior and terminal framing. Actual passed results are reported separately;
+this ledger does not treat implementation or syntax checks as executable proof.

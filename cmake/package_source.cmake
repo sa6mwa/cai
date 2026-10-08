@@ -32,7 +32,7 @@ if(NOT stage_result EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND "${CAI_TAR_BIN}" -cf "${archive_base}" --format=gnu --owner=0 --group=0
+  COMMAND "${CAI_TAR_BIN}" -cf "${archive_base}" --sort=name --mtime=@0 --mode=u+rw,go+r,go-w,a+X --format=gnu --owner=0 --group=0
           "${source_root_name}"
   WORKING_DIRECTORY "${stage_root}"
   RESULT_VARIABLE archive_result)

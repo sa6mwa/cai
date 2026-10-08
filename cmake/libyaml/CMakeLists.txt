@@ -1,5 +1,4 @@
 cmake_minimum_required(VERSION 3.21)
-project(cai_private_yaml VERSION 0.2.5 LANGUAGES C)
 if(NOT EXISTS "${CAI_YAML_SOURCE}/include/yaml.h")
   message(FATAL_ERROR "CAI_YAML_SOURCE must name the verified libyaml source root")
 endif()

@@ -1,32 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-mode=${1:-release-matrix}
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$repo_root"
-
-case "$mode" in
-  release-matrix)
-    presets=(
-      x86_64-linux-gnu-release
-      x86_64-linux-musl-release
-      aarch64-linux-gnu-release
-      aarch64-linux-musl-release
-      armhf-linux-gnu-release
-      armhf-linux-musl-release
-    )
-    if "$repo_root/scripts/osxcross_available.sh" --quiet; then
-      presets+=(arm64-apple-darwin-release)
-    else
-      printf '%s\n' \
-        '[package] skipping arm64-apple-darwin-release: complete osxcross toolchain not available'
-    fi
-    for preset in "${presets[@]}"; do
-      cmake --build --preset "$preset" --target cai_package_archive
-    done
-    ;;
-  *)
-    printf 'usage: %s [release-matrix]\n' "$0" >&2
-    exit 2
-    ;;
-esac
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+cd "$root"
+[[ ${1:-release-matrix} == release-matrix ]] || exit 2
+target_text=$("$root/scripts/release_targets.sh")
+while read -r target; do
+  cmake --build --preset "$target-release" --target cai_package_archive
+done <<<"$target_text"
+# A binary rehearsal has its own scope; it cannot replace the final manifest.
+cmake "-DCAI_DIST_DIR=$root/dist" "-DCAI_VERSION=$("$root/scripts/release_version.sh" "$root")" \
+  "-DCAI_TARGETS=${target_text//$'\n'/;}" \
+  "-DCAI_PACKAGE_SCOPE=binary" "-DCAI_CHECKSUMS_PATH=$root/build/binary-CHECKSUMS" -P cmake/package_checksums.cmake

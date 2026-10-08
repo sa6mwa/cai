@@ -6,6 +6,7 @@ if [ "$#" -lt 2 ] || [ "$#" -gt 6 ]; then
   exit 1
 fi
 
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 version="$1"
 output_path="$2"
 source_url="git+https://github.com/sa6mwa/cai.git"
@@ -42,4 +43,4 @@ sed \
   -e "s|@SOURCE_TAG_LINE@|$tag_line|g" \
   -e "s|@SOURCE_DIR_LINE@|$dir_line|g" \
   -e "s|@LIB_EXTENSION@|$lib_extension|g" \
-  cai.rockspec.in >"$output_path"
+  "$root/cai.rockspec.in" >"$output_path"

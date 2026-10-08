@@ -17,6 +17,7 @@ set(archive_base "${CAI_DIST_DIR}/${package_name}.tar")
 
 file(REMOVE_RECURSE "${stage_root}")
 file(MAKE_DIRECTORY "${package_root}" "${CAI_DIST_DIR}")
+file(CHMOD "${package_root}" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 execute_process(
   COMMAND "${CMAKE_COMMAND}" --install "${CAI_BINARY_DIR}"
     --component cai-cli --prefix "${package_root}"
@@ -46,7 +47,7 @@ endif()
 file(REMOVE "${archive_base}" "${archive_base}.gz")
 execute_process(
   COMMAND "${CAI_TAR_BIN}" -cf "${archive_base}" --format=gnu
-    --owner=0 --group=0 "${package_name}"
+    --sort=name --mtime=@0 --mode=u+rw,go+r,go-w,a+X --owner=0 --group=0 "${package_name}"
   WORKING_DIRECTORY "${stage_root}"
   RESULT_VARIABLE archive_result)
 if(NOT archive_result EQUAL 0)

@@ -60,6 +60,8 @@ files=(
   cai.rockspec.in
   scripts/build_lua_rock.sh
   scripts/render_release_rockspec.sh
+  lua/CMakeLists.txt
+  cmake/cai-export-policy.cmake
   lua/cai_lua.c
   lua/cai_lua_config.inc
   lua/cai_lua_skills.inc

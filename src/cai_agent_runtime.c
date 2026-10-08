@@ -10767,13 +10767,35 @@ int cai_agent_runtime_user_shell_finish(cai_agent_runtime *runtime,
       text = NULL;
       pthread_cond_broadcast(&runtime->condition);
     }
-    if (runtime->logger != NULL && runtime->logger->infof != NULL)
-      runtime->logger->infof(
-          runtime->logger, "cai.user_shell.completed",
-          "role=%s prompt_kind=%s exit_code=%d duration_ms=%llu "
-          "bytes=%llu shared=%b",
-          "user", "shell", exit_code, duration_ms, runtime->user_shell_bytes,
-          runtime->user_shell_shared);
+    if (runtime->logger != NULL && runtime->logger->info != NULL) {
+      pslog_field fields[6];
+      size_t field_index;
+      memset(fields, 0, sizeof(fields));
+      fields[0].key = "role";
+      fields[0].type = PSLOG_FIELD_STRING;
+      fields[0].as.string_value = "user";
+      fields[0].value_len = 4U;
+      fields[1].key = "prompt_kind";
+      fields[1].type = PSLOG_FIELD_STRING;
+      fields[1].as.string_value = "shell";
+      fields[1].value_len = 5U;
+      fields[2].key = "exit_code";
+      fields[2].type = PSLOG_FIELD_SIGNED;
+      fields[2].as.signed_value = (pslog_int64)exit_code;
+      fields[3].key = "duration_ms";
+      fields[3].type = PSLOG_FIELD_UNSIGNED;
+      fields[3].as.unsigned_value = (pslog_uint64)duration_ms;
+      fields[4].key = "bytes";
+      fields[4].type = PSLOG_FIELD_UNSIGNED;
+      fields[4].as.unsigned_value = (pslog_uint64)runtime->user_shell_bytes;
+      fields[5].key = "shared";
+      fields[5].type = PSLOG_FIELD_BOOL;
+      fields[5].as.bool_value = runtime->user_shell_shared != 0;
+      for (field_index = 0U; field_index < 6U; field_index++)
+        fields[field_index].key_len = strlen(fields[field_index].key);
+      runtime->logger->info(runtime->logger, "cai.user_shell.completed", fields,
+                            sizeof(fields) / sizeof(fields[0]));
+    }
     cai_free_mem(NULL, runtime->user_shell_command);
     runtime->user_shell_command = NULL;
     pthread_cond_broadcast(&runtime->condition);

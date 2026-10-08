@@ -31,6 +31,7 @@ set(archive_path "${archive_base}.gz")
 
 file(REMOVE_RECURSE "${stage_root}")
 file(MAKE_DIRECTORY "${package_root}" "${CAI_DIST_DIR}")
+file(CHMOD "${package_root}" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 
 execute_process(
   COMMAND "${CMAKE_COMMAND}" --install "${CAI_BINARY_DIR}" --prefix "${package_root}"
@@ -43,15 +44,19 @@ function(cai_strip_file path primary_flag)
   if(NOT CAI_STRIP_BIN OR IS_SYMLINK "${path}" OR NOT EXISTS "${path}")
     return()
   endif()
+  set(archive_flags "")
+  if(path MATCHES "\\.a$")
+    list(APPEND archive_flags -D)
+  endif()
   execute_process(
-    COMMAND "${CAI_STRIP_BIN}" "${primary_flag}" "${path}"
+    COMMAND "${CAI_STRIP_BIN}" ${archive_flags} "${primary_flag}" "${path}"
     RESULT_VARIABLE strip_result
     ERROR_QUIET)
   if(strip_result EQUAL 0)
     return()
   endif()
   execute_process(
-    COMMAND "${CAI_STRIP_BIN}" -S "${path}"
+    COMMAND "${CAI_STRIP_BIN}" ${archive_flags} -S "${path}"
     RESULT_VARIABLE strip_result
     ERROR_QUIET)
   if(NOT strip_result EQUAL 0)
@@ -76,7 +81,7 @@ endforeach()
 
 file(REMOVE "${archive_base}" "${archive_path}")
 execute_process(
-  COMMAND "${CAI_TAR_BIN}" -cf "${archive_base}" --format=gnu --owner=0 --group=0 "${package_name}"
+  COMMAND "${CAI_TAR_BIN}" -cf "${archive_base}" --sort=name --mtime=@0 --mode=u+rw,go+r,go-w,a+X --format=gnu --owner=0 --group=0 "${package_name}"
   WORKING_DIRECTORY "${stage_root}"
   RESULT_VARIABLE tar_result)
 if(NOT tar_result EQUAL 0)
