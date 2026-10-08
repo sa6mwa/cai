@@ -420,6 +420,8 @@ function(cai_set_lonejson_from_target)
   endif()
 endfunction()
 
+include(CaiYaml)
+
 function(cai_set_pslog_from_target)
   if(TARGET pslog::pslog_shared)
     get_target_property(_cai_pslog_include pslog::pslog_shared
@@ -793,6 +795,7 @@ set(CAI_SOURCES
   src/cai_agent_runtime.c
   src/cai_session_store.c
   src/cai_skills.c
+  src/cai_skill_metadata.c
   src/cai_allocator.c
   src/cai_auth.c
   src/cai_chrome.c
@@ -880,10 +883,13 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
 endforeach()
 if(TARGET cai_shared)
   target_link_libraries(cai_shared PRIVATE ${CAI_CURL_SHARED_LINK}
-    Threads::Threads ${CAI_OPENSSL_CRYPTO_SHARED_LINK} ${CAI_LONEJSON_LINK})
+    Threads::Threads ${CAI_OPENSSL_CRYPTO_SHARED_LINK} ${CAI_LONEJSON_LINK} cai_yaml_static)
 endif()
 if(TARGET cai_static)
+  target_include_directories(cai_static PRIVATE "${CAI_LIBYAML_PREFIX}/include")
   target_link_libraries(cai_static INTERFACE
+    $<BUILD_INTERFACE:cai_yaml_static>
+    $<INSTALL_INTERFACE:cai::yaml_static>
     $<BUILD_INTERFACE:${CAI_CURL_STATIC_LINK}>
     $<BUILD_INTERFACE:Threads::Threads>
     $<BUILD_INTERFACE:${CAI_OPENSSL_CRYPTO_STATIC_LINK}>
@@ -972,7 +978,7 @@ endfunction()
 
 if(CAI_BUILD_CLI)
   find_package(lockdc CONFIG REQUIRED COMPONENTS static)
-  add_executable(cai_cli cli/main.c cli/options.c cli/config.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
+  add_executable(cai_cli cli/main.c cli/options.c cli/config.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
     cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c
     cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
   set_target_properties(cai_cli PROPERTIES OUTPUT_NAME cai)
@@ -991,6 +997,9 @@ if(CAI_BUILD_CLI)
       COMPONENT cai-cli)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/man/cai.1"
       DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
+      COMPONENT cai-cli)
+    install(FILES "${CAI_LIBYAML_SOURCE}/License"
+      DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/third_party/libyaml"
       COMPONENT cai-cli)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/model-metadata.md"
       "${CMAKE_CURRENT_SOURCE_DIR}/docs/chrome.md"
@@ -1029,6 +1038,9 @@ if(CAI_BUILD_CLI)
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_config_test.py"
         "$<TARGET_FILE:cai_cli>")
     set_tests_properties(cai_cli_config PROPERTIES TIMEOUT 45)
+    add_test(NAME cai_cli_skills
+      COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_skills_test.py" "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_skills PROPERTIES TIMEOUT 45)
     add_test(NAME cai_cli_chrome
       COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tests/chrome_test.py"
         cli "$<TARGET_FILE:cai_cli>" "${CMAKE_CURRENT_BINARY_DIR}"
@@ -1036,14 +1048,14 @@ if(CAI_BUILD_CLI)
     set_tests_properties(cai_cli_chrome PROPERTIES LABELS "integration;local;offline" TIMEOUT 90)
 
     add_executable(cai_cli_shell_fixture tests/cli_shell_fixture.c
-      cli/options.c cli/config.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
+      cli/options.c cli/config.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
       cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c
       cli/session_commands.c cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
     target_link_libraries(cai_cli_shell_fixture PRIVATE cai_static
       softline::softline_static libmdf::mdf_static lockdc::static)
     cai_configure_cli_target(cai_cli_shell_fixture)
     add_executable(cai_cli_settings_fixture tests/cli_settings_fixture.c
-      cli/options.c cli/config.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
+      cli/options.c cli/config.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
       cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c
       cli/session_commands.c cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
     target_link_libraries(cai_cli_settings_fixture PRIVATE cai_static
@@ -1075,7 +1087,7 @@ if(CAI_BUILD_CLI)
     add_test(NAME cai_cli_storage_stream COMMAND cai_cli_storage_stream_test)
     set_tests_properties(cai_cli_storage_stream PROPERTIES TIMEOUT 30)
     add_executable(cai_cli_reasoning_test tests/cli_reasoning_test.c
-      cli/options.c cli/config.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c cli/review_report.c
+      cli/options.c cli/config.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c cli/review_report.c
       cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
     target_link_libraries(cai_cli_reasoning_test PRIVATE cai_static
       softline::softline_static libmdf::mdf_static lockdc::static)
@@ -1087,7 +1099,7 @@ if(CAI_BUILD_CLI)
     cai_configure_cli_target(cai_cli_log_test)
     add_test(NAME cai_cli_log COMMAND cai_cli_log_test "${CMAKE_CURRENT_BINARY_DIR}")
     add_executable(cai_cli_startup_fixture tests/cli_startup_fixture.c
-      cli/options.c cli/config.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c cli/review_report.c cli/pouch.c
+      cli/options.c cli/config.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c cli/review_report.c cli/pouch.c
       cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c cli/log.c
       cli/response.c cli/chrome_host.c cli/chrome_setup.c)
     target_link_libraries(cai_cli_startup_fixture PRIVATE cai_static
@@ -1292,6 +1304,18 @@ endif()
 
 if(CAI_BUILD_TESTS)
   enable_testing()
+  add_executable(cai_skill_metadata_test tests/skill_metadata_test.c)
+  cai_link_internal_consumer(cai_skill_metadata_test)
+  cai_configure_c_target(cai_skill_metadata_test)
+  target_compile_options(cai_skill_metadata_test PRIVATE -UNDEBUG)
+  add_test(NAME cai_skill_metadata_test COMMAND cai_skill_metadata_test)
+  set_tests_properties(cai_skill_metadata_test PROPERTIES LABELS "unit;local" TIMEOUT 20)
+  add_executable(cai_yaml_c89_test tests/yaml_c89_test.c)
+  target_link_libraries(cai_yaml_c89_test PRIVATE cai_yaml_static)
+  cai_configure_c_target(cai_yaml_c89_test)
+  target_compile_options(cai_yaml_c89_test PRIVATE -UNDEBUG)
+  add_test(NAME cai_yaml_c89_test COMMAND cai_yaml_c89_test)
+  set_tests_properties(cai_yaml_c89_test PROPERTIES LABELS "unit;local" TIMEOUT 5)
   add_executable(cai_config_test tests/config_test.c)
   cai_link_internal_consumer(cai_config_test)
   cai_configure_c_target(cai_config_test)
@@ -2874,6 +2898,7 @@ if(CAI_INSTALL)
     set(CAI_CONFIG_LONEJSON_INCLUDE_HINT "${CAI_LONEJSON_INCLUDE_DIR}")
     set(CAI_CONFIG_PSLOG_INCLUDE_HINT "${CAI_PSLOG_INCLUDE_DIR}")
   endif()
+  set(CAI_PC_DEPENDENCY_LIBS_PRIVATE "-L\${libdir}/cai -lyaml")
   set(CAI_LONEJSON_PKG_SHA256_FOR_PACKAGE "${CAI_LONEJSON_PKG_SHA256}")
   if(NOT DEFINED CAI_LONEJSON_PKG_SHA256_FOR_PACKAGE OR
      CAI_LONEJSON_PKG_SHA256_FOR_PACKAGE STREQUAL "")
@@ -2909,6 +2934,9 @@ if(CAI_INSTALL)
 
   install(DIRECTORY "${CAI_PUBLIC_INCLUDE_DIR}/" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
   install(DIRECTORY "${CAI_GENERATED_INCLUDE_DIR}/" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+  install(FILES "$<TARGET_FILE:cai_yaml_static>" DESTINATION "${CMAKE_INSTALL_LIBDIR}/cai")
+  install(FILES "${CAI_LIBYAML_SOURCE}/License"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/third_party/libyaml")
   if(TARGET cai_static)
     install(TARGETS cai_static EXPORT caiTargets
       ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"

@@ -446,6 +446,44 @@ Lua exposes `cai.config()` with `load(text_or_chunk_reader, origin)`,
 `write_template(chunk_writer)` and `create_template_file`. Lua configuration
 strings reject embedded NUL bytes instead of silently truncating them.
 
+### Skills
+
+Smith runtimes discover skill packages under
+`${XDG_CONFIG_HOME:-$HOME/.config}/cai/skills`, or `--config-dir DIR`'s
+`skills` directory. `--skills-dir DIR` and `[paths] skills_dir` override that
+root. The catalog's names and descriptions enter developer instructions;
+the model calls `read_skill` to load a selected `SKILL.md` and its referenced
+text resources. Skill selection happens when requested by name or when the
+task matches the description. Global skill files do not become workspace files.
+
+```sh
+cai --install-skill ./my-skill
+cai --install-skill ./my-skill --replace
+cai --skills-dir ./skills --install-skill ./my-skill
+```
+
+Installation validates the YAML front matter and copies the complete package,
+including nested/hidden regular files and executable scripts, without running
+them. The installed directory is named from skill metadata. Existing skills
+require explicit `--replace`; publication is atomic and a failed copy preserves
+the previous package. Links, devices and FIFOs are rejected. Examples containing
+their own `SKILL.md` inside a package remain artifacts, not additional catalog
+entries. Skill changes are discovered when the runtime is opened again.
+
+YAML names/descriptions support quoting, folded/literal scalars and aliases.
+Unknown metadata is ignored; catalog descriptions collapse whitespace.
+`cai_skill_metadata_open` and its receiver getters provide the same validation
+to SDK hosts. Front matter is buffered up to 1 MiB; the Markdown body is not
+loaded during catalog discovery. `read_skill` limits each text resource to 1 MiB.
+Lua uses `cai.skill_metadata(text_or_chunk_reader, fallback_name)` and
+`metadata:name()`, `metadata:description()`, `metadata:close()`.
+
+Libyaml 0.2.5 is temporarily built from checksum-pinned source into reusable
+static/shared outputs per target under `.cache/deps`, with archives retained in
+the shared dependency cache. It stays below the C89 public API. SDK packages
+include its private static link dependency and license; the CAI binary links
+it statically. Moving this source producer into c.pkt.systems core is deferred.
+
 Chrome control through the official ChatGPT extension is opt-in:
 `cai --chrome-setup` registers cai's own native host, then `cai --chrome`
 enables browser tools. Setup refuses conflicting registrations;

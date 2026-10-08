@@ -271,6 +271,18 @@ Use
 .I DIR
 as the global skills directory.
 .TP
+.BI \-\-install-skill " DIR"
+Validate and install the directory's SKILL.md plus nested artifacts, then exit.
+Defaults to $XDG_CONFIG_HOME/cai/skills or ~/.config/cai/skills; --config-dir
+selects DIR/skills and --skills-dir overrides that root. The package is named
+from YAML metadata. Preserves executable files and rejects links/devices/FIFOs.
+No authentication, model requests or artifact execution occurs.
+.TP
+.B \-\-replace
+With --install-skill, explicitly replace an existing skill package. Publication
+is atomic; copy/validation failure preserves the previous package. Without this
+flag, an existing package is an error.
+.TP
 .BI \-\-identity " TEXT"
 Set the visible agent identity.
 .TP

@@ -609,7 +609,7 @@ C-only `cai_skill_provider` callback pair; the provider is copied by value and
 must never re-enter a language runtime from an agent worker.
 
 Each package is a directory with a private regular `SKILL.md`. CAI reads its
-small YAML frontmatter at construction, requires a one-line `description`, and
+bounded YAML front matter at construction, requires `description`, and
 adds `name: description` to the developer catalog. The catalog tells the model
 to select a skill when the user names it **or** the task clearly matches its
 description, then call `read_skill` to obtain the complete `SKILL.md`. This is
@@ -620,7 +620,13 @@ and is bounded to 1 MiB per resource.
 
 Malformed, inaccessible, duplicate, or excessively large packages are skipped
 without preventing agent startup. If configured, `warning_callback` receives a
-non-fatal diagnostic. A selected package/resource that later cannot be read is
+non-fatal diagnostic; otherwise Smith routes it through the client's logger.
+Quoted, folded/literal and aliased scalar metadata is parsed by private libyaml;
+catalog descriptions are normalized to one line. Discovery stops at a package
+boundary so nested artifact examples do not add skills to developer instructions.
+The CAI `--install-skill DIR` utility copies a validated package without executing
+artifacts; `--replace` authorizes atomic replacement of an existing package.
+A selected package/resource that later cannot be read is
 a normal actionable tool error. The catalog and `read_skill` capability apply
 to ordinary, custom, and isolated review presets when their corresponding tool
 capability includes `CAI_AGENT_PRESET_TOOL_SKILLS`.

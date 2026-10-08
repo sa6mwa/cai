@@ -106,6 +106,9 @@ static void cai_cli_help(void) {
         "  -I, --developer-instructions TEXT\n"
         "                               Append developer instructions\n",
         stdout);
+  fputs("      --install-skill DIR     Install a SKILL.md package and exit\n"
+        "      --replace               Explicitly replace an installed skill\n",
+        stdout);
   fputs("      --codex-agents-md       Discover ancestor AGENTS.md files\n"
         "      --no-image-generation   Disable hosted image generation\n"
         "      --no-terminal           Disable terminal tools\n"
@@ -156,6 +159,10 @@ int cai_cli_read_options(int argc, char *const *argv,
     flag = argv[i];
     if (strcmp(flag, "--no-config") == 0) {
       options->no_config = 1;
+      continue;
+    }
+    if (strcmp(flag, "--replace") == 0) {
+      options->replace_skill = 1;
       continue;
     }
     if (strcmp(flag, "--chrome") == 0) {
@@ -332,6 +339,8 @@ int cai_cli_read_options(int argc, char *const *argv,
       field = &options->config_dir;
     else if (strcmp(flag, "--skills-dir") == 0)
       field = &options->skills_dir;
+    else if (strcmp(flag, "--install-skill") == 0)
+      field = &options->install_skill;
     else if (strcmp(flag, "--identity") == 0)
       field = &options->identity;
     else if (strcmp(flag, "-I") == 0 ||
@@ -382,6 +391,11 @@ int cai_cli_read_options(int argc, char *const *argv,
 int cai_cli_validate_options(cai_cli_options *options) {
   static const char *const providers[] = {"chatgpt", "openai", "openrouter",
                                           "berget",  "custom", NULL};
+  if (options->replace_skill && options->install_skill == NULL) {
+    cai_cli_option_error(options, "%s",
+                         "cai: --replace requires --install-skill");
+    return -1;
+  }
 
   if (options->config_file != NULL && options->no_config) {
     cai_cli_option_error(options,
@@ -411,15 +425,16 @@ int cai_cli_validate_options(cai_cli_options *options) {
   }
   if ((options->list + options->resume_list + options->login +
        options->chrome_setup + options->chrome_remove +
-       (options->export_id != NULL) + (options->import_file != NULL)) > 1) {
+       (options->export_id != NULL) + (options->import_file != NULL) +
+       (options->install_skill != NULL)) > 1) {
     cai_cli_option_error(
         options, "%s",
         "cai: select only one of --list, --resume without ID, --login, "
-        "--export, or --import\n");
+        "--export, --import, or --install-skill\n");
     return -1;
   }
   if ((options->list || options->resume_list || options->export_id != NULL ||
-       options->import_file != NULL) &&
+       options->import_file != NULL || options->install_skill != NULL) &&
       (options->new_session || options->resume_id != NULL || options->review ||
        options->review_and_fix || options->goal != NULL ||
        options->instruction_count != 0U || options->non_interactive)) {
@@ -520,7 +535,7 @@ int cai_cli_validate_options(cai_cli_options *options) {
     return -1;
   }
   if (options->list || options->resume_list || options->export_id != NULL ||
-      options->import_file != NULL)
+      options->import_file != NULL || options->install_skill != NULL)
     return 1;
   if (strcmp(options->provider, "custom") == 0) {
     if (options->endpoint == NULL ||
@@ -602,6 +617,7 @@ const char *cai_cli_instruction_at(const cai_cli_options *options,
         strcmp(flag, "--review-reasoning-summary") == 0 ||
         strcmp(flag, "--agents-md") == 0 || strcmp(flag, "--config-dir") == 0 ||
         strcmp(flag, "--config") == 0 || strcmp(flag, "--skills-dir") == 0 ||
+        strcmp(flag, "--install-skill") == 0 ||
         strcmp(flag, "--identity") == 0 || strcmp(flag, "-I") == 0 ||
         strcmp(flag, "--developer-instructions") == 0;
     if (has_value && i + 1 < options->argc) {

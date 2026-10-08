@@ -216,6 +216,7 @@ int cai_client_refresh_chatgpt_auth_after_http(cai_client *client,
                                                cai_error *error);
 
 void cai_log_client_opened(const cai_client_impl *client);
+void cai_log_skill_warning(const cai_client_impl *client, const char *message);
 void cai_log_openrouter_server_continuity(const cai_client_impl *client);
 void cai_log_http_request_start(const cai_client_impl *client,
                                 const char *method, const char *path,

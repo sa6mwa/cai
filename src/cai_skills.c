@@ -294,143 +294,11 @@ int cai_skills_catalog_has_entries(const cai_skill_catalog *catalog) {
   return catalog != NULL && catalog->count > 0U;
 }
 
-static int cai_skill_read_source(cai_source *source, char **out, size_t maximum,
-                                 cai_error *error) {
-  char chunk[4096];
-  char *data;
-  size_t length;
-  size_t capacity;
-  size_t nread;
-  int rc;
-
-  *out = NULL;
-  data = NULL;
-  length = 0U;
-  capacity = 0U;
-  rc = CAI_OK;
-  while ((nread = cai_source_read(source, chunk, sizeof(chunk), error)) > 0U) {
-    if (nread > maximum - length) {
-      rc = cai_set_error(error, CAI_ERR_INVALID, "skill resource is too large");
-      break;
-    }
-    if (length + nread + 1U > capacity) {
-      size_t next = capacity == 0U ? 4096U : capacity;
-      char *resized;
-      while (next < length + nread + 1U) {
-        if (next > maximum / 2U) {
-          next = maximum + 1U;
-          break;
-        }
-        next *= 2U;
-      }
-      resized = (char *)cai_realloc_mem(NULL, data, next);
-      if (resized == NULL) {
-        rc = cai_set_error(error, CAI_ERR_NOMEM,
-                           "failed to read skill resource");
-        break;
-      }
-      data = resized;
-      capacity = next;
-    }
-    memcpy(data + length, chunk, nread);
-    length += nread;
-  }
-  if (rc == CAI_OK && error != NULL && error->code != CAI_OK) {
-    rc = error->code;
-  }
-  if (rc == CAI_OK && data == NULL) {
-    data = cai_strdup(NULL, "");
-    if (data == NULL) {
-      rc = cai_set_error(error, CAI_ERR_NOMEM, "failed to read skill resource");
-    }
-  }
-  if (rc == CAI_OK) {
-    data[length] = '\0';
-    *out = data;
-  } else {
-    cai_free_mem(NULL, data);
-  }
-  return rc;
-}
-
-static int cai_skill_parse_frontmatter(const char *text, const char *fallback,
-                                       char **out_name, char **out_description,
-                                       cai_error *error) {
-  const char *cursor;
-  const char *line_end;
-  const char *value;
-  size_t line_length;
-  char *name;
-  char *description;
-
-  *out_name = NULL;
-  *out_description = NULL;
-  if (strncmp(text, "---\n", 4U) != 0 && strncmp(text, "---\r\n", 5U) != 0) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "SKILL.md must begin with YAML frontmatter");
-  }
-  cursor = strchr(text, '\n') + 1;
-  name = NULL;
-  description = NULL;
-  while (*cursor != '\0') {
-    line_end = strchr(cursor, '\n');
-    line_length =
-        line_end != NULL ? (size_t)(line_end - cursor) : strlen(cursor);
-    if (line_length > 0U && cursor[line_length - 1U] == '\r') {
-      line_length--;
-    }
-    if (line_length == 3U && strncmp(cursor, "---", 3U) == 0) {
-      break;
-    }
-    if (line_length > 5U && strncmp(cursor, "name:", 5U) == 0) {
-      value = cursor + 5U;
-      while (*value == ' ' || *value == '\t')
-        value++;
-      cai_free_mem(NULL, name);
-      name = cai_strndup(NULL, value, line_length - (size_t)(value - cursor));
-    } else if (line_length > 12U && strncmp(cursor, "description:", 12U) == 0) {
-      value = cursor + 12U;
-      while (*value == ' ' || *value == '\t')
-        value++;
-      cai_free_mem(NULL, description);
-      description =
-          cai_strndup(NULL, value, line_length - (size_t)(value - cursor));
-    }
-    if (line_end == NULL)
-      break;
-    cursor = line_end + 1U;
-  }
-  if (*cursor == '\0' || description == NULL || description[0] == '\0') {
-    cai_free_mem(NULL, name);
-    cai_free_mem(NULL, description);
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "SKILL.md frontmatter requires description");
-  }
-  if (name == NULL || name[0] == '\0') {
-    const char *basename;
-
-    basename = strrchr(fallback, '/');
-    basename = basename != NULL ? basename + 1U : fallback;
-    cai_free_mem(NULL, name);
-    name = cai_strdup(NULL, basename);
-  }
-  if (name == NULL || !cai_skill_segment_valid(name) || strlen(name) > 64U ||
-      strlen(description) > 1024U || strpbrk(description, "\r\n") != NULL) {
-    cai_free_mem(NULL, name);
-    cai_free_mem(NULL, description);
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "SKILL.md frontmatter is invalid");
-  }
-  *out_name = name;
-  *out_description = description;
-  return CAI_OK;
-}
-
 static int cai_skill_catalog_visit(void *context, const char *skill_id,
                                    cai_error *error) {
   cai_skill_catalog *catalog = (cai_skill_catalog *)context;
   cai_source *source;
-  char *text;
+  cai_skill_metadata *metadata;
   char *name;
   char *description;
   size_t i;
@@ -444,7 +312,7 @@ static int cai_skill_catalog_visit(void *context, const char *skill_id,
     return CAI_OK;
   }
   source = NULL;
-  text = NULL;
+  metadata = NULL;
   name = NULL;
   description = NULL;
   rc = catalog->provider.read(catalog->provider.context, skill_id, NULL,
@@ -454,22 +322,28 @@ static int cai_skill_catalog_visit(void *context, const char *skill_id,
                        "skill provider returned no SKILL.md source");
   }
   if (rc == CAI_OK) {
-    rc = cai_skill_read_source(source, &text, CAI_SKILLS_MAX_FILE_BYTES, error);
+    rc = cai_skill_metadata_open(source, skill_id, &metadata, error);
   }
   if (source != NULL)
     cai_source_close(source);
   if (rc == CAI_OK) {
-    rc =
-        cai_skill_parse_frontmatter(text, skill_id, &name, &description, error);
+    name = cai_strdup(NULL, metadata->name(metadata));
+    description = cai_strdup(NULL, metadata->description(metadata));
+    if (name == NULL || description == NULL)
+      rc = cai_set_error(error, CAI_ERR_NOMEM, "copy skill catalog metadata");
   }
-  cai_free_mem(NULL, text);
+  cai_skill_metadata_close(metadata);
   if (rc != CAI_OK) {
     cai_error warning;
     const char *detail;
+    char diagnostic[1400];
     cai_error_init(&warning);
     detail = error != NULL && error->message != NULL ? error->message
                                                      : "invalid SKILL.md";
-    cai_skills_warn(catalog, detail);
+    snprintf(diagnostic, sizeof(diagnostic), "%s: %s", skill_id, detail);
+    cai_skills_warn(catalog, diagnostic);
+    cai_free_mem(NULL, name);
+    cai_free_mem(NULL, description);
     cai_error_cleanup(&warning);
     cai_error_cleanup(error);
     return CAI_OK;
@@ -535,8 +409,7 @@ static int cai_skill_local_scan_dir(cai_local_skill_provider *local, int dir_fd,
                 0 &&
             S_ISREG(skill_st.st_mode) && skill_st.st_nlink == 1) {
           rc = visit(visit_context, path, error);
-        }
-        if (rc == CAI_OK && depth < CAI_SKILLS_MAX_DEPTH) {
+        } else if (rc == CAI_OK && depth < CAI_SKILLS_MAX_DEPTH) {
           rc = cai_skill_local_scan_dir(local, skill_fd, path, depth + 1U,
                                         visit, visit_context, error);
         }
@@ -814,20 +687,17 @@ static int cai_skill_callback(void *context, const void *params, void *result,
   }
   cai_source_close(source);
   if (rc != CAI_OK) {
-    out->content.cleanup(&out->content);
     return rc;
   }
   out->skill = cai_strdup(NULL, args->skill);
   out->resource = cai_strdup(NULL, resource);
   if (out->skill == NULL || out->resource == NULL) {
-    cai_free_mem(NULL, out->skill);
-    cai_free_mem(NULL, out->resource);
-    out->content.cleanup(&out->content);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate skill result");
   }
-  return cai_tool_result_set_spooled(&cai_skill_result_map, out, "content",
-                                     &out->content, error);
+  /* The result already owns this spool. Moving it onto itself would clear
+   * its receiver methods; registry cleanup owns all result fields. */
+  return CAI_OK;
 }
 
 int cai_agent_register_skill_tool_owned(cai_agent *agent,

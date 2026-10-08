@@ -23,6 +23,24 @@ extern char *realpath(const char *path, char *resolved_path);
 static const unsigned char cai_smith_gpt_5_6_prompt_template[] = {
 #include "cai_smith_gpt_5_6_prompt.inc"
 };
+static void cai_smith_skill_warning(void *context, const char *message) {
+  cai_log_skill_warning((const cai_client_impl *)context, message);
+}
+static int cai_smith_prepare_skills(const cai_skill_config *config,
+                                    const char *directory,
+                                    cai_client_impl *client,
+                                    cai_skill_catalog **catalog, char **prompt,
+                                    cai_error *error) {
+  cai_skill_config effective;
+  cai_skill_config_init(&effective);
+  if (config != NULL)
+    effective = *config;
+  if (effective.warning_callback == NULL) {
+    effective.warning_callback = cai_smith_skill_warning;
+    effective.warning_context = client;
+  }
+  return cai_skills_prepare(&effective, directory, catalog, prompt, error);
+}
 
 void cai_smith_config_init(cai_smith_config *config) {
   cai_agent_preset_config_init(config);
@@ -909,8 +927,9 @@ int cai_client_new_preset_agent(cai_client *client,
                                               &repository_instructions, error);
   if (rc == CAI_OK &&
       (tool_capabilities & CAI_AGENT_PRESET_TOOL_SKILLS) != 0UL) {
-    rc = cai_skills_prepare(config->skills, config->agent_config_directory,
-                            &skill_catalog, &skill_catalog_prompt, error);
+    rc = cai_smith_prepare_skills(config->skills,
+                                  config->agent_config_directory, client_impl,
+                                  &skill_catalog, &skill_catalog_prompt, error);
     if (rc == CAI_OK && !cai_skills_catalog_has_entries(skill_catalog)) {
       tool_capabilities &= ~CAI_AGENT_PRESET_TOOL_SKILLS;
     }
@@ -1153,8 +1172,9 @@ int cai_client_new_preset_review_agent(cai_client *client,
                                               &repository_instructions, error);
   if (rc == CAI_OK && (preset->review_tool_capabilities &
                        CAI_AGENT_PRESET_TOOL_SKILLS) != 0UL) {
-    rc = cai_skills_prepare(config->skills, config->agent_config_directory,
-                            &skill_catalog, &skill_catalog_prompt, error);
+    rc = cai_smith_prepare_skills(config->skills,
+                                  config->agent_config_directory, client_impl,
+                                  &skill_catalog, &skill_catalog_prompt, error);
   }
   if (rc != CAI_OK) {
     goto review_instructions_failed;

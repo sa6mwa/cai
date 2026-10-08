@@ -14,6 +14,7 @@
 #include "review_report.h"
 #include "session_commands.h"
 #include "shell.h"
+#include "skills.h"
 #include "status.h"
 #include <locale.h>
 
@@ -2408,7 +2409,8 @@ int main(int argc, char **argv) {
   utility_mode = state.options.chrome_setup || state.options.chrome_remove ||
                  state.options.login || state.options.list ||
                  state.options.resume_list || state.options.export_id != NULL ||
-                 state.options.import_file != NULL;
+                 state.options.import_file != NULL ||
+                 state.options.install_skill != NULL;
   default_log_level = utility_mode ? PSLOG_LEVEL_WARN : PSLOG_LEVEL_TRACE;
   if (cai_cli_log_open(&state.log, default_log_level,
                        !state.batch && !utility_mode, &error) != CAI_OK)
@@ -2418,6 +2420,10 @@ int main(int argc, char **argv) {
   if (realpath(".", state.workspace) == NULL) {
     cli_diagnostic(&state, PSLOG_LEVEL_ERROR, "cannot resolve workspace");
     result = 2;
+    goto cleanup;
+  }
+  if (state.options.install_skill != NULL) {
+    result = cai_cli_install_skill(&state.options, state.log.logger);
     goto cleanup;
   }
   if (!state.batch && !utility_mode) {

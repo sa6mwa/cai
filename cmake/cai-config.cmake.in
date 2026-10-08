@@ -1,4 +1,5 @@
 @PACKAGE_INIT@
+set(_cai_yaml_archive "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/cai/@CMAKE_STATIC_LIBRARY_PREFIX@yaml@CMAKE_STATIC_LIBRARY_SUFFIX@")
 
 include(CMakeFindDependencyMacro)
 include("${CMAKE_CURRENT_LIST_DIR}/CaiLonejsonAbi.cmake")
@@ -20,6 +21,13 @@ find_dependency(OpenSSL COMPONENTS Crypto)
 find_dependency(Threads)
 find_package(lonejson CONFIG QUIET COMPONENTS curl oidc openssl)
 find_package(pslog CONFIG QUIET)
+
+if(NOT TARGET cai::yaml_static)
+  add_library(cai::yaml_static STATIC IMPORTED)
+  set_target_properties(cai::yaml_static PROPERTIES
+    IMPORTED_LOCATION "${_cai_yaml_archive}")
+endif()
+unset(_cai_yaml_archive)
 
 include("${CMAKE_CURRENT_LIST_DIR}/cai-targets.cmake")
 

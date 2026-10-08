@@ -362,6 +362,10 @@ cai_sink_stderr
 cai_sink_stdout
 cai_sink_write
 cai_skill_config_init
+cai_skill_metadata_close
+cai_skill_metadata_description
+cai_skill_metadata_name
+cai_skill_metadata_open
 cai_smith_config_init
 cai_smith_prompt_version
 cai_source_close

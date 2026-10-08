@@ -62,6 +62,7 @@ files=(
   scripts/render_release_rockspec.sh
   lua/cai_lua.c
   lua/cai_lua_config.inc
+  lua/cai_lua_skills.inc
   lua/cai_lua.exports
 )
 

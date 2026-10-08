@@ -60,6 +60,27 @@ typedef struct cai_skill_config {
   void *warning_context;
 } cai_skill_config;
 
+typedef struct cai_skill_metadata cai_skill_metadata;
+/** Owned, immutable skill identity with borrowed string getters. */
+struct cai_skill_metadata {
+  const char *(*name)(const cai_skill_metadata *self);
+  const char *(*description)(const cai_skill_metadata *self);
+  void (*close)(cai_skill_metadata *self);
+  void *impl;
+};
+/** Parse YAML front matter (buffered, maximum 1 MiB), not the Markdown body.
+ * The source is borrowed and consumed, with bounded read-ahead; reopen/reset
+ * it before reading the full document. Quoted/folded/literal scalars and YAML
+ * aliases are resolved. Name falls back to fallback_name's basename when
+ * absent; description is required. Unknown metadata is ignored. Name is
+ * limited to 64 bytes and description to 1024 bytes; catalog descriptions
+ * collapse whitespace to a single line. No filesystem/environment effects. */
+int cai_skill_metadata_open(cai_source *source, const char *fallback_name,
+                            cai_skill_metadata **out, cai_error *error);
+const char *cai_skill_metadata_name(const cai_skill_metadata *self);
+const char *cai_skill_metadata_description(const cai_skill_metadata *self);
+void cai_skill_metadata_close(cai_skill_metadata *self);
+
 /** Initialize a zero-defaultable global skill configuration. */
 void cai_skill_config_init(cai_skill_config *config);
 

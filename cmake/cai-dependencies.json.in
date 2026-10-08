@@ -6,6 +6,18 @@
   "dependencyMode": "@CAI_RESOLVED_DEPENDENCY_MODE@",
   "dependencies": [
     {
+      "name": "libyaml",
+      "version": "@CAI_LIBYAML_VERSION@",
+      "targetId": "@CAI_TARGET_ID@",
+      "sourceSystem": "github-source",
+      "sourceUrl": "@CAI_LIBYAML_URL@",
+      "sha256": "@CAI_LIBYAML_SHA256@",
+      "archiveName": "libyaml-0.2.5.tar.gz",
+      "licenseIdentifier": "MIT",
+      "bundled": true,
+      "installRole": "private-static-parser"
+    },
+    {
       "name": "c.pkt.systems",
       "version": "@CAI_C_PKT_SYSTEMS_VERSION@",
       "targetId": "@CAI_TARGET_ID@",

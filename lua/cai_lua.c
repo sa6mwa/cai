@@ -11852,6 +11852,7 @@ static const luaL_Reg cai_lua_conversation_params_methods[] = {
     {NULL, NULL}};
 
 #include "cai_lua_config.inc"
+#include "cai_lua_skills.inc"
 
 static void cai_lua_metatable(lua_State *L, const char *name,
                               const luaL_Reg *methods, lua_CFunction gc) {
@@ -11877,6 +11878,8 @@ int luaopen_cai(lua_State *L) {
   } while (0)
   cai_lua_metatable(L, CAI_LUA_CONFIG, cai_lua_config_methods,
                     cai_lua_config_close);
+  cai_lua_metatable(L, CAI_LUA_SKILL_METADATA, cai_lua_skill_metadata_methods,
+                    cai_lua_skill_metadata_close);
   cai_lua_metatable(L, CAI_LUA_CLIENT, cai_lua_client_methods,
                     cai_lua_client_gc);
   cai_lua_metatable(L, "cai.tool_display", cai_lua_display_methods,
@@ -11924,6 +11927,8 @@ int luaopen_cai(lua_State *L) {
   lua_setfield(L, -2, "open");
   lua_pushcfunction(L, cai_lua_config_new);
   lua_setfield(L, -2, "config");
+  lua_pushcfunction(L, cai_lua_skill_metadata_new);
+  lua_setfield(L, -2, "skill_metadata");
   lua_pushcfunction(L, cai_lua_patch_render);
   lua_setfield(L, -2, "patch_render");
   lua_pushcfunction(L, cai_lua_display_new);

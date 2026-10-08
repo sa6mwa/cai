@@ -2770,4 +2770,26 @@ do
   assert_throws(function() config:get("agent", "model") end, "closed config")
 end
 
+do
+  local text = '---\nname: "lua-skill"\ndescription: >-\n  A folded\n  description.\nmetadata:\n  tags: [one, two]\n---\nBody.\n'
+  local metadata = assert_ok(cai.skill_metadata(text, "fallback"))
+  assert_eq(metadata:name(), "lua-skill", "quoted YAML skill name")
+  assert_eq(metadata:description(), "A folded description.", "folded YAML description")
+  metadata:close()
+  metadata:close()
+  assert_throws(function() metadata:name() end)
+  local index = 1
+  metadata = assert_ok(cai.skill_metadata(function()
+    if index > #text then return nil end
+    local chunk = text:sub(index, index)
+    index = index + 1
+    return chunk
+  end, "fallback"))
+  assert_eq(metadata:name(), "lua-skill", "chunk skill metadata")
+  metadata:close()
+  assert_not_ok(cai.skill_metadata('---\nname: invalid\n---\n', "fallback"))
+  assert_not_ok(cai.skill_metadata(function() error("reader failed") end, "fallback"))
+  assert_throws(function() cai.skill_metadata(text, "nul\0name") end)
+end
+
 print("cai lua tests passed")
