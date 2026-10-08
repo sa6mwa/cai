@@ -14,7 +14,7 @@ send '/goal new Initial objective\r'; expect 'STREAM in flight'
 send '/goal status\r'; expect 'Initial objective'; expect 'unbounded'
 send '/goal new Replacement objective\r'
 [[ $(requests) == 1 ]]
-release; expect 'REPLACEMENT done'; expect 'Worked for'
+release; expect_assistant 'REPLACEMENT done'; expect 'Worked for'
 [[ $(requests) == 3 ]]
 sed -n '2p' "$root/peer/requests.jsonl" >"$root/request"
 contains "$root/request" 'Replacement objective'; contains "$root/request" 'Initial objective'
@@ -29,11 +29,11 @@ count=$(requests)
 terminal_start
 expect 'Pausable objective'; [[ $(requests) == "$count" ]]
 plan '{"plan":[{"tool":"update_goal","arguments":{"status":"complete"}},"RESUMED done"]}'
-send '/goal resume\r'; expect 'RESUMED done'
+send '/goal resume\r'; expect_assistant 'RESUMED done'
 send '/goal status\r'; expect complete
 plan '{"plan":[{"text":"CLEARED partial response","pause":true},"CLEARED turn completed"]}'
 send '/goal new Clear objective\r'; expect 'STREAM in flight'
-send '/goal clear\r'; release; expect 'CLEARED turn completed'
+send '/goal clear\r'; release; expect_assistant 'CLEARED turn completed'
 send '/goal\r'; expect 'No goal.'
 terminal_close
 logs

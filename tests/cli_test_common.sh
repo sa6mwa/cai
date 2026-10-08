@@ -72,6 +72,19 @@ has_since() {
     sed 's/[[:space:]][[:space:]]*/ /g' | grep -F -- "$2" >/dev/null
 }
 expect() { wait_for has_since "${send_offset:-0}" "$1"; }
+assistant_logged() {
+  logs
+  jq -se --arg expected "$1" 'any(.[]; .role == "assistant" and .event == "assistant_text_delta" and .msg == $expected)' "$root/logs.jsonl" >/dev/null
+}
+# Fixture responses arrive as single deltas. Assert exact semantic content plus
+# each rendered word; a sticky-line redraw may occur between feed writes.
+expect_assistant() {
+  local word
+  local -a words
+  read -r -a words <<<"$1"
+  for word in "${words[@]}"; do expect "$word"; done
+  wait_for assistant_logged "$1"
+}
 turn_finished() {
   tail -c +$(($1+1)) "$term/text" | awk -v marker="$2" '
     !seen {position=index($0,marker); if(position) {seen=1; $0=substr($0,position+length(marker))}}

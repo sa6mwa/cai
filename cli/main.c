@@ -110,6 +110,7 @@ typedef struct cli_state {
   int automation_done;
   int automation_failed;
   int auto_goal;
+  size_t goal_starts_pending;
   size_t next_instruction;
   cai_chatgpt_quota quota;
   cai_cli_quota_refresh quota_refresh;
@@ -944,12 +945,19 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     state->review_report_length = event->data_length;
   }
   if (event->parent_tool_call_id == NULL) {
+    if (event->type == CAI_AGENT_EVENT_GOAL_CHANGED &&
+        state->goal_starts_pending > 0U && event->data != NULL &&
+        ((event->data_length == 8U &&
+          memcmp(event->data, "replaced", 8U) == 0) ||
+         (event->data_length == 7U && memcmp(event->data, "resumed", 7U) == 0)))
+      state->goal_starts_pending--;
     if (event->type == CAI_AGENT_EVENT_RUN_COMPLETED)
       state->awaiting_turn = 0;
     if (event->type == CAI_AGENT_EVENT_RUN_FAILED ||
         event->type == CAI_AGENT_EVENT_RUN_CANCELLED) {
       state->awaiting_turn = 0;
       state->automation_failed = 1;
+      state->goal_starts_pending = 0U;
     }
     if (event->type == CAI_AGENT_EVENT_RUN_STARTED) {
       state->show_welcome = 0;
@@ -1459,6 +1467,7 @@ static void cli_close_runtime(cli_state *state) {
   }
   cai_agent_runtime_close(state->runtime);
   state->runtime = NULL;
+  state->goal_starts_pending = 0U;
   cai_chrome_close(state->chrome);
   state->chrome = NULL;
   cai_cli_reasoning_reset(&state->reasoning);
@@ -1619,6 +1628,8 @@ static int cli_goal_command(cli_state *state, const char *arg,
   }
   if (rc != CAI_OK)
     return rc;
+  if (objective != NULL || strcmp(action, "resume") == 0)
+    state->goal_starts_pending++;
   fields[0] = pslog_str("command", action);
   fields[1] = pslog_str("prompt_kind", "goal_control");
   cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, "goal_control",
@@ -2195,6 +2206,10 @@ static int cli_advance_automation(cli_state *state, cai_error *error) {
     state->automation_done = 1;
     return CAI_OK;
   }
+  /* A completed turn may be delivered before a new/resumed host goal is
+   * applied. Do not consume that older goal projection as the new outcome. */
+  if (state->goal_starts_pending > 0U)
+    return CAI_OK;
   if (state->auto_goal) {
     rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
     if (rc != CAI_OK)

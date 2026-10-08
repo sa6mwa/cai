@@ -9,6 +9,56 @@ typedef struct event_log_capture {
   size_t length;
 } event_log_capture;
 
+static int test_goal_handoff(void) {
+  cli_state state;
+  cai_agent_runtime_event event;
+  memset(&state, 0, sizeof(state));
+  memset(&event, 0, sizeof(event));
+  state.batch = 1;
+  state.auto_goal = 1;
+  state.awaiting_turn = 1;
+  state.goal_starts_pending = 2U;
+  event.type = CAI_AGENT_EVENT_RUN_COMPLETED;
+  if (cli_event(&state, &event, NULL) != CAI_OK || state.awaiting_turn ||
+      cli_advance_automation(&state, NULL) != CAI_OK || state.automation_done ||
+      !state.auto_goal)
+    return 1;
+  /* An older turn completing must not consult an obsolete goal projection.
+   * Unrelated and child goal events cannot acknowledge these host starts. */
+  event.type = CAI_AGENT_EVENT_GOAL_CHANGED;
+  event.data = "paused";
+  event.data_length = 6U;
+  if (cli_event(&state, &event, NULL) != CAI_OK ||
+      state.goal_starts_pending != 2U)
+    return 1;
+  event.data = "replaced";
+  event.data_length = 8U;
+  event.parent_tool_call_id = "child";
+  if (cli_event(&state, &event, NULL) != CAI_OK ||
+      state.goal_starts_pending != 2U)
+    return 1;
+  event.parent_tool_call_id = NULL;
+  if (cli_event(&state, &event, NULL) != CAI_OK ||
+      state.goal_starts_pending != 1U ||
+      cli_advance_automation(&state, NULL) != CAI_OK || state.automation_done)
+    return 1;
+  event.data = "resumed";
+  event.data_length = 7U;
+  if (cli_event(&state, &event, NULL) != CAI_OK ||
+      state.goal_starts_pending != 0U ||
+      cli_event(&state, &event, NULL) != CAI_OK ||
+      state.goal_starts_pending != 0U)
+    return 1;
+  state.goal_starts_pending = 1U;
+  state.awaiting_turn = 1;
+  event.type = CAI_AGENT_EVENT_RUN_FAILED;
+  if (cli_event(&state, &event, NULL) != CAI_OK ||
+      state.goal_starts_pending != 0U || state.awaiting_turn ||
+      cli_advance_automation(&state, NULL) != CAI_OK || !state.automation_done)
+    return 1;
+  return 0;
+}
+
 static int event_log_write(void *context, const char *bytes, size_t count,
                            size_t *written) {
   event_log_capture *capture = (event_log_capture *)context;
@@ -505,8 +555,9 @@ int main(void) {
   for (rc = 0; rc < 8; rc++)
     if (test_output_failure(rc) != 0)
       return 1;
-  if (test_shared_auth() != 0 || test_event_logging() != 0 ||
-      test_reasoning_sections() != 0 || test_literal_tokens() != 0)
+  if (test_goal_handoff() != 0 || test_shared_auth() != 0 ||
+      test_event_logging() != 0 || test_reasoning_sections() != 0 ||
+      test_literal_tokens() != 0)
     return 1;
   memset(&state, 0, sizeof(state));
   if (!cai_cli_quota_due(0, start, start, 0) ||

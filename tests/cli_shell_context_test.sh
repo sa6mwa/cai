@@ -12,7 +12,7 @@ for chat in false true; do
   send 'begin tool boundary test\r'; expect 'STREAM in flight'
   send '!printf shell-boundary-marker\r'; expect 'Shell command exited 0'
   [[ $(requests) == $((before+1)) ]]
-  release; expect 'BOUNDARY done'; expect 'Worked for'
+  release; expect_assistant 'BOUNDARY done'; expect 'Worked for'
   [[ $(requests) == $((before+2)) ]]
   tail -1 "$root/peer/requests.jsonl" >"$root/request"
   contains "$root/request" shell-boundary-marker
