@@ -480,7 +480,13 @@ Lua uses `cai.skill_metadata(text_or_chunk_reader, fallback_name)` and
 
 Libyaml 0.2.5 is temporarily built from checksum-pinned source into reusable
 static/shared outputs per target under `.cache/deps`, with archives retained in
-the shared dependency cache. It stays below the C89 public API. SDK packages
+the shared dependency cache (`CPKT_DEPENDENCY_CACHE`, or
+`${XDG_CACHE_HOME:-$HOME/.cache}/cpkt/deps`). Configure only prepares its native
+build graph; normal builds invoke the shared incremental producer. ASan,
+coverage and fuzz use separate outputs with the selected instrumentation.
+Nonstandard compiler/flag configurations should use their own `CAI_DEPS_DIR`;
+one operation owns each producer root and inputs stay stable during checks.
+It stays below the C89 public API. SDK packages
 include its private static link dependency and license; the CAI binary links
 it statically. Moving this source producer into c.pkt.systems core is deferred.
 

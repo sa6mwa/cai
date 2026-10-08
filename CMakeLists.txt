@@ -94,9 +94,9 @@ elseif(DEFINED CAI_DEPENDENCY_CACHE AND NOT "${CAI_DEPENDENCY_CACHE}" STREQUAL "
 elseif(DEFINED ENV{CPKT_DEPENDENCY_CACHE} AND NOT "$ENV{CPKT_DEPENDENCY_CACHE}" STREQUAL "")
   set(_cai_dependency_cache_default "$ENV{CPKT_DEPENDENCY_CACHE}")
 elseif(DEFINED ENV{XDG_CACHE_HOME} AND NOT "$ENV{XDG_CACHE_HOME}" STREQUAL "")
-  set(_cai_dependency_cache_default "$ENV{XDG_CACHE_HOME}/c.pkt.systems/deps")
+  set(_cai_dependency_cache_default "$ENV{XDG_CACHE_HOME}/cpkt/deps")
 elseif(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
-  set(_cai_dependency_cache_default "$ENV{HOME}/.cache/c.pkt.systems/deps")
+  set(_cai_dependency_cache_default "$ENV{HOME}/.cache/cpkt/deps")
 else()
   message(FATAL_ERROR
     "HOME, XDG_CACHE_HOME, or CPKT_DEPENDENCY_CACHE is required for the "
@@ -877,7 +877,7 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
     target_compile_definitions(${_cai_target} PRIVATE
       LONEJSON_WITH_CURL LONEJSON_WITH_JWT LONEJSON_WITH_OIDC
       LONEJSON_WITH_OPENSSL)
-    add_dependencies(${_cai_target} cai_smith_prompt_asset)
+    add_dependencies(${_cai_target} cai_smith_prompt_asset cai_yaml_build)
     cai_configure_c_target(${_cai_target})
   endif()
 endforeach()
@@ -886,7 +886,7 @@ if(TARGET cai_shared)
     Threads::Threads ${CAI_OPENSSL_CRYPTO_SHARED_LINK} ${CAI_LONEJSON_LINK} cai_yaml_static)
 endif()
 if(TARGET cai_static)
-  target_include_directories(cai_static PRIVATE "${CAI_LIBYAML_PREFIX}/include")
+  target_include_directories(cai_static PRIVATE "${CAI_LIBYAML_SOURCE}/include")
   target_link_libraries(cai_static INTERFACE
     $<BUILD_INTERFACE:cai_yaml_static>
     $<INSTALL_INTERFACE:cai::yaml_static>
@@ -1316,6 +1316,17 @@ if(CAI_BUILD_TESTS)
   target_compile_options(cai_yaml_c89_test PRIVATE -UNDEBUG)
   add_test(NAME cai_yaml_c89_test COMMAND cai_yaml_c89_test)
   set_tests_properties(cai_yaml_c89_test PROPERTIES LABELS "unit;local" TIMEOUT 5)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux"
+      AND CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR
+      AND CAI_TARGET_ID MATCHES "-linux-gnu$")
+    add_test(NAME cai_yaml_producer_test COMMAND "${CMAKE_COMMAND}"
+      "-DCAI_ROOT=${CMAKE_CURRENT_SOURCE_DIR}" "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+      "-DCAI_YAML_SOURCE=${CAI_LIBYAML_SOURCE}" "-DCAI_YAML_ARCHIVE=${yaml_archive}"
+      "-DCAI_C_COMPILER=${CMAKE_C_COMPILER}" "-DCAI_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}"
+      "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/yaml_producer_test.cmake")
+    set_tests_properties(cai_yaml_producer_test PROPERTIES LABELS "unit;local;lifecycle" TIMEOUT 60)
+  endif()
   add_executable(cai_config_test tests/config_test.c)
   cai_link_internal_consumer(cai_config_test)
   cai_configure_c_target(cai_config_test)

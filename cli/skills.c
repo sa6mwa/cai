@@ -24,39 +24,15 @@ static int fail(cai_error *error, const char *operation, const char *path) {
 static int invalid(cai_error *error, const char *message) {
   return cai_cli_error(error, CAI_ERR_INVALID, message);
 }
-static void normalize_path(char *path) {
-  char *read = path + 1, *write = path + 1, *end;
-  size_t size;
-  int last;
-  while (*read) {
-    while (*read == '/')
-      read++;
-    end = strchr(read, '/');
-    if (end == NULL)
-      end = read + strlen(read);
-    last = *end == '\0';
-    size = (size_t)(end - read);
-    if (size == 2U && memcmp(read, "..", 2U) == 0) {
-      if (write > path + 1) {
-        write--;
-        while (write > path + 1 && write[-1] != '/')
-          write--;
-      }
-    } else if (size != 0U && !(size == 1U && *read == '.')) {
-      memmove(write, read, size);
-      write += size;
-      *write++ = '/';
-    }
-    if (last)
-      break;
-    read = end + 1;
-  }
-  if (write > path + 1)
-    write--;
-  *write = '\0';
+static int inside(const char *path, const char *directory) {
+  size_t length = strlen(directory);
+  return strcmp(directory, "/") == 0 ||
+         (strncmp(path, directory, length) == 0 &&
+          (path[length] == '\0' || path[length] == '/'));
 }
-static int mkdir_root(char *path, cai_error *error) {
+static int mkdir_root(char *path, const char *source, cai_error *error) {
   char *p;
+  char parent[PATH_MAX] = "/";
   struct stat st;
   int created;
   for (p = path + 1;; p++) {
@@ -64,16 +40,34 @@ static int mkdir_root(char *path, cai_error *error) {
     if (saved != '/' && saved != '\0')
       continue;
     *p = '\0';
+    if (lstat(path, &st) != 0) {
+      if (errno != ENOENT) {
+        *p = saved;
+        return fail(error, "inspect skills directory", path);
+      }
+      if (inside(parent, source)) {
+        *p = saved;
+        return invalid(
+            error, "skills destination must not be inside the source package");
+      }
+    } else if (saved == '\0' && S_ISLNK(st.st_mode)) {
+      *p = saved;
+      return invalid(error,
+                     "skills root must be a real directory, not a symlink");
+    }
     created = mkdir(path, 0700) == 0;
     if ((!created && errno != EEXIST) || (created && chmod(path, 0700) != 0)) {
       *p = saved;
       return fail(error, "create skills directory", path);
     }
-    if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+    if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) {
       *p = saved;
-      return invalid(
-          error,
-          "skills directory parents must be real directories, not symlinks");
+      return invalid(error,
+                     "skills directory parents must resolve to directories");
+    }
+    if (realpath(path, parent) == NULL) {
+      *p = saved;
+      return fail(error, "resolve skills directory parent", path);
     }
     *p = saved;
     if (saved == '\0')
@@ -342,14 +336,7 @@ int cai_cli_install_skill(const cai_cli_options *options,
   rc = root_path(options, root, &error);
   if (rc != CAI_OK)
     goto done;
-  normalize_path(root);
-  if (strncmp(root, source_path, strlen(source_path)) == 0 &&
-      (root[strlen(source_path)] == '\0' || root[strlen(source_path)] == '/')) {
-    rc = invalid(&error,
-                 "skills destination must not be inside the source package");
-    goto done;
-  }
-  rc = mkdir_root(root, &error);
+  rc = mkdir_root(root, source_path, &error);
   if (rc != CAI_OK)
     goto done;
   if (realpath(root, canonical) == NULL) {
@@ -370,9 +357,7 @@ int cai_cli_install_skill(const cai_cli_options *options,
     goto done;
   }
   temporary[0] = '\0';
-  if (strncmp(canonical, source_path, strlen(source_path)) == 0 &&
-      (canonical[strlen(source_path)] == '\0' ||
-       canonical[strlen(source_path)] == '/')) {
+  if (inside(canonical, source_path)) {
     rc = invalid(&error,
                  "skills destination must not be inside the source package");
     goto done;

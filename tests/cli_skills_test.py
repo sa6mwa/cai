@@ -114,6 +114,25 @@ def main():
         custom = root / 'custom-skills'
         result = run('--install-skill', source, '--skills-dir', custom)
         assert result.returncode == 0 and (custom / 'installed-example' / 'SKILL.md').exists(), result.stderr
+        # Installation must resolve exactly the same path as runtime discovery,
+        # including ordinary symlink ancestors followed by '..'.
+        physical = root / 'physical'
+        (physical / 'child').mkdir(parents=True)
+        ancestor = root / 'ancestor-link'
+        ancestor.symlink_to(physical / 'child', target_is_directory=True)
+        selected = str(ancestor) + '/../skills'
+        result = run('--install-skill', source, '--skills-dir', selected)
+        assert result.returncode == 0, result.stderr
+        assert (physical / 'skills' / 'installed-example' / 'SKILL.md').exists()
+        assert not (root / 'skills').exists()
+        into_source = root / 'into-source'
+        into_source.symlink_to(source, target_is_directory=True)
+        result = run('--install-skill', source, '--skills-dir', into_source / 'new-root')
+        assert result.returncode != 0 and not (source / 'new-root').exists()
+        final_link = root / 'skills-root-link'
+        final_link.symlink_to(custom, target_is_directory=True)
+        result = run('--install-skill', source, '--skills-dir', final_link, '--replace')
+        assert result.returncode != 0
         config_root = root / 'alternate-config'
         result = run('--install-skill', source, '--config-dir', config_root)
         assert result.returncode == 0 and (config_root / 'skills' / 'installed-example' / 'SKILL.md').exists(), result.stderr
