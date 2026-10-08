@@ -96,11 +96,17 @@ if ! grep -F 'requires an arm64 osxcross host triple' \
   exit 1
 fi
 
-if OSXCROSS_ROOT="$tmpdir/osxcross" CPKT_OSXCROSS_HOST="$host" \
+if CPKT_TOOLCHAIN_CACHE="$tmpdir/status=ready" OSXCROSS_ROOT="$tmpdir/osxcross" CPKT_OSXCROSS_HOST="$host" \
   "$repo_root/scripts/osxcross_available.sh" --quiet; then
   printf 'expected incomplete osxcross SDK to be unavailable\n' >&2
   exit 1
 fi
+if CPKT_TOOLCHAIN_CACHE="$tmpdir/status=ready" OSXCROSS_ROOT="$tmpdir/osxcross" CPKT_OSXCROSS_HOST="$host" \
+  "$repo_root/scripts/cpkt-toolchains.sh" env arm64-apple-darwin >"$tmpdir/missing-env.out" 2>"$tmpdir/missing-env.err"; then
+  printf 'missing collection must not export empty compiler commands\n' >&2
+  exit 1
+fi
+[[ ! -s "$tmpdir/missing-env.out" ]]
 
 mkdir -p "$tmpdir/osxcross/SDK/MacOSX15.sdk/usr/include"
 

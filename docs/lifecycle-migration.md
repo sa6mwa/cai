@@ -50,6 +50,8 @@ Lua rockspecs reference their public source archive, also embedded in the source
 Failed Git tag and ignore queries are errors, distinct from valid empty lists.
 Lua staging requires its public headers and preserves existing staging when header
 enumeration fails.
+Toolchain discovery reads the exact status field. Missing optional Darwin tools
+omit that target; failed or malformed discovery stops target selection.
 
 ## Removed controllers
 

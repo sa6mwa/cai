@@ -272,7 +272,7 @@ ensure_target() {
 print_env() {
   local target=$1 description key value
   description=$(report_target "$target")
-  [[ "$description" == *$'status=ready'* ]] || die "target is missing; run: $0 ensure $target"
+  grep -qx 'status=ready' <<<"$description" || die "target is missing; run: $0 ensure $target"
   for key in source root prefix sysroot cc cxx ld ar ranlib strip nm objcopy objdump addr2line gdb readelf libstdcxx_a libgcc_a otool; do
     value=$(printf '%s\n' "$description" | sed -n "s/^${key}=//p")
     [[ -z "$value" ]] || printf 'export %s=%q\n' "CPKT_TOOLCHAIN_${key^^}" "$value"
