@@ -1,6 +1,10 @@
   if(CAI_BUILD_TESTS)
     add_executable(cai_terminal_peer tests/terminal_peer.c)
     cai_configure_cli_target(cai_terminal_peer)
+    add_test(NAME cai_cli_terminal_peer
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/terminal_peer_test.sh"
+        "$<TARGET_FILE:cai_terminal_peer>")
+    set_tests_properties(cai_cli_terminal_peer PROPERTIES TIMEOUT 5)
     find_program(CAI_TEST_PYTHON python3 REQUIRED)
     find_program(CAI_TEST_JQ jq REQUIRED)
     add_test(NAME cai_cli_help COMMAND cai_cli --help)

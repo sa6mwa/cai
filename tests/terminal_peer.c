@@ -36,6 +36,50 @@ static int write_all(int fd, const char *data, size_t size) {
   }
   return 0;
 }
+
+/* Record the ASCII input row independently of sticky-line redraws. This is a
+ * bounded data snapshot, not a terminal emulator or an assertion engine. */
+static void prompt_control(const char *csi, char *prompt, size_t capacity,
+                           int rows, int width, int *row, int *column,
+                           int *scroll_bottom) {
+  char *end;
+  long first = strtol(csi, &end, 10);
+  long second = *end == ';' ? strtol(end + 1, NULL, 10) : 1L;
+  char command = csi[strlen(csi) - 1U];
+  int i;
+  if (first < 1L)
+    first = 1L;
+  if (second < 1L)
+    second = 1L;
+  if (command == 'H' || command == 'f') {
+    *row = (int)(first > rows ? rows : first);
+    *column = (int)(second > width ? width : second);
+  } else if (command == 'A') {
+    *row = first >= *row ? 1 : *row - (int)first;
+  } else if (command == 'B') {
+    *row = first > rows - *row ? rows : *row + (int)first;
+  } else if (command == 'C') {
+    *column = first > width - *column ? width : *column + (int)first;
+  } else if (command == 'D') {
+    *column = first >= *column ? 1 : *column - (int)first;
+  } else if (command == 'G') {
+    *column = (int)(first > width ? width : first);
+  } else if (command == 'r') {
+    if (*end != ';')
+      second = rows;
+    *scroll_bottom = (int)(second > rows ? rows : second);
+  } else if ((command == 'K' && *row == rows) || command == 'J') {
+    /* Default K erases from the cursor; K=1 erases through it. */
+    long mode = strtol(csi, NULL, 10);
+    int start = mode == 1L || mode == 2L || *row < rows ? 0 : *column - 1;
+    int stop = mode == 1L ? *column : (int)capacity;
+    if (mode > 2L || (command == 'J' && mode == 1L && *row < rows))
+      return;
+    for (i = start; i < stop && i < (int)capacity; i++)
+      prompt[i] = ' ';
+  }
+}
+
 int main(int argc, char **argv) {
   int master, slave, raw, text, diagnostics, status_fd, status, state = 0;
   int alive = 1, input = 1, control, foreground, width;
@@ -48,6 +92,10 @@ int main(int argc, char **argv) {
   struct winsize window;
   struct termios attributes;
   FILE *settings;
+  char prompt[4096], csi[64];
+  size_t csi_length = 0U, prompt_length;
+  int cursor_row = 1, cursor_column = 1, scroll_bottom = 30;
+  memset(prompt, ' ', sizeof(prompt));
   if (argc < 4) {
     fprintf(stderr, "usage: terminal_peer OUTPUT_DIR WIDTH COMMAND [ARG...]\n");
     return 2;
@@ -147,11 +195,18 @@ int main(int argc, char **argv) {
         unsigned char ch = (unsigned char)data[i];
         if (state == 1) {
           state = ch == '[' ? 2 : ch == ']' ? 3 : 0;
+          csi_length = 0U;
           continue;
         }
         if (state == 2) {
-          if (ch >= 0x40 && ch <= 0x7e)
+          if (csi_length + 1U < sizeof(csi))
+            csi[csi_length++] = (char)ch;
+          if (ch >= 0x40 && ch <= 0x7e) {
+            csi[csi_length] = '\0';
+            prompt_control(csi, prompt, sizeof(prompt), window.ws_row, width,
+                           &cursor_row, &cursor_column, &scroll_bottom);
             state = 0;
+          }
           continue;
         }
         if (state == 3) {
@@ -167,11 +222,42 @@ int main(int argc, char **argv) {
         }
         if (ch == 27)
           state = 1;
-        else if (ch != '\r')
-          plain[used++] = (char)ch;
+        else {
+          if (ch == '\r')
+            cursor_column = 1;
+          else if (ch == '\n') {
+            if (cursor_row != scroll_bottom && cursor_row < window.ws_row)
+              cursor_row++;
+          } else if (ch == '\b') {
+            if (cursor_column > 1)
+              cursor_column--;
+          } else if (ch >= 32U && ch < 127U) {
+            if (cursor_row == window.ws_row && cursor_column > 0 &&
+                cursor_column <= (int)sizeof(prompt))
+              prompt[cursor_column - 1] = (char)ch;
+            if (cursor_column < width)
+              cursor_column++;
+          }
+          if (ch != '\r')
+            plain[used++] = (char)ch;
+        }
       }
       if (write_all(text, plain, used))
         break;
+      snprintf(path, sizeof(path), "%s/prompt.tmp", argv[1]);
+      settings = fopen(path, "w");
+      if (settings) {
+        prompt_length =
+            (size_t)width < sizeof(prompt) ? (size_t)width : sizeof(prompt);
+        while (prompt_length > 0U && prompt[prompt_length - 1U] == ' ')
+          prompt_length--;
+        fwrite(prompt, 1U, prompt_length, settings);
+        fputc('\n', settings);
+        fclose(settings);
+        snprintf(state_path, sizeof(state_path), "%s/prompt", argv[1]);
+        if (rename(path, state_path) != 0)
+          stopped = 1;
+      }
     }
     snprintf(path, sizeof(path), "%s/tty.tmp", argv[1]);
     settings = fopen(path, "w");

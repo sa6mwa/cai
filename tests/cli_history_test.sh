@@ -15,12 +15,12 @@ release; expect_turn "$offset" HistorySteerDone
 [[ $(grep -c '^history-steering$' "$history") == 1 ]]
 send '/new\r'; expect '--- session ---'
 count=$(requests); cp "$history" "$root/snapshot"
-send '\022history-steering\r'; expect '> history-steering'
+send '\022history-steering\r'; expect_prompt '> history-steering'
 [[ $(requests) == "$count" ]]; cmp "$history" "$root/snapshot"
 send '\025'; terminal_close
 cp "$history" "$root/snapshot"
 terminal_start; cmp "$history" "$root/snapshot"
-send '\022history-steering\r'; expect '> history-steering'; [[ $(requests) == "$count" ]]
+send '\022history-steering\r'; expect_prompt '> history-steering'; [[ $(requests) == "$count" ]]
 send '\025'; terminal_close
 mkdir "$root/other"
 base[${#base[@]}-1]="$root/other"

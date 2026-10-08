@@ -72,6 +72,7 @@ has_since() {
     sed 's/[[:space:]][[:space:]]*/ /g' | grep -F -- "$2" >/dev/null
 }
 expect() { wait_for has_since "${send_offset:-0}" "$1"; }
+expect_prompt() { wait_for has "$term/prompt" "$1"; }
 assistant_logged() {
   logs
   jq -se --arg expected "$1" 'any(.[]; .role == "assistant" and .event == "assistant_text_delta" and .msg == $expected)' "$root/logs.jsonl" >/dev/null

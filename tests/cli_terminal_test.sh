@@ -33,8 +33,8 @@ send '\r'; expect 'STREAM in flight'
 absent "$term/text" 'FINAL paragraph.'
 count=$(requests)
 send '/help\r'; expect 'Run cai --help'; [[ $(requests) == "$count" ]]
-send 'preserved-draft'; resize 48; expect preserved-draft
-release; expect 'FINAL paragraph.'; expect 'Worked for'
+send 'preserved-draft'; resize 48; expect_prompt preserved-draft
+release; expect_assistant 'FINAL paragraph.'; expect 'Worked for'
 contains "$root/peer/requests.jsonl" 'data:image/png;base64,'
 contains "$term/text" '! Worked for'
 plan '{"plan":["DRAFT SENT DONE"]}'
