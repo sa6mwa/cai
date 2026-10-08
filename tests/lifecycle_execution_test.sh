@@ -7,7 +7,7 @@ scratch=$(mktemp -d "${TMPDIR:-$repo/build}/lifecycle-test.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
 trap 'printf "lifecycle regression failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2; cat "$scratch/events" "$scratch/err" >&2 2>/dev/null || true' ERR
 mkdir -p "$scratch/scripts" "$scratch/bin"
-cp "$repo/scripts/"{build,test,release}.sh "$scratch/scripts/"
+cp "$repo/scripts/"{build,test,release,package}.sh "$scratch/scripts/"
 cp "$repo/Makefile" "$scratch/"
 cat >"$scratch/bin/record" <<'SH'
 #!/usr/bin/env bash
@@ -26,7 +26,12 @@ printf 'identity\t%s\n' "$*" >>"$CAI_LIFECYCLE_LOG"
 printf '1.2.3\n'
 SH
 printf '#!/bin/sh\nexit 1\n' >"$scratch/scripts/osxcross_available.sh"
-printf '#!/bin/sh\nprintf targets >>"$CAI_LIFECYCLE_TARGET_LOG"\nprintf "x86_64-linux-gnu\\n"\n' >"$scratch/scripts/release_targets.sh"
+cat >"$scratch/scripts/release_targets.sh" <<'SH'
+#!/usr/bin/env bash
+printf targets >>"$CAI_LIFECYCLE_TARGET_LOG"
+printf 'x86_64-linux-gnu\n'
+[[ ${CAI_LIFECYCLE_FAIL:-} != targets ]] || exit 7
+SH
 printf '#!/bin/sh\nprintf "http://127.0.0.1:3001/mcp\\n"\n' >"$scratch/scripts/devenv.sh"
 chmod +x "$scratch/scripts/"*.sh
 export PATH="$scratch/bin:$PATH" CAI_LIFECYCLE_LOG="$scratch/events" CAI_LIFECYCLE_TARGET_LOG="$scratch/targets"
@@ -150,3 +155,26 @@ for target in test-lua-smith-e2e prerelease-hardening; do
   if CAI_ENABLE_INTEGRATION_TESTS=1 CAI_LIFECYCLE_FAIL=make run_make "$target"; then exit 1; fi
   [[ $(wc -l <"$CAI_LIFECYCLE_LOG") == 1 ]]
 done
+# Discovery errors cannot become an empty/partial checksum inventory.
+: >"$CAI_LIFECYCLE_LOG"
+if CAI_LIFECYCLE_FAIL=targets run_make package-checksums; then exit 1; fi
+[[ ! -s "$CAI_LIFECYCLE_LOG" ]]
+: >"$CAI_LIFECYCLE_LOG"
+run_make package-checksums
+grep -q -- '-DCAI_TARGETS=x86_64-linux-gnu' "$CAI_LIFECYCLE_LOG"
+[[ $(wc -l <"$CAI_LIFECYCLE_LOG") == 1 ]]
+for failed in identity targets; do
+  : >"$CAI_LIFECYCLE_LOG"; : >"$CAI_LIFECYCLE_TARGET_LOG"
+  if CAI_LIFECYCLE_FAIL="$failed" bash "$scratch/scripts/package.sh" >"$scratch/out" 2>"$scratch/err"; then exit 1; else [[ $? == 7 ]]; fi
+  [[ $(cat "$CAI_LIFECYCLE_LOG") == identity$'\t'* ]]
+  [[ $(wc -l <"$CAI_LIFECYCLE_LOG") == 1 ]]
+  [[ "$failed" != identity || ! -s "$CAI_LIFECYCLE_TARGET_LOG" ]]
+done
+: >"$CAI_LIFECYCLE_LOG"
+bash "$scratch/scripts/package.sh"
+[[ $(head -1 "$CAI_LIFECYCLE_LOG") == identity$'\t'* ]]
+grep -q -- '-DCAI_VERSION=1.2.3' "$CAI_LIFECYCLE_LOG"
+[[ $(wc -l <"$CAI_LIFECYCLE_LOG") == 3 ]]
+: >"$CAI_LIFECYCLE_LOG"
+if bash "$scratch/scripts/package.sh" release-matrix unexpected >"$scratch/out" 2>"$scratch/err"; then exit 1; else [[ $? == 2 ]]; fi
+[[ ! -s "$CAI_LIFECYCLE_LOG" ]]

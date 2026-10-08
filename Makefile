@@ -149,7 +149,8 @@ package-source:
 package-source-smoke: package-source
 	bash scripts/test_release_from_source.sh "$(ROOT)" "$(ROOT)/dist/cai-$(RELEASE_VERSION).tar.gz"
 package-checksums:
-	$(CMAKE) -DCAI_DIST_DIR="$(ROOT)/dist" -DCAI_VERSION="$(RELEASE_VERSION)" -DCAI_TARGETS="$$(bash scripts/release_targets.sh | paste -sd ';')" -P cmake/package_checksums.cmake
+	targets="$$(bash scripts/release_targets.sh | paste -sd ';')"; \
+	$(CMAKE) -DCAI_DIST_DIR="$(ROOT)/dist" -DCAI_VERSION="$(RELEASE_VERSION)" -DCAI_TARGETS="$$targets" -P cmake/package_checksums.cmake
 package-verify:
 	bash scripts/package-verify.sh "$(ROOT)" "$(RELEASE_VERSION)"
 verify-release-archives: package-verify

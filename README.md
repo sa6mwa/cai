@@ -888,6 +888,9 @@ when needed. Lua projects can use the rock as a facade over the C library,
 while Vectis can still call the C API directly where that fits its performance
 and integration needs better.
 
+The released rockspec uses the public GitHub release URL for its source archive.
+The source rock embeds that same archive, so unpacking it needs no source download.
+
 For manual LuaRock installation, install the matching lonejson source rock
 first because this version is served from the GitHub release, not LuaRocks.org:
 

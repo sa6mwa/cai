@@ -1141,7 +1141,7 @@ verify_rockspec_file() {
   local matches
 
   require_file "$rockspec"
-  matches=$(grep -n -E '/home/|/Users/|/opt/|\.cache/deps|\.\./' \
+  matches=$(grep -n -E 'file://|/home/|/Users/|/opt/|\.cache/deps|\.\./' \
     "$rockspec" 2>/dev/null || true)
   if [[ -n "$matches" ]]; then
     printf '%s\n' "$matches" >&2

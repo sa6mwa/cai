@@ -14,7 +14,7 @@ find_program(CAI_GZIP_BIN NAMES gzip REQUIRED)
 set(source_root_name "cai-${CAI_VERSION}")
 set(archive_base "${CAI_DIST_DIR}/${source_root_name}.tar")
 set(archive_path "${archive_base}.gz")
-set(stage_root "${CAI_DIST_DIR}/.source-pack")
+set(stage_root "${CAI_ROOT}/build/source-pack")
 set(stage_dir "${stage_root}/${source_root_name}")
 
 file(MAKE_DIRECTORY "${CAI_DIST_DIR}")

@@ -43,6 +43,10 @@ The final explicit checksum inventory requires every selected SDK plus source,
 CLI and Lua delivery. Binary-only rehearsals have their own manifest under
 `build/`. No release refs are mutated by local lifecycle commands. Failed final
 release stops; it does not fix, retag, rebuild or publish in the same operation.
+Version and target discovery failures stop packaging before producers or checksum
+publication. Empty targets and unknown checksum scopes are rejected. Source archive
+staging belongs under `build/`; `dist/` contains only delivery artifacts. Released
+Lua rockspecs reference their public source archive, also embedded in the source rock.
 
 ## Removed controllers
 

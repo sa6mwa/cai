@@ -5,12 +5,26 @@ trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/dist"
 version=1.2.3
 names=(cai-1.2.3-x86_64-linux-gnu.tar.gz cai-1.2.3.tar.gz cai-lua-1.2.3.tar.gz cai-cli-1.2.3-x86_64-linux-musl.tar.gz cai-1.2.3-1.rockspec cai-1.2.3-1.src.rock)
-run() { cmake "-DCAI_DIST_DIR=$scratch/dist" "-DCAI_VERSION=$version" -DCAI_TARGETS=x86_64-linux-gnu -P "$repo/cmake/package_checksums.cmake"; }
+run() { cmake "-DCAI_DIST_DIR=$scratch/dist" "-DCAI_VERSION=$version" -DCAI_TARGETS=x86_64-linux-gnu "$@" -P "$repo/cmake/package_checksums.cmake"; }
 for name in "${names[@]}"; do printf 'fixture %s\n' "$name" >"$scratch/dist/$name"; done
 run
 [[ $(wc -l <"$scratch/dist/cai-$version-CHECKSUMS") == ${#names[@]} ]]
 (cd "$scratch/dist" && sha256sum -c "cai-$version-CHECKSUMS")
 cp "$scratch/dist/cai-$version-CHECKSUMS" "$scratch/manifest"
+for argument in '-DCAI_TARGETS=' '-DCAI_TARGETS=unknown' '-DCAI_PACKAGE_SCOPE=unknown'; do
+  if run "$argument" >"$scratch/out" 2>"$scratch/err"; then exit 1; fi
+  cmp "$scratch/manifest" "$scratch/dist/cai-$version-CHECKSUMS"
+done
+for path in '' "$scratch/dist/cai-$version-CHECKSUMS"; do
+  if run -DCAI_PACKAGE_SCOPE=binary "-DCAI_CHECKSUMS_PATH=$path" >"$scratch/out" 2>"$scratch/err"; then exit 1; fi
+  cmp "$scratch/manifest" "$scratch/dist/cai-$version-CHECKSUMS"
+done
+ln -s "$scratch/dist/cai-$version-CHECKSUMS" "$scratch/manifest-alias"
+if run -DCAI_PACKAGE_SCOPE=binary "-DCAI_CHECKSUMS_PATH=$scratch/manifest-alias" >"$scratch/out" 2>"$scratch/err"; then exit 1; fi
+cmp "$scratch/manifest" "$scratch/dist/cai-$version-CHECKSUMS"
+run -DCAI_PACKAGE_SCOPE=binary "-DCAI_CHECKSUMS_PATH=$scratch/binary-CHECKSUMS"
+[[ $(wc -l <"$scratch/binary-CHECKSUMS") == 1 ]]
+cmp "$scratch/manifest" "$scratch/dist/cai-$version-CHECKSUMS"
 rm "$scratch/dist/${names[0]}"
 if run >"$scratch/out" 2>"$scratch/err"; then exit 1; fi
 cmp "$scratch/manifest" "$scratch/dist/cai-$version-CHECKSUMS"
