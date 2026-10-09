@@ -699,6 +699,12 @@ cai_chat_write_tools(lonejson_writer *writer,
                                       strlen(tools[i].parameters_json), error);
       }
     }
+    if (status == LONEJSON_STATUS_OK && !tools[i].is_custom) {
+      status = cai_chat_key(writer, "strict", error);
+      if (status == LONEJSON_STATUS_OK) {
+        status = writer->bool_fn(writer, tools[i].strict != 0, error);
+      }
+    }
     if (status == LONEJSON_STATUS_OK) {
       status = writer->end_object(writer, error);
     }
@@ -2070,6 +2076,14 @@ static int cai_chat_stream_attempt(
   }
   if (rc == CAI_OK) {
     rc = cai_append_client_headers(client, &headers, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_prefixed_header(client, &headers, "OpenAI-Organization: ",
+                                    impl->organization_id, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_append_prefixed_header(
+        client, &headers, "OpenAI-Project: ", impl->project_id, error);
   }
   if (rc == CAI_OK) {
     curl = curl_easy_init();

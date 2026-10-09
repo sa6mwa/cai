@@ -43575,6 +43575,134 @@ chat_done:
                     &server.child_status);
 }
 
+static void test_chat_request_settings(test_state *state) {
+  static const char schema[] =
+      "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"integer\"}},"
+      "\"required\":[\"x\"],\"additionalProperties\":false}";
+  static const char body[] =
+      "data: {\"id\":\"chat_settings\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}\n\n"
+      "data: [DONE]\n\n";
+  static const char *header_values[] = {"OpenAI-Organization: org_chat\r\n",
+                                        "OpenAI-Project: proj_chat\r\n"};
+  static const char *header_names[] = {"OpenAI-Organization:",
+                                       "OpenAI-Project:"};
+  mock_http_expectation script[2];
+  const char *required[5];
+  const char *forbidden[2];
+  http_mock_server server;
+  cai_client_config config;
+  cai_client *client;
+  cai_response_create_params *params;
+  cai_response *response;
+  cai_sink_callbacks callbacks;
+  cai_stream_sinks sinks;
+  cai_sink *sink;
+  cai_error error;
+  write_state text;
+  char strict_tool[512];
+  char loose_tool[512];
+  char name[64];
+  size_t variant;
+  size_t mode;
+  size_t header;
+  size_t required_count;
+  size_t forbidden_count;
+  int rc;
+
+  snprintf(
+      strict_tool, sizeof(strict_tool),
+      "\"function\":{\"name\":\"strict\",\"parameters\":%s,\"strict\":true}",
+      schema);
+  snprintf(
+      loose_tool, sizeof(loose_tool),
+      "\"function\":{\"name\":\"loose\",\"parameters\":%s,\"strict\":false}",
+      schema);
+  for (variant = 0U; variant < 4U; variant++) {
+    required[0] = "Authorization: Bearer mock-key\r\n";
+    required[1] = strict_tool;
+    required[2] = loose_tool;
+    required_count = 3U;
+    forbidden_count = 0U;
+    for (header = 0U; header < 2U; header++) {
+      if ((variant & (1U << header)) != 0U)
+        required[required_count++] = header_values[header];
+      else
+        forbidden[forbidden_count++] = header_names[header];
+    }
+    memset(script, 0, sizeof(script));
+    for (mode = 0U; mode < sizeof(script) / sizeof(script[0]); mode++) {
+      script[mode].request_prefix = "POST /v1/chat/completions HTTP/";
+      script[mode].required = required;
+      script[mode].required_count = required_count;
+      script[mode].forbidden = forbidden;
+      script[mode].forbidden_count = forbidden_count;
+      script[mode].status = 200;
+      script[mode].content_type = "text/event-stream";
+      script[mode].body = body;
+    }
+    if (http_mock_server_open_script(state, "chat_request_settings", script,
+                                     sizeof(script) / sizeof(script[0]),
+                                     &server) != 0)
+      return;
+    cai_error_init(&error);
+    client = NULL;
+    params = NULL;
+    response = NULL;
+    sink = NULL;
+    memset(&text, 0, sizeof(text));
+    cai_client_config_init(&config);
+    config.api_key = "mock-key";
+    config.base_url = server.base_url;
+    config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
+    config.http_2_disabled = 1;
+    config.timeout_ms = 1000L;
+    config.chat_max_attempts = 1U;
+    config.organization_id = (variant & 1U) != 0U ? "org_chat" : NULL;
+    config.project_id = (variant & 2U) != 0U ? "proj_chat" : NULL;
+    rc = cai_client_open(&config, &client, &error);
+    if (rc == CAI_OK)
+      rc = cai_response_create_params_new(&params, &error);
+    if (rc == CAI_OK)
+      rc = params->set_model(params, "test-model", &error);
+    if (rc == CAI_OK)
+      rc = params->add_text(params, "user", "check settings", &error);
+    if (rc == CAI_OK)
+      rc = params->add_function_tool(params, "strict", NULL, schema, 1, &error);
+    if (rc == CAI_OK)
+      rc = params->add_function_tool(params, "loose", NULL, schema, 0, &error);
+    memset(&callbacks, 0, sizeof(callbacks));
+    callbacks.write = test_write;
+    callbacks.context = &text;
+    if (rc == CAI_OK)
+      rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+    cai_stream_sinks_init(&sinks);
+    sinks.output_text = sink;
+    expect_int(state, "chat_settings_setup", rc, CAI_OK);
+    for (mode = 0U; rc == CAI_OK && mode < 2U; mode++) {
+      snprintf(name, sizeof(name), "chat_settings_headers_%u_mode_%u",
+               (unsigned int)variant, (unsigned int)mode);
+      if (mode == 0U) {
+        rc = cai_client_stream_response_with_id(client, params, &sinks, NULL,
+                                                NULL, &error);
+        expect_str(state, name, text.buffer, "OK");
+      } else {
+        rc = cai_client_create_response(client, params, &response, &error);
+        if (response != NULL)
+          expect_str(state, name, cai_response_output_text(response), "OK");
+      }
+      expect_int(state, name, rc, CAI_OK);
+    }
+    cai_response_destroy(response);
+    cai_response_create_params_destroy(params);
+    cai_sink_close(sink);
+    cai_client_close(client);
+    cai_error_cleanup(&error);
+    expect_child_exit(state, "chat_request_settings", server.pid,
+                      &server.child_status);
+  }
+}
+
 static void test_chat_buffered_response(test_state *state) {
   static const char *chunks[] = {
       "data: {\"id\":\"chat_buffered\",\"choices\":[{\"index\":0,\"delta\":{"
@@ -51452,6 +51580,7 @@ static const test_entry test_entries[] = {
     {"chat_failed_tool_stream_preserves_session",
      test_chat_failed_tool_stream_preserves_session},
     {"chat_completions_adapter", test_chat_completions_adapter},
+    {"chat_request_settings", test_chat_request_settings},
     {"chat_buffered_response", test_chat_buffered_response},
     {"stream_response_text", test_stream_response_text},
     {"stream_compaction_progress_callback",
