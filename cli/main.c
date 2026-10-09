@@ -1375,7 +1375,8 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   config.developer_instructions_extension =
       state->options.developer_instructions;
   config.codex_compat_agents_md = state->options.codex_agents_md;
-  config.enable_image_generation = state->options.image_generation;
+  config.enable_image_generation =
+      !state->options.review && state->options.image_generation;
   config.disable_terminal = !state->options.terminal;
   config.disable_review_subagent = !state->options.review_subagent;
   config.event_callback = cli_event;

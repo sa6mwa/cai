@@ -99,10 +99,18 @@ for error in __http_error__ __api_error__; do
     for marker in 'HTTP 429' rate_limit_exceeded req_fixture_429 'quota exhausted'; do contains "$root/stderr" "$marker"; done
   else contains "$root/stderr" 'HTTP 500'; contains "$root/stderr" 'fixture error'; fi
 done
-for mode in default out json base custom activity; do
+# Exercise isolated review with the actual image-generation default, rather
+# than inheriting the normal-agent fixture's capability override.
+review_base=()
+for arg in "${base[@]}"; do
+  [[ "$arg" == --no-image-generation ]] || review_base+=("$arg")
+done
+base=("${review_base[@]}")
+for mode in default disabled out json base custom activity; do
   items=$(jq -n --arg report "$report" '[$report]')
   flags=(--review)
   case "$mode" in
+    disabled) flags+=(--no-image-generation) ;;
     out) flags+=(-o "$root/findings.md") ;;
     json) flags+=(-T json) ;;
     base) flags+=(--base HEAD) ;;

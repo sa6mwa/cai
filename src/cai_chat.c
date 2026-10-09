@@ -836,6 +836,13 @@ static int cai_chat_request_write(const cai_response_create_params *params,
                                &json_error);
     }
     if (status == LONEJSON_STATUS_OK) {
+      status = cai_chat_key(&writer, "strict", &json_error);
+    }
+    if (status == LONEJSON_STATUS_OK) {
+      status =
+          writer.bool_fn(&writer, params->text_format_strict != 0, &json_error);
+    }
+    if (status == LONEJSON_STATUS_OK) {
       status = cai_chat_key(&writer, "schema", &json_error);
     }
     if (status == LONEJSON_STATUS_OK) {

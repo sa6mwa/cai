@@ -43229,6 +43229,13 @@ static void test_chat_completions_adapter(test_state *state) {
   static const char *tool_image_required[] = {
       "\"role\":\"tool\"", "\"tool_call_id\":\"call_image\"",
       "\"type\":\"image_url\"", "\"url\":\"data:image/png;base64,aGVsbG8=\""};
+  static const char *strict_schema_required[] = {
+      "\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{"
+      "\"name\":\"answer\",\"strict\":true,\"schema\":{\"type\":\"object\""};
+  static const char *loose_schema_required[] = {
+      "\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{"
+      "\"name\":\"answer\",\"strict\":false,\"schema\":{\"type\":\"object\""};
+  static const char *plain_forbidden[] = {"\"response_format\""};
   static const char *first_forbidden[] = {"previous_response_id",
                                           "\"input\":["};
   static const char first_body[] =
@@ -43300,10 +43307,15 @@ static void test_chat_completions_adapter(test_state *state) {
        200, "OK", "text/event-stream", NULL, first_body},
       {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
        "text/event-stream", NULL, glm_body},
-      {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
-       "text/event-stream", NULL, glm_json_body},
-      {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
-       "text/event-stream", NULL, glm_plain_body}};
+      {"POST /v1/chat/completions HTTP/", strict_schema_required,
+       sizeof(strict_schema_required) / sizeof(strict_schema_required[0]), NULL,
+       0U, 200, "OK", "text/event-stream", NULL, glm_json_body},
+      {"POST /v1/chat/completions HTTP/", NULL, 0U, plain_forbidden,
+       sizeof(plain_forbidden) / sizeof(plain_forbidden[0]), 200, "OK",
+       "text/event-stream", NULL, glm_plain_body},
+      {"POST /v1/chat/completions HTTP/", loose_schema_required,
+       sizeof(loose_schema_required) / sizeof(loose_schema_required[0]), NULL,
+       0U, 200, "OK", "text/event-stream", NULL, glm_json_body}};
   http_mock_server server;
   cai_client_config config;
   cai_client *client;
@@ -43382,7 +43394,7 @@ static void test_chat_completions_adapter(test_state *state) {
   sinks.output_item_done = test_stream_output_item_done;
   sinks.output_item_context = &item;
 
-  for (step = 0U; step < 11U; step++) {
+  for (step = 0U; step < sizeof(script) / sizeof(script[0]); step++) {
     cai_response_create_params_destroy(params);
     params = NULL;
     cai_error_cleanup(&error);
@@ -43446,19 +43458,21 @@ static void test_chat_completions_adapter(test_state *state) {
           params, "call_image", "data:image/png;base64,aGVsbG8=", NULL, &error);
     } else {
       params->add_text(params, "user", "Reply with exactly OK.", &error);
-      if (step == 9U) {
-        params->set_text_format_json_schema(
-            params, "answer", NULL,
-            "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":"
-            "\"string\"}},"
-            "\"required\":[\"answer\"]}",
-            1, &error);
+      if (step == 9U || step == 11U) {
+        expect_int(state, "chat_set_json_schema",
+                   params->set_text_format_json_schema(
+                       params, "answer", NULL,
+                       "{\"type\":\"object\",\"properties\":{\"answer\":{"
+                       "\"type\":\"string\"}},\"required\":[\"answer\"],"
+                       "\"additionalProperties\":false}",
+                       step == 9U, &error),
+                   CAI_OK);
       }
       memset(&text, 0, sizeof(text));
     }
     id = NULL;
     memset(&usage, 0, sizeof(usage));
-    if (step == 4U || step == 5U) {
+    if (step == 4U || step == 5U || step == 11U) {
       rc = cai_client_create_response(client, params, &response, &error);
     } else {
       rc = cai_client_stream_response_with_id(client, params, &sinks, &id,
@@ -43518,6 +43532,14 @@ static void test_chat_completions_adapter(test_state *state) {
     } else if (step == 10U) {
       expect_int(state, "chat_glm_plain_stream", rc, CAI_OK);
       expect_str(state, "chat_glm_plain_final", text.buffer, "<READY>");
+    } else if (step == 11U) {
+      expect_int(state, "chat_json_nonstream", rc, CAI_OK);
+      if (response != NULL) {
+        expect_str(state, "chat_json_nonstream_final",
+                   cai_response_output_text(response), "{\"answer\":\"OK\"}");
+        cai_response_destroy(response);
+        response = NULL;
+      }
     } else {
       expect_int(state, "chat_image_stream", rc, CAI_OK);
     }
