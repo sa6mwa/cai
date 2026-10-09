@@ -952,7 +952,10 @@ SearXNG and todo/kanban tools, streamed tool output, low-level conversation
 handling, and session state save/restore. See
 [examples/README.md](examples/README.md).
 - Non-streamed JSON responses are capped by `json_response_limit_bytes`
-  (default 1 MiB). Tool output can spill to disk with
+  (default 1 MiB). Buffered Chat Completions calls apply this limit during
+  capture and to the complete constructed JSON, including escaping and usage
+  fields; exceeding it returns `CAI_ERR_LIMIT`. Streaming calls are not capped
+  by this setting. Tool output can spill to disk with
   `tool_output_memory_limit` and can be hard-capped per auto-run with
   `tool_output_max_bytes`.
 - Clients and sessions can enforce cumulative token and estimated USD spend

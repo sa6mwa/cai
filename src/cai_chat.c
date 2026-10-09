@@ -1069,6 +1069,8 @@ typedef struct cai_chat_stream_state {
   char *body;
   size_t body_length;
   size_t response_bytes;
+  size_t capture_limit_bytes;
+  size_t capture_bytes;
   double started_at;
   double first_token_ms;
   long retry_after_ms;
@@ -1244,6 +1246,20 @@ static int cai_chat_emit_spool(cai_sink *sink, const lonejson_spooled *spool,
   return CAI_OK;
 }
 
+/* Only buffered calls set this limit. Reject payload growth before retention;
+ * the final JSON sink also counts escaping and response-envelope bytes. */
+static int cai_chat_capture_reserve(cai_chat_stream_state *state,
+                                    size_t count) {
+  if (state->capture_limit_bytes == 0U)
+    return CAI_OK;
+  if (count > state->capture_limit_bytes - state->capture_bytes)
+    return cai_set_error(
+        state->error, CAI_ERR_LIMIT,
+        "Chat Completions response exceeded configured JSON response limit");
+  state->capture_bytes += count;
+  return CAI_OK;
+}
+
 static int cai_chat_emit_text(cai_chat_stream_state *state,
                               const lonejson_spooled *text, int reasoning) {
   cai_sink *sink;
@@ -1253,6 +1269,11 @@ static int cai_chat_emit_text(cai_chat_stream_state *state,
 
   if (text->size_fn(text) == 0U) {
     return CAI_OK;
+  }
+  if (!reasoning) {
+    rc = cai_chat_capture_reserve(state, text->size_fn(text));
+    if (rc != CAI_OK)
+      return rc;
   }
   sink =
       reasoning ? state->sinks->reasoning_summary : state->sinks->output_text;
@@ -1473,6 +1494,10 @@ static int cai_chat_emit_tool_delta(cai_chat_stream_state *state,
     }
   }
   if (delta->function.arguments.size_fn(&delta->function.arguments) > 0U) {
+    rc = cai_chat_capture_reserve(
+        state, delta->function.arguments.size_fn(&delta->function.arguments));
+    if (rc != CAI_OK)
+      return rc;
     if (!tool->has_arguments) {
       CAI_LJ->spooled_init(CAI_LJ, &tool->arguments);
       tool->has_arguments = 1;
@@ -1949,13 +1974,11 @@ typedef struct cai_chat_attempt_result {
   int retryable;
 } cai_chat_attempt_result;
 
-static int cai_chat_stream_attempt(cai_client *client,
-                                   const cai_response_create_params *params,
-                                   const cai_stream_sinks *sinks,
-                                   char **out_response_id,
-                                   cai_token_usage *out_usage, cai_error *error,
-                                   unsigned int attempt,
-                                   cai_chat_attempt_result *result) {
+static int cai_chat_stream_attempt(
+    cai_client *client, const cai_response_create_params *params,
+    const cai_stream_sinks *sinks, char **out_response_id,
+    cai_token_usage *out_usage, cai_error *error, unsigned int attempt,
+    cai_chat_attempt_result *result, size_t capture_limit_bytes) {
   cai_client_impl *impl;
   cai_chat_stream_state state;
   cai_chat_upload *upload;
@@ -2000,6 +2023,7 @@ static int cai_chat_stream_attempt(cai_client *client,
   state.error = error;
   state.out_response_id = out_response_id;
   state.out_usage = out_usage;
+  state.capture_limit_bytes = capture_limit_bytes;
   state.glm_thinking = params->text_format_schema_json == NULL &&
                        (params->text_format_type == NULL ||
                         strcmp(params->text_format_type, "json_object") != 0) &&
@@ -2201,8 +2225,8 @@ static int cai_chat_stream_retries(cai_client *client,
                                    const cai_response_create_params *params,
                                    const cai_stream_sinks *sinks,
                                    char **out_response_id,
-                                   cai_token_usage *out_usage,
-                                   cai_error *error) {
+                                   cai_token_usage *out_usage, cai_error *error,
+                                   size_t capture_limit_bytes) {
   cai_chat_attempt_result result;
   cai_client_impl *impl;
   unsigned int attempt;
@@ -2222,7 +2246,8 @@ static int cai_chat_stream_retries(cai_client *client,
                            "agent turn was cancelled");
     memset(&result, 0, sizeof(result));
     rc = cai_chat_stream_attempt(client, params, sinks, out_response_id,
-                                 out_usage, error, attempt, &result);
+                                 out_usage, error, attempt, &result,
+                                 capture_limit_bytes);
     if (!result.retryable || attempt >= impl->chat_max_attempts)
       return rc;
     /* Clock nanoseconds provide request-local jitter without process-global
@@ -2272,8 +2297,9 @@ int cai_chat_stream_response(cai_client *client,
   cai_error local_error;
   int rc;
   cai_error_init(&local_error);
-  rc = cai_chat_stream_retries(client, params, sinks, out_response_id,
-                               out_usage, error != NULL ? error : &local_error);
+  rc =
+      cai_chat_stream_retries(client, params, sinks, out_response_id, out_usage,
+                              error != NULL ? error : &local_error, 0U);
   cai_error_cleanup(&local_error);
   return rc;
 }
@@ -2343,6 +2369,8 @@ static int cai_chat_capture_item(void *user, const char *item_id,
 typedef struct cai_chat_buffer_sink_context {
   cai_buffer_builder *builder;
   cai_error *error;
+  size_t limit;
+  int failure_code;
 } cai_chat_buffer_sink_context;
 
 static lonejson_status cai_chat_buffer_sink(void *user, const void *bytes,
@@ -2352,10 +2380,16 @@ static lonejson_status cai_chat_buffer_sink(void *user, const void *bytes,
 
   (void)json_error;
   context = (cai_chat_buffer_sink_context *)user;
-  return cai_buffer_append(context->builder, (const char *)bytes, count,
-                           context->error) == CAI_OK
-             ? LONEJSON_STATUS_OK
-             : LONEJSON_STATUS_CALLBACK_FAILED;
+  if (count > context->limit - context->builder->length) {
+    context->failure_code = cai_set_error(
+        context->error, CAI_ERR_LIMIT,
+        "Chat Completions response exceeded configured JSON response limit");
+    return LONEJSON_STATUS_CALLBACK_FAILED;
+  }
+  context->failure_code = cai_buffer_append(
+      context->builder, (const char *)bytes, count, context->error);
+  return context->failure_code == CAI_OK ? LONEJSON_STATUS_OK
+                                         : LONEJSON_STATUS_CALLBACK_FAILED;
 }
 
 static int
@@ -2375,6 +2409,8 @@ cai_chat_capture_build_response(cai_client *client,
   builder.allocator = &CAI_CLIENT_IMPL(client)->allocator;
   sink_context.builder = &builder;
   sink_context.error = error;
+  sink_context.limit = CAI_CLIENT_IMPL(client)->json_response_limit_bytes;
+  sink_context.failure_code = CAI_OK;
   memset(&writer, 0, sizeof(writer));
   lonejson_error_init(&json_error);
   status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_chat_buffer_sink,
@@ -2455,10 +2491,40 @@ cai_chat_capture_build_response(cai_client *client,
     status = writer.i64(&writer, usage->input_tokens, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
+    status = cai_chat_key(&writer, "input_tokens_details", &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.begin_object(&writer, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = cai_chat_key(&writer, "cached_tokens", &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.i64(&writer, usage->input_cached_tokens, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.end_object(&writer, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
     status = cai_chat_key(&writer, "output_tokens", &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
     status = writer.i64(&writer, usage->output_tokens, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = cai_chat_key(&writer, "output_tokens_details", &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.begin_object(&writer, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = cai_chat_key(&writer, "reasoning_tokens", &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.i64(&writer, usage->output_reasoning_tokens, &json_error);
+  }
+  if (status == LONEJSON_STATUS_OK) {
+    status = writer.end_object(&writer, &json_error);
   }
   if (status == LONEJSON_STATUS_OK) {
     status = cai_chat_key(&writer, "total_tokens", &json_error);
@@ -2480,6 +2546,8 @@ cai_chat_capture_build_response(cai_client *client,
   }
   if (status != LONEJSON_STATUS_OK) {
     cai_free_mem(builder.allocator, builder.data);
+    if (sink_context.failure_code != CAI_OK)
+      return sink_context.failure_code;
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                                 "failed to build Chat Completions response",
                                 json_error.message);
@@ -2496,6 +2564,7 @@ int cai_chat_create_response(cai_client *client,
   cai_chat_response_capture capture;
   cai_stream_sinks sinks;
   cai_token_usage usage;
+  cai_error local_error;
   lonejson_error json_error;
   lonejson_status status;
   char *id;
@@ -2507,6 +2576,9 @@ int cai_chat_create_response(cai_client *client,
                          "are required");
   }
   *out = NULL;
+  cai_error_init(&local_error);
+  if (error == NULL)
+    error = &local_error;
   memset(&capture, 0, sizeof(capture));
   CAI_LJ->spooled_init(CAI_LJ, &capture.text);
   CAI_LJ->spooled_init(CAI_LJ, &capture.items);
@@ -2531,7 +2603,9 @@ int cai_chat_create_response(cai_client *client,
     sinks.output_text_context = &capture;
     sinks.output_item_done = cai_chat_capture_item;
     sinks.output_item_context = &capture;
-    rc = cai_chat_stream_response(client, params, &sinks, &id, &usage, error);
+    rc = cai_chat_stream_retries(
+        client, params, &sinks, &id, &usage, error,
+        CAI_CLIENT_IMPL(client)->json_response_limit_bytes);
   }
   if (rc == CAI_OK) {
     status = capture.items_writer.end_array(&capture.items_writer, &json_error);
@@ -2554,5 +2628,10 @@ int cai_chat_create_response(cai_client *client,
   cai_free_mem(NULL, id);
   capture.text.cleanup(&capture.text);
   capture.items.cleanup(&capture.items);
+  if (rc == CAI_ERR_LIMIT)
+    cai_log_http_response_limit(
+        CAI_CLIENT_IMPL(client), "POST", "chat/completions",
+        CAI_CLIENT_IMPL(client)->json_response_limit_bytes);
+  cai_error_cleanup(&local_error);
   return rc;
 }

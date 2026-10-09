@@ -43575,6 +43575,218 @@ chat_done:
                     &server.child_status);
 }
 
+static void test_chat_buffered_response(test_state *state) {
+  static const char *chunks[] = {
+      "data: {\"id\":\"chat_buffered\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"content\":\"hello\"}}]}\n\n"
+      "data: "
+      "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\\n\\\"quoted\\\"\"}"
+      ","
+      "\"finish_reason\":\"stop\"}]}\n\n",
+      "data: {\"id\":\"chat_buffered\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"tool_calls\":[{\"index\":0,\"id\":\"call_one\",\"function\":{"
+      "\"name\":\"echo\",\"arguments\":\"{\\\"x\\\":\"}}]}}]}\n\n"
+      "data: "
+      "{\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,"
+      "\"function\":{\"arguments\":\"1}\"}}]},\"finish_reason\":\"tool_calls\"}"
+      "]}\n\n",
+      "data: {\"id\":\"chat_buffered\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"tool_calls\":[{\"index\":0,\"id\":\"call_patch\",\"function\":{"
+      "\"name\":\"apply_patch\",\"arguments\":\"{\\\"input\\\":"
+      "\\\"patch\\\\ntext\\\"}\"}}]},"
+      "\"finish_reason\":\"tool_calls\"}]}\n\n",
+      "data: {\"id\":\"chat_buffered\",\"choices\":[{\"index\":0,\"delta\":{},"
+      "\"finish_reason\":\"stop\"}]}\n\n",
+      "data: {\"id\":\"chat_buffered\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"content\":\"hello\",\"tool_calls\":[{\"index\":0,\"id\":\"call_one\","
+      "\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"x\\\":1}\"}}]},"
+      "\"finish_reason\":\"tool_calls\"}]}\n\n"};
+  static const char usage_chunk[] =
+      "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":20,"
+      "\"completion_tokens\":8,\"total_tokens\":28,"
+      "\"prompt_tokens_details\":{\"cached_tokens\":10},"
+      "\"completion_tokens_details\":{\"reasoning_tokens\":5}}}\n\n";
+  static const size_t payload_sizes[] = {
+      sizeof("hello\n\"quoted\"") - 1U, sizeof("{\"x\":1}") - 1U,
+      sizeof("{\"input\":\"patch\\ntext\"}") - 1U, 2U,
+      sizeof("hello{\"x\":1}") - 1U};
+  mock_http_expectation script[7];
+  http_mock_server server;
+  cai_client_config config;
+  cai_client *client;
+  cai_response_create_params *params;
+  cai_response *response;
+  cai_custom_tool_format format;
+  cai_stream_sinks sinks;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink;
+  cai_token_usage usage;
+  cai_error error;
+  test_log_capture logs;
+  write_state text;
+  pslog_logger *logger;
+  char body[2048];
+  char unfinished[2048];
+  char name[80];
+  const char *finish;
+  const char *tail;
+  size_t kind;
+  size_t mode;
+  size_t response_size;
+  int expected;
+  int rc;
+
+  logger = test_log_open(&logs);
+  expect_int(state, "chat_buffered_logger", logger != NULL, 1);
+  for (kind = 0U; kind < sizeof(chunks) / sizeof(chunks[0]); kind++) {
+    snprintf(body, sizeof(body), "%s%sdata: [DONE]\n\n", chunks[kind],
+             kind == 3U ? "" : usage_chunk);
+    memset(script, 0, sizeof(script));
+    for (mode = 0U; mode < sizeof(script) / sizeof(script[0]); mode++) {
+      script[mode].request_prefix = "POST /v1/chat/completions HTTP/";
+      script[mode].status = 200;
+      script[mode].content_type = "text/event-stream";
+      script[mode].body = body;
+    }
+    if (kind != 3U) {
+      /* No finish_reason: a capture overflow must abort before completion,
+       * including tool arguments that never reach output_item_done. */
+      finish = strstr(chunks[kind], ",\"finish_reason\":\"");
+      tail = strchr(finish + strlen(",\"finish_reason\":\""), '"') + 1;
+      snprintf(unfinished, sizeof(unfinished), "%.*s%sdata: [DONE]\n\n",
+               (int)(finish - chunks[kind]), chunks[kind], tail);
+      script[3].body = unfinished;
+    }
+    if (http_mock_server_open_script(state, "chat_buffered_response", script,
+                                     sizeof(script) / sizeof(script[0]),
+                                     &server) != 0)
+      break;
+    response_size = 0U;
+    for (mode = 0U; mode < sizeof(script) / sizeof(script[0]); mode++) {
+      snprintf(name, sizeof(name), "chat_buffered_kind_%u_mode_%u",
+               (unsigned int)kind, (unsigned int)mode);
+      cai_error_init(&error);
+      client = NULL;
+      params = NULL;
+      response = NULL;
+      sink = NULL;
+      memset(&logs, 0, sizeof(logs));
+      memset(&text, 0, sizeof(text));
+      memset(&usage, 0, sizeof(usage));
+      cai_client_config_init(&config);
+      config.base_url = server.base_url;
+      config.api_key = "mock-key";
+      config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
+      config.http_2_disabled = 1;
+      config.timeout_ms = 1000L;
+      config.chat_max_attempts = 1U;
+      config.logger = logger;
+      /* Default, exact JSON bytes, one byte short, fragmented payload
+       * overflow, payload fits but envelope/escaping does not, streaming
+       * ignores the buffered limit, and failure without an error receiver. */
+      if (mode == 1U)
+        config.json_response_limit_bytes = response_size;
+      else if (mode == 2U)
+        config.json_response_limit_bytes = response_size - 1U;
+      else if (mode == 3U)
+        config.json_response_limit_bytes = payload_sizes[kind] - 1U;
+      else if (mode == 4U)
+        config.json_response_limit_bytes = payload_sizes[kind];
+      else if (mode >= 5U)
+        config.json_response_limit_bytes = 1U;
+      rc = cai_client_open(&config, &client, &error);
+      if (rc == CAI_OK)
+        rc = cai_response_create_params_new(&params, &error);
+      if (rc == CAI_OK)
+        rc = params->set_model(params, "test-model", &error);
+      if (rc == CAI_OK)
+        rc = params->add_text(params, "user", "test capture", &error);
+      if (rc == CAI_OK && (kind == 1U || kind == 4U))
+        rc = params->add_function_tool(params, "echo", NULL,
+                                       "{\"type\":\"object\"}", 0, &error);
+      if (rc == CAI_OK && kind == 2U) {
+        memset(&format, 0, sizeof(format));
+        format.type = "grammar";
+        format.syntax = "lark";
+        format.definition = "start: /./+";
+        rc = params->add_custom_tool(params, "apply_patch", NULL, &format,
+                                     &error);
+      }
+      expect_int(state, name, rc, CAI_OK);
+      if (rc == CAI_OK && mode == 5U) {
+        memset(&callbacks, 0, sizeof(callbacks));
+        callbacks.context = &text;
+        callbacks.write = test_write;
+        rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+        cai_stream_sinks_init(&sinks);
+        sinks.output_text = sink;
+        if (rc == CAI_OK)
+          rc = cai_client_stream_response_with_id(client, params, &sinks, NULL,
+                                                  &usage, &error);
+      } else if (rc == CAI_OK) {
+        rc = cai_client_create_response(client, params, &response,
+                                        mode == 6U ? NULL : &error);
+      }
+      expected =
+          mode == 0U || mode == 1U || mode == 5U ? CAI_OK : CAI_ERR_LIMIT;
+      expect_int(state, name, rc, expected);
+      if (response != NULL) {
+        response_size = strlen(cai_response_raw_json(response));
+        expect_int(state, name, cai_response_input_tokens(response),
+                   kind == 3U ? 0 : 20);
+        expect_int(state, name, cai_response_input_cached_tokens(response),
+                   kind == 3U ? 0 : 10);
+        expect_int(state, name, cai_response_output_tokens(response),
+                   kind == 3U ? 0 : 8);
+        expect_int(state, name, cai_response_output_reasoning_tokens(response),
+                   kind == 3U ? 0 : 5);
+        expect_int(state, name, cai_response_total_tokens(response),
+                   kind == 3U ? 0 : 28);
+        expect_int(state, name, cai_response_usage(response, &usage, &error),
+                   CAI_OK);
+        if (kind == 0U)
+          expect_str(state, name, cai_response_output_text(response),
+                     "hello\n\"quoted\"");
+        else if (kind == 1U || kind == 4U)
+          expect_str(state, name,
+                     cai_response_tool_call_arguments(response, 0U),
+                     "{\"x\":1}");
+        else if (kind == 2U)
+          expect_str(state, name,
+                     cai_response_tool_call_arguments(response, 0U),
+                     "patch\ntext");
+      }
+      if (rc == CAI_OK)
+        expect_int(state, name, usage.input_cached_tokens, kind == 3U ? 0 : 10);
+      if (rc == CAI_OK)
+        expect_int(state, name, usage.output_reasoning_tokens,
+                   kind == 3U ? 0 : 5);
+      if (rc == CAI_ERR_LIMIT) {
+        expect_int(state, name, response == NULL, 1);
+        if (mode != 6U) {
+          expect_int(state, name, error.code, CAI_ERR_LIMIT);
+          expect_str(state, name, error.message,
+                     "Chat Completions response exceeded configured JSON "
+                     "response limit");
+        }
+        test_expect_log(state, name, &logs, "cai.http.response_limit", "warn",
+                        "chat/completions");
+      }
+      cai_response_destroy(response);
+      cai_response_create_params_destroy(params);
+      cai_sink_close(sink);
+      cai_client_close(client);
+      cai_error_cleanup(&error);
+      if (rc != expected)
+        break;
+    }
+    expect_child_exit(state, "chat_buffered_response", server.pid,
+                      &server.child_status);
+  }
+  if (logger != NULL)
+    logger->destroy(logger);
+}
+
 static void test_stream_response_text(test_state *state) {
   int pipe_fds[2];
   pid_t pid;
@@ -51240,6 +51452,7 @@ static const test_entry test_entries[] = {
     {"chat_failed_tool_stream_preserves_session",
      test_chat_failed_tool_stream_preserves_session},
     {"chat_completions_adapter", test_chat_completions_adapter},
+    {"chat_buffered_response", test_chat_buffered_response},
     {"stream_response_text", test_stream_response_text},
     {"stream_compaction_progress_callback",
      test_stream_compaction_progress_callback},

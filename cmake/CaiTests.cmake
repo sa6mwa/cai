@@ -548,6 +548,7 @@ if(CAI_BUILD_TESTS)
     chat_transport_failure_modes
     chat_failed_tool_stream_preserves_session
     chat_completions_adapter
+    chat_buffered_response
     stream_compaction_progress_callback
     stream_upload_setup_failure
     stream_responses_websocket
