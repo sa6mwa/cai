@@ -1,0 +1,43 @@
+# Validate disposable state before project() can start compiler producers.
+set(CAI_DEPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.cache/deps"
+    CACHE PATH "Repo-local extracted third-party dependency roots.")
+cmake_path(ABSOLUTE_PATH CAI_DEPS_DIR BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" NORMALIZE)
+set(CAI_DEPS_DIR "${CAI_DEPS_DIR}" CACHE PATH "Repo-local extracted third-party dependency roots." FORCE)
+file(REAL_PATH "${CAI_DEPS_DIR}" _cai_physical_deps)
+file(REAL_PATH "${CMAKE_CURRENT_SOURCE_DIR}" _cai_physical_source)
+file(REAL_PATH "${CMAKE_CURRENT_BINARY_DIR}" _cai_physical_build)
+foreach(_cai_state IN ITEMS _cai_physical_deps _cai_physical_build)
+  string(FIND "${${_cai_state}}/" "${_cai_physical_source}/build/" _cai_in_build)
+  string(FIND "${${_cai_state}}/" "${_cai_physical_source}/.cache/" _cai_in_cache)
+  if((NOT _cai_in_build EQUAL 0 AND NOT _cai_in_cache EQUAL 0) OR
+      IS_SYMLINK "${CMAKE_CURRENT_SOURCE_DIR}/.cache" OR IS_SYMLINK "${CMAKE_CURRENT_SOURCE_DIR}/build")
+    message(FATAL_ERROR "Dependency/build state must stay under this source checkout's build/ or .cache/; borrowed or redirected state is forbidden")
+  endif()
+endforeach()
+if(DEFINED CPKT_DEPENDENCY_CACHE AND NOT "${CPKT_DEPENDENCY_CACHE}" STREQUAL "")
+  set(_cai_dependency_cache_default "${CPKT_DEPENDENCY_CACHE}")
+elseif(DEFINED ENV{CPKT_DEPENDENCY_CACHE} AND NOT "$ENV{CPKT_DEPENDENCY_CACHE}" STREQUAL "")
+  set(_cai_dependency_cache_default "$ENV{CPKT_DEPENDENCY_CACHE}")
+elseif(DEFINED ENV{XDG_CACHE_HOME} AND NOT "$ENV{XDG_CACHE_HOME}" STREQUAL "")
+  set(_cai_dependency_cache_default "$ENV{XDG_CACHE_HOME}/cpkt/deps")
+elseif(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
+  set(_cai_dependency_cache_default "$ENV{HOME}/.cache/cpkt/deps")
+else()
+  message(FATAL_ERROR
+    "HOME, XDG_CACHE_HOME, or CPKT_DEPENDENCY_CACHE is required for the "
+    "shared c.pkt.systems dependency archive cache")
+endif()
+set(CPKT_DEPENDENCY_CACHE "${_cai_dependency_cache_default}" CACHE PATH
+    "Shared checksum-pinned external archive cache." FORCE)
+cmake_path(ABSOLUTE_PATH CPKT_DEPENDENCY_CACHE BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" NORMALIZE)
+set(CPKT_DEPENDENCY_CACHE "${CPKT_DEPENDENCY_CACHE}" CACHE PATH "Shared checksum-pinned external archive cache." FORCE)
+file(REAL_PATH "${CPKT_DEPENDENCY_CACHE}" _cai_archive_cache_parent)
+while(NOT EXISTS "${_cai_archive_cache_parent}")
+  cmake_path(GET _cai_archive_cache_parent PARENT_PATH _cai_archive_cache_parent)
+endwhile()
+find_program(CAI_WORKSPACE_GIT git REQUIRED)
+execute_process(COMMAND "${CAI_WORKSPACE_GIT}" -C "${_cai_archive_cache_parent}" rev-parse --show-toplevel
+  RESULT_VARIABLE _cai_archive_cache_git_result OUTPUT_QUIET ERROR_QUIET)
+if(_cai_archive_cache_git_result EQUAL 0)
+  message(FATAL_ERROR "CPKT_DEPENDENCY_CACHE must be a global archive cache outside source checkouts")
+endif()

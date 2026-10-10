@@ -4,7 +4,7 @@ SHELL := bash
 MAKEFLAGS += --no-builtin-rules
 .NOTPARALLEL:
 ROOT := $(CURDIR)
-ifneq ($(realpath $(dir $(firstword $(MAKEFILE_LIST)))),$(realpath $(CURDIR)))
+ifneq ($(realpath $(firstword $(MAKEFILE_LIST))),$(CURDIR)/Makefile)
 $(error run make -C $(dir $(firstword $(MAKEFILE_LIST))) so the checkout owns generated paths)
 endif
 CMAKE := cmake
@@ -35,7 +35,7 @@ LUA_PSLOG_ROCK_STAMP := $(LUA_ROCK_TREE)/lib/luarocks/rocks-5.5/lua-pslog/$(CAI_
 
 .PHONY: help build build-debug build-cli build-host build-release deps-debug deps-release deps-cross cross-build cross-test test-cross test test-debug test-cli test-host test-release test-all test-e2e test-offline test-integration integration-build test-install-tree valgrind asan test-asan fuzz fuzz-smoke fuzz-long coverage test-coverage lua-rock lua-runner lua-env lua-test format format-check finalize-slice clangd-check prerelease prerelease-live prerelease-hardening release-pipeline release release-matrix lifecycle-version-contract require-clean-worktree package package-source package-source-smoke package-checksums package-verify verify-release-archives verify-release-privacy release-lua-artifacts print-release-version chatgpt-login test-lua-smith-e2e test-smith-goal-e2e example-smoke-local clean clean-dist devenv-check dev-up dev-down dev-reset dev-ps dev-logs searxng-pull searxng-up searxng-wait searxng-down searxng-logs searxng-test mcp-everything-up mcp-everything-wait mcp-everything-down mcp-everything-logs mcp-everything-test mcp-everything-live-test mcp-inspector-e2e
 help:
-	@printf '%s\n' 'make build / test       Native debug library and unit feedback.' 'make build-cli / test-cli Native CLI and fixtures; no cross builds.' 'make test-all           Native tests once per scope, Lua, memory, fuzz and local e2e.' 'make format / format-check Source formatting only; no configure or build.' 'make prerelease         Incremental native/matrix/package preparation.' 'make release / release-matrix Clean tagged final artifact gate; no publish or ref mutation.' 'make package            Warm binary matrix packaging.' 'make package-source / package-source-smoke Explicit source shipment and reconstruction.' 'make package-verify     Verify existing final bytes, without rebuilding producers.' 'make valgrind / asan / fuzz-smoke / fuzz-long / test-coverage Hardening.' 'make lua-rock / lua-test / lua-env Native Lua facade and source rock.' 'make test-offline / test-integration Local fixtures / opt-in credentialed tests.' 'make dev-up / dev-down / dev-reset / dev-ps / dev-logs Rootless Podman Kube services.' 'make clean / clean-dist Remove owned generated state / dist only.' 'See README and scripts for focused installed-SDK, service and model checks.'
+	@printf '%s\n' 'make build / test       Native debug library and unit feedback.' 'make build-cli / test-cli Native CLI and fixtures; no cross builds.' 'make test-all           Native tests once per scope, Lua, memory, fuzz and local e2e.' 'make format / format-check Source formatting only; no configure or build.' 'make prerelease         Incremental native/matrix/package preparation.' 'make release / release-matrix Clean signed, tagged final artifact gate; no publish or ref mutation.' 'make package            Warm binary matrix packaging.' 'make package-source / package-source-smoke Explicit source shipment and reconstruction.' 'make package-verify     Verify existing final bytes, without rebuilding producers.' 'make valgrind / asan / fuzz-smoke / fuzz-long / test-coverage Hardening.' 'make lua-rock / lua-test / lua-env Native Lua facade and source rock.' 'make test-offline / test-integration Local fixtures / opt-in credentialed tests.' 'make dev-up / dev-down / dev-reset / dev-ps / dev-logs Rootless Podman Kube services.' 'make clean / clean-dist Remove owned generated state / dist only.' 'See README and scripts for focused installed-SDK, service and model checks.'
 
 build: build-debug
 build-debug:
@@ -140,6 +140,7 @@ prerelease-hardening:
 	# Preparation already passed live coverage and fuzz smoke; extend only fuzzing.
 	bash scripts/fuzz.sh long
 release:
+	@test '$(origin RELEASE_VERSION)' = file || { printf 'Final release forbids RELEASE_VERSION overrides; use the exact signed, tagged commit.\n' >&2; exit 2; }
 	bash scripts/release.sh final
 release-matrix: release
 package: build-release

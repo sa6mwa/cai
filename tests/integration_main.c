@@ -1598,7 +1598,8 @@ static int todo_run(cai_tool_registry *registry, cai_sink *sink,
 }
 
 static int run_todo_workflow_regression(void) {
-  char dir_template[] = "/tmp/cai-todo-integration-XXXXXX";
+  char dir_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-todo-integration-XXXXXX";
   char store_path[PATH_MAX];
   char lock_path[PATH_MAX];
   char args[1024];
@@ -2450,7 +2451,8 @@ static int run_openrouter_read_tool_regression(void) {
   cai_error error;
   integration_exec_tool_event_state event_state;
   integration_write_state writer;
-  char dir_template[] = "/tmp/cai-openrouter-read-e2e-XXXXXX";
+  char dir_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-openrouter-read-e2e-XXXXXX";
   char text_path[PATH_MAX];
   char binary_path[PATH_MAX];
   static const unsigned char binary_bytes[] = {'o', 'r', 0U, 'x'};
@@ -3327,7 +3329,7 @@ static int run_exec_tool_llm_regression(void) {
   cai_error error;
   integration_exec_tool_event_state event_state;
   integration_write_state writer;
-  char dir_template[] = "/tmp/cai-exec-llm-e2e-XXXXXX";
+  char dir_template[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-exec-llm-e2e-XXXXXX";
   char alpha_path[PATH_MAX];
   char archive_path[PATH_MAX];
   char hardened_path[PATH_MAX];
@@ -3640,7 +3642,7 @@ static int run_read_tool_llm_regression(void) {
   cai_error error;
   integration_exec_tool_event_state event_state;
   integration_write_state writer;
-  char dir_template[] = "/tmp/cai-read-llm-e2e-XXXXXX";
+  char dir_template[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-read-llm-e2e-XXXXXX";
   char nested_dir[PATH_MAX];
   char file_path[PATH_MAX];
   char nested_path[PATH_MAX];
@@ -3735,7 +3737,8 @@ static int run_read_tool_llm_regression(void) {
   fclose(fp);
   fp = NULL;
   snprintf(outside_path, sizeof(outside_path),
-           "/tmp/cai-read-llm-outside-%ld.txt", (long)getpid());
+           CAI_TEST_BINARY_DIR "/test-tmp/cai-read-llm-outside-%ld.txt",
+           (long)getpid());
   fp = fopen(outside_path, "wb");
   if (fp != NULL) {
     fputs("outside secret\n", fp);
@@ -4018,7 +4021,8 @@ static int parse_nonnegative_ll_decimal(const char *text, long long *out) {
 }
 
 static int integration_openrouter_throttle(void) {
-  static const char lock_path[] = "/tmp/cai-openrouter-rate-limit.lock";
+  static const char lock_path[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-openrouter-rate-limit.lock";
   unsigned int delay_sec;
   char buffer[64];
   time_t now;
@@ -4738,7 +4742,7 @@ static int run_chatgpt_smith_goal_regression(void) {
   const char *git_init[] = {"git", "init", NULL, NULL};
   char command_output[1024];
   char prompt[1024];
-  char workspace[] = "/tmp/cai-smith-goal-e2e-XXXXXX";
+  char workspace[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-smith-goal-e2e-XXXXXX";
   int prompt_length;
   int rc;
   int workspace_created;
@@ -4876,8 +4880,10 @@ static int run_chatgpt_smith_runtime_regression(void) {
   FILE *fixture;
   char fixture_path[PATH_MAX];
   char session_id[CAI_AGENT_SESSION_ID_MAX];
-  char sessions_root[] = "/tmp/cai-smith-runtime-sessions-XXXXXX";
-  char workspace[] = "/tmp/cai-smith-runtime-e2e-XXXXXX";
+  char sessions_root[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-smith-runtime-sessions-XXXXXX";
+  char workspace[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-smith-runtime-e2e-XXXXXX";
   int cleanup_failed;
   int rc;
   int store_open;
@@ -5204,8 +5210,10 @@ static int run_chatgpt_smith_review_regression(int require_mcp) {
   char command_output[4096];
   char follow_up_prompt[1024];
   char make_hello_path[PATH_MAX];
-  char sessions_root[] = "/tmp/cai-smith-review-sessions-XXXXXX";
-  char workspace[] = "/tmp/cai-smith-review-e2e-XXXXXX";
+  char sessions_root[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-smith-review-sessions-XXXXXX";
+  char workspace[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-smith-review-e2e-XXXXXX";
   const char *mcp_url;
   int cleanup_failed;
   int rc;
@@ -5565,8 +5573,10 @@ static int run_chatgpt_smith_subagent_regression(void) {
   FILE *fixture;
   char command_output[4096];
   char fixture_path[PATH_MAX];
-  char sessions_root[] = "/tmp/cai-smith-subagents-sessions-XXXXXX";
-  char workspace[] = "/tmp/cai-smith-subagents-e2e-XXXXXX";
+  char sessions_root[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-smith-subagents-sessions-XXXXXX";
+  char workspace[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-smith-subagents-e2e-XXXXXX";
   int cleanup_failed;
   int rc;
   int sessions_root_created;
@@ -6252,7 +6262,8 @@ static int run_state_restore_regression(void) {
   cai_error error;
   const char *model;
   const char *answer;
-  char state_path[] = "/tmp/cai-integration-state-XXXXXX";
+  char state_path[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-integration-state-XXXXXX";
   double spent_usd;
   double limit_usd;
   int state_fd;

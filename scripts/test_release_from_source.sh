@@ -7,10 +7,13 @@ if [[ $# -ne 2 ]]; then
 fi
 
 repo_root=$(cd "$1" && pwd -P)
+if [[ -L "$repo_root/build" || -L "$repo_root/.cache" ]]; then
+  printf 'source reconstruction: redirected build/.cache state is forbidden\n' >&2
+  exit 2
+fi
 source_tarball=$2
-smoke_root="$repo_root/build/release-source-smoke"
+smoke_root="$repo_root/build/source-smoke"
 extract_root="$smoke_root/extract"
-build_root="$smoke_root/build"
 
 if [[ ! -f "$repo_root/CMakeLists.txt" || ! -d "$repo_root/scripts" ]]; then
   printf 'test_release_from_source.sh: invalid repository root: %s\n' \
@@ -25,7 +28,7 @@ if [[ ! -f "$source_tarball" ]]; then
 fi
 
 case "$smoke_root" in
-  "$repo_root"/build/release-source-smoke)
+  "$repo_root"/build/source-smoke)
     ;;
   /|""|"$repo_root"|"$HOME"|"$repo_root"/..*)
     printf 'test_release_from_source.sh: refusing to use unsafe smoke root\n' >&2
@@ -34,7 +37,7 @@ case "$smoke_root" in
 esac
 
 rm -rf "$smoke_root"
-mkdir -p "$extract_root" "$build_root"
+mkdir -p "$extract_root"
 
 tar -xzf "$source_tarball" -C "$extract_root"
 
@@ -45,6 +48,11 @@ if [[ -z "$source_root" ]]; then
   printf 'test_release_from_source.sh: failed to locate extracted source tree\n' >&2
   exit 1
 fi
+# Stage only extracted source bytes before any compiled state exists. A fixed
+# short path keeps AF_UNIX fixtures within the platform's pathname budget.
+mv "$source_root" "$smoke_root/src"
+source_root="$smoke_root/src"
+rmdir "$extract_root"
 if [[ ! -f "$source_root/VERSION" ]]; then
   printf 'test_release_from_source.sh: extracted source tree is missing VERSION\n' >&2
   exit 1
@@ -55,12 +63,12 @@ if [[ ! "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
     "$release_version" >&2
   exit 1
 fi
+build_root="$source_root/build"
 
-"$repo_root/scripts/cpkt-toolchains.sh" ensure x86_64-linux-gnu >/dev/null
+"$source_root/scripts/cpkt-toolchains.sh" ensure x86_64-linux-gnu >/dev/null
 cmake -S "$source_root" -B "$build_root" -G Ninja \
   "-DCMAKE_TOOLCHAIN_FILE=$source_root/cmake/toolchains/linux-bootlin.cmake" \
   -DCPKT_TARGET_ID=x86_64-linux-gnu -DCAI_TARGET_ID=x86_64-linux-gnu \
-  "-DCAI_DEPS_DIR=$repo_root/.cache/deps" \
   -DCMAKE_BUILD_TYPE=Release -DCAI_BUILD_INTEGRATION_TESTS=OFF
 configured_version=$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' \
   "$build_root/generated/include/cai/version.h")

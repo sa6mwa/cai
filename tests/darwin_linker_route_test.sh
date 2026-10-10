@@ -7,7 +7,7 @@ if [[ $# -ne 1 ]]; then
 fi
 
 repo_root=$1
-tmpdir=$(mktemp -d)
+tmpdir=$(mktemp -d "${TMPDIR:-$repo_root/build}/darwin-route.XXXXXX")
 trap 'rm -rf "$tmpdir"' EXIT
 
 host=arm64-apple-darwin25
@@ -30,7 +30,7 @@ exit 0
 EOF_TARGET_LD
 chmod +x "$osx_bin/$host-ld"
 
-for tool in ar ranlib otool clang++ nm; do
+for tool in ar ranlib otool clang++ nm strip; do
   printf '#!/usr/bin/env sh\nexit 0\n' >"$osx_bin/$host-$tool"
   chmod +x "$osx_bin/$host-$tool"
 done
@@ -108,29 +108,33 @@ if CPKT_TOOLCHAIN_CACHE="$tmpdir/status=ready" OSXCROSS_ROOT="$tmpdir/osxcross" 
 fi
 [[ ! -s "$tmpdir/missing-env.out" ]]
 
-mkdir -p "$tmpdir/osxcross/SDK/MacOSX15.sdk/usr/include"
+mkdir -p "$tmpdir/osxcross/SDK/MacOSX15.sdk/usr/include" "$tmpdir/osxcross/SDK/MacOSX15.sdk/usr/lib"
+export CPKT_TOOLCHAIN_CACHE="$tmpdir/cache"
+mig_root="$CPKT_TOOLCHAIN_CACHE/roots/host-mig-puredarwin-88753c478c97b9a08bcdb66cecc68ba5881ff3af-x86_64-linux-gnu"
+mkdir -p "$mig_root/bin" "$mig_root/libexec"
+for path in "$mig_root/bin/mig" "$mig_root/bin/mig-upstream" "$mig_root/libexec/migcom"; do
+  printf '#!/bin/sh\nexit 0\n' >"$path"; chmod +x "$path"
+done
+touch "$mig_root/TOOLCHAIN"
 
 if ! OSXCROSS_ROOT="$tmpdir/osxcross" CPKT_OSXCROSS_HOST="$host" \
   cmake -P "$repo_root/cmake/toolchains/arm64-apple-darwin.cmake" \
   >"$tmpdir/verify-only.out" 2>"$tmpdir/verify-only.err"; then
-  printf 'expected Darwin toolchain to allow verify-only setup without strip or install_name_tool\n' >&2
+  printf 'expected complete Darwin collection to load without install_name_tool\n' >&2
   cat "$tmpdir/verify-only.err" >&2
   exit 1
 fi
 
 if ! OSXCROSS_ROOT="$tmpdir/osxcross" CPKT_OSXCROSS_HOST="$host" \
   "$repo_root/scripts/osxcross_available.sh" --quiet; then
-  printf 'expected Darwin release matrix availability without strip or install_name_tool\n' >&2
+  printf 'expected complete Darwin release matrix availability\n' >&2
   exit 1
 fi
 OSXCROSS_ROOT="$tmpdir/osxcross" CPKT_OSXCROSS_HOST="$host" \
   "$repo_root/scripts/cpkt-toolchains.sh" discover arm64-apple-darwin \
   >"$tmpdir/discover.out"
-if grep -F "strip=$osx_bin/$host-strip" "$tmpdir/discover.out" >/dev/null; then
-  printf 'Darwin discovery must not advertise a missing optional strip tool\n' >&2
-  cat "$tmpdir/discover.out" >&2
-  exit 1
-fi
+grep -Fq "strip=$osx_bin/$host-strip" "$tmpdir/discover.out"
+grep -Fq "mig=$mig_root/bin/mig" "$tmpdir/discover.out"
 
 mv "$osx_bin/$host-otool" "$osx_bin/$host-otool.missing"
 if OSXCROSS_ROOT="$tmpdir/osxcross" CPKT_OSXCROSS_HOST="$host" \
@@ -139,7 +143,7 @@ if OSXCROSS_ROOT="$tmpdir/osxcross" CPKT_OSXCROSS_HOST="$host" \
   printf 'expected Darwin toolchain to require otool for package verification\n' >&2
   exit 1
 fi
-if ! grep -F 'missing CPKT_OTOOL' "$tmpdir/missing-otool.err" >/dev/null; then
+if ! grep -F 'Missing complete osxcross' "$tmpdir/missing-otool.err" >/dev/null; then
   printf 'expected missing otool diagnostic, got:\n' >&2
   cat "$tmpdir/missing-otool.err" >&2
   exit 1

@@ -3,10 +3,13 @@ if(NOT DEFINED CPKT_TARGET_ID OR CPKT_TARGET_ID STREQUAL "")
 endif()
 set(CPKT_TARGET_ID "${CPKT_TARGET_ID}" CACHE STRING
     "pkt.systems lifecycle target id" FORCE)
-list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES CPKT_TARGET_ID)
+list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES CPKT_TARGET_ID CPKT_LIFECYCLE_SCRIPTS_DIR)
 
-set(_cpkt_toolchain_script
-    "${CMAKE_CURRENT_LIST_DIR}/../../scripts/cpkt-toolchains.sh")
+if(NOT DEFINED CPKT_LIFECYCLE_SCRIPTS_DIR)
+  set(CPKT_LIFECYCLE_SCRIPTS_DIR "${CMAKE_CURRENT_LIST_DIR}/../../scripts"
+      CACHE PATH "Declared lifecycle helper directory")
+endif()
+set(_cpkt_toolchain_script "${CPKT_LIFECYCLE_SCRIPTS_DIR}/cpkt-toolchains.sh")
 if(NOT EXISTS "${_cpkt_toolchain_script}")
   message(FATAL_ERROR "missing lifecycle toolchain resolver: ${_cpkt_toolchain_script}")
 endif()

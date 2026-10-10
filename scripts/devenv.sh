@@ -139,10 +139,11 @@ for selected in "${services[@]}"; do
       fi
       wait_ready
       if [[ "$service" == searxng ]]; then
-        podman exec "$pod-$service" /usr/local/searxng/.venv/bin/python -c 'import pathlib; pathlib.Path("/var/cache/searxng/.cai-owner-check").write_text("owner"); pathlib.Path("/tmp/.cai-owner-check").write_text("owner")'
+        mount=/var/cache/searxng
       else
-        podman exec "$pod-$service" node -e 'for (const p of ["/state/.cai-owner-check","/tmp/.cai-owner-check"]) require("fs").writeFileSync(p,"owner")'
+        mount=/state
       fi
+      podman exec "$pod-$service" sh -c 'set -e; printf owner >"$1/.cai-owner-check"; printf owner >/tmp/.cai-owner-check' _ "$mount"
       for directory in state tmp; do [[ $(stat -c %u "$state/$directory/$service/.cai-owner-check") == "$(id -u)" ]] || fail 'service state has the wrong host owner'; done
       printf '%s_BASE_URL=%s pod=%s image=%s\n' "$prefix" "$url" "$pod" "$image" ;;
     down|reset) down ;;

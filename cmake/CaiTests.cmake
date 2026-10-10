@@ -598,8 +598,14 @@ if(CAI_BUILD_TESTS)
     OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cai_unit_test_groups.txt"
     CONTENT "${_cai_unit_test_groups_text}\n")
   foreach(_cai_unit_test IN LISTS CAI_UNIT_TEST_GROUPS)
-    add_test(NAME cai_tests.${_cai_unit_test}
-      COMMAND cai_tests --only ${_cai_unit_test})
+    if(_cai_unit_test STREQUAL "smith_profile")
+      add_test(NAME cai_tests.${_cai_unit_test} COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_without_repository.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}" "$<TARGET_FILE:cai_tests>" --only smith_profile)
+    else()
+      add_test(NAME cai_tests.${_cai_unit_test}
+        COMMAND cai_tests --only ${_cai_unit_test})
+    endif()
     set_tests_properties(cai_tests.${_cai_unit_test} PROPERTIES
       LABELS "unit;local"
       TIMEOUT 3)
@@ -688,6 +694,16 @@ if(CAI_BUILD_TESTS)
       "${CMAKE_CURRENT_SOURCE_DIR}")
   set_tests_properties(cai_lifecycle_execution_test PROPERTIES
     LABELS "local;packaging" TIMEOUT 30)
+  foreach(check release_identity workspace)
+    add_test(NAME cai_${check}_test COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/${check}_test.sh" "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(cai_${check}_test PROPERTIES LABELS "host;local;lifecycle" TIMEOUT 30)
+  endforeach()
+  foreach(check toolchain-resolvers aflpp-resolver)
+    add_test(NAME cai_lifecycle_${check}_test COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-cpkt-${check}.sh")
+    set_tests_properties(cai_lifecycle_${check}_test PROPERTIES LABELS "host;local;lifecycle;resolver" TIMEOUT 30)
+  endforeach()
   add_test(NAME cai_makefile_targets_test
     COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/makefile_targets_test.sh"
       "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -811,6 +827,7 @@ if(CAI_BUILD_TESTS)
     LABELS "smoke;local;example-smoke"
     TIMEOUT 3)
   add_executable(cai_mcp_example_smoke tests/mcp_example_smoke.c)
+  target_compile_definitions(cai_mcp_example_smoke PRIVATE CAI_TEST_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}")
   cai_configure_c_target(cai_mcp_example_smoke)
   if(TARGET cai_example_mcp_server)
     add_test(NAME cai_mcp_example_smoke
@@ -1123,6 +1140,7 @@ if(CAI_BUILD_TESTS)
     # + 240 seconds) and needs cleanup headroom beyond one long turn.
     set(CAI_INTEGRATION_TIMEOUT_SMITH_REVIEW 720)
     add_executable(cai_integration_tests tests/integration_main.c)
+    target_compile_definitions(cai_integration_tests PRIVATE CAI_TEST_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}")
     target_include_directories(cai_integration_tests PRIVATE
       "${CAI_PUBLIC_INCLUDE_DIR}"
       "${CAI_GENERATED_INCLUDE_DIR}"

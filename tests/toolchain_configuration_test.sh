@@ -5,10 +5,13 @@ repo=$1
 scratch=$(mktemp -d "${TMPDIR:-$repo/build}/toolchain-configuration.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
 trap 'printf "toolchain configuration regression failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2; cat "$scratch/err" >&2 2>/dev/null || true' ERR
-mkdir -p "$scratch/scripts" "$scratch/cmake/toolchains" "$scratch/base with spaces/fixture-bootlin/bin" "$scratch/sysroot/lib"
+mkdir -p "$scratch/scripts" "$scratch/cmake/toolchains" "$scratch/base with spaces/fixture-bootlin/bin"
 cp "$repo/cmake/toolchains/"{linux-bootlin,linux-aflpp}.cmake "$scratch/cmake/toolchains/"
 cp "$repo/scripts/cpkt-aflpp.sh" "$scratch/scripts/"
-export CAI_CONFIG_ROOT="$scratch/base with spaces/fixture-bootlin" CAI_CONFIG_SYSROOT="$scratch/sysroot" CAI_CONFIG_LOG="$scratch/events"
+cp "$repo/scripts/"{cpkt-afl-runtime,cpkt-archive-cache,require-host-bash}.sh "$scratch/scripts/"
+export CAI_CONFIG_ROOT="$scratch/base with spaces/fixture-bootlin" CAI_CONFIG_LOG="$scratch/events"
+export CAI_CONFIG_SYSROOT="$CAI_CONFIG_ROOT/sysroot"
+mkdir -p "$CAI_CONFIG_ROOT/lib" "$CAI_CONFIG_ROOT/runtime" "$CAI_CONFIG_SYSROOT/lib" "$CAI_CONFIG_SYSROOT/usr/lib"
 cat >"$scratch/scripts/cpkt-toolchains.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'bootlin %s\n' "$*" >>"$CAI_CONFIG_LOG"
@@ -23,11 +26,15 @@ cat >"$CAI_CONFIG_ROOT/bin/compiler" <<'SH'
 case "$1" in
   -print-prog-name=ld) printf '%s/bin/compiler\n' "$CAI_CONFIG_ROOT" ;;
   -print-file-name=libc.so) printf '%s/lib/libc.so\n' "$CAI_CONFIG_SYSROOT" ;;
+  -print-file-name=libstdc++.so.6) printf '%s/runtime/libstdc++.so.6\n' "$CAI_CONFIG_ROOT" ;;
+  -print-prog-name=cc1|-print-prog-name=cc1plus) printf '%s/bin/compiler\n' "$CAI_CONFIG_ROOT" ;;
   *) exit 7 ;;
 esac
 SH
 chmod +x "$scratch/scripts/cpkt-toolchains.sh" "$CAI_CONFIG_ROOT/bin/compiler"
 touch "$CAI_CONFIG_SYSROOT/lib/libc.so"
+touch "$CAI_CONFIG_ROOT/runtime/libstdc++.so.6"
+cp "$CAI_CONFIG_ROOT/bin/compiler" "$CAI_CONFIG_SYSROOT/lib/ld-linux-x86-64.so.2"
 load_bootlin() { cmake -DCPKT_TARGET_ID=x86_64-linux-gnu -P "$scratch/cmake/toolchains/linux-bootlin.cmake" >"$scratch/out" 2>"$scratch/err"; }
 : >"$CAI_CONFIG_LOG"
 load_bootlin
@@ -41,17 +48,19 @@ export CPKT_TOOLCHAIN_CACHE="$scratch/tool-cache"
 for command in discover env; do
   : >"$CAI_CONFIG_LOG"
   if bash "$scratch/scripts/cpkt-aflpp.sh" "$command" >"$scratch/out" 2>"$scratch/err"; then exit 1; fi
-  grep -q 'Missing AFL++ collection' "$scratch/err"
+  grep -Fq 'AFL++ is not ready' "$scratch/err"
   [[ ! -s "$scratch/out" && ! -e "$CPKT_TOOLCHAIN_CACHE" ]]
   [[ $(cat "$CAI_CONFIG_LOG") == 'bootlin discover x86_64-linux-gnu' ]]
 done
 # A prepared synthetic collection supplies report/export fields without builds.
-afl_root="$CPKT_TOOLCHAIN_CACHE/roots/aflplusplus-5.02c-x86_64-linux-gnu-fixture-bootlin"
-mkdir -p "$afl_root/bin" "$afl_root/lib/afl"
-for tool in afl-fuzz afl-showmap cpkt-afl-gcc cpkt-afl-g++; do
+afl_root="$CPKT_TOOLCHAIN_CACHE/roots/aflplusplus-5.02c-x86_64-linux-gnu-fixture-bootlin-r2"
+mkdir -p "$afl_root/bin" "$afl_root/lib/afl" "$afl_root/libexec/bootlin-runtime"
+for tool in afl-fuzz afl-showmap cpkt-afl-gcc cpkt-afl-g++ afl-cc afl-gcc-fast afl-g++-fast bootlin-gcc bootlin-g++; do
   cp "$CAI_CONFIG_ROOT/bin/compiler" "$afl_root/bin/$tool"
 done
-touch "$afl_root/lib/afl/afl-gcc-pass.so" "$afl_root/lib/afl/afl-compiler-rt.o" "$afl_root/.cpkt-aflpp-revision-2-fixture-bootlin"
+touch "$afl_root/lib/afl/afl-gcc-pass.so" "$afl_root/lib/afl/afl-compiler-rt.o" "$afl_root/lib/afl/dynamic_list.txt" "$afl_root/.cpkt-aflpp-revision-2-fixture-bootlin"
+cp "$CAI_CONFIG_ROOT/bin/compiler" "$afl_root/libexec/bootlin-runtime/cc1"
+cp "$CAI_CONFIG_ROOT/bin/compiler" "$afl_root/libexec/bootlin-runtime/cc1plus"
 for command in discover env; do
   : >"$CAI_CONFIG_LOG"
   bash "$scratch/scripts/cpkt-aflpp.sh" "$command" >"$scratch/out" 2>"$scratch/err"
@@ -100,6 +109,8 @@ cat >"$owner/bin/ctest" <<'SH'
 printf 'test\n' >>"$CAI_CONFIG_LOG"
 SH
 chmod +x "$owner/scripts/cpkt-toolchains.sh" "$owner/bin/"*
+mkdir -p "$owner/package/cai-1.2.3/scripts"
+cp "$owner/scripts/cpkt-toolchains.sh" "$owner/package/cai-1.2.3/scripts/"
 tar -czf "$owner/source.tar.gz" -C "$owner/package" cai-1.2.3
 : >"$CAI_CONFIG_LOG"
 PATH="$owner/bin:$PATH" bash "$owner/scripts/test_release_from_source.sh" "$owner" "$owner/source.tar.gz"

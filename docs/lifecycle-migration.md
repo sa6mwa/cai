@@ -29,14 +29,17 @@ newer preset-only feature.
 | `make package` | SDK staging and binary-scope checksum inventory | Warm; preserves other identified artifacts |
 | `make package-verify` | Existing complete shipped bytes and extracted consumers | Does not rebuild product producers |
 | `make package-source-smoke` | Explicit clean source reconstruction | Owns only source-smoke scratch |
-| `make release`, `make release-matrix` | One final local artifact set | Clean committed checkout and exact lightweight tag required first |
+| `make release`, `make release-matrix` | One final local artifact set | Clean committed checkout, verified final commit signature and exact lightweight tag required first |
 
 Final release cleans local generated state once. Its source reconstruction is
 the native Release producer and full non-live test lane. Its GNU SDK is packaged
 from that output. Selected cross SDKs retain their target scope and the shipped
 musl CLI retains actual runtime proof. No other cross runtime runner is claimed.
-Equivalent prerequisites share `.cache/deps` and verified archives; distinct
-instrumentation remains separate. Host-only fixtures are labeled `host` and are
+Equivalent prerequisites within one checkout share `.cache/deps`; checkouts
+share only global verified archives and prepared toolchains. Reconstruction owns
+`build/source-smoke/src/build` and its own `.cache/deps`. Native Debug library
+and CLI presets share `build/debug` and retain the same library configuration.
+Distinct instrumentation remains separate. Host-only fixtures are labeled `host` and are
 not repeated under hardening or Lua selections.
 
 The final explicit checksum inventory requires every selected SDK plus source,
@@ -57,8 +60,8 @@ configuration. CMake/try-compile and AFL++ discovery only inspect prepared tools
 they never download or compile toolchains as a side effect.
 Service selectors and inspector opt-in are validated before mutations. Live pods
 retain their original teardown manifests; startup does not recreate a missing one.
-Cleanup also checks cached borrowed tool roots in the native source-release lane,
-even when the original inline cache environment setting is no longer present.
+Cleanup removes local tool roots even when an override or stale CMake entry
+describes them as shared. It cannot be evaded by borrowing another checkout's state.
 Formatting uses native filename-safe batches and propagates traversal failures as
 well as formatter failures; it does not start one process per source file.
 
@@ -77,8 +80,18 @@ real readiness probes and teardown from retained manifests remain required.
 No Compose/containerd path, secondary dispatcher or process supervisor remains.
 Reset covers all services and requires retained manifests for every live pod;
 stopping a single service uses `down SERVICE` and retains the other services.
-Both full cleanup and dist-only cleanup reject shared caches under their deleted
-paths, including caches reached through external symlink aliases.
+Full cleanup removes all of `build/`, `dist/` and `.cache/`, including hidden
+entries. Dist-only cleanup removes `dist/`. Redirected directory entries are
+unlinked without deleting their external targets or using foreign pod manifests;
+configuration rejects redirected build and dependency state.
+
+The exact vendored helper collection uses `~/.cache/cpkt/toolchains` (or the
+declared XDG/explicit global cache), complete Bootlin collections and the pinned
+Linux-host MIG toolchain for osxcross. Darwin discovery cannot claim readiness
+from a partial collection. CMake/try-compile propagate the declared helper path.
+All release refs remain local until the amended, signed, lightweight-tagged
+commit completes the clean local artifact gate. Hosted diagnostics, when opted
+in, neither gate release nor supply release artifacts; never push to trigger CI.
 
 The legacy dependency-cache alias and its competing cache interpretation are
 removed. `CPKT_DEPENDENCY_CACHE` resolves from explicit CMake input, environment,

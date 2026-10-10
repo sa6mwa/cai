@@ -1502,7 +1502,7 @@ static void test_model_capabilities(test_state *state) {
 }
 
 static void test_env_precedence(test_state *state) {
-  char template_dir[] = "/tmp/cai-env-test-XXXXXX";
+  char template_dir[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-env-test-XXXXXX";
   char original_cwd[4096];
   char *key;
   cai_error error;
@@ -3825,8 +3825,10 @@ static int test_terminal_workdir_swap_policy(void *context, const char *command,
 }
 
 static void test_terminal_workdir_pinning(test_state *state) {
-  char root_template[] = "/tmp/cai-terminal-pinned-root-XXXXXX";
-  char outside_template[] = "/tmp/cai-terminal-pinned-outside-XXXXXX";
+  char root_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-terminal-pinned-root-XXXXXX";
+  char outside_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-terminal-pinned-outside-XXXXXX";
   char moved_root[PATH_MAX];
   cai_terminal_tool_config config;
   cai_tool_registry *registry;
@@ -4695,8 +4697,10 @@ static int extract_json_string_field(const char *json, const char *field,
 }
 
 static void test_lonejson_selected_array_rewrite(test_state *state) {
-  char input_path[] = "/tmp/cai-array-rewrite-in-XXXXXX";
-  char output_path[] = "/tmp/cai-array-rewrite-out-XXXXXX";
+  char input_path[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-array-rewrite-in-XXXXXX";
+  char output_path[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-array-rewrite-out-XXXXXX";
   char replacement_id[] = "r2";
   char append_id[] = "i3";
   char output[512];
@@ -4774,7 +4778,7 @@ static void test_tool_registry(test_state *state) {
   counting_tool_state route_state;
   cai_error error;
   char *json;
-  char source_path[] = "/tmp/cai-tool-source-XXXXXX";
+  char source_path[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-tool-source-XXXXXX";
   int source_fd;
 
   cai_error_init(&error);
@@ -5577,7 +5581,7 @@ test_mcp_client_open_failure_keeps_receiver_cleanup(test_state *state) {
   cai_error_init(&error);
   cai_mcp_streamable_http_client_config_init(&config);
   config.url = "http://127.0.0.1:1/mcp";
-  config.ca_path = "/tmp/cai-missing-ca-path";
+  config.ca_path = CAI_TEST_BINARY_DIR "/test-tmp/cai-missing-ca-path";
   config.notification = test_noop_mcp_notification;
   config.notification_context = &cleanup_count;
   config.notification_context_cleanup = test_cleanup_counter;
@@ -6798,8 +6802,8 @@ static void test_client_open(test_state *state) {
   logger = &fake_logger;
   config.api_key = "test-key";
   config.base_url = "http://example.test/v1";
-  config.ca_bundle_path = "/tmp/cai-test-ca.pem";
-  config.ca_path = "/tmp/cai-test-ca-dir";
+  config.ca_bundle_path = CAI_TEST_BINARY_DIR "/test-tmp/cai-test-ca.pem";
+  config.ca_path = CAI_TEST_BINARY_DIR "/test-tmp/cai-test-ca-dir";
   config.logger = logger;
   g_test_infof_count = 0;
   client = NULL;
@@ -6815,9 +6819,10 @@ static void test_client_open(test_state *state) {
     expect_str(state, "client_base_url", CAI_CLIENT_IMPL(client)->base_url,
                "http://example.test/v1");
     expect_str(state, "client_ca_bundle_path",
-               CAI_CLIENT_IMPL(client)->ca_bundle_path, "/tmp/cai-test-ca.pem");
+               CAI_CLIENT_IMPL(client)->ca_bundle_path,
+               CAI_TEST_BINARY_DIR "/test-tmp/cai-test-ca.pem");
     expect_str(state, "client_ca_path", CAI_CLIENT_IMPL(client)->ca_path,
-               "/tmp/cai-test-ca-dir");
+               CAI_TEST_BINARY_DIR "/test-tmp/cai-test-ca-dir");
     if (CAI_CLIENT_IMPL(client)->ca_bundle_path == config.ca_bundle_path ||
         CAI_CLIENT_IMPL(client)->ca_path == config.ca_path) {
       test_fail(state, "client_ca_paths_owned",
@@ -21713,7 +21718,7 @@ static void test_chatgpt_auth_refresh_retry(test_state *state) {
        sizeof(second_required) / sizeof(second_required[0]), second_forbidden,
        sizeof(second_forbidden) / sizeof(second_forbidden[0]), 200, "OK",
        "application/json", NULL, success_body}};
-  char template_dir[] = "/tmp/cai-auth-test-XXXXXX";
+  char template_dir[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-auth-test-XXXXXX";
   char auth_path[PATH_MAX];
   char auth_json[2048];
   char *stored;
@@ -21839,7 +21844,8 @@ static void test_chatgpt_auth_invalid_refresh_retryable(test_state *state) {
       {"POST /v1/oauth/token HTTP/", refresh_required,
        sizeof(refresh_required) / sizeof(refresh_required[0]), NULL, 0U, 400,
        "Bad Request", "application/json", NULL, auth_error_body}};
-  char template_dir[] = "/tmp/cai-auth-invalid-refresh-XXXXXX";
+  char template_dir[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-auth-invalid-refresh-XXXXXX";
   char auth_path[PATH_MAX];
   char auth_json[2048];
   http_mock_server server;
@@ -21911,7 +21917,7 @@ cleanup:
 static void test_chatgpt_auth_refresh_http_timeout(test_state *state) {
   static const char access_token[] =
       "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.old";
-  char template_dir[] = "/tmp/cai-auth-timeout-XXXXXX";
+  char template_dir[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-auth-timeout-XXXXXX";
   char auth_path[PATH_MAX];
   char auth_json[1024];
   http_mock_server server;
@@ -21984,7 +21990,8 @@ static void test_chatgpt_auth_save_failure_preserves_file(test_state *state) {
       {"POST /v1/oauth/token HTTP/", refresh_required,
        sizeof(refresh_required) / sizeof(refresh_required[0]), NULL, 0U, 200,
        "OK", "application/json", NULL, refresh_body}};
-  char template_dir[] = "/tmp/cai-auth-save-failure-XXXXXX";
+  char template_dir[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-auth-save-failure-XXXXXX";
   char auth_path[PATH_MAX];
   char auth_json[2048];
   char *stored;
@@ -22090,7 +22097,8 @@ test_chatgpt_auth_expired_refreshes_before_request(test_state *state) {
        response_forbidden,
        sizeof(response_forbidden) / sizeof(response_forbidden[0]), 200, "OK",
        "application/json", NULL, success_body}};
-  char template_dir[] = "/tmp/cai-auth-expired-test-XXXXXX";
+  char template_dir[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-auth-expired-test-XXXXXX";
   char auth_path[PATH_MAX];
   char auth_json[2048];
   char *stored;
@@ -22203,7 +22211,8 @@ test_chatgpt_auth_reloads_changed_file_before_refresh(test_state *state) {
        response_forbidden,
        sizeof(response_forbidden) / sizeof(response_forbidden[0]), 200, "OK",
        "application/json", NULL, success_body}};
-  char template_dir[] = "/tmp/cai-auth-reload-test-XXXXXX";
+  char template_dir[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-auth-reload-test-XXXXXX";
   char auth_path[PATH_MAX];
   char auth_json[2048];
   http_mock_server server;
@@ -22294,7 +22303,8 @@ static void test_chatgpt_auth_rejects_changed_file_account(test_state *state) {
   static const char expired_token[] = "eyJhbGciOiJub25lIn0.eyJleHAiOjF9.old";
   static const char fresh_token[] =
       "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.disk";
-  char template_dir[] = "/tmp/cai-auth-account-test-XXXXXX";
+  char template_dir[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-auth-account-test-XXXXXX";
   char auth_path[PATH_MAX];
   char auth_json[2048];
   cai_chatgpt_auth_config auth_config;
@@ -22386,7 +22396,8 @@ static void test_chatgpt_auth_stream_refresh_retry(test_state *state) {
        sizeof(second_required) / sizeof(second_required[0]), second_forbidden,
        sizeof(second_forbidden) / sizeof(second_forbidden[0]), 200, "OK",
        "text/event-stream", NULL, stream_body}};
-  char template_dir[] = "/tmp/cai-auth-stream-test-XXXXXX";
+  char template_dir[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-auth-stream-test-XXXXXX";
   char auth_path[PATH_MAX];
   char auth_json[2048];
   http_mock_server server;
@@ -22474,7 +22485,8 @@ cleanup:
 }
 
 static void test_chatgpt_auth_default_path(test_state *state) {
-  char template_dir[] = "/tmp/cai-auth-default-path-XXXXXX";
+  char template_dir[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-auth-default-path-XXXXXX";
   char xdg_dir[PATH_MAX];
   char expected[PATH_MAX];
   test_env_snapshot home_env;
@@ -22606,7 +22618,8 @@ cleanup:
 }
 
 static void test_chatgpt_auth_open_default_path(test_state *state) {
-  char template_dir[] = "/tmp/cai-auth-default-open-XXXXXX";
+  char template_dir[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-auth-default-open-XXXXXX";
   char xdg_dir[PATH_MAX];
   char cai_dir[PATH_MAX];
   char auth_path[PATH_MAX];
@@ -22677,7 +22690,8 @@ static void
 test_chatgpt_auth_client_defaults_to_codex_backend(test_state *state) {
   const char *future_token = "eyJhbGciOiJub25lIn0."
                              "eyJleHAiOjQxMDI0NDQ4MDB9.future";
-  char template_dir[] = "/tmp/cai-auth-backend-test-XXXXXX";
+  char template_dir[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-auth-backend-test-XXXXXX";
   char auth_path[PATH_MAX];
   char auth_json[2048];
   cai_chatgpt_auth_config auth_config;
@@ -22734,7 +22748,8 @@ static void
 test_chatgpt_auth_client_custom_allocator_owns_token(test_state *state) {
   static const char token[] =
       "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.custom";
-  char template_dir[] = "/tmp/cai-auth-client-alloc-XXXXXX";
+  char template_dir[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-auth-client-alloc-XXXXXX";
   char auth_path[PATH_MAX];
   char auth_json[1024];
   tracking_alloc_state alloc_state;
@@ -22823,7 +22838,8 @@ static void test_chatgpt_auth_agent_uses_client_history(test_state *state) {
        sizeof(second_required) / sizeof(second_required[0]), second_forbidden,
        sizeof(second_forbidden) / sizeof(second_forbidden[0]), 200, "OK",
        "application/json", NULL, second_body}};
-  char template_dir[] = "/tmp/cai-auth-history-test-XXXXXX";
+  char template_dir[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-auth-history-test-XXXXXX";
   char auth_path[PATH_MAX];
   char auth_json[2048];
   http_mock_server server;
@@ -22926,7 +22942,8 @@ static void test_chatgpt_login_authorize_url(test_state *state) {
 
   cai_error_init(&error);
   cai_chatgpt_login_config_init(&config);
-  config.auth_json_path = "/tmp/cai-auth-login-url.json";
+  config.auth_json_path =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-auth-login-url.json";
   config.redirect_uri = "http://localhost:1455/auth/callback";
   config.issuer = "https://auth.example.test/";
   config.state = "state-fixed";
@@ -22977,7 +22994,8 @@ static void test_chatgpt_login_authorize_url(test_state *state) {
 static void test_chatgpt_login_browser_helper(test_state *state) {
   static const char test_url[] =
       "https://auth.example.test/oauth/authorize?x=1;touch nope";
-  char template_dir[] = "/tmp/cai-browser-helper-XXXXXX";
+  char template_dir[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-browser-helper-XXXXXX";
   char script_path[PATH_MAX];
   char missing_path[PATH_MAX];
   char output_path[PATH_MAX];
@@ -23056,7 +23074,9 @@ static void test_chatgpt_login_browser_helper(test_state *state) {
     }
     had_ld_preload = 1;
   }
-  if (setenv("LD_PRELOAD", "/tmp/cai-test-asan-preload.so", 1) != 0) {
+  if (setenv("LD_PRELOAD",
+             CAI_TEST_BINARY_DIR "/test-tmp/cai-test-asan-preload.so",
+             1) != 0) {
     test_fail(state, "chatgpt_browser_ld_preload_set", "setenv failed");
     goto cleanup;
   }
@@ -23115,7 +23135,8 @@ static void test_chatgpt_login_callback_validation(test_state *state) {
 
   cai_error_init(&error);
   cai_chatgpt_login_config_init(&config);
-  config.auth_json_path = "/tmp/cai-auth-login-validation.json";
+  config.auth_json_path =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-auth-login-validation.json";
   config.redirect_uri = "http://localhost:1455/auth/callback";
   config.issuer = "https://auth.example.test";
   config.state = "state-fixed";
@@ -23253,7 +23274,8 @@ cleanup:
 }
 
 static void test_chatgpt_login_exchange_http_timeout(test_state *state) {
-  char template_dir[] = "/tmp/cai-login-timeout-XXXXXX";
+  char template_dir[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-login-timeout-XXXXXX";
   char auth_path[PATH_MAX];
   http_mock_server server;
   cai_chatgpt_login_config config;
@@ -23341,7 +23363,8 @@ static void test_chatgpt_login_default_path_write(test_state *state) {
       {"POST /v1/oauth/token HTTP/", required,
        sizeof(required) / sizeof(required[0]), NULL, 0U, 200, "OK",
        "application/json", NULL, token_body}};
-  char template_dir[] = "/tmp/cai-login-default-path-XXXXXX";
+  char template_dir[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-login-default-path-XXXXXX";
   char xdg_dir[PATH_MAX];
   char cai_dir[PATH_MAX];
   char auth_path[PATH_MAX];
@@ -23444,7 +23467,8 @@ cleanup:
 }
 
 static void test_chatgpt_auth_rejects_partial_allocator(test_state *state) {
-  char template_dir[] = "/tmp/cai-auth-partial-alloc-XXXXXX";
+  char template_dir[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-auth-partial-alloc-XXXXXX";
   char auth_path[PATH_MAX];
   char auth_json[1024];
   alloc_count_state auth_alloc_state;
@@ -24757,7 +24781,7 @@ static void test_agent_session(test_state *state) {
   read_state source_state;
   mcp_source_state failing_source_state;
   cai_hosted_mcp_tool_config mcp_config;
-  char file_path[] = "/tmp/cai-session-file-XXXXXX";
+  char file_path[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-session-file-XXXXXX";
   int file_fd;
   static const char *mcp_allowed_names[] = {"roll"};
 
@@ -25262,7 +25286,7 @@ static void test_agent_client_history_continuity(test_state *state) {
 }
 
 static void test_global_skills_catalog(test_state *state) {
-  char root_template[] = "/tmp/cai-skills-XXXXXX";
+  char root_template[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-skills-XXXXXX";
   char skills_path[PATH_MAX];
   char valid_path[PATH_MAX];
   char invalid_path[PATH_MAX];
@@ -25417,12 +25441,17 @@ static void test_smith_profile(test_state *state) {
   cai_agent *agent;
   cai_response *response;
   cai_error error;
-  char instructions_workspace[] = "/tmp/cai-smith-instructions-XXXXXX";
-  char external_instructions[] = "/tmp/cai-smith-external-XXXXXX";
+  char instructions_workspace[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-smith-instructions-XXXXXX";
+  char external_instructions[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-smith-external-XXXXXX";
   char agents_path[PATH_MAX];
-  char review_workspace[] = "/tmp/cai-smith-review-instructions-XXXXXX";
+  char review_workspace[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-smith-review-instructions-XXXXXX";
+  char runtime_workspace[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-smith-custom-runtime-XXXXXX";
   char review_agents_path[PATH_MAX];
-  char policy_root[] = "/tmp/cai-smith-policy-XXXXXX";
+  char policy_root[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-smith-policy-XXXXXX";
   char policy_dir[PATH_MAX];
   char policy_global_path[PATH_MAX];
   char policy_codex_dir[PATH_MAX];
@@ -25902,7 +25931,9 @@ static void test_smith_profile(test_state *state) {
     agent = NULL;
   }
   cai_agent_runtime_config_init(&runtime_config);
-  runtime_config.workspace_directory = "/tmp";
+  expect_int(state, "custom_preset_runtime_workspace",
+             mkdtemp(runtime_workspace) != NULL, 1L);
+  runtime_config.workspace_directory = runtime_workspace;
   runtime_config.preset_descriptor = &preset;
   runtime_store.checkpoint = test_runtime_session_store_checkpoint;
   runtime_store.load_latest = test_runtime_session_store_load;
@@ -25911,10 +25942,14 @@ static void test_smith_profile(test_state *state) {
       test_runtime_session_store_load_events_after;
   runtime_store.context = &runtime_store_state;
   runtime_config.session_store = &runtime_store;
-  expect_int(
-      state, "custom_preset_runtime_open",
-      cai_agent_runtime_open(mock.client, &runtime_config, &runtime, &error),
-      CAI_OK);
+  {
+    int open_rc =
+        cai_agent_runtime_open(mock.client, &runtime_config, &runtime, &error);
+    if (open_rc != CAI_OK)
+      test_fail(state, "custom_preset_runtime_detail",
+                error.message != NULL ? error.message : "no error detail");
+    expect_int(state, "custom_preset_runtime_open", open_rc, CAI_OK);
+  }
   if (runtime != NULL) {
     expect_substr(state, "custom_preset_checkpoint_name",
                   runtime_store_state.saved_checkpoint,
@@ -25936,6 +25971,7 @@ static void test_smith_profile(test_state *state) {
     runtime = NULL;
   }
   preset.supports_review = 1;
+  rmdir(runtime_workspace);
   preset.review_tool_capabilities = CAI_AGENT_PRESET_TOOL_READ_FILE;
   preset.review_developer_instructions =
       "You are {{agent_identity}}, a Vectis reviewer. Return JSON only.";
@@ -26082,8 +26118,10 @@ static void test_smith_review_runtime(test_state *state) {
   runtime_event_state events;
   cai_error error;
   char review_session_id[CAI_AGENT_SESSION_ID_MAX];
-  char revision_workspace[] = "/tmp/cai-review-revision-XXXXXX";
-  char revision_path_root[] = "/tmp/cai-review-path-XXXXXX";
+  char revision_workspace[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-review-revision-XXXXXX";
+  char revision_path_root[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-review-path-XXXXXX";
   char revision_saved_cwd[PATH_MAX];
   char revision_git_directory[PATH_MAX];
   char revision_git_path[PATH_MAX];
@@ -27176,7 +27214,7 @@ static void test_agent_runtime_review_subagent(test_state *state) {
   cai_agent_run_state run_state;
   runtime_event_state events;
   cai_error error;
-  char workspace[] = "/tmp/cai-review-base-XXXXXX";
+  char workspace[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-review-base-XXXXXX";
   char git_directory[PATH_MAX];
   char git_path[PATH_MAX];
   char *saved_path;
@@ -27235,8 +27273,12 @@ static void test_agent_runtime_review_subagent(test_state *state) {
     test_fail(state, "agent_runtime_review_subagent_git_path",
               "failed to set fake git PATH");
   }
-  if (setenv("GIT_DIR", "/tmp/cai-review-external-git-dir", 1) != 0 ||
-      setenv("GIT_WORK_TREE", "/tmp/cai-review-external-work-tree", 1) != 0) {
+  if (setenv("GIT_DIR",
+             CAI_TEST_BINARY_DIR "/test-tmp/cai-review-external-git-dir",
+             1) != 0 ||
+      setenv("GIT_WORK_TREE",
+             CAI_TEST_BINARY_DIR "/test-tmp/cai-review-external-work-tree",
+             1) != 0) {
     test_fail(state, "agent_runtime_review_subagent_git_override",
               "failed to set external git overrides");
   }
@@ -28962,7 +29004,8 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
   cai_agent_run_state run_state;
   cai_error error;
   struct timespec delay;
-  char image_workspace[] = "/tmp/cai-runtime-auto-compact-image-XXXXXX";
+  char image_workspace[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-runtime-auto-compact-image-XXXXXX";
   char image_path[PATH_MAX];
   char image_tool_response[1024];
   int i;
@@ -29532,7 +29575,7 @@ static void test_agent_runtime_queued_turns(test_state *state) {
   ssize_t nread;
   int child_status;
   char base_url[128];
-  char workspace[] = "/tmp/cai-runtime-queued-XXXXXX";
+  char workspace[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-runtime-queued-XXXXXX";
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
   cai_agent_session_store store;
@@ -29683,7 +29726,8 @@ static void test_agent_runtime_semantic_events_common(test_state *state,
   ssize_t nread;
   int child_status;
   char base_url[128];
-  char workspace[] = "/tmp/cai-runtime-semantic-XXXXXX";
+  char workspace[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-runtime-semantic-XXXXXX";
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
   cai_client *client;
@@ -29866,7 +29910,8 @@ static void test_agent_runtime_host_goal_controls(test_state *state) {
   static const char *const objectives[] = {
       "polling objective alpha", "polling objective beta",
       "polling objective gamma", "polling objective delta"};
-  char workspace[] = "/tmp/cai-runtime-host-goal-XXXXXX";
+  char workspace[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-runtime-host-goal-XXXXXX";
   cai_client_config client_config;
   cai_agent_runtime_config config;
   cai_agent_goal_request request;
@@ -30312,7 +30357,8 @@ static void test_agent_runtime_goal_replace_queued_failure(test_state *state) {
 }
 
 static void test_agent_runtime_goal_checkpoint_watermark(test_state *state) {
-  char workspace[] = "/tmp/cai-runtime-goal-watermark-XXXXXX";
+  char workspace[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-runtime-goal-watermark-XXXXXX";
   cai_client_config client_config;
   cai_agent_runtime_config config;
   cai_agent_goal_request request;
@@ -30411,7 +30457,8 @@ static void test_agent_runtime_goal_checkpoint_watermark(test_state *state) {
 
 static void
 test_agent_runtime_goal_create_status_allocation_failure(test_state *state) {
-  char workspace[] = "/tmp/cai-runtime-goal-create-status-XXXXXX";
+  char workspace[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-runtime-goal-create-status-XXXXXX";
   cai_client_config client_config;
   cai_agent_runtime_config config;
   cai_agent_goal_request request;
@@ -30506,7 +30553,8 @@ static void test_agent_runtime_goal_budget(test_state *state) {
   ssize_t nread;
   int child_status;
   char base_url[128];
-  char workspace[] = "/tmp/cai-runtime-goal-budget-XXXXXX";
+  char workspace[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-runtime-goal-budget-XXXXXX";
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
   cai_agent_session_store store;
@@ -30662,7 +30710,8 @@ static void test_agent_runtime_goal_usage_limit(test_state *state) {
   ssize_t nread;
   int child_status;
   char base_url[128];
-  char workspace[] = "/tmp/cai-runtime-goal-usage-limit-XXXXXX";
+  char workspace[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-runtime-goal-usage-limit-XXXXXX";
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
   cai_agent_session_store store;
@@ -30810,7 +30859,8 @@ static void test_agent_runtime_goal_usage_limit(test_state *state) {
 }
 
 static void test_agent_local_session_store(test_state *state) {
-  char template_directory[] = "/tmp/cai-session-store-XXXXXX";
+  char template_directory[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-session-store-XXXXXX";
   char session_id[CAI_AGENT_SESSION_ID_MAX];
   char buffer[128];
   char scope_path[PATH_MAX];
@@ -30873,7 +30923,9 @@ static void test_agent_local_session_store(test_state *state) {
              cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
   if (source != NULL) {
     expect_int(state, "local_session_store_first_checkpoint",
-               store.checkpoint(store.context, "/tmp/cai-session-store-scope",
+               store.checkpoint(store.context,
+                                CAI_TEST_BINARY_DIR
+                                "/test-tmp/cai-session-store-scope",
                                 "session_one", source, 0U, &error),
                CAI_OK);
   }
@@ -30886,14 +30938,18 @@ static void test_agent_local_session_store(test_state *state) {
              cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
   if (source != NULL) {
     expect_int(state, "local_session_store_second_checkpoint",
-               store.checkpoint(store.context, "/tmp/cai-session-store-scope",
+               store.checkpoint(store.context,
+                                CAI_TEST_BINARY_DIR
+                                "/test-tmp/cai-session-store-scope",
                                 "session_one", source, 7U, &error),
                CAI_OK);
   }
   cai_source_close(source);
   source = NULL;
-  (void)SHA256((const unsigned char *)"/tmp/cai-session-store-scope",
-               strlen("/tmp/cai-session-store-scope"), digest);
+  (void)SHA256((const unsigned char *)CAI_TEST_BINARY_DIR
+               "/test-tmp/cai-session-store-scope",
+               strlen(CAI_TEST_BINARY_DIR "/test-tmp/cai-session-store-scope"),
+               digest);
   for (i = 0U; i < sizeof(digest); i++) {
     scope_path[i * 2U] = hex[digest[i] >> 4U];
     scope_path[i * 2U + 1U] = hex[digest[i] & 0x0fU];
@@ -30917,7 +30973,9 @@ static void test_agent_local_session_store(test_state *state) {
              cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
   if (source != NULL) {
     expect_int(state, "local_session_store_repair_checkpoint",
-               store.checkpoint(store.context, "/tmp/cai-session-store-scope",
+               store.checkpoint(store.context,
+                                CAI_TEST_BINARY_DIR
+                                "/test-tmp/cai-session-store-scope",
                                 "session_one", source, 7U, &error),
                CAI_OK);
   }
@@ -30927,7 +30985,9 @@ static void test_agent_local_session_store(test_state *state) {
   event.type = "steering_queued";
   event.data = "resume this steering input";
   expect_int(state, "local_session_store_append_event",
-             store.append_event(store.context, "/tmp/cai-session-store-scope",
+             store.append_event(store.context,
+                                CAI_TEST_BINARY_DIR
+                                "/test-tmp/cai-session-store-scope",
                                 "session_one", &event, &error),
              CAI_OK);
   (void)snprintf(external_event_path, sizeof(external_event_path), "%s/%s",
@@ -30943,7 +31003,9 @@ static void test_agent_local_session_store(test_state *state) {
     event.type = "steering_queued";
     event.data = "must not write linked log";
     expect_int(state, "local_session_store_event_hardlink_rejected",
-               store.append_event(store.context, "/tmp/cai-session-store-scope",
+               store.append_event(store.context,
+                                  CAI_TEST_BINARY_DIR
+                                  "/test-tmp/cai-session-store-scope",
                                   "linked-event", &event, &error),
                CAI_ERR_TRANSPORT);
     cai_error_cleanup(&error);
@@ -30978,7 +31040,9 @@ static void test_agent_local_session_store(test_state *state) {
   }
   memset(session_id, 0, sizeof(session_id));
   expect_int(state, "local_session_store_load",
-             store.load_latest(store.context, "/tmp/cai-session-store-scope",
+             store.load_latest(store.context,
+                               CAI_TEST_BINARY_DIR
+                               "/test-tmp/cai-session-store-scope",
                                session_id, sizeof(session_id), &loaded,
                                &loaded_sequence, &error),
              CAI_OK);
@@ -30999,9 +31063,10 @@ static void test_agent_local_session_store(test_state *state) {
   }
   expect_int(state, "local_session_store_replay_events",
              store.load_events_after(
-                 store.context, "/tmp/cai-session-store-scope", "session_one",
-                 loaded_sequence, test_session_event_capture, &event_capture,
-                 &error),
+                 store.context,
+                 CAI_TEST_BINARY_DIR "/test-tmp/cai-session-store-scope",
+                 "session_one", loaded_sequence, test_session_event_capture,
+                 &event_capture, &error),
              CAI_OK);
   expect_int(state, "local_session_store_replay_count", event_capture.count,
              1L);
@@ -31025,7 +31090,9 @@ static void test_agent_local_session_store(test_state *state) {
              cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
   if (source != NULL) {
     expect_int(state, "local_session_store_multiline_checkpoint",
-               store.checkpoint(store.context, "/tmp/cai-session-store-scope",
+               store.checkpoint(store.context,
+                                CAI_TEST_BINARY_DIR
+                                "/test-tmp/cai-session-store-scope",
                                 "multiline-events", source, 8U, &error),
                CAI_OK);
   }
@@ -31035,13 +31102,16 @@ static void test_agent_local_session_store(test_state *state) {
   event.type = "turn_queued";
   event.data = "actual journal event";
   expect_int(state, "local_session_store_multiline_append_event",
-             store.append_event(store.context, "/tmp/cai-session-store-scope",
+             store.append_event(store.context,
+                                CAI_TEST_BINARY_DIR
+                                "/test-tmp/cai-session-store-scope",
                                 "multiline-events", &event, &error),
              CAI_OK);
   memset(&event_capture, 0, sizeof(event_capture));
   expect_int(state, "local_session_store_multiline_replay",
              store.load_events_after(
-                 store.context, "/tmp/cai-session-store-scope",
+                 store.context,
+                 CAI_TEST_BINARY_DIR "/test-tmp/cai-session-store-scope",
                  "multiline-events", 8U, test_session_event_capture,
                  &event_capture, &error),
              CAI_OK);
@@ -31073,9 +31143,10 @@ static void test_agent_local_session_store(test_state *state) {
   memset(&event_capture, 0, sizeof(event_capture));
   expect_int(state, "local_session_store_duplicate_event_rejected",
              store.load_events_after(
-                 store.context, "/tmp/cai-session-store-scope", "session_one",
-                 loaded_sequence, test_session_event_capture, &event_capture,
-                 &error),
+                 store.context,
+                 CAI_TEST_BINARY_DIR "/test-tmp/cai-session-store-scope",
+                 "session_one", loaded_sequence, test_session_event_capture,
+                 &event_capture, &error),
              CAI_ERR_INVALID);
   expect_int(state, "local_session_store_duplicate_event_first_replayed",
              event_capture.count, 1L);
@@ -31253,7 +31324,9 @@ static void test_agent_local_session_store(test_state *state) {
   event.type = "steering_queued";
   event.data = "event in a newer journal";
   expect_int(state, "local_session_store_newer_event_only_append",
-             store.append_event(store.context, "/tmp/cai-session-store-scope",
+             store.append_event(store.context,
+                                CAI_TEST_BINARY_DIR
+                                "/test-tmp/cai-session-store-scope",
                                 "events_only", &event, &error),
              CAI_OK);
   (void)snprintf(newer_event_file_path, sizeof(newer_event_file_path),
@@ -31272,7 +31345,9 @@ static void test_agent_local_session_store(test_state *state) {
   }
   memset(session_id, 0, sizeof(session_id));
   expect_int(state, "local_session_store_skip_incomplete_journal",
-             store.load_latest(store.context, "/tmp/cai-session-store-scope",
+             store.load_latest(store.context,
+                               CAI_TEST_BINARY_DIR
+                               "/test-tmp/cai-session-store-scope",
                                session_id, sizeof(session_id), &loaded,
                                &loaded_sequence, &error),
              CAI_OK);
@@ -31286,11 +31361,15 @@ static void test_agent_local_session_store(test_state *state) {
   event.type = "steering_queued";
   event.data = "event before first checkpoint";
   expect_int(state, "local_session_store_event_only_append",
-             store.append_event(store.context, "/tmp/cai-session-event-only",
+             store.append_event(store.context,
+                                CAI_TEST_BINARY_DIR
+                                "/test-tmp/cai-session-event-only",
                                 "events_only", &event, &error),
              CAI_OK);
-  (void)SHA256((const unsigned char *)"/tmp/cai-session-event-only",
-               strlen("/tmp/cai-session-event-only"), digest);
+  (void)SHA256((const unsigned char *)CAI_TEST_BINARY_DIR
+               "/test-tmp/cai-session-event-only",
+               strlen(CAI_TEST_BINARY_DIR "/test-tmp/cai-session-event-only"),
+               digest);
   for (i = 0U; i < sizeof(digest); i++) {
     event_scope_path[i * 2U] = hex[digest[i] >> 4U];
     event_scope_path[i * 2U + 1U] = hex[digest[i] & 0x0fU];
@@ -31299,11 +31378,12 @@ static void test_agent_local_session_store(test_state *state) {
   (void)snprintf(event_file_path, sizeof(event_file_path), "%s/%s/%s",
                  template_directory, event_scope_path, "events_only.jsonl");
   memset(session_id, 0, sizeof(session_id));
-  expect_int(state, "local_session_store_event_only_load",
-             store.load_latest(store.context, "/tmp/cai-session-event-only",
-                               session_id, sizeof(session_id), &loaded,
-                               &loaded_sequence, &error),
-             CAI_OK);
+  expect_int(
+      state, "local_session_store_event_only_load",
+      store.load_latest(
+          store.context, CAI_TEST_BINARY_DIR "/test-tmp/cai-session-event-only",
+          session_id, sizeof(session_id), &loaded, &loaded_sequence, &error),
+      CAI_OK);
   expect_int(state, "local_session_store_event_only_no_checkpoint",
              loaded == NULL, 1L);
   expect_str(state, "local_session_store_event_only_no_session", session_id,
@@ -31327,7 +31407,9 @@ static void test_agent_local_session_store(test_state *state) {
   }
   memset(session_id, 0, sizeof(session_id));
   expect_int(state, "local_session_store_legacy_checkpoint_load",
-             store.load_latest(store.context, "/tmp/cai-session-store-scope",
+             store.load_latest(store.context,
+                               CAI_TEST_BINARY_DIR
+                               "/test-tmp/cai-session-store-scope",
                                session_id, sizeof(session_id), &loaded,
                                &loaded_sequence, &error),
              CAI_OK);
@@ -31369,7 +31451,9 @@ static void test_agent_local_session_store(test_state *state) {
   }
   memset(session_id, 0, sizeof(session_id));
   expect_int(state, "local_session_store_overflow_rejected",
-             store.load_latest(store.context, "/tmp/cai-session-store-scope",
+             store.load_latest(store.context,
+                               CAI_TEST_BINARY_DIR
+                               "/test-tmp/cai-session-store-scope",
                                session_id, sizeof(session_id), &loaded,
                                &loaded_sequence, &error),
              CAI_ERR_INVALID);
@@ -31402,7 +31486,8 @@ static void test_agent_local_session_store(test_state *state) {
 
 static void
 test_agent_runtime_explicit_local_store_opaque_id(test_state *state) {
-  char template_directory[] = "/tmp/cai-explicit-session-store-XXXXXX";
+  char template_directory[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-explicit-session-store-XXXXXX";
   char scope_hash[65];
   char scope_path[PATH_MAX];
   char journal_path[PATH_MAX];
@@ -31519,7 +31604,8 @@ test_agent_runtime_explicit_local_store_opaque_id(test_state *state) {
 
 static void
 test_agent_local_session_store_scope_parent_sync(test_state *state) {
-  char root_directory[] = "/tmp/cai-session-store-sync-XXXXXX";
+  char root_directory[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-session-store-sync-XXXXXX";
   char scope_path[PATH_MAX];
   char journal_path[PATH_MAX];
   char hash[65];
@@ -31591,7 +31677,8 @@ test_agent_local_session_store_scope_parent_sync(test_state *state) {
 }
 
 static void test_agent_local_session_store_root_parent_sync(test_state *state) {
-  char root_directory[] = "/tmp/cai-session-store-root-sync-XXXXXX";
+  char root_directory[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-session-store-root-sync-XXXXXX";
   cai_agent_local_session_store_config config;
   cai_agent_session_store store;
   cai_error error;
@@ -31661,7 +31748,8 @@ test_agent_local_session_store_rejects_long_default_path(test_state *state) {
 
 static void
 test_agent_local_session_store_rejects_file_root(test_state *state) {
-  char root_file[] = "/tmp/cai-session-store-file-root-XXXXXX";
+  char root_file[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-session-store-file-root-XXXXXX";
   cai_agent_local_session_store_config config;
   cai_agent_session_store store;
   cai_error error;
@@ -31688,7 +31776,8 @@ test_agent_local_session_store_rejects_file_root(test_state *state) {
 
 static void
 test_agent_local_session_store_rejects_insecure_root(test_state *state) {
-  char root_directory[] = "/tmp/cai-insecure-session-store-XXXXXX";
+  char root_directory[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-insecure-session-store-XXXXXX";
   cai_agent_local_session_store_config config;
   cai_agent_session_store store;
   cai_error error;
@@ -31724,7 +31813,8 @@ test_agent_local_session_store_rejects_insecure_root(test_state *state) {
 
 static void
 test_agent_local_session_store_rejects_unsafe_scope(test_state *state) {
-  char root_directory[] = "/tmp/cai-unsafe-session-store-XXXXXX";
+  char root_directory[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-unsafe-session-store-XXXXXX";
   char scope_path[PATH_MAX];
   char hash[65];
   unsigned char digest[SHA256_DIGEST_LENGTH];
@@ -32117,7 +32207,7 @@ static void test_agent_runtime_resume(test_state *state) {
 }
 
 static void test_agent_runtime_markdown_export(test_state *state) {
-  char workspace[] = "/tmp/cai-runtime-export-XXXXXX";
+  char workspace[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-runtime-export-XXXXXX";
   char path[PATH_MAX];
   char expected_path[PATH_MAX];
   char failed_path[PATH_MAX];
@@ -32231,7 +32321,7 @@ static void test_agent_runtime_markdown_export(test_state *state) {
       expect_substr(state, "runtime_export_session_id", captured.buffer,
                     "- Session ID:\n    resumed_session");
       expect_substr(state, "runtime_export_workspace", captured.buffer,
-                    "- Workspace:\n    /tmp/cai-runtime-export-");
+                    workspace);
       expect_substr(state, "runtime_export_active_model", captured.buffer,
                     "- Active model:\n    gpt-5.6-luna");
       expect_substr(state, "runtime_export_recorded_history_model",
@@ -32905,7 +32995,7 @@ static void test_patch_tool(test_state *state) {
       "*** Add File: restrictive-umask.txt\n"
       "+private\n"
       "*** End Patch";
-  char dir_template[] = "/tmp/cai-patch-test-XXXXXX";
+  char dir_template[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-patch-test-XXXXXX";
   char alpha_path[PATH_MAX];
   char beta_path[PATH_MAX];
   char renamed_path[PATH_MAX];
@@ -33451,7 +33541,7 @@ static void test_agent_tool_declarations(test_state *state) {
 
 static void test_agent_tool_auto_run(test_state *state) {
   static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
-  char spool_dir[] = "/tmp/cai-tool-spool-XXXXXX";
+  char spool_dir[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-tool-spool-XXXXXX";
   int pipe_fds[2];
   pid_t pid;
   int port;
@@ -34008,7 +34098,8 @@ static void test_agent_view_image_auto_run(test_state *state) {
       0x54U, 0x08U, 0xd7U, 0x63U, 0xf8U, 0xcfU, 0xc0U, 0xf0U, 0x1fU, 0x00U,
       0x05U, 0x00U, 0x01U, 0xffU, 0x89U, 0x99U, 0x07U, 0x00U, 0x00U, 0x00U,
       0x00U, 0x49U, 0x45U, 0x4eU, 0x44U, 0xaeU, 0x42U, 0x60U, 0x82U};
-  char workspace[] = "/tmp/cai-agent-view-image-XXXXXX";
+  char workspace[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-agent-view-image-XXXXXX";
   char image_path[PATH_MAX];
   int pipe_fds[2];
   pid_t pid;
@@ -34538,7 +34629,7 @@ static int run_list_files_tool_case(test_state *state, const char *name,
 }
 
 static void test_read_tool(test_state *state) {
-  char dir_template[] = "/tmp/cai-read-test-XXXXXX";
+  char dir_template[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-read-test-XXXXXX";
   char sub_dir[PATH_MAX];
   char nested_dir[PATH_MAX];
   char file_path[PATH_MAX];
@@ -34642,11 +34733,13 @@ static void test_read_tool(test_state *state) {
            "%s/sub/invalid-utf8.txt", dir_template);
   write_bytes_or_die(invalid_utf8_path, invalid_utf8_bytes,
                      sizeof(invalid_utf8_bytes));
-  snprintf(outside_path, sizeof(outside_path), "/tmp/cai-read-outside-%ld.txt",
+  snprintf(outside_path, sizeof(outside_path),
+           CAI_TEST_BINARY_DIR "/test-tmp/cai-read-outside-%ld.txt",
            (long)getpid());
   write_file_or_die(outside_path, "outside\n");
   snprintf(outside_fifo_path, sizeof(outside_fifo_path),
-           "/tmp/cai-read-outside-%ld.fifo", (long)getpid());
+           CAI_TEST_BINARY_DIR "/test-tmp/cai-read-outside-%ld.fifo",
+           (long)getpid());
   unlink(outside_fifo_path);
   if (mkfifo(outside_fifo_path, 0600) != 0) {
     test_fail(state, "read_outside_fifo_fixture", "mkfifo failed");
@@ -34672,7 +34765,8 @@ static void test_read_tool(test_state *state) {
   }
   snprintf(dangling_symlink_path, sizeof(dangling_symlink_path),
            "%s/sub/dangling-link", dir_template);
-  if (symlink("/tmp/cai-read-missing-target", dangling_symlink_path) != 0) {
+  if (symlink(CAI_TEST_BINARY_DIR "/test-tmp/cai-read-missing-target",
+              dangling_symlink_path) != 0) {
     test_fail(state, "read_dangling_symlink_fixture", "symlink failed");
   }
 
@@ -35144,7 +35238,8 @@ static void test_view_image_tool(test_state *state) {
       0x54U, 0x08U, 0xd7U, 0x63U, 0xf8U, 0xcfU, 0xc0U, 0xf0U, 0x1fU, 0x00U,
       0x05U, 0x00U, 0x01U, 0xffU, 0x89U, 0x99U, 0x07U, 0x00U, 0x00U, 0x00U,
       0x00U, 0x49U, 0x45U, 0x4eU, 0x44U, 0xaeU, 0x42U, 0x60U, 0x82U};
-  char dir_template[] = "/tmp/cai-view-image-test-XXXXXX";
+  char dir_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-view-image-test-XXXXXX";
   char extra_template[] = "cai-view-image-extra-XXXXXX";
   char extra_root[PATH_MAX];
   char extra_image[PATH_MAX];
@@ -35379,7 +35474,7 @@ static void test_view_image_tool(test_state *state) {
 }
 
 static void test_exec_tool(test_state *state) {
-  char dir_template[] = "/tmp/cai-exec-test-XXXXXX";
+  char dir_template[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-exec-test-XXXXXX";
   char child_dir[PATH_MAX];
   char child_tests_dir[PATH_MAX];
   char alpha_path[PATH_MAX];
@@ -35752,7 +35847,8 @@ static void test_exec_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
 
-  snprintf(alpha_path, sizeof(alpha_path), "/tmp/cai-exec-host-leak-%ld",
+  snprintf(alpha_path, sizeof(alpha_path),
+           CAI_TEST_BINARY_DIR "/test-tmp/cai-exec-host-leak-%ld",
            (long)getpid());
   alpha_file = fopen(alpha_path, "wb");
   if (alpha_file != NULL) {
@@ -36226,7 +36322,8 @@ static void test_terminal_registration_rollback(test_state *state) {
 }
 
 static void test_terminal_tools(test_state *state) {
-  char dir_template[] = "/tmp/cai-terminal-test-XXXXXX";
+  char dir_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-terminal-test-XXXXXX";
   static const cai_terminal_tool_config legacy_config = {
       NULL, NULL, NULL, 20L, 300L, 32768U, NULL,
       NULL, NULL, NULL, 0L,  0L,   0L,     0L};
@@ -36241,6 +36338,7 @@ static void test_terminal_tools(test_state *state) {
   int rc;
   int i;
   long long terminate_grace_elapsed_ms;
+  double drain_deadline;
   char *blocked_stdin_request;
   size_t blocked_stdin_request_size;
   struct timespec terminate_grace_finished;
@@ -36484,7 +36582,8 @@ static void test_terminal_tools(test_state *state) {
     /* Buffered output now returns immediately, so a fast caller can drain
      * several small result windows before the reader observes child exit.
      * Bound the total drain rather than assuming ten polls imply completion. */
-    for (i = 0; i < 1000 && events.completed < 4; i++) {
+    drain_deadline = test_now_seconds() + 1.0;
+    while (events.completed < 4 && test_now_seconds() < drain_deadline) {
       writer.buffer[0] = '\0';
       writer.length = 0U;
       rc = cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
@@ -36595,7 +36694,8 @@ static void test_terminal_tools(test_state *state) {
 
 static void
 test_terminal_buffered_output_returns_immediately(test_state *state) {
-  char dir_template[] = "/tmp/cai-terminal-buffered-XXXXXX";
+  char dir_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-terminal-buffered-XXXXXX";
   cai_terminal_tool_config config;
   cai_tool_registry *registry;
   cai_sink_callbacks callbacks;
@@ -36676,7 +36776,8 @@ test_terminal_buffered_output_returns_immediately(test_state *state) {
 }
 
 static void test_terminal_sink_failure_preserves_output(test_state *state) {
-  char dir_template[] = "/tmp/cai-terminal-sink-retry-XXXXXX";
+  char dir_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-terminal-sink-retry-XXXXXX";
   cai_terminal_tool_config config;
   cai_tool_registry *registry;
   cai_sink_callbacks callbacks;
@@ -36756,7 +36857,8 @@ static void test_terminal_sink_failure_preserves_output(test_state *state) {
 }
 
 static void test_terminal_capture_truncation(test_state *state) {
-  char dir_template[] = "/tmp/cai-terminal-truncation-XXXXXX";
+  char dir_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-terminal-truncation-XXXXXX";
   cai_terminal_tool_config config;
   cai_tool_registry *registry;
   cai_sink_callbacks callbacks;
@@ -36824,7 +36926,8 @@ static void test_terminal_capture_truncation(test_state *state) {
 }
 
 static void test_terminal_reader_start_failure(test_state *state) {
-  char dir_template[] = "/tmp/cai-terminal-reader-failure-XXXXXX";
+  char dir_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-terminal-reader-failure-XXXXXX";
   cai_terminal_tool_config config;
   cai_tool_registry *registry;
   cai_sink_callbacks callbacks;
@@ -36898,7 +37001,8 @@ static void test_terminal_reader_start_failure(test_state *state) {
 }
 
 static void test_terminal_external_child_reap(test_state *state) {
-  char dir_template[] = "/tmp/cai-terminal-external-reap-XXXXXX";
+  char dir_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-terminal-external-reap-XXXXXX";
   cai_terminal_tool_config config;
   cai_tool_registry *registry;
   cai_sink_callbacks callbacks;
@@ -36995,8 +37099,10 @@ static void test_terminal_external_child_reap(test_state *state) {
 
 static void test_terminal_closes_inherited_fds(test_state *state) {
 #if defined(__linux__)
-  char dir_template[] = "/tmp/cai-terminal-fd-isolation-XXXXXX";
-  char secret_template[] = "/tmp/cai-terminal-fd-secret-XXXXXX";
+  char dir_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-terminal-fd-isolation-XXXXXX";
+  char secret_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-terminal-fd-secret-XXXXXX";
   static const char secret[] = "model-must-not-read-this-host-secret";
   char request[512];
   cai_terminal_tool_config config;
@@ -37099,7 +37205,8 @@ static void test_terminal_closes_inherited_fds(test_state *state) {
 }
 
 static void test_terminal_concurrent_start(test_state *state) {
-  char dir_template[] = "/tmp/cai-terminal-race-XXXXXX";
+  char dir_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-terminal-race-XXXXXX";
   cai_terminal_tool_config config;
   cai_tool_registry *registry;
   cai_sink_callbacks callbacks;
@@ -37200,7 +37307,8 @@ static void test_terminal_concurrent_start(test_state *state) {
 }
 
 static void test_terminal_concurrent_operation(test_state *state) {
-  char dir_template[] = "/tmp/cai-terminal-operation-XXXXXX";
+  char dir_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-terminal-operation-XXXXXX";
   cai_terminal_tool_config config;
   cai_tool_registry *registry;
   cai_sink_callbacks callbacks;
@@ -37497,7 +37605,8 @@ static void test_todo_add_item_child(const char *store_path,
 }
 
 static void test_todo_file_store_initializes_under_lock(test_state *state) {
-  char dir_template[] = "/tmp/cai-todo-lock-test-XXXXXX";
+  char dir_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-todo-lock-test-XXXXXX";
   char store_path[PATH_MAX];
   char lock_path[PATH_MAX];
   char store_text[2048];
@@ -37561,7 +37670,7 @@ static void test_todo_file_store_initializes_under_lock(test_state *state) {
 }
 
 static void test_todo_tool(test_state *state) {
-  char dir_template[] = "/tmp/cai-todo-test-XXXXXX";
+  char dir_template[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-todo-test-XXXXXX";
   char store_path[PATH_MAX];
   char lock_path[PATH_MAX];
   cai_todo_tool_config config;
@@ -38518,7 +38627,8 @@ static void test_todo_tool(test_state *state) {
 }
 
 static void test_todo_callback_store(test_state *state) {
-  char dir_template[] = "/tmp/cai-todo-callback-test-XXXXXX";
+  char dir_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-todo-callback-test-XXXXXX";
   todo_callback_store store;
   cai_todo_store_callbacks store_callbacks;
   cai_todo_tool_config config;
@@ -38654,7 +38764,8 @@ static void test_todo_callback_store(test_state *state) {
 
 static void test_agent_multi_tool_auto_run(test_state *state) {
   static const char schema[] = "{\"type\":\"object\",\"properties\":{}}";
-  char spool_dir[] = "/tmp/cai-multi-tool-spool-XXXXXX";
+  char spool_dir[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-multi-tool-spool-XXXXXX";
   int pipe_fds[2];
   pid_t pid;
   int port;
@@ -38947,7 +39058,8 @@ static void test_agent_tool_error_output_continues(test_state *state) {
   ssize_t nread;
   int child_status;
   char base_url[128];
-  char dir_template[] = "/tmp/cai-tool-error-test-XXXXXX";
+  char dir_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-tool-error-test-XXXXXX";
   cai_client_config client_config;
   cai_agent_config agent_config;
   cai_run_options run_options;
@@ -43164,6 +43276,9 @@ static void test_agent_runtime_patch_events(test_state *state) {
             if (capture.chunks < 2U)
               test_fail(state, "runtime_patch_bounded_chunks",
                         "expected multiple chunks");
+            if (capture.chunks > 4U)
+              test_fail(state, "runtime_patch_coalesced_chunks",
+                        "small decoded writes flooded the event queue");
             created = fopen(file, "r");
             rows = 0U;
             if (created == NULL)
@@ -46760,7 +46875,8 @@ test_session_stream_auto_tool_error_output_continues(test_state *state) {
   ssize_t nread;
   int child_status;
   char base_url[128];
-  char dir_template[] = "/tmp/cai-stream-tool-error-test-XXXXXX";
+  char dir_template[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-stream-tool-error-test-XXXXXX";
   cai_client_config client_config;
   cai_agent_config agent_config;
   cai_run_options run_options;
@@ -46891,7 +47007,8 @@ static void test_session_stream_auto_source_tool_run(test_state *state) {
   ssize_t nread;
   int child_status;
   char base_url[128];
-  char source_path[] = "/tmp/cai-stream-source-tool-XXXXXX";
+  char source_path[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-stream-source-tool-XXXXXX";
   int source_fd;
   cai_client_config client_config;
   cai_agent_config agent_config;
@@ -48536,7 +48653,8 @@ static void test_session_resume_and_history_import(test_state *state) {
   cai_error error;
   char history_json[512];
   char state_json[1024];
-  char state_path[] = "/tmp/cai-session-state-test-XXXXXX";
+  char state_path[] =
+      CAI_TEST_BINARY_DIR "/test-tmp/cai-session-state-test-XXXXXX";
   int state_fd;
 
   if (pipe(pipe_fds) != 0) {

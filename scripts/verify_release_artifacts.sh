@@ -54,7 +54,7 @@ new_workspace() {
 trap cleanup_workspaces EXIT INT TERM
 
 host_home=${HOME:-}
-cpkt_cache_dir_name=c.pkt.systems
+cpkt_cache_dir_name=cpkt
 cpkt_toolchain_dir_name=toolchains
 if [[ -n "${CPKT_TOOLCHAIN_CACHE:-}" ]]; then
   toolchain_cache=$CPKT_TOOLCHAIN_CACHE
@@ -78,7 +78,7 @@ verify_no_toolchain_cache_path() {
       fail "$context contains a Bootlin toolchain cache path"
     fi
   fi
-  matches=$(grep -n -E '(^|/)c[.]pkt[.]systems/toolchains(/|$)' <<<"$text" || true)
+  matches=$(grep -n -E '(^|/)(cpkt|c[.]pkt[.]systems)/toolchains(/|$)' <<<"$text" || true)
   if [[ -n "$matches" ]]; then
     printf '%s\n' "$matches" >&2
     fail "$context contains a Bootlin toolchain cache path"

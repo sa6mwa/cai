@@ -12,7 +12,7 @@ test_root=$(mktemp -d "$build_dir/toolchain-cache-guard.XXXXXX")
 trap 'rm -rf "$test_root"' EXIT
 mkdir -p "$test_root/pkg"
 cache_root=/var/cache
-cpkt_cache_dir_name=c.pkt.systems
+cpkt_cache_dir_name=cpkt
 cpkt_toolchain_dir_name=toolchains
 printf 'cache=%s/%s/%s/roots/bootlin\n' \
   "$cache_root" "$cpkt_cache_dir_name" "$cpkt_toolchain_dir_name" \

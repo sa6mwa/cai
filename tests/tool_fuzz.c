@@ -81,7 +81,8 @@ static int fuzz_read_root(char *root, size_t root_size) {
 
   if (!initialized) {
     snprintf(template_path, sizeof(template_path),
-             "/tmp/cai-read-fuzz-%ld-XXXXXX", (long)getpid());
+             CAI_TEST_BINARY_DIR "/test-tmp/cai-read-fuzz-%ld-XXXXXX",
+             (long)getpid());
     if (mkdtemp(template_path) == NULL) {
       return 0;
     }

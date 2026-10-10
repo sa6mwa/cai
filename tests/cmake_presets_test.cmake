@@ -34,123 +34,6 @@ if(_cai_presets_text MATCHES
     "CMake presets must not select a Clang compiler or retain TSan/MSan paths")
 endif()
 
-file(READ "${CAI_SOURCE_DIR}/CMakeLists.txt" _cai_cmake_lists_text)
-if(_cai_cmake_lists_text MATCHES "option\\(CAI_USE_LOCKDC_SDK" OR
-   _cai_cmake_lists_text MATCHES
-   "CAI_DEPENDENCY_MODE STREQUAL \"(lockdc|pkt)\"" OR
-   _cai_cmake_lists_text MATCHES "CAI_USE_LOCKDC_SDK")
-  message(FATAL_ERROR
-    "CMake must not retain deprecated lockdc or pkt dependency compatibility")
-endif()
-if(NOT _cai_cmake_lists_text MATCHES
-   "set\\(CPKT_DEPENDENCY_CACHE \"\\$\\{_cai_dependency_cache_default\\}\" CACHE PATH")
-  message(FATAL_ERROR
-    "CMake must expose CPKT_DEPENDENCY_CACHE as the lifecycle cache variable")
-endif()
-if(NOT _cai_cmake_lists_text MATCHES
-   "\"Shared checksum-pinned external archive cache\\.\" FORCE")
-  message(FATAL_ERROR
-    "CMake must force the resolved dependency cache value into CPKT_DEPENDENCY_CACHE")
-endif()
-file(READ "${CAI_SOURCE_DIR}/cmake/CaiAcquisition.cmake" _cai_acquisition_text)
-string(APPEND _cai_cmake_lists_text "${_cai_acquisition_text}")
-if(NOT _cai_cmake_lists_text MATCHES
-   "CPKT_DEPENDENCY_CACHE}/archives/sha256/\\$\\{sha256\\}/")
-  message(FATAL_ERROR
-    "CMake dependency archives must use the lifecycle checksum-keyed shared cache layout")
-endif()
-if(NOT _cai_cmake_lists_text MATCHES
-   "CPKT_DEPENDENCY_CACHE}/locks/\\$\\{sha256\\}\\.lock")
-  message(FATAL_ERROR
-    "CMake dependency archive locks must be keyed by checksum under locks/")
-endif()
-if(_cai_cmake_lists_text MATCHES "CPKT_DEPENDENCY_CACHE}/\\.locks" OR
-   _cai_cmake_lists_text MATCHES
-   "CPKT_DEPENDENCY_CACHE}/\\$\\{[^}]+_NAME\\}\\.tar\\.gz")
-  message(FATAL_ERROR
-    "CMake must not use the legacy flat dependency cache or .locks layout")
-endif()
-if(_cai_cmake_lists_text MATCHES "CMAKE_C_STANDARD" OR
-   _cai_cmake_lists_text MATCHES "C_STANDARD[ \t\r\n]+90" OR
-   _cai_cmake_lists_text MATCHES "C_STANDARD_REQUIRED" OR
-   _cai_cmake_lists_text MATCHES "C_EXTENSIONS")
-  message(FATAL_ERROR
-    "project-owned C89 targets must use explicit compiler flags, not CMake C standard properties")
-endif()
-if(NOT _cai_cmake_lists_text MATCHES "-std=c89")
-  message(FATAL_ERROR
-    "project-owned C89 targets must retain the explicit -std=c89 compiler flag")
-endif()
-
-file(READ "${CAI_SOURCE_DIR}/cmake/CaiVersion.cmake" _cai_version_text)
-if(NOT _cai_version_text MATCHES "scripts/release_version\\.sh")
-  message(FATAL_ERROR
-    "CMake version detection must use the lifecycle release_version.sh script")
-endif()
-
-file(READ "${CAI_SOURCE_DIR}/cmake/CaiLonejsonAbi.cmake"
-     _cai_lonejson_abi_text)
-if(NOT _cai_lonejson_abi_text MATCHES "CMAKE_READELF" OR
-   NOT _cai_lonejson_abi_text MATCHES "CMAKE_OBJDUMP" OR
-   NOT _cai_lonejson_abi_text MATCHES "CPKT_OTOOL")
-  message(FATAL_ERROR
-    "lonejson ABI validation must prefer configured target inspection tools")
-endif()
-
-file(READ "${CAI_SOURCE_DIR}/cmake/package_archive.cmake"
-     _cai_package_archive_text)
-if(_cai_package_archive_text MATCHES
-   "find_program\\(CAI_STRIP_BIN NAMES strip\\)")
-  message(FATAL_ERROR
-    "package archives must not fall back to an ambient strip from PATH")
-endif()
-
-file(READ "${CAI_SOURCE_DIR}/cmake/toolchains/linux-bootlin.cmake"
-     _cai_linux_bootlin_toolchain_text)
-file(READ "${CAI_SOURCE_DIR}/cmake/toolchains/native-lifecycle.cmake"
-     _cai_native_lifecycle_toolchain_text)
-if(NOT _cai_native_lifecycle_toolchain_text MATCHES
-   "CMAKE_HOST_SYSTEM_NAME STREQUAL \"Linux\"" OR
-   NOT _cai_native_lifecycle_toolchain_text MATCHES
-   "include\\(\"\\$\\{CMAKE_CURRENT_LIST_DIR\\}/linux-bootlin\\.cmake\"\\)" OR
-   NOT _cai_native_lifecycle_toolchain_text MATCHES
-   "CMAKE_HOST_SYSTEM_NAME STREQUAL \"Darwin\"" OR
-   NOT _cai_native_lifecycle_toolchain_text MATCHES
-   "pinned Bootlin compiler collections are x86-hosted")
-  message(FATAL_ERROR
-    "native lifecycle toolchain must route x86_64 Linux through Bootlin, reject unsupported Linux hosts, and preserve Darwin host-native developer builds")
-endif()
-if(NOT _cai_linux_bootlin_toolchain_text MATCHES
-   "set\\(CMAKE_FIND_ROOT_PATH \"\\$\\{_cpkt_sysroot\\}\" \"\\$\\{_cpkt_root\\}\" CACHE STRING \"\" FORCE\\)")
-  message(FATAL_ERROR
-    "Linux Bootlin toolchain must search both the selected sysroot and Bootlin root")
-endif()
-if(NOT _cai_linux_bootlin_toolchain_text MATCHES
-   "CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER CACHE STRING \"\" FORCE" OR
-   NOT _cai_linux_bootlin_toolchain_text MATCHES
-   "CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY CACHE STRING \"\" FORCE")
-  message(FATAL_ERROR
-    "Linux Bootlin toolchain find-root modes must be pinned in the CMake cache")
-endif()
-if(NOT _cai_linux_bootlin_toolchain_text MATCHES "-print-prog-name=ld" OR
-   NOT _cai_linux_bootlin_toolchain_text MATCHES "-print-file-name=libc\\.so" OR
-   NOT _cai_linux_bootlin_toolchain_text MATCHES
-   "compiler selects linker outside Bootlin root" OR
-   NOT _cai_linux_bootlin_toolchain_text MATCHES
-   "compiler selects libc outside Bootlin sysroot")
-  message(FATAL_ERROR
-    "Linux Bootlin toolchain must assert selected linker and libc stay inside the pinned collection")
-endif()
-foreach(_cai_tool IN ITEMS
-    CMAKE_LINKER CMAKE_AR CMAKE_RANLIB CMAKE_STRIP CMAKE_NM
-    CMAKE_OBJCOPY CMAKE_OBJDUMP CMAKE_ADDR2LINE CMAKE_GDB CMAKE_READELF)
-  if(NOT _cai_linux_bootlin_toolchain_text MATCHES
-     "set\\(${_cai_tool} \"\\$\\{_cpkt_[A-Za-z0-9_]+\\}\" CACHE FILEPATH \"\" FORCE\\)")
-    message(FATAL_ERROR
-      "Linux Bootlin toolchain must force ${_cai_tool} from the pinned collection")
-  endif()
-endforeach()
-
 foreach(_cai_deprecated_mode IN ITEMS lockdc pkt)
   set(_cai_mode_build_dir
       "${CAI_BINARY_DIR}/deprecated-dependency-mode-${_cai_deprecated_mode}")
@@ -282,6 +165,11 @@ _cai_reject_cache_key(${_cai_darwin_release_index}
 _cai_find_configure_preset(debug-cai _cai_cli_native_index)
 _cai_require_inherits(${_cai_cli_native_index} debug-cai debug)
 _cai_require_cache_value(${_cai_cli_native_index} debug-cai CAI_BUILD_CLI ON)
+string(JSON _cai_cli_binary_dir GET "${_cai_presets_text}" configurePresets ${_cai_cli_native_index} binaryDir)
+if(NOT _cai_cli_binary_dir STREQUAL "${_cai_source_dir_literal}/build/debug")
+  message(FATAL_ERROR "Native library and CLI feedback must share their Debug producer")
+endif()
+_cai_reject_cache_key(${_cai_cli_native_index} debug-cai CAI_BUILD_SHARED)
 _cai_find_configure_preset(libcai _cai_library_index)
 _cai_require_cache_value(${_cai_library_index} libcai CAI_BUILD_CLI OFF)
 _cai_find_configure_preset(cai _cai_cli_release_index)

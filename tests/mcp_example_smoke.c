@@ -261,7 +261,7 @@ static int read_fd_text(int fd, char *buffer, size_t capacity) {
 
 int main(int argc, char **argv) {
   char response[RESPONSE_LIMIT];
-  char dir_template[] = "/tmp/cai-mcp-example-XXXXXX";
+  char dir_template[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-mcp-example-XXXXXX";
   char todo_store[PATH_MAX];
   char todo_lock[PATH_MAX];
   char stderr_text[32768];

@@ -486,7 +486,8 @@ the shared dependency cache (`CPKT_DEPENDENCY_CACHE`, or
 `${XDG_CACHE_HOME:-$HOME/.cache}/cpkt/deps`). Configure only prepares its native
 build graph; normal builds invoke the shared incremental producer. ASan,
 coverage and fuzz use separate outputs with the selected instrumentation.
-Nonstandard compiler/flag configurations should use their own `CAI_DEPS_DIR`;
+Nonstandard compiler/flag configurations should use their own `CAI_DEPS_DIR`
+under this checkout's `build/` or `.cache/`;
 one operation owns each producer root and inputs stay stable during checks.
 It stays below the C89 public API. SDK packages
 include its private static link dependency and license; the CAI binary links
@@ -711,11 +712,16 @@ fail with an explicit preparation command. Prepare fuzz tooling with
   `CAI_VERSION_OVERRIDE` candidate and never cleans or changes release refs.
 - `make release` and `make release-matrix` are the same final local delivery gate.
   Before cleaning or provisioning, HEAD must have one exact lightweight release
-  tag, the worktree must be clean, and no version override may be set. The gate
-  cleans owned generated state once, preserving shared verified caches.
+  tag, the final amended commit's signature must verify, the worktree must be
+  clean, and no version override may be set. The gate removes the entire
+  checkout-local `build/`, `dist/`, and `.cache/`, including hidden entries and
+  local tools. Only global verified caches and installed prerequisites survive.
+  Other checkouts' generated state cannot be borrowed to bypass cleanup.
 - The shipped source archive is reconstructed into the native Release lane and
   runs its complete non-live CTest inventory. That exact output supplies the GNU
   SDK package; the main checkout does not build or test a second equivalent lane.
+  Reconstruction uses its own extracted helpers, build directory and dependency
+  roots. Only checksum-verified global archives and toolchains are shared.
   Other target SDKs receive build/link and extracted-package proof. The shipped
   x86_64 musl CLI receives its actual runtime checks. Cross execution is otherwise
   deferred because no runner is configured.
@@ -723,6 +729,11 @@ fail with an explicit preparation command. Prepare fuzz tooling with
   e2e retain their distinct scopes. Source-only host fixtures run once; hardening
   and facade selections do not replay them. Every required selection rejects an
   empty inventory and stops at its first failure. All lifecycle commands serialize.
+  Native debug library and CLI presets share `build/debug`, so enabling the CLI
+  reuses the library producer. Linux configuration never falls back to host GCC.
+  Linux markerless-workspace tests use `bwrap` to hide the surrounding Git
+  repository while keeping their scratch files under the owned build directory.
+  Native Darwin uses `sandbox-exec` to deny inspection of the host Git marker.
 - `make package` is warm SDK packaging; its binary-only manifest is under `build/`.
   `make package-verify` verifies an existing complete final artifact set without
   rebuilding producers. The final CHECKSUMS file explicitly selects all shipped

@@ -17,14 +17,15 @@ if [[ -n "$require" ]]; then
 fi
 if [[ -z "$version" && "$owned" == true ]]; then
   head=$(git -C "$root" rev-parse HEAD)
-  tag_lines=$(git -C "$root" for-each-ref --format='%(objecttype) %(objectname) %(*objectname) %(refname)' refs/tags | sed 's/  / - /') || fail 'cannot read release tags'
+  tag_lines=$(git -C "$root" for-each-ref --format='%(objecttype) %(objectname) %(*objectname) %(refname) %(symref)' refs/tags | sed 's/  / - /') || fail 'cannot read release tags'
   tags=()
-  while read -r type object peeled ref; do
+  while read -r type object peeled ref symbolic; do
     tag=${ref#refs/tags/}
     [[ "$tag" =~ ^v[0-9] ]] || continue
     if [[ "$object" == "$head" || "$peeled" == "$head" ]]; then
       [[ "$tag" =~ ^v${semver}$ ]] || fail "invalid exact release tag: $tag"
       [[ "$type" == commit ]] || fail "exact release tag $tag is not lightweight"
+      [[ -z "$symbolic" ]] || fail "exact release tag $tag is symbolic"
       tags+=("$tag")
     fi
   done <<<"$tag_lines"
@@ -34,6 +35,10 @@ elif [[ -z "$version" && -f "$root/VERSION" && -f "$root/RELEASE_MANIFEST" ]]; t
   version=$(sed 's/^[[:space:]]*//;s/[[:space:]]*$//' "$root/VERSION")
 fi
 [[ -z "$require" || -n "$version" ]] || fail 'HEAD must have one exact lightweight vX.Y.Z release tag'
+if [[ -n "$require" ]]; then
+  git -C "$root" verify-commit HEAD >/dev/null 2>&1 ||
+    fail 'final release requires the final amended commit to have a verified signature'
+fi
 version=${version:-0.0.0}
 [[ "$version" =~ ^${semver}$ ]] || fail "invalid version: $version"
 printf '%s\n' "$version"

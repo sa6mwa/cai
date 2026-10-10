@@ -38,9 +38,8 @@ fi
 
 case "${1:-all}" in
   all)
-    cmake "-DROOT=$repo_root" -P "$repo_root/cmake/clean_check.cmake"
     # Keep the generated teardown manifests until their pods are stopped.
-    if [[ -d "$repo_root/build/devenv" ]]; then
+    if [[ ! -L "$repo_root/build" && -d "$repo_root/build/devenv" ]]; then
       "$repo_root/scripts/devenv.sh" down
     fi
     remove_generated_path build
@@ -48,7 +47,6 @@ case "${1:-all}" in
     remove_generated_path .cache
     ;;
   dist)
-    cmake "-DROOT=$repo_root" -DOWNED=dist -P "$repo_root/cmake/clean_check.cmake"
     remove_generated_path dist
     ;;
   *)

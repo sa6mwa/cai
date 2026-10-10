@@ -81,7 +81,8 @@ static int cai_patch_fuzz_new_root(char *root, size_t root_size) {
   char omega[PATH_MAX];
   int written;
 
-  written = snprintf(root, root_size, "/tmp/cai-patch-fuzz-XXXXXX");
+  written = snprintf(root, root_size,
+                     CAI_TEST_BINARY_DIR "/test-tmp/cai-patch-fuzz-XXXXXX");
   if (written < 0 || (size_t)written >= root_size || mkdtemp(root) == NULL) {
     return 0;
   }

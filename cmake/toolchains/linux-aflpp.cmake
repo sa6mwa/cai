@@ -3,7 +3,7 @@ set(CPKT_TARGET_ID "x86_64-linux-gnu" CACHE STRING
 
 include("${CMAKE_CURRENT_LIST_DIR}/linux-bootlin.cmake")
 
-set(_cpkt_aflpp_script "${CMAKE_CURRENT_LIST_DIR}/../../scripts/cpkt-aflpp.sh")
+set(_cpkt_aflpp_script "${CPKT_LIFECYCLE_SCRIPTS_DIR}/cpkt-aflpp.sh")
 if(NOT EXISTS "${_cpkt_aflpp_script}")
   message(FATAL_ERROR "missing lifecycle AFL++ resolver: ${_cpkt_aflpp_script}")
 endif()

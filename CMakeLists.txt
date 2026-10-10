@@ -5,6 +5,7 @@ include(CaiVersion)
 include(CaiLonejsonAbi)
 include(cai-export-policy)
 include(cai-rpath)
+include(CaiWorkspace)
 
 cai_detect_version(CAI_RESOLVED_VERSION "${CMAKE_CURRENT_SOURCE_DIR}")
 string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" CAI_CMAKE_PROJECT_VERSION
@@ -15,6 +16,15 @@ if(CAI_CMAKE_PROJECT_VERSION STREQUAL "")
     "${CAI_RESOLVED_VERSION}")
 endif()
 set(CAI_PACKAGE_VERSION "${CAI_RESOLVED_VERSION}")
+set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING "Dependency mode: cpkt, host, or auto.")
+set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
+if(NOT CAI_DEPENDENCY_MODE MATCHES "^(cpkt|host|auto)$")
+  message(FATAL_ERROR "CAI_DEPENDENCY_MODE must be one of: cpkt, host, auto.")
+endif()
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux" AND NOT CMAKE_TOOLCHAIN_FILE)
+  set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchains/native-lifecycle.cmake"
+      CACHE FILEPATH "Pinned native lifecycle compiler collection")
+endif()
 project(cai VERSION ${CAI_CMAKE_PROJECT_VERSION} LANGUAGES C)
 
 include(CMakePackageConfigHelpers)
@@ -43,26 +53,6 @@ option(CAI_INSTALL "Enable install rules." ON)
 set(CAI_VERSION_OVERRIDE "" CACHE STRING "Override detected cai package version.")
 set(CAI_DIST_DIR "${CMAKE_BINARY_DIR}/dist" CACHE PATH "Distribution output directory.")
 set(CAI_TARGET_ID "" CACHE STRING "Release archive target id.")
-set(CAI_DEPS_DIR "${CMAKE_SOURCE_DIR}/.cache/deps"
-    CACHE PATH "Repo-local extracted third-party dependency roots.")
-if(DEFINED CPKT_DEPENDENCY_CACHE AND NOT "${CPKT_DEPENDENCY_CACHE}" STREQUAL "")
-  set(_cai_dependency_cache_default "${CPKT_DEPENDENCY_CACHE}")
-elseif(DEFINED ENV{CPKT_DEPENDENCY_CACHE} AND NOT "$ENV{CPKT_DEPENDENCY_CACHE}" STREQUAL "")
-  set(_cai_dependency_cache_default "$ENV{CPKT_DEPENDENCY_CACHE}")
-elseif(DEFINED ENV{XDG_CACHE_HOME} AND NOT "$ENV{XDG_CACHE_HOME}" STREQUAL "")
-  set(_cai_dependency_cache_default "$ENV{XDG_CACHE_HOME}/cpkt/deps")
-elseif(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
-  set(_cai_dependency_cache_default "$ENV{HOME}/.cache/cpkt/deps")
-else()
-  message(FATAL_ERROR
-    "HOME, XDG_CACHE_HOME, or CPKT_DEPENDENCY_CACHE is required for the "
-    "shared c.pkt.systems dependency archive cache")
-endif()
-set(CPKT_DEPENDENCY_CACHE "${_cai_dependency_cache_default}" CACHE PATH
-    "Shared checksum-pinned external archive cache." FORCE)
-set(CAI_DEPENDENCY_MODE "cpkt" CACHE STRING
-    "Dependency mode: cpkt, host, or auto.")
-set_property(CACHE CAI_DEPENDENCY_MODE PROPERTY STRINGS cpkt host auto)
 set(CAI_C_PKT_SYSTEMS_VERSION "0.11.0" CACHE STRING
     "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
 # ABI 4 is the latest released ABI. Values 3 and 5 through 7 were only used by
@@ -94,12 +84,6 @@ if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
   message(FATAL_ERROR "Enable at least one of CAI_BUILD_STATIC or CAI_BUILD_SHARED.")
 endif()
 
-if(NOT CAI_DEPENDENCY_MODE STREQUAL "cpkt" AND
-   NOT CAI_DEPENDENCY_MODE STREQUAL "host" AND
-   NOT CAI_DEPENDENCY_MODE STREQUAL "auto")
-  message(FATAL_ERROR
-    "CAI_DEPENDENCY_MODE must be one of: cpkt, host, auto.")
-endif()
 
 if(CAI_TARGET_ID STREQUAL "")
   string(TOLOWER "${CMAKE_SYSTEM_NAME}" _cai_system_name_lower)
@@ -1031,6 +1015,8 @@ if(CAI_BUILD_FUZZERS)
   endif()
   function(cai_add_fuzzer target source corpus_relpath)
     add_executable(${target} ${source} tests/fuzz_driver.c)
+    target_compile_definitions(${target} PRIVATE CAI_TEST_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}")
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-tmp")
     target_include_directories(${target} PRIVATE
       "${CAI_PUBLIC_INCLUDE_DIR}"
       "${CAI_GENERATED_INCLUDE_DIR}"

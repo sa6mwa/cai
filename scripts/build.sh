@@ -2,6 +2,10 @@
 # CMake presets are authoritative. No preset interpreter or implicit cleaning.
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+if [[ -L "$root/build" || -L "$root/.cache" ]]; then
+  printf 'build: redirected build/.cache state is forbidden\n' >&2
+  exit 2
+fi
 cd "$root"
 mode=${1:-debug}
 shift "$(( $# > 0 ? 1 : 0 ))"
@@ -20,7 +24,7 @@ case "$mode" in
   fuzz) "$root/scripts/cpkt-aflpp.sh" ensure ;;
   cai) "$root/scripts/cpkt-toolchains.sh" ensure x86_64-linux-musl >/dev/null ;;
   *-linux-*-release) "$root/scripts/cpkt-toolchains.sh" ensure "${mode%-release}" >/dev/null ;;
-  arm64-apple-darwin-release) ;;
+  arm64-apple-darwin-release) "$root/scripts/cpkt-toolchains.sh" ensure arm64-apple-darwin >/dev/null ;;
   asan|release) "$root/scripts/cpkt-toolchains.sh" ensure x86_64-linux-gnu >/dev/null ;;
   *) [[ "$(uname -s)" != Linux ]] || "$root/scripts/cpkt-toolchains.sh" ensure x86_64-linux-gnu >/dev/null ;;
 esac

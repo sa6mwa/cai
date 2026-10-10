@@ -2,40 +2,47 @@ set(CMAKE_SYSTEM_NAME Darwin)
 set(CMAKE_SYSTEM_PROCESSOR arm64)
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
-if(DEFINED ENV{OSXCROSS_ROOT} AND NOT "$ENV{OSXCROSS_ROOT}" STREQUAL "")
-  set(CAI_OSXCROSS_ROOT "$ENV{OSXCROSS_ROOT}")
-elseif(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
-  set(CAI_OSXCROSS_ROOT "$ENV{HOME}/.local/cross/osxcross")
-else()
-  message(FATAL_ERROR "OSXCROSS_ROOT is not set and HOME is unavailable")
+list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES CPKT_LIFECYCLE_SCRIPTS_DIR)
+if(NOT DEFINED CPKT_LIFECYCLE_SCRIPTS_DIR)
+  set(CPKT_LIFECYCLE_SCRIPTS_DIR "${CMAKE_CURRENT_LIST_DIR}/../../scripts"
+      CACHE PATH "Declared lifecycle helper directory")
 endif()
-
-if(DEFINED ENV{CPKT_OSXCROSS_HOST} AND NOT "$ENV{CPKT_OSXCROSS_HOST}" STREQUAL "")
-  set(CAI_OSXCROSS_HOST "$ENV{CPKT_OSXCROSS_HOST}" CACHE STRING
-      "osxcross target host triple")
-else()
-  set(CAI_OSXCROSS_HOST "arm64-apple-darwin25" CACHE STRING
-      "osxcross target host triple")
-endif()
-if(NOT CAI_OSXCROSS_HOST MATCHES "^arm64-apple-darwin")
+if(DEFINED ENV{CPKT_OSXCROSS_HOST} AND NOT "$ENV{CPKT_OSXCROSS_HOST}" STREQUAL "" AND
+    NOT "$ENV{CPKT_OSXCROSS_HOST}" MATCHES "^arm64-apple-darwin")
   message(FATAL_ERROR
-    "arm64-apple-darwin-release requires an arm64 osxcross host triple; "
-    "got '${CAI_OSXCROSS_HOST}'. Use an arm64-apple-darwin* toolchain or a "
-    "matching target preset.")
+    "arm64-apple-darwin-release requires an arm64 osxcross host triple")
 endif()
+execute_process(COMMAND "${CPKT_LIFECYCLE_SCRIPTS_DIR}/cpkt-toolchains.sh" discover arm64-apple-darwin
+  RESULT_VARIABLE _cai_discovery_result OUTPUT_VARIABLE _cai_description ERROR_VARIABLE _cai_discovery_error)
+if(NOT _cai_discovery_result EQUAL 0 OR NOT _cai_description MATCHES "(^|[\r\n])status=ready([\r\n]|$)")
+  message(FATAL_ERROR "Missing complete osxcross and pinned host MIG collection; prepare with ${CPKT_LIFECYCLE_SCRIPTS_DIR}/cpkt-toolchains.sh ensure arm64-apple-darwin: ${_cai_discovery_error}")
+endif()
+foreach(key root prefix cc cxx ld ar ranlib strip nm otool mig migcom mig_root)
+  string(REGEX MATCH "(^|[\r\n])${key}=([^\r\n]+)" _cai_match "${_cai_description}")
+  if(NOT _cai_match)
+    message(FATAL_ERROR "Darwin resolver did not report ${key}")
+  endif()
+  set(_cai_${key} "${CMAKE_MATCH_2}")
+endforeach()
+set(CAI_OSXCROSS_ROOT "${_cai_root}")
+set(CAI_OSXCROSS_HOST "${_cai_prefix}" CACHE STRING "osxcross target host triple" FORCE)
 set(CAI_MACOS_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum macOS deployment target")
 set(CMAKE_OSX_DEPLOYMENT_TARGET "${CAI_MACOS_DEPLOYMENT_TARGET}" CACHE STRING "" FORCE)
 
 set(CAI_OSXCROSS_BIN_DIR "${CAI_OSXCROSS_ROOT}/bin")
 set(ENV{PATH} "${CAI_OSXCROSS_BIN_DIR}:$ENV{PATH}")
-set(CMAKE_C_COMPILER "${CAI_OSXCROSS_BIN_DIR}/${CAI_OSXCROSS_HOST}-clang" CACHE FILEPATH "")
-set(CMAKE_CXX_COMPILER "${CAI_OSXCROSS_BIN_DIR}/${CAI_OSXCROSS_HOST}-clang++" CACHE FILEPATH "")
-set(CMAKE_AR "${CAI_OSXCROSS_BIN_DIR}/${CAI_OSXCROSS_HOST}-ar" CACHE FILEPATH "")
-set(CMAKE_RANLIB "${CAI_OSXCROSS_BIN_DIR}/${CAI_OSXCROSS_HOST}-ranlib" CACHE FILEPATH "")
-set(CMAKE_LINKER "${CAI_OSXCROSS_BIN_DIR}/${CAI_OSXCROSS_HOST}-ld" CACHE FILEPATH "")
-set(CMAKE_STRIP "${CAI_OSXCROSS_BIN_DIR}/${CAI_OSXCROSS_HOST}-strip" CACHE FILEPATH "")
+set(ENV{PATH} "${_cai_mig_root}/bin:$ENV{PATH}")
+set(ENV{MIG} "${_cai_mig}")
+set(ENV{MIGCOM} "${_cai_migcom}")
+set(CMAKE_C_COMPILER "${_cai_cc}" CACHE FILEPATH "" FORCE)
+set(CMAKE_CXX_COMPILER "${_cai_cxx}" CACHE FILEPATH "" FORCE)
+set(CMAKE_AR "${_cai_ar}" CACHE FILEPATH "" FORCE)
+set(CMAKE_RANLIB "${_cai_ranlib}" CACHE FILEPATH "" FORCE)
+set(CMAKE_LINKER "${_cai_ld}" CACHE FILEPATH "" FORCE)
+set(CMAKE_STRIP "${_cai_strip}" CACHE FILEPATH "" FORCE)
+set(CMAKE_NM "${_cai_nm}" CACHE FILEPATH "" FORCE)
 set(CMAKE_INSTALL_NAME_TOOL "${CAI_OSXCROSS_BIN_DIR}/${CAI_OSXCROSS_HOST}-install_name_tool" CACHE FILEPATH "")
-set(CPKT_OTOOL "${CAI_OSXCROSS_BIN_DIR}/${CAI_OSXCROSS_HOST}-otool" CACHE FILEPATH "")
+set(CPKT_OTOOL "${_cai_otool}" CACHE FILEPATH "" FORCE)
 
 foreach(_cai_required_tool
         CMAKE_C_COMPILER

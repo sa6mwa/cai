@@ -12,7 +12,10 @@ phase=identity
 trap 'printf "release phase %s failed at line %s: %s (status %s)\n" "$phase" "$LINENO" "$BASH_COMMAND" "$?" >&2' ERR
 case "$action" in
   identity) exec "$root/scripts/release_version.sh" "$root" --require-release ;;
-  final) version=$("$root/scripts/release_version.sh" "$root" --require-release) ;;
+  final)
+    [[ -z ${RELEASE_VERSION:-} ]] || { printf 'Final release forbids RELEASE_VERSION overrides\n' >&2; exit 2; }
+    version=$("$root/scripts/release_version.sh" "$root" --require-release)
+    ;;
   prepare|build-matrix|configure-matrix) ;;
   *) printf 'usage: %s {identity|configure-matrix|build-matrix|prepare|final}\n' "$0" >&2; exit 2 ;;
 esac
@@ -49,7 +52,7 @@ case "$action" in
     cmake "-DCAI_ROOT=$root" "-DCAI_DIST_DIR=$root/dist" "-DCAI_VERSION=$version" -P cmake/package_source.cmake
     phase=source-release-lane
     "$root/scripts/test_release_from_source.sh" "$root" "$root/dist/cai-$version.tar.gz"
-    native="$root/build/release-source-smoke/build"
+    native="$root/build/source-smoke/src/build"
     source_lane=1
     # Different instrumentation and facade configurations have separate proof.
     phase=hardening

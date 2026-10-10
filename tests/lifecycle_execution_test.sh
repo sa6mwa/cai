@@ -98,8 +98,8 @@ cat >"$scratch/scripts/test_release_from_source.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 "$(dirname "$0")/../bin/record" test_release_from_source.sh "$@"
-mkdir -p "$1/build/release-source-smoke/build"
-printf 'CMAKE_STRIP:FILEPATH=/target/strip\n' >"$1/build/release-source-smoke/build/CMakeCache.txt"
+mkdir -p "$1/build/source-smoke/src/build"
+printf 'CMAKE_STRIP:FILEPATH=/target/strip\n' >"$1/build/source-smoke/src/build/CMakeCache.txt"
 SH
 chmod +x "$scratch/scripts/test_release_from_source.sh"
 : >"$CAI_LIFECYCLE_LOG"
@@ -109,7 +109,7 @@ bash "$scratch/scripts/release.sh" final >"$scratch/out" 2>"$scratch/err"
 [[ $(grep -c '^test_release_from_source.sh' "$CAI_LIFECYCLE_LOG") == 1 ]]
 [[ $(grep -c '^package-verify.sh' "$CAI_LIFECYCLE_LOG") == 1 ]]
 ! grep -q -- $'--preset\tx86_64-linux-gnu-release' "$CAI_LIFECYCLE_LOG"
-grep -q 'release-source-smoke/build' "$CAI_LIFECYCLE_LOG"
+grep -q 'source-smoke/src/build' "$CAI_LIFECYCLE_LOG"
 # Preparation runs the opt-in live gate exactly once; offline preparation omits it.
 mkdir -p "$scratch/build/x86_64-linux-gnu-release"
 printf 'CMAKE_STRIP:FILEPATH=/target/strip\n' >"$scratch/build/x86_64-linux-gnu-release/CMakeCache.txt"
@@ -195,6 +195,15 @@ done
 : >"$CAI_LIFECYCLE_PREP_LOG"
 CAI_LIFECYCLE_SYSTEM=Darwin bash "$scratch/scripts/build.sh" configure-debug
 [[ ! -s "$CAI_LIFECYCLE_PREP_LOG" ]]
+# Redirection is rejected before tools/configure can write into another owner.
+mkdir -p "$scratch/foreign"
+mv "$scratch/build" "$scratch/build.saved"
+ln -s "$scratch/foreign" "$scratch/build"
+: >"$CAI_LIFECYCLE_LOG"; : >"$CAI_LIFECYCLE_PREP_LOG"
+if bash "$scratch/scripts/build.sh" debug >"$scratch/out" 2>"$scratch/err"; then exit 1; else [[ $? == 2 ]]; fi
+[[ ! -s "$CAI_LIFECYCLE_LOG" && ! -s "$CAI_LIFECYCLE_PREP_LOG" ]]
+[[ -z $(find "$scratch/foreign" -mindepth 1 -print -quit) ]]
+rm "$scratch/build"; mv "$scratch/build.saved" "$scratch/build"
 : >"$CAI_LIFECYCLE_LOG"
 run_make package-checksums
 grep -q -- '-DCAI_TARGETS=x86_64-linux-gnu' "$CAI_LIFECYCLE_LOG"

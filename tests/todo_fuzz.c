@@ -25,7 +25,8 @@ static int cai_fuzz_todo_root(char *root, size_t root_size) {
 
   if (!initialized) {
     snprintf(template_path, sizeof(template_path),
-             "/tmp/cai-todo-fuzz-%ld-XXXXXX", (long)getpid());
+             CAI_TEST_BINARY_DIR "/test-tmp/cai-todo-fuzz-%ld-XXXXXX",
+             (long)getpid());
     if (mkdtemp(template_path) == NULL) {
       return 0;
     }

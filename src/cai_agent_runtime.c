@@ -4162,28 +4162,51 @@ typedef struct cai_runtime_patch_stream {
   cai_agent_runtime *runtime;
   const cai_tool_event *event;
   int type;
+  char bytes[4096];
+  size_t length;
 } cai_runtime_patch_stream;
+
+static int cai_runtime_patch_flush(cai_runtime_patch_stream *stream,
+                                   cai_error *error) {
+  int rc;
+  pthread_mutex_lock(&stream->runtime->lock);
+  rc = cai_runtime_enqueue_tool_locked(
+      stream->runtime, stream->type,
+      stream->length != 0U ? stream->bytes : NULL, stream->length,
+      stream->event->name, stream->event->call_id, CAI_AGENT_TOOL_ACTION_PATCH,
+      NULL, 0U, stream->runtime->state, error);
+  pthread_mutex_unlock(&stream->runtime->lock);
+  if (rc == CAI_OK)
+    stream->length = 0U;
+  return rc;
+}
 
 static int cai_runtime_patch_write(void *context, const void *bytes,
                                    size_t count, cai_error *error) {
   cai_runtime_patch_stream *stream = (cai_runtime_patch_stream *)context;
   size_t length;
   int rc = CAI_OK;
-  do {
-    length = count > 4096U ? 4096U : count;
-    pthread_mutex_lock(&stream->runtime->lock);
-    rc = cai_runtime_enqueue_tool_locked(
-        stream->runtime, stream->type, (const char *)bytes, length,
-        stream->event->name, stream->event->call_id,
-        CAI_AGENT_TOOL_ACTION_PATCH, NULL, 0U, stream->runtime->state, error);
-    pthread_mutex_unlock(&stream->runtime->lock);
-    if (rc != CAI_OK)
-      return rc;
-    if (length == 0U)
-      break;
+  /* Decoding JSON escapes can produce single-byte writes. Batch only one
+   * bounded chunk, flushing before the existing end-of-stream sentinel. */
+  if (count == 0U) {
+    if (stream->length != 0U)
+      rc = cai_runtime_patch_flush(stream, error);
+    return rc == CAI_OK ? cai_runtime_patch_flush(stream, error) : rc;
+  }
+  while (count != 0U) {
+    length = sizeof(stream->bytes) - stream->length;
+    if (length > count)
+      length = count;
+    memcpy(stream->bytes + stream->length, bytes, length);
+    stream->length += length;
     bytes = (const char *)bytes + length;
     count -= length;
-  } while (count != 0U);
+    if (stream->length == sizeof(stream->bytes)) {
+      rc = cai_runtime_patch_flush(stream, error);
+      if (rc != CAI_OK)
+        return rc;
+    }
+  }
   return rc;
 }
 /* Both providers hand native custom tools decoded raw input here. The Chat
@@ -4197,6 +4220,7 @@ static int cai_runtime_emit_patch(cai_agent_runtime *runtime,
   int rc;
   if (runtime->event_callback == NULL)
     return CAI_OK;
+  memset(&stream, 0, sizeof(stream));
   stream.runtime = runtime;
   stream.event = event;
   stream.type = CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS;

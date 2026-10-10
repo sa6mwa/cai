@@ -56,21 +56,23 @@
       "inherits": "native-lifecycle",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
+        "CAI_BUILD_CLI": "OFF",
         "CAI_ENABLE_VALGRIND_TESTS": "ON"
       }
     },
     {
       "name": "debug-cai",
       "inherits": "debug",
+      "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
         "CAI_BUILD_CLI": "ON",
-        "CAI_BUILD_SHARED": "OFF",
         "CAI_BUILD_EXAMPLES": "OFF"
       }
     },
     {
       "name": "libcai",
       "inherits": "debug",
+      "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
         "CAI_BUILD_CLI": "OFF"
       }
