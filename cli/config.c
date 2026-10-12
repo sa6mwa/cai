@@ -25,24 +25,35 @@ typedef struct cli_field {
   {s, k, offsetof(cai_cli_options, m), CAI_CONFIG_BOOL, 0U, NULL, d}
 static const cli_field fields[] = {
     S("paths", "directory", directory, CAI_CONFIG_PATH,
-      "Default workspace; explicit -C wins."),
+      "Empty uses the current working directory on each invocation; explicit "
+      "-C wins."),
     S("paths", "auth_json", auth_json, CAI_CONFIG_PATH,
-      "Optional auth file; automatic uses Codex first, then encrypted cai "
-      "auth."),
+      "Empty checks ~/.codex/auth.json first, then encrypted cai auth. "
+      "An explicit file must exist and replaces that discovery."),
     S("paths", "agents_md", agents_md, CAI_CONFIG_PATH,
-      "Global AGENTS.md override."),
+      "Global AGENTS.md; empty uses config_dir/AGENTS.md, loaded if it "
+      "exists."),
     S("paths", "config_dir", config_dir, CAI_CONFIG_PATH,
-      "Global agent configuration/instructions root."),
+      "Global instructions root; empty uses "
+      "${XDG_CONFIG_HOME:-$HOME/.config}/cai. "
+      "Path defaults shown here are resolved at generation; empty keeps "
+      "automatic lookup."),
     S("paths", "skills_dir", skills_dir, CAI_CONFIG_PATH,
-      "Global skills directory; empty is automatic."),
+      "Global skills directory; empty uses config_dir/skills, loaded if it "
+      "exists."),
     S("paths", "model_metadata", model_metadata, CAI_CONFIG_PATH,
-      "Provider fallback catalog JSON file."),
+      "Empty optionally loads config_dir/models.json; built-in/provider "
+      "metadata "
+      "still applies. An explicit file must exist."),
     S("paths", "export_dir", export_dir, CAI_CONFIG_PATH,
-      "Export root; automatic uses XDG_DATA_HOME/cai/exports."),
+      "Export root; empty uses "
+      "${XDG_DATA_HOME:-$HOME/.local/share}/cai/exports."),
     S("paths", "lockd_client_pem", lockd_client_pem, CAI_CONFIG_PATH,
-      "Remote lockd mTLS client PEM."),
+      "Remote lockd mTLS client PEM; empty supplies no client certificate."),
     S("storage", "lockd", lockd, 0U,
-      "Storage endpoint; automatic uses state/cai/pouch."),
+      "Empty opens a pouch under "
+      "${XDG_STATE_HOME:-$HOME/.local/state}/cai/pouch; "
+      "explicit values are lockd endpoint URLs."),
     S("chrome", "socket", chrome_socket, CAI_CONFIG_PATH,
       "Chrome host socket; empty discovers hosts."),
     B("chrome", "enabled", chrome, "Enable the Chrome tool."),
@@ -94,6 +105,55 @@ static int absolute_path(char *out, size_t size, const char *path,
   return n < 0 || (size_t)n >= size
              ? fail(error, path, "configuration filename too long")
              : 1;
+}
+static int template_paths(cai_config *cfg, const char *config_root,
+                          cai_error *error) {
+  static const char *const keys[] = {"config_dir", "agents_md", "skills_dir"};
+  static const char *const suffixes[] = {"", "/AGENTS.md", "/skills"};
+  char root[PATH_MAX], path[PATH_MAX];
+  const char *base;
+  size_t i;
+  int n, rc;
+  if (config_root[0] != '\0')
+    n = snprintf(root, sizeof(root), "%s", config_root);
+  else {
+    base = getenv("XDG_CONFIG_HOME");
+    if (base != NULL && base[0] == '/')
+      n = snprintf(root, sizeof(root), "%s/cai", base);
+    else {
+      base = getenv("HOME");
+      n = base != NULL && base[0] == '/'
+              ? snprintf(root, sizeof(root), "%s/.config/cai", base)
+              : 0;
+    }
+  }
+  if (n < 0 || (size_t)n >= sizeof(root))
+    return fail(error, NULL, "default configuration path too long");
+  if (n > 0) {
+    for (i = 0U; i < sizeof(keys) / sizeof(keys[0]); i++) {
+      n = snprintf(path, sizeof(path), "%s%s", root, suffixes[i]);
+      if (n < 0 || (size_t)n >= sizeof(path))
+        return fail(error, NULL, "default configuration path too long");
+      rc = cai_config_set_default(cfg, "paths", keys[i], path, error);
+      if (rc != CAI_OK)
+        return -1;
+    }
+  }
+  base = getenv("XDG_DATA_HOME");
+  if (base != NULL && base[0] == '/')
+    n = snprintf(path, sizeof(path), "%s/cai/exports", base);
+  else {
+    base = getenv("HOME");
+    n = base != NULL && base[0] == '/'
+            ? snprintf(path, sizeof(path), "%s/.local/share/cai/exports", base)
+            : 0;
+  }
+  if (n < 0 || (size_t)n >= sizeof(path))
+    return fail(error, NULL, "default export path too long");
+  if (n > 0 &&
+      cai_config_set_default(cfg, "paths", "export_dir", path, error) != CAI_OK)
+    return -1;
+  return 1;
 }
 static int open_schema(cai_config **out, cai_error *error) {
   cai_config_field extension[sizeof(fields) / sizeof(fields[0])];
@@ -165,6 +225,8 @@ static int open_schema(cai_config **out, cai_error *error) {
     rc = cai_config_set_default(*out, "agent", "image_generation",
                                 defaults.image_generation ? "true" : "false",
                                 error);
+  if (rc == CAI_OK)
+    rc = cai_config_set_default(*out, "ui", "tool_output", "compact", error);
   return rc == CAI_OK ? 1 : -1;
 }
 static void optional_string(const cai_config *cfg, const char *section,
@@ -224,6 +286,8 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
                : 1;
     }
     if (rc < 0)
+      return -1;
+    if (template_paths(cfg, config_root, error) < 0)
       return -1;
     if (cfg->create_template_file(cfg, selected, error) != CAI_OK ||
         cai_config_load_file(cfg, selected, error) != CAI_OK)

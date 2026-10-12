@@ -9,9 +9,39 @@ run --list; ok
 [[ $(stat -c %a "$config") == 600 && $(stat -c %a "$(dirname "$config")") == 700 ]]
 contains "$config" '# model = "gpt-6-luna"'
 contains "$config" '# config_env_has_precedence = false'
+contains "$config" '## CAI configuration.'
+contains "$config" "# config_dir = \"$root/config/cai\""
+contains "$config" "# agents_md = \"$root/config/cai/AGENTS.md\""
+contains "$config" "# skills_dir = \"$root/config/cai/skills\""
+contains "$config" "# export_dir = \"$root/data/cai/exports\""
+contains "$config" '# tool_output = "compact"'
+contains "$config" '## Empty checks ~/.codex/auth.json first, then encrypted cai auth.'
+contains "$config" '## Empty optionally loads config_dir/models.json;'
+contains "$config" '## Remote lockd mTLS client PEM; empty supplies no client certificate.'
+! grep -E '^# [^=]*$' "$config"
 contains "$config" '[env]'
 absent "$config" '[response]'; absent "$config" '[session_limits]'
 ! grep -Ev '^[[:space:]]*$|^#|^\[' "$config"
+# Removing one comment marker from a path selects exactly the documented
+# value; leaving it commented keeps automatic lookup on subsequent starts.
+printf '[paths]\n' >"$root/uncommented.ini"
+sed -n 's/^# \(config_dir\|agents_md\|skills_dir\|export_dir\) = /\1 = /p' "$config" >>"$root/uncommented.ini"
+run --config "$root/uncommented.ini" --list; ok
+run --config-dir "$root/custom-config" --list; ok
+contains "$root/custom-config/config.ini" "# agents_md = \"$root/custom-config/AGENTS.md\""
+contains "$root/custom-config/config.ini" "# skills_dir = \"$root/custom-config/skills\""
+(
+  unset XDG_CONFIG_HOME XDG_DATA_HOME
+  run --config "$root/fallback.ini" --list; ok
+  contains "$root/fallback.ini" "# agents_md = \"$root/.config/cai/AGENTS.md\""
+  contains "$root/fallback.ini" "# export_dir = \"$root/.local/share/cai/exports\""
+)
+(
+  export XDG_CONFIG_HOME=relative XDG_DATA_HOME=relative
+  run --config "$root/relative-xdg.ini" --list; ok
+  contains "$root/relative-xdg.ini" "# config_dir = \"$root/.config/cai\""
+  contains "$root/relative-xdg.ini" "# export_dir = \"$root/.local/share/cai/exports\""
+)
 peer_start
 base=("$cli" -C "$work")
 write_config() {

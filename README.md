@@ -418,7 +418,12 @@ MCP client configuration is planned for a later CLI release.
 CAI creates `${XDG_CONFIG_HOME:-$HOME/.config}/cai/config.ini` on first
 startup (help/version do not create it). The private file is the configuration
 reference: each supported setting includes its description and commented
-default. Uncomment a setting to select it explicitly. Existing files are
+default. Explanatory comments start with `##`; setting assignments start with
+`#` so removing one marker selects the value explicitly. Automatic global
+instruction, skills and export paths are shown as resolved at template creation.
+Leaving them commented retains automatic lookup on subsequent starts; an empty
+value has the field-specific discovery, inheritance or unset meaning documented
+beside that setting. Existing files are
 never rewritten. `--config FILE` selects another file; `--no-config` skips
 creation and loading. `--config-dir DIR` also selects `DIR/config.ini`.
 Precedence is built-in defaults, configuration, then CLI options. Resuming
@@ -428,7 +433,8 @@ The `[env]` section accepts literal environment assignments. Existing process
 variables, including empty ones, win unless the global
 `config_env_has_precedence = true` setting is uncommented. Environment values
 are applied before authentication, logging and worker startup; templates do
-not copy credentials or the current environment.
+not copy credentials or environment assignments. Path defaults may reflect the
+current XDG roots, HOME or explicit `--config-dir`.
 
 The shared `<cai/config.h>` receiver provides incremental INI loading,
 schema validation, typed access, explicit environment/path handling, and

@@ -256,6 +256,25 @@ int main(int argc, char **argv) {
   fclose(file);
   assert(strstr(bytes, "secret-DO-NOT-LOG") == NULL &&
          strstr(bytes, "# config_env_has_precedence = false") != NULL);
+  assert(strncmp(bytes, "## CAI configuration.", 21U) == 0);
+  assert(strstr(bytes, "\n## Config [env]") != NULL);
+  assert(strstr(bytes, "\n## Optional literal environment assignments;") !=
+         NULL);
+  /* Every single-# line is an assignment; documentation uses ##, even when
+   * it contains '=' or a newline supplied by a host schema. */
+  {
+    const char *line = bytes, *end;
+    while (*line != '\0') {
+      end = strchr(line, '\n');
+      if (end == NULL)
+        end = line + strlen(line);
+      if (line[0] == '#' && line[1] != '#') {
+        assert(line[1] == ' ');
+        assert(memchr(line, '=', (size_t)(end - line)) != NULL);
+      }
+      line = *end != '\0' ? end + 1 : end;
+    }
+  }
   assert(cai_config_open(NULL, 0U, &again, &error) == CAI_OK);
   assert(load(again, bytes, 1U, 0, &error) == CAI_OK &&
          again->get(again, "client", "provider") == NULL);
@@ -355,8 +374,8 @@ int main(int argc, char **argv) {
   n = fread(bytes, 1, sizeof(bytes) - 1U, file);
   bytes[n] = '\0';
   fclose(file);
-  assert(strstr(bytes, "# unsafe = active") != NULL);
-  assert(strstr(bytes, "# [malicious]") != NULL);
+  assert(strstr(bytes, "\n## unsafe = active") != NULL);
+  assert(strstr(bytes, "\n## [malicious]") != NULL);
   assert(strstr(bytes, "secret-DO-NOT-LOG") == NULL);
   assert(load(again, bytes, 2U, 0, &error) == CAI_OK);
   memset(&rejected, 0, sizeof(rejected));

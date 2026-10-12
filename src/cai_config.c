@@ -861,7 +861,7 @@ static int write_comment(cai_sink *sink, const char *text, cai_error *error) {
     if (*p == '\n' || *p == '\r') {
       rc = cai_sink_write(sink, start, (size_t)(p - start), error);
       if (rc == CAI_OK)
-        rc = write_literal(sink, "\n# ", error);
+        rc = write_literal(sink, "\n## ", error);
       start = p + 1;
     }
   }
@@ -894,12 +894,13 @@ int cai_config_write_template(const cai_config *self, cai_sink *sink,
   impl = IMPL(self);
   rc = write_literal(
       sink,
-      "# CAI configuration. Uncomment an assignment to set it explicitly.\n# "
+      "## CAI configuration. Uncomment a single-# assignment to set it "
+      "explicitly.\n## "
       "Quoted values support \\n, \\r, \\t, \\\\ and \\\". Comments start with "
-      "# or ; on their own line or after a quoted value.\n# Empty optional "
-      "strings use automatic/inherited defaults; "
-      "zero limits use\n# the documented automatic default or disable that "
-      "limit. Paths support ~/\n# and file-relative paths. Existing "
+      "# or ; on their own line or after a quoted value.\n## Empty strings "
+      "have the field-specific meaning documented below; "
+      "zero limits use\n## the documented automatic default or disable that "
+      "limit. Paths support ~/\n## and file-relative paths. Existing "
       "environment wins unless changed below.\n\n",
       error);
   /* Global assignments must precede every section regardless of schema order.
@@ -929,7 +930,7 @@ int cai_config_write_template(const cai_config *self, cai_sink *sink,
         const char *value = entry->default_value;
         if (strcmp(entry->section, section) != 0)
           continue;
-        rc = write_literal(sink, "# ", error);
+        rc = write_literal(sink, "## ", error);
         if (rc == CAI_OK)
           rc = write_comment(sink,
                              entry->description != NULL ? entry->description
@@ -963,9 +964,11 @@ int cai_config_write_template(const cai_config *self, cai_sink *sink,
   if (rc == CAI_OK)
     rc = write_literal(
         sink,
-        "\n[env]\n# Optional literal environment assignments; values are never "
-        "interpolated.\n# This template does not copy your environment or "
-        "credentials.\n# BERGET_API_KEY = \"\"\n# LOG_LEVEL = \"info\"\n",
+        "\n[env]\n## Optional literal environment assignments; values are "
+        "never "
+        "interpolated.\n## This section does not copy your environment or "
+        "credentials. The assignments below are examples, not defaults.\n"
+        "# BERGET_API_KEY = \"\"\n# LOG_LEVEL = \"info\"\n",
         error);
   return rc;
 }

@@ -16,9 +16,10 @@ F("client", "http_2_disabled", BOOL, CLIENT, http_2_disabled, 0, NULL,
 F("client", "insecure_skip_verify", BOOL, CLIENT, insecure_skip_verify, 0, NULL,
   "Disable TLS certificate verification.")
 F("client", "ca_bundle_path", STR, CLIENT, ca_bundle_path, CAI_CONFIG_PATH,
-  NULL, "TLS CA bundle.")
+  NULL,
+  "TLS CA bundle override; empty uses the transport's default trust store.")
 F("client", "ca_path", STR, CLIENT, ca_path, CAI_CONFIG_PATH, NULL,
-  "TLS CA directory.")
+  "TLS CA directory override; empty uses the transport's default trust store.")
 F("client", "responses_websocket_fallback_disabled", BOOL, CLIENT,
   responses_websocket_fallback_disabled, 0, NULL,
   "Disable HTTPS fallback from WebSocket streaming.")
@@ -100,7 +101,9 @@ F("response", "enable_local_history", BOOL, AGENT, enable_local_history, 0,
 F("response", "history_memory_limit", SIZE, AGENT, history_memory_limit, 0,
   NULL, "History spill threshold; zero automatic.")
 F("response", "history_spool_dir", STR, AGENT, history_spool_dir,
-  CAI_CONFIG_PATH, NULL, "History spool directory.")
+  CAI_CONFIG_PATH, NULL,
+  "History spool directory; empty uses the system temporary directory when "
+  "history spills.")
 F("session_limits", "max_input_tokens", I64, AGENT,
   session_usage_limits.max_input_tokens, 0, NULL,
   "Session input-token limit; zero disables.")
@@ -149,13 +152,18 @@ F("review", "reasoning_effort", STR, RUNTIME, review_reasoning_effort, 0,
 F("review", "reasoning_summary", STR, RUNTIME, review_reasoning_summary, 0,
   "none|auto|concise|detailed", "Reviewer summary; empty inherits.")
 F("runtime", "workspace_directory", STR, RUNTIME, workspace_directory,
-  CAI_CONFIG_PATH, NULL, "Workspace path; applications select their workspace.")
+  CAI_CONFIG_PATH, NULL,
+  "Workspace path; the host must supply an existing directory.")
 F("runtime", "agent_config_directory", STR, RUNTIME, agent_config_directory,
-  CAI_CONFIG_PATH, NULL, "Global agent configuration directory.")
+  CAI_CONFIG_PATH, NULL,
+  "Global instructions root; empty uses ${XDG_CONFIG_HOME:-$HOME/.config}/cai.")
 F("runtime", "global_agents_md_path", STR, RUNTIME, global_agents_md_path,
-  CAI_CONFIG_PATH, NULL, "Global AGENTS.md override.")
+  CAI_CONFIG_PATH, NULL,
+  "Global AGENTS.md; empty uses agent_config_directory/AGENTS.md, loaded if it "
+  "exists.")
 F("runtime", "image_directory", STR, RUNTIME, image_directory, CAI_CONFIG_PATH,
-  NULL, "Additional permitted image directory.")
+  NULL,
+  "Additional permitted image directory; empty permits workspace images only.")
 F("runtime", "session_scope", STR, RUNTIME, session_scope, 0, NULL,
   "Session namespace; empty uses workspace.")
 F("runtime", "session_id", STR, RUNTIME, session_id, 0, NULL,
@@ -178,9 +186,11 @@ F("runtime", "turn_queue_limit", SIZE, RUNTIME, turn_queue_limit, 0, NULL,
 F("runtime", "logger_disabled", BOOL, RUNTIME, logger_disabled, 0, NULL,
   "Disable runtime diagnostics.")
 F("terminal", "root_path", STR, TERMINAL, root_path, CAI_CONFIG_PATH, NULL,
-  "Terminal workspace root.")
+  "Terminal workspace root; cai supplies its workspace, SDK hosts must supply "
+  "a root.")
 F("terminal", "default_workdir", STR, TERMINAL, default_workdir,
-  CAI_CONFIG_PATH, NULL, "Initial terminal working directory.")
+  CAI_CONFIG_PATH, NULL,
+  "Initial terminal working directory; empty uses root_path.")
 F("terminal", "shell_path", STR, TERMINAL, shell_path, CAI_CONFIG_PATH, NULL,
   "Agent command shell; empty uses /bin/sh.")
 F("terminal", "default_yield_time_ms", LONG, TERMINAL, default_yield_time_ms, 0,

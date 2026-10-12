@@ -141,9 +141,11 @@ int cai_config_resolve_path(cai_config *self, const char *section,
  * Validation/allocation precede changes; failure attempts rollback. Process
  * environment mutation must be serialized by the embedding application. */
 int cai_config_apply_environment(const cai_config *self, cai_error *error);
-/** Emit documented sections and commented defaults, never explicit settings
- * or live environment/secret values. Globals precede sections even when
- * declared later in the schema. Caller owns sink. */
+/** Emit documented sections with ## explanatory comments and # commented
+ * assignments, never explicit settings or secret values. Defaults come from
+ * schema metadata; hosts may resolve automatic paths with set_default.
+ * [env] examples never copy live environment values. Globals precede sections
+ * even when declared later in the schema. Caller owns sink. */
 int cai_config_write_template(const cai_config *self, cai_sink *sink,
                               cai_error *error);
 /** Atomically create a missing absolute template filename, mode 0600,
