@@ -80,6 +80,9 @@ typedef struct cai_agent_impl {
   cai_client *client;
   char *model;
   char *developer_instructions;
+  /* Model-owned prefix; the capability/policy/skills suffix stays captured. */
+  size_t smith_prompt_prefix_length;
+  unsigned long smith_prompt_capabilities;
   char *prompt_cache_key;
   char *tool_choice;
   char *tool_choice_json;
@@ -518,6 +521,10 @@ int cai_patch_tool_write_locations(cai_tool_registry *registry,
                                    const char *name, cai_sink *sink,
                                    cai_error *error);
 typedef struct cai_skill_catalog cai_skill_catalog;
+int cai_smith_prepare_model_instructions(cai_agent *agent, const char *model,
+                                         const char *identity, char **out,
+                                         size_t *prefix_length,
+                                         cai_error *error);
 int cai_skills_prepare(const cai_skill_config *config,
                        const char *agent_config_directory,
                        cai_skill_catalog **out_catalog, char **out_prompt,

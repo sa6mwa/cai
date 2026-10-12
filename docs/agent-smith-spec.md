@@ -124,19 +124,15 @@ Important upstream observations:
   rubric, no multi-agent collaboration, non-interactive permissions, and a
   model override when configured. `codex-rs/prompts/templates/review/rubric.md`
   is the current rubric source.
-- The checked-out public source includes current base instructions in
-  `codex-rs/protocol/src/prompts/base_instructions/default.md` and a
-  GPT-5.2 Codex model-instruction template in
-  `codex-rs/core/templates/model_instructions/`. It does **not** contain a
-  checked-in GPT-5.6 Smith-ready instruction asset. Some current model
-  instructions are model/backend metadata rather than a stable source file.
+- The current checkout includes per-model instruction templates in
+  `codex-rs/models-manager/models.json`. Codex can also receive model-owned
+  instructions from its account/backend catalog, so a local snapshot does not
+  prove equality with the current remote account's instructions.
 
-Therefore CAI MUST not claim a byte-for-byte GPT-5.6 prompt clone based only
-on this checkout. Instead, Smith will maintain versioned CAI prompt assets with
-explicit upstream provenance, import upstream prompt revisions deliberately,
-and test the resulting rendered request contract against the selected models.
-This is both more honest and safer than silently freezing an accidental old
-prompt.
+Smith maintains pinned CAI prompt assets with explicit upstream provenance,
+imports revisions deliberately, and tests the rendered request contract for
+each supported profile. CAI identifies the exact snapshot it ships rather
+than claiming equality with dynamically updated account instructions.
 
 ## 3. Goals and non-goals
 
@@ -504,16 +500,45 @@ testing prompt is prohibited.
 
 ### 6.1 Prompt ownership and rendering
 
-CAI stores prompt sources under `prompts/smith/`. Smith's GPT-5.6 base is the
-exact `model_messages.instructions_template` for `gpt-5.6-terra` from the
-checked-in Codex model catalogue. At the pinned revision, Sol, Terra, and Luna
-use the same source hash. `prompts/smith/manifest.json` records that base
-revision, source selector, SHA-256, equivalent model set, renderer version,
-and the separately pinned review-rubric provenance.
+CAI stores prompt sources under `prompts/smith/`. Each source is the exact
+`model_messages.instructions_template` from the pinned Codex model catalogue.
+`prompts/smith/manifest.json` records each profile's revision, source selector,
+source/template SHA-256 and matching model identifiers, the renderer policy,
+fallback profile, and separately pinned review-rubric provenance.
 
-The imported `gpt-5.6-codex.md` is deliberately byte-for-byte upstream source
-material, not a CAI rewrite. The build rejects a changed hash. The CMake
-renderer changes only the identity phrases `You are Codex` and `As Codex` to
+| Model identifiers | Bundled base |
+| --- | --- |
+| `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `codex-auto-review` | Shared GPT-5.6 template |
+| `gpt-6-luna` | GPT-6 Luna template |
+| `gpt-6-sol` | GPT-6 Sol template |
+| `gpt-6.1-sol` | GPT-6.1 Sol template |
+| `gpt-6-astra` | GPT-6 Astra template |
+
+The optional `openai/` provider prefix selects the same base. Selection uses
+exact model identifiers; an unknown model uses the GPT-5.6 fallback rather
+than guessing a future model's contract. Custom preset templates and isolated
+review rubrics are independent of this catalog.
+
+The GPT-6 profiles change communication, permission handling and autonomy,
+and have distinct working/testing guidance. CAI preserves those model-owned
+instructions. Their references to `functions.exec`, Promise-based batching,
+asynchronous questions, app discovery and orchestrator skill APIs describe
+Codex facilities. CAI's overlay maps these to serial registered tools, ordinary
+assistant questions which wait for a user reply, and `read_skill` for its
+configured catalog. No connector or tool is advertised merely because its
+name appears in an upstream prompt. Goal token budgets require an explicit
+numeric user request; durable goals retain CAI's existing lifecycle.
+
+In this snapshot, GPT-6 Luna says to add/run tests only when the user asks for
+testing or verification. GPT-6 Sol permits meaningful focused verification and
+limits repeat testing; GPT-6.1 Sol and Astra carry similar focused-verification
+guidance with revised permission and communication wording. User instructions
+and the host's applicable AGENTS.md policies take precedence. These differences
+are preserved rather than flattened into a shared GPT-6 prompt.
+
+Imported `*-codex.md` files are deliberately byte-for-byte upstream source
+material. The build rejects changed source or template hashes. Templates
+change only the identity phrases `You are Codex` and `As Codex` to
 `{{agent_identity}}`, then appends the `{{agent_tools}}` CAI overlay.
 That overlay is later developer instruction and MUST state only an actual CAI
 capability or host-interface difference:
@@ -533,24 +558,10 @@ overlay or capability redaction. New divergence requires a documented
 capability reason, prompt snapshot coverage, and representative live evaluation
 before it is accepted.
 
-The manifest has this shape:
-
-```json
-{
-  "schema_version": 1,
-  "preset": "smith",
-  "upstream": {
-    "project": "openai/codex",
-    "base": {
-      "revision": "<full git SHA>",
-      "asset": "<source selector>",
-      "sha256": "<source SHA-256>"
-    }
-  },
-  "rendered_asset_version": "smith-7",
-  "identity_placeholder": "{{agent_identity}}"
-}
-```
+The manifest's `profiles` array owns selection and provenance; CMake generates
+the private C catalog and byte assets from it. Ordinary builds never read a
+Codex checkout. `scripts/import_smith_prompts.sh CODEX_CHECKOUT` is an explicit
+source-data generator which requires a committed upstream catalog.
 
 Prompt sources are imported as Apache-2.0-compatible source material with
 their provenance and license recorded. CAI keeps prompt assets
@@ -558,6 +569,15 @@ separate from host configuration and never downloads or mutates them at
 runtime. Updating an upstream instruction requires a new reviewed manifest,
 hashes, rendered-request tests, and a compatibility decision for existing
 sessions.
+
+Changing model replaces only the captured model-owned prefix at the existing
+safe runtime boundary. The capability overlay, repository policy, skill catalog,
+subagent guidance and host extension remain captured in the session's agent;
+switching models does not reread files or create new tool processes. Checkpoint
+failure rolls back the model, reasoning settings and prompt together. Resume
+restores the model selection and chooses its bundled base before inference.
+The public C API, shared-library ABI and independently versioned session format
+are unchanged; model-profile provenance is supplied by the manifest hashes.
 
 The renderer has exactly two automatic content substitutions in imported base
 instructions: the `You are Codex` and `As Codex` identity phrases become

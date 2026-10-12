@@ -25383,6 +25383,208 @@ static void test_global_skills_catalog(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void expect_runtime_prompt(test_state *state, cai_agent_runtime *runtime,
+                                  const char *expected) {
+  mcp_sink_state captured;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink = NULL;
+  cai_error error;
+  memset(&captured, 0, sizeof(captured));
+  memset(&callbacks, 0, sizeof(callbacks));
+  cai_error_init(&error);
+  callbacks.write = test_mcp_sink_write;
+  callbacks.context = &captured;
+  expect_int(state, "runtime_prompt_sink",
+             cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  if (sink != NULL) {
+    expect_int(state, "runtime_prompt_export",
+               cai_agent_runtime_export_markdown(runtime, sink, &error),
+               CAI_OK);
+    expect_substr(state, "runtime_prompt_text", captured.buffer, expected);
+    cai_sink_close(sink);
+  }
+  cai_error_cleanup(&error);
+}
+
+static void test_smith_model_prompts(test_state *state) {
+  static const char *const models[] = {
+      "gpt-5.6-sol",       "gpt-5.6-terra",     "gpt-5.6-luna",
+      "gpt-6-luna",        "gpt-6-sol",         "gpt-6.1-sol",
+      "gpt-6-astra",       "openai/gpt-6-luna", "zai-org/GLM-5.3-Flash",
+      "gpt-6-unrecognized"};
+  cai_client_config client_config;
+  cai_smith_config config;
+  cai_agent_preset preset;
+  cai_client *client = NULL;
+  cai_agent *agent = NULL;
+  cai_error error;
+  char directory[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-model-prompts-XXXXXX";
+  char path[PATH_MAX];
+  char *baseline[7];
+  size_t baseline_length[7];
+  char *next;
+  size_t i, j, prefix_length;
+  cai_agent_impl *impl;
+
+  memset(baseline, 0, sizeof(baseline));
+  cai_error_init(&error);
+  if (mkdtemp(directory) == NULL) {
+    test_fail(state, "smith_model_prompt_directory", "mkdtemp failed");
+    return;
+  }
+  snprintf(path, sizeof(path), "%s/AGENTS.md", directory);
+  write_file_or_die(path, "Repository prompt sentinel.");
+  cai_client_config_init(&client_config);
+  client_config.api_key = "offline-prompt-test";
+  client_config.base_url = "http://127.0.0.1:1/v1";
+  client_config.logger_disabled = 1;
+  expect_int(state, "smith_model_prompt_client",
+             cai_client_open(&client_config, &client, &error), CAI_OK);
+  cai_smith_config_init(&config);
+  config.workspace_directory = directory;
+  config.agent_config_directory = directory;
+  config.agent_identity = "Model Agent";
+  config.developer_instructions_extension = "Host prompt sentinel.";
+  config.disable_terminal = 1;
+  for (i = 0U; client != NULL && i < sizeof(models) / sizeof(models[0]); i++) {
+    config.model = models[i];
+    expect_int(state, models[i],
+               cai_client_new_smith_agent(client, &config, &agent, &error),
+               CAI_OK);
+    if (agent == NULL)
+      continue;
+    impl = CAI_AGENT_IMPL(agent);
+    expect_substr(state, "smith_model_identity", impl->developer_instructions,
+                  i >= 3U && i <= 7U ? "Model Agent, an agent based on GPT-6."
+                                     : "Model Agent, an agent based on GPT-5.");
+    expect_substr(state, "smith_model_policy", impl->developer_instructions,
+                  "Repository prompt sentinel.");
+    expect_substr(state, "smith_model_extension", impl->developer_instructions,
+                  "Host prompt sentinel.");
+    expect_substr(state, "smith_model_serial_override",
+                  impl->developer_instructions,
+                  "CAI has no functions.exec orchestration");
+    if (strstr(impl->developer_instructions, "{{agent_identity}}") != NULL ||
+        strstr(impl->developer_instructions, "{{agent_tools}}") != NULL)
+      test_fail(state, "smith_model_tokens", "unexpanded renderer token");
+    if (i < 7U) {
+      baseline[i] = strdup(impl->developer_instructions);
+      baseline_length[i] = impl->smith_prompt_prefix_length;
+      if (baseline[i] == NULL)
+        test_fail(state, "smith_model_copy", "strdup failed");
+    } else if (baseline[i == 7U ? 3U : 0U] != NULL) {
+      j = i == 7U ? 3U : 0U;
+      if (impl->smith_prompt_prefix_length != baseline_length[j] ||
+          memcmp(impl->developer_instructions, baseline[j],
+                 baseline_length[j]) != 0)
+        test_fail(state, "smith_model_alias_or_fallback",
+                  "wrong model prompt prefix");
+    }
+    /* Disabled tools must not be advertised; model templates which do not
+     * contain the old patch/terminal sentences must still construct. */
+    if (strstr(impl->developer_instructions,
+               "Use exec_command for one managed") != NULL)
+      test_fail(state, "smith_model_no_terminal",
+                "disabled terminal advertised");
+    /* Retarget only the base. The already-captured suffix survives even if
+     * repository files change while the session is open. */
+    write_file_or_die(path, "Changed repository sentinel.");
+    next = NULL;
+    expect_int(state, "smith_model_prepare",
+               cai_smith_prepare_model_instructions(
+                   agent, i >= 3U && i <= 7U ? "gpt-5.6-luna" : "gpt-6-luna",
+                   config.agent_identity, &next, &prefix_length, &error),
+               CAI_OK);
+    if (next != NULL) {
+      expect_substr(state, "smith_model_captured_policy", next,
+                    "Repository prompt sentinel.");
+      if (strstr(next, "Changed repository sentinel.") != NULL)
+        test_fail(state, "smith_model_policy_not_reloaded",
+                  "policy reread during switch");
+      expect_substr(state, "smith_model_captured_extension", next,
+                    "Host prompt sentinel.");
+      cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, next);
+    } else {
+      test_fail(state, "smith_model_prepare_result",
+                "different profile produced no instructions");
+    }
+    write_file_or_die(path, "Repository prompt sentinel.");
+    cai_agent_destroy(agent);
+    agent = NULL;
+    cai_agent_preset_from_smith(&preset);
+    preset.tool_capabilities &= ~CAI_AGENT_PRESET_TOOL_APPLY_PATCH;
+    expect_int(
+        state, "smith_model_no_patch_open",
+        cai_client_new_preset_agent(client, &preset, &config, &agent, &error),
+        CAI_OK);
+    if (agent != NULL) {
+      if (strstr(CAI_AGENT_IMPL(agent)->developer_instructions,
+                 "Make workspace edits only with apply_patch.") != NULL ||
+          strstr(CAI_AGENT_IMPL(agent)->developer_instructions,
+                 "Use `apply_patch` for local file edits.") != NULL)
+        test_fail(state, "smith_model_no_patch", "disabled patch advertised");
+      cai_agent_destroy(agent);
+      agent = NULL;
+    }
+  }
+  for (i = 1U; i < 3U; i++)
+    if (baseline[0] != NULL && baseline[i] != NULL)
+      expect_str(state, "smith_model_5_6_shared", baseline[i], baseline[0]);
+  for (i = 3U; i < 7U; i++)
+    for (j = 0U; j < i; j++)
+      if (baseline[i] != NULL && baseline[j] != NULL &&
+          strcmp(baseline[i], baseline[j]) == 0)
+        test_fail(state, "smith_model_distinct_profiles",
+                  "distinct upstream prompts collapsed");
+  for (i = 0U; i < 7U; i++)
+    free(baseline[i]);
+  if (client != NULL) {
+    cai_agent_preset_from_smith(&preset);
+    preset.developer_instructions = "Custom {{agent_identity}} instructions.";
+    expect_int(
+        state, "smith_model_custom_open",
+        cai_client_new_preset_agent(client, &preset, &config, &agent, &error),
+        CAI_OK);
+    if (agent != NULL) {
+      next = NULL;
+      expect_int(state, "smith_model_custom_prepare",
+                 cai_smith_prepare_model_instructions(
+                     agent, "gpt-6-luna", config.agent_identity, &next,
+                     &prefix_length, &error),
+                 CAI_OK);
+      expect_int(state, "smith_model_custom_retained", next == NULL, 1L);
+      expect_substr(state, "smith_model_custom_text",
+                    CAI_AGENT_IMPL(agent)->developer_instructions,
+                    "Custom Model Agent instructions.");
+      cai_agent_destroy(agent);
+      agent = NULL;
+    }
+    expect_int(
+        state, "smith_model_review_open",
+        cai_client_new_smith_review_agent(client, &config, &agent, &error),
+        CAI_OK);
+    if (agent != NULL) {
+      next = NULL;
+      expect_int(state, "smith_model_review_prepare",
+                 cai_smith_prepare_model_instructions(
+                     agent, "gpt-6-luna", config.agent_identity, &next,
+                     &prefix_length, &error),
+                 CAI_OK);
+      expect_int(state, "smith_model_review_retained", next == NULL, 1L);
+      expect_substr(state, "smith_model_review_rubric",
+                    CAI_AGENT_IMPL(agent)->developer_instructions,
+                    "final response MUST be exactly one JSON object");
+      cai_agent_destroy(agent);
+      agent = NULL;
+    }
+  }
+  if (client != NULL)
+    cai_client_close(client);
+  unlink(path);
+  rmdir(directory);
+  cai_error_cleanup(&error);
+}
+
 static void test_smith_profile(test_state *state) {
   static const char response_body[] =
       "{\"id\":\"resp_smith\",\"status\":\"completed\",\"output\":[{\"type\":"
@@ -25411,7 +25613,8 @@ static void test_smith_profile(test_state *state) {
       "This is a FREEFORM tool, so do not wrap the patch in JSON.",
       "Make workspace edits only with apply_patch.",
       "# Personality",
-      "The preceding GPT-5.6 Codex instructions are the default contract.",
+      "The preceding model-specific Codex instructions are the default "
+      "contract.",
       "Create a goal only when explicitly requested."};
   static const char *forbidden[] = {"\"name\":\"shell_command\"", "As Codex,"};
   static const char *none_required[] = {
@@ -28325,6 +28528,8 @@ static void test_agent_runtime_model_switch(test_state *state) {
         CAI_OK);
     expect_str(state, "runtime_model_switch_compatible_model",
                cai_agent_runtime_model(runtime), CAI_MODEL_GPT_6_ASTRA);
+    expect_runtime_prompt(state, runtime,
+                          "Default to using clear, concise paragraphs");
     expect_substr(state, "runtime_model_switch_compatible_checkpoint",
                   store_state.saved_checkpoint, CAI_MODEL_GPT_6_ASTRA);
     expect_substr(state, "runtime_model_switch_compatible_checkpoint_hash",
@@ -28352,6 +28557,7 @@ static void test_agent_runtime_model_switch(test_state *state) {
         CAI_ERR_SERVER);
     expect_str(state, "runtime_model_switch_resume_failed_preserves_model",
                cai_agent_runtime_model(runtime), CAI_MODEL_GPT_6_ASTRA);
+    expect_runtime_prompt(state, runtime, "an agent based on GPT-6.");
     cai_error_cleanup(&error);
     cai_error_init(&error);
     expect_int(
@@ -28505,6 +28711,7 @@ static void test_agent_runtime_model_switch(test_state *state) {
         CAI_ERR_TRANSPORT);
     expect_str(state, "runtime_model_switch_compact_failure_model",
                cai_agent_runtime_model(runtime), CAI_MODEL_GPT_6_ASTRA);
+    expect_runtime_prompt(state, runtime, "an agent based on GPT-6.");
     cai_error_cleanup(&error);
     cai_error_init(&error);
     expect_int(
@@ -28513,6 +28720,7 @@ static void test_agent_runtime_model_switch(test_state *state) {
         CAI_OK);
     expect_str(state, "runtime_model_switch_compact_capacity_model",
                cai_agent_runtime_model(runtime), CAI_MODEL_GPT_5_6_LUNA);
+    expect_runtime_prompt(state, runtime, "an agent based on GPT-5.");
     expect_substr(state, "runtime_model_switch_compact_goal_usage",
                   store_state.saved_checkpoint, "\"goal_tokens_used\":24");
     cai_agent_runtime_close(runtime);
@@ -51567,6 +51775,7 @@ static const test_entry test_entries[] = {
     {"agent_client_history_continuity", test_agent_client_history_continuity},
     {"global_skills_catalog", test_global_skills_catalog},
     {"smith_profile", test_smith_profile},
+    {"smith_model_prompts", test_smith_model_prompts},
     {"smith_review_runtime", test_smith_review_runtime},
     {"smith_review_parent_handoff", test_smith_review_parent_handoff},
     {"agent_runtime_subagent", test_agent_runtime_subagent},

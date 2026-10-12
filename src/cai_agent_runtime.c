@@ -7087,6 +7087,8 @@ int cai_agent_runtime_open(cai_client *client,
           cai_agent_runtime_settings selected =
               cai_runtime_effective_settings(runtime);
           cai_runtime_settings_owned active_copy, smith_copy;
+          char *model_instructions;
+          size_t model_prefix_length;
           if (config->model == NULL && (saved->state_request_model != NULL ||
                                         saved->state_model != NULL))
             selected.model = saved->state_request_model != NULL
@@ -7100,12 +7102,27 @@ int cai_agent_runtime_open(cai_client *client,
             selected.reasoning_summary = saved->state_reasoning_summary;
           memset(&active_copy, 0, sizeof(active_copy));
           memset(&smith_copy, 0, sizeof(smith_copy));
+          model_instructions = NULL;
           rc = cai_runtime_settings_copy(&active_copy, &selected,
                                          &CAI_CLIENT_IMPL(client)->allocator,
                                          error);
           if (rc == CAI_OK)
             rc = cai_runtime_settings_copy(&smith_copy, &selected, NULL, error);
+          if (rc == CAI_OK)
+            rc = cai_smith_prepare_model_instructions(
+                runtime->agent, selected.model,
+                runtime->smith_identity != NULL
+                    ? runtime->smith_identity
+                    : runtime->preset_default_identity,
+                &model_instructions, &model_prefix_length, error);
           if (rc == CAI_OK) {
+            if (model_instructions != NULL) {
+              cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator,
+                           agent->developer_instructions);
+              agent->developer_instructions = model_instructions;
+              agent->smith_prompt_prefix_length = model_prefix_length;
+              model_instructions = NULL;
+            }
             cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, agent->model);
             cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator,
                          agent->reasoning_effort);
@@ -7127,6 +7144,7 @@ int cai_agent_runtime_open(cai_client *client,
           }
           cai_runtime_settings_clear(&active_copy);
           cai_runtime_settings_clear(&smith_copy);
+          cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, model_instructions);
         }
         if (rc == CAI_OK) {
           if (CAI_SESSION_IMPL(runtime->session)->goal_status != NULL) {
@@ -7518,6 +7536,8 @@ static int cai_runtime_set_model_internal(
   char *old_model;
   char *old_smith_model;
   char *old_compaction_hash;
+  char *next_instructions, *old_instructions;
+  size_t next_prompt_prefix_length, old_prompt_prefix_length;
   cai_runtime_settings_owned next_reasoning, next_smith_reasoning;
   cai_agent_runtime_settings reasoning;
   char *old_effort, *old_summary, *old_smith_effort, *old_smith_summary;
@@ -7690,6 +7710,13 @@ static int cai_runtime_set_model_internal(
   if (rc == CAI_OK)
     rc = cai_runtime_settings_copy(&next_smith_reasoning, &reasoning, NULL,
                                    error);
+  next_instructions = NULL;
+  if (rc == CAI_OK && model_changed)
+    rc = cai_smith_prepare_model_instructions(
+        runtime->agent, model,
+        runtime->smith_identity != NULL ? runtime->smith_identity
+                                        : runtime->preset_default_identity,
+        &next_instructions, &next_prompt_prefix_length, error);
   if (rc != CAI_OK) {
     cai_runtime_settings_clear(&next_reasoning);
     cai_runtime_settings_clear(&next_smith_reasoning);
@@ -7726,6 +7753,12 @@ static int cai_runtime_set_model_internal(
   cai_runtime_settings_clear(&next_reasoning);
   cai_runtime_settings_clear(&next_smith_reasoning);
   old_model = agent->model;
+  old_instructions = agent->developer_instructions;
+  old_prompt_prefix_length = agent->smith_prompt_prefix_length;
+  if (next_instructions != NULL) {
+    agent->developer_instructions = next_instructions;
+    agent->smith_prompt_prefix_length = next_prompt_prefix_length;
+  }
   old_smith_model = runtime->smith_model;
   old_compaction_hash = runtime->model_compaction_hash;
   old_context_window = runtime->model_context_window;
@@ -7744,6 +7777,17 @@ static int cai_runtime_set_model_internal(
   if (model_changed)
     runtime->history_compaction_pending = preserve_history_compatibility;
   rc = cai_runtime_checkpoint(runtime, requires_compaction ? 0 : 1, error);
+  if (next_instructions != NULL) {
+    if (rc != CAI_OK) {
+      cai_free_mem(&CAI_CLIENT_IMPL(runtime->client)->allocator,
+                   agent->developer_instructions);
+      agent->developer_instructions = old_instructions;
+      agent->smith_prompt_prefix_length = old_prompt_prefix_length;
+    } else {
+      cai_free_mem(&CAI_CLIENT_IMPL(runtime->client)->allocator,
+                   old_instructions);
+    }
+  }
   if (rc != CAI_OK) {
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                  agent->model);

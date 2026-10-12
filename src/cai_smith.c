@@ -20,9 +20,26 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_AGENT_IDENTITY_TOKEN "{{agent_identity}}"
 #define CAI_AGENT_TOOLS_TOKEN "{{agent_tools}}"
 
-static const unsigned char cai_smith_gpt_5_6_prompt_template[] = {
-#include "cai_smith_gpt_5_6_prompt.inc"
-};
+typedef struct cai_smith_prompt_entry {
+  const char *model;
+  const unsigned char *instructions;
+} cai_smith_prompt_entry;
+#include "cai_smith_prompt_catalog.inc"
+
+static const char *cai_smith_model_prompt(const char *model) {
+  size_t i;
+  if (model != NULL) {
+    /* OpenRouter can expose the same model under its OpenAI provider prefix. */
+    if (strncmp(model, "openai/", 7U) == 0)
+      model += 7;
+    for (i = 0U; i < sizeof(cai_smith_prompt_entries) /
+                         sizeof(cai_smith_prompt_entries[0]);
+         i++)
+      if (strcmp(model, cai_smith_prompt_entries[i].model) == 0)
+        return (const char *)cai_smith_prompt_entries[i].instructions;
+  }
+  return (const char *)cai_smith_fallback_prompt;
+}
 static void cai_smith_skill_warning(void *context, const char *message) {
   cai_log_skill_warning((const cai_client_impl *)context, message);
 }
@@ -83,7 +100,8 @@ static int cai_preset_render_template(
     const cai_allocator *allocator, const char *template_text,
     const cai_agent_preset *preset, const cai_agent_preset_config *config,
     const char *repository_instructions, const char *skill_catalog,
-    const char *tool_contract, char **out, cai_error *error) {
+    const char *tool_contract, char **out, size_t *model_prefix_length,
+    cai_error *error) {
   const char *identity;
   const char *extension;
   const char *cursor;
@@ -103,6 +121,8 @@ static int cai_preset_render_template(
   char *instructions;
 
   *out = NULL;
+  if (model_prefix_length != NULL)
+    *model_prefix_length = 0U;
   identity = config->agent_identity != NULL ? config->agent_identity
                                             : preset->default_identity;
   extension = config->developer_instructions_extension;
@@ -202,6 +222,8 @@ static int cai_preset_render_template(
     prefix_length = (size_t)(token - cursor);
     memcpy(instructions + offset, cursor, prefix_length);
     offset += prefix_length;
+    if (token == tools_token && model_prefix_length != NULL)
+      *model_prefix_length = offset;
     memcpy(instructions + offset, replacement, part_length);
     offset += part_length;
     cursor =
@@ -237,7 +259,8 @@ static int cai_smith_build_tool_contract(const cai_allocator *allocator,
   static const char *const environment_heading =
       "# CAI agent-mode capability adjustments\n\n";
   static const char *const environment_communication =
-      "The preceding GPT-5.6 Codex instructions are the default contract. "
+      "The preceding model-specific Codex instructions are the default "
+      "contract. "
       "This section supersedes them only where CAI exposes a different "
       "capability or host interface. CAI has no commentary/final channels: "
       "use ordinary assistant messages and tool calls. Before a relevant tool "
@@ -247,7 +270,15 @@ static int cai_smith_build_tool_contract(const cai_allocator *allocator,
       "Use only the tools present in this request and follow their schemas. "
       "CAI dispatches calls serially, so do not request parallel calls. CAI "
       "has no update_plan tool; goals are durable session state, not a task "
-      "plan. Repository policies supplied by the host are binding for the "
+      "plan. ";
+  static const char *const environment_interfaces =
+      "CAI has no functions.exec orchestration or Promise-based tool "
+      "batching, asynchronous question tool, app connector discovery, or "
+      "plugin manager. Ask the user in an assistant message when input is "
+      "required, then wait for their reply; elapsed time grants no approval. "
+      "Do not assume any web/search/image-generation tool is present merely "
+      "because upstream instructions name it. Repository policies supplied "
+      "by the host are binding for the "
       "workspace paths they govern; more-specific policy wins.\n\n";
   static const char *const common =
       "Never invent an unavailable tool, emulate its output, or claim that an "
@@ -265,7 +296,9 @@ static int cai_smith_build_tool_contract(const cai_allocator *allocator,
       "Use view_image to inspect local images when it is present. ";
   static const char *const goal =
       "Create a goal only when explicitly requested. Mark it complete only "
-      "when its objective is achieved; mark it blocked only after the same "
+      "when its objective is achieved. Never set a token budget unless the "
+      "user explicitly requests a numeric token budget. Mark it blocked only "
+      "after the same "
       "external blocker recurs for three consecutive goal turns. Use "
       "clear_goal to remove a goal without claiming completion. ";
   static const char *const mcp = "The host may expose configured MCP tools. ";
@@ -283,7 +316,7 @@ static int cai_smith_build_tool_contract(const cai_allocator *allocator,
   static const char *const serial =
       "Tool calls are serial: complete and assess one call before issuing "
       "another.";
-  const char *parts[15];
+  const char *parts[16];
   size_t count;
   size_t length;
   size_t i;
@@ -295,6 +328,7 @@ static int cai_smith_build_tool_contract(const cai_allocator *allocator,
   parts[count++] = environment_heading;
   parts[count++] = environment_communication;
   parts[count++] = environment_tools;
+  parts[count++] = environment_interfaces;
   parts[count++] = common;
   if ((capabilities & CAI_AGENT_PRESET_TOOL_READ_FILE) != 0UL) {
     parts[count++] = read_file;
@@ -352,28 +386,28 @@ static int cai_smith_build_tool_contract(const cai_allocator *allocator,
   return CAI_OK;
 }
 
-static int cai_smith_remove_prompt_fragment(char *prompt, const char *fragment,
+static int cai_smith_remove_prompt_fragment(char *prompt, size_t *prefix_length,
+                                            const char *fragment,
                                             cai_error *error) {
   char *match;
   size_t fragment_length;
 
   match = strstr(prompt, fragment);
-  if (match == NULL) {
-    return cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "pinned Codex prompt fragment is missing");
-  }
+  (void)error;
   fragment_length = strlen(fragment);
+  if (match == NULL || (size_t)(match - prompt) >= *prefix_length ||
+      fragment_length > *prefix_length - (size_t)(match - prompt))
+    return CAI_OK;
   memmove(match, match + fragment_length, strlen(match + fragment_length) + 1U);
+  *prefix_length -= fragment_length;
   return CAI_OK;
 }
 
-static int cai_smith_render_instructions(const cai_allocator *allocator,
-                                         const cai_agent_preset *preset,
-                                         const cai_agent_preset_config *config,
-                                         unsigned long tool_capabilities,
-                                         const char *repository_instructions,
-                                         const char *skill_catalog, char **out,
-                                         cai_error *error) {
+static int cai_smith_render_instructions(
+    const cai_allocator *allocator, const cai_agent_preset *preset,
+    const cai_agent_preset_config *config, unsigned long tool_capabilities,
+    const char *repository_instructions, const char *skill_catalog, char **out,
+    size_t *prefix_length, cai_error *error) {
   char *tool_contract;
   int rc;
 
@@ -382,24 +416,27 @@ static int cai_smith_render_instructions(const cai_allocator *allocator,
                          "Smith instruction output pointer is required");
   }
   *out = NULL;
+  *prefix_length = 0U;
   if (preset->developer_instructions != NULL) {
     return cai_preset_render_template(allocator, preset->developer_instructions,
                                       preset, config, repository_instructions,
-                                      skill_catalog, NULL, out, error);
+                                      skill_catalog, NULL, out, NULL, error);
   }
   tool_contract = NULL;
   rc = cai_smith_build_tool_contract(allocator, tool_capabilities,
                                      &tool_contract, error);
   if (rc == CAI_OK) {
     rc = cai_preset_render_template(
-        allocator, (const char *)cai_smith_gpt_5_6_prompt_template, preset,
-        config, repository_instructions, skill_catalog, tool_contract, out,
-        error);
+        allocator,
+        cai_smith_model_prompt(config->model != NULL ? config->model
+                                                     : preset->default_model),
+        preset, config, repository_instructions, skill_catalog, tool_contract,
+        out, prefix_length, error);
   }
   if (rc == CAI_OK &&
       (tool_capabilities & CAI_AGENT_PRESET_TOOL_APPLY_PATCH) == 0UL) {
     rc = cai_smith_remove_prompt_fragment(
-        *out,
+        *out, prefix_length,
         "Use `apply_patch` for local file edits. Do not create or edit files "
         "with `cat` or other shell write tricks. Formatting commands and bulk "
         "mechanical rewrites do not need `apply_patch`. Do not use Python to "
@@ -410,7 +447,7 @@ static int cai_smith_render_instructions(const cai_allocator *allocator,
   if (rc == CAI_OK &&
       (tool_capabilities & CAI_AGENT_PRESET_TOOL_TERMINAL) == 0UL) {
     rc = cai_smith_remove_prompt_fragment(
-        *out,
+        *out, prefix_length,
         "- Exercise caution when escaping text for exec_command calls - "
         "backticks and `$()` passed to the `cmd` argument will still execute. "
         "DO NOT use escape sequences that risk accidental exposure of "
@@ -423,6 +460,60 @@ static int cai_smith_render_instructions(const cai_allocator *allocator,
     *out = NULL;
   }
   return rc;
+}
+
+int cai_smith_prepare_model_instructions(cai_agent *agent, const char *model,
+                                         const char *identity, char **out,
+                                         size_t *prefix_length,
+                                         cai_error *error) {
+  cai_agent_impl *impl = CAI_AGENT_IMPL(agent);
+  const cai_allocator *allocator = &CAI_CLIENT_IMPL(impl->client)->allocator;
+  cai_agent_preset preset;
+  cai_agent_preset_config config;
+  char *rendered, *combined;
+  size_t length, suffix_length;
+  int rc;
+
+  *out = NULL;
+  *prefix_length = impl->smith_prompt_prefix_length;
+  /* Custom presets and isolated reviewers retain their own instruction text. */
+  if (*prefix_length == 0U ||
+      cai_smith_model_prompt(impl->model) == cai_smith_model_prompt(model))
+    return CAI_OK;
+  length = strlen(impl->developer_instructions);
+  if (*prefix_length > length)
+    return cai_set_error(
+        error, CAI_ERR_PROTOCOL,
+        "Smith instruction prefix exceeds captured instructions");
+  suffix_length = length - *prefix_length;
+  cai_agent_preset_from_smith(&preset);
+  cai_agent_preset_config_init(&config);
+  config.model = model;
+  config.agent_identity = identity;
+  rendered = NULL;
+  rc = cai_smith_render_instructions(allocator, &preset, &config,
+                                     impl->smith_prompt_capabilities, NULL,
+                                     NULL, &rendered, prefix_length, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (*prefix_length > SIZE_MAX - suffix_length - 1U) {
+    cai_free_mem(allocator, rendered);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Smith model instructions are too large");
+  }
+  combined = (char *)cai_alloc(allocator, *prefix_length + suffix_length + 1U);
+  if (combined == NULL) {
+    cai_free_mem(allocator, rendered);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to allocate Smith model instructions");
+  }
+  memcpy(combined, rendered, *prefix_length);
+  memcpy(combined + *prefix_length,
+         impl->developer_instructions + impl->smith_prompt_prefix_length,
+         suffix_length + 1U);
+  cai_free_mem(allocator, rendered);
+  *out = combined;
+  return CAI_OK;
 }
 
 static int cai_smith_read_instructions_fd(const cai_allocator *allocator,
@@ -888,6 +979,7 @@ int cai_client_new_preset_agent(cai_client *client,
   char *skill_catalog_prompt;
   cai_skill_catalog *skill_catalog;
   const char *model;
+  size_t prompt_prefix_length;
   unsigned long tool_capabilities;
   int rc;
 
@@ -937,7 +1029,8 @@ int cai_client_new_preset_agent(cai_client *client,
   if (rc == CAI_OK) {
     rc = cai_smith_render_instructions(
         &client_impl->allocator, preset, config, tool_capabilities,
-        repository_instructions, skill_catalog_prompt, &instructions, error);
+        repository_instructions, skill_catalog_prompt, &instructions,
+        &prompt_prefix_length, error);
   }
   cai_free_mem(&client_impl->allocator, repository_instructions);
   cai_free_mem(NULL, skill_catalog_prompt);
@@ -975,6 +1068,8 @@ int cai_client_new_preset_agent(cai_client *client,
     }
     return rc;
   }
+  CAI_AGENT_IMPL(*out)->smith_prompt_prefix_length = prompt_prefix_length;
+  CAI_AGENT_IMPL(*out)->smith_prompt_capabilities = tool_capabilities;
   if (!config->disable_terminal &&
       (preset->tool_capabilities & CAI_AGENT_PRESET_TOOL_TERMINAL) != 0UL) {
     memset(&terminal_config, 0, sizeof(terminal_config));
@@ -1183,7 +1278,7 @@ int cai_client_new_preset_review_agent(cai_client *client,
     rc = cai_preset_render_template(
         &client_impl->allocator, preset->review_developer_instructions, preset,
         config, repository_instructions, skill_catalog_prompt, NULL,
-        &instructions, error);
+        &instructions, NULL, error);
     if (rc != CAI_OK) {
       goto review_instructions_failed;
     }

@@ -569,45 +569,14 @@ configure_file(
   "${CAI_GENERATED_INCLUDE_DIR}/cai/version.h"
   @ONLY)
 
-# Smith ships the exact upstream GPT-5.6 Codex instruction asset. The
-# compiled representation replaces only identity phrases with Smith's renderer
-# token and appends the narrow CAI capability overlay token.
-set(CAI_SMITH_GPT_5_6_PROMPT_SOURCE
-    "${CMAKE_CURRENT_SOURCE_DIR}/prompts/smith/gpt-5.6-codex.md")
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-             "${CAI_SMITH_GPT_5_6_PROMPT_SOURCE}")
-set(CAI_SMITH_GPT_5_6_PROMPT_TEMPLATE_SOURCE
-    "${CMAKE_CURRENT_SOURCE_DIR}/prompts/smith/gpt-5.6-codex-smith-template.md")
+# Pinned model-specific sources are imported explicitly, never fetched by builds.
 set(CAI_SMITH_PRIVATE_INCLUDE_DIR
     "${CMAKE_CURRENT_BINARY_DIR}/generated/private")
-file(SHA256 "${CAI_SMITH_GPT_5_6_PROMPT_SOURCE}"
-     CAI_SMITH_GPT_5_6_PROMPT_SHA256)
-if(NOT CAI_SMITH_GPT_5_6_PROMPT_SHA256 STREQUAL
-       "35d8b5d513fff3b55344d5f9f3169305cc276aee053f5be140a77708e0926e7c")
-  message(FATAL_ERROR
-    "Smith GPT-5.6 Codex prompt asset hash does not match its pinned upstream "
-    "revision")
-endif()
-if(NOT EXISTS "${CAI_SMITH_GPT_5_6_PROMPT_TEMPLATE_SOURCE}")
-  message(FATAL_ERROR "Smith GPT-5.6 prompt template asset is required")
-endif()
 set(CAI_SMITH_PROMPT_GENERATOR
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/generate_byte_asset.cmake")
-set(CAI_SMITH_PROMPT_INC_PATH
-    "${CAI_SMITH_PRIVATE_INCLUDE_DIR}/cai_smith_gpt_5_6_prompt.inc")
-add_custom_command(
-  OUTPUT "${CAI_SMITH_PROMPT_INC_PATH}"
-  COMMAND "${CMAKE_COMMAND}"
-    "-DCAI_ASSET_INPUT=${CAI_SMITH_GPT_5_6_PROMPT_TEMPLATE_SOURCE}"
-    "-DCAI_ASSET_OUTPUT=${CAI_SMITH_PROMPT_INC_PATH}"
-    -DCAI_ASSET_MODE=c-string
-    -P "${CAI_SMITH_PROMPT_GENERATOR}"
-  DEPENDS
-    "${CAI_SMITH_GPT_5_6_PROMPT_TEMPLATE_SOURCE}"
-    "${CAI_SMITH_PROMPT_GENERATOR}"
-  VERBATIM)
+include(cmake/CaiSmithPrompts.cmake)
 add_custom_target(cai_smith_prompt_asset
-  DEPENDS "${CAI_SMITH_PROMPT_INC_PATH}")
+  DEPENDS ${CAI_SMITH_PROMPT_INC_PATHS})
 
 if(NOT CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
   find_package(lonejson CONFIG QUIET COMPONENTS curl oidc openssl)

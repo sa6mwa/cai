@@ -1,3 +1,2 @@
-# This asset is pinned byte-for-byte to its upstream Codex revision, including
-# its intentional final blank line.
-prompts/smith/gpt-5.6-codex.md whitespace=-blank-at-eof
+# Imported prompt bytes and their identity-only templates retain upstream spacing.
+prompts/smith/*-codex*.md -text whitespace=-blank-at-eol,-blank-at-eof

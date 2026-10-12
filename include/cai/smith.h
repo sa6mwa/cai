@@ -73,7 +73,9 @@ typedef struct cai_agent_preset {
   /**
    * Full developer-instruction template for ordinary runs. The literal token
    * {{agent_identity}} is substituted with the selected identity. NULL is
-   * reserved for the built-in Smith template.
+   * reserved for Smith's built-in model-specific template catalog. Known
+   * model identifiers select their pinned Codex instructions; unknown models
+   * use the documented GPT-5.6 fallback. Custom templates remain authoritative.
    */
   const char *developer_instructions;
   /**

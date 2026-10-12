@@ -1105,6 +1105,21 @@ logs conversation events as described above.
 
 ## Agent Instructions
 
+Smith bundles pinned model-specific Codex developer instructions. GPT-5.6
+Sol/Terra/Luna share a template; GPT-6 Luna, GPT-6 Sol, GPT-6.1 Sol and GPT-6
+Astra each select their own. The `openai/` provider prefix is accepted for these
+identifiers; other model identifiers use the GPT-5.6 fallback. Custom preset
+instructions and the isolated review rubric remain authoritative.
+
+Model changes replace the model-owned instruction prefix at the existing safe
+settings boundary, preserving the captured tool policy, repository instructions,
+skills and developer extension. Resume selects the saved model's instructions;
+a failed checkpoint restores both the model and its prior prompt. CAI adapts
+Codex's channels, serial tool dispatch, questions, skills and connector assumptions
+through its capability overlay. Builds use committed assets only. The import
+helper `bash scripts/import_smith_prompts.sh CODEX_CHECKOUT` updates sources and
+their provenance manifest for a deliberate prompt refresh.
+
 The preferred high-level API is method-style handles:
 
 ```c

@@ -3,31 +3,103 @@
   "preset": "smith",
   "rendered_asset_version": "smith-7",
   "identity_placeholder": "{{agent_identity}}",
-  "template": {
-    "asset": "prompts/smith/gpt-5.6-codex-smith-template.md",
-    "sha256": "a188f43d51e0a8b5a515f12d3e4e478bb88fa3ccd97ac1213fca6bf269841da9"
-  },
   "upstream": {
     "project": "openai/codex",
     "license": "Apache-2.0",
-    "base": {
-      "revision": "5bcd7b0fbcefb41d0caa8db1a212ad7d47cf93ab",
-      "asset": "codex-rs/models-manager/models.json#gpt-5.6-terra.model_messages.instructions_template",
-      "sha256": "35d8b5d513fff3b55344d5f9f3169305cc276aee053f5be140a77708e0926e7c"
-    },
     "review": {
       "revision": "34e4823a1d9d6c412291962cc2c00514dd966841",
       "asset": "codex-rs/prompts/templates/review/rubric.md",
       "sha256": "ec60e7f36a1d1c2679ce095c0205ecc56f7dd8fb57707a13ef362072390f219f"
     }
   },
-  "equivalent_models": [
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna"
-  ],
   "rendering": {
     "identity_replacement": "The identity phrases 'You are Codex' and 'As Codex' become '{{agent_identity}}'.",
     "overlay": "CAI appends a narrow capability overlay through {{agent_tools}}."
-  }
+  },
+  "profiles": [
+    {
+      "name": "gpt-5.6",
+      "models": [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "codex-auto-review"
+      ],
+      "source": {
+        "asset": "prompts/smith/gpt-5.6-codex.md",
+        "revision": "0c329ad2c9d5a2592128a1d536c66e16f9397e46",
+        "selector": "codex-rs/models-manager/models.json#gpt-5.6-terra.model_messages.instructions_template",
+        "sha256": "a91357a1cd2727a0be06d461248d6e3a7274746e38108f548a3adf2cc2430415"
+      },
+      "template": {
+        "asset": "prompts/smith/gpt-5.6-codex-smith-template.md",
+        "sha256": "5c68ac7d170696f3231aeef145646bd6b422ce70641a3f98e487bf6660447804"
+      }
+    },
+    {
+      "name": "gpt-6-luna",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "source": {
+        "asset": "prompts/smith/gpt-6-luna-codex.md",
+        "revision": "0c329ad2c9d5a2592128a1d536c66e16f9397e46",
+        "selector": "codex-rs/models-manager/models.json#gpt-6-luna.model_messages.instructions_template",
+        "sha256": "b707476816bfe5e571a1bd2179f130fff2b132da5ab8e61063acdb7fd24daf12"
+      },
+      "template": {
+        "asset": "prompts/smith/gpt-6-luna-codex-smith-template.md",
+        "sha256": "68d57f93fb1d8416aa59f8f6bd7fe76f41afecfbc8213b3f8b7079bc10bc4555"
+      }
+    },
+    {
+      "name": "gpt-6-sol",
+      "models": [
+        "gpt-6-sol"
+      ],
+      "source": {
+        "asset": "prompts/smith/gpt-6-sol-codex.md",
+        "revision": "0c329ad2c9d5a2592128a1d536c66e16f9397e46",
+        "selector": "codex-rs/models-manager/models.json#gpt-6-sol.model_messages.instructions_template",
+        "sha256": "b1dd8718c037906c53a305c5cbccb4a4be35ccbb7837461ec349bfc495412f0d"
+      },
+      "template": {
+        "asset": "prompts/smith/gpt-6-sol-codex-smith-template.md",
+        "sha256": "44c43528f667fdff7f7eb728c046e6e6e5d0de2c8f51e26a659b9d918607af42"
+      }
+    },
+    {
+      "name": "gpt-6.1-sol",
+      "models": [
+        "gpt-6.1-sol"
+      ],
+      "source": {
+        "asset": "prompts/smith/gpt-6.1-sol-codex.md",
+        "revision": "0c329ad2c9d5a2592128a1d536c66e16f9397e46",
+        "selector": "codex-rs/models-manager/models.json#gpt-6.1-sol.model_messages.instructions_template",
+        "sha256": "e1bdd4f8f0df4b20f4a0ffc8a861ce819df45325d8cecdfb92e80379cf8d142e"
+      },
+      "template": {
+        "asset": "prompts/smith/gpt-6.1-sol-codex-smith-template.md",
+        "sha256": "c51daf3f49b4beefa02579592921fca1d51a5ac2e9d66ea9c0dd5fbab887422a"
+      }
+    },
+    {
+      "name": "gpt-6-astra",
+      "models": [
+        "gpt-6-astra"
+      ],
+      "source": {
+        "asset": "prompts/smith/gpt-6-astra-codex.md",
+        "revision": "0c329ad2c9d5a2592128a1d536c66e16f9397e46",
+        "selector": "codex-rs/models-manager/models.json#gpt-6-astra.model_messages.instructions_template",
+        "sha256": "35bd51b5f577cb7b24cd5f4629e49e37cb724ab57754ce6f8f202001635bab8a"
+      },
+      "template": {
+        "asset": "prompts/smith/gpt-6-astra-codex-smith-template.md",
+        "sha256": "98ad4e7c54ffd83139e56afd2786dc5bd44ea38c1c1195334533426bdeeef5ee"
+      }
+    }
+  ],
+  "fallback_profile": "gpt-5.6"
 }

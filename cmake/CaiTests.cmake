@@ -445,6 +445,7 @@ if(CAI_BUILD_TESTS)
     agent_client_history_continuity
     global_skills_catalog
     smith_profile
+    smith_model_prompts
     smith_review_runtime
     smith_review_parent_handoff
     agent_runtime_subagent
@@ -735,6 +736,10 @@ if(CAI_BUILD_TESTS)
   set_tests_properties(cai_smith_prompt_asset_test PROPERTIES
     LABELS "unit;local"
     TIMEOUT 3)
+  add_test(NAME cai_smith_prompt_import_test
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/smith_prompt_import_test.sh"
+      "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+  set_tests_properties(cai_smith_prompt_import_test PROPERTIES LABELS "unit;local;host" TIMEOUT 10)
   add_test(NAME cai_byte_asset_generator_test
     COMMAND "${CMAKE_COMMAND}"
       "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"

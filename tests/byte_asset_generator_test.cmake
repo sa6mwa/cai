@@ -16,6 +16,20 @@ file(REMOVE_RECURSE "${_cai_work}")
 file(MAKE_DIRECTORY "${_cai_work}")
 file(WRITE "${_cai_work}/empty.bin" "")
 file(WRITE "${_cai_work}/raw.bin" "AB")
+file(WRITE "${_cai_work}/boundary.bin" "p\n")
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" -DCAI_ASSET_MODE=c-string
+          "-DCAI_ASSET_INPUT=${_cai_work}/boundary.bin"
+          "-DCAI_ASSET_OUTPUT=${_cai_work}/boundary.inc"
+          -P "${_cai_generator}"
+  RESULT_VARIABLE _cai_boundary_result)
+if(NOT _cai_boundary_result EQUAL 0)
+  message(FATAL_ERROR "NUL checking must not match across byte boundaries")
+endif()
+file(READ "${_cai_work}/boundary.inc" _cai_boundary_contents)
+if(NOT _cai_boundary_contents STREQUAL "  0x70, 0x0a, 0x00\n")
+  message(FATAL_ERROR "C-string generator must preserve bytes and append one NUL")
+endif()
 
 execute_process(
   COMMAND "${CMAKE_COMMAND}" -DCAI_ASSET_MODE=raw

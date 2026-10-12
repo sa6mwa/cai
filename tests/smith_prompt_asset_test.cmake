@@ -1,110 +1,56 @@
-if(NOT DEFINED CAI_SOURCE_DIR OR CAI_SOURCE_DIR STREQUAL "")
-  message(FATAL_ERROR "CAI_SOURCE_DIR is required")
+if(NOT DEFINED CAI_SOURCE_DIR OR NOT DEFINED CAI_BINARY_DIR)
+  message(FATAL_ERROR "CAI_SOURCE_DIR and CAI_BINARY_DIR are required")
 endif()
-if(NOT DEFINED CAI_BINARY_DIR OR CAI_BINARY_DIR STREQUAL "")
-  message(FATAL_ERROR "CAI_BINARY_DIR is required")
+file(READ "${CAI_SOURCE_DIR}/prompts/smith/manifest.json" _manifest)
+string(JSON _count LENGTH "${_manifest}" profiles)
+math(EXPR _last "${_count} - 1")
+if(NOT _count EQUAL 5)
+  message(FATAL_ERROR "Expected five distinct Smith model prompt profiles")
 endif()
-
-set(_cai_prompt "${CAI_SOURCE_DIR}/prompts/smith/gpt-5.6-codex.md")
-set(_cai_template
-    "${CAI_SOURCE_DIR}/prompts/smith/gpt-5.6-codex-smith-template.md")
-set(_cai_manifest "${CAI_SOURCE_DIR}/prompts/smith/manifest.json")
-if(NOT EXISTS "${_cai_prompt}" OR NOT EXISTS "${_cai_template}" OR
-   NOT EXISTS "${_cai_manifest}")
-  message(FATAL_ERROR "Smith prompt assets and manifest are required")
-endif()
-
-file(SHA256 "${_cai_prompt}" _cai_prompt_sha256)
-if(NOT _cai_prompt_sha256 STREQUAL
-       "35d8b5d513fff3b55344d5f9f3169305cc276aee053f5be140a77708e0926e7c")
-  message(FATAL_ERROR "Smith GPT-5.6 prompt asset does not match Codex source")
-endif()
-file(READ "${_cai_prompt}" _cai_prompt_contents)
-if(NOT _cai_prompt_contents MATCHES
-       "^You are Codex, an agent based on GPT-5\\.")
-  message(FATAL_ERROR "Smith prompt asset is not the upstream Codex baseline")
-endif()
-
-set(_cai_expected_template "${_cai_prompt_contents}")
-string(REGEX REPLACE
-  "^You are Codex, an agent based on GPT-5\\."
-  "You are {{agent_identity}}, an agent based on GPT-5."
-  _cai_expected_template "${_cai_expected_template}")
-string(REPLACE "As Codex," "As {{agent_identity}},"
-               _cai_expected_template "${_cai_expected_template}")
-string(APPEND _cai_expected_template "\n{{agent_tools}}\n")
-string(HEX "${_cai_expected_template}" _cai_expected_template_hex)
-string(TOLOWER "${_cai_expected_template_hex}" _cai_expected_template_hex)
-file(READ "${_cai_template}" _cai_template_hex HEX)
-string(TOLOWER "${_cai_template_hex}" _cai_template_hex)
-if(NOT _cai_template_hex STREQUAL _cai_expected_template_hex)
-  message(FATAL_ERROR
-    "Smith template must be the byte-exact upstream rendering template")
-endif()
-if(_cai_template_hex MATCHES "00")
-  message(FATAL_ERROR "Smith C-string template must not contain NUL bytes")
-endif()
-
-file(READ "${_cai_manifest}" _cai_manifest_contents)
-string(JSON _cai_manifest_hash GET "${_cai_manifest_contents}" upstream base sha256)
-string(JSON _cai_manifest_template_hash GET "${_cai_manifest_contents}"
-       template sha256)
-string(JSON _cai_manifest_template_asset GET "${_cai_manifest_contents}"
-       template asset)
-if(NOT _cai_manifest_hash STREQUAL _cai_prompt_sha256 OR
-   NOT _cai_manifest_template_hash STREQUAL
-       "a188f43d51e0a8b5a515f12d3e4e478bb88fa3ccd97ac1213fca6bf269841da9" OR
-   NOT _cai_manifest_template_asset STREQUAL
-       "prompts/smith/gpt-5.6-codex-smith-template.md")
-  message(FATAL_ERROR "Smith prompt manifest does not describe its assets")
-endif()
-
-set(_cai_generated_inc
-    "${CAI_BINARY_DIR}/generated/private/cai_smith_gpt_5_6_prompt.inc")
-execute_process(
-  COMMAND "${CMAKE_COMMAND}" --build "${CAI_BINARY_DIR}"
-          --target cai_smith_prompt_asset --parallel 2
-  RESULT_VARIABLE _cai_build_result)
-if(NOT _cai_build_result EQUAL 0)
-  message(FATAL_ERROR "Smith prompt asset target build failed")
-endif()
-if(NOT EXISTS "${_cai_generated_inc}")
-  message(FATAL_ERROR "Smith generated prompt byte include is required")
-endif()
-
-file(READ "${_cai_generated_inc}" _cai_generated_inc_contents)
-if(_cai_generated_inc_contents MATCHES "[,][ \t\r\n]*$")
-  message(FATAL_ERROR "Smith generated prompt include must not end with a comma")
-endif()
-if(_cai_generated_inc_contents MATCHES "[^0-9a-fA-Fx, \t\r\n]")
-  message(FATAL_ERROR "Smith generated prompt include contains non-byte syntax")
-endif()
-file(STRINGS "${_cai_generated_inc}" _cai_generated_inc_lines)
-foreach(_cai_generated_inc_line IN LISTS _cai_generated_inc_lines)
-  string(LENGTH "${_cai_generated_inc_line}" _cai_generated_inc_line_length)
-  if(_cai_generated_inc_line_length GREATER 72)
-    message(FATAL_ERROR "Smith generated prompt include exceeds 72 columns")
+foreach(_index RANGE ${_last})
+  string(JSON _name GET "${_manifest}" profiles ${_index} name)
+  foreach(_kind source template)
+    string(JSON _asset GET "${_manifest}" profiles ${_index} ${_kind} asset)
+    string(JSON _expected_hash GET "${_manifest}" profiles ${_index} ${_kind} sha256)
+    file(SHA256 "${CAI_SOURCE_DIR}/${_asset}" _hash)
+    if(NOT _hash STREQUAL _expected_hash)
+      message(FATAL_ERROR "Prompt asset hash mismatch: ${_asset}")
+    endif()
+    file(READ "${CAI_SOURCE_DIR}/${_asset}" _${_kind})
+  endforeach()
+  if(NOT _source MATCHES "^You are Codex, an agent based on GPT-[56]\\.")
+    message(FATAL_ERROR "Prompt is not the upstream Codex baseline: ${_name}")
   endif()
-  if(NOT _cai_generated_inc_line MATCHES
-         "^  0x[0-9a-fA-F][0-9a-fA-F](, 0x[0-9a-fA-F][0-9a-fA-F])*,?$")
-    message(FATAL_ERROR "Smith generated prompt include must contain byte literals")
+  string(REGEX REPLACE "^You are Codex," "You are {{agent_identity}}," _expected "${_source}")
+  string(REPLACE "As Codex," "As {{agent_identity}}," _expected "${_expected}")
+  string(APPEND _expected "\n{{agent_tools}}\n")
+  if(NOT _template STREQUAL _expected)
+    message(FATAL_ERROR "Only identity substitution and the capability overlay are allowed: ${_name}")
+  endif()
+  string(HEX "${_template}" _template_hex)
+  string(REGEX MATCHALL ".." _template_bytes "${_template_hex}")
+  list(FIND _template_bytes "00" _nul_index)
+  if(NOT _nul_index EQUAL -1)
+    message(FATAL_ERROR "Smith templates cannot contain NUL bytes")
+  endif()
+  string(REGEX REPLACE "[.-]" "_" _symbol "cai_smith_${_name}_prompt")
+  set(_inc "${CAI_BINARY_DIR}/generated/private/${_symbol}.inc")
+  # CMake already built these prerequisites. CTest validates bytes, never builds.
+  file(READ "${_inc}" _bytes)
+  if(_bytes MATCHES "[,][ \t\r\n]*$" OR _bytes MATCHES "[^0-9a-fA-Fx, \t\r\n]")
+    message(FATAL_ERROR "Invalid generated byte syntax: ${_name}")
+  endif()
+  file(STRINGS "${_inc}" _lines)
+  foreach(_line IN LISTS _lines)
+    string(LENGTH "${_line}" _length)
+    if(_length GREATER 72 OR NOT _line MATCHES "^  0x[0-9a-fA-F][0-9a-fA-F](, 0x[0-9a-fA-F][0-9a-fA-F])*,?$")
+      message(FATAL_ERROR "Invalid generated byte line: ${_name}")
+    endif()
+  endforeach()
+  string(REPLACE "0x" "" _hex "${_bytes}")
+  string(REGEX REPLACE "[, \t\r\n]" "" _hex "${_hex}")
+  string(TOLOWER "${_hex}" _hex)
+  if(NOT _hex STREQUAL "${_template_hex}00")
+    message(FATAL_ERROR "Generated bytes must equal the template plus one terminator: ${_name}")
   endif()
 endforeach()
-string(REGEX MATCHALL "0x[0-9a-fA-F][0-9a-fA-F]"
-       _cai_generated_prompt_bytes "${_cai_generated_inc_contents}")
-list(LENGTH _cai_generated_prompt_bytes _cai_generated_prompt_byte_count)
-string(LENGTH "${_cai_template_hex}" _cai_template_hex_length)
-math(EXPR _cai_expected_prompt_byte_count "${_cai_template_hex_length} / 2 + 1")
-if(NOT _cai_generated_prompt_byte_count EQUAL _cai_expected_prompt_byte_count)
-  message(FATAL_ERROR "Smith generated prompt byte count does not match template")
-endif()
-set(_cai_generated_prompt_hex "${_cai_generated_inc_contents}")
-string(REPLACE "0x" "" _cai_generated_prompt_hex
-               "${_cai_generated_prompt_hex}")
-string(REGEX REPLACE "[, \t\r\n]" "" _cai_generated_prompt_hex
-                     "${_cai_generated_prompt_hex}")
-string(TOLOWER "${_cai_generated_prompt_hex}" _cai_generated_prompt_hex)
-if(NOT _cai_generated_prompt_hex STREQUAL "${_cai_template_hex}00")
-  message(FATAL_ERROR
-    "Smith generated prompt bytes must match the template plus one terminator")
-endif()

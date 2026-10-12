@@ -1,12 +1,28 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/cli_test_common.sh"
+case "${1:?settings test requires responses or chat_completions}" in
+  responses) chat=false ;;
+  chat_completions) chat=true ;;
+  *) fail 'Unknown settings test protocol' ;;
+esac
 peer_start
 export OPENAI_API_KEY=fixture OPENROUTER_API_KEY=fixture CAI_TEST_API_BASE_URL="$endpoint"
 printf 'settings tool output\n' >"$work/data.txt"
 catalog='{"models":[{"slug":"gpt-6-luna","display_name":"Luna","context_window":272000,"supported_in_api":true,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"max"}]},{"slug":"gpt-6.1-sol","display_name":"Sol","context_window":272000,"supported_in_api":true,"default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}]},{"slug":"no-reasoning","supported_reasoning_levels":[]}]}'
 settings_plan() { jq -n --argjson cat "$catalog" --argjson items "$1" --argjson chat "$chat" '{catalog:$cat,chat:$chat,plan:$items}' >"$root/plan"; plan "$(cat "$root/plan")"; }
-selection() { tail -1 "$root/peer/requests.jsonl" >"$root/request"; json "$root/request" ".model == \"$1\" and (.reasoning_effort // .reasoning.effort) == \"$2\""; }
-for chat in false true; do
+selection() {
+  tail -1 "$root/peer/requests.jsonl" >"$root/request"
+  json "$root/request" ".model == \"$1\" and (.reasoning_effort // .reasoning.effort) == \"$2\""
+  # Assert the actual outbound developer instructions for both wire protocols,
+  # including queued mid-turn settings and restoration from encrypted history.
+  if [[ "$1" == gpt-6.1-sol ]]; then
+    contains "$root/request" 'Default to using clear, concise paragraphs'
+  elif [[ "$1" == gpt-6-luna ]]; then
+    absent "$root/request" 'Default to using clear, concise paragraphs'
+  fi
+  contains "$root/request" 'an agent based on GPT-6.'
+  contains "$root/request" 'CAI has no functions.exec orchestration'
+}
   if [[ "$chat" == true ]]; then export CAI_TEST_CHAT_COMPLETIONS=1; else unset CAI_TEST_CHAT_COMPLETIONS; fi
   base=("$cli" -p openai --no-terminal --no-image-generation -C "$work")
   settings_plan '[]'; terminal_start -N
@@ -50,7 +66,8 @@ for chat in false true; do
   count=$(wc -l <"$root/peer/gets")
   send '/model\r'; expect "OpenRouter's large catalog is not listed"
   [[ $(wc -l <"$root/peer/gets") == "$count" ]]; terminal_close
-done
+# The account catalog contract is protocol-independent and runs once.
+if [[ "$chat" == true ]]; then exit 0; fi
 # Account catalog has no UI filtering, even beyond row 50 or client visibility fields.
 mkdir -p "$root/.codex"
 printf '%s\n' '{"auth_mode":"chatgpt","tokens":{"id_token":"eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA0MTAyNDQ0ODAwfQ.sig","access_token":"eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA0MTAyNDQ0ODAwfQ.sig","refresh_token":"fixture","account_id":"fixture"}}' >"$root/.codex/auth.json"

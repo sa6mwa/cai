@@ -5816,6 +5816,8 @@ cai_session_refresh_request_settings(cai_session *session,
   cai_agent_impl *agent = CAI_SESSION_AGENT_IMPL(session);
   int rc = params->set_model(params, agent->model, error);
   if (rc == CAI_OK)
+    rc = params->set_instructions(params, agent->developer_instructions, error);
+  if (rc == CAI_OK)
     rc = params->set_reasoning(params, agent->reasoning_effort,
                                agent->reasoning_summary, error);
   return rc;
