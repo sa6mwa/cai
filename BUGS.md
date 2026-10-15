@@ -246,7 +246,8 @@ commit and verification evidence.
 ## BUG-011: Idle core dump followed by an unreadable pouch index warning
 
 - **Priority:** critical.
-- **Status:** investigating; crash cause and storage recovery are unproven.
+- **Status:** crash cause identified in liblockdc; upstream repair and regression
+  verification remain open.
 - **Reported:** CAI dumped core while idle. On the next startup it printed
   `cache.load.index.error: pouch query-index manifest is not readable`
   for namespace `cai.sessions`, code 1.
@@ -267,15 +268,25 @@ commit and verification evidence.
 - **Crash coverage:** an idle writer killed without closing its pouch can be
   reopened and resumed. The static musl CAI also survives two real ten-second
   background index-publication cycles while interactive and idle. Neither test
-  reproduces the reported core dump; no matching CAI core was available in this
-  environment's crash records. Keep the crash report open.
+  reproduced the reported core dump; no matching CAI core was available during
+  those checks. The subsequently supplied core is analyzed below.
 - **Lease hypothesis:** the user observed the warning disappear and suggested
   lease expiration. The logged code is `LC_ERR_INVALID` (1), not
   `LC_ERR_TIMEOUT` (6); it comes from parsing an invalid index manifest during
   cache warming, which does not acquire a document lease. CAI's normal document
   leases have a one-hour TTL and a separate acquisition wait. Automatic index
   rebuilding explains the same disappearance without waiting for lease expiry;
-  the user's actual recovery timing and crash cause remain unverified.
+  the user's actual recovery timing remains unverified.
+- **Core evidence (2026-10-15):** the supplied core and matching `~/cai`
+  executable identify a stack overflow in liblockdc's background compaction
+  worker. `lc_pouch_state_copy_file_span_to_fd_crc` reserves a 128 KiB local
+  buffer; its first stack write faults in the musl thread's guard page.
+  The current static build still contains the same allocation. The prior
+  index-recovery checks did not exercise this compaction path. See
+  [the upstream report](docs/liblockdc-compaction-stack-overflow.md) for the
+  verified backtrace, instruction/register evidence and required regression
+  coverage. The index warning's relationship to this interrupted compaction
+  has not been established. No upstream files or user storage were modified.
 
 ## BUG-012: Capture PTY shell output for conversation context
 
