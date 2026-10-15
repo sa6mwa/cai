@@ -18,13 +18,14 @@
       "installRole": "private-static-parser"
     },
     {
-      "name": "c.pkt.systems",
-      "version": "@CAI_C_PKT_SYSTEMS_VERSION@",
+      "name": "cpkt",
+      "packageId": "@CAI_CPKT_PACKAGE_ID_FOR_PACKAGE@",
+      "version": "@CAI_CPKT_VERSION@",
       "targetId": "@CAI_TARGET_ID@",
       "sourceSystem": "github-release",
-      "sourceUrl": "@CAI_C_PKT_SYSTEMS_URL_FOR_PACKAGE@",
-      "sha256": "@CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE@",
-      "archiveName": "@CAI_C_PKT_SYSTEMS_ARCHIVE_NAME_FOR_PACKAGE@",
+      "sourceUrl": "@CAI_CPKT_URL_FOR_PACKAGE@",
+      "sha256": "@CAI_CPKT_SHA256_FOR_PACKAGE@",
+      "archiveName": "@CAI_CPKT_ARCHIVE_NAME_FOR_PACKAGE@",
       "licenseIdentifier": "NOASSERTION",
       "bundled": false,
       "installRole": "external-static-consumer-sdk"

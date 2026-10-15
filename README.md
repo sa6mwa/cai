@@ -96,8 +96,13 @@ runtime, review, storage, and presentation contracts.
 
 The `cai` preset builds the terminal coding agent as a statically linked
 Linux x86_64 musl executable. It adds pinned softline 0.10.0 for the prompt and
-libmdf 0.14.0 for streamed Markdown rendering, and liblockdc 0.18.0 with
+libmdf 0.14.0 for streamed Markdown rendering, and liblockdc 0.19.0 with
 liblql 0.3.0 for durable storage. It uses libpslog 0.12.0 for logging.
+The native dependency SDK is cpkt 0.3.0 from
+[c89systems/cpkt](https://github.com/c89systems/cpkt). CAI consumes liblockdc's
+core archive; its separate PostgreSQL provider is excluded. Neither cpktdb nor
+cpktmisc is required. Dependency prefixes remain separate, and imported CMake
+targets supply the complete static link dependencies.
 `libcai` itself has no dependency on the CLI prompt, rendering, or storage libraries.
 Softline and libmdf run on the UI thread. The runtime
 worker executes model requests and tools, then wakes the UI thread to render
@@ -497,7 +502,7 @@ under this checkout's `build/` or `.cache/`;
 one operation owns each producer root and inputs stay stable during checks.
 It stays below the C89 public API. SDK packages
 include its private static link dependency and license; the CAI binary links
-it statically. Moving this source producer into c.pkt.systems core is deferred.
+it statically. Moving this source producer into cpkt core is deferred.
 
 Chrome control through the official ChatGPT extension is opt-in:
 `cai --chrome-setup` registers cai's own native host, then `cai --chrome`
@@ -679,7 +684,7 @@ Linux compiler collections are pinned to Bootlin stable 2026.08-1 (GCC 15.3.0)
 for all six Linux targets. The AFL++ GCC plugin uses that same collection.
 Local tests, examples, fuzzers, and e2e helpers use the selected x86_64 GNU
 collection's loader and runtime directly; no shell-level library-path override
-is needed. c.pkt.systems 0.11.0 shared dependencies require glibc 2.43 or
+is needed. cpkt 0.3.0 shared dependencies require glibc 2.43 or
 newer on Linux. Deployments on older glibc must upgrade their runtime or use a
 fully static musl application and validate it.
 Fuzz harnesses disable their own core dumps so Apport and other host crash
@@ -717,7 +722,11 @@ fail with an explicit preparation command. Prepare fuzz tooling with
   build/link coverage and binary package verification. It accepts an explicit
   `CAI_VERSION_OVERRIDE` candidate and never cleans or changes release refs.
 - `make release` and `make release-matrix` are the same final local delivery gate.
-  Before cleaning or provisioning, HEAD must have one exact lightweight release
+  Squash the verified development branch onto the local default branch before
+  requesting amendment and signing. Keep remote refs unchanged. Signing, tagging
+  and the final gate use that default-branch commit, without an intermediate
+  release branch. Before cleaning or provisioning, HEAD must be attached to the
+  resolved default branch and have one exact lightweight release
   tag, the final amended commit's signature must verify, the worktree must be
   clean, and no version override may be set. The gate removes the entire
   checkout-local `build/`, `dist/`, and `.cache/`, including hidden entries and
@@ -780,7 +789,7 @@ fail with an explicit preparation command. Prepare fuzz tooling with
   the target platform. They also include `README.md` and `LICENSE` under
   `share/doc/libcai/`, plus supplemental docs under `share/doc/libcai/docs/`.
 - Dependency mode defaults to `cpkt`: the build uses the official
-  `github.com/sa6mwa/c.pkt.systems` release tarball for the selected target to
+  `github.com/c89systems/cpkt` release tarball for the selected target to
   provide the native dependency stack. cai currently consumes curl, OpenSSL,
   nghttp2, libssh2, and zlib from that archive. It also uses official
   `lonejson` and `libpslog` release artifacts for the JSON library and logger
@@ -796,7 +805,7 @@ fail with an explicit preparation command. Prepare fuzz tooling with
   `auto` chooses host only when all required host pieces are discoverable and
   the lonejson ABI matches, otherwise it falls back to `cpkt`.
 - Installed CMake and pkg-config metadata preserve that dependency mode.
-  `cpkt` mode records the official `c.pkt.systems` dependency URL and checksum;
+  `cpkt` mode records the official `cpkt` dependency URL and checksum;
   `host` mode records the resolved host include/library paths. `cai` archives
   do not vendor dependency headers.
 
@@ -1060,7 +1069,7 @@ target_link_libraries(app PRIVATE cai::cai_shared)
 ```
 
 The metadata records the dependency mode used to build cai. In the default
-`cpkt` mode it points at the matching official `c.pkt.systems` release URL and
+`cpkt` mode it points at the matching official `cpkt` release URL and
 checksum for the native curl/OpenSSL stack and the matching official lonejson
 release URL/checksum. The CMake package models lonejson as an external
 dependency: `find_package(cai)` requires `liblonejson` and its `curl`, `oidc`,

@@ -1,4 +1,4 @@
-# Temporary private source producer until libyaml joins c.pkt.systems core.
+# Temporary private source producer until libyaml joins cpkt core.
 set(CAI_LIBYAML_VERSION "0.2.5")
 set(CAI_LIBYAML_URL "https://github.com/yaml/libyaml/archive/refs/tags/0.2.5.tar.gz")
 set(CAI_LIBYAML_SHA256 "fa240dbf262be053f3898006d502d514936c818e422afdcf33921c63bed9bf2e")

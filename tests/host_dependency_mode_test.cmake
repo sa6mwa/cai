@@ -16,7 +16,7 @@ file(REMOVE_RECURSE "${host_dir}")
 
 set(prefix_paths "")
 foreach(path IN ITEMS
-    "${CAI_C_PKT_SYSTEMS_PREFIX}"
+    "${CAI_CPKT_PREFIX}"
     "${CAI_LONEJSON_PREFIX}"
     "${CAI_PSLOG_PREFIX}")
   if(NOT path STREQUAL "" AND EXISTS "${path}")
@@ -78,9 +78,9 @@ if(NOT configure_result EQUAL 0)
 endif()
 
 file(READ "${host_dir}/cai.pc" pc_text)
-if(pc_text MATCHES "c_pkt_systems_sha256=[^\n]+")
+if(pc_text MATCHES "cpkt_sha256=[^\n]+")
   message(FATAL_ERROR
-    "host dependency mode should not emit a bundled c.pkt.systems checksum")
+    "host dependency mode should not emit a bundled cpkt checksum")
 endif()
 
 set(auto_dir "${CAI_BINARY_DIR}/auto-dependency-mode-partial-pslog")
@@ -128,7 +128,7 @@ endif()
 execute_process(
   COMMAND "${CMAKE_COMMAND}"
           "-DCAI_BINARY_DIR=${auto_dir}"
-          "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_DEPS_DIR}/c.pkt.systems-${CAI_C_PKT_SYSTEMS_VERSION}-x86_64-linux-gnu"
+          "-DCAI_CPKT_PREFIX=${CAI_DEPS_DIR}/cpkt-${CAI_CPKT_VERSION}-x86_64-linux-gnu"
           "-DCAI_TARGET_ID=x86_64-linux-gnu"
           -DCAI_BUILD_SHARED=ON
           -DCAI_BUILD_STATIC=OFF
@@ -189,7 +189,7 @@ set(abi_configure_command
   "-DCAI_LONEJSON_INCLUDE_DIR=${fake_abi_prefix}/include"
   "-DCAI_LONEJSON_LIBRARY=${fake_abi_library}")
 set(abi_prefix_paths "")
-foreach(path IN ITEMS "${CAI_C_PKT_SYSTEMS_PREFIX}" "${CAI_PSLOG_PREFIX}")
+foreach(path IN ITEMS "${CAI_CPKT_PREFIX}" "${CAI_PSLOG_PREFIX}")
   if(NOT path STREQUAL "" AND EXISTS "${path}")
     list(APPEND abi_prefix_paths "${path}")
   endif()
@@ -308,7 +308,7 @@ if(NOT auto_abi_configure_result EQUAL 0)
 endif()
 
 file(READ "${auto_abi_dir}/cai.pc" auto_abi_pc_text)
-if(NOT auto_abi_pc_text MATCHES "c_pkt_systems_sha256=[0-9a-f]+")
+if(NOT auto_abi_pc_text MATCHES "cpkt_sha256=[0-9a-f]+")
   message(FATAL_ERROR
     "auto dependency mode should fall back to cpkt when host liblonejson has "
     "the wrong ABI")

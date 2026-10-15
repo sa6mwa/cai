@@ -438,7 +438,7 @@ verify_dependency_manifest() {
   manifest_text=$(cat "$manifest")
   pc_lonejson_version=$(sed -n 's/^lonejson_version=//p' "$pc")
   pc_lonejson_sha256=$(sed -n 's/^lonejson_sha256=//p' "$pc")
-  if ! grep -F '"name": "c.pkt.systems"' <<<"$manifest_text" >/dev/null ||
+  if ! grep -F '"name": "cpkt"' <<<"$manifest_text" >/dev/null ||
      ! grep -F '"name": "lonejson"' <<<"$manifest_text" >/dev/null ||
      ! grep -F '"name": "libpslog"' <<<"$manifest_text" >/dev/null ||
      ! grep -F "\"targetId\": \"$target_id\"" <<<"$manifest_text" >/dev/null ||
@@ -891,10 +891,10 @@ verify_extracted_sdk_smoke() {
   local root_dir=$1
   local target_id=$2
   local pc="$root_dir/lib/pkgconfig/cai.pc"
-  local c_pkt_version
+  local cpkt_version
   local lonejson_version
   local pslog_version
-  local c_pkt_prefix
+  local cpkt_prefix
   local lonejson_prefix
   local pslog_prefix
   local cmake_prefixes=()
@@ -910,25 +910,25 @@ verify_extracted_sdk_smoke() {
   local tool_path
   local smoke_workspace
 
-  c_pkt_version=$(pc_value "$pc" c_pkt_systems_version)
+  cpkt_version=$(pc_value "$pc" cpkt_version)
   lonejson_version=$(pc_value "$pc" lonejson_version)
-  [[ -n "$c_pkt_version" ]] || fail "cai.pc is missing c.pkt.systems version"
+  [[ -n "$cpkt_version" ]] || fail "cai.pc is missing cpkt version"
   [[ -n "$lonejson_version" ]] || fail "cai.pc is missing lonejson version"
 
-  c_pkt_prefix="$repo_root/.cache/deps/c.pkt.systems-$c_pkt_version-$target_id"
+  cpkt_prefix="$repo_root/.cache/deps/cpkt-$cpkt_version-$target_id"
   lonejson_prefix="$repo_root/.cache/deps/liblonejson-$lonejson_version-$target_id"
   pslog_version=$(sed -n \
     's/^CAI_PSLOG_VERSION[[:space:]]*[?:]*=[[:space:]]*//p' \
     "$repo_root/Makefile" | tail -n 1)
   pslog_prefix="$repo_root/.cache/deps/libpslog-$pslog_version-$target_id"
 
-  require_dependency_prefix "$c_pkt_prefix" "c.pkt.systems" "$root_dir"
+  require_dependency_prefix "$cpkt_prefix" "cpkt" "$root_dir"
   require_dependency_prefix "$lonejson_prefix" "liblonejson" "$root_dir"
 
-  cmake_prefixes=("$root_dir" "$c_pkt_prefix" "$lonejson_prefix")
+  cmake_prefixes=("$root_dir" "$cpkt_prefix" "$lonejson_prefix")
   pkg_config_dirs=(
     "$root_dir/lib/pkgconfig"
-    "$c_pkt_prefix/lib/pkgconfig"
+    "$cpkt_prefix/lib/pkgconfig"
     "$lonejson_prefix/lib/pkgconfig"
   )
   include_dirs=("-I$root_dir/include" "-I$lonejson_prefix/include")
@@ -936,8 +936,8 @@ verify_extracted_sdk_smoke() {
     cmake_prefixes+=("$pslog_prefix")
     pkg_config_dirs+=("$pslog_prefix/lib/pkgconfig")
   fi
-  if [[ -d "$c_pkt_prefix/include" ]]; then
-    include_dirs+=("-I$c_pkt_prefix/include")
+  if [[ -d "$cpkt_prefix/include" ]]; then
+    include_dirs+=("-I$cpkt_prefix/include")
   fi
 
   cmake_prefix_path=$(join_by ';' "${cmake_prefixes[@]}")
@@ -1195,6 +1195,11 @@ verify_cli_archive() {
       share/doc/libcai/docs/chrome.md; do
     require_file "$root_dir/$doc"
   done
+  local dependency
+  for dependency in liblockdc liblql softline libmdf libpslog liblonejson curl openssl zlib nghttp2 libssh2; do
+    require_file "$root_dir/share/doc/libcai/third_party/$dependency/LICENSE"
+  done
+  require_file "$root_dir/share/doc/libcai/third_party/libyaml/License"
   readelf=$(find_target_readelf x86_64-linux-musl) || fail "readelf required to verify static cai CLI"
   header=$("$readelf" -h "$binary") || fail "failed to read cai CLI ELF header: $binary"
   if ! grep -E 'Class:[[:space:]]+ELF64' <<<"$header" >/dev/null ||

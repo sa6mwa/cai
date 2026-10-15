@@ -177,7 +177,7 @@ endif()
 
 string(FIND "${pc_text}" "Requires.private: libcurl >= 7.86.0" pc_curl_pos)
 string(FIND "${pc_text}" "Requires: lonejson lonejson-curl lonejson-oidc lonejson-openssl" pc_public_deps_pos)
-string(FIND "${pc_text}" "c_pkt_systems_url=" pc_c_pkt_url_pos)
+string(FIND "${pc_text}" "cpkt_url=" pc_c_pkt_url_pos)
 string(FIND "${pc_text}" "lonejson_url=" pc_lonejson_url_pos)
 string(FIND "${pc_text}" "lonejson_abi_version=" pc_lonejson_abi_pos)
 if(pc_curl_pos EQUAL -1 OR pc_public_deps_pos EQUAL -1 OR
@@ -187,7 +187,7 @@ if(pc_curl_pos EQUAL -1 OR pc_public_deps_pos EQUAL -1 OR
 endif()
 
 file(READ "${prefix}/share/cai/dependencies.json" dependencies_text)
-string(FIND "${dependencies_text}" "\"name\": \"c.pkt.systems\""
+string(FIND "${dependencies_text}" "\"name\": \"cpkt\""
        deps_c_pkt_pos)
 string(FIND "${dependencies_text}" "\"name\": \"lonejson\""
        deps_lonejson_pos)
@@ -282,9 +282,9 @@ endif()
 
 if((NOT DEFINED CAI_RESOLVED_DEPENDENCY_MODE OR
     CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt") AND
-   DEFINED CAI_C_PKT_SYSTEMS_PREFIX AND
-   NOT CAI_C_PKT_SYSTEMS_PREFIX STREQUAL "" AND
-   EXISTS "${CAI_C_PKT_SYSTEMS_PREFIX}/include/curl/curl.h" AND
+   DEFINED CAI_CPKT_PREFIX AND
+   NOT CAI_CPKT_PREFIX STREQUAL "" AND
+   EXISTS "${CAI_CPKT_PREFIX}/include/curl/curl.h" AND
    DEFINED CAI_LONEJSON_PREFIX AND NOT CAI_LONEJSON_PREFIX STREQUAL "" AND
    EXISTS "${CAI_LONEJSON_PREFIX}/include/lonejson.h")
   set(consumer_dir "${CAI_BINARY_DIR}/install-metadata-consumer")
@@ -459,7 +459,7 @@ int main(void) {
 }
 ")
   set(consumer_prefix_path
-      "${prefix};${CAI_C_PKT_SYSTEMS_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}")
+      "${prefix};${CAI_CPKT_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}")
   string(REPLACE ";" "\\;" consumer_prefix_path_arg "${consumer_prefix_path}")
   set(consumer_configure_command
     "${CMAKE_COMMAND}"
@@ -520,7 +520,7 @@ int main(void) {
 }
 ")
   set(fallback_prefix_path
-      "${prefix};${CAI_C_PKT_SYSTEMS_PREFIX};${fallback_deps_dir}")
+      "${prefix};${CAI_CPKT_PREFIX};${fallback_deps_dir}")
   string(REPLACE ";" "\\;" fallback_prefix_path_arg "${fallback_prefix_path}")
   set(fallback_consumer_configure_command
     "${CMAKE_COMMAND}"
@@ -600,7 +600,7 @@ int main(void) {
       -S "${shared_only_consumer_dir}"
       -B "${shared_only_consumer_dir}/build"
       "-Dcai_DIR=${prefix}/lib/cmake/cai"
-      "-DCMAKE_PREFIX_PATH=${CAI_C_PKT_SYSTEMS_PREFIX}"
+      "-DCMAKE_PREFIX_PATH=${CAI_CPKT_PREFIX}"
       "-DCMAKE_LIBRARY_PATH=${shared_only_fake_lonejson_dir}/lib")
     execute_process(
       COMMAND ${shared_only_consumer_configure_command}
@@ -634,7 +634,7 @@ find_package(cai CONFIG REQUIRED)
     -S "${missing_dep_consumer_dir}"
     -B "${missing_dep_consumer_dir}/build"
     "-Dcai_DIR=${prefix}/lib/cmake/cai"
-    "-DCMAKE_PREFIX_PATH=${CAI_C_PKT_SYSTEMS_PREFIX}"
+    "-DCMAKE_PREFIX_PATH=${CAI_CPKT_PREFIX}"
     "-DCMAKE_IGNORE_PATH=${missing_dep_ignore_path_arg}")
   execute_process(
     COMMAND ${missing_dep_consumer_configure_command}
@@ -692,7 +692,7 @@ int main(void) {
     -S "${build_tree_consumer_dir}"
     -B "${build_tree_consumer_dir}/build"
     "-DCMAKE_C_COMPILER=${CAI_C_COMPILER}"
-    "-DCMAKE_PREFIX_PATH=${CAI_C_PKT_SYSTEMS_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}")
+    "-DCMAKE_PREFIX_PATH=${CAI_CPKT_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}")
   if(DEFINED CAI_GENERATOR AND NOT CAI_GENERATOR STREQUAL "")
     list(APPEND build_tree_configure_command -G "${CAI_GENERATOR}")
   endif()

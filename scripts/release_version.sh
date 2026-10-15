@@ -12,6 +12,19 @@ if [[ -n "$top" && $(cd "$top" && pwd -P) == "$root" ]]; then owned=true; fi
 version=${CAI_VERSION_OVERRIDE:-}
 if [[ -n "$require" ]]; then
   [[ "$owned" == true ]] || fail 'final release requires the owning Git checkout'
+  default_ref=$(git -C "$root" symbolic-ref --quiet refs/remotes/origin/HEAD || true)
+  default_branch=${default_ref#refs/remotes/origin/}
+  if [[ -z "$default_ref" ]]; then
+    for candidate in trunk main master; do
+      if git -C "$root" show-ref --verify --quiet "refs/heads/$candidate"; then
+        [[ -z "$default_branch" ]] || fail 'cannot resolve an unambiguous default branch; set origin/HEAD'
+        default_branch=$candidate
+      fi
+    done
+  fi
+  [[ -n "$default_branch" ]] || fail 'cannot resolve the default branch; set origin/HEAD'
+  branch=$(git -C "$root" symbolic-ref --quiet --short HEAD || true)
+  [[ "$branch" == "$default_branch" ]] || fail "final release requires HEAD attached to default branch $default_branch"
   [[ -z "$version" ]] || fail 'candidate version overrides are forbidden for final release'
   [[ -z $(git -C "$root" status --porcelain=v1 --untracked-files=all) ]] || fail 'final release requires a clean committed worktree'
 fi

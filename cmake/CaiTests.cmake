@@ -859,7 +859,7 @@ if(CAI_BUILD_TESTS)
         "-DCAI_VERSION=${CAI_PACKAGE_VERSION}"
         "-DCAI_BUILD_SHARED=${CAI_BUILD_SHARED}"
         "-DCAI_BUILD_STATIC=${CAI_BUILD_STATIC}"
-        "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
+        "-DCAI_CPKT_PREFIX=${CAI_CPKT_PREFIX}"
         "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
         "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
         "-DCAI_RESOLVED_DEPENDENCY_MODE=${CAI_RESOLVED_DEPENDENCY_MODE}"
@@ -882,13 +882,15 @@ if(CAI_BUILD_TESTS)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_metadata_test.cmake")
     set_tests_properties(cai_install_metadata_test PROPERTIES
       LABELS "packaging;local"
-      TIMEOUT 30)
+      # Six fresh consumers validate cpkt's complete SDK payload. Measured native
+      # completion is 40 seconds; retain a bounded gate for this package proof.
+      TIMEOUT 60)
     set(CAI_HOST_DEPENDENCY_MODE_TEST_ARGS
       "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
       "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
       "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
-      "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
-      "-DCAI_C_PKT_SYSTEMS_VERSION=${CAI_C_PKT_SYSTEMS_VERSION}"
+      "-DCAI_CPKT_PREFIX=${CAI_CPKT_PREFIX}"
+      "-DCAI_CPKT_VERSION=${CAI_CPKT_VERSION}"
       "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
       "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
       "-DCAI_LONEJSON_INCLUDE_DIR=${CAI_LONEJSON_INCLUDE_DIR}"
@@ -905,7 +907,9 @@ if(CAI_BUILD_TESTS)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_dependency_mode_test.cmake")
     set_tests_properties(cai_host_dependency_mode_unsupported_target PROPERTIES
       LABELS "packaging;local"
-      TIMEOUT 10)
+      # Host/auto cases perform full SDK validation in fresh configurations.
+      # Native completion was measured at 28 seconds after the provider split.
+      TIMEOUT 60)
     add_test(NAME cai_host_dependency_mode_unsupported_target_makefiles
       COMMAND "${CMAKE_COMMAND}"
         ${CAI_HOST_DEPENDENCY_MODE_TEST_ARGS}
@@ -914,7 +918,7 @@ if(CAI_BUILD_TESTS)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_dependency_mode_test.cmake")
     set_tests_properties(cai_host_dependency_mode_unsupported_target_makefiles PROPERTIES
       LABELS "packaging;local"
-      TIMEOUT 10)
+      TIMEOUT 60)
     add_test(NAME cai_rpath_token_test
       COMMAND "${CMAKE_COMMAND}"
         "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
@@ -940,7 +944,7 @@ if(CAI_BUILD_TESTS)
           COMMAND "${CMAKE_COMMAND}"
             "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
             "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
-            "-DCAI_PREFIXES=${CAI_C_PKT_SYSTEMS_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}"
+            "-DCAI_PREFIXES=${CAI_CPKT_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_dependency_runtime_test.cmake")
         set_tests_properties(cai_host_dependency_runtime_test PROPERTIES
           LABELS "packaging;local" TIMEOUT 120)
@@ -1000,16 +1004,28 @@ if(CAI_BUILD_TESTS)
       add_test(NAME cai_cpkt_link_targets_test
         COMMAND "${CMAKE_COMMAND}"
           "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
-          "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
+          "-DCAI_CPKT_PREFIX=${CAI_CPKT_PREFIX}"
           "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
           "-DCAI_BUILD_SHARED=${CAI_BUILD_SHARED}"
           "-DCAI_BUILD_STATIC=${CAI_BUILD_STATIC}"
           "-DCAI_BUILD_LUA=${CAI_BUILD_LUA}"
           "-DCAI_BUILD_EXAMPLES=${CAI_BUILD_EXAMPLES}"
+          "-DCAI_BUILD_CLI=${CAI_BUILD_CLI}"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cpkt_link_targets_test.cmake")
       set_tests_properties(cai_cpkt_link_targets_test PROPERTIES
         LABELS "packaging;local"
         TIMEOUT 3)
+      add_test(NAME cai_cpkt_target_mismatch_test
+        COMMAND "${CMAKE_COMMAND}"
+          "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+          "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+          "-DCAI_CPKT_PREFIX=${CAI_CPKT_PREFIX}"
+          "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
+          "-DCAI_C_COMPILER=${CMAKE_C_COMPILER}"
+          "-DCAI_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cpkt_target_mismatch_test.cmake")
+      set_tests_properties(cai_cpkt_target_mismatch_test PROPERTIES
+        LABELS "packaging;local" TIMEOUT 15)
     endif()
     set(CAI_NESTED_CONFIGURE_TOOLCHAIN_ARGS "")
     if(DEFINED CMAKE_TOOLCHAIN_FILE AND NOT CMAKE_TOOLCHAIN_FILE STREQUAL "")
@@ -1039,7 +1055,7 @@ if(CAI_BUILD_TESTS)
         "-DCAI_INSTALL=OFF"
         "-DCAI_DEPENDENCY_MODE=${CAI_RESOLVED_DEPENDENCY_MODE}"
         "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
-        "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
+        "-DCAI_CPKT_PREFIX=${CAI_CPKT_PREFIX}"
         "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
         "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
         "-DCAI_LONEJSON_INCLUDE_DIR=${CAI_LONEJSON_INCLUDE_DIR}"
@@ -1060,7 +1076,7 @@ if(CAI_BUILD_TESTS)
         "-DCAI_GENERATOR=${CMAKE_GENERATOR}"
         "-DCAI_DEPENDENCY_MODE=${CAI_RESOLVED_DEPENDENCY_MODE}"
         "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
-        "-DCAI_C_PKT_SYSTEMS_PREFIX=${CAI_C_PKT_SYSTEMS_PREFIX}"
+        "-DCAI_CPKT_PREFIX=${CAI_CPKT_PREFIX}"
         "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
         "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
         "-DCAI_LONEJSON_INCLUDE_DIR=${CAI_LONEJSON_INCLUDE_DIR}"

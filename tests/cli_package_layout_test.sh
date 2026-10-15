@@ -11,12 +11,24 @@ test -f "$stage/share/man/man1/cai.1"
 test -f "$stage/share/doc/libcai/README.md"
 test -f "$stage/share/doc/libcai/LICENSE"
 test -f "$stage/share/doc/libcai/docs/model-metadata.md"
-for dependency in liblockdc liblql softline libmdf libpslog; do
+for dependency in liblockdc liblql softline libmdf libpslog liblonejson curl openssl zlib nghttp2 libssh2; do
   test -f "$stage/share/doc/libcai/third_party/$dependency/LICENSE"
 done
 for notice in LICENSE.md LICENSE.BSD-3-Clause AUTHORS README.softline.md provenance.json softline.patch; do
   test -f "$stage/share/doc/libcai/third_party/softline/licenses/c-ares/$notice"
 done
+source_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+curl_license="$stage/share/doc/libcai/third_party/curl/LICENSE"
+mv "$curl_license" "$curl_license.saved"
+if (
+  CAI_REPO_ROOT="$source_root" source "$source_root/scripts/verify_release_artifacts.sh" --self-test
+  verify_cli_archive "$stage"
+) >"$stage/verify.stdout" 2>"$stage/verify.stderr"; then
+  printf 'CLI artifact verification accepted a missing curl license\n' >&2
+  exit 1
+fi
+grep -Fq "missing required file: $curl_license" "$stage/verify.stderr"
+mv "$curl_license.saved" "$curl_license"
 test ! -e "$stage/share/doc/cai"
 
 if command -v groff >/dev/null; then

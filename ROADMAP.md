@@ -46,7 +46,7 @@ Implemented:
 - Model constants and curated metadata for current OpenAI/OpenRouter models
   used by the SDK and tests.
 - External binary dependencies through `CAI_DEPENDENCY_MODE=cpkt`: official
-  `c.pkt.systems`, `lonejson`, and `libpslog` release artifacts.
+  `cpkt`, `lonejson`, and `libpslog` release artifacts.
 - Host dependency mode for already-installed curl/lonejson/pslog.
 - libpslog-backed client logging.
 - SearXNG, reverse-geocoding, todo/kanban, and opt-in command execution tool

@@ -10,7 +10,7 @@ fixture="$scratch/checkout with spaces"
 mkdir -p "$fixture/scripts" "$fixture/build" "$fixture/dist" "$fixture/.cache"
 cp "$repo/scripts/"{release_version,release}.sh "$fixture/scripts/"
 cp "$repo/Makefile" "$fixture/"
-git -C "$fixture" init -q
+git -C "$fixture" init -q --initial-branch=trunk
 git -C "$fixture" config user.name Fixture
 git -C "$fixture" config user.email fixture@example.invalid
 git -C "$fixture" config core.hooksPath /dev/null
@@ -36,6 +36,17 @@ git -C "$fixture" -c commit.gpgSign=true commit --amend --no-edit -q
 reject 'exact lightweight'
 git -C "$fixture" tag -d v1.2.3 >/dev/null
 git -C "$fixture" -c tag.gpgSign=false tag v1.2.3
+[[ $(bash "$fixture/scripts/release_version.sh" "$fixture" --require-release) == 1.2.3 ]]
+git -C "$fixture" checkout -qb feature/release
+reject 'attached to default branch trunk'
+git -C "$fixture" checkout -q trunk
+git -C "$fixture" checkout -q --detach
+reject 'attached to default branch trunk'
+git -C "$fixture" checkout -q trunk
+# Resolve nonstandard defaults through origin/HEAD, without network access.
+git -C "$fixture" branch -m stable
+git -C "$fixture" update-ref refs/remotes/origin/stable HEAD
+git -C "$fixture" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/stable
 [[ $(bash "$fixture/scripts/release_version.sh" "$fixture" --require-release) == 1.2.3 ]]
 if make --no-print-directory -C "$fixture" release RELEASE_VERSION=9.9.9 >"$scratch/out" 2>"$scratch/err"; then exit 1; fi
 grep -Fq 'forbids RELEASE_VERSION overrides' "$scratch/err"

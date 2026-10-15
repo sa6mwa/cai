@@ -25,7 +25,7 @@ elseif(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
 else()
   message(FATAL_ERROR
     "HOME, XDG_CACHE_HOME, or CPKT_DEPENDENCY_CACHE is required for the "
-    "shared c.pkt.systems dependency archive cache")
+    "shared cpkt dependency archive cache")
 endif()
 set(CPKT_DEPENDENCY_CACHE "${_cai_dependency_cache_default}" CACHE PATH
     "Shared checksum-pinned external archive cache." FORCE)

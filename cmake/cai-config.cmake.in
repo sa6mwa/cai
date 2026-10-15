@@ -10,11 +10,22 @@ set(cai_LONEJSON_TARGET "@CAI_TARGET_ID@")
 set(cai_LONEJSON_URL
     "https://github.com/sa6mwa/lonejson/releases/download/v@CAI_LONEJSON_VERSION@/liblonejson-@CAI_LONEJSON_VERSION@-@CAI_TARGET_ID@.tar.gz")
 set(cai_LONEJSON_SHA256 "@CAI_LONEJSON_PKG_SHA256_FOR_PACKAGE@")
-set(cai_C_PKT_SYSTEMS_VERSION "@CAI_C_PKT_SYSTEMS_VERSION@")
-set(cai_C_PKT_SYSTEMS_TARGET "@CAI_TARGET_ID@")
-set(cai_C_PKT_SYSTEMS_URL
-    "https://github.com/sa6mwa/c.pkt.systems/releases/download/v@CAI_C_PKT_SYSTEMS_VERSION@/c.pkt.systems-@CAI_C_PKT_SYSTEMS_VERSION@-@CAI_TARGET_ID@.tar.gz")
-set(cai_C_PKT_SYSTEMS_SHA256 "@CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE@")
+set(cai_CPKT_VERSION "@CAI_CPKT_VERSION@")
+set(cai_CPKT_TARGET "@CAI_TARGET_ID@")
+set(cai_CPKT_URL
+    "https://github.com/c89systems/cpkt/releases/download/v@CAI_CPKT_VERSION@/cpkt-@CAI_CPKT_VERSION@-@CAI_TARGET_ID@.tar.gz")
+set(cai_CPKT_SHA256 "@CAI_CPKT_SHA256_FOR_PACKAGE@")
+set(cai_CPKT_PACKAGE_ID "@CAI_CPKT_PACKAGE_ID_FOR_PACKAGE@")
+
+if(cai_DEPENDENCY_MODE STREQUAL "cpkt")
+  find_dependency(CpktCore @CAI_MINIMUM_CPKT_VERSION@ CONFIG)
+  if(NOT CpktCore_TARGET_ID STREQUAL cai_CPKT_TARGET)
+    set(cai_FOUND FALSE)
+    set(cai_NOT_FOUND_MESSAGE
+        "cai requires cpkt target ${cai_CPKT_TARGET}, found ${CpktCore_TARGET_ID}")
+    return()
+  endif()
+endif()
 
 find_dependency(CURL @CAI_MINIMUM_CURL_VERSION@)
 find_dependency(OpenSSL COMPONENTS Crypto)
@@ -58,7 +69,7 @@ if(NOT TARGET lonejson::lonejson)
     "Install liblonejson with ABI ${cai_LONEJSON_ABI_VERSION} and make "
     "either its CMake package or liblonejson discoverable. Official package: "
     "${cai_LONEJSON_URL}. "
-    "For the native curl/OpenSSL stack, use ${cai_C_PKT_SYSTEMS_URL}.")
+    "For the native curl/OpenSSL stack, use ${cai_CPKT_URL}.")
 endif()
 cai_validate_lonejson_library_abi(
   "${cai_LONEJSON_LIBRARY}" "${cai_LONEJSON_ABI_VERSION}"

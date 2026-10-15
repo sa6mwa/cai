@@ -53,8 +53,10 @@ option(CAI_INSTALL "Enable install rules." ON)
 set(CAI_VERSION_OVERRIDE "" CACHE STRING "Override detected cai package version.")
 set(CAI_DIST_DIR "${CMAKE_BINARY_DIR}/dist" CACHE PATH "Distribution output directory.")
 set(CAI_TARGET_ID "" CACHE STRING "Release archive target id.")
-set(CAI_C_PKT_SYSTEMS_VERSION "0.11.0" CACHE STRING
-    "Pinned c.pkt.systems release used for curl/native dependencies." FORCE)
+set(CAI_CPKT_VERSION "0.3.0" CACHE STRING
+    "Pinned cpkt release used for curl/native dependencies." FORCE)
+# Consumer compatibility is independent of the producer's exact archive pin.
+set(CAI_MINIMUM_CPKT_VERSION "0.3.0")
 # ABI 4 is the latest released ABI. Values 3 and 5 through 7 were only used by
 # unreleased development branches and must not survive a reconfigure. Preserve
 # any other packager-selected ABI override.
@@ -131,23 +133,23 @@ if(CAI_BUILD_CLI AND (NOT CAI_TARGET_ID MATCHES "^x86_64-linux-(gnu|musl)$" OR
     "The cai CLI requires x86_64 Linux and cpkt dependencies (GNU for development, musl for distribution)")
 endif()
 
-function(cai_c_pkt_systems_sha256 target_id out_var)
+function(cai_cpkt_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "fbd3e3f357c22dc26b94cc7e5e200651b59ecb39357ce7bb8c4cb3d939a2b557")
+    set(_sha256 "7b59ac702da1aab906c48c33a67954954c074f591d714085f3e4bd7a23619a66")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "f07a729e860efb275874871d73f3fcdde5ab6e0395762963f90b9db481ae34b8")
+    set(_sha256 "61c6e657cefd916b5f500374917ccc7e039d27b2ef1353a45a8f6f22d91c75ed")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "940c3d63f0d9b436cc3f27b73547b62e989fae258915274749160446e936124a")
+    set(_sha256 "4f1f964e5e54f191162d42871815a74afd9da02c77adce304a52dd03397d4740")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "6de39175f8f399a966d0aa925fcf665dd2c221bc38255624215f2faf332ab248")
+    set(_sha256 "7e25be64d73bc7140f01659c0c0e11e066990c88587fce2ca49ba8bf874a31aa")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "ca71287d539f550ef97311b12637a32e76ef163e4ac70edcfa26831474f41677")
+    set(_sha256 "2b57c7090186ed06a1df2525407e0cc222d6be1b40e3d7ff09c62e25354bee42")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "4c4eabad12354164f3fbc8f181e99e49d34fa073be9a4a328070493f27f1374e")
+    set(_sha256 "dcc7d29a6536382ce05fc1351917bb7118b8db13a4fb52e3cb96d4a91ff977f5")
   elseif(target_id STREQUAL "arm64-apple-darwin")
-    set(_sha256 "89e6d81df7a41d076a6067d6a79545e9ed318bef595a506e1da02b1b6fd601df")
+    set(_sha256 "5bf571b6dfeb19a8dc796cb584fd8e770eb1a10a3d2b98ab46269d7c8e895fce")
   else()
-    message(FATAL_ERROR "No pinned c.pkt.systems checksum for target ${target_id}")
+    message(FATAL_ERROR "No pinned cpkt checksum for target ${target_id}")
   endif()
   set(${out_var} "${_sha256}" PARENT_SCOPE)
 endfunction()
@@ -307,12 +309,12 @@ endfunction()
 if(CAI_BUILD_CLI)
   if(CAI_TARGET_ID STREQUAL "x86_64-linux-gnu")
     set(_cai_liblql_sha256 "fafb04f9af5d9610f77380ac1f848d1edd3d60dcf7ce6a098f6a04e30dd2b47a")
-    set(_cai_lockdc_sha256 "1e949887d613824716645dd5e9a85a1b89ad2d8d66431838c0a28c999b0e23da")
+    set(_cai_lockdc_sha256 "8ddf238f08aae7f47a1d4be65e06a6f397e21bf84983e646105e55491c354527")
     set(_cai_softline_sha256 "dbe96138bb9fbbb40c2aaff1dc307568458180155d534656ff04e4a752e5d2d6")
     set(_cai_libmdf_sha256 "b250a82e2562897102aee69bca2c946e53eadffddd1d85131975eaea00651b65")
   else()
     set(_cai_liblql_sha256 "e33a57e5d97337304c8541efaf8ab33bff9060cae600d1fe744a6734dca74ad4")
-    set(_cai_lockdc_sha256 "580b8f4b8dd87d77a3ef16f8a304ce3dc472e45e64e39ec1250a8582a8182c31")
+    set(_cai_lockdc_sha256 "93f0bfd9fd7eb2a253e5bac1ca2cd41eb3f1557d58b1817cda0bd7032d320ada")
     set(_cai_softline_sha256 "1fbd56ec0006b06d3cd66c5ad7ef6f03f6bdde7a2dc187508d03e8b544335854")
     set(_cai_libmdf_sha256 "144827811d9e1477a6e0835b8a94492c2a1ba7eb7fa6d091ee0e0c73f2e7b2ee")
   endif()
@@ -326,13 +328,13 @@ if(CAI_BUILD_CLI)
     "${_cai_liblql_archive}" "${_cai_liblql_prefix}"
     "${_cai_liblql_sha256}"
     "${_cai_liblql_prefix}/include/lql/lql.h")
-  set(_cai_lockdc_name "liblockdc-0.18.0-${CAI_TARGET_ID}")
+  set(_cai_lockdc_name "liblockdc-0.19.0-${CAI_TARGET_ID}")
   set(_cai_lockdc_prefix "${CAI_DEPS_DIR}/${_cai_lockdc_name}")
   cai_dependency_archive_path("${_cai_lockdc_name}.tar.gz"
     "${_cai_lockdc_sha256}"
     _cai_lockdc_archive)
-  cai_download_tarball("liblockdc 0.18.0 ${CAI_TARGET_ID}"
-    "https://github.com/sa6mwa/liblockdc/releases/download/v0.18.0/${_cai_lockdc_name}.tar.gz"
+  cai_download_tarball("liblockdc 0.19.0 ${CAI_TARGET_ID}"
+    "https://github.com/sa6mwa/liblockdc/releases/download/v0.19.0/${_cai_lockdc_name}.tar.gz"
     "${_cai_lockdc_archive}" "${_cai_lockdc_prefix}"
     "${_cai_lockdc_sha256}"
     "${_cai_lockdc_prefix}/include/lc/lc.h")
@@ -380,23 +382,23 @@ if(CAI_BUILD_CLI)
 endif()
 
 if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
-  cai_c_pkt_systems_sha256("${CAI_TARGET_ID}" CAI_C_PKT_SYSTEMS_SHA256)
-  set(CAI_C_PKT_SYSTEMS_NAME
-      "c.pkt.systems-${CAI_C_PKT_SYSTEMS_VERSION}-${CAI_TARGET_ID}")
-  set(CAI_C_PKT_SYSTEMS_URL
-      "https://github.com/sa6mwa/c.pkt.systems/releases/download/v${CAI_C_PKT_SYSTEMS_VERSION}/${CAI_C_PKT_SYSTEMS_NAME}.tar.gz")
+  cai_cpkt_sha256("${CAI_TARGET_ID}" CAI_CPKT_SHA256)
+  set(CAI_CPKT_NAME
+      "cpkt-${CAI_CPKT_VERSION}-${CAI_TARGET_ID}")
+  set(CAI_CPKT_URL
+      "https://github.com/c89systems/cpkt/releases/download/v${CAI_CPKT_VERSION}/${CAI_CPKT_NAME}.tar.gz")
   cai_dependency_archive_path(
-    "${CAI_C_PKT_SYSTEMS_NAME}.tar.gz" "${CAI_C_PKT_SYSTEMS_SHA256}"
-    CAI_C_PKT_SYSTEMS_ARCHIVE)
-  set(CAI_C_PKT_SYSTEMS_PREFIX
-      "${CAI_DEPS_DIR}/${CAI_C_PKT_SYSTEMS_NAME}")
+    "${CAI_CPKT_NAME}.tar.gz" "${CAI_CPKT_SHA256}"
+    CAI_CPKT_ARCHIVE)
+  set(CAI_CPKT_PREFIX
+      "${CAI_DEPS_DIR}/${CAI_CPKT_NAME}")
   cai_download_tarball(
-    "c.pkt.systems ${CAI_C_PKT_SYSTEMS_VERSION} ${CAI_TARGET_ID}"
-    "${CAI_C_PKT_SYSTEMS_URL}"
-    "${CAI_C_PKT_SYSTEMS_ARCHIVE}"
-    "${CAI_C_PKT_SYSTEMS_PREFIX}"
-    "${CAI_C_PKT_SYSTEMS_SHA256}"
-    "${CAI_C_PKT_SYSTEMS_PREFIX}/include/curl/curl.h")
+    "cpkt ${CAI_CPKT_VERSION} ${CAI_TARGET_ID}"
+    "${CAI_CPKT_URL}"
+    "${CAI_CPKT_ARCHIVE}"
+    "${CAI_CPKT_PREFIX}"
+    "${CAI_CPKT_SHA256}"
+    "${CAI_CPKT_PREFIX}/include/curl/curl.h")
 
   cai_lonejson_pkg_sha256("${CAI_TARGET_ID}" CAI_LONEJSON_PKG_SHA256)
   set(CAI_LONEJSON_PKG_NAME
@@ -431,10 +433,10 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
     "${CAI_PSLOG_PKG_SHA256}"
     "${CAI_PSLOG_PREFIX}/include/pslog.h")
   set(CMAKE_PREFIX_PATH
-      "${CAI_C_PKT_SYSTEMS_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX};${CMAKE_PREFIX_PATH}")
+      "${CAI_CPKT_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX};${CMAKE_PREFIX_PATH}")
   if(CMAKE_CROSSCOMPILING)
     list(APPEND CMAKE_FIND_ROOT_PATH
-         "${CAI_C_PKT_SYSTEMS_PREFIX}"
+         "${CAI_CPKT_PREFIX}"
          "${CAI_LONEJSON_PREFIX}"
          "${CAI_PSLOG_PREFIX}")
   endif()
@@ -442,10 +444,16 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
       CACHE PATH "lonejson package directory" FORCE)
   set(pslog_DIR "${CAI_PSLOG_PREFIX}/lib/cmake/pslog"
       CACHE PATH "pslog package directory" FORCE)
-  set(CURL_DIR "${CAI_C_PKT_SYSTEMS_PREFIX}/lib/cmake/CURL"
+  set(CURL_DIR "${CAI_CPKT_PREFIX}/lib/cmake/CURL"
       CACHE PATH "curl package directory" FORCE)
-  set(OpenSSL_DIR "${CAI_C_PKT_SYSTEMS_PREFIX}/lib/cmake/OpenSSL"
+  set(OpenSSL_DIR "${CAI_CPKT_PREFIX}/lib/cmake/OpenSSL"
       CACHE PATH "OpenSSL package directory" FORCE)
+  set(CpktCore_DIR "${CAI_CPKT_PREFIX}/lib/cmake/CpktCore"
+      CACHE PATH "cpkt core package directory" FORCE)
+  find_package(CpktCore ${CAI_CPKT_VERSION} EXACT CONFIG REQUIRED)
+  if(NOT CpktCore_TARGET_ID STREQUAL CAI_TARGET_ID)
+    message(FATAL_ERROR "cpkt target ${CpktCore_TARGET_ID} does not match ${CAI_TARGET_ID}")
+  endif()
   find_package(lonejson CONFIG REQUIRED COMPONENTS curl oidc openssl)
   find_package(pslog CONFIG REQUIRED)
   cai_set_lonejson_from_target()
@@ -457,13 +465,14 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
   get_filename_component(_cai_lonejson_library_dir
     "${CAI_LONEJSON_LIBRARY}" DIRECTORY)
   list(APPEND CMAKE_BUILD_RPATH
-       "${CAI_C_PKT_SYSTEMS_PREFIX}/lib" "${_cai_lonejson_library_dir}")
+       "${CAI_CPKT_PREFIX}/lib" "${_cai_lonejson_library_dir}")
 endif()
 
-set(CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE "")
+set(CAI_CPKT_SHA256_FOR_PACKAGE "")
 set(CAI_PSLOG_PKG_SHA256_FOR_PACKAGE "")
 if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
-  set(CAI_C_PKT_SYSTEMS_SHA256_FOR_PACKAGE "${CAI_C_PKT_SYSTEMS_SHA256}")
+  set(CAI_CPKT_SHA256_FOR_PACKAGE "${CAI_CPKT_SHA256}")
+  set(CAI_CPKT_PACKAGE_ID_FOR_PACKAGE "${CpktCore_PACKAGE_ID}")
   set(CAI_PSLOG_PKG_SHA256_FOR_PACKAGE "${CAI_PSLOG_PKG_SHA256}")
 endif()
 
@@ -485,7 +494,7 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
 endif()
 
 file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/lua-dependency-paths.txt"
-  CONTENT "${CMAKE_C_COMPILER}\n${CAI_C_PKT_SYSTEMS_PREFIX}\n${CAI_LONEJSON_PREFIX}\n${CAI_PSLOG_PREFIX}\n${CPKT_DEPENDENCY_CACHE}\n")
+  CONTENT "${CMAKE_C_COMPILER}\n${CAI_CPKT_PREFIX}\n${CAI_LONEJSON_PREFIX}\n${CAI_PSLOG_PREFIX}\n${CPKT_DEPENDENCY_CACHE}\n")
 
 set(CAI_BUILD_LUA_RUNNER OFF)
 if(CAI_BUILD_LUA OR
@@ -495,8 +504,8 @@ endif()
 
 if(CAI_BUILD_LUA_RUNNER)
   if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
-    set(CAI_LUA_INCLUDE_DIR "${CAI_C_PKT_SYSTEMS_PREFIX}/include")
-    set(CAI_LUA_LIBRARY "${CAI_C_PKT_SYSTEMS_PREFIX}/lib/liblua.a")
+    set(CAI_LUA_INCLUDE_DIR "${CAI_CPKT_PREFIX}/include")
+    set(CAI_LUA_LIBRARY "${CAI_CPKT_PREFIX}/lib/liblua.a")
   endif()
   find_path(CAI_LUA_INCLUDE_DIR lua.h
     PATHS /usr/local/include /usr/include /opt/homebrew/include
@@ -841,6 +850,7 @@ if(CAI_BUILD_CLI)
       COMPONENT cai-cli)
     foreach(_cai_cli_dep_doc
         "${CAI_DEPS_DIR}/libpslog-${CAI_PSLOG_VERSION}-${CAI_TARGET_ID}/share/doc/libpslog"
+        "${CAI_LONEJSON_PREFIX}/share/doc/liblonejson"
         "${_cai_lockdc_prefix}/share/doc/liblockdc"
         "${_cai_liblql_prefix}/share/doc/liblql"
         "${CAI_DEPS_DIR}/softline-${CAI_SOFTLINE_VERSION}-${CAI_TARGET_ID}/share/doc/softline"
@@ -848,6 +858,12 @@ if(CAI_BUILD_CLI)
       get_filename_component(_cai_cli_dep_name "${_cai_cli_dep_doc}" NAME)
       install(FILES "${_cai_cli_dep_doc}/LICENSE"
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/third_party/${_cai_cli_dep_name}"
+        COMPONENT cai-cli)
+    endforeach()
+    foreach(_cai_cli_core_dep curl openssl zlib nghttp2 libssh2)
+      install(FILES
+        "${CAI_CPKT_PREFIX}/share/doc/cpkt/core/third_party/${_cai_cli_core_dep}/LICENSE"
+        DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/third_party/${_cai_cli_core_dep}"
         COMPONENT cai-cli)
     endforeach()
     install(DIRECTORY
@@ -1031,12 +1047,12 @@ if(CAI_INSTALL)
   set(CAI_INSTALL_CMAKEDIR
       "${CMAKE_INSTALL_LIBDIR}/cmake/cai"
       CACHE STRING "Install path for cai CMake package files.")
-  set(CAI_C_PKT_SYSTEMS_URL_FOR_PACKAGE "host")
-  set(CAI_C_PKT_SYSTEMS_ARCHIVE_NAME_FOR_PACKAGE "host")
+  set(CAI_CPKT_URL_FOR_PACKAGE "host")
+  set(CAI_CPKT_ARCHIVE_NAME_FOR_PACKAGE "host")
   if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
-    set(CAI_C_PKT_SYSTEMS_URL_FOR_PACKAGE "${CAI_C_PKT_SYSTEMS_URL}")
-    get_filename_component(CAI_C_PKT_SYSTEMS_ARCHIVE_NAME_FOR_PACKAGE
-      "${CAI_C_PKT_SYSTEMS_URL}" NAME)
+    set(CAI_CPKT_URL_FOR_PACKAGE "${CAI_CPKT_URL}")
+    get_filename_component(CAI_CPKT_ARCHIVE_NAME_FOR_PACKAGE
+      "${CAI_CPKT_URL}" NAME)
   endif()
   set(CAI_LONEJSON_PKG_URL_FOR_PACKAGE "host")
   set(CAI_LONEJSON_ARCHIVE_NAME_FOR_PACKAGE "host")
