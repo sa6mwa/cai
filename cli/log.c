@@ -118,6 +118,9 @@ static lonejson_status notice_bool(void *user, const lonejson_value_path *path,
 }
 
 static const char *notice_message(const char *event) {
+  if (strcmp(event, "cache.load.index.error") == 0)
+    return "Search index cache unavailable; indexed queries will attempt "
+           "recovery from stored records";
   if (strcmp(event, "cai.http.transport_error") == 0)
     return "HTTP transport failed";
   if (strcmp(event, "cai.http.request.done") == 0)

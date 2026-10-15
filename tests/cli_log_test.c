@@ -105,6 +105,19 @@ static int structured_notices(cai_cli_log *log) {
         strstr(observed.text[2], "retryable: true") != NULL);
   CHECK(strchr(observed.text[2], '\n') == NULL);
 
+  fields[0] = pslog_str("sys", "storage.pouch");
+  fields[1] = pslog_str("ns", "cai.sessions");
+  fields[2] = pslog_str("error", "pouch query-index manifest is not readable");
+  fields[3] = pslog_i64("code", 1);
+  log->logger->warn(log->logger, "cache.load.index.error", fields, 4U);
+  memset(&observed, 0, sizeof(observed));
+  CHECK(cai_cli_log_notices(log, collect, &observed) == 0 &&
+        observed.count == 1U);
+  CHECK(strstr(observed.text[0], "indexed queries will attempt recovery") !=
+        NULL);
+  CHECK(strstr(observed.text[0], "from stored records") != NULL);
+  CHECK(strstr(observed.text[0], "ns: cai.sessions") != NULL);
+  CHECK(strstr(observed.text[0], "manifest is not readable") != NULL);
   memset(long_detail, 'x', sizeof(long_detail) - 1U);
   memcpy(long_detail, "failure detail: ", 16U);
   long_detail[sizeof(long_detail) - 1U] = '\0';

@@ -2,6 +2,9 @@
  */
 #include "../cli/pouch.c"
 #include <assert.h>
+#include <poll.h>
+#include <signal.h>
+#include <sys/wait.h>
 
 static int query_calls;
 static int (*real_query)(lc_client *, const lc_query_req *,
@@ -85,6 +88,53 @@ static int reject(void *context, const cai_agent_session_event *event,
   (void)context;
   (void)event;
   return cai_cli_error(error, CAI_ERR_TRANSPORT, "replay sink failed");
+}
+
+static void interrupted_idle_writer(void) {
+  cai_cli_pouch pouch;
+  cai_error error;
+  int ready[2], status, received;
+  pid_t child;
+  struct pollfd descriptor;
+  char ready_byte;
+  assert(pipe(ready) == 0);
+  child = fork();
+  assert(child >= 0);
+  if (child == 0) {
+    close(ready[0]);
+    cai_error_init(&error);
+    assert(cai_cli_pouch_open(&pouch, NULL, NULL, NULL, &error) == CAI_OK);
+    save(&pouch, "/work/idle-crash", "idle-crash", &error);
+    assert(write(ready[1], "R", 1U) == 1);
+    close(ready[1]);
+    /* Leave the handle and background worker open, with no foreground work.
+     * SIGKILL models an unclean exit without generating a system core file. */
+    for (;;)
+      pause();
+  }
+  close(ready[1]);
+  descriptor.fd = ready[0];
+  descriptor.events = POLLIN;
+  descriptor.revents = 0;
+  received = poll(&descriptor, 1U, 10000) == 1 &&
+             read(ready[0], &ready_byte, 1U) == 1 && ready_byte == 'R';
+  close(ready[0]);
+  (void)kill(child, SIGKILL);
+  assert(waitpid(child, &status, 0) == child);
+  assert(received && WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+  cai_error_init(&error);
+  assert(cai_cli_pouch_open(&pouch, NULL, NULL, NULL, &error) == CAI_OK);
+  newest(&pouch, "/work/idle-crash", "idle-crash", &error);
+  {
+    cai_cli_session *listed = NULL;
+    size_t count = 0U;
+    assert(cai_cli_pouch_list(&pouch, "/work/idle-crash", &listed, &count,
+                              &error) == CAI_OK);
+    assert(count == 1U && strcmp(listed[0].id, "idle-crash") == 0);
+    free(listed);
+  }
+  cai_cli_pouch_close(&pouch);
+  cai_error_cleanup(&error);
 }
 
 int main(int argc, char **argv) {
@@ -274,6 +324,7 @@ int main(int argc, char **argv) {
   assert(observed == 0);
   cai_cli_pouch_close(&pouch);
   cai_error_cleanup(&error);
+  interrupted_idle_writer();
   /* Test runner removes the isolated encrypted root. */
   printf("Fixture: %s\n", directory);
   return 0;

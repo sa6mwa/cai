@@ -115,6 +115,14 @@
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_pouch_startup_test.sh"
         "$<TARGET_FILE:cai_cli_pouch_startup_test>" "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(cai_cli_pouch_startup PROPERTIES TIMEOUT 60)
+    add_test(NAME cai_cli_pouch_recovery
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_pouch_recovery_test.sh"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_pouch_recovery PROPERTIES TIMEOUT 30)
+    add_test(NAME cai_cli_idle
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_idle_test.sh"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_idle PROPERTIES TIMEOUT 45)
     add_executable(cai_cli_status_test tests/cli_status_test.c cli/status.c)
     target_link_libraries(cai_cli_status_test PRIVATE cai_static
       softline::softline_static)

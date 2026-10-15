@@ -200,3 +200,37 @@ commit and verification evidence.
 - **Evidence:** `cai_cli_model_catalog` passes a response delayed beyond the old
   deadline, HTTP 503 with cached fallback, a configured 100 ms timeout, a single
   actionable interactive warning, and immediate successful retry.
+
+## BUG-011: Idle core dump followed by an unreadable pouch index warning
+
+- **Priority:** critical.
+- **Status:** investigating; crash cause and storage recovery are unproven.
+- **Reported:** CAI dumped core while idle. On the next startup it printed
+  `cache.load.index.error: pouch query-index manifest is not readable`
+  for namespace `cai.sessions`, code 1.
+- **Required behavior:** idle CAI must not crash. After abnormal termination,
+  authoritative session documents and credentials must remain usable. Damaged
+  derived query indexes should recover through liblockdc's supported recovery
+  mechanism, with a clear diagnostic explaining recovery or required action.
+- **Investigation:** locate the crash record and matching executable, inspect
+  index loading and rebuild semantics, reproduce against an isolated test store,
+  and distinguish a missing/corrupt cache from authoritative storage damage.
+  Do not delete, rebuild, or otherwise modify the user's existing store during
+  diagnosis. A missing index and a corrupt index need separate coverage.
+- **Recovery evidence:** the actual CLI recovers missing, empty and malformed
+  query-index manifests in an isolated encrypted store. Listings are unchanged,
+  export and resume preserve the conversation, and the encryption key remains
+  unchanged. A subsequent open no longer emits the warning. The diagnostic now
+  explains that indexed queries will attempt recovery from stored records.
+- **Crash coverage:** an idle writer killed without closing its pouch can be
+  reopened and resumed. The static musl CAI also survives two real ten-second
+  background index-publication cycles while interactive and idle. Neither test
+  reproduces the reported core dump; no matching CAI core was available in this
+  environment's crash records. Keep the crash report open.
+- **Lease hypothesis:** the user observed the warning disappear and suggested
+  lease expiration. The logged code is `LC_ERR_INVALID` (1), not
+  `LC_ERR_TIMEOUT` (6); it comes from parsing an invalid index manifest during
+  cache warming, which does not acquire a document lease. CAI's normal document
+  leases have a one-hour TTL and a separate acquisition wait. Automatic index
+  rebuilding explains the same disappearance without waiting for lease expiry;
+  the user's actual recovery timing and crash cause remain unverified.
