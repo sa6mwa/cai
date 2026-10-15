@@ -48,6 +48,8 @@ struct cai_tool_display {
   unsigned char utf8[4];
   size_t utf8_length;
   size_t utf8_expected;
+  unsigned int breaks;
+  int ansi;
 };
 
 typedef struct display_mcp_result {
@@ -98,9 +100,29 @@ static int display_mcp_failed(const cai_agent_runtime_event *event) {
 
 static int display_write(cai_tool_display *d, const char *s, size_t n,
                          cai_error *error) {
+  size_t i;
+  int rc;
   if (n == 0U)
     return CAI_OK;
-  return cai_sink_write(d->config.sink, s, n, error);
+  rc = cai_sink_write(d->config.sink, s, n, error);
+  if (rc != CAI_OK)
+    return rc;
+  for (i = 0U; i < n; i++) {
+    unsigned char ch = (unsigned char)s[i];
+    if (d->ansi == 1)
+      d->ansi = ch == '[' ? 2 : 0;
+    else if (d->ansi == 2) {
+      if (ch >= 0x40U && ch <= 0x7eU)
+        d->ansi = 0;
+    } else if (ch == 27U)
+      d->ansi = 1;
+    else if (ch == '\n') {
+      if (d->breaks < 2U)
+        d->breaks++;
+    } else if (ch != '\r')
+      d->breaks = 0U;
+  }
+  return CAI_OK;
 }
 static int display_escape(cai_tool_display *d, unsigned char ch,
                           cai_error *error) {
@@ -197,7 +219,15 @@ static int display_marker(cai_tool_display *d, int result, const char *verb,
   const char *star = !d->config.color || result < 0 ? "* "
                      : result                       ? "\033[92m*\033[0m "
                                                     : "\033[91m*\033[0m ";
-  rc = display_text(d, star, error);
+  rc = display_flush_utf8(d, error);
+  if (rc == CAI_OK && d->config.begin_block != NULL)
+    rc = d->config.begin_block(d->config.begin_block_context, error);
+  else if (rc == CAI_OK) {
+    while (rc == CAI_OK && d->breaks < 2U)
+      rc = display_text(d, "\n", error);
+  }
+  if (rc == CAI_OK)
+    rc = display_text(d, star, error);
   if (rc == CAI_OK && d->config.color)
     rc = display_text(d, "\033[1;96m", error);
   if (rc == CAI_OK)
@@ -305,9 +335,12 @@ static int patch_row_start(cai_tool_display *d, cai_display_call *c,
   char prefix[64];
   size_t n;
   int rc = CAI_OK;
-  if (d->config.color && (c->row_kind == '+' || c->row_kind == '-'))
-    rc = patch_output(d, c, c->row_kind == '+' ? "\033[42m" : "\033[41m", 5U,
-                      error);
+  int colored = d->config.color && (c->row_kind == '+' || c->row_kind == '-');
+  if (colored) {
+    const char *style = c->row_kind == '+' ? "\033[48;2;33;58;43m\033[97m"
+                                           : "\033[48;2;74;34;29m\033[97m";
+    rc = patch_output(d, c, style, strlen(style), error);
+  }
   if (continuation) {
     memset(prefix, ' ', c->row_prefix);
     n = c->row_prefix;
@@ -321,7 +354,16 @@ static int patch_row_start(cai_tool_display *d, cai_display_call *c,
     c->row_prefix = n;
   }
   c->row_column = n;
-  if (rc == CAI_OK)
+  if (rc == CAI_OK && colored && !continuation) {
+    rc = patch_output(d, c, prefix, n - 1U, error);
+    if (rc == CAI_OK)
+      rc = patch_output(d, c, c->row_kind == '+' ? "\033[92m" : "\033[91m", 5U,
+                        error);
+    if (rc == CAI_OK)
+      rc = patch_output(d, c, prefix + n - 1U, 1U, error);
+    if (rc == CAI_OK)
+      rc = patch_output(d, c, "\033[97m", 5U, error);
+  } else if (rc == CAI_OK)
     rc = patch_output(d, c, prefix, n, error);
   return rc;
 }
@@ -344,11 +386,24 @@ static int patch_piece(cai_tool_display *d, cai_display_call *c, int kind,
   int rc = CAI_OK, colored;
   size_t i = 0U;
   if ((c->row_active ? c->row_width : d->width) == 0U) {
+    int first = !c->row_active;
     c->row_width = 0U;
     c->row_active = !newline;
     colored = d->config.color && (kind == '+' || kind == '-');
-    rc = colored ? display_text(d, kind == '+' ? "\033[42m" : "\033[41m", error)
+    rc = colored ? display_text(d,
+                                kind == '+' ? "\033[48;2;33;58;43m\033[97m"
+                                            : "\033[48;2;74;34;29m\033[97m",
+                                error)
                  : CAI_OK;
+    if (rc == CAI_OK && colored && first && n != 0U) {
+      rc = display_text(d, kind == '+' ? "\033[92m" : "\033[91m", error);
+      if (rc == CAI_OK)
+        rc = display_safe(d, s, 1U, error);
+      if (rc == CAI_OK)
+        rc = display_text(d, "\033[97m", error);
+      s++;
+      n--;
+    }
     if (rc == CAI_OK)
       rc = display_safe(d, s, n, error);
     if (rc == CAI_OK && colored)
@@ -764,6 +819,7 @@ int cai_tool_display_new(const cai_tool_display_config *config,
     return cai_set_error(error, CAI_ERR_NOMEM, "cannot allocate tool renderer");
   memset(d, 0, sizeof(*d));
   d->config = *config;
+  d->breaks = 2U;
   if (d->config.preview_lines == 0U)
     d->config.preview_lines = 5U;
   *out = d;

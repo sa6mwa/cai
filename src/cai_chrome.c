@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -108,10 +109,6 @@ int cai_chrome_request(cai_chrome *c, const char *method, const char *params,
   int rc;
   if (out != NULL)
     *out = NULL;
-  if (c != NULL && c->fd < 0)
-    return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "Chrome connection is closed; check the ChatGPT "
-                         "extension and reopen the browser connection");
   if (c == NULL || method == NULL || method[0] == '\0' || params == NULL ||
       out == NULL || params[strspn(params, " \r\n\t")] != '{')
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -119,6 +116,27 @@ int cai_chrome_request(cai_chrome *c, const char *method, const char *params,
                          "object params and output");
   if (strlen(params) > CAI_CHROME_REQUEST_LIMIT)
     return cai_set_error(error, CAI_ERR_LIMIT, "Chrome request is too large");
+  if (c->fd < 0 && c->lazy) {
+    cai_chrome_config config;
+    cai_chrome *connected = NULL;
+    memset(&config, 0, sizeof(config));
+    config.socket_path = c->socket_path;
+    config.socket_directory = c->socket_directory;
+    config.timeout_ms = c->timeout_ms;
+    config.max_response_bytes = c->limit;
+    config.logger = c->logger;
+    rc = cai_chrome_open(&config, &connected, error);
+    if (rc != CAI_OK)
+      return rc;
+    c->fd = connected->fd;
+    c->sequence = connected->sequence;
+    connected->fd = -1;
+    cai_chrome_close(connected);
+  }
+  if (c->fd < 0)
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "Chrome connection is closed; check the ChatGPT "
+                         "extension and reopen the browser connection");
   memset(&request, 0, sizeof(request));
   request.jsonrpc = "2.0";
   request.method = method;
@@ -241,6 +259,12 @@ int cai_chrome_open(const cai_chrome_config *config, cai_chrome **out,
                            "Chrome socket path is too long");
     strcpy(selected, config->socket_path);
   } else {
+    if (config->socket_directory != NULL &&
+        access(config->socket_directory, F_OK) != 0 && errno == ENOENT)
+      return cai_set_error(
+          error, CAI_ERR_TRANSPORT,
+          "No CAI Chrome host is connected. Run cai --chrome-setup, then open "
+          "the ChatGPT extension in Chrome.");
     rc = cai_chrome_private_directory(config->socket_directory, error);
     if (rc != CAI_OK)
       return rc;
@@ -335,6 +359,69 @@ int cai_chrome_begin_turn(cai_chrome *c, const char *session, const char *turn,
   c->turn_id = t;
   return CAI_OK;
 }
+int cai_chrome_open_lazy(const cai_chrome_config *config, cai_chrome **out,
+                         cai_error *error) {
+  cai_chrome_config defaults;
+  cai_chrome *c;
+  const char *root, *suffix;
+  char directory[4096];
+  int n;
+  if (out == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID, "Chrome output is required");
+  *out = NULL;
+  memset(&defaults, 0, sizeof(defaults));
+  if (config == NULL)
+    config = &defaults;
+  if (config->timeout_ms < 0L || config->timeout_ms > 60000L ||
+      config->max_response_bytes > 64U * 1024U * 1024U)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Invalid Chrome configuration");
+  c = cai_alloc(NULL, sizeof(*c));
+  if (c == NULL)
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "Cannot allocate Chrome connection");
+  memset(c, 0, sizeof(*c));
+  c->fd = -1;
+  c->lazy = 1;
+  c->timeout_ms = config->timeout_ms != 0L ? config->timeout_ms : 30000L;
+  c->limit = config->max_response_bytes != 0U ? config->max_response_bytes
+                                              : CAI_CHROME_RESPONSE_LIMIT;
+  c->logger = config->logger;
+  if (config->socket_path != NULL)
+    c->socket_path = cai_strdup(NULL, config->socket_path);
+  else {
+    const char *path = config->socket_directory;
+    if (path == NULL) {
+      root = getenv("XDG_RUNTIME_DIR");
+      suffix = "/cai/chrome";
+      if (root == NULL || root[0] == '\0') {
+        root = getenv("XDG_CACHE_HOME");
+        if (root == NULL || root[0] == '\0') {
+          root = getenv("HOME");
+          suffix = "/.cache/cai/chrome";
+        }
+      }
+      n = root != NULL && root[0] == '/'
+              ? snprintf(directory, sizeof(directory), "%s%s", root, suffix)
+              : -1;
+      if (n < 0 || (size_t)n >= sizeof(directory)) {
+        cai_chrome_close(c);
+        return cai_set_error(error, CAI_ERR_INVALID,
+                             "Chrome requires an absolute XDG_RUNTIME_DIR, "
+                             "XDG_CACHE_HOME, or HOME");
+      }
+      path = directory;
+    }
+    c->socket_directory = cai_strdup(NULL, path);
+  }
+  if (c->socket_path == NULL && c->socket_directory == NULL) {
+    cai_chrome_close(c);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "Cannot copy Chrome socket path");
+  }
+  *out = c;
+  return CAI_OK;
+}
 /* Shared with the chrome tool for lifecycle requests. */
 typedef struct chrome_turn {
   const char *session;
@@ -388,6 +475,8 @@ void cai_chrome_close(cai_chrome *c) {
   cai_free_mem(NULL, c->session_id);
   cai_free_mem(NULL, c->turn_id);
   cai_free_mem(NULL, c->pending_image);
+  cai_free_mem(NULL, c->socket_path);
+  cai_free_mem(NULL, c->socket_directory);
   cai_free_mem(NULL, c);
 }
 

@@ -93,6 +93,7 @@ cai_chrome_begin_turn
 cai_chrome_close
 cai_chrome_end_turn
 cai_chrome_open
+cai_chrome_open_lazy
 cai_chrome_request
 cai_chrome_result_free
 cai_client_cancel_response

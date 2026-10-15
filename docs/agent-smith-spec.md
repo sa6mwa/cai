@@ -1757,10 +1757,14 @@ report. It has no CAI file-mutation tools; terminal execution follows the
 host's normal sandbox policy.
 9. Deterministic tests and the opt-in luna live e2e proof pass.
 
-### Opt-in Chrome extension control
+### Chrome extension control
 
 The cai CLI supplies a native-messaging host for the official ChatGPT Chrome
 extension. Explicit setup/removal refuses fixed-name registration conflicts.
-`--chrome` enables the library's browser tools, typed screenshots and turn
-cleanup. Review subagents receive no browser connection. See
+Smith registers browser tools, typed screenshots and turn cleanup by default,
+with lazy connection and explicit native-host setup. `--no-chrome` disables
+them. Hosted Responses web search is also on by default (`--no-web-search`
+disables it). Kanban, SearXNG and reverse geocoding are optional, off by
+default, with CLI/environment/INI policies documented in the README and the
+generated configuration template. Review subagents receive no browser connection. See
 [Chrome integration](chrome.md) for the protocol and verification boundary.

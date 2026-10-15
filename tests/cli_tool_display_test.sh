@@ -30,7 +30,8 @@ contains "$term/text" '* Edited file.c'
 contains "$term/text" '   3 -old'; contains "$term/text" '   3 +new'; contains "$term/text" '   8 +new2'
 for marker in between1 before0 after1; do absent "$term/text" "$marker"; done
 contains "$term/text" ⋮
-contains "$term/raw" $'\033[41m'; contains "$term/raw" $'\033[42m'
+contains "$term/raw" $'\033[48;2;74;34;29m'; contains "$term/raw" $'\033[48;2;33;58;43m'
+contains "$term/raw" $'\033[91m-\033[97m'; contains "$term/raw" $'\033[92m+\033[97m'
 grep -Eq $'\033\\[(0;)?1;96mEdited' "$term/raw"
 count=$(requests); send '/output full\r'; expect 'setting applies from the next tool call'; [[ $(requests) == "$count" ]]
 cp "$root/original" "$work/file.c"; patch_plan 'FULL PATCH DONE'
@@ -45,6 +46,16 @@ tail -c +$((offset+1)) "$term/text" >"$root/later"
 contains "$root/later" OUT05; absent "$root/later" OUT06
 contains "$root/later" 'Ran sh command.sh'; contains "$root/later" exit=3
 contains "$term/raw" $'\033[91m*\033[0m'
+# The committed feed has real block boundaries regardless of terminal redraws.
+# Strip only presentation controls for assertions; never alter command bytes.
+sed -E $'s/\033\[[0-?]*[ -/]*[@-~]//g' "$term/feed" >"$root/feed"
+awk '/^\* (Running|Ran|Edited|Added|Deleted)/ {if (NR>1 && previous!="") exit 1; seen++} {previous=$0} END {if (seen<4) exit 1}' "$root/feed"
+# A preamble in a tool response exercises the assistant-to-tool transition.
+plan '{"plan":[{"tool":"exec_command","arguments":{"cmd":"printf PARTIAL","yield_time_ms":1000},"text":"Assistant before a command"},{"tool":"exec_command","arguments":{"cmd":"true","yield_time_ms":1000}},"SPACING DONE"]}'
+prompt 'check spacing' 'SPACING DONE'
+sed -E $'s/\033\[[0-?]*[ -/]*[@-~]//g' "$term/feed" >"$root/feed"
+awk '/^\* (Running|Ran|Edited|Added|Deleted)/ {if (NR>1 && previous!="") exit 1; seen++} {previous=$0} END {if (seen<8) exit 1}' "$root/feed"
+contains "$root/feed" PARTIAL
 terminal_close
 cp "$root/original" "$work/file.c"; patch_plan 'FINAL ONLY'
 run -Nni 'apply patch'; ok

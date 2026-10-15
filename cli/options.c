@@ -27,6 +27,10 @@ void cai_cli_options_init(cai_cli_options *options) {
   options->terminal = 1;
   options->shell_context = 1;
   options->review_subagent = 1;
+  options->chrome = 1;
+  options->web_search = 1;
+  options->read_file = options->list_files = options->apply_patch = 1;
+  options->view_image = options->goals = options->skills = 1;
 }
 
 static void cai_cli_help(void) {
@@ -78,7 +82,25 @@ static void cai_cli_help(void) {
         "CAI_API_KEY)\n",
         stdout);
   fputs(
-      "      --chrome                Enable ChatGPT Chrome extension tools\n"
+      "      --chrome / --no-chrome   Chrome extension tools (default on)\n"
+      "      --web-search / --no-web-search  Hosted Responses search (default "
+      "on)\n"
+      "      --todo / --no-todo       Encrypted kanban tool (default off)\n"
+      "      --searxng / --no-searxng  Local search tool (default off)\n"
+      "      --searxng-url URL        Search base (default "
+      "http://127.0.0.1:8888)\n"
+      "      --revgeo / --no-revgeo    Reverse geocoding (default off)\n"
+      "      --revgeo-url URL         Reverse geocoding provider base URL\n",
+      stdout);
+  fputs("      --[no-]read-file         File reading (default on)\n"
+        "      --[no-]list-files        File listing (default on)\n"
+        "      --[no-]apply-patch       Workspace patching (default on)\n"
+        "      --[no-]view-image        Image inspection (default on)\n"
+        "      --[no-]goals             Goal tools (default on)\n"
+        "      --[no-]skills            Skill discovery and reading (default "
+        "on)\n",
+        stdout);
+  fputs(
       "      --chrome-socket PATH    Select a connected CAI Chrome host\n"
       "      --chrome-setup          Register CAI as Chrome native host and "
       "exit\n"
@@ -167,7 +189,46 @@ int cai_cli_read_options(int argc, char *const *argv,
     }
     if (strcmp(flag, "--chrome") == 0) {
       options->chrome = 1;
+      options->chrome_explicit = 1;
       continue;
+    }
+    if (strcmp(flag, "--no-chrome") == 0) {
+      options->chrome = 0;
+      options->chrome_explicit = 1;
+      continue;
+    }
+    if (strncmp(flag, "--", 2U) == 0) {
+      static const char *const names[] = {
+          "web-search",      "todo",           "searxng",
+          "revgeo",          "read-file",      "list-files",
+          "apply-patch",     "view-image",     "goals",
+          "skills",          "terminal",       "image-generation",
+          "review-subagent", "codex-agents-md"};
+      int *values[14];
+      size_t k;
+      int enabled = strncmp(flag, "--no-", 5U) != 0;
+      const char *name = flag + (enabled ? 2U : 5U);
+      values[0] = &options->web_search;
+      values[1] = &options->todo;
+      values[2] = &options->searxng;
+      values[3] = &options->revgeo;
+      values[4] = &options->read_file;
+      values[5] = &options->list_files;
+      values[6] = &options->apply_patch;
+      values[7] = &options->view_image;
+      values[8] = &options->goals;
+      values[9] = &options->skills;
+      values[10] = &options->terminal;
+      values[11] = &options->image_generation;
+      values[12] = &options->review_subagent;
+      values[13] = &options->codex_agents_md;
+      for (k = 0U; k < sizeof(names) / sizeof(names[0]); k++)
+        if (strncmp(flag, "--", 2U) == 0 && strcmp(name, names[k]) == 0) {
+          *values[k] = enabled;
+          break;
+        }
+      if (k != sizeof(names) / sizeof(names[0]))
+        continue;
     }
     if (strcmp(flag, "--chrome-setup") == 0) {
       options->chrome_setup = 1;
@@ -243,24 +304,8 @@ int cai_cli_read_options(int argc, char *const *argv,
       options->resume_list = 1;
       continue;
     }
-    if (strcmp(flag, "--no-image-generation") == 0) {
-      options->image_generation = 0;
-      continue;
-    }
-    if (strcmp(flag, "--no-terminal") == 0) {
-      options->terminal = 0;
-      continue;
-    }
     if (strcmp(flag, "--no-shell-context") == 0) {
       options->shell_context = 0;
-      continue;
-    }
-    if (strcmp(flag, "--no-review-subagent") == 0) {
-      options->review_subagent = 0;
-      continue;
-    }
-    if (strcmp(flag, "--codex-agents-md") == 0) {
-      options->codex_agents_md = 1;
       continue;
     }
     if (strcmp(flag, "-v") == 0 || strcmp(flag, "--verbose") == 0) {
@@ -307,7 +352,12 @@ int cai_cli_read_options(int argc, char *const *argv,
     else if (strcmp(flag, "--chrome-socket") == 0) {
       field = &options->chrome_socket;
       options->chrome = 1;
-    } else if (strcmp(flag, "--chrome-manifest") == 0)
+      options->chrome_explicit = 1;
+    } else if (strcmp(flag, "--searxng-url") == 0)
+      field = &options->searxng_url;
+    else if (strcmp(flag, "--revgeo-url") == 0)
+      field = &options->revgeo_url;
+    else if (strcmp(flag, "--chrome-manifest") == 0)
       field = &options->chrome_manifest;
     else if (strcmp(flag, "--endpoint") == 0)
       field = &options->endpoint;
@@ -410,15 +460,16 @@ int cai_cli_validate_options(cai_cli_options *options) {
     return -1;
   }
   if ((options->chrome_setup || options->chrome_remove) &&
-      (options->chrome || options->new_session || options->resume_id != NULL ||
-       options->review || options->review_and_fix || options->goal != NULL ||
+      ((options->chrome_explicit && options->chrome) || options->new_session ||
+       options->resume_id != NULL || options->review ||
+       options->review_and_fix || options->goal != NULL ||
        options->instruction_count != 0U || options->non_interactive)) {
     cai_cli_option_error(
         options,
         "cai: Chrome setup/removal cannot be combined with agent work");
     return -1;
   }
-  if (options->review && options->chrome) {
+  if (options->review && options->chrome && options->chrome_explicit) {
     cai_cli_option_error(
         options, "cai: isolated --review does not support Chrome tools");
     return -1;
@@ -607,6 +658,10 @@ const char *cai_cli_instruction_at(const cai_cli_options *options,
         strcmp(flag, "--provider") == 0 || strcmp(flag, "--endpoint") == 0 ||
         strcmp(flag, "--api-key-env") == 0 ||
         strcmp(flag, "--model-metadata") == 0 || strcmp(flag, "-C") == 0 ||
+        strcmp(flag, "--searxng-url") == 0 ||
+        strcmp(flag, "--revgeo-url") == 0 ||
+        strcmp(flag, "--chrome-socket") == 0 ||
+        strcmp(flag, "--chrome-manifest") == 0 ||
         strcmp(flag, "--directory") == 0 || strcmp(flag, "-a") == 0 ||
         strcmp(flag, "--auth-json") == 0 || strcmp(flag, "-m") == 0 ||
         strcmp(flag, "--model") == 0 || strcmp(flag, "-r") == 0 ||

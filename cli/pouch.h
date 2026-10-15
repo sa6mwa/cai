@@ -4,6 +4,7 @@
 #include "pouch_stream.h"
 #include <cai/blob_store.h>
 #include <cai/session_store.h>
+#include <cai/tools/todo.h>
 #include <limits.h>
 #include <pthread.h>
 
@@ -51,6 +52,10 @@ int cai_cli_pouch_publish(cai_cli_pouch *pouch, const char *id, int published,
 int cai_cli_pouch_lock(cai_cli_pouch *pouch, const char *id, lc_lease **out,
                        cai_error *error);
 int cai_cli_pouch_unlock(lc_lease *lease, int result, cai_error *error);
+/* Global kanban document, encrypted in cai.todo. Context is the borrowed pouch.
+ * Intermediate rewrites stay in encrypted attachments until transaction commit.
+ */
+const cai_todo_store_callbacks *cai_cli_pouch_todo_callbacks(void);
 /* Stream JSONL containing the current complete checkpoint and all journal
  * events. */
 int cai_cli_pouch_export(cai_cli_pouch *pouch, const char *id, cai_sink *sink,

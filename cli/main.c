@@ -70,7 +70,6 @@ typedef struct cli_state {
   cai_chatgpt_auth shared_auth;
   pthread_mutex_t auth_lock;
   int has_auth_lock;
-  cai_chrome *chrome;
   cai_client *client;
   cai_client *model_client;
   pslog_logger *model_log;
@@ -288,6 +287,15 @@ static int cli_tool_sink(void *context, const void *bytes, size_t count,
     return CAI_OK;
   return cai_cli_error(error, CAI_ERR_TRANSPORT, "cannot write tool activity");
 }
+static int cli_tool_begin_block(void *context, cai_error *error) {
+  cli_state *state = context;
+  while (state->feed_breaks < 2) {
+    if (cli_sink(state, "\n", 1U) != 0)
+      return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                           "cannot separate tool activity");
+  }
+  return CAI_OK;
+}
 /* Prefix visible renderer rows without retaining body text or inserting a
  * marker inside an ANSI sequence split across writes. Blank rows stay blank. */
 static int cli_prefixed_sink(void *context, const char *bytes, size_t count) {
@@ -365,6 +373,8 @@ static int cli_tool_display_init(cli_state *state, cai_error *error) {
                     ? CAI_TOOL_OUTPUT_FULL
                     : CAI_TOOL_OUTPUT_COMPACT;
   config.color = state->interactive && getenv("NO_COLOR") == NULL;
+  config.begin_block = cli_tool_begin_block;
+  config.begin_block_context = state;
   rc = cai_tool_display_new(&config, &state->tool_display, error);
   width = cli_render_width();
   if (rc == CAI_OK)
@@ -1349,22 +1359,6 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   int wakeup_fd;
   int rc;
 
-  if (state->options.chrome && state->chrome == NULL) {
-    cai_chrome_config browser;
-    char directory[PATH_MAX];
-    memset(&browser, 0, sizeof(browser));
-    browser.socket_path = state->options.chrome_socket;
-    browser.logger = state->log.logger;
-    if (browser.socket_path == NULL) {
-      rc = cai_cli_chrome_directory(directory, sizeof(directory), 0, error);
-      if (rc != CAI_OK)
-        return rc;
-      browser.socket_directory = directory;
-    }
-    rc = cai_chrome_open(&browser, &state->chrome, error);
-    if (rc != CAI_OK)
-      return rc;
-  }
   state->show_welcome = 1;
   cai_agent_runtime_config_init(&config);
   if (state->configuration != NULL &&
@@ -1386,7 +1380,26 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   if (state->options.review)
     config.preset = CAI_SMITH_REVIEW_PRESET;
   skills.skills_directory = state->options.skills_dir;
-  config.chrome = state->chrome;
+  config.disable_chrome = state->options.review || !state->options.chrome;
+  config.chrome_config.socket_path = state->options.chrome_socket;
+  config.disable_web_search = !state->options.web_search;
+  config.disable_read_file = !state->options.read_file;
+  config.disable_list_files = !state->options.list_files;
+  config.disable_apply_patch = !state->options.apply_patch;
+  config.disable_view_image = !state->options.view_image;
+  config.disable_goals = !state->options.goals;
+  config.disable_skills = !state->options.skills;
+  config.enable_todo = !state->options.review && state->options.todo;
+  config.enable_searxng = !state->options.review && state->options.searxng;
+  config.enable_revgeo = !state->options.review && state->options.revgeo;
+  if (state->options.searxng_url != NULL)
+    config.searxng.base_url = state->options.searxng_url;
+  if (state->options.revgeo_url != NULL)
+    config.revgeo.base_url = state->options.revgeo_url;
+  if (config.enable_todo) {
+    config.todo.store = cai_cli_pouch_todo_callbacks();
+    config.todo.store_context = &state->pouch;
+  }
   config.logger = state->log.logger;
   config.workspace_directory = state->workspace;
   config.image_directory =
@@ -1509,8 +1522,6 @@ static void cli_close_runtime(cli_state *state) {
   cai_agent_runtime_close(state->runtime);
   state->runtime = NULL;
   state->goal_starts_pending = 0U;
-  cai_chrome_close(state->chrome);
-  state->chrome = NULL;
   cai_cli_reasoning_reset(&state->reasoning);
 }
 
@@ -2916,7 +2927,6 @@ cleanup:
   cai_cli_response_close(&state.final_response);
   if (state.runtime != NULL)
     cli_close_runtime(&state);
-  cai_chrome_close(state.chrome);
   if (state.has_log_watch)
     (void)sl_watch_remove(state.sl, state.log_watch_id);
   if (state.has_timer_watch)

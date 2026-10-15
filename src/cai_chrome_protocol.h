@@ -62,5 +62,8 @@ struct cai_chrome {
   char *pending_image;
   int used;
   int cleanup;
+  int lazy;
+  char *socket_path;
+  char *socket_directory;
 };
 #endif

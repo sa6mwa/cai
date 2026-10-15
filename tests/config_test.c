@@ -491,6 +491,33 @@ int main(int argc, char **argv) {
   assert(strcmp(again->get(again, "host", "demo"), "value") == 0);
   again->close(again);
   config->close(config);
+  assert(cai_config_open(NULL, 0U, &again, &error) == CAI_OK);
+  cai_agent_runtime_config_init(&runtime);
+  assert(again->apply_runtime(again, &runtime, &error) == CAI_OK);
+  assert(!runtime.disable_web_search && !runtime.disable_chrome &&
+         !runtime.enable_todo && !runtime.enable_searxng &&
+         !runtime.enable_revgeo);
+  assert(load(again,
+              "[agent]\nweb_search=false\ntodo=true\nsearxng=true\nrevgeo="
+              "true\nread_file=false\nlist_files=false\napply_patch="
+              "false\nview_image=false\ngoals=false\nskills=false\n[chrome]"
+              "\nenabled=false\ntimeout_ms=150\nsocket=\"/tmp/"
+              "browser.sock\"\n[todo]\ndefault_board=work\n[searxng]\nbase_url="
+              "http://127.0.0.1:8889\n[revgeo]\nzoom=15\n",
+              1U, 0, &error) == CAI_OK);
+  assert(again->apply_runtime(again, &runtime, &error) == CAI_OK);
+  assert(runtime.disable_web_search && runtime.disable_chrome &&
+         runtime.enable_todo && runtime.enable_searxng &&
+         runtime.enable_revgeo && runtime.disable_read_file &&
+         runtime.disable_list_files && runtime.disable_apply_patch &&
+         runtime.disable_view_image && runtime.disable_goals &&
+         runtime.disable_skills);
+  assert(strcmp(runtime.chrome_config.socket_path, "/tmp/browser.sock") == 0 &&
+         runtime.chrome_config.timeout_ms == 150L &&
+         strcmp(runtime.todo.default_board, "work") == 0 &&
+         strcmp(runtime.searxng.base_url, "http://127.0.0.1:8889") == 0 &&
+         runtime.revgeo.zoom == 15);
+  again->close(again);
   cai_error_cleanup(&error);
   return 0;
 }

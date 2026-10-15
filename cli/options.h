@@ -11,6 +11,14 @@ typedef struct cai_cli_options {
   const char *chrome_socket;
   const char *chrome_manifest;
   int chrome;
+  int chrome_explicit;
+  int web_search;
+  int todo;
+  int searxng;
+  int revgeo;
+  int read_file, list_files, apply_patch, view_image, goals, skills;
+  const char *searxng_url;
+  const char *revgeo_url;
   int chrome_setup;
   int chrome_remove;
   const char *endpoint;

@@ -52,6 +52,13 @@ provider credentials. Normal startup never installs/removes a registration.
 
 ## Connections and browser tools
 
+Smith runtimes and CAI enable Chrome tools by default, connecting only on the
+first browser request. Use `--no-chrome`, `CAI_CHROME=false`, or
+`[chrome] enabled=false` to disable them. No registration or browser is needed
+for an ordinary turn. Setup remains explicit. An unavailable host fails the
+tool call with setup guidance; a later call may discover a newly connected
+host. Sent operations are never automatically retried.
+
 Each Chrome extension connection creates a private socket named `<pid>.sock`
 in `$XDG_RUNTIME_DIR/cai/chrome`, falling back to
 `${XDG_CACHE_HOME:-$HOME/.cache}/cai/chrome` when the runtime directory is unset.
@@ -114,6 +121,12 @@ cleanup. Close the runtime before closing the browser connection.
 Low-level `cai_chrome_request` accepts complete extension parameters; callers
 supply the required session/turn metadata and are responsible for `turnEnded`.
 Use `cai_chrome_result_free` to release returned JSON.
+Smith's runtime can instead own its default lazy connection; set
+`disable_chrome` to opt out or `chrome_config` to customize discovery/limits.
+`cai_chrome_open_lazy` also exposes this behavior directly; `cai_chrome_open`
+continues to perform eager discovery and identity validation. Custom presets
+must grant `CAI_AGENT_PRESET_TOOL_CHROME` to acquire or borrow a browser.
+Children and isolated reviewers receive no default browser.
 
 Lua Smith runtimes own their browser connection when configured with a table:
 

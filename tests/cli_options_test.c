@@ -51,6 +51,34 @@ static int storage_options(void) {
   return 0;
 }
 
+static int tool_options(void) {
+  cai_cli_options options;
+  char arg0[] = "cai", arg1[] = "-i", arg2[] = "actual prompt";
+  char searxng[] = "--searxng-url", revgeo[] = "--revgeo-url";
+  char socket[] = "--chrome-socket";
+  char *args[5];
+  char *flags[3];
+  size_t i;
+  flags[0] = searxng;
+  flags[1] = revgeo;
+  flags[2] = socket;
+  args[0] = arg0;
+  if (cai_cli_parse_options(1, args, &options) != 1 || !options.web_search ||
+      !options.chrome || options.todo || options.searxng || options.revgeo)
+    return 1;
+  for (i = 0U; i < 3U; i++) {
+    args[1] = flags[i];
+    args[2] = arg1;
+    args[3] = arg1;
+    args[4] = arg2;
+    if (cai_cli_parse_options(5, args, &options) != 1 ||
+        options.instruction_count != 1U ||
+        strcmp(cai_cli_instruction_at(&options, 0U), arg2) != 0 ||
+        cai_cli_instruction_at(&options, 1U) != NULL)
+      return 1;
+  }
+  return 0;
+}
 static int shell_options(void) {
   cai_cli_options options;
   char arg0[] = "cai", arg1[] = "--no-shell-context", arg2[] = "--no-terminal";
@@ -342,5 +370,5 @@ int main(void) {
       cai_cli_parse_options(3, invalid_legacy_instructions, &options) != -1 ||
       cai_cli_parse_options(3, invalid_legacy_workspace, &options) != -1)
     return 1;
-  return shell_options() || storage_options();
+  return shell_options() || storage_options() || tool_options();
 }

@@ -519,10 +519,63 @@ include its private static link dependency and license; the CAI binary links
 it statically. Moving this source producer into cpkt core is deferred.
 
 Chrome control through the official ChatGPT extension is opt-in:
-`cai --chrome-setup` registers cai's own native host, then `cai --chrome`
-enables browser tools. Setup refuses conflicting registrations;
+Smith enables hosted `web_search` on Responses providers and the ChatGPT Chrome
+extension tool by default. Browser discovery is lazy: ordinary turns work
+without Chrome, and a browser call reports missing setup or connection.
+`cai --chrome-setup` registers cai's own native host. Setup refuses conflicting registrations;
 `--chrome-remove` removes only cai's verified registration. No OpenAI native
 executable is required. See [Chrome setup, API, and compatibility](docs/chrome.md).
+
+Tool policy uses CLI > environment > `config.ini` > built-in defaults.
+`[env]` is applied first with its documented environment precedence rule.
+All boolean environment settings accept the INI boolean syntax. The following
+controls apply at startup, including when resuming a conversation:
+
+| Tool | CLI (also `--no-NAME`) | Environment | INI | Default |
+| --- | --- | --- | --- | --- |
+| Hosted search (Responses only) | `--web-search` | `CAI_WEB_SEARCH` | `[agent] web_search` | on |
+| Chrome extension | `--chrome` | `CAI_CHROME` | `[chrome] enabled` | on |
+| Kanban | `--todo` | `CAI_TODO` | `[agent] todo` | off |
+| SearXNG function search | `--searxng` | `CAI_SEARXNG` | `[agent] searxng` | off |
+| Reverse geocoding | `--revgeo` | `CAI_REVGEO` | `[agent] revgeo` | off |
+| File reading | `--read-file` | `CAI_READ_FILE` | `[agent] read_file` | on |
+| File listing | `--list-files` | `CAI_LIST_FILES` | `[agent] list_files` | on |
+| Workspace patching | `--apply-patch` | `CAI_APPLY_PATCH` | `[agent] apply_patch` | on |
+| Local images | `--view-image` | `CAI_VIEW_IMAGE` | `[agent] view_image` | model dependent |
+| Goal tools | `--goals` | `CAI_GOALS` | `[agent] goals` | on |
+| Skills | `--skills` | `CAI_SKILLS` | `[agent] skills` | on when installed |
+| Managed commands | `--terminal` | `CAI_TERMINAL` | `[agent] terminal` | on |
+| Image generation | `--image-generation` | `CAI_IMAGE_GENERATION` | `[agent] image_generation` | on |
+| Review subagent | `--review-subagent` | `CAI_REVIEW_SUBAGENT` | `[agent] review_subagent` | on |
+| Codex global/ancestor instructions | `--codex-agents-md` | `CAI_CODEX_AGENTS_MD` | `[agent] codex_agents_md` | off |
+
+`--searxng-url`/`CAI_SEARXNG_URL` override `[searxng] base_url`;
+`--revgeo-url`/`CAI_REVGEO_URL` override `[revgeo] base_url`.
+`--chrome-socket`/`CAI_CHROME_SOCKET` select `[chrome] socket`.
+The generated template documents service timeouts, result limits and language
+settings. SearXNG is available to Chat Completions providers without hosted
+search. CAI's optional kanban uses one shared encrypted `cai.todo` document,
+with bounded streaming reads/writes and transaction commit/rollback; it creates
+no `todo.json` file. Isolated reviews omit these optional tools and browser
+access. Ordinary subagents inherit narrowed local capabilities and hosted
+search policy, but receive no Chrome connection or optional kanban/service tools.
+The separate sandboxed exec preset remains an SDK alternative to the managed
+terminal pair; registering both under `exec_command` is not supported.
+
+The equivalent libcai runtime fields are `disable_web_search`, `disable_chrome`,
+`chrome_config`, `enable_todo`/`todo`, `enable_searxng`/`searxng`,
+`enable_revgeo`/`revgeo`, and the individual `disable_read_file`,
+`disable_list_files`, `disable_apply_patch`, `disable_view_image`,
+`disable_goals`, `disable_skills` policies. The standard INI parser projects
+them through `apply_runtime`. SDK hosts enabling kanban can supply its streaming
+store callbacks; without them the SDK's existing file store applies.
+Preset capability masks also gate search and browser access:
+`CAI_AGENT_PRESET_TOOL_WEB_SEARCH` and `CAI_AGENT_PRESET_TOOL_CHROME` are set
+by Smith; custom descriptors grant them explicitly. Runtime disable policies
+can narrow these grants.
+Global instruction load records include the source, resolved path and byte count
+in the session log, including after replay. Conversation state never supplies
+CAI startup configuration.
 
 `-C DIR`/`--directory DIR` changes directory before the agent opens its
 session. Repeat `-i TEXT`/`--instruction TEXT` to run prompts in order, after
@@ -916,8 +969,11 @@ the public C workflow facade: clients, agents, sessions, responses/outputs,
 streaming sinks, tool registries, tool presets, ChatGPT auth/login helpers, and
 the MCP Streamable HTTP handler and client. Lua Smith runtimes also accept
 `chrome = { socket_path = path }` or `chrome = { socket_directory = dir }`,
-with optional timeout/frame limits. They own the connection until runtime close;
+with optional timeout/frame limits. They own a lazy connection until runtime close;
 see [Chrome integration](docs/chrome.md).
+Lua runtime tables also accept all `disable_*` policies and `enable_todo`,
+`enable_searxng`, `enable_revgeo` with their corresponding tool configuration
+tables. `todo.store` may be a native store; the runtime borrows it until close.
 
 Build and run the local LuaRock test:
 

@@ -9,11 +9,12 @@ extern "C" {
 #endif
 /** Opaque, single-owner browser connection. */
 typedef struct cai_chrome cai_chrome;
-/** Explicit local browser opt-in; no Chrome configuration is changed. */
+/** Local browser connection settings; no Chrome configuration is changed. */
 typedef struct cai_chrome_config {
   /** Absolute socket path; NULL discovers exactly one host in directory. */
   const char *socket_path;
-  /** Private, user-owned directory; required unless socket_path is set. */
+  /** Private, user-owned directory; required by eager open unless socket_path
+   * is set. Lazy open can discover the standard CAI directory. */
   const char *socket_directory;
   /** Whole request deadline in milliseconds; zero selects 30000, maximum 60000.
    */
@@ -32,6 +33,13 @@ typedef struct cai_chrome_config {
  */
 int cai_chrome_open(const cai_chrome_config *config, cai_chrome **out,
                     cai_error *error);
+/** Create a lazy connection without contacting the host. NULL configuration
+ * uses the standard CAI socket directory (runtime directory, cache, then HOME).
+ * Discovery and identity validation happen on the first request. Missing hosts
+ * and disconnected sockets can be retried by a later request; a sent operation
+ * is never automatically retried. Configuration strings are copied. */
+int cai_chrome_open_lazy(const cai_chrome_config *config, cai_chrome **out,
+                         cai_error *error);
 /** Send a browser JSON-RPC method and return its buffered JSON result.
  * params_json must be a JSON object. Browser operations require session_id,
  * turn_id and session_context in params, as defined by the extension.

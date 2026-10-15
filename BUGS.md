@@ -39,7 +39,7 @@ commit and verification evidence.
 ## BUG-002: Missing blank row before some tool activity blocks
 
 - **Priority:** high.
-- **Status:** open.
+- **Status:** fixed; renderer and interactive feed checks pass.
 - **Reported:** `* Running`, `* Ran`, and similar tool headings sometimes run
   directly against the preceding assistant paragraph or command output.
   Other transitions already have the desired spacing.
@@ -48,6 +48,11 @@ commit and verification evidence.
 - **Verification:** cover assistant-to-tool, command-output-to-completion,
   consecutive tools, empty output, partial final lines, failures, and notices.
   Assert spacing in the feed and the displayed terminal.
+- **Fix:** activity headings ask the feed owner to establish a blank row.
+  Standalone library rendering separates its own blocks. Literal payloads and
+  patch rows retain their existing spacing; partial final lines are terminated
+  before the separator. `cai_display` and `cai_cli_tool_display` cover wrapped
+  patches, preambles, partial/empty command output, failures and consecutive calls.
 
 ## BUG-003: Slash-command transcript colors do not communicate outcome
 
@@ -74,7 +79,7 @@ commit and verification evidence.
 ## BUG-004: Patch colors are too bright and lack distinct change markers
 
 - **Priority:** normal.
-- **Status:** open; Codex source is the requested color reference.
+- **Status:** fixed; C, Lua and interactive feed checks pass.
 - **Reported:** the current ANSI red/green patch backgrounds are too bright;
   patch text and `-`/`+` markers do not have the intended contrast.
 - **Required behavior:** use the palette from `../../github/codex/`: darker red
@@ -83,6 +88,11 @@ commit and verification evidence.
   patch behavior.
 - **Verification:** inspect Codex's actual color constants; assert emitted
   colors and resets, unchanged context, wrapped rows, and color-free output.
+- **Fix:** Codex's dark palette is `#213A2B` for additions and `#4A221D`
+  for removals. Changed rows use bright white text, distinct bright green/red
+  signs, and a reset after each row. Context has no background. Numbered,
+  unnumbered, chunked and wrapped patch paths use the same palette; plain output
+  remains free of ANSI sequences.
 
 ## BUG-005: Context window differs between startup and session replay
 
@@ -142,27 +152,48 @@ commit and verification evidence.
   case remains unaccounted for; these passing probes do not close the report.
   The CLI pouch adapter stores sessions, scope coordination, and credentials;
   it does not supply CAI startup configuration.
+- **Added evidence and diagnostics:** current instructions also survive saved
+  model selection and configuration-driven `CODEX_HOME`. `CAI_CODEX_AGENTS_MD`
+  now follows CLI > environment > INI precedence, including an explicit
+  `--no-codex-agents-md` override. The log records each global instruction
+  source, resolved path and loaded byte count, or that the file is absent.
+  File-open errors include the path and OS reason. No replay suppression or
+  configuration stored in pouch was found. Keep the reported real-session
+  discrepancy open until its failing input is identified.
 
 ## BUG-008: Enable the existing todo/kanban tool in CAI
 
 - **Priority:** normal; feature backlog.
-- **Status:** confirmed missing from CAI's runtime tool registration.
-- **Evidence:** libcai implements `todo_kanban` and exposes
+- **Status:** implemented; optional and disabled by default.
+- **Original evidence:** libcai implemented `todo_kanban` and exposed
   `cai_agent_register_todo_tool`, but neither the CLI nor the Smith/runtime
-  startup path registers it.
+  startup path registered it.
 - **Required work:** expose the existing tool to the normal CAI agent, provide
   appropriate persistent storage, and include its capabilities in the agent's
   instructions. Cover fresh sessions, replay, persistence, failed operations,
   and the actual tool list sent to the provider. Keep isolated review behavior
   deliberate.
+- **Implementation/evidence:** Smith runtime and CAI register `todo_kanban`
+  when enabled. CAI uses an encrypted `cai.todo` namespace with streamed private
+  lease reads and bounded upload backpressure; no JSON state file is created.
+  Temporary rewrite attachments remain transactional. Establishing the read
+  snapshot before upload avoids storage-lock inversion. Tests cover actual
+  provider declarations, add/list across invocations, 256 KiB rewrites, multiple
+  rewrites in one transaction, rollback, injected commit failure and an aborted
+  partial upload. Lua retains borrowed native stores through runtime close and
+  releases them correctly on failed startup.
 
 ## BUG-009: Expose optional tools and consistent tool configuration
 
 - **Priority:** normal; feature backlog.
-- **Status:** inventory complete; implementation pending.
-- **Missing optional tools:** todo/kanban (BUG-008), SearXNG search, and reverse
-  geocoding are implemented by libcai but not registered by CAI. These extras
-  should be disabled by default.
+- **Status:** implemented; native protocol/CLI/Lua checks pass.
+- **Previously missing tools:** todo/kanban (BUG-008), SearXNG search, and
+  reverse geocoding. These extras are now available and disabled by default.
+- **Smith defaults:** hosted Responses web search and Chrome extension control
+  are enabled by default. Chrome connects only when called; ordinary startup
+  needs no installed/connected browser. Chat Completions omits hosted search;
+  optional SearXNG provides function-based search there. Isolated reviewers
+  receive no default browser, hosted search or optional service/state tools.
 - **Required configuration:** explicit enable/disable controls through CLI
   flags, environment variables, and `config.ini`, with documented precedence
   and a commented default template. Include provider/service settings where
@@ -175,6 +206,17 @@ commit and verification evidence.
   each enable/disable path, precedence, resumed sessions, unavailable services,
   actual dispatch, and isolated review capabilities. Settings are startup
   configuration, not pouch-backed configuration.
+- **Evidence:** request capture covers defaults, explicit flags, environment,
+  INI, `[env]` precedence, resumed sessions, missing browser hosts, successful
+  service dispatch and HTTP 503 recovery. Local file/goal/skill capability
+  restrictions also narrow custom subagents. README, man page, public C fields,
+  Lua runtime tables and generated INI schema describe the controls.
+  Default web/browser registration is gated by explicit preset capability bits;
+  a restricted custom descriptor named Smith cannot acquire extra tools.
+- **Primary artifact:** the rebuilt static musl binary passes both protocol
+  policy/service tests, both global-instruction replay tests and the interactive
+  patch/spacing test. Browser protocol/setup coverage uses local fixtures;
+  an installed Chrome extension was not exercised on this machine.
 
 ## BUG-010: /model catalog request times out and prints duplicate diagnostics
 

@@ -119,6 +119,7 @@ typedef struct cai_lua_agent_runtime {
   int instruction_store_ref;
   int skill_provider_ref;
   int subagent_prepare_backends_ref;
+  int todo_store_ref;
   int mcp_clients_ref;
   size_t mcp_client_count;
   int review_parent_ref;
@@ -618,7 +619,7 @@ static int cai_lua_todo_store_prepare(cai_lua_native_store *store,
   }
   adapter = store->adapter;
   if (adapter->kind != CAI_LUA_NATIVE_STORE_TODO ||
-      adapter->core_reference_active) {
+      adapter->core_reference_active || adapter->active_runtimes != 0U) {
     return cai_lua_set_error(error, CAI_ERR_INVALID,
                              "native todo store is already registered");
   }
@@ -3522,6 +3523,14 @@ static int cai_lua_agent_runtime_review_event(
   return cai_lua_agent_runtime_event(*receiver, event, error);
 }
 
+static void cai_lua_revgeo_config(lua_State *L, int index,
+                                  cai_revgeo_tool_config *config);
+static void cai_lua_searxng_config(lua_State *L, int index,
+                                   cai_searxng_tool_config *config);
+static int cai_lua_todo_config(lua_State *L, int index,
+                               cai_todo_tool_config *config,
+                               cai_lua_native_store **native_store,
+                               cai_error *error);
 static int cai_lua_client_new_smith_runtime_common(lua_State *L,
                                                    int review_mode,
                                                    int custom_preset) {
@@ -3530,6 +3539,8 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   cai_lua_native_store *native_session_store;
   cai_lua_native_store *native_skill_store;
   cai_lua_native_store *native_instruction_store;
+  cai_lua_native_store *native_todo_store = NULL;
+  cai_todo_store_callbacks todo_callbacks;
   cai_agent_runtime_config config;
   cai_chrome_config chrome_config;
   int has_chrome;
@@ -3709,6 +3720,40 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   config.enable_image_generation =
       cai_lua_opt_bool_field(L, 2, "enable_image_generation", 0);
   config.disable_terminal = cai_lua_opt_bool_field(L, 2, "disable_terminal", 0);
+  config.disable_web_search =
+      cai_lua_opt_bool_field(L, 2, "disable_web_search", 0);
+  config.disable_chrome = cai_lua_opt_bool_field(L, 2, "disable_chrome", 0);
+  config.disable_read_file =
+      cai_lua_opt_bool_field(L, 2, "disable_read_file", 0);
+  config.disable_list_files =
+      cai_lua_opt_bool_field(L, 2, "disable_list_files", 0);
+  config.disable_apply_patch =
+      cai_lua_opt_bool_field(L, 2, "disable_apply_patch", 0);
+  config.disable_view_image =
+      cai_lua_opt_bool_field(L, 2, "disable_view_image", 0);
+  config.disable_goals = cai_lua_opt_bool_field(L, 2, "disable_goals", 0);
+  config.disable_skills = cai_lua_opt_bool_field(L, 2, "disable_skills", 0);
+  config.enable_todo = cai_lua_opt_bool_field(L, 2, "enable_todo", 0);
+  config.enable_searxng = cai_lua_opt_bool_field(L, 2, "enable_searxng", 0);
+  config.enable_revgeo = cai_lua_opt_bool_field(L, 2, "enable_revgeo", 0);
+  lua_getfield(L, 2, "searxng");
+  cai_lua_searxng_config(L, -1, &config.searxng);
+  lua_pop(L, 1);
+  lua_getfield(L, 2, "revgeo");
+  cai_lua_revgeo_config(L, -1, &config.revgeo);
+  lua_pop(L, 1);
+  lua_getfield(L, 2, "todo");
+  cai_error_init(&error);
+  rc = cai_lua_todo_config(L, -1, &config.todo, &native_todo_store, &error);
+  lua_pop(L, 1);
+  if (rc != CAI_OK)
+    return cai_lua_fail(L, rc, &error);
+  if (native_todo_store != NULL) {
+    todo_callbacks = cai_lua_todo_store_callbacks;
+    todo_callbacks.destroy =
+        NULL; /* Retain the native store as runtime input. */
+    config.todo.store = &todo_callbacks;
+  }
   config.image_directory =
       cai_lua_opt_string_field(L, 2, "image_directory", NULL);
   config.session_scope = cai_lua_opt_string_field(L, 2, "session_scope", NULL);
@@ -3773,6 +3818,7 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   runtime->instruction_store_ref = LUA_NOREF;
   runtime->skill_provider_ref = LUA_NOREF;
   runtime->subagent_prepare_backends_ref = LUA_NOREF;
+  runtime->todo_store_ref = LUA_NOREF;
   runtime->mcp_clients_ref = LUA_NOREF;
   runtime->review_parent_ref = LUA_NOREF;
   runtime->review_children_ref = LUA_NOREF;
@@ -3802,7 +3848,7 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
     config.logger = logger;
     if (has_chrome) {
       chrome_config.logger = logger;
-      rc = cai_chrome_open(&chrome_config, &runtime->chrome, &error);
+      rc = cai_chrome_open_lazy(&chrome_config, &runtime->chrome, &error);
       config.chrome = runtime->chrome;
     }
   }
@@ -3862,6 +3908,14 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   memset(&logger_ref, 0, sizeof(logger_ref));
   has_logger_ref = 0;
   runtime->parent_client = client;
+  runtime->todo_store_ref = LUA_NOREF;
+  if (config.enable_todo && native_todo_store != NULL) {
+    lua_getfield(L, 2, "todo");
+    lua_getfield(L, -1, "store");
+    runtime->todo_store_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    lua_pop(L, 1);
+    native_todo_store->adapter->active_runtimes++;
+  }
   client->child_runtimes++;
   if (config.global_instruction_store != NULL) {
     lua_getfield(L, 2, "global_instruction_store");
@@ -4409,6 +4463,17 @@ static void cai_lua_agent_runtime_release(lua_State *L,
                                           cai_lua_agent_runtime *self) {
   cai_chrome_close(self->chrome);
   self->chrome = NULL;
+  if (self->todo_store_ref != LUA_NOREF) {
+    cai_lua_native_store *store;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, self->todo_store_ref);
+    store = (cai_lua_native_store *)luaL_testudata(L, -1, CAI_LUA_NATIVE_STORE);
+    if (store != NULL && store->adapter != NULL &&
+        store->adapter->active_runtimes > 0U)
+      store->adapter->active_runtimes--;
+    lua_pop(L, 1);
+    luaL_unref(L, LUA_REGISTRYINDEX, self->todo_store_ref);
+    self->todo_store_ref = LUA_NOREF;
+  }
   cai_lua_runtime_mcp_clients_release(L, self);
   if (self->callback_ref != LUA_NOREF) {
     luaL_unref(L, LUA_REGISTRYINDEX, self->callback_ref);
@@ -4891,6 +4956,7 @@ static int cai_lua_agent_runtime_start_review(lua_State *L) {
   review->instruction_store_ref = LUA_NOREF;
   review->skill_provider_ref = LUA_NOREF;
   review->subagent_prepare_backends_ref = LUA_NOREF;
+  review->todo_store_ref = LUA_NOREF;
   review->mcp_clients_ref = LUA_NOREF;
   review->review_parent_ref = cai_lua_ref_parent(L, 1);
   review->review_children_ref = LUA_NOREF;
@@ -12047,6 +12113,9 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_SKILLS", CAI_AGENT_PRESET_TOOL_SKILLS);
   CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_SUBAGENTS",
                       CAI_AGENT_PRESET_TOOL_SUBAGENTS);
+  CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_WEB_SEARCH",
+                      CAI_AGENT_PRESET_TOOL_WEB_SEARCH);
+  CAI_LUA_SET_INTEGER("AGENT_PRESET_TOOL_CHROME", CAI_AGENT_PRESET_TOOL_CHROME);
   CAI_LUA_SET_STRING("DEFAULT_DOTENV_PATH", CAI_DEFAULT_DOTENV_PATH);
   CAI_LUA_SET_STRING("CHATGPT_AUTH_DEFAULT_ISSUER",
                      CAI_CHATGPT_AUTH_DEFAULT_ISSUER);

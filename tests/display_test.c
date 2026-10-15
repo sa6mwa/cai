@@ -109,7 +109,7 @@ static void numbered_patches(capture *c) {
   static const char expected[] =
       "* Edited file.c\n 280  same\n 281 -old\n 281 "
       "+abcdefghijklmnopqrstuvwxyz\n      1234567890\n 282 +next\n 283  "
-      "tail\n* Added new.c\n   1 +hello\n";
+      "tail\n\n* Added new.c\n   1 +hello\n";
   cai_sink *sink = NULL;
   cai_sink_callbacks callbacks;
   cai_tool_display_config config;
@@ -125,14 +125,15 @@ static void numbered_patches(capture *c) {
   assert(render_width(c, patch, sizeof(patch) - 1U, 1U, 0, 1, 0, 32U) ==
          CAI_OK);
   assert(strstr(c->bytes,
-                "\033[41m 281 -old                       \033[0m\n") != NULL);
+                "\033[48;2;74;34;29m\033[97m 281 \033[91m-\033[97mold   "
+                "                    \033[0m\n") != NULL);
+  assert(strstr(c->bytes, "\033[48;2;33;58;43m\033[97m 281 "
+                          "\033[92m+\033[97mabcdefghijklmnopqrstuvwxyz\033["
+                          "0m\n\033[48;2;33;58;43m\033[97m     "
+                          " 1234567890                \033[0m\n") != NULL);
   assert(strstr(c->bytes,
-                "\033[42m 281 +abcdefghijklmnopqrstuvwxyz\033[0m\n\033[42m     "
-                " 1234567890                \033[0m\n") != NULL);
-  assert(
-      strstr(c->bytes,
-             "\033[42m 282 +next                      \033[0m\n 283  tail\n") !=
-      NULL);
+                "\033[48;2;33;58;43m\033[97m 282 \033[92m+\033[97mnext  "
+                "                    \033[0m\n 283  tail\n") != NULL);
   reset(c);
   assert(render_width(c, "*** Update File: x\n@@\n+x\n",
                       strlen("*** Update File: x\n@@\n+x\n"), 1U, 0, 0, 0,
@@ -149,7 +150,8 @@ static void numbered_patches(capture *c) {
   }
   reset(c);
   assert(render_width(c, "+a\033[2J\0b", 9U, 1U, 0, 1, 0, 32U) == CAI_OK);
-  assert(strstr(c->bytes, "+a\\x1b[2J\\x00b") != NULL);
+  assert(strstr(c->bytes, "\033[91m") == NULL);
+  assert(strstr(c->bytes, "\033[92m+\033[97ma\\x1b[2J\\x00b") != NULL);
   reset(c);
   assert(render_width(c, "+1234567890123456789012345界é\n",
                       strlen("+1234567890123456789012345界é\n"), 1U, 0, 0, 0,
@@ -314,7 +316,7 @@ static void patches(capture *c) {
   static const char expected[] =
       "* Edited dir/file.c\n@@\n before1\n-old\n+new å🚀\n"
       " between0\n ⋮\n between3\n-old2\n+new2\n after0\n"
-      "* Added added.c\n+added\n* Deleted deleted.c\n";
+      "\n* Added added.c\n+added\n\n* Deleted deleted.c\n";
   char *long_patch;
   size_t length, j;
   reset(c);
@@ -322,8 +324,13 @@ static void patches(capture *c) {
   assert(strcmp(c->bytes, expected) == 0);
   reset(c);
   assert(render(c, patch, sizeof(patch) - 1U, 7U, 0, 1, 0) == CAI_OK);
-  assert(strstr(c->bytes, "\033[42m+new å🚀\033[0m\n") != NULL);
-  assert(strstr(c->bytes, "\033[41m-old\033[0m\n") != NULL);
+  assert(
+      strstr(c->bytes,
+             "\033[48;2;33;58;43m\033[97m\033[92m+\033[97mnew å🚀\033[0m\n") !=
+      NULL);
+  assert(strstr(c->bytes,
+                "\033[48;2;74;34;29m\033[97m\033[91m-\033[97mold\033[0m\n") !=
+         NULL);
   assert(strstr(c->bytes,
                 "\033[92m*\033[0m \033[1;96mEdited dir/file.c\033[0m\n") !=
          NULL);
@@ -366,7 +373,7 @@ static void patches(capture *c) {
   assert(render(c, long_patch, length + 1U, 4096U, 1, 1, 0) == CAI_OK);
   for (j = 0U; j < c->length; j++)
     assert(c->bytes[j] != '\0');
-  assert(strstr(c->bytes, "\033[42mxxxxx") != NULL);
+  assert(strstr(c->bytes, "\033[48;2;33;58;43m\033[97mxxxxx") != NULL);
   reset(c);
   assert(render(c, long_patch, 65536U, 4096U, 0, 0, 0) == CAI_OK);
   assert(c->length == 65537U && c->bytes[65536U] == '\n');

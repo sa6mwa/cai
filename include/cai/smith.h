@@ -29,7 +29,7 @@ extern "C" {
  * The runtime realizes every capability for which it has the required host
  * configuration. The direct cai_client_new_preset_agent constructors realize
  * the local file, terminal, and image-view capabilities; MCP, hosted image
- * generation, and goal state require a live cai_agent_runtime.
+ * generation/search, Chrome and goal state require a live cai_agent_runtime.
  */
 /** Register the sandboxed UTF-8 file reader. */
 #define CAI_AGENT_PRESET_TOOL_READ_FILE (1UL << 0)
@@ -55,6 +55,10 @@ extern "C" {
  * are run_<name>; child agents never receive this capability.
  */
 #define CAI_AGENT_PRESET_TOOL_SUBAGENTS (1UL << 9)
+/** Allow hosted Responses web search, registered by the runtime by default. */
+#define CAI_AGENT_PRESET_TOOL_WEB_SEARCH (1UL << 10)
+/** Allow Chrome extension control, connected lazily by the runtime. */
+#define CAI_AGENT_PRESET_TOOL_CHROME (1UL << 11)
 
 /** Declarative, host-defined agent profile for CAI's shared runtime. */
 typedef struct cai_agent_preset {

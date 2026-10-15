@@ -24,6 +24,11 @@ typedef struct cai_tool_display_config {
   int mode;
   /** Command preview line count; zero selects five. */
   size_t preview_lines;
+  /** Optional host callback before each activity heading. Ensure a blank row
+   * after any preceding feed output; return a CAI status. Context is borrowed.
+   * Without it the renderer separates its own activity blocks. */
+  int (*begin_block)(void *context, cai_error *error);
+  void *begin_block_context;
 } cai_tool_display_config;
 
 /** Create an owner-thread renderer. No sink ownership is transferred.

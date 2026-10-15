@@ -2636,8 +2636,8 @@ do
   end))
   local rendered = table.concat(output)
   assert(observed, "patch output must appear before source EOF")
-  assert(rendered:find("\27[41m-old\27[0m", 1, true))
-  assert(rendered:find("\27[42m+new\27[0m", 1, true))
+  assert(rendered:find("\27[48;2;74;34;29m\27[97m\27[91m-\27[97mold\27[0m", 1, true))
+  assert(rendered:find("\27[48;2;33;58;43m\27[97m\27[92m+\27[97mnew\27[0m", 1, true))
   assert(not rendered:find("mid1", 1, true) and rendered:find("⋮", 1, true))
   local numbered = {}
   assert_ok(cai.patch_render("*** Add File: x\n+abcdefghijklmnopqrstuvwxyz0123456789\n", {width=32}, function(chunk) numbered[#numbered+1] = chunk; return true end))
@@ -2686,23 +2686,56 @@ do
   assert_throws(function() display:event({}) end)
 end
 
--- Browser configuration is explicit, checked before opening a runtime, and
--- unavailable endpoints return useful errors without retaining the client.
+-- Smith browser registration is lazy: an unavailable browser cannot prevent
+-- ordinary agent startup. Reviewers still reject explicit browser access.
 do
   local browser_client = assert_ok(cai.open({ api_key = "fixture" }))
-  local runtime, err = browser_client:new_smith_runtime({
+  native_todo.reset()
+  local store = assert(native_todo.new())
+  local runtime = assert_ok(browser_client:new_smith_runtime({
     workspace_directory = ".",
     chrome = { socket_path = "/cai-test-nonexistent/chrome.sock" },
     disable_default_session_store = true,
-  })
-  assert(runtime == nil and err, "missing Chrome endpoint should fail")
-  assert(tostring(err.message):find("Chrome"), "Chrome error should name the integration")
+    disable_web_search = true,
+    enable_todo = true,
+    todo = { store = store, default_board = "runtime" },
+    enable_searxng = true,
+    searxng = { base_url = "http://127.0.0.1:1", timeout_ms = 50 },
+    enable_revgeo = true,
+    revgeo = { base_url = "http://127.0.0.1:1", timeout_ms = 50 },
+    disable_read_file = true,
+    disable_list_files = true,
+    disable_apply_patch = true,
+    disable_view_image = true,
+    disable_goals = true,
+    disable_skills = true,
+  }))
+  assert_not_ok(store:close(), "runtime must retain its borrowed todo store")
+  local registry = cai.tool_registry()
+  assert_not_ok(registry:register_todo_tool({ store = store }),
+    "a runtime's borrowed store cannot transfer to another registry")
+  registry:close()
+  collectgarbage("collect")
+  assert(native_todo.destroy_count() == 0)
+  runtime:close()
+  store:close()
+  assert(native_todo.destroy_count() == 1, "runtime close must release its todo store")
+  native_todo.reset()
+  store = assert(native_todo.new())
+  assert_not_ok(browser_client:new_smith_runtime({
+    workspace_directory = ".", disable_default_session_store = true,
+    enable_todo = true, todo = { store = store, name = "create_goal" },
+  }), "failed registration must release borrowed runtime inputs")
+  store:close()
+  assert(native_todo.destroy_count() == 1, "failed runtime must not consume a borrowed store")
   assert(not pcall(function()
     browser_client:new_smith_review_runtime({ workspace_directory = ".", chrome = {} })
   end), "isolated reviewers must reject browser access")
   local _, close_error = browser_client:close()
-  assert(close_error == nil, "failed browser setup must release the client")
+  assert(close_error == nil, "lazy browser setup must release the client")
   assert(cai.AGENT_TOOL_ACTION_CHROME == 15)
+  assert(cai.AGENT_PRESET_TOOL_WEB_SEARCH == 1024)
+  assert(cai.AGENT_PRESET_TOOL_CHROME == 2048)
 end
 
 -- The facade delegates INI parsing/environment policy to the shared C receiver.

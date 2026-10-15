@@ -17,6 +17,7 @@ typedef struct cli_stream {
   int stopped;
   cai_error error;
   cai_cli_producer produce;
+  cai_cli_consumer consume;
   void *context;
   void (*destroy)(void *);
 } cli_stream;
@@ -114,7 +115,7 @@ static size_t stream_read(void *context, void *bytes, size_t count,
   if (count == 0U)
     return 0U;
   pthread_mutex_lock(&stream->lock);
-  while (stream->begin == stream->end && !stream->done)
+  while (stream->begin == stream->end && !stream->done && !stream->stopped)
     pthread_cond_wait(&stream->ready, &stream->lock);
   available = stream->end - stream->begin;
   if (available > count)
@@ -123,6 +124,8 @@ static size_t stream_read(void *context, void *bytes, size_t count,
     memcpy(bytes, stream->bytes + stream->begin, available);
     stream->begin += available;
     pthread_cond_broadcast(&stream->ready);
+  } else if (stream->stopped && !stream->done) {
+    cai_cli_error(error, CAI_ERR_CANCELLED, "stream upload aborted");
   } else if (stream->error.code != CAI_OK) {
     cai_cli_error(error, stream->error.code, stream->error.message);
     if (error != NULL)
@@ -187,6 +190,95 @@ int cai_cli_stream_source(cai_cli_producer produce, void *context,
     stream->destroy = NULL;
     stream_close(stream);
   }
+  return rc;
+}
+
+static void *stream_consume(void *context) {
+  cli_stream *stream = context;
+  cai_source_callbacks callbacks;
+  cai_source *source = NULL;
+  cai_error error;
+  int rc;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.read = stream_read;
+  callbacks.context = stream;
+  cai_error_init(&error);
+  rc = cai_source_from_callbacks(&callbacks, &source, &error);
+  if (rc == CAI_OK)
+    rc = stream->consume(stream->context, source, &error);
+  cai_source_close(source);
+  pthread_mutex_lock(&stream->lock);
+  if (rc != CAI_OK)
+    cai_cli_error(&stream->error, rc,
+                  error.message != NULL ? error.message
+                                        : "stream upload failed");
+  stream->stopped = 1;
+  pthread_cond_broadcast(&stream->ready);
+  pthread_mutex_unlock(&stream->lock);
+  cai_error_cleanup(&error);
+  return NULL;
+}
+
+int cai_cli_stream_sink(cai_cli_consumer consume, void *context, cai_sink **out,
+                        cai_error *error) {
+  cli_stream *stream;
+  cai_sink_callbacks callbacks;
+  int rc;
+  *out = NULL;
+  stream = calloc(1U, sizeof(*stream));
+  if (stream == NULL)
+    return cai_cli_error(error, CAI_ERR_NOMEM, "allocate upload adapter");
+  if (pthread_mutex_init(&stream->lock, NULL) != 0) {
+    free(stream);
+    return cai_cli_error(error, CAI_ERR_TRANSPORT, "initialize upload lock");
+  }
+  if (pthread_cond_init(&stream->ready, NULL) != 0) {
+    pthread_mutex_destroy(&stream->lock);
+    free(stream);
+    return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                         "initialize upload condition");
+  }
+  stream->consume = consume;
+  stream->context = context;
+  cai_error_init(&stream->error);
+  if (pthread_create(&stream->thread, NULL, stream_consume, stream) != 0) {
+    pthread_cond_destroy(&stream->ready);
+    pthread_mutex_destroy(&stream->lock);
+    free(stream);
+    return cai_cli_error(error, CAI_ERR_TRANSPORT, "start upload consumer");
+  }
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = stream_write;
+  callbacks.close = stream_close;
+  callbacks.context = stream;
+  rc = cai_sink_from_callbacks(&callbacks, out, error);
+  if (rc != CAI_OK)
+    stream_close(stream);
+  return rc;
+}
+
+int cai_cli_stream_ready(cai_source *source, cai_error *error) {
+  cli_stream *stream = source->callbacks.context;
+  int rc = CAI_OK;
+  pthread_mutex_lock(&stream->lock);
+  while (stream->begin == stream->end && !stream->done)
+    pthread_cond_wait(&stream->ready, &stream->lock);
+  if (stream->begin == stream->end && stream->error.code != CAI_OK)
+    rc = cai_cli_error(error, stream->error.code, stream->error.message);
+  pthread_mutex_unlock(&stream->lock);
+  return rc;
+}
+int cai_cli_stream_finish(cai_sink *sink, cai_error *error) {
+  cli_stream *stream = sink->callbacks.context;
+  int rc = CAI_OK;
+  pthread_mutex_lock(&stream->lock);
+  stream->done = 1;
+  pthread_cond_broadcast(&stream->ready);
+  while (!stream->stopped)
+    pthread_cond_wait(&stream->ready, &stream->lock);
+  if (stream->error.code != CAI_OK)
+    rc = cai_cli_error(error, stream->error.code, stream->error.message);
+  pthread_mutex_unlock(&stream->lock);
   return rc;
 }
 

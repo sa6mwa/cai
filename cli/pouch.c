@@ -170,6 +170,7 @@ static int mapped_source(const lonejson_map *map, const void *doc,
 
 typedef struct download {
   lc_client *client;
+  lc_lease *lease;
   char *key;
   char *attachment;
   const char *ns;
@@ -197,7 +198,19 @@ static int download_write(void *context, cai_sink *sink, cai_error *error) {
   lc_error_init(&local);
   rc = cai_cli_lc_sink(sink, &destination, error);
   if (rc == CAI_OK) {
-    if (request->attachment != NULL) {
+    if (request->lease != NULL && request->attachment != NULL) {
+      lc_attachment_get_req private_request;
+      lc_attachment_get_req_init(&private_request);
+      memset(&attached, 0, sizeof(attached));
+      private_request.selector.name = request->attachment;
+      rc = lc_lease_get_attachment(request->lease, &private_request,
+                                   destination, &attached, &local);
+      lc_attachment_get_res_cleanup(&attached);
+    } else if (request->lease != NULL) {
+      memset(&response, 0, sizeof(response));
+      rc = lc_lease_get(request->lease, destination, NULL, &response, &local);
+      lc_get_res_cleanup(&response);
+    } else if (request->attachment != NULL) {
       lc_attachment_get_op_init(&attachment);
       memset(&attached, 0, sizeof(attached));
       attachment.lease.ns = request->ns;
@@ -252,6 +265,32 @@ static int download_source(lc_client *client, const char *key,
                            cai_error *error) {
   return download_source_ns(client, "cai.sessions", key, attachment, out,
                             error);
+}
+
+static int download_private(lc_lease *lease, const char *attachment,
+                            cai_source **out, cai_error *error) {
+  download *request = calloc(1U, sizeof(*request));
+  int rc;
+  if (request == NULL)
+    return cai_cli_error(error, CAI_ERR_NOMEM, "allocate private download");
+  request->lease = lease;
+  request->attachment = attachment != NULL ? strdup(attachment) : NULL;
+  if (attachment != NULL && request->attachment == NULL) {
+    download_close(request);
+    return cai_cli_error(error, CAI_ERR_NOMEM, "copy private attachment name");
+  }
+  rc = cai_cli_stream_source(download_write, request, download_close, out,
+                             error);
+  if (rc != CAI_OK) {
+    download_close(request);
+    return rc;
+  }
+  rc = cai_cli_stream_ready(*out, error);
+  if (rc != CAI_OK) {
+    cai_source_close(*out);
+    *out = NULL;
+  }
+  return rc;
 }
 
 typedef struct parse_input {
@@ -1067,6 +1106,174 @@ static int auth_replace(void *context, const char *key, cai_source *source,
   if (rc == CAI_OK)
     rc = update(lease, source, error);
   return release(lease, rc, error);
+}
+
+typedef struct todo_transaction {
+  cai_cli_pouch *pouch;
+  lc_lease *lease;
+  cai_sink *upload;
+  unsigned int staged;
+  char stage_name[16];
+} todo_transaction;
+static int todo_initial(void *context, cai_sink *sink, cai_error *error) {
+  static const char empty[] =
+      "{\"version\":1,\"boards\":[],\"items\":[],\"done\":[]}";
+  (void)context;
+  return cai_sink_write(sink, empty, sizeof(empty) - 1U, error);
+}
+
+static int todo_begin(void *context, void **out, cai_error *error) {
+  todo_transaction *txn;
+  cai_source *initial = NULL;
+  int rc;
+  *out = NULL;
+  txn = calloc(1U, sizeof(*txn));
+  if (txn == NULL)
+    return cai_cli_error(error, CAI_ERR_NOMEM, "allocate kanban transaction");
+  txn->pouch = context;
+  rc = acquire_ns(txn->pouch->sessions, "cai.todo", "kanban", &txn->lease,
+                  error);
+  if (rc == CAI_OK &&
+      (txn->lease->state_etag == NULL || txn->lease->state_etag[0] == '\0')) {
+    rc = cai_cli_stream_source(todo_initial, NULL, NULL, &initial, error);
+    if (rc == CAI_OK)
+      rc = update(txn->lease, initial, error);
+    cai_source_close(initial);
+  }
+  if (rc != CAI_OK) {
+    release(txn->lease, rc, error);
+    free(txn);
+    return rc;
+  }
+  *out = txn;
+  return CAI_OK;
+}
+static int todo_open_read(void *context, void *transaction,
+                          lonejson_reader_fn *reader, void **reader_context,
+                          cai_error *error) {
+  todo_transaction *txn = transaction;
+  cai_source *source = NULL;
+  int rc;
+  (void)context;
+  rc = download_private(txn->lease, txn->staged ? txn->stage_name : NULL,
+                        &source, error);
+  *reader = cai_cli_json_read;
+  *reader_context = source;
+  return rc;
+}
+static void todo_close_read(void *context, void *transaction, void *reader) {
+  (void)context;
+  (void)transaction;
+  cai_source_close(reader);
+}
+static int todo_upload(void *context, cai_source *source, cai_error *error) {
+  todo_transaction *txn = context;
+  lc_source *input = NULL;
+  lc_attach_req request;
+  lc_attach_res response;
+  lc_error local;
+  int rc;
+  lc_attach_req_init(&request);
+  memset(&response, 0, sizeof(response));
+  lc_error_init(&local);
+  request.name = txn->stage_name;
+  request.content_type = "application/json";
+  rc = cai_cli_lc_source(source, &input, error);
+  if (rc == CAI_OK &&
+      lc_lease_attach(txn->lease, &request, input, &response, &local) != LC_OK)
+    rc = cai_cli_lc_error(error, &local);
+  lc_source_close(input);
+  lc_attach_res_cleanup(&response);
+  lc_error_cleanup(&local);
+  return rc;
+}
+static int todo_open_write(void *context, void *transaction,
+                           lonejson_sink_fn *sink, void **sink_context,
+                           cai_error *error) {
+  todo_transaction *txn = transaction;
+  int rc;
+  (void)context;
+  snprintf(txn->stage_name, sizeof(txn->stage_name), "rewrite-%u",
+           txn->staged % 2U);
+  rc = cai_cli_stream_sink(todo_upload, txn, &txn->upload, error);
+  *sink = cai_cli_json_write;
+  *sink_context = txn->upload;
+  return rc;
+}
+static int todo_commit_write(void *context, void *transaction,
+                             cai_error *error) {
+  todo_transaction *txn = transaction;
+  int rc;
+  (void)context;
+  rc = cai_cli_stream_finish(txn->upload, error);
+  cai_sink_close(txn->upload);
+  txn->upload = NULL;
+  if (rc == CAI_OK)
+    txn->staged++;
+  return rc;
+}
+static void todo_cleanup(todo_transaction *txn) {
+  lc_error error;
+  int deleted;
+  cai_sink_close(txn->upload);
+  lc_error_init(&error);
+  if (lc_lease_delete_all_attachments(txn->lease, &deleted, &error) != LC_OK &&
+      txn->pouch->logger != NULL)
+    txn->pouch->logger->warnf(
+        txn->pouch->logger, "Kanban staging cleanup failed", "error=%s",
+        error.message != NULL ? error.message : "lockd error");
+  lc_error_cleanup(&error);
+}
+static int todo_commit(void *context, void *transaction, cai_error *error) {
+  todo_transaction *txn = transaction;
+  cai_source *source = NULL;
+  int rc = CAI_OK;
+  (void)context;
+  if (txn->staged) {
+    rc = download_private(txn->lease, txn->stage_name, &source, error);
+    if (rc == CAI_OK)
+      rc = update(txn->lease, source, error);
+    cai_source_close(source);
+  }
+  todo_cleanup(txn);
+  if (rc != CAI_OK) {
+    lc_release_req request;
+    lc_error local;
+    lc_release_req_init(&request);
+    lc_error_init(&local);
+    request.rollback = 1;
+    if (lc_lease_release(txn->lease, &request, &local) != LC_OK)
+      lc_lease_close(txn->lease);
+    lc_error_cleanup(&local);
+  } else
+    rc = release(txn->lease, rc, error);
+  free(txn);
+  return rc;
+}
+static void todo_rollback(void *context, void *transaction) {
+  todo_transaction *txn = transaction;
+  lc_error error;
+  lc_release_req request;
+  (void)context;
+  lc_error_init(&error);
+  cai_sink_close(txn->upload);
+  lc_release_req_init(&request);
+  request.rollback = 1;
+  if (lc_lease_release(txn->lease, &request, &error) != LC_OK) {
+    if (txn->pouch->logger != NULL)
+      txn->pouch->logger->warnf(
+          txn->pouch->logger, "Kanban rollback failed", "error=%s",
+          error.message != NULL ? error.message : "lockd error");
+    lc_lease_close(txn->lease);
+  }
+  lc_error_cleanup(&error);
+  free(txn);
+}
+const cai_todo_store_callbacks *cai_cli_pouch_todo_callbacks(void) {
+  static const cai_todo_store_callbacks callbacks = {
+      todo_begin,        todo_open_read, todo_close_read, todo_open_write,
+      todo_commit_write, todo_commit,    todo_rollback,   NULL};
+  return &callbacks;
 }
 
 static int private_directory(const char *path, cai_error *error) {

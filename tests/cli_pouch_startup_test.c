@@ -137,6 +137,99 @@ static void interrupted_idle_writer(void) {
   cai_error_cleanup(&error);
 }
 
+static void todo_write_document(cai_cli_pouch *pouch, void *txn,
+                                const char *label, size_t chunks,
+                                cai_error *error) {
+  const cai_todo_store_callbacks *store = cai_cli_pouch_todo_callbacks();
+  lonejson_sink_fn sink;
+  void *context;
+  lonejson_error json_error;
+  char bytes[4096];
+  size_t i;
+  memset(bytes, 'x', sizeof(bytes));
+  lonejson_error_init(&json_error);
+  assert(store->open_write(pouch, txn, &sink, &context, error) == CAI_OK);
+  assert(sink(context, "{\"label\":\"", 10U, &json_error) ==
+         LONEJSON_STATUS_OK);
+  assert(sink(context, label, strlen(label), &json_error) ==
+         LONEJSON_STATUS_OK);
+  assert(sink(context, "\",\"padding\":\"", 13U, &json_error) ==
+         LONEJSON_STATUS_OK);
+  for (i = 0U; i < chunks; i++)
+    assert(sink(context, bytes, sizeof(bytes), &json_error) ==
+           LONEJSON_STATUS_OK);
+  assert(sink(context, "\"}", 2U, &json_error) == LONEJSON_STATUS_OK);
+  assert(store->commit_write(pouch, txn, error) == CAI_OK);
+}
+static void todo_read_document(cai_cli_pouch *pouch, void *txn,
+                               const char *label, size_t expected,
+                               cai_error *error) {
+  const cai_todo_store_callbacks *store = cai_cli_pouch_todo_callbacks();
+  lonejson_reader_fn reader;
+  lonejson_read_result result;
+  void *context;
+  unsigned char bytes[4096];
+  size_t total = 0U;
+  int found = 0;
+  assert(store->open_read(pouch, txn, &reader, &context, error) == CAI_OK);
+  do {
+    result = reader(context, bytes, sizeof(bytes) - 1U);
+    assert(!result.error_code);
+    bytes[result.bytes_read] = '\0';
+    if (strstr((char *)bytes, label) != NULL)
+      found = 1;
+    total += result.bytes_read;
+  } while (!result.eof);
+  store->close_read(pouch, txn, context);
+  assert(found && total == expected);
+}
+static int reject_todo_update(lc_lease *lease, lc_source *source,
+                              const lc_update_opts *options, lc_error *error) {
+  (void)lease;
+  (void)source;
+  (void)options;
+  error->code = LC_ERR_TRANSPORT;
+  error->message = strdup("injected kanban commit failure");
+  return LC_ERR_TRANSPORT;
+}
+static void todo_transactions(cai_cli_pouch *pouch, cai_error *error) {
+  const cai_todo_store_callbacks *store = cai_cli_pouch_todo_callbacks();
+  void *txn = NULL;
+  size_t length = 10U + strlen("committed") + 13U + 64U * 4096U + 2U;
+  assert(store->begin(pouch, &txn, error) == CAI_OK);
+  todo_write_document(pouch, txn, "committed", 64U, error);
+  todo_read_document(pouch, txn, "committed", length, error);
+  /* Repeated rewrites read the most recent staged bytes in the same txn. */
+  todo_write_document(pouch, txn, "committed", 64U, error);
+  assert(store->commit(pouch, txn, error) == CAI_OK);
+  assert(store->begin(pouch, &txn, error) == CAI_OK);
+  todo_read_document(pouch, txn, "committed", length, error);
+  todo_write_document(pouch, txn, "rolled back", 40U, error);
+  store->rollback(pouch, txn);
+  assert(store->begin(pouch, &txn, error) == CAI_OK);
+  todo_write_document(pouch, txn, "failed commit", 2U, error);
+  ((todo_transaction *)txn)->lease->update = reject_todo_update;
+  assert(store->commit(pouch, txn, error) == CAI_ERR_TRANSPORT);
+  assert(strstr(error->message, "injected kanban commit failure") != NULL);
+  cai_error_cleanup(error);
+  cai_error_init(error);
+  assert(store->begin(pouch, &txn, error) == CAI_OK);
+  todo_read_document(pouch, txn, "committed", length, error);
+  {
+    lonejson_sink_fn sink;
+    void *context;
+    lonejson_error local;
+    lonejson_error_init(&local);
+    assert(store->open_write(pouch, txn, &sink, &context, error) == CAI_OK);
+    assert(sink(context, "{\"partial\":", 11U, &local) == LONEJSON_STATUS_OK);
+    /* Closing before EOF must abort, rather than publish truncated JSON. */
+    store->rollback(pouch, txn);
+  }
+  assert(store->begin(pouch, &txn, error) == CAI_OK);
+  todo_read_document(pouch, txn, "committed", length, error);
+  assert(store->commit(pouch, txn, error) == CAI_OK);
+}
+
 int main(int argc, char **argv) {
   char directory[PATH_MAX];
   cai_cli_pouch pouch;
@@ -322,6 +415,9 @@ int main(int argc, char **argv) {
   assert(pouch.store.load_events_after(&pouch, "/work/a", "second", 0U, reject,
                                        NULL, &error) == CAI_ERR_TRANSPORT);
   assert(observed == 0);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  todo_transactions(&pouch, &error);
   cai_cli_pouch_close(&pouch);
   cai_error_cleanup(&error);
   interrupted_idle_writer();

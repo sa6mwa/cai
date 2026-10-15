@@ -59,3 +59,24 @@ absent "$root/instructions" CODEX_CUSTOM_MARKER
 absent "$root/instructions" ANCESTOR_MARKER
 turn --codex-agents-md -ni 'explicit compatibility flag'
 contains "$root/instructions" CODEX_CUSTOM_MARKER
+(
+  export CAI_CODEX_AGENTS_MD=true
+  turn -ni 'environment enables current global instructions'
+  contains "$root/instructions" CODEX_CUSTOM_MARKER
+  turn --no-codex-agents-md -ni 'explicit opt out overrides the environment'
+  absent "$root/instructions" CODEX_CUSTOM_MARKER
+)
+# Config-driven environment and an explicit model change must both preserve
+# fresh global instructions when the saved session is loaded again.
+unset CODEX_HOME
+write_config true
+printf '[env]\nCODEX_HOME = "%s"\n' "$root/custom-codex" >>"$config"
+turn -ni 'change model while retaining global instructions' -m gpt-6-astra
+contains "$root/instructions" CODEX_CUSTOM_MARKER
+turn -ni 'restore the saved model and current instructions'
+json "$root/request" '.model == "gpt-6-astra"'
+contains "$root/instructions" CODEX_CUSTOM_MARKER
+# Every startup records resolved paths, rather than relying on a model's claim
+# that it saw an instruction. No configuration comes from the conversation.
+contains "$root/stderr" 'Global AGENTS.md loaded'
+contains "$root/stderr" "$root/custom-codex/AGENTS.md"

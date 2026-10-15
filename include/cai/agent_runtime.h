@@ -9,7 +9,10 @@
 #include <cai/session_store.h>
 #include <cai/skills.h>
 #include <cai/smith.h>
+#include <cai/tools/revgeo.h>
+#include <cai/tools/searxng.h>
 #include <cai/tools/terminal.h>
+#include <cai/tools/todo.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -645,6 +648,36 @@ typedef struct cai_agent_runtime_config {
    * and release tab/debugger leases after success, failure or cancellation.
    */
   cai_chrome *chrome;
+  /** Disable Smith's default Chrome extension tool. Browser discovery and
+   * connection are lazy. A custom preset must grant _TOOL_CHROME explicitly.
+   * Isolated reviewers never receive a default browser.
+   * An explicit borrowed chrome connection also requires this to be zero. */
+  int disable_chrome;
+  /** Configuration for an owned lazy Chrome connection when chrome is NULL.
+   * Empty paths use XDG_RUNTIME_DIR/cai/chrome, then XDG_CACHE_HOME/cai/chrome,
+   * then HOME/.cache/cai/chrome. Strings are copied at open. */
+  cai_chrome_config chrome_config;
+  /** Disable Smith's default hosted web_search on the Responses protocol.
+   * Chat Completions has no hosted search; enable SearXNG there if desired. */
+  int disable_web_search;
+  /** Disable individual local Smith capabilities, including in reviewers.
+   * These policies narrow the selected preset and are inherited by children. */
+  int disable_read_file;
+  int disable_list_files;
+  int disable_apply_patch;
+  int disable_view_image;
+  int disable_goals;
+  int disable_skills;
+  /** Optional local tools; disabled by default, unavailable in isolated review.
+   * Registration copies configuration at open. Custom todo store context is
+   * borrowed unless its destroy callback transfers ownership to the tool.
+   * These optional tools are not inherited by subagents. */
+  int enable_todo;
+  cai_todo_tool_config todo;
+  int enable_searxng;
+  cai_searxng_tool_config searxng;
+  int enable_revgeo;
+  cai_revgeo_tool_config revgeo;
 } cai_agent_runtime_config;
 
 /** Initialize a zero-defaultable runtime configuration. */

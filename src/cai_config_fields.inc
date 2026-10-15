@@ -144,6 +144,89 @@ F("agent", "terminal", NOTBOOL, RUNTIME, disable_terminal, 0, NULL,
   "Enable managed terminal tools.")
 F("agent", "review_subagent", NOTBOOL, RUNTIME, disable_review_subagent, 0,
   NULL, "Enable the built-in reviewer.")
+F("agent", "web_search", NOTBOOL, RUNTIME, disable_web_search, 0, NULL,
+  "Enable Smith hosted web_search on Responses providers; Chat Completions "
+  "uses optional SearXNG instead.")
+F("agent", "read_file", NOTBOOL, RUNTIME, disable_read_file, 0, NULL,
+  "Enable file reading.")
+F("agent", "list_files", NOTBOOL, RUNTIME, disable_list_files, 0, NULL,
+  "Enable file listing.")
+F("agent", "apply_patch", NOTBOOL, RUNTIME, disable_apply_patch, 0, NULL,
+  "Enable workspace patches.")
+F("agent", "view_image", NOTBOOL, RUNTIME, disable_view_image, 0, NULL,
+  "Enable local image inspection when supported by the model.")
+F("agent", "goals", NOTBOOL, RUNTIME, disable_goals, 0, NULL,
+  "Enable model goal lifecycle tools.")
+F("agent", "skills", NOTBOOL, RUNTIME, disable_skills, 0, NULL,
+  "Enable skill discovery and reading.")
+F("agent", "todo", BOOL, RUNTIME, enable_todo, 0, NULL,
+  "Enable kanban tasks; cai stores them in encrypted pouch, SDK defaults to "
+  "its file store.")
+F("agent", "searxng", BOOL, RUNTIME, enable_searxng, 0, NULL,
+  "Enable the SearXNG function tool; no request is made until invoked.")
+F("agent", "revgeo", BOOL, RUNTIME, enable_revgeo, 0, NULL,
+  "Enable reverse geocoding; no request is made until invoked.")
+F("chrome", "enabled", NOTBOOL, RUNTIME, disable_chrome, 0, NULL,
+  "Enable Smith Chrome extension tools; connection is lazy, children have no "
+  "browser access.")
+F("chrome", "socket", STR, RUNTIME, chrome_config.socket_path, CAI_CONFIG_PATH,
+  NULL, "Chrome host socket; empty discovers hosts.")
+F("chrome", "socket_directory", STR, RUNTIME, chrome_config.socket_directory,
+  CAI_CONFIG_PATH, NULL,
+  "Empty discovers sockets under XDG_RUNTIME_DIR/cai/chrome, cache, then "
+  "HOME/.cache/cai/chrome.")
+F("chrome", "timeout_ms", LONG, RUNTIME, chrome_config.timeout_ms, 0, NULL,
+  "Chrome request timeout; zero selects 30000 ms, maximum 60000.")
+F("chrome", "max_response_bytes", SIZE, RUNTIME,
+  chrome_config.max_response_bytes, 0, NULL,
+  "Buffered Chrome response limit; zero selects 16 MiB, maximum 64 MiB.")
+F("todo", "default_board", STR, RUNTIME, todo.default_board, 0, NULL,
+  "Default kanban board; empty selects default.")
+F("todo", "max_title_bytes", SIZE, RUNTIME, todo.max_title_bytes, 0, NULL,
+  "Task title bound; zero uses the tool default.")
+F("todo", "max_description_bytes", SIZE, RUNTIME, todo.max_description_bytes, 0,
+  NULL, "Task description bound; zero uses the tool default.")
+F("todo", "max_result_items", SIZE, RUNTIME, todo.max_result_items, 0, NULL,
+  "Task result limit; zero uses the tool default.")
+F("searxng", "base_url", STR, RUNTIME, searxng.base_url, 0, NULL,
+  "Search provider; empty selects http://127.0.0.1:8888.")
+F("searxng", "engine", STR, RUNTIME, searxng.engine, 0, NULL,
+  "Search engine selector; empty lets SearXNG decide.")
+F("searxng", "search_path", STR, RUNTIME, searxng.search_path, 0, NULL,
+  "Search endpoint path; empty selects /search.")
+F("searxng", "response_memory_limit", SIZE, RUNTIME,
+  searxng.response_memory_limit, 0, NULL,
+  "Search memory threshold; zero uses the tool default.")
+F("searxng", "response_spool_dir", STR, RUNTIME, searxng.response_spool_dir,
+  CAI_CONFIG_PATH, NULL,
+  "Search spill directory; empty uses system temporary storage.")
+F("searxng", "language", STR, RUNTIME, searxng.language, 0, NULL,
+  "Search language; empty uses provider selection.")
+F("searxng", "timeout_ms", LONG, RUNTIME, searxng.timeout_ms, 0, NULL,
+  "Search request timeout; zero uses the tool default.")
+F("searxng", "response_max_bytes", SIZE, RUNTIME, searxng.response_max_bytes, 0,
+  NULL, "Search response bound; zero uses the tool default.")
+F("revgeo", "base_url", STR, RUNTIME, revgeo.base_url, 0, NULL,
+  "Reverse geocoding provider; empty selects "
+  "https://nominatim.openstreetmap.org.")
+F("revgeo", "user_agent", STR, RUNTIME, revgeo.user_agent, 0, NULL,
+  "Geocoding User-Agent; empty uses the tool default.")
+F("revgeo", "reverse_path", STR, RUNTIME, revgeo.reverse_path, 0, NULL,
+  "Reverse endpoint path; empty selects /reverse.")
+F("revgeo", "response_memory_limit", SIZE, RUNTIME,
+  revgeo.response_memory_limit, 0, NULL,
+  "Geocoding memory threshold; zero uses the tool default.")
+F("revgeo", "response_spool_dir", STR, RUNTIME, revgeo.response_spool_dir,
+  CAI_CONFIG_PATH, NULL,
+  "Geocoding spill directory; empty uses system temporary storage.")
+F("revgeo", "language", STR, RUNTIME, revgeo.language, 0, NULL,
+  "Geocoding language; empty uses provider selection.")
+F("revgeo", "zoom", INT, RUNTIME, revgeo.zoom, 0, NULL,
+  "Geocoding detail; zero selects the tool default.")
+F("revgeo", "timeout_ms", LONG, RUNTIME, revgeo.timeout_ms, 0, NULL,
+  "Geocoding request timeout; zero uses the tool default.")
+F("revgeo", "response_max_bytes", SIZE, RUNTIME, revgeo.response_max_bytes, 0,
+  NULL, "Geocoding response bound; zero uses the tool default.")
 F("review", "model", STR, RUNTIME, review_model, 0, NULL,
   "Reviewer model; empty inherits active agent.")
 F("review", "reasoning_effort", STR, RUNTIME, review_reasoning_effort, 0,

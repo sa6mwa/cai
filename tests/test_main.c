@@ -26780,9 +26780,16 @@ static void test_agent_runtime_subagent(test_state *state) {
       "\"total_tokens\":5}}}\n\n";
   static const char *parent_required[] = {
       "delegate this task", "\"name\":\"run_worker\"", "`run_worker`"};
-  static const char *parent_forbidden[] = {"\"name\":\"run_subagent\""};
+  static const char *parent_forbidden[] = {"\"name\":\"run_subagent\"",
+                                           "\"name\":\"chrome\"",
+                                           "\"type\":\"web_search\""};
   static const char *child_required[] = {"Prepared JSON worker task.",
                                          "You are Worker"};
+  static const char *child_forbidden[] = {
+      "\"name\":\"read_file\"",   "\"name\":\"list_files\"",
+      "\"name\":\"apply_patch\"", "\"name\":\"view_image\"",
+      "\"name\":\"create_goal\"", "\"name\":\"read_skill\"",
+      "\"name\":\"chrome\"",      "\"type\":\"web_search\""};
   static const char *final_required[] = {
       "\"call_id\":\"call_subagent\"",
       "The subagent completed without a text handover.", "<subagent_handoff"};
@@ -26792,7 +26799,8 @@ static void test_agent_runtime_subagent(test_state *state) {
        sizeof(parent_forbidden) / sizeof(parent_forbidden[0]), 200, "OK",
        "text/event-stream", NULL, parent_tool_response},
       {"POST /v1/responses HTTP/", child_required,
-       sizeof(child_required) / sizeof(child_required[0]), NULL, 0U, 200, "OK",
+       sizeof(child_required) / sizeof(child_required[0]), child_forbidden,
+       sizeof(child_forbidden) / sizeof(child_forbidden[0]), 200, "OK",
        "text/event-stream", NULL, child_response},
       {"POST /v1/responses HTTP/", final_required,
        sizeof(final_required) / sizeof(final_required[0]), NULL, 0U, 200, "OK",
@@ -26819,7 +26827,8 @@ static void test_agent_runtime_subagent(test_state *state) {
     return;
   }
   memset(&parent_preset, 0, sizeof(parent_preset));
-  parent_preset.name = "delegate-parent";
+  /* Naming a restricted custom descriptor Smith must not grant extra tools. */
+  parent_preset.name = CAI_SMITH_PRESET;
   parent_preset.prompt_version = "delegate-parent-1";
   parent_preset.default_identity = "Parent";
   parent_preset.default_model = CAI_MODEL_GPT_5_6_LUNA;
@@ -26835,6 +26844,10 @@ static void test_agent_runtime_subagent(test_state *state) {
   child_preset.default_reasoning_effort = CAI_REASONING_EFFORT_LOW;
   child_preset.default_reasoning_summary = CAI_REASONING_SUMMARY_AUTO;
   child_preset.developer_instructions = "You are Worker.";
+  child_preset.tool_capabilities =
+      CAI_AGENT_PRESET_TOOL_READ_FILE | CAI_AGENT_PRESET_TOOL_LIST_FILES |
+      CAI_AGENT_PRESET_TOOL_APPLY_PATCH | CAI_AGENT_PRESET_TOOL_VIEW_IMAGE |
+      CAI_AGENT_PRESET_TOOL_GOAL | CAI_AGENT_PRESET_TOOL_SKILLS;
   memset(&profile, 0, sizeof(profile));
   memset(parameters, 0, sizeof(parameters));
   parameters[0].name = "format";
@@ -26871,6 +26884,9 @@ static void test_agent_runtime_subagent(test_state *state) {
   config.disable_default_session_store = 1;
   config.session_store = &store;
   config.session_scope = "subagent-handoff-checkpoint-retry";
+  config.disable_read_file = config.disable_list_files = 1;
+  config.disable_apply_patch = config.disable_view_image = 1;
+  config.disable_goals = config.disable_skills = 1;
   config.subagents = &profile;
   config.subagent_count = 1U;
   config.event_callback = test_runtime_event;

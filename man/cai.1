@@ -37,8 +37,50 @@ if it is missing. Defaults to $XDG_CONFIG_HOME/cai/config.ini, or
 Skip configuration loading and template creation. Incompatible with --config.
 .TP
 .B \-\-chrome
-Enable Chrome browser tools through the installed ChatGPT extension and CAI's
-native messaging host. Does not install or change a host registration.
+Enable Chrome browser tools (Smith default) through the installed ChatGPT
+extension and CAI's native messaging host. Connection is lazy; an ordinary turn
+needs no connected browser. Does not install or change a host registration.
+.TP
+.B \-\-no-chrome
+Disable Chrome tools. Also configurable with CAI_CHROME or [chrome] enabled.
+.TP
+.BR \-\-web-search " / " \-\-no-web-search
+Enable/disable hosted web_search on Responses providers (default on).
+Chat Completions has no hosted search; SearXNG is available separately.
+.TP
+.BR \-\-todo " / " \-\-no-todo
+Enable/disable todo_kanban (default off). CAI uses a shared encrypted cai.todo
+document, with streamed transactional updates, rather than a todo.json file.
+.TP
+.BR \-\-searxng " / " \-\-no-searxng
+Enable/disable function-based SearXNG search (default off).
+.TP
+.BI \-\-searxng-url " URL"
+Override [searxng] base_url (default http://127.0.0.1:8888).
+.TP
+.BR \-\-revgeo " / " \-\-no-revgeo
+Enable/disable reverse geocoding (default off).
+.TP
+.BI \-\-revgeo-url " URL"
+Override [revgeo] base_url (default https://nominatim.openstreetmap.org).
+.TP
+.B \-\-[no-]read-file, \-\-[no-]list-files, \-\-[no-]apply-patch
+Enable/disable individual file capabilities (default on).
+.TP
+.B \-\-[no-]view-image, \-\-[no-]goals, \-\-[no-]skills
+Enable/disable image inspection, model goal tools and skill discovery (default
+on when the model/catalog permits). These policies also narrow review tools.
+.PP
+Tool settings use CLI > environment > INI > built-in defaults. Boolean variables
+are CAI_WEB_SEARCH, CAI_CHROME, CAI_TODO, CAI_SEARXNG, CAI_REVGEO,
+CAI_READ_FILE, CAI_LIST_FILES, CAI_APPLY_PATCH, CAI_VIEW_IMAGE, CAI_GOALS,
+CAI_SKILLS, CAI_TERMINAL, CAI_IMAGE_GENERATION, CAI_REVIEW_SUBAGENT and
+CAI_CODEX_AGENTS_MD, using true/false values. INI keys live under [agent]
+(lowercase names without CAI_) except [chrome] enabled. The existing [env]
+precedence rule is applied before resolving settings.
+CAI_SEARXNG_URL, CAI_REVGEO_URL and CAI_CHROME_SOCKET select service endpoints.
+The default template documents tool-specific timeouts and limits. Isolated
+reviews omit hosted search, browser, kanban and optional service tools.
 .TP
 .BI \-\-chrome-socket " PATH"
 Select a connected CAI Chrome host socket; also enables browser tools.

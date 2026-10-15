@@ -693,6 +693,8 @@ struct cai_agent_runtime {
   int terminal_enabled;
   int image_generation_enabled;
   cai_chrome *chrome;
+  int owns_chrome;
+  int disable_web_search;
   unsigned long chrome_turn_sequence;
   cai_mcp_client **mcp_clients;
   size_t mcp_client_count;
@@ -2193,6 +2195,23 @@ static int cai_runtime_capture_preset_profile(
   return rc;
 }
 
+static unsigned long
+cai_runtime_disabled_tools(const cai_agent_runtime_config *config) {
+  unsigned long disabled = 0UL;
+  if (config->disable_read_file)
+    disabled |= CAI_AGENT_PRESET_TOOL_READ_FILE;
+  if (config->disable_list_files)
+    disabled |= CAI_AGENT_PRESET_TOOL_LIST_FILES;
+  if (config->disable_apply_patch)
+    disabled |= CAI_AGENT_PRESET_TOOL_APPLY_PATCH;
+  if (config->disable_view_image)
+    disabled |= CAI_AGENT_PRESET_TOOL_VIEW_IMAGE;
+  if (config->disable_goals)
+    disabled |= CAI_AGENT_PRESET_TOOL_GOAL;
+  if (config->disable_skills)
+    disabled |= CAI_AGENT_PRESET_TOOL_SKILLS;
+  return disabled;
+}
 static int cai_runtime_capture_subagents(cai_agent_runtime *runtime,
                                          const cai_agent_runtime_config *config,
                                          const cai_agent_preset *parent_preset,
@@ -2270,6 +2289,11 @@ static int cai_runtime_capture_subagents(cai_agent_runtime *runtime,
                                    error);
     if (rc == CAI_OK)
       rc = cai_runtime_copy_subagent_preset(source->preset, target, error);
+    if (rc == CAI_OK) {
+      unsigned long disabled = cai_runtime_disabled_tools(config);
+      target->preset.tool_capabilities &= ~disabled;
+      target->preset.review_tool_capabilities &= ~disabled;
+    }
     if (rc == CAI_OK)
       rc = cai_runtime_copy_string_list(source->allowed_models,
                                         source->allowed_model_count,
@@ -6756,6 +6780,7 @@ int cai_agent_runtime_open(cai_client *client,
   cai_agent_runtime *runtime;
   cai_smith_config smith;
   cai_agent_preset builtin_preset;
+  cai_agent_preset effective_preset;
   const cai_agent_preset *preset;
   cai_terminal_tool_config terminal_config;
   char *subagent_instructions;
@@ -6796,6 +6821,13 @@ int cai_agent_runtime_open(cai_client *client,
   cai_agent_preset_from_smith(&builtin_preset);
   preset = config->preset_descriptor != NULL ? config->preset_descriptor
                                              : &builtin_preset;
+  effective_preset = *preset;
+  {
+    unsigned long disabled = cai_runtime_disabled_tools(config);
+    effective_preset.tool_capabilities &= ~disabled;
+    effective_preset.review_tool_capabilities &= ~disabled;
+  }
+  preset = &effective_preset;
   review_mode = config->preset != NULL &&
                 strcmp(config->preset, CAI_SMITH_REVIEW_PRESET) == 0;
   resumed_checkpoint = 0;
@@ -6988,10 +7020,64 @@ int cai_agent_runtime_open(cai_client *client,
     rc = cai_agent_add_simple_hosted_tool(
         runtime->agent, CAI_HOSTED_TOOL_IMAGE_GENERATION, error);
   }
-  if (rc == CAI_OK && config->chrome != NULL) {
-    rc = cai_agent_register_chrome_tool(runtime->agent, config->chrome, error);
-    if (rc == CAI_OK)
-      runtime->chrome = config->chrome;
+  runtime->disable_web_search = config->disable_web_search;
+  if (rc == CAI_OK && !review_mode && !config->disable_web_search &&
+      (preset->tool_capabilities & CAI_AGENT_PRESET_TOOL_WEB_SEARCH) != 0UL &&
+      CAI_CLIENT_IMPL(client)->api_protocol == CAI_API_PROTOCOL_RESPONSES) {
+    rc = cai_agent_add_simple_hosted_tool(runtime->agent,
+                                          CAI_HOSTED_TOOL_WEB_SEARCH, error);
+  }
+  if (rc == CAI_OK && !review_mode && !config->disable_chrome) {
+    runtime->chrome = config->chrome;
+    if (runtime->chrome != NULL &&
+        (preset->tool_capabilities & CAI_AGENT_PRESET_TOOL_CHROME) == 0UL)
+      rc = cai_set_error(error, CAI_ERR_INVALID,
+                         "agent preset does not enable Chrome tools");
+    if (runtime->chrome == NULL &&
+        (preset->tool_capabilities & CAI_AGENT_PRESET_TOOL_CHROME) != 0UL) {
+      cai_chrome_config browser = config->chrome_config;
+      browser.logger = runtime->logger;
+      rc = cai_chrome_open_lazy(&browser, &runtime->chrome, error);
+      if (rc == CAI_OK)
+        runtime->owns_chrome = 1;
+    }
+    if (rc == CAI_OK && runtime->chrome != NULL)
+      rc = cai_agent_register_chrome_tool(runtime->agent, runtime->chrome,
+                                          error);
+  }
+  if (rc == CAI_OK && review_mode &&
+      (config->enable_todo || config->enable_searxng || config->enable_revgeo))
+    rc = cai_set_error(
+        error, CAI_ERR_INVALID,
+        "isolated review does not support optional stateful or network tools");
+  if (rc == CAI_OK && config->enable_todo)
+    rc = cai_agent_register_todo_tool(runtime->agent, &config->todo, error);
+  if (rc == CAI_OK && config->enable_searxng)
+    rc = cai_agent_register_searxng_tool(runtime->agent, &config->searxng,
+                                         error);
+  if (rc == CAI_OK && config->enable_revgeo)
+    rc = cai_agent_register_revgeo_tool(runtime->agent, &config->revgeo, error);
+  if (rc == CAI_OK && runtime->logger != NULL && runtime->logger->log != NULL) {
+    pslog_field fields[5];
+    static const char *const names[] = {"web_search", "chrome", "todo",
+                                        "searxng", "revgeo"};
+    size_t field;
+    memset(fields, 0, sizeof(fields));
+    for (field = 0U; field < 5U; field++) {
+      fields[field].key = names[field];
+      fields[field].key_len = strlen(names[field]);
+      fields[field].type = PSLOG_FIELD_BOOL;
+    }
+    fields[0].as.bool_value =
+        !review_mode && !config->disable_web_search &&
+        (preset->tool_capabilities & CAI_AGENT_PRESET_TOOL_WEB_SEARCH) != 0UL &&
+        CAI_CLIENT_IMPL(client)->api_protocol == CAI_API_PROTOCOL_RESPONSES;
+    fields[1].as.bool_value = runtime->chrome != NULL;
+    fields[2].as.bool_value = config->enable_todo;
+    fields[3].as.bool_value = config->enable_searxng;
+    fields[4].as.bool_value = config->enable_revgeo;
+    runtime->logger->log(runtime->logger, PSLOG_LEVEL_DEBUG,
+                         "Agent tool policy", fields, 5U);
   }
   if (rc == CAI_OK) {
     rc = cai_agent_new_session(runtime->agent, &runtime->session, error);
@@ -7247,6 +7333,8 @@ int cai_agent_runtime_open(cai_client *client,
     if (runtime->agent != NULL) {
       cai_agent_destroy(runtime->agent);
     }
+    if (runtime->owns_chrome)
+      cai_chrome_close(runtime->chrome);
     if (runtime->owns_local_store) {
       cai_agent_local_session_store_close(&runtime->local_store);
     }
@@ -9220,6 +9308,9 @@ static int cai_runtime_open_tool_subagent(
   config.terminal_tool_config =
       parent->smith_has_terminal_config ? &parent->smith_terminal_config : NULL;
   config.disable_terminal = parent->smith_disable_terminal;
+  /* A child never shares its parent's browser connection. */
+  config.disable_chrome = 1;
+  config.disable_web_search = parent->disable_web_search;
   config.image_directory = parent->smith_image_directory;
   config.session_store =
       parent->owns_local_store ? NULL : parent->session_store;
@@ -11561,6 +11652,8 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
   if (runtime->agent != NULL) {
     cai_agent_destroy(runtime->agent);
   }
+  if (runtime->owns_chrome)
+    cai_chrome_close(runtime->chrome);
   if (runtime->owns_local_store) {
     cai_agent_local_session_store_close(&runtime->local_store);
   }

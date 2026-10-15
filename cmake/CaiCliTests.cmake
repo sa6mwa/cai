@@ -13,6 +13,10 @@
         "$<TARGET_FILE:cai_cli>")
     set_tests_properties(cai_cli_config PROPERTIES TIMEOUT 45)
     foreach(_cai_agents_protocol responses chat_completions)
+      add_test(NAME cai_cli_tool_policy_${_cai_agents_protocol}
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_tool_policy_test.sh"
+          "$<TARGET_FILE:cai_cli>" "${_cai_agents_protocol}")
+      set_tests_properties(cai_cli_tool_policy_${_cai_agents_protocol} PROPERTIES TIMEOUT 45)
       add_test(NAME cai_cli_agents_md_${_cai_agents_protocol}
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_agents_md_test.sh"
           "$<TARGET_FILE:cai_cli>" "${_cai_agents_protocol}")

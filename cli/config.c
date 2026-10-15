@@ -54,9 +54,6 @@ static const cli_field fields[] = {
       "Empty opens a pouch under "
       "${XDG_STATE_HOME:-$HOME/.local/state}/cai/pouch; "
       "explicit values are lockd endpoint URLs."),
-    S("chrome", "socket", chrome_socket, CAI_CONFIG_PATH,
-      "Chrome host socket; empty discovers hosts."),
-    B("chrome", "enabled", chrome, "Enable the Chrome tool."),
     B("ui", "shell_context", shell_context,
       "Share captured !COMMAND output; /shell remains local."),
     {"ui", "tool_output", offsetof(cai_cli_options, tool_output),
@@ -235,6 +232,36 @@ static void optional_string(const cai_config *cfg, const char *section,
   if (value != NULL)
     *out = value[0] != '\0' ? value : NULL;
 }
+/* Config [env] has already been applied. Keep the usual CLI > environment >
+ * INI precedence while using the standard parser for validation and storage. */
+static int tool_environment(cai_config *cfg, cai_error *error) {
+  static const char *const env[] = {
+      "CAI_WEB_SEARCH",       "CAI_CHROME",          "CAI_TODO",
+      "CAI_SEARXNG",          "CAI_REVGEO",          "CAI_TERMINAL",
+      "CAI_IMAGE_GENERATION", "CAI_REVIEW_SUBAGENT", "CAI_CODEX_AGENTS_MD",
+      "CAI_SEARXNG_URL",      "CAI_REVGEO_URL",      "CAI_CHROME_SOCKET",
+      "CAI_READ_FILE",        "CAI_LIST_FILES",      "CAI_APPLY_PATCH",
+      "CAI_VIEW_IMAGE",       "CAI_GOALS",           "CAI_SKILLS"};
+  static const char *const sections[] = {
+      "agent", "chrome", "agent", "agent",   "agent",  "agent",
+      "agent", "agent",  "agent", "searxng", "revgeo", "chrome",
+      "agent", "agent",  "agent", "agent",   "agent",  "agent"};
+  static const char *const keys[] = {
+      "web_search",       "enabled",         "todo",
+      "searxng",          "revgeo",          "terminal",
+      "image_generation", "review_subagent", "codex_agents_md",
+      "base_url",         "base_url",        "socket",
+      "read_file",        "list_files",      "apply_patch",
+      "view_image",       "goals",           "skills"};
+  size_t i;
+  for (i = 0U; i < sizeof(env) / sizeof(env[0]); i++) {
+    const char *value = getenv(env[i]);
+    if (value != NULL &&
+        cai_config_set(cfg, sections[i], keys[i], value, error) != CAI_OK)
+      return fail(error, env[i], "invalid environment setting");
+  }
+  return 1;
+}
 int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
                       cai_config **configuration, cai_error *error) {
   cai_cli_options early, defaults;
@@ -295,6 +322,8 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
     if (cfg->apply_environment(cfg, error) != CAI_OK)
       return -1;
   }
+  if (tool_environment(cfg, error) < 0)
+    return -1;
   cai_cli_options_init(&defaults);
   optional_string(cfg, "client", "provider", &defaults.provider);
   for (i = 0U; i < sizeof(agent_keys) / sizeof(agent_keys[0]); i++)
@@ -318,6 +347,32 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
       cfg, "agent", "review_subagent", defaults.review_subagent);
   defaults.codex_agents_md = cai_config_get_bool(
       cfg, "agent", "codex_agents_md", defaults.codex_agents_md);
+  defaults.web_search =
+      cai_config_get_bool(cfg, "agent", "web_search", defaults.web_search);
+  defaults.chrome =
+      cai_config_get_bool(cfg, "chrome", "enabled", defaults.chrome);
+  defaults.todo = cai_config_get_bool(cfg, "agent", "todo", defaults.todo);
+  defaults.searxng =
+      cai_config_get_bool(cfg, "agent", "searxng", defaults.searxng);
+  defaults.revgeo =
+      cai_config_get_bool(cfg, "agent", "revgeo", defaults.revgeo);
+  defaults.read_file =
+      cai_config_get_bool(cfg, "agent", "read_file", defaults.read_file);
+  defaults.list_files =
+      cai_config_get_bool(cfg, "agent", "list_files", defaults.list_files);
+  defaults.apply_patch =
+      cai_config_get_bool(cfg, "agent", "apply_patch", defaults.apply_patch);
+  defaults.view_image =
+      cai_config_get_bool(cfg, "agent", "view_image", defaults.view_image);
+  defaults.goals = cai_config_get_bool(cfg, "agent", "goals", defaults.goals);
+  defaults.skills =
+      cai_config_get_bool(cfg, "agent", "skills", defaults.skills);
+  optional_string(cfg, "searxng", "base_url", &defaults.searxng_url);
+  optional_string(cfg, "revgeo", "base_url", &defaults.revgeo_url);
+  if (cai_config_resolve_path(cfg, "chrome", "socket", &resolved, error) !=
+      CAI_OK)
+    return -1;
+  defaults.chrome_socket = resolved;
   for (i = 0U; i < sizeof(fields) / sizeof(fields[0]); i++) {
     const cli_field *f = &fields[i];
     unsigned char *p = (unsigned char *)&defaults + f->offset;
@@ -339,10 +394,13 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
     optional_string(cfg, "client", "api_key_env", &defaults.api_key_env);
   }
   {
-    static const char *const sections[] = {"client", "client", "terminal",
-                                           "terminal", "terminal"};
-    static const char *const keys[] = {"ca_bundle_path", "ca_path", "root_path",
-                                       "default_workdir", "shell_path"};
+    static const char *const sections[] = {"client",   "client",   "terminal",
+                                           "terminal", "terminal", "chrome",
+                                           "searxng",  "revgeo"};
+    static const char *const keys[] = {
+        "ca_bundle_path",     "ca_path",           "root_path",
+        "default_workdir",    "shell_path",        "socket_directory",
+        "response_spool_dir", "response_spool_dir"};
     for (i = 0U; i < sizeof(keys) / sizeof(keys[0]); i++)
       if (cai_config_resolve_path(cfg, sections[i], keys[i], &resolved,
                                   error) != CAI_OK)

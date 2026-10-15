@@ -21,7 +21,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-while IFS='=' read -r name _; do case "$name" in LOG_*|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|http_proxy|https_proxy|all_proxy|NO_COLOR|OPENAI_API_KEY|OPENROUTER_API_KEY|BERGET_API_KEY|CAI_API_KEY) unset "$name" ;; esac; done < <(env)
+while IFS='=' read -r name _; do case "$name" in CAI_TERMINAL_PEER|CAI_TEST_*) ;; LOG_*|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|http_proxy|https_proxy|all_proxy|NO_COLOR|OPENAI_API_KEY|OPENROUTER_API_KEY|BERGET_API_KEY|CAI_*) unset "$name" ;; esac; done < <(env)
 export HOME="$root" XDG_CONFIG_HOME="$root/config" XDG_STATE_HOME="$root/state" XDG_CACHE_HOME="$root/cache" XDG_DATA_HOME="$root/data"
 export CAI_API_KEY=fixture NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost TERM=xterm-256color
 export SHELL=/bin/sh
