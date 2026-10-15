@@ -12,6 +12,8 @@ commit and verification evidence.
 - **Reported:** after resizing CAI, old command/source text remains inside patch
   rows or below the input prompt. The status bar and prompt can appear in the
   middle of output. Subsequent output can overwrite existing text.
+  Environment: xfce4-terminal directly on X on local hardware, without SSH,
+  tmux, or screen. The user cannot currently reproduce it consistently.
 - **Required behavior:** transcript rows remain intact, feed output stays above
   the status/editor area, and resize updates both softline and libmdf geometry.
 - **Evidence:** normal interactive assistant, reasoning, tool, patch, notice,
@@ -50,7 +52,7 @@ commit and verification evidence.
 ## BUG-003: Slash-command transcript colors do not communicate outcome
 
 - **Priority:** normal.
-- **Status:** open.
+- **Status:** fixed; native and static musl command checks passed.
 - **Reported:** `$ /command` uses pale text and an undifferentiated `$`.
 - **Required behavior:** green `$` for success, red `$` for failure. Command
   text should be code-like, non-italic, and brownish orange (the latest color
@@ -59,6 +61,15 @@ commit and verification evidence.
 - **Verification:** successful and invalid slash commands, refused operations,
   wrapped commands, and `NO_COLOR`. Preserve input-before-result ordering and
   keep non-interactive structured logging intact.
+- **Fix:** defer the command echo until validation or the first result, keeping
+  it before all result output without buffering results. Use brownish-orange
+  literal text, with green/red outcome markers and explicit color resets.
+  Invalid resume selections, unknown commands, and busy session switches now
+  report rejection through the normal diagnostic path.
+- **Evidence:** `cai_cli_commands` covers successful and invalid settings,
+  invalid resume selections, unknown commands, literal Markdown punctuation,
+  wrapped output and `NO_COLOR`. Existing settings, shell, handoff, session,
+  logging, and spinner checks pass with the change.
 
 ## BUG-004: Patch colors are too bright and lack distinct change markers
 
@@ -92,6 +103,7 @@ commit and verification evidence.
 
 - **Priority:** normal.
 - **Status:** fixed; targeted native and static musl verification passed.
+- **Fix commit:** `88e3eb5`.
 - **Cause:** CAI reapplied softline's busy and spinner setters on every status
   refresh, including provider/tool wakeups and the elapsed-time timer. Softline
   0.10.0 resets the animation clock and frame in these setters even when their
@@ -167,7 +179,7 @@ commit and verification evidence.
 ## BUG-010: /model catalog request times out and prints duplicate diagnostics
 
 - **Priority:** high.
-- **Status:** investigating.
+- **Status:** fixed; focused regression and affected CLI checks passed.
 - **Reported:** `/model` cannot list the signed-in ChatGPT catalog. The GET
   `models?client_version=0.160.0` times out after about five seconds; CAI prints
   both `HTTP transport failed` and `Model catalog unavailable`, after a generic
@@ -179,3 +191,12 @@ commit and verification evidence.
 - **Verification:** delayed success, genuine timeout, offline/provider failure,
   cached-catalog fallback, subsequent successful retry, and actual interactive
   output. Identify the failing deadline before increasing any timeout.
+- **Cause and fix:** CAI unconditionally replaced the model-discovery client's
+  configured timeout with 1500 ms. Discovery now inherits the configured client
+  deadline. Explicit listings bypass the failure cooldown, and an unsuccessful
+  refresh can display a previous catalog. Scoped catalog logging retains all
+  transport records in the file while suppressing duplicate lower-level
+  notices in the default JSON logging mode.
+- **Evidence:** `cai_cli_model_catalog` passes a response delayed beyond the old
+  deadline, HTTP 503 with cached fallback, a configured 100 ms timeout, a single
+  actionable interactive warning, and immediate successful retry.

@@ -19,12 +19,16 @@ class Peer(http.server.BaseHTTPRequestHandler):
         config = json.loads((root / 'config.json').read_text())
         with (root / 'gets').open('a') as output:
             output.write(self.path + '\n')
-        self.send_response(config.get('catalog_status', 200))
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(json.dumps(config.get('catalog', {'data': [
-            {'id': 'gpt-5.6-luna', 'name': 'Luna'},
-            {'id': 'gpt-6-astra', 'name': 'Astra'}]})).encode())
+        try:
+            time.sleep(config.get('catalog_delay_ms', 0) / 1000)
+            self.send_response(config.get('catalog_status', 200))
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(config.get('catalog', {'data': [
+                {'id': 'gpt-5.6-luna', 'name': 'Luna'},
+                {'id': 'gpt-6-astra', 'name': 'Astra'}]})).encode())
+        finally:
+            (root / 'catalog_finished').write_text(str(time.monotonic_ns()))
 
     def event(self, kind, **values):
         value = dict(type=kind, **values)
@@ -121,7 +125,7 @@ class Peer(http.server.BaseHTTPRequestHandler):
             self.event('response.completed', response={'id': 'resp_fixture_' + str(time.monotonic_ns()),
                 'usage': {'input_tokens': 10, 'output_tokens': 10, 'total_tokens': 20}})
 
-class Server(http.server.HTTPServer):
+class Server(http.server.ThreadingHTTPServer):
     def handle_error(self, request, client_address):
         if not isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
             traceback.print_exc()

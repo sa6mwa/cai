@@ -73,6 +73,7 @@ typedef struct cli_state {
   cai_chrome *chrome;
   cai_client *client;
   cai_client *model_client;
+  pslog_logger *model_log;
   cai_client *quota_client;
   cai_agent_runtime *runtime;
   sl_t *sl;
@@ -123,6 +124,8 @@ typedef struct cli_state {
   int notice_open;
   int notice_first_row;
   int command_input;
+  int command_ok;
+  const char *pending_command;
   cai_cli_shell shell;
   sl_watch_id_t shell_watches[3];
   int shell_watched[3];
@@ -131,6 +134,7 @@ typedef struct cli_state {
 } cli_state;
 
 static int cli_advance_automation(cli_state *state, cai_error *error);
+static int cli_flush_command(cli_state *state, int ok);
 static int cli_submit_automation(cli_state *state, const char *instruction,
                                  cai_error *error);
 
@@ -295,13 +299,20 @@ static int cli_prefixed_sink(void *context, const char *bytes, size_t count) {
     if (state->row_line_start && state->row_ansi == 0 && ch != 27U &&
         ch != '\n' && ch != '\r') {
       const char *prefix = "? ";
-      if (state->notice_open)
-        prefix = state->command_input ? (state->notice_first_row ? "$ " : "  ")
-                 : state->notice_first_row
-                     ? (state->interactive && getenv("NO_COLOR") == NULL
-                            ? "\033[91m*\033[0m "
-                            : "* ")
-                     : "  ";
+      if (state->notice_open) {
+        prefix = state->notice_first_row ? (state->command_input ? "$ " : "* ")
+                                         : "  ";
+        if (state->interactive && getenv("NO_COLOR") == NULL) {
+          if (state->command_input) {
+            prefix = !state->notice_first_row
+                         ? "\033[38;2;215;160;95m  "
+                         : (state->command_ok
+                                ? "\033[0;92m$\033[0m \033[38;2;215;160;95m"
+                                : "\033[0;91m$\033[0m \033[38;2;215;160;95m");
+          } else if (state->notice_first_row)
+            prefix = "\033[91m*\033[0m ";
+        }
+      }
       if (cli_sink(state, bytes + start, i - start) != 0 ||
           cli_sink(state, prefix, strlen(prefix)) != 0)
         return -1;
@@ -431,6 +442,8 @@ static int cli_reasoning_body(void *context, const char *data, size_t length) {
 }
 
 static int cli_text(cli_state *state, const char *data, size_t length) {
+  if (cli_flush_command(state, 1) != 0)
+    return -1;
   if (cli_finish_reasoning(state) != 0) {
     return -1;
   }
@@ -475,6 +488,8 @@ static int cli_literal_prepare(cli_state *state, int prefixed) {
              : -1;
 }
 static int cli_write(cli_state *state, const char *text) {
+  if (cli_flush_command(state, 1) != 0)
+    return -1;
   if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
     return -1;
   if (state->batch) {
@@ -499,6 +514,8 @@ static int cli_write(cli_state *state, const char *text) {
 static int cli_prompt(cli_state *state, const char *text) {
   if (state->batch)
     return 0;
+  if (cli_flush_command(state, 1) != 0)
+    return -1;
   if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0) {
     return -1;
   }
@@ -508,12 +525,23 @@ static int cli_prompt(cli_state *state, const char *text) {
   return 0;
 }
 
-static int cli_command_input(cli_state *state, const char *text) {
-  int rc;
+static void cli_command_input(cli_state *state, const char *text) {
   pslog_field field =
       pslog_str("prompt_kind", text[0] == '!' ? "shell_command" : "command");
   cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, "command_input",
                       "user", text, strlen(text), &field, 1U);
+  state->pending_command = text;
+}
+
+/* Delay the echo until validation succeeds or fails, but always emit it
+ * before command results. No command output is buffered for this purpose. */
+static int cli_flush_command(cli_state *state, int ok) {
+  const char *text = state->pending_command;
+  int rc;
+  if (text == NULL)
+    return 0;
+  state->pending_command = NULL;
+  state->command_ok = ok;
   if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0 ||
       cli_geometry(state) != 0 || cli_literal_prepare(state, 1) != 0)
     return -1;
@@ -528,6 +556,9 @@ static int cli_command_input(cli_state *state, const char *text) {
   rc = cai_cli_literal_render(state->notice_renderer, text);
   state->notice_open = 0;
   state->command_input = 0;
+  if (state->interactive && getenv("NO_COLOR") == NULL &&
+      cli_sink(state, "\033[0m", 4U) != 0)
+    rc = -1;
   while (rc == 0 && state->feed_breaks < 2)
     rc = cli_sink(state, "\n", 1U);
   return rc;
@@ -759,7 +790,8 @@ static int cli_terminal_shell(cli_state *state, cai_error *error) {
   if (shell == NULL || shell[0] == '\0')
     shell = "/bin/sh";
   foreground = tcgetpgrp(STDIN_FILENO);
-  if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0 ||
+  if (cli_flush_command(state, 1) != 0 || cli_finish_response(state) != 0 ||
+      cli_finish_reasoning(state) != 0 ||
       sl_output_stream_end(state->sl) != SL_OK)
     return cai_cli_error(error, CAI_ERR_TRANSPORT,
                          "release terminal for interactive shell");
@@ -1211,7 +1243,10 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
     if (cai_cli_shell_plain(&state->shell, NULL, 0U, 1, cli_shell_literal,
                             state, error) != CAI_OK)
       return CAI_ERR_TRANSPORT;
-    return cli_command_input(state, command) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+    if (cli_flush_command(state, 1) != 0)
+      return CAI_ERR_TRANSPORT;
+    cli_command_input(state, command);
+    return cli_flush_command(state, 1) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
   }
   if (event->data != NULL &&
       strcmp(event->type, "user_shell_output_hex") == 0) {
@@ -1483,20 +1518,23 @@ static int cli_list_write(void *context, const void *bytes, size_t count,
                           cai_error *error) {
   cli_state *state;
   state = (cli_state *)context;
-  if (cli_sink(state, bytes, count) != 0)
+  if (cli_flush_command(state, 1) != 0 || cli_sink(state, bytes, count) != 0)
     return cai_cli_error(error, CAI_ERR_TRANSPORT, "write session rows");
   return CAI_OK;
+}
+
+static int cli_load_sessions(cli_state *state, cai_error *error) {
+  free(state->sessions);
+  state->sessions = NULL;
+  state->session_count = 0U;
+  return cai_cli_pouch_list(&state->pouch, state->workspace, &state->sessions,
+                            &state->session_count, error);
 }
 
 static int cli_list_sessions(cli_state *state, cai_error *error) {
   cai_sink_callbacks callbacks;
   cai_sink *sink;
-  int rc;
-  free(state->sessions);
-  state->sessions = NULL;
-  state->session_count = 0U;
-  rc = cai_cli_pouch_list(&state->pouch, state->workspace, &state->sessions,
-                          &state->session_count, error);
+  int rc = cli_load_sessions(state, error);
   if (rc != CAI_OK)
     return rc;
   memset(&callbacks, 0, sizeof(callbacks));
@@ -1520,9 +1558,8 @@ static int cli_switch_session(cli_state *state, const char *id, int new_session,
     return rc;
   if (state->shell.pid > 0 || run_state == CAI_AGENT_SAMPLING ||
       run_state == CAI_AGENT_DISPATCHING_TOOL) {
-    return cli_write(state, "\nWait for the current turn to finish.\n") == 0
-               ? CAI_OK
-               : CAI_ERR_TRANSPORT;
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "Wait for the current turn to finish.");
   }
   if (cli_finish_response(state) != 0)
     return CAI_ERR_TRANSPORT;
@@ -1751,13 +1788,12 @@ static int cli_settings_command(cli_state *state, const char *arguments,
              pending.reasoning_effort != NULL ? "Pending reasoning: `" : "",
              pending.reasoning_effort != NULL ? pending.reasoning_effort : "",
              pending.reasoning_effort != NULL ? "`\n\n" : "");
-    if (cli_text(state, message, strlen(message)) != 0)
-      return CAI_ERR_TRANSPORT;
     if (!reasoning_only && strcmp(state->options.provider, "openrouter") == 0) {
       static const char note[] =
           "OpenRouter's large catalog is not listed here. "
           "Use `/model MODEL [EFFORT]` or `/reasoning EFFORT`.\n";
-      if (cli_text(state, note, strlen(note)) != 0)
+      if (cli_text(state, message, strlen(message)) != 0 ||
+          cli_text(state, note, strlen(note)) != 0)
         return CAI_ERR_TRANSPORT;
       return cli_finish_response(state) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
     }
@@ -1765,13 +1801,28 @@ static int cli_settings_command(cli_state *state, const char *arguments,
   /* A separate discovery client avoids touching the agent worker's transport.
    */
   if (listing || requested.reasoning_effort != NULL) {
-    rc = cai_client_list_models(state->model_client,
-                                CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED,
-                                &catalog, error);
+    rc = cai_client_list_models(
+        state->model_client,
+        listing ? CAI_MODEL_CATALOG_REFRESH_ONLINE
+                : CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED,
+        &catalog, error);
     if (rc != CAI_OK) {
+      if (listing && cli_flush_command(state, 0) != 0)
+        return CAI_ERR_TRANSPORT;
+      cai_error_cleanup(error);
+      cai_error_init(error);
+      /* An explicit retry may fail while a previous successful catalog is
+       * still useful. Offline lookup performs no further network request. */
+      (void)cai_client_list_models(state->model_client,
+                                   CAI_MODEL_CATALOG_REFRESH_OFFLINE, &catalog,
+                                   error);
       cai_error_cleanup(error);
       cai_error_init(error);
     }
+  }
+  if (listing && cli_text(state, message, strlen(message)) != 0) {
+    cai_model_catalog_close(catalog);
+    return CAI_ERR_TRANSPORT;
   }
   entry = cai_model_catalog_find(catalog, target_model);
   if (!listing && requested.reasoning_effort != NULL && entry != NULL &&
@@ -1826,14 +1877,23 @@ static int cli_settings_command(cli_state *state, const char *arguments,
     }
   } else if (listing) {
     if (catalog == NULL) {
-      const char *note = "Model list unavailable; enter a model ID.\n";
+      const char *note = "Model list unavailable. Use /model to retry, or "
+                         "/model MODEL [EFFORT] to select directly.\n";
       rc =
           cli_text(state, note, strlen(note)) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
     } else {
       size_t limit = catalog->count;
       if (strcmp(state->options.provider, "chatgpt") != 0 && limit > 50U)
         limit = 50U;
-      rc = CAI_OK;
+      rc = catalog->is_stale
+               ? (cli_text(state,
+                           "Using cached model catalog; /model retries "
+                           "discovery.\n\n",
+                           strlen("Using cached model catalog; /model retries "
+                                  "discovery.\n\n")) == 0
+                      ? CAI_OK
+                      : CAI_ERR_TRANSPORT)
+               : CAI_OK;
       for (i = 0U; rc == CAI_OK && i < limit; i++) {
         snprintf(message, sizeof(message), "- `%s`%s%s\n",
                  catalog->entries[i].slug,
@@ -2089,24 +2149,20 @@ static int cli_handle_command(cli_state *state, const char *line,
     errno = 0;
     number = strtoul(arg, &end, 10);
     if (errno != 0 || arg == end || *end != '\0' || number == 0U) {
-      return cli_write(state, "\nUsage: /resume <number>\n") == 0
-                 ? CAI_OK
-                 : CAI_ERR_TRANSPORT;
+      return cai_cli_error(error, CAI_ERR_INVALID, "Usage: /resume <number>");
     }
-    rc = cli_list_sessions(state, error);
+    rc = cli_load_sessions(state, error);
     if (rc != CAI_OK)
       return rc;
     if (number > state->session_count) {
-      return cli_write(state, "\nNo session with that number.\n") == 0
-                 ? CAI_OK
-                 : CAI_ERR_TRANSPORT;
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "No session with that number.");
     }
     return cli_switch_session(state, state->sessions[number - 1U].id, 0, error);
   }
   if (line[0] == '/')
-    return cli_write(state, "Unknown command. Send /help for usage.") == 0
-               ? CAI_OK
-               : CAI_ERR_TRANSPORT;
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "Unknown command. Send /help for usage.");
   *handled = 0;
   return CAI_OK;
 }
@@ -2696,7 +2752,18 @@ int main(int argc, char **argv) {
     cli_print_error(&state, "open client", &error);
     goto cleanup;
   }
-  client_config.timeout_ms = 1500L;
+  /* Explicit catalog commands inherit the configured request deadline. They
+   * are independent of the short, opportunistic quota-refresh timeout. */
+  {
+    pslog_field operation = pslog_str("operation", "model catalog");
+    state.model_log = state.log.logger->with(state.log.logger, &operation, 1U);
+    if (state.model_log == NULL) {
+      cai_cli_error(&error, CAI_ERR_NOMEM, "create model catalog logger");
+      cli_print_error(&state, "open model catalog client", &error);
+      goto cleanup;
+    }
+    client_config.logger = state.model_log;
+  }
   rc = cai_client_open(&client_config, &state.model_client, &error);
   if (rc != CAI_OK) {
     cli_print_error(&state, "open model catalog client", &error);
@@ -2790,10 +2857,11 @@ int main(int argc, char **argv) {
       break;
     }
     if (line[0] != '\0') {
-      rc = (line[0] == '/' || line[0] == '!') &&
-                   cli_command_input(&state, line) != 0
-               ? CAI_ERR_TRANSPORT
-               : cli_handle_command(&state, line, &error, &handled);
+      if (line[0] == '/' || line[0] == '!')
+        cli_command_input(&state, line);
+      rc = cli_handle_command(&state, line, &error, &handled);
+      if (cli_flush_command(&state, rc == CAI_OK) != 0)
+        rc = CAI_ERR_TRANSPORT;
       if (rc == CAI_OK && !handled) {
         if (cli_prompt(&state, line) != 0) {
           rc = CAI_ERR_TRANSPORT;
@@ -2862,6 +2930,8 @@ cleanup:
     state.client->close(state.client);
   if (state.model_client != NULL)
     state.model_client->close(state.model_client);
+  if (state.model_log != NULL)
+    state.model_log->destroy(state.model_log);
   if (state.quota_client != NULL)
     state.quota_client->close(state.quota_client);
   if (state.auth != NULL)

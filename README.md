@@ -347,8 +347,13 @@ change applies at the next durable tool-round or turn boundary. Subsequent
 changes merge into pending settings. Applied settings are checkpointed
 atomically and restored on automatic or explicit resume; explicit `-m`, `-r`,
 and `--reasoning-summary` independently override saved values. `/new` uses the
-startup defaults. Catalog browsing uses a separate client and a five-minute
-cache; it makes no additional startup request. Interactive warnings and errors
+startup defaults. Catalog discovery uses a separate client and a five-minute
+cache; it makes no additional startup request. Explicit `/model` and
+`/reasoning` listings refresh discovery using the configured client request
+timeout. A failed refresh retains the last catalog when available; repeat the
+command to retry immediately. Accepted commands have a green `$`, rejected
+commands a red `$`, and literal, non-italic command text is brownish orange.
+Interactive warnings and errors
 use a red `*` with `WARN:` or `ERROR:` and readable details, with one blank
 line between feed blocks. Complete diagnostic records stay in the session log.
 
@@ -431,6 +436,10 @@ value has the field-specific discovery, inheritance or unset meaning documented
 beside that setting. Existing files are
 never rewritten. `--config FILE` selects another file; `--no-config` skips
 creation and loading. `--config-dir DIR` also selects `DIR/config.ini`.
+Startup configuration is read from these files and CLI/environment inputs,
+not from pouch storage. Restart CAI after editing the configuration. Global
+instruction files are loaded again when a conversation runtime opens, including
+on replay; saved conversation state does not replace those files.
 Precedence is built-in defaults, configuration, then CLI options. Resuming
 restores the saved model and reasoning settings unless explicitly overridden
 by startup flags. Paths accept `~/` and are relative to the configuration file.

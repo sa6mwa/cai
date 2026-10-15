@@ -189,6 +189,13 @@ static void notice(cai_cli_log *log) {
         strcmp(record.level, "fatal") != 0 &&
         strcmp(record.level, "panic") != 0)
       return;
+    /* Discovery reports one complete catalog warning. Its lower transport
+     * records remain in the log file, without duplicating the UI notice. */
+    if (strcmp(record.operation, "model catalog") == 0 &&
+        (strcmp(record.message, "cai.http.transport_error") == 0 ||
+         strcmp(record.message, "cai.http.request.done") == 0 ||
+         strcmp(record.message, "cai.http.response_limit") == 0))
+      return;
     label = strcmp(record.level, "warn") == 0 ? "WARN" : "ERROR";
     cursor = notice_message(record.message);
   } else {

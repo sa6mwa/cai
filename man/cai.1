@@ -352,7 +352,10 @@ tool-round or turn boundary, before the next model request. Later changes merge
 into pending settings. Applied settings are checkpointed together and restored
 on resume. Explicit startup model, effort, and reasoning-summary flags override
 only their corresponding saved values. New sessions use startup defaults.
-Catalog discovery uses a separate client and cache.
+Catalog discovery uses a separate client and cache. Explicit model and reasoning
+listings refresh discovery using the configured client timeout. Failed refreshes
+preserve a previously loaded catalog when available. Repeat the command to retry
+immediately.
 .TP
 .BI /reasoning " [EFFORT]"
 Set reasoning effort, or list provider-advertised choices and the default for

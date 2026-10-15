@@ -45,6 +45,10 @@
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_spinner_test.sh"
         "$<TARGET_FILE:cai_cli_settings_fixture>")
     set_tests_properties(cai_cli_spinner PROPERTIES TIMEOUT 45)
+    add_test(NAME cai_cli_model_catalog
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_model_catalog_test.sh"
+        "$<TARGET_FILE:cai_cli_settings_fixture>")
+    set_tests_properties(cai_cli_model_catalog PROPERTIES TIMEOUT 30)
     foreach(_cai_settings_protocol responses chat_completions)
       add_test(NAME cai_cli_settings_${_cai_settings_protocol}
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_settings_test.sh"
@@ -137,6 +141,10 @@
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_test.sh"
         "$<TARGET_FILE:cai_cli>")
     set_tests_properties(cai_cli_terminal PROPERTIES TIMEOUT 60)
+    add_test(NAME cai_cli_commands
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_commands_test.sh"
+        "$<TARGET_FILE:cai_cli>")
+    set_tests_properties(cai_cli_commands PROPERTIES TIMEOUT 45)
     add_test(NAME cai_cli_terminal_handoff
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_handoff_test.sh"
         "$<TARGET_FILE:cai_cli>")
