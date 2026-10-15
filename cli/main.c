@@ -1083,13 +1083,6 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
   if (rc != CAI_OK) {
     return rc;
   }
-  busy = run_state == CAI_AGENT_SAMPLING ||
-         run_state == CAI_AGENT_DISPATCHING_TOOL;
-  if (state->was_busy && !busy) {
-    cai_cli_status_refresh_branch(&state->status, state->workspace);
-    cli_refresh_quota(state, 0);
-  }
-  state->was_busy = busy;
   model = state->options.model;
   effort = state->options.reasoning_effort;
   memset(&settings, 0, sizeof(settings));
@@ -1112,6 +1105,20 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
   rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
   if (rc != CAI_OK)
     return rc;
+  busy = metrics.turn_active || run_state == CAI_AGENT_SAMPLING ||
+         run_state == CAI_AGENT_DISPATCHING_TOOL;
+  /* Softline resets its animation clock/frame on every setter call, even
+   * when the value is unchanged. Only a turn boundary changes this state. */
+  if (state->was_busy != busy) {
+    if (sl_set_status_busy(state->sl, busy) != SL_OK ||
+        sl_set_status_spinner(state->sl, busy) != SL_OK)
+      return CAI_ERR_TRANSPORT;
+    state->was_busy = busy;
+    if (!busy) {
+      cai_cli_status_refresh_branch(&state->status, state->workspace);
+      cli_refresh_quota(state, 0);
+    }
+  }
   if (state->timer_fd >= 0 && state->timer_armed != metrics.turn_active) {
     memset(&timer_spec, 0, sizeof(timer_spec));
     if (metrics.turn_active) {
@@ -1137,9 +1144,7 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
                        metrics.session_usage.estimated_spend_usd,
                        metrics.session_usage.estimated_spend_eur,
                        state->options.provider, &goal);
-  if (sl_set_status_busy(state->sl, busy) != SL_OK ||
-      sl_set_status_spinner(state->sl, busy) != SL_OK ||
-      sl_set_status_message(state->sl, turn_message) != SL_OK ||
+  if (sl_set_status_message(state->sl, turn_message) != SL_OK ||
       cai_cli_status_apply(state->sl, &state->status) != 0) {
     return CAI_ERR_TRANSPORT;
   }

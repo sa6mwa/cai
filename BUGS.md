@@ -86,3 +86,51 @@ commit and verification evidence.
 - **Verification:** fresh versus resumed sessions, saved model/effort settings,
   live metadata versus fallback metadata, long-context settings, unavailable
   metadata, and consistent `/status` and status-bar percentages.
+
+## BUG-006: Spinner restarts during an active turn
+
+- **Priority:** normal.
+- **Status:** fixed; targeted native and static musl verification passed.
+- **Cause:** CAI reapplied softline's busy and spinner setters on every status
+  refresh, including provider/tool wakeups and the elapsed-time timer. Softline
+  0.10.0 resets the animation clock and frame in these setters even when their
+  arguments are unchanged. This is CAI's integration error.
+- **Fix:** apply busy/spinner changes only at busy-state transitions, keeping
+  the spinner active while the runtime reports an active turn.
+- **Verification:** `cai_cli_spinner` traces calls reaching the real softline
+  setters across timer ticks, mid-turn `/status`, successful and failed tool
+  calls, provider failure, cancellation, and a subsequent recovery turn.
+  The existing Responses and Chat Completions settings tests pass, including
+  queued settings changes during a turn. Static musl terminal failure/recovery
+  coverage also passes.
+
+## BUG-007: Codex global instructions appear missing after session replay
+
+- **Priority:** high.
+- **Status:** investigating.
+- **Reported:** enabling `[agent] codex_agents_md = true` in `config.ini` does
+  not appear to load the global Codex `AGENTS.md` when resuming a session.
+- **Required behavior:** current startup flags, environment, and `config.ini`
+  determine configuration; there must be no pouch-backed CAI configuration
+  overriding them. Load CAI's global instructions, then
+  `${CODEX_HOME:-$HOME/.codex}/AGENTS.md` when enabled, then ancestor/workspace
+  instructions. Resuming conversation state must not suppress current global
+  instructions or restore a stale instruction snapshot over them.
+- **Verification:** capture actual provider requests for fresh and resumed
+  sessions, enabling/disabling compatibility between invocations, changed
+  instruction contents, default versus explicit `CODEX_HOME`, and configured
+  CAI global instructions. Inspect pouch document kinds and replay to establish
+  whether configuration or old instructions are overriding current settings.
+
+## BUG-008: Enable the existing todo/kanban tool in CAI
+
+- **Priority:** normal; feature backlog.
+- **Status:** confirmed missing from CAI's runtime tool registration.
+- **Evidence:** libcai implements `todo_kanban` and exposes
+  `cai_agent_register_todo_tool`, but neither the CLI nor the Smith/runtime
+  startup path registers it.
+- **Required work:** expose the existing tool to the normal CAI agent, provide
+  appropriate persistent storage, and include its capabilities in the agent's
+  instructions. Cover fresh sessions, replay, persistence, failed operations,
+  and the actual tool list sent to the provider. Keep isolated review behavior
+  deliberate.
