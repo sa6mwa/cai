@@ -53,8 +53,9 @@ commit and verification evidence.
 - **Status:** open.
 - **Reported:** `$ /command` uses pale text and an undifferentiated `$`.
 - **Required behavior:** green `$` for success, red `$` for failure. Command
-  text should match submitted conversation prompt text in color, without
-  italics. Keep terminal input distinct from the submitted transcript.
+  text should be code-like, non-italic, and brownish orange (the latest color
+  selection supersedes the earlier prompt-colored/green suggestions). Keep
+  terminal input distinct from the submitted transcript.
 - **Verification:** successful and invalid slash commands, refused operations,
   wrapped commands, and `NO_COLOR`. Preserve input-before-result ordering and
   keep non-interactive structured logging intact.
@@ -110,6 +111,7 @@ commit and verification evidence.
 - **Status:** investigating.
 - **Reported:** enabling `[agent] codex_agents_md = true` in `config.ini` does
   not appear to load the global Codex `AGENTS.md` when resuming a session.
+  The user confirms restarting CAI after editing the configuration.
 - **Required behavior:** current startup flags, environment, and `config.ini`
   determine configuration; there must be no pouch-backed CAI configuration
   overriding them. Load CAI's global instructions, then
@@ -121,6 +123,13 @@ commit and verification evidence.
   instruction contents, default versus explicit `CODEX_HOME`, and configured
   CAI global instructions. Inspect pouch document kinds and replay to establish
   whether configuration or old instructions are overriding current settings.
+- **Current evidence:** static musl request-capture tests pass for Responses
+  and Chat Completions: enabling compatibility on an existing encrypted
+  conversation, edited instructions, explicit CODEX_HOME, and disabling it
+  again all affect the actual outbound instructions. The reported real-session
+  case remains unaccounted for; these passing probes do not close the report.
+  The CLI pouch adapter stores sessions, scope coordination, and credentials;
+  it does not supply CAI startup configuration.
 
 ## BUG-008: Enable the existing todo/kanban tool in CAI
 
@@ -134,3 +143,39 @@ commit and verification evidence.
   instructions. Cover fresh sessions, replay, persistence, failed operations,
   and the actual tool list sent to the provider. Keep isolated review behavior
   deliberate.
+
+## BUG-009: Expose optional tools and consistent tool configuration
+
+- **Priority:** normal; feature backlog.
+- **Status:** inventory complete; implementation pending.
+- **Missing optional tools:** todo/kanban (BUG-008), SearXNG search, and reverse
+  geocoding are implemented by libcai but not registered by CAI. These extras
+  should be disabled by default.
+- **Required configuration:** explicit enable/disable controls through CLI
+  flags, environment variables, and `config.ini`, with documented precedence
+  and a commented default template. Include provider/service settings where
+  required, and individual controls for existing tools that lack them.
+- **Executor distinction:** libcai also has a separate sandboxed exec preset
+  using the same `exec_command` name as the registered terminal pair. Expose
+  any alternative through explicit backend selection; do not register two
+  implementations under the same name.
+- **Verification:** inspect outbound provider tool declarations for defaults,
+  each enable/disable path, precedence, resumed sessions, unavailable services,
+  actual dispatch, and isolated review capabilities. Settings are startup
+  configuration, not pouch-backed configuration.
+
+## BUG-010: /model catalog request times out and prints duplicate diagnostics
+
+- **Priority:** high.
+- **Status:** investigating.
+- **Reported:** `/model` cannot list the signed-in ChatGPT catalog. The GET
+  `models?client_version=0.160.0` times out after about five seconds; CAI prints
+  both `HTTP transport failed` and `Model catalog unavailable`, after a generic
+  "Model list unavailable" response.
+- **Required behavior:** use a suitable deadline for explicit model discovery,
+  preserve available catalog data, and surface one actionable catalog failure
+  with useful transport details. A catalog error must leave model selection,
+  reasoning effort, session state, and ordinary turns usable.
+- **Verification:** delayed success, genuine timeout, offline/provider failure,
+  cached-catalog fallback, subsequent successful retry, and actual interactive
+  output. Identify the failing deadline before increasing any timeout.
