@@ -276,3 +276,39 @@ commit and verification evidence.
   leases have a one-hour TTL and a separate acquisition wait. Automatic index
   rebuilding explains the same disappearance without waiting for lease expiry;
   the user's actual recovery timing and crash cause remain unverified.
+
+## BUG-012: Capture PTY shell output for conversation context
+
+- **Priority:** normal; feature backlog.
+- **Status:** open; terminal handoff currently keeps shell output local.
+- **Required behavior:** `!sh` and `/shell` must run with a real PTY and retain
+  the last 5,000 lines of terminal output by default. Discard older lines and
+  make the retained-line limit configurable through CLI flags, environment and
+  `config.ini`, with the usual precedence and documented defaults.
+- **Shared controls:** use the existing shell-context controls for both ordinary
+  `!COMMAND` and PTY shells: `--no-shell-context`, `[ui] shell_context`, and
+  `/shell-context [on|off]`. After shell exit, share retained output through the
+  existing shell-result context mechanism, without treating it as a user prompt
+  or automatically starting an inference turn. Persist and replay that context
+  without executing the shell again.
+- **Capture boundary:** relay terminal output normally to the user while
+  independently scrubbing the capture before it enters the retained buffer.
+  Use internal code, not external tools. Remove ANSI/VT control sequences,
+  colors and DEC controls while preserving real text. The parser must retain
+  state across chunks, including split escape sequences and UTF-8 characters;
+  cover CSI, OSC/DCS strings and their BEL/ST terminators, and C0/C1 controls
+  where applicable. Define handling of carriage returns, backspaces, erasure
+  and cursor redraws so removing escape bytes does not leak parameters or
+  destroy readable text. Do not claim complete terminal emulation without
+  evidence.
+- **Bounds:** keep capture bounded as output arrives, without a hidden full
+  transcript or temporary spool. A line limit alone does not bound an enormous
+  unterminated line; specify a byte bound and truncation behavior as part of
+  implementation. Clearly identify omitted output in the shared shell result.
+- **Verification:** exercise real PTYs, output above the retained-line limit,
+  configurable limits and precedence, final unterminated lines, oversized
+  lines, Unicode, chunk-split control sequences, color/string controls and
+  terminal redraws. Cover shell exit, failure, cancellation, terminal restore,
+  context enabled/disabled, persistence/replay and ordinary `!COMMAND`
+  regressions. Capture the subsequent model request to prove that retained
+  text is shell context and contains no terminal escape sequences.
