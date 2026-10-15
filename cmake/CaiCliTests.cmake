@@ -7,6 +7,43 @@
     set_tests_properties(cai_cli_terminal_peer PROPERTIES TIMEOUT 5)
     find_program(CAI_TEST_PYTHON python3 REQUIRED)
     find_program(CAI_TEST_JQ jq REQUIRED)
+    find_program(CAI_TEST_TMUX tmux REQUIRED)
+    add_executable(cai_cli_softline_resize_repro tests/softline_resize_repro.c)
+    target_link_libraries(cai_cli_softline_resize_repro PRIVATE softline::softline_static)
+    cai_configure_cli_target(cai_cli_softline_resize_repro)
+    add_executable(cai_cli_resize_fixture tests/cli_resize_fixture.c
+      cli/options.c cli/config.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
+      cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c
+      cli/session_commands.c cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
+    target_link_libraries(cai_cli_resize_fixture PRIVATE cai_static
+      softline::softline_static libmdf::mdf_static lockdc::static)
+    cai_configure_cli_target(cai_cli_resize_fixture)
+    add_test(NAME cai_cli_resize_settled
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_resize_test.sh"
+        "$<TARGET_FILE:cai_cli>" "${CAI_TEST_TMUX}" settled)
+    add_test(NAME cai_cli_resize_producer
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_resize_test.sh"
+        "$<TARGET_FILE:cai_cli_resize_fixture>" "${CAI_TEST_TMUX}" producer)
+    set_tests_properties(cai_cli_resize_settled cai_cli_resize_producer PROPERTIES TIMEOUT 30)
+    foreach(_cai_resize_mode watch yield retained)
+      set(_cai_resize_draft early)
+      if(_cai_resize_mode STREQUAL "retained")
+        set(_cai_resize_draft late)
+      endif()
+      add_test(NAME cai_cli_softline_resize_${_cai_resize_mode}_shrink
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/softline_resize_repro.sh"
+          "$<TARGET_FILE:cai_cli_softline_resize_repro>" 120 30 60 18 "${_cai_resize_mode}" partial "${_cai_resize_draft}")
+      add_test(NAME cai_cli_softline_resize_${_cai_resize_mode}_grow
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/softline_resize_repro.sh"
+          "$<TARGET_FILE:cai_cli_softline_resize_repro>" 60 30 130 36 "${_cai_resize_mode}" complete "${_cai_resize_draft}")
+      set_tests_properties(cai_cli_softline_resize_${_cai_resize_mode}_shrink
+        cai_cli_softline_resize_${_cai_resize_mode}_grow PROPERTIES TIMEOUT 20)
+    endforeach()
+    # BUG-001: this diagnostic deterministically exposes softline 0.10.0's
+    # documented unobserved-retained-frame limitation. Keep it visible, but
+    # run its failing assertion manually until the upstream repair is consumed.
+    # See docs/softline-retained-resize-report.md; all other resize cases gate.
+    set_tests_properties(cai_cli_softline_resize_retained_shrink PROPERTIES DISABLED TRUE)
     add_test(NAME cai_cli_help COMMAND cai_cli --help)
     add_test(NAME cai_cli_config
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_config_test.sh"
@@ -208,7 +245,7 @@
     get_property(_cai_cli_tests DIRECTORY PROPERTY TESTS)
     list(FILTER _cai_cli_tests INCLUDE REGEX "^cai_cli_")
     set_tests_properties(${_cai_cli_tests} PROPERTIES LABELS "cli;local;offline"
-      ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>;CAI_TEST_PYTHON=${CAI_TEST_PYTHON};CAI_TEST_JQ=${CAI_TEST_JQ}")
+      ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>;CAI_TEST_PYTHON=${CAI_TEST_PYTHON};CAI_TEST_JQ=${CAI_TEST_JQ};CAI_TEST_TMUX=${CAI_TEST_TMUX}")
     foreach(_cai_cli_test IN LISTS _cai_cli_tests)
       get_test_property(${_cai_cli_test} TIMEOUT _cai_cli_timeout)
       if(NOT _cai_cli_timeout)

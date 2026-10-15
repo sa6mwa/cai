@@ -2,6 +2,7 @@
 # Observe actual cells and scrollback in tmux, including its real CPR replies.
 source "$(dirname "$0")/cli_test_common.sh"
 tmux_bin=${1:-$(command -v tmux)}
+mode=${2:-settled}
 unset TMUX TMUX_PANE
 cd "$root"
 tmux_run() { "$tmux_bin" -S terminal.sock -f /dev/null "$@"; }
@@ -13,6 +14,10 @@ finish() {
 trap finish EXIT
 peer_start
 base=("$cli" -p custom --endpoint "$endpoint" -m gpt-5.6-luna --no-image-generation -C "$work")
+if [[ "$mode" == producer ]]; then
+  export CAI_TEST_RESIZE_READY="$root/resize-ready" CAI_TEST_RESIZE_RELEASE="$root/resize-release"
+  mkfifo "$CAI_TEST_RESIZE_RELEASE"; exec 8<>"$CAI_TEST_RESIZE_RELEASE"
+fi
 {
   printf "cat > snake.c <<'EOF'\n"
   for ((i=0;i<120;i++)); do
@@ -51,11 +56,17 @@ snapshot() {
 visible() { snapshot; grep -Fq -- "$1" "$root/screen"; }
 wait_for visible 'Welcome to CAI'
 tmux_run send-keys -t cai:0.0 'create the file' Enter
-wait_for visible 'STREAM in flight'
+if [[ "$mode" == producer ]]; then
+  wait_for test -s "$CAI_TEST_RESIZE_READY"
+  wait_for visible 'RESIZE SINK READY'
+else
+  wait_for visible 'STREAM in flight'
+fi
 cp "$root/screen" "$root/before-resize"
 tmux_run resize-window -x 80 -y 18
-wait_for visible 'STREAM in flight'
 tmux_run send-keys -t cai:0.0 'draft survives resize'
+if [[ "$mode" == producer ]]; then printf P >&8; fi
+wait_for visible 'STREAM in flight'
 wait_for visible '> draft survives resize'
 cp "$root/screen" "$root/narrow"
 tmux_run resize-window -x 130 -y 36

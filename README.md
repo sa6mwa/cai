@@ -786,6 +786,11 @@ collection's loader and runtime directly; no shell-level library-path override
 is needed. cpkt 0.3.0 shared dependencies require glibc 2.43 or
 newer on Linux. Deployments on older glibc must upgrade their runtime or use a
 fully static musl application and validate it.
+CLI test builds require `tmux`, alongside the existing Bash/Python fixture and
+`jq` tools, for actual terminal-cell and scrollback assertions. Each test owns
+and cleans a private tmux socket/server. The open retained-frame resize
+diagnostic and its manual reproducer are documented in
+[the softline resize report](docs/softline-retained-resize-report.md).
 Fuzz harnesses disable their own core dumps so Apport and other host crash
 collectors cannot delay crash reporting; no host sysctl changes are required.
 The fuzz gate retains crashing or hanging inputs and fails when they are found.
