@@ -788,65 +788,102 @@ static int cli_shell_restore_foreground(pid_t foreground, cai_error *error) {
   return cai_cli_error(error, CAI_ERR_TRANSPORT, message);
 }
 
+static int cli_terminal_shell_output(void *context, const char *bytes,
+                                     size_t length, cai_error *error) {
+  cli_state *state = context;
+  pslog_field kind = pslog_str("prompt_kind", "shell_output");
+  int rc =
+      cai_agent_runtime_user_shell_write(state->runtime, bytes, length, error);
+  if (rc == CAI_OK)
+    cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO,
+                        "user_shell_output", "user", bytes, length, &kind, 1U);
+  return rc;
+}
+
 static int cli_terminal_shell(cli_state *state, cai_error *error) {
   pslog_field fields[3];
   char message[256];
   const char *shell = getenv("SHELL");
   pid_t foreground;
-  int rc, status, saved_errno;
+  int rc, status, shell_rc;
+  cai_error shell_error;
   rc = cli_terminal_shell_ready(state, error);
   if (rc != CAI_OK)
     return rc;
   if (shell == NULL || shell[0] == '\0')
     shell = "/bin/sh";
+  rc = cai_agent_runtime_user_shell_begin(state->runtime, shell,
+                                          state->options.shell_context, error);
+  if (rc != CAI_OK)
+    return rc;
+  (void)clock_gettime(CLOCK_MONOTONIC, &state->shell.started);
   foreground = tcgetpgrp(STDIN_FILENO);
   if (cli_flush_command(state, 1) != 0 || cli_finish_response(state) != 0 ||
       cli_finish_reasoning(state) != 0 ||
-      sl_output_stream_end(state->sl) != SL_OK)
+      sl_output_stream_end(state->sl) != SL_OK) {
+    state->exit_requested = 1;
     return cai_cli_error(error, CAI_ERR_TRANSPORT,
                          "release terminal for interactive shell");
+  }
   fields[0] = pslog_str("shell", shell);
   cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO,
                       "terminal_shell_started", "user", "Interactive shell",
                       strlen("Interactive shell"), fields, 1U);
-  /* Quoted SHELL is one executable; system handles parent SIGINT/SIGQUIT.
-   * The child inherits the real terminal and ordinary user permissions. */
-  status = system("exec \"${SHELL:-/bin/sh}\" -i");
-  saved_errno = errno;
+  cai_error_init(&shell_error);
+  shell_rc =
+      cai_cli_shell_handoff(shell, state->workspace, cli_terminal_shell_output,
+                            state, &status, &shell_error);
+  rc = cai_agent_runtime_user_shell_finish(
+      state->runtime,
+      shell_rc != CAI_OK  ? 127
+      : WIFEXITED(status) ? WEXITSTATUS(status)
+                          : 128 + WTERMSIG(status),
+      cai_cli_shell_elapsed(&state->shell), error);
+  if (rc != CAI_OK) {
+    cai_error_cleanup(&shell_error);
+    state->exit_requested = 1;
+    return rc;
+  }
   /* Recover ownership before any logger or renderer can write to the TTY.
    * A killed shell cannot restore its previous foreground process group. */
   rc = cli_shell_restore_foreground(foreground, error);
   if (rc != CAI_OK) {
+    cai_error_cleanup(&shell_error);
     state->exit_requested = 1;
     return rc;
   }
   state->feed_breaks = 0;
   state->feed_ansi = 0;
-  fields[1] = pslog_i64("exit_code", status == -1        ? -1
-                                     : WIFEXITED(status) ? WEXITSTATUS(status)
-                                                         : -1);
-  fields[2] = pslog_i64(
-      "signal", status != -1 && WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+  fields[1] =
+      pslog_i64("exit_code", WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+  fields[2] = pslog_i64("signal", WIFSIGNALED(status) ? WTERMSIG(status) : 0);
   cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO,
                       "terminal_shell_completed", "user", "Interactive shell",
                       strlen("Interactive shell"), fields, 3U);
   if (sl_output_stream_begin(state->sl) != SL_OK || cli_geometry(state) != 0) {
+    cai_error_cleanup(&shell_error);
     state->exit_requested = 1;
     return cai_cli_error(error, CAI_ERR_TRANSPORT,
                          "restore CAI terminal after interactive shell");
   }
   cai_cli_status_refresh_branch(&state->status, state->workspace);
-  if (status == -1)
-    snprintf(message, sizeof(message), "launch interactive shell: %s",
-             strerror(saved_errno));
-  else if (WIFSIGNALED(status))
+  if (shell_rc != CAI_OK) {
+    rc = cai_cli_error(error, shell_rc, shell_error.message);
+    cai_error_cleanup(&shell_error);
+    return rc;
+  }
+  cai_error_cleanup(&shell_error);
+  if (WIFSIGNALED(status))
     snprintf(message, sizeof(message),
              "interactive shell terminated by signal %d", WTERMSIG(status));
-  else if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+  else if (WEXITSTATUS(status) != 0)
     snprintf(message, sizeof(message), "interactive shell exited %d",
-             WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+             WEXITSTATUS(status));
   else
-    return CAI_OK;
+    return cli_write(state, "Shell exited 0.") == 0
+               ? CAI_OK
+               : cai_cli_error(error, CAI_ERR_TRANSPORT,
+                               "cannot display shell completion");
   return cai_cli_error(error, CAI_ERR_TRANSPORT, message);
 }
 
@@ -1428,6 +1465,8 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   config.developer_instructions_extension =
       state->options.developer_instructions;
   config.codex_compat_agents_md = state->options.codex_agents_md;
+  config.shell_context_max_lines = state->options.shell_context_max_lines;
+  config.shell_context_max_bytes = state->options.shell_context_max_bytes;
   config.enable_image_generation =
       !state->options.review && state->options.image_generation;
   config.disable_terminal = !state->options.terminal;

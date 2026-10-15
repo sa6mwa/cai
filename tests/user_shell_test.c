@@ -252,6 +252,7 @@ int main(int argc, char **argv) {
     config.session_store = &store;
     config.event_callback = event;
     config.event_context = &f;
+    config.shell_context_max_bytes = 32768U;
     CHECK(cai_agent_runtime_open(client, &config, &runtime, &error) == CAI_OK);
     CHECK(cai_agent_runtime_user_shell_write(runtime, "x", 1U, &error) ==
           CAI_ERR_INVALID);
@@ -294,11 +295,11 @@ int main(int argc, char **argv) {
     CHECK(cai_agent_runtime_user_shell_finish(runtime, 7, 1234U, &error) ==
           CAI_OK);
     wait_export(runtime, &exported, &error);
-    CHECK(strstr(exported.data, "\\x00\\x1b\\xff€") != NULL);
+    CHECK(strstr(exported.data, "\\x1b") == NULL);
     CHECK(strstr(exported.data, "Exit code: 7") != NULL &&
           strstr(exported.data, "1.234 seconds") != NULL);
     CHECK(strstr(exported.data, "70000 raw bytes total") != NULL);
-    CHECK(strstr(exported.data, "RAW-TAIL!") == NULL);
+    CHECK(strstr(exported.data, "RAW-TAIL!") != NULL);
     CHECK(occurrences(exported.data, "<user_shell_command>") == 1U);
     CHECK(cai_agent_runtime_get_metrics(runtime, &metrics, &error) == CAI_OK);
     CHECK(!metrics.turn_active && !metrics.has_last_turn);

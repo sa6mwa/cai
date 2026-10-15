@@ -135,6 +135,8 @@ typedef struct cai_session_impl {
   char *state_model;
   /** Provider compaction hash recorded with state_model, when available. */
   char *state_model_compaction_hash;
+  /** Last effective window for state_request_model, not a startup setting. */
+  long long state_context_window_tokens;
   /** Imported active request settings, independent of history provenance. */
   char *state_request_model;
   char *state_reasoning_effort;

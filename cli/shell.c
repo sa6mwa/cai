@@ -4,13 +4,35 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/timerfd.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
+
+static volatile sig_atomic_t handoff_resize;
+static void handoff_winch(int signal_number) {
+  (void)signal_number;
+  handoff_resize = 1;
+}
+
+static int handoff_write(int fd, const char *data, size_t size) {
+  while (size != 0U) {
+    ssize_t n = write(fd, data, size);
+    if (n < 0 && errno == EINTR)
+      continue;
+    if (n <= 0)
+      return -1;
+    data += n;
+    size -= (size_t)n;
+  }
+  return 0;
+}
 
 static int shell_error(cai_error *error, const char *operation, int code) {
   char message[512];
@@ -39,6 +61,7 @@ static void shell_child_error(int fd, const char *operation, const char *path,
 typedef struct shell_waiter {
   pid_t pid;
   int fd;
+  int raw_status;
 } shell_waiter;
 
 /* A dedicated wait owns exactly this child. The completion pipe keeps the UI
@@ -51,9 +74,10 @@ static void *shell_wait(void *context) {
   do {
     waited = waitpid(waiter->pid, &status, 0);
   } while (waited < 0 && errno == EINTR);
-  result = waited < 0          ? -errno
-           : WIFEXITED(status) ? WEXITSTATUS(status)
-                               : 128 + WTERMSIG(status);
+  result = waited < 0           ? -errno
+           : waiter->raw_status ? status
+           : WIFEXITED(status)  ? WEXITSTATUS(status)
+                                : 128 + WTERMSIG(status);
   if (waited > 0)
     (void)kill(-waiter->pid, SIGKILL);
   while (write(waiter->fd, &result, sizeof(result)) < 0 && errno == EINTR) {
@@ -66,6 +90,221 @@ static void *shell_wait(void *context) {
 void cai_cli_shell_init(cai_cli_shell *shell) {
   memset(shell, 0, sizeof(*shell));
   shell->output_fd = shell->exit_fd = shell->timer_fd = -1;
+}
+
+int cai_cli_shell_handoff(const char *path, const char *directory,
+                          cai_cli_shell_output_fn output, void *context,
+                          int *status, cai_error *error) {
+  struct termios saved, raw;
+  struct winsize geometry;
+  struct sigaction action, previous;
+  struct pollfd fds[3];
+  shell_waiter *waiter = NULL;
+  pthread_t thread;
+  char name[256], buffer[4096], input[4096];
+  size_t input_length = 0U, input_offset = 0U;
+  int master = -1, slave = -1, pipefd[2] = {-1, -1};
+  int rc = CAI_OK, failure = 0, raw_set = 0, signal_set = 0;
+  int launched = 0, exited = 0, eof = 0, input_open = 1, wait_status, ready;
+  pid_t child = -1;
+  ssize_t n;
+  *status = 127 << 8;
+  if (tcgetattr(STDIN_FILENO, &saved) != 0 ||
+      ioctl(STDIN_FILENO, TIOCGWINSZ, &geometry) != 0)
+    return shell_error(error, "cannot read terminal attributes", errno);
+  master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
+  if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0) {
+    failure = errno;
+    goto done;
+  }
+  failure = ptsname_r(master, name, sizeof(name));
+  if (failure != 0)
+    goto done;
+  slave = open(name, O_RDWR | O_NOCTTY | O_CLOEXEC);
+  if (slave < 0 || tcsetattr(slave, TCSANOW, &saved) != 0 ||
+      ioctl(slave, TIOCSWINSZ, &geometry) != 0 ||
+      pipe2(pipefd, O_CLOEXEC) != 0) {
+    failure = errno;
+    goto done;
+  }
+  waiter = malloc(sizeof(*waiter));
+  if (waiter == NULL) {
+    rc = cai_cli_error(error, CAI_ERR_NOMEM, "cannot allocate PTY waiter");
+    goto done;
+  }
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = SIG_DFL;
+  sigemptyset(&action.sa_mask);
+  child = fork();
+  if (child == 0) {
+    sigset_t mask;
+    close(master);
+    close(pipefd[0]);
+    close(pipefd[1]);
+    if (setsid() < 0 || ioctl(slave, TIOCSCTTY, 0) < 0 ||
+        dup2(slave, STDIN_FILENO) < 0 || dup2(slave, STDOUT_FILENO) < 0 ||
+        dup2(slave, STDERR_FILENO) < 0) {
+      shell_child_error(slave, "Cannot initialize shell terminal", "", errno);
+      _exit(126);
+    }
+    if (slave > STDERR_FILENO)
+      close(slave);
+    (void)sigaction(SIGINT, &action, NULL);
+    (void)sigaction(SIGQUIT, &action, NULL);
+    (void)sigaction(SIGTERM, &action, NULL);
+    (void)sigaction(SIGHUP, &action, NULL);
+    (void)sigaction(SIGWINCH, &action, NULL);
+    (void)sigaction(SIGPIPE, &action, NULL);
+    sigemptyset(&mask);
+    (void)sigprocmask(SIG_SETMASK, &mask, NULL);
+    if (chdir(directory) != 0) {
+      shell_child_error(STDERR_FILENO, "Cannot enter shell directory ",
+                        directory, errno);
+      _exit(126);
+    }
+    execl(path, path, "-i", (char *)NULL);
+    shell_child_error(STDERR_FILENO, "Cannot execute user shell ", path, errno);
+    _exit(127);
+  }
+  if (child < 0) {
+    failure = errno;
+    goto done;
+  }
+  close(slave);
+  slave = -1;
+  waiter->pid = child;
+  waiter->fd = pipefd[1];
+  waiter->raw_status = 1;
+  failure = pthread_create(&thread, NULL, shell_wait, waiter);
+  if (failure != 0)
+    goto done;
+  launched = 1;
+  waiter = NULL;
+  pipefd[1] = -1;
+  action.sa_handler = handoff_winch;
+  handoff_resize = 0;
+  if (sigaction(SIGWINCH, &action, &previous) != 0) {
+    failure = errno;
+    goto done;
+  }
+  signal_set = 1;
+  raw = saved;
+  cfmakeraw(&raw);
+  if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0) {
+    failure = errno;
+    goto done;
+  }
+  raw_set = 1;
+  if (fcntl(master, F_SETFL, O_NONBLOCK) < 0) {
+    failure = errno;
+    goto done;
+  }
+  handoff_resize = 1;
+  while (!eof || !exited) {
+    if (handoff_resize) {
+      handoff_resize = 0;
+      if (ioctl(STDIN_FILENO, TIOCGWINSZ, &geometry) == 0)
+        (void)ioctl(master, TIOCSWINSZ, &geometry);
+    }
+    fds[0].fd = eof ? -1 : master;
+    fds[0].events = POLLIN | (input_offset < input_length ? POLLOUT : 0);
+    fds[1].fd = input_open && !exited && !eof && input_offset == input_length
+                    ? STDIN_FILENO
+                    : -1;
+    fds[1].events = POLLIN;
+    fds[2].fd = exited ? -1 : pipefd[0];
+    fds[2].events = POLLIN;
+    /* A detached background job may retain the slave after its shell exits.
+     * Drain queued bytes, then release the handoff instead of waiting for it.
+     */
+    ready = poll(fds, 3U, exited ? 0 : -1);
+    if (ready == 0)
+      break;
+    if (ready < 0) {
+      if (errno == EINTR)
+        continue;
+      failure = errno;
+      break;
+    }
+    if ((fds[0].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
+      n = read(master, buffer, sizeof(buffer));
+      if (n > 0) {
+        rc = output(context, buffer, (size_t)n, error);
+        if (rc != CAI_OK)
+          break;
+        if (handoff_write(STDOUT_FILENO, buffer, (size_t)n) != 0) {
+          failure = errno;
+          break;
+        }
+      } else if (n == 0 || (n < 0 && errno == EIO))
+        eof = 1;
+      else if (errno != EINTR && errno != EAGAIN) {
+        failure = errno;
+        break;
+      }
+    }
+    if ((fds[0].revents & POLLOUT) != 0 && input_offset < input_length) {
+      n = write(master, input + input_offset, input_length - input_offset);
+      if (n > 0)
+        input_offset += (size_t)n;
+      else if (n < 0 && errno != EINTR && errno != EAGAIN && errno != EIO) {
+        failure = errno;
+        break;
+      }
+    }
+    if (fds[2].revents != 0) {
+      n = read(pipefd[0], status, sizeof(*status));
+      if (n == (ssize_t)sizeof(*status)) {
+        exited = 1;
+        if (*status < 0) {
+          failure = -*status;
+          break;
+        }
+      } else if (n >= 0 || errno != EINTR) {
+        failure = EIO;
+        break;
+      }
+    }
+    if (fds[1].revents != 0 && !exited && !eof) {
+      n = read(STDIN_FILENO, input, sizeof(input));
+      if (n == 0) {
+        input_open = 0;
+        (void)kill(-child, SIGHUP);
+      } else if (n > 0) {
+        input_offset = 0U;
+        input_length = (size_t)n;
+      } else if (errno != EINTR) {
+        failure = errno;
+        break;
+      }
+    }
+  }
+done:
+  if (child > 0 && !exited)
+    (void)kill(-child, SIGKILL);
+  if (launched)
+    pthread_join(thread, NULL);
+  else if (child > 0) {
+    (void)kill(child, SIGKILL);
+    while (waitpid(child, &wait_status, 0) < 0 && errno == EINTR) {
+    }
+  }
+  free(waiter);
+  if (master >= 0)
+    close(master);
+  if (slave >= 0)
+    close(slave);
+  if (pipefd[0] >= 0)
+    close(pipefd[0]);
+  if (pipefd[1] >= 0)
+    close(pipefd[1]);
+  if (raw_set && tcsetattr(STDIN_FILENO, TCSANOW, &saved) != 0 && failure == 0)
+    failure = errno;
+  if (signal_set && sigaction(SIGWINCH, &previous, NULL) != 0 && failure == 0)
+    failure = errno;
+  return rc != CAI_OK   ? rc
+         : failure != 0 ? shell_error(error, "interactive PTY handoff", failure)
+                        : CAI_OK;
 }
 
 void cai_cli_shell_cancel(cai_cli_shell *shell) {
@@ -190,6 +429,7 @@ int cai_cli_shell_start(cai_cli_shell *shell, const char *command,
   }
   waiter->pid = pid;
   waiter->fd = notification[1];
+  waiter->raw_status = 0;
   saved = pthread_create(&shell->waiter, NULL, shell_wait, waiter);
   if (saved != 0) {
     free(waiter);

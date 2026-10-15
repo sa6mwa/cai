@@ -51,6 +51,35 @@ static int storage_options(void) {
   return 0;
 }
 
+static int capture_options(void) {
+  char flag0[] = "cai", flag1[] = "--shell-context-max-lines";
+  char flag2[] = "--shell-context-max-bytes", prompt[] = "-i";
+  char invalid[][32] = {"0", "-1", "+2", "2x", "", "184467440737095516160"};
+  char value[] = "17", bytes[] = "1024", instruction[] = "real instruction";
+  char *args[7];
+  cai_cli_options options;
+  size_t i;
+  args[0] = flag0;
+  args[1] = flag1;
+  args[2] = value;
+  args[3] = flag2;
+  args[4] = bytes;
+  args[5] = prompt;
+  args[6] = instruction;
+  if (cai_cli_parse_options(7, args, &options) != 1 ||
+      options.shell_context_max_lines != 17U ||
+      options.shell_context_max_bytes != 1024U ||
+      strcmp(cai_cli_instruction_at(&options, 0U), instruction) != 0 ||
+      cai_cli_instruction_at(&options, 1U) != NULL)
+    return 1;
+  for (i = 0U; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+    args[2] = invalid[i];
+    if (cai_cli_parse_options(3, args, &options) != -1)
+      return 1;
+  }
+  return 0;
+}
+
 static int tool_options(void) {
   cai_cli_options options;
   char arg0[] = "cai", arg1[] = "-i", arg2[] = "actual prompt";
@@ -370,5 +399,6 @@ int main(void) {
       cai_cli_parse_options(3, invalid_legacy_instructions, &options) != -1 ||
       cai_cli_parse_options(3, invalid_legacy_workspace, &options) != -1)
     return 1;
-  return shell_options() || storage_options() || tool_options();
+  return shell_options() || storage_options() || tool_options() ||
+         capture_options();
 }

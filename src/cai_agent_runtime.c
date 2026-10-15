@@ -7,6 +7,7 @@
 #include <cai/tools/view_image.h>
 
 #include "cai_internal.h"
+#include "cai_terminal_text.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -600,8 +601,8 @@ struct cai_agent_runtime {
   int shell_context_applying;
   int shell_context_failed;
   char *user_shell_command;
-  unsigned char user_shell_output[32768];
-  size_t user_shell_length;
+  cai_terminal_text user_shell_output;
+  size_t shell_context_max_lines, shell_context_max_bytes;
   unsigned long long user_shell_bytes;
   int user_shell_shared;
   size_t goal_control_limit;
@@ -3129,10 +3130,9 @@ static int cai_runtime_refresh_goal_projection(cai_agent_runtime *runtime,
   double context_percent;
 
   goal = CAI_SESSION_IMPL(runtime->session);
-  context_window = runtime->model_context_window;
-  if (context_window <= 0LL) {
-    context_window = runtime->session->context_window_tokens(runtime->session);
-  }
+  context_window = runtime->session->context_window_tokens(runtime->session);
+  if (context_window <= 0LL)
+    context_window = runtime->model_context_window;
   context_available = goal->has_context_usage && context_window > 0LL;
   context_percent = context_available
                         ? (double)goal->context_usage.total_tokens * 100.0 /
@@ -3912,17 +3912,11 @@ static int cai_runtime_compact_before_request(cai_agent_runtime *runtime,
   }
   chat = CAI_SESSION_CLIENT_IMPL(runtime->session)->api_protocol ==
          CAI_API_PROTOCOL_CHAT_COMPLETIONS;
+  context_window = cai_session_context_window_tokens(runtime->session);
+  if (context_window <= 0LL)
+    context_window = runtime->model_context_window;
   limit = runtime->model_auto_compact_token_limit;
-  if (limit <= 0LL) {
-    limit = cai_model_auto_compact_token_limit(
-        CAI_AGENT_IMPL(runtime->agent)->model);
-  }
-  context_window = runtime->model_context_window;
-  if (context_window <= 0LL) {
-    context_window =
-        cai_model_context_window_tokens(CAI_AGENT_IMPL(runtime->agent)->model);
-  }
-  if (chat && limit <= 0LL && context_window > 0LL) {
+  if (limit <= 0LL && context_window > 0LL) {
     limit = (context_window * 80LL) / 100LL;
   }
   estimated_history_tokens = history_bytes > (size_t)LLONG_MAX / 3U
@@ -5275,9 +5269,7 @@ static void *cai_runtime_worker(void *context) {
                                  &error);
     }
     if (rc == CAI_OK)
-      rc = runtime->history_compaction_pending
-               ? CAI_OK
-               : cai_runtime_capture_active_model_metadata(runtime, &error);
+      rc = cai_runtime_capture_active_model_metadata(runtime, &error);
     if (rc == CAI_OK) {
       rc = cai_runtime_compact_pending_history(runtime, &error);
     }
@@ -6545,10 +6537,6 @@ static int cai_runtime_capture_active_model_metadata(cai_agent_runtime *runtime,
   char *hash;
   int rc;
 
-  if (runtime->model_compaction_hash != NULL &&
-      runtime->model_context_window != 0LL) {
-    return CAI_OK;
-  }
   if (CAI_CLIENT_IMPL(runtime->client)->chatgpt_auth == NULL &&
       !cai_client_has_live_model_catalog(runtime->client) &&
       CAI_CLIENT_IMPL(runtime->client)->fallback_catalog == NULL) {
@@ -6575,11 +6563,14 @@ static int cai_runtime_capture_active_model_metadata(cai_agent_runtime *runtime,
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to retain active model metadata");
   }
-  if (runtime->model_compaction_hash == NULL) {
+  /* Active limits can refresh before replay compaction, but the hash still
+   * describes the retained history until compaction succeeds. */
+  if (runtime->model_compaction_hash == NULL &&
+      !runtime->history_compaction_pending) {
     runtime->model_compaction_hash = hash;
     hash = NULL;
   }
-  if (runtime->model_context_window == 0LL && current != NULL) {
+  if (current != NULL && current->context_window_tokens > 0LL) {
     runtime->model_context_window = current->context_window_tokens;
     runtime->model_auto_compact_token_limit = current->auto_compact_token_limit;
   }
@@ -6648,6 +6639,10 @@ static int cai_runtime_compact_pending_history(cai_agent_runtime *runtime,
                       : runtime->model_compaction_hash;
   previous_context_window = previous != NULL ? previous->context_window_tokens
                                              : runtime->model_context_window;
+  if (session->state_request_model != NULL && session->state_model != NULL &&
+      strcmp(session->state_request_model, session->state_model) == 0 &&
+      session->state_context_window_tokens > 0LL)
+    previous_context_window = session->state_context_window_tokens;
   should_compact = history_bytes != 0U && previous_hash != NULL &&
                    current_hash != NULL &&
                    strcmp(previous_hash, current_hash) != 0;
@@ -6669,7 +6664,8 @@ static int cai_runtime_compact_pending_history(cai_agent_runtime *runtime,
                  runtime->model_compaction_hash);
     runtime->model_compaction_hash = current_hash;
     current_hash = NULL;
-    runtime->model_context_window = current_context_window;
+    if (current_context_window > 0LL)
+      runtime->model_context_window = current_context_window;
     runtime->model_auto_compact_token_limit = current_auto_compact_token_limit;
     runtime->history_compaction_pending = 0;
   }
@@ -6765,6 +6761,8 @@ static int cai_runtime_model_switch_metadata(
 void cai_agent_runtime_config_init(cai_agent_runtime_config *config) {
   if (config != NULL) {
     memset(config, 0, sizeof(*config));
+    config->shell_context_max_lines = 5000U;
+    config->shell_context_max_bytes = 4U * 1024U * 1024U;
   }
 }
 
@@ -6809,6 +6807,12 @@ int cai_agent_runtime_open(cai_client *client,
         error, CAI_ERR_INVALID,
         "agent session identifier must contain 1 to 128 bytes");
   }
+  if ((config->shell_context_max_bytes != 0U &&
+       config->shell_context_max_bytes < 4U) ||
+      config->shell_context_max_bytes > (size_t)-1 / 2U)
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "shell context byte bound must be zero or >=4 and fit memory");
   if (config->resume_session_id != NULL &&
       (config->resume_session_id[0] == '\0' ||
        strnlen(config->resume_session_id, CAI_AGENT_SESSION_ID_MAX) >=
@@ -6878,6 +6882,12 @@ int cai_agent_runtime_open(cai_client *client,
   combined_instructions = NULL;
   runtime->owner_thread = pthread_self();
   runtime->client = client;
+  runtime->shell_context_max_lines = config->shell_context_max_lines != 0U
+                                         ? config->shell_context_max_lines
+                                         : 5000U;
+  runtime->shell_context_max_bytes = config->shell_context_max_bytes != 0U
+                                         ? config->shell_context_max_bytes
+                                         : 4U * 1024U * 1024U;
   runtime->state = CAI_AGENT_IDLE;
   runtime->event_limit = config->event_queue_limit != 0U
                              ? config->event_queue_limit
@@ -7854,6 +7864,8 @@ static int cai_runtime_set_model_internal(
   old_history_compaction_pending = runtime->history_compaction_pending;
   agent->model = next_model;
   runtime->smith_model = next_smith_model;
+  if (model_changed)
+    runtime->model_context_window = next_context_window;
   if (!preserve_history_compatibility) {
     runtime->model_compaction_hash = next_compaction_hash;
     runtime->model_context_window = next_context_window;
@@ -10744,15 +10756,19 @@ int cai_agent_runtime_user_shell_begin(cai_agent_runtime *runtime,
         error, CAI_ERR_LIMIT,
         "shell context is unavailable; wait or reopen the session");
   } else {
-    rc = cai_runtime_append_journal_event_locked(runtime, "user_shell_started",
-                                                 copy, NULL, error);
+    rc = cai_terminal_text_init(&runtime->user_shell_output,
+                                runtime->shell_context_max_lines,
+                                runtime->shell_context_max_bytes, error);
+    if (rc == CAI_OK)
+      rc = cai_runtime_append_journal_event_locked(
+          runtime, "user_shell_started", copy, NULL, error);
     if (rc == CAI_OK) {
       runtime->user_shell_command = copy;
       runtime->user_shell_shared = share_with_model != 0;
-      runtime->user_shell_length = 0U;
       runtime->user_shell_bytes = 0U;
       copy = NULL;
-    }
+    } else
+      cai_terminal_text_close(&runtime->user_shell_output);
   }
   pthread_mutex_unlock(&runtime->lock);
   cai_free_mem(NULL, copy);
@@ -10765,7 +10781,7 @@ int cai_agent_runtime_user_shell_write(cai_agent_runtime *runtime,
   static const char hex[] = "0123456789abcdef";
   const unsigned char *data = bytes;
   char encoded[8193];
-  size_t offset, count, keep, i;
+  size_t offset, count, i;
   int rc = cai_runtime_owner(runtime, error);
   if (rc != CAI_OK)
     return rc;
@@ -10792,66 +10808,13 @@ int cai_agent_runtime_user_shell_write(cai_agent_runtime *runtime,
     rc = cai_runtime_append_journal_event_locked(
         runtime, "user_shell_output_hex", encoded, NULL, error);
     if (rc == CAI_OK) {
-      keep = sizeof(runtime->user_shell_output) - runtime->user_shell_length;
-      if (keep > count)
-        keep = count;
-      memcpy(runtime->user_shell_output + runtime->user_shell_length,
-             data + offset, keep);
-      runtime->user_shell_length += keep;
+      cai_terminal_text_write(&runtime->user_shell_output, data + offset,
+                              count);
       runtime->user_shell_bytes += (unsigned long long)count;
     }
   }
   pthread_mutex_unlock(&runtime->lock);
   return rc;
-}
-
-/* Escape controls and malformed UTF-8 in model context, preserving readable
- * text. The durable raw stream is independent of this bounded model copy. */
-static size_t cai_runtime_shell_plain(const unsigned char *data, size_t length,
-                                      char *out, size_t capacity) {
-  static const char hex[] = "0123456789abcdef";
-  size_t i = 0U, n = 0U, count, j;
-  unsigned long scalar;
-  while (i < length) {
-    unsigned char ch = data[i];
-    count = ch < 128U                  ? 1U
-            : ch >= 194U && ch <= 223U ? 2U
-            : ch >= 224U && ch <= 239U ? 3U
-            : ch >= 240U && ch <= 244U ? 4U
-                                       : 0U;
-    scalar = count > 1U ? ch & ((1U << (7U - count)) - 1U) : ch;
-    if (count > length - i)
-      count = 0U;
-    for (j = 1U; j < count; j++) {
-      if ((data[i + j] & 192U) != 128U) {
-        count = 0U;
-        break;
-      }
-      scalar = (scalar << 6) | (data[i + j] & 63U);
-    }
-    if ((count == 2U && scalar < 128UL) || (count == 3U && scalar < 2048UL) ||
-        (count == 4U && scalar < 65536UL) || scalar > 1114111UL ||
-        (scalar >= 55296UL && scalar <= 57343UL) ||
-        (count == 1U && ((ch < 32U && ch != '\n' && ch != '\t') || ch == 127U)))
-      count = 0U;
-    if (count == 0U) {
-      if (capacity - n < 5U)
-        break;
-      out[n++] = '\\';
-      out[n++] = 'x';
-      out[n++] = hex[ch >> 4];
-      out[n++] = hex[ch & 15U];
-      i++;
-    } else {
-      if (capacity - n <= count)
-        break;
-      memcpy(out + n, data + i, count);
-      n += count;
-      i += count;
-    }
-  }
-  out[n] = '\0';
-  return i;
 }
 
 int cai_agent_runtime_user_shell_finish(cai_agent_runtime *runtime,
@@ -10860,9 +10823,9 @@ int cai_agent_runtime_user_shell_finish(cai_agent_runtime *runtime,
                                         cai_error *error) {
   cai_runtime_input_node *node = NULL;
   char *text = NULL;
-  char plain[32769];
+  char *plain = NULL;
   char suffix[160];
-  size_t consumed, capacity;
+  size_t capacity;
   unsigned long long sequence = 0U;
   int rc = cai_runtime_owner(runtime, error);
   if (rc != CAI_OK)
@@ -10877,15 +10840,16 @@ int cai_agent_runtime_user_shell_finish(cai_agent_runtime *runtime,
     rc = cai_set_error(error, CAI_ERR_LIMIT, "shell context queue is full");
     goto done;
   }
-  consumed =
-      cai_runtime_shell_plain(runtime->user_shell_output,
-                              runtime->user_shell_length, plain, sizeof(plain));
+  rc = cai_terminal_text_finish(&runtime->user_shell_output, &plain, error);
+  if (rc != CAI_OK)
+    goto done;
   suffix[0] = '\0';
-  if ((unsigned long long)consumed < runtime->user_shell_bytes)
-    snprintf(suffix, sizeof(suffix),
-             "\n[Output truncated for model context; %llu raw bytes total. "
-             "Full output is retained in the session journal.]\n",
-             runtime->user_shell_bytes);
+  if (runtime->user_shell_output.truncated)
+    snprintf(
+        suffix, sizeof(suffix),
+        "[Earlier output truncated for model context; %llu raw bytes total. "
+        "Full output is retained in the session journal.]\n",
+        runtime->user_shell_bytes);
   capacity = strlen(runtime->user_shell_command) + strlen(plain) +
              strlen(suffix) + 256U;
   text = cai_alloc(NULL, capacity);
@@ -10898,7 +10862,7 @@ int cai_agent_runtime_user_shell_finish(cai_agent_runtime *runtime,
            "Exit code: %d\nDuration: %llu.%03llu seconds\nOutput:\n%s%s"
            "\n</result>\n</user_shell_command>",
            runtime->user_shell_command, exit_code, duration_ms / 1000U,
-           duration_ms % 1000U, plain, suffix);
+           duration_ms % 1000U, suffix, plain);
   if (runtime->user_shell_shared) {
     node = cai_alloc(NULL, sizeof(*node));
     if (node == NULL) {
@@ -10957,12 +10921,14 @@ int cai_agent_runtime_user_shell_finish(cai_agent_runtime *runtime,
     }
     cai_free_mem(NULL, runtime->user_shell_command);
     runtime->user_shell_command = NULL;
+    cai_terminal_text_close(&runtime->user_shell_output);
     pthread_cond_broadcast(&runtime->condition);
   }
 done:
   pthread_mutex_unlock(&runtime->lock);
   cai_runtime_input_node_free(node);
   cai_free_mem(NULL, text);
+  cai_free_mem(NULL, plain);
   return rc;
 }
 
@@ -11633,6 +11599,7 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
     cai_runtime_input_node_free(input);
   }
   cai_free_mem(NULL, runtime->user_shell_command);
+  cai_terminal_text_close(&runtime->user_shell_output);
   while (runtime->goal_control_head != NULL) {
     cai_runtime_goal_control_node *control = runtime->goal_control_head;
 

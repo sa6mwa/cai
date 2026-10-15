@@ -1,4 +1,6 @@
 local cai = require("cai")
+assert(not pcall(cai.open, {api_protocol="unsupported"}),
+  "unknown wire protocols must be rejected")
 local pslog = require("pslog")
 local native_store_test = require("cai_native_todo_store_test")
 
@@ -1244,6 +1246,9 @@ do
     },
   }))
   assert_eq(custom_runtime:state(), "idle", "Lua custom preset initial state")
+  local initial_metrics = assert_ok(custom_runtime:metrics())
+  assert(type(initial_metrics.context_window_tokens) == "number")
+  assert(initial_metrics.turn_active == false and initial_metrics.has_last_turn == false)
   assert_ok(custom_runtime:user_shell_begin("lua-recorded-shell", false))
   assert_ok(custom_runtime:user_shell_write("literal output\0\255"))
   assert_ok(custom_runtime:user_shell_finish(7, 1250))

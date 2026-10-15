@@ -128,6 +128,7 @@ typedef struct cai_session_state_doc {
   long long version;
   char *model;
   char *model_compaction_hash;
+  long long context_window_tokens;
   char *request_model;
   char *reasoning_effort;
   char *reasoning_summary;
@@ -180,6 +181,8 @@ static const lonejson_field cai_session_state_fields[] = {
                                           "model"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(
         cai_session_state_doc, model_compaction_hash, "model_compaction_hash"),
+    LONEJSON_FIELD_I64(cai_session_state_doc, context_window_tokens,
+                       "context_window_tokens"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc, request_model,
                                           "request_model"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc,
@@ -730,7 +733,8 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
     cai_agent_destroy(agent);
     return cai_set_error(error, CAI_ERR_NOMEM, "failed to allocate agent");
   }
-  if (impl->auto_compact && impl->auto_compact_token_limit <= 0LL) {
+  if (impl->auto_compact && impl->auto_compact_token_limit <= 0LL &&
+      !cai_client_has_live_model_catalog(client)) {
     cai_agent_destroy(agent);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "model has unknown context window; set "
@@ -742,7 +746,8 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "compact threshold percent must be 1..95");
   }
-  if (impl->auto_compact && impl->auto_compact_token_limit < 1000LL) {
+  if (impl->auto_compact && impl->auto_compact_token_limit > 0LL &&
+      impl->auto_compact_token_limit < 1000LL) {
     cai_agent_destroy(agent);
     return cai_set_error(error, CAI_ERR_INVALID,
                          "compact threshold must be at least 1000 tokens");
@@ -6811,11 +6816,19 @@ int cai_session_close_with_usage(cai_session *session,
 }
 
 long long cai_session_context_window_tokens(const cai_session *session) {
+  long long window;
+  const cai_session_impl *saved;
   if (session == NULL || CAI_SESSION_IMPL(session)->agent == NULL) {
     return 0LL;
   }
-  return cai_client_model_context_window(
+  window = cai_client_model_context_window(
       CAI_SESSION_CLIENT(session), CAI_SESSION_AGENT_IMPL(session)->model);
+  saved = CAI_SESSION_IMPL(session);
+  if (window <= 0LL && saved->state_request_model != NULL &&
+      strcmp(saved->state_request_model,
+             CAI_SESSION_AGENT_IMPL(session)->model) == 0)
+    window = saved->state_context_window_tokens;
+  return window;
 }
 
 long long cai_session_auto_compact_token_limit(const cai_session *session) {
@@ -7253,6 +7266,7 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
   doc.model_compaction_hash =
       CAI_SESSION_IMPL(session)->state_model_compaction_hash;
   doc.request_model = CAI_SESSION_AGENT_IMPL(session)->model;
+  doc.context_window_tokens = cai_session_context_window_tokens(session);
   doc.reasoning_effort = CAI_SESSION_AGENT_IMPL(session)->reasoning_effort;
   doc.reasoning_summary = CAI_SESSION_AGENT_IMPL(session)->reasoning_summary;
   doc.preset_name = CAI_SESSION_IMPL(session)->state_preset_name;
@@ -7448,6 +7462,11 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
                        "unsupported session state version");
     goto done;
   }
+  if (doc.context_window_tokens < 0LL) {
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "session state has invalid context window");
+    goto done;
+  }
   if (doc.previous_response_id != NULL && doc.conversation_id != NULL) {
     rc = cai_set_error(error, CAI_ERR_INVALID,
                        "session state has multiple continuation handles");
@@ -7620,6 +7639,8 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
                  CAI_SESSION_IMPL(session)->state_model_compaction_hash);
     CAI_SESSION_IMPL(session)->state_model = next_state_model;
+    CAI_SESSION_IMPL(session)->state_context_window_tokens =
+        doc.context_window_tokens;
     CAI_SESSION_IMPL(session)->state_model_compaction_hash =
         next_state_model_compaction_hash;
     next_state_model = NULL;

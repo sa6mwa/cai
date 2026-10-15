@@ -678,6 +678,12 @@ typedef struct cai_agent_runtime_config {
   cai_searxng_tool_config searxng;
   int enable_revgeo;
   cai_revgeo_tool_config revgeo;
+  /** Retained sanitized shell context: zero selects 5000 logical lines. */
+  size_t shell_context_max_lines;
+  /** Retained UTF-8 bytes: zero selects 4 MiB, minimum explicit value 4.
+   * Old complete lines are discarded first; an oversized line keeps its
+   * scalar-aligned suffix. Raw shell journal records remain independent. */
+  size_t shell_context_max_bytes;
 } cai_agent_runtime_config;
 
 /** Initialize a zero-defaultable runtime configuration. */
@@ -833,7 +839,9 @@ int cai_agent_runtime_user_shell_begin(cai_agent_runtime *runtime,
                                        int share_with_model, cai_error *error);
 /** Stream raw command output into the durable journal, in bounded chunks.
  * Binary bytes are preserved as hex journal records. No complete output is
- * buffered: only the first 32768 bytes are retained for model context. A
+ * buffered: a bounded sanitized tail is retained for model context. ANSI/VT
+ * controls are consumed incrementally; CR/backspace and horizontal editing
+ * update the current logical line. This is not a full screen emulator. A
  * successful return durably acknowledges every supplied byte. On failure,
  * an already acknowledged prefix may remain; do not retry the same chunk. */
 int cai_agent_runtime_user_shell_write(cai_agent_runtime *runtime,
@@ -841,11 +849,11 @@ int cai_agent_runtime_user_shell_write(cai_agent_runtime *runtime,
                                        cai_error *error);
 /** Complete the recording. Shared results become tagged user-role context at
  * the next safe boundary, including while idle, without a model request,
- * steering event or goal turn. Invalid UTF-8/control bytes in the bounded
- * model copy are escaped; truncation is explicit. Full raw output stays in
- * the journal. Completion survives restart; execution is never replayed.
- * A failed completion may be retried. Close discards an unfinished recording
- * but retains its acknowledged journal bytes. duration_ms is monotonic time. */
+ * steering event or goal turn. Invalid UTF-8 is replaced; control strings
+ * and non-text controls are removed; truncation is explicit. Raw output stays
+ * in the journal. Completion survives restart; execution is never replayed. A
+ * failed completion may be retried. Close discards an unfinished recording but
+ * retains its acknowledged journal bytes. duration_ms is monotonic time. */
 int cai_agent_runtime_user_shell_finish(cai_agent_runtime *runtime,
                                         int exit_code,
                                         unsigned long long duration_ms,

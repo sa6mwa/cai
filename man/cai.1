@@ -212,9 +212,20 @@ Validate a JSONL export, assign a new ID in the current directory, and exit.
 Failed imports are not published in conversation lists.
 .TP
 .B \-\-no-shell-context
-Keep future !COMMAND results out of model context. Commands still execute with
+Keep future !COMMAND, !sh and /shell results out of model context.
+The positive --shell-context enables sharing. CAI_SHELL_CONTEXT and
+[ui] shell_context supply startup defaults. Commands still execute with
 normal user permissions, display literal output and save full raw history.
 Earlier shared results remain in context.
+.TP
+.BI \-\-shell-context-max-lines " N"
+Retain the last N sanitized logical lines of shell output (default 5000).
+Overrides CAI_SHELL_CONTEXT_MAX_LINES and [runtime] shell_context_max_lines.
+.TP
+.BI \-\-shell-context-max-bytes " N"
+Bound retained sanitized UTF-8 bytes (default 4194304, minimum 4).
+Overrides CAI_SHELL_CONTEXT_MAX_BYTES and [runtime] shell_context_max_bytes.
+Old complete lines are discarded first; oversized lines retain a bounded suffix.
 .TP
 .BR \-p , " " \-\-provider " " NAME
 Select
@@ -417,8 +428,10 @@ With no arguments, hand the real terminal to $SHELL -i, falling back to
 and an idle agent. These commands cannot be queued or steered; a busy draft
 remains editable. The shell uses normal user permissions in the workspace.
 CAI restores terminal ownership, prompt state and geometry after exit, even
-following a screen clear or resize. Shell activity is not captured, replayed,
-or shared with the model. Logs record the executable and exit metadata.
+following a screen clear or resize. A real PTY relays output and foreground
+job control. Output is captured through libcai, with the same sharing controls
+and retained context bounds as !COMMAND. Replay never executes the shell.
+Logs record the executable, output and exit metadata.
 Launch failures and nonzero exits report details and return to CAI.
 .TP
 .BI ! COMMAND
@@ -432,7 +445,10 @@ Ordinary prompts entered while it runs are durably queued until completion.
 Full raw output is journaled in bounded chunks. Resume replays it without
 execution. Shared results become tagged user-role context, with exit code and
 duration, at a safe model/tool boundary without starting a model turn. At most
-32 KiB of output is retained for inference, with an explicit truncation marker;
+5000 logical lines and 4 MiB of text are retained for inference by default,
+with an explicit truncation marker. ANSI/VT colors and control strings are
+removed before buffering; carriage return, backspace and horizontal editing
+update the current logical line. This is not a full screen emulator;
 JSONL exports preserve the complete raw stream. Markdown exports use retained
 model context. Slash commands echo as plain $ input rows; normal user prompts
 keep their > prefix. The gray ! message line receives ANSI-free libmdf text.

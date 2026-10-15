@@ -748,10 +748,9 @@ static int cai_smith_load_global_instruction_file(
         *out != NULL ? (pslog_uint64)strlen(*out) : 0U;
     for (i = 0U; i < 3U; i++)
       fields[i].key_len = strlen(fields[i].key);
-    logger->info(logger,
-                 *out != NULL ? "Global AGENTS.md loaded"
-                              : "Global AGENTS.md absent",
-                 fields, 3U);
+    logger->info(
+        logger, fd >= 0 ? "Global AGENTS.md loaded" : "Global AGENTS.md absent",
+        fields, 3U);
   }
   return rc;
 }
@@ -922,6 +921,10 @@ static int cai_smith_load_repository_instructions(
     if (rc != CAI_OK)
       return rc;
   } else {
+    if (logger != NULL && logger->info != NULL)
+      logger->info(logger,
+                   "Codex AGENTS.md compatibility disabled by startup settings",
+                   NULL, 0U);
     rc = cai_smith_load_workspace_instruction_file(
         allocator, config->workspace_directory, &part, error);
     if (rc == CAI_OK)

@@ -3,6 +3,7 @@ source "$(dirname "$0")/cli_test_common.sh"
 peer_start
 export CAI_TEST_TERMINAL_STDERR=1
 export SHELL="$root/user shell" CAI_TEST_SHELL_LAUNCHES="$root/launches"
+export CAI_TEST_BACKGROUND_PID="$root/background-pid"
 cat >"$SHELL" <<'SH'
 #!/bin/sh
 if [ "$1" != -i ]; then exec /bin/sh "$@"; fi
@@ -14,21 +15,30 @@ SH
 chmod 700 "$SHELL"
 canonical() { [[ -s "$term/tty" && $(cut -d' ' -f1 "$term/tty") == "$1" ]]; }
 terminal_start -N
-send '/shell\r'; expect SHELL_HANDOFF_READY; wait_for canonical 1
+send '/shell\r'; expect SHELL_HANDOFF_READY; canonical 0
 resize 48
-send 'touch ../normal-permissions; printf UNSHARED_TERMINAL_OUTPUT; exit\r'
-wait_for canonical 0
+send 'stty size; touch ../normal-permissions; printf SHARED_TERMINAL_OUTPUT; exit\r'
+expect 'Shell exited 0.'; canonical 0
+expect '30 48'
 [[ -f "$root/normal-permissions" && $(requests) == 0 ]]
 plan '{"plan":["POST HANDOFF ANSWER\n\nword word word word word word word word word word word word word word word word word word word word\n\n"]}'
 send 'continue after the handoff\r'; expect 'POST HANDOFF ANSWER'; expect 'Worked for'
-absent "$root/peer/requests.jsonl" UNSHARED_TERMINAL_OUTPUT
-absent "$root/peer/requests.jsonl" '<user_shell_command>'
+contains "$root/peer/requests.jsonl" SHARED_TERMINAL_OUTPUT
+contains "$root/peer/requests.jsonl" '<user_shell_command>'
+# Ctrl-C reaches the foreground job on the inner PTY and leaves its shell
+# usable; it does not cancel CAI or leak a sleeping command.
+send '!sh\r'; expect SHELL_HANDOFF_READY
+send 'printf INTERRUPT_READY; sleep 60\r'; expect INTERRUPT_READY
+send '\003'; expect '$'
+send 'printf AFTER_INTERRUPT; exit\r'; expect 'Shell exited 0.'
 send '\022/shell\r'; expect '/shell'; canonical 0
-[[ $(wc -c <"$root/launches") == 1 ]]
-send '\r'; wait_for canonical 1
+[[ $(wc -c <"$root/launches") == 2 ]]
+send '\r'; expect SHELL_HANDOFF_READY; canonical 0
 send 'exit 7\r'; expect 'interactive shell exited 7'; wait_for canonical 0
-send '\025!sh\r'; wait_for canonical 1
+send '\025!sh\r'; expect SHELL_HANDOFF_READY; canonical 0
 send 'kill -KILL $$\r'; expect 'interactive shell terminated by signal 9'; wait_for canonical 0
+send '!sh\r'; expect SHELL_HANDOFF_READY
+send 'exit 137\r'; expect 'interactive shell exited 137'
 plan '{"plan":[{"text":"BusyHandoffDone","pause":true}]}'
 send 'busy turn\r'; expect 'STREAM in flight'
 count=$(wc -c <"$root/launches")
@@ -36,6 +46,11 @@ send '/shell\r'; expect 'Shell is available only between turns'
 send '\t\033\r'; expect 'Use Enter to open the shell'
 [[ $(wc -c <"$root/launches") == "$count" ]]
 send '\025'; release; expect BusyHandoffDone
+expect 'Worked for'
+send '!sh\r'; expect SHELL_HANDOFF_READY
+send 'sleep 60 & echo $! > "$CAI_TEST_BACKGROUND_PID"; exit\r'
+expect 'Shell exited 0.'
+if [[ -s "$root/background-pid" ]]; then kill "$(cat "$root/background-pid")" 2>/dev/null || true; fi
 terminal_close
 export SHELL="$root/missing; touch injected"
 terminal_start -N
@@ -44,8 +59,8 @@ terminal_close
 for fallback in unset empty; do
   if [[ "$fallback" == unset ]]; then unset SHELL; else export SHELL=; fi
   terminal_start -N
-  send '!sh\r'; wait_for canonical 1
-  send 'touch fallback-shell; exit\r'; wait_for canonical 0; [[ -f "$work/fallback-shell" ]]
+  send '!sh\r'; expect '$'; canonical 0
+  send 'touch fallback-shell; exit\r'; expect 'Shell exited 0.'; canonical 0; [[ -f "$work/fallback-shell" ]]
   rm "$work/fallback-shell"; terminal_close
 done
 for command in /shell '!sh'; do

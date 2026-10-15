@@ -64,6 +64,8 @@ static int cai_lua_absindex(lua_State *L, int index) {
 
 int luaopen_cai(lua_State *L);
 static int cai_lua_push_usage(lua_State *L, const cai_token_usage *usage);
+static int cai_lua_push_accounting(lua_State *L,
+                                   const cai_usage_accounting *accounting);
 static int cai_lua_set_error_detail(cai_error *error, int code,
                                     const char *message, const char *detail);
 static int cai_lua_spooled_init(lonejson_spooled *out, cai_error *error);
@@ -2240,6 +2242,7 @@ static int cai_lua_open(lua_State *L) {
   pslog_lua_logger_ref logger_ref;
   cai_client *client;
   const char *chatgpt_auth_json;
+  const char *api_protocol;
   cai_lua_native_store *chatgpt_auth_store;
   cai_error error;
   int has_logger_ref;
@@ -2274,6 +2277,16 @@ static int cai_lua_open(lua_State *L) {
         L, 1, "metadata_provider", config.metadata_provider);
     config.model_metadata_json = cai_lua_opt_string_field(
         L, 1, "model_metadata_json", config.model_metadata_json);
+    api_protocol = cai_lua_opt_string_field(L, 1, "api_protocol", NULL);
+    if (api_protocol != NULL) {
+      if (strcmp(api_protocol, "responses") == 0)
+        config.api_protocol = CAI_API_PROTOCOL_RESPONSES;
+      else if (strcmp(api_protocol, "chat_completions") == 0)
+        config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
+      else
+        return luaL_error(L,
+                          "api_protocol must be responses or chat_completions");
+    }
     config.organization_id = cai_lua_opt_string_field(L, 1, "organization_id",
                                                       config.organization_id);
     config.project_id =
@@ -3759,6 +3772,8 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   config.session_scope = cai_lua_opt_string_field(L, 2, "session_scope", NULL);
   config.session_id = cai_lua_opt_string_field(L, 2, "session_id", NULL);
   config.resume_latest = cai_lua_opt_bool_field(L, 2, "resume_latest", 0);
+  config.resume_session_id =
+      cai_lua_opt_string_field(L, 2, "resume_session_id", NULL);
   config.disable_default_session_store =
       cai_lua_opt_bool_field(L, 2, "disable_default_session_store", 0);
   lua_getfield(L, 2, "session_store");
@@ -3778,6 +3793,10 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   lua_pop(L, 1);
   config.event_queue_limit =
       cai_lua_opt_size_field(L, 2, "event_queue_limit", 0U);
+  config.shell_context_max_lines =
+      cai_lua_opt_size_field(L, 2, "shell_context_max_lines", 0U);
+  config.shell_context_max_bytes =
+      cai_lua_opt_size_field(L, 2, "shell_context_max_bytes", 0U);
   config.steering_queue_limit =
       cai_lua_opt_size_field(L, 2, "steering_queue_limit", 0U);
   config.turn_queue_limit =
@@ -5274,6 +5293,40 @@ static int cai_lua_agent_runtime_state(lua_State *L) {
     return cai_lua_fail(L, rc, &error);
   }
   lua_pushstring(L, cai_lua_agent_runtime_state_name(state));
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_agent_runtime_metrics(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  cai_agent_runtime_metrics metrics;
+  cai_error error;
+  int rc;
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_get_metrics(self->ptr, &metrics, &error);
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK)
+    return cai_lua_fail(L, rc, &error);
+  lua_newtable(L);
+#define METRIC_INTEGER(name)                                                   \
+  lua_pushinteger(L, (lua_Integer)metrics.name);                               \
+  lua_setfield(L, -2, #name)
+#define METRIC_BOOL(name)                                                      \
+  lua_pushboolean(L, metrics.name != 0);                                       \
+  lua_setfield(L, -2, #name)
+  METRIC_INTEGER(context_window_tokens);
+  METRIC_INTEGER(context_used_tokens);
+  METRIC_BOOL(has_context_usage);
+  METRIC_BOOL(turn_active);
+  METRIC_INTEGER(turn_elapsed_ms);
+  METRIC_BOOL(has_last_turn);
+  METRIC_INTEGER(last_turn_duration_ms);
+  METRIC_INTEGER(last_turn_finished_unix_seconds);
+#undef METRIC_INTEGER
+#undef METRIC_BOOL
+  cai_lua_push_accounting(L, &metrics.session_usage);
+  lua_setfield(L, -2, "session_usage");
   cai_lua_error_cleanup(&error);
   return 1;
 }
@@ -11626,6 +11679,7 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"clear_goal", cai_lua_agent_runtime_clear_goal},
     {"pump", cai_lua_agent_runtime_pump},
     {"state", cai_lua_agent_runtime_state},
+    {"metrics", cai_lua_agent_runtime_metrics},
     {"session_id", cai_lua_agent_runtime_session_id},
     {"model", cai_lua_agent_runtime_model},
     {"export_markdown", cai_lua_agent_runtime_export_markdown},

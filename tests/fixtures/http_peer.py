@@ -120,6 +120,9 @@ class Peer(http.server.BaseHTTPRequestHandler):
             self.event('error', code='fixture_error', message=item['error'])
         elif chat:
             delta({}, 'tool_calls' if 'tool' in item else 'stop')
+            if config.get('usage'):
+                self.wfile.write(('data: ' + json.dumps({'id': 'chat-fixture', 'choices': [],
+                    'usage': config['usage']}) + '\n\n').encode())
             self.wfile.write(b'data: [DONE]\n\n')
         else:
             self.event('response.completed', response={'id': 'resp_fixture_' + str(time.monotonic_ns()),

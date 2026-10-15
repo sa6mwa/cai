@@ -67,6 +67,7 @@ typedef struct cai_cli_options {
   int image_generation;
   int terminal;
   int shell_context;
+  size_t shell_context_max_lines, shell_context_max_bytes;
   int review_subagent;
   int codex_agents_md;
   int verbosity;

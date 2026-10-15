@@ -1,6 +1,18 @@
 
 if(CAI_BUILD_TESTS)
   enable_testing()
+  add_executable(cai_context_metadata_test tests/context_metadata_test.c)
+  cai_link_internal_consumer(cai_context_metadata_test)
+  cai_configure_c_target(cai_context_metadata_test)
+  target_compile_options(cai_context_metadata_test PRIVATE -UNDEBUG)
+  add_test(NAME cai_context_metadata COMMAND cai_context_metadata_test)
+  set_tests_properties(cai_context_metadata PROPERTIES LABELS "unit;local" TIMEOUT 5)
+  add_executable(cai_terminal_text_test tests/terminal_text_test.c)
+  cai_link_internal_consumer(cai_terminal_text_test)
+  cai_configure_c_target(cai_terminal_text_test)
+  target_compile_options(cai_terminal_text_test PRIVATE -UNDEBUG)
+  add_test(NAME cai_terminal_text COMMAND cai_terminal_text_test)
+  set_tests_properties(cai_terminal_text PROPERTIES LABELS "unit;local" TIMEOUT 5)
   add_executable(cai_skill_metadata_test tests/skill_metadata_test.c)
   cai_link_internal_consumer(cai_skill_metadata_test)
   cai_configure_c_target(cai_skill_metadata_test)
@@ -1127,6 +1139,13 @@ if(CAI_BUILD_TESTS)
       ENVIRONMENT "${CAI_LUA_TEST_ENV}"
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT 3)
+    foreach(_cai_lua_context_protocol responses chat_completions)
+      add_test(NAME cai_lua_context_instructions_${_cai_lua_context_protocol}
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_context_instructions_test.sh"
+          "${CAI_LUA_EXECUTABLE}" "${_cai_lua_context_protocol}")
+      set_tests_properties(cai_lua_context_instructions_${_cai_lua_context_protocol}
+        PROPERTIES LABELS "unit;local;offline" ENVIRONMENT "${CAI_LUA_TEST_ENV}" TIMEOUT 20)
+    endforeach()
     add_test(NAME cai_lua_chrome
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/chrome_test.sh"
         lua "${CAI_LUA_EXECUTABLE}" "${CMAKE_CURRENT_BINARY_DIR}")

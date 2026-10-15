@@ -636,6 +636,7 @@ endif()
 set(CAI_SOURCES
   src/cai_agent.c
   src/cai_agent_runtime.c
+  src/cai_terminal_text.c
   src/cai_session_store.c
   src/cai_skills.c
   src/cai_skill_metadata.c

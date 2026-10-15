@@ -80,3 +80,16 @@ contains "$root/instructions" CODEX_CUSTOM_MARKER
 # that it saw an instruction. No configuration comes from the conversation.
 contains "$root/stderr" 'Global AGENTS.md loaded'
 contains "$root/stderr" "$root/custom-codex/AGENTS.md"
+# The interactive /resume path reopens the runtime with current startup
+# settings and freshly reads instruction files. Editing config.ini alone is
+# deliberately not a live configuration reload.
+plan "$(jq -n --argjson chat "$([[ "$protocol" == chat_completions ]] && printf true || printf false)" '{chat:$chat,plan:["InteractiveAgentsDone"]}')"
+terminal_start
+printf 'CODEX_INTERACTIVE_MARKER\n' >"$root/custom-codex/AGENTS.md"
+write_config false
+send '/resume\r'; expect 'resume'
+send '/resume 1\r'; expect 'session'
+prompt 'check instructions after manual resume' InteractiveAgentsDone
+tail -1 "$root/peer/requests.jsonl" >"$root/request"
+contains "$root/request" CODEX_INTERACTIVE_MARKER
+terminal_close

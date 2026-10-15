@@ -55,7 +55,7 @@ static const cli_field fields[] = {
       "${XDG_STATE_HOME:-$HOME/.local/state}/cai/pouch; "
       "explicit values are lockd endpoint URLs."),
     B("ui", "shell_context", shell_context,
-      "Share captured !COMMAND output; /shell remains local."),
+      "Share sanitized output from !COMMAND, !sh and /shell with the model."),
     {"ui", "tool_output", offsetof(cai_cli_options, tool_output),
      CAI_CONFIG_STRING, 0U, "compact|full",
      "Tool previews; empty selects compact."}};
@@ -193,7 +193,9 @@ static int open_schema(cai_config **out, cai_error *error) {
         strcmp(f->key, "event_queue_limit") != 0 &&
         strcmp(f->key, "steering_queue_limit") != 0 &&
         strcmp(f->key, "turn_queue_limit") != 0 &&
-        strcmp(f->key, "logger_disabled") != 0)
+        strcmp(f->key, "logger_disabled") != 0 &&
+        strcmp(f->key, "shell_context_max_lines") != 0 &&
+        strcmp(f->key, "shell_context_max_bytes") != 0)
       continue;
     selected[count] = *f;
     if (strcmp(f->section, "agent") == 0 && strcmp(f->key, "preset") == 0) {
@@ -235,24 +237,52 @@ static void optional_string(const cai_config *cfg, const char *section,
 /* Config [env] has already been applied. Keep the usual CLI > environment >
  * INI precedence while using the standard parser for validation and storage. */
 static int tool_environment(cai_config *cfg, cai_error *error) {
-  static const char *const env[] = {
-      "CAI_WEB_SEARCH",       "CAI_CHROME",          "CAI_TODO",
-      "CAI_SEARXNG",          "CAI_REVGEO",          "CAI_TERMINAL",
-      "CAI_IMAGE_GENERATION", "CAI_REVIEW_SUBAGENT", "CAI_CODEX_AGENTS_MD",
-      "CAI_SEARXNG_URL",      "CAI_REVGEO_URL",      "CAI_CHROME_SOCKET",
-      "CAI_READ_FILE",        "CAI_LIST_FILES",      "CAI_APPLY_PATCH",
-      "CAI_VIEW_IMAGE",       "CAI_GOALS",           "CAI_SKILLS"};
+  static const char *const env[] = {"CAI_WEB_SEARCH",
+                                    "CAI_CHROME",
+                                    "CAI_TODO",
+                                    "CAI_SEARXNG",
+                                    "CAI_REVGEO",
+                                    "CAI_TERMINAL",
+                                    "CAI_IMAGE_GENERATION",
+                                    "CAI_REVIEW_SUBAGENT",
+                                    "CAI_CODEX_AGENTS_MD",
+                                    "CAI_SEARXNG_URL",
+                                    "CAI_REVGEO_URL",
+                                    "CAI_CHROME_SOCKET",
+                                    "CAI_READ_FILE",
+                                    "CAI_LIST_FILES",
+                                    "CAI_APPLY_PATCH",
+                                    "CAI_VIEW_IMAGE",
+                                    "CAI_GOALS",
+                                    "CAI_SKILLS",
+                                    "CAI_SHELL_CONTEXT",
+                                    "CAI_SHELL_CONTEXT_MAX_LINES",
+                                    "CAI_SHELL_CONTEXT_MAX_BYTES"};
   static const char *const sections[] = {
-      "agent", "chrome", "agent", "agent",   "agent",  "agent",
-      "agent", "agent",  "agent", "searxng", "revgeo", "chrome",
-      "agent", "agent",  "agent", "agent",   "agent",  "agent"};
-  static const char *const keys[] = {
-      "web_search",       "enabled",         "todo",
-      "searxng",          "revgeo",          "terminal",
-      "image_generation", "review_subagent", "codex_agents_md",
-      "base_url",         "base_url",        "socket",
-      "read_file",        "list_files",      "apply_patch",
-      "view_image",       "goals",           "skills"};
+      "agent", "chrome", "agent",   "agent",  "agent",  "agent",   "agent",
+      "agent", "agent",  "searxng", "revgeo", "chrome", "agent",   "agent",
+      "agent", "agent",  "agent",   "agent",  "ui",     "runtime", "runtime"};
+  static const char *const keys[] = {"web_search",
+                                     "enabled",
+                                     "todo",
+                                     "searxng",
+                                     "revgeo",
+                                     "terminal",
+                                     "image_generation",
+                                     "review_subagent",
+                                     "codex_agents_md",
+                                     "base_url",
+                                     "base_url",
+                                     "socket",
+                                     "read_file",
+                                     "list_files",
+                                     "apply_patch",
+                                     "view_image",
+                                     "goals",
+                                     "skills",
+                                     "shell_context",
+                                     "shell_context_max_lines",
+                                     "shell_context_max_bytes"};
   size_t i;
   for (i = 0U; i < sizeof(env) / sizeof(env[0]); i++) {
     const char *value = getenv(env[i]);
@@ -325,6 +355,16 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   if (tool_environment(cfg, error) < 0)
     return -1;
   cai_cli_options_init(&defaults);
+  defaults.shell_context_max_lines = (size_t)cai_config_get_integer(
+      cfg, "runtime", "shell_context_max_lines", 5000LL);
+  defaults.shell_context_max_bytes = (size_t)cai_config_get_integer(
+      cfg, "runtime", "shell_context_max_bytes", 4194304LL);
+  if (defaults.shell_context_max_lines == 0U)
+    defaults.shell_context_max_lines = 5000U;
+  if (defaults.shell_context_max_bytes == 0U)
+    defaults.shell_context_max_bytes = 4194304U;
+  if (defaults.shell_context_max_bytes < 4U)
+    return fail(error, NULL, "shell_context_max_bytes must be at least 4");
   optional_string(cfg, "client", "provider", &defaults.provider);
   for (i = 0U; i < sizeof(agent_keys) / sizeof(agent_keys[0]); i++)
     if (i >= 3U ||

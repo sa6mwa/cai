@@ -81,6 +81,16 @@ model, reasoning effort, and reasoning-summary mode are checkpointed together.
 Resume restores them unless explicit runtime configuration overrides the
 corresponding fields.
 
+Context reporting uses the effective provider window, rather than a compiled
+API model maximum for a signed-in ChatGPT account. Before discovery it is
+unknown; a checkpoint retains the last known window for the selected model so
+resume can report it without blocking startup on the catalog. Current catalog
+metadata supersedes that saved value. Runtime metrics and compaction use the
+same window. Lua exposes these metrics through `runtime:metrics()`, including
+context/usage and active/completed turn timings, and accepts `resume_session_id`
+for exact resume. Lua clients select `api_protocol = "responses"` or
+`"chat_completions"` explicitly when endpoint presets are insufficient.
+
 Smith defaults to `gpt-5.6-terra` with medium reasoning and provider-directed
 `auto` reasoning summaries. The C and Lua Smith terminal examples intentionally
 use `gpt-5.6-luna` and CAI-owned ChatGPT subscription authentication to keep
@@ -141,8 +151,10 @@ Exact `!sh` and `/shell` commands hand the real terminal to `$SHELL -i`
 and output, cannot be queued or steered, and leave the draft editable if the
 agent is busy. The shell runs with normal user permissions in the workspace.
 On exit, CAI restores terminal ownership, prompt settings and current geometry,
-including after a screen clear or resize. Shell activity is not captured,
-replayed or sent to the model; the session log records launch and exit metadata.
+including after a screen clear or resize. CAI relays a real PTY, including
+window changes and foreground-job control. Output is journaled as it arrives;
+the sanitized tail becomes shell-result context after exit, using the same
+sharing controls as `!COMMAND`. Replaying never launches the shell again.
 A failed launch or nonzero shell exit reports details and returns to CAI.
 
 Other `!COMMAND` inputs run captured commands as described below.
@@ -161,11 +173,23 @@ Commands and full raw output are journaled as they arrive. Replay displays them
 without executing commands. By default, a completed result becomes tagged
 user-role context, including exit code and elapsed time, at the next safe
 model/tool boundary. It does not start inference, steer the agent or advance a
-goal turn. The model copy retains at most 32 KiB of output, with an explicit
-truncation marker; JSONL retains the complete raw stream. Markdown export uses
+goal turn. The model copy retains the last 5,000 logical lines, bounded by
+4 MiB of UTF-8, with an explicit marker when earlier output was discarded.
+`--shell-context-max-lines N` and `--shell-context-max-bytes N` override
+`CAI_SHELL_CONTEXT_MAX_LINES` / `CAI_SHELL_CONTEXT_MAX_BYTES`, which override
+`[runtime] shell_context_max_lines` / `shell_context_max_bytes` in `config.ini`.
+Zero in SDK/INI selects the default; CLI values must be positive (bytes >=4).
+An oversized line keeps a bounded suffix, discarding prefixes in chunks.
+ANSI/VT colors, CSI and OSC/DCS/control strings are removed before retention;
+CR, backspace and horizontal cursor/erase controls update the current logical
+line. Incomplete controls are dropped, invalid UTF-8 is replaced, and split
+controls/UTF-8 are handled across reads. This is a text transcript, not a full
+screen or alternate-screen emulator. JSONL retains the complete raw stream.
+Markdown export uses
 the existing libcai exporter of retained model context.
 
-`--no-shell-context` or `/shell-context off` keeps future shell results out of
+`--no-shell-context`, `CAI_SHELL_CONTEXT=false`, `[ui] shell_context=false`,
+or `/shell-context off` keeps future shell results out of
 model context while still executing, displaying and saving them.
 `/shell-context on` enables sharing; `/shell-context` shows the setting.
 The setting is captured when each command starts. Earlier shared results stay
@@ -184,6 +208,9 @@ on recovery. Lua exposes `runtime:user_shell_begin(command, share)` (sharing
 defaults to true), `runtime:user_shell_write(bytes)` (binary strings accepted),
 and `runtime:user_shell_finish(exit_code, duration_ms)`. libcai never executes
 these explicitly user-run commands itself.
+Both C runtime configuration and Lua runtime option tables accept
+`shell_context_max_lines` and `shell_context_max_bytes` with the defaults above.
+The shared INI parser exposes them under `[runtime]` to C and Lua hosts.
 
 ```sh
 scripts/cpkt-toolchains.sh ensure x86_64-linux-gnu
@@ -518,7 +545,6 @@ It stays below the C89 public API. SDK packages
 include its private static link dependency and license; the CAI binary links
 it statically. Moving this source producer into cpkt core is deferred.
 
-Chrome control through the official ChatGPT extension is opt-in:
 Smith enables hosted `web_search` on Responses providers and the ChatGPT Chrome
 extension tool by default. Browser discovery is lazy: ordinary turns work
 without Chrome, and a browser call reports missing setup or connection.
@@ -548,6 +574,12 @@ controls apply at startup, including when resuming a conversation:
 | Image generation | `--image-generation` | `CAI_IMAGE_GENERATION` | `[agent] image_generation` | on |
 | Review subagent | `--review-subagent` | `CAI_REVIEW_SUBAGENT` | `[agent] review_subagent` | on |
 | Codex global/ancestor instructions | `--codex-agents-md` | `CAI_CODEX_AGENTS_MD` | `[agent] codex_agents_md` | off |
+
+Startup flags, environment and `config.ini` determine instruction settings;
+editing the INI requires a restart. `/resume` keeps those startup settings and
+reads the instruction files again. Session storage never supplies configuration
+or an old global instruction snapshot. Logs identify each global file's resolved
+path and loaded byte count, or explicitly report disabled Codex compatibility.
 
 `--searxng-url`/`CAI_SEARXNG_URL` override `[searxng] base_url`;
 `--revgeo-url`/`CAI_REVGEO_URL` override `[revgeo] base_url`.

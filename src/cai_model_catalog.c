@@ -685,17 +685,22 @@ void cai_client_model_estimate_usage(const cai_client *client,
 long long cai_client_model_context_window(const cai_client *client,
                                           const char *model) {
   const cai_model_catalog_entry *entry;
+  const cai_catalog_policy *policy;
 
   entry = cai_client_cached_model_metadata(client, model);
   if (entry != NULL && entry->context_window_tokens > 0LL) {
     return entry->context_window_tokens;
   }
-  if (cai_client_catalog_policy(client) != NULL) {
-    long long seeded =
-        cai_catalog_seed_context(cai_client_catalog_policy(client), model);
+  policy = cai_client_catalog_policy(client);
+  if (policy != NULL) {
+    long long seeded = cai_catalog_seed_context(policy, model);
     if (seeded > 0LL) {
       return seeded;
     }
+    /* Signed-in ChatGPT limits belong to the account catalog. API model
+     * maxima are not evidence of the effective account/session window. */
+    if (strcmp(policy->host, "chatgpt.com") == 0)
+      return 0LL;
   }
   return cai_client_static_model_matches(client, model)
              ? cai_model_context_window_tokens(model)

@@ -97,7 +97,7 @@ commit and verification evidence.
 ## BUG-005: Context window differs between startup and session replay
 
 - **Priority:** high.
-- **Status:** open; effective-limit provenance needs investigation.
+- **Status:** fixed; native, CLI, Lua and static-musl feature checks pass.
 - **Reported:** ChatGPT `gpt-6-luna` with medium reasoning initially reports
   approximately one million context tokens, but reports 272000 after reload.
   A supplied `/status` example reports 14733 / 272000 tokens, or 5%.
@@ -108,6 +108,17 @@ commit and verification evidence.
 - **Verification:** fresh versus resumed sessions, saved model/effort settings,
   live metadata versus fallback metadata, long-context settings, unavailable
   metadata, and consistent `/status` and status-bar percentages.
+- **Cause/fix:** startup exposed the compiled API model maximum before account
+  catalog discovery. Signed-in ChatGPT now reports an unknown window until
+  authoritative metadata is available. Portable state retains the last effective
+  window for its selected request model; resume can use it without a startup
+  catalog call. Current metadata takes precedence, and metrics/compaction share
+  the same window. Refreshing active limits preserves retained-history hash
+  provenance until compatibility compaction succeeds, including retry failures.
+- **Evidence:** native state round-trip/invalid-state/live-update tests;
+  interactive fresh/offline-resume/provider-update capture; Lua Responses and
+  Chat Completions exact-resume tests; existing model-switch/compaction failure
+  tests. Lua now exposes runtime metrics and explicit client wire protocols.
 
 ## BUG-006: Spinner restarts during an active turn
 
@@ -130,7 +141,8 @@ commit and verification evidence.
 ## BUG-007: Codex global instructions appear missing after session replay
 
 - **Priority:** high.
-- **Status:** investigating.
+- **Status:** current startup and replay paths verified, including actual user
+  configuration and global instructions; no replay suppression found.
 - **Reported:** enabling `[agent] codex_agents_md = true` in `config.ini` does
   not appear to load the global Codex `AGENTS.md` when resuming a session.
   The user confirms restarting CAI after editing the configuration.
@@ -158,8 +170,24 @@ commit and verification evidence.
   `--no-codex-agents-md` override. The log records each global instruction
   source, resolved path and loaded byte count, or that the file is absent.
   File-open errors include the path and OS reason. No replay suppression or
-  configuration stored in pouch was found. Keep the reported real-session
-  discrepancy open until its failing input is identified.
+  configuration stored in pouch was found. At that stage the reported
+  real-session discrepancy remained open pending the follow-up below.
+- **Follow-up evidence (2026-10-16):** a local provider fixture captured fresh
+  and resumed requests using the actual user `config.ini` and Codex global file,
+  with isolated state/cache paths. Both requests contained the complete current
+  global file, and logs confirmed its resolved path and loaded bytes. The last
+  available real-session startup was at 13:43:44 on October 15; the configuration
+  file was modified at 13:43:58, after that startup. This log therefore cannot
+  demonstrate instruction loss after enabling the setting. No live provider
+  request or user-store mutation was needed for the probe.
+- **Coverage/diagnostics:** C CLI capture now also covers interactive `/resume`,
+  re-reading changed instruction files while retaining startup settings. Lua
+  covers exact resume and enabling/disabling Codex instructions for both wire
+  protocols. Logs explicitly identify disabled Codex compatibility; an existing
+  empty global file is distinguished from an absent file. Configuration edits
+  require a restart. The original subjective model report was not reproduced;
+  current outbound requests are verified rather than inferring behavior from
+  whether an assistant says it read an instruction.
 
 ## BUG-008: Enable the existing todo/kanban tool in CAI
 
@@ -291,7 +319,7 @@ commit and verification evidence.
 ## BUG-012: Capture PTY shell output for conversation context
 
 - **Priority:** normal; feature backlog.
-- **Status:** open; terminal handoff currently keeps shell output local.
+- **Status:** implemented; native/CLI/Lua and static-musl feature checks pass.
 - **Required behavior:** `!sh` and `/shell` must run with a real PTY and retain
   the last 5,000 lines of terminal output by default. Discard older lines and
   make the retained-line limit configurable through CLI flags, environment and
@@ -323,3 +351,19 @@ commit and verification evidence.
   context enabled/disabled, persistence/replay and ordinary `!COMMAND`
   regressions. Capture the subsequent model request to prove that retained
   text is shell context and contains no terminal escape sequences.
+- **Implementation:** CAI internally relays a real PTY; libcai incrementally
+  sanitizes a bounded logical-line tail for both pipe and PTY shell results.
+  Defaults are 5,000 lines and 4 MiB of retained UTF-8, configurable through
+  CLI/environment/INI and C/Lua runtime fields. It handles split UTF-8 and
+  control sequences, CSI, OSC/DCS/SOS/PM/APC strings, C0/C1 controls, CR,
+  backspace, and horizontal movement/erasure. Vertical/alternate-screen state
+  is not emulated. Oversized lines discard UTF-8-aligned prefix chunks.
+  Raw journal chunks remain independent of the sanitized model tail, as with
+  ordinary bang commands; there is no complete in-memory raw transcript.
+- **Evidence:** native sanitizer chunk-boundary/limit/Unicode tests and runtime
+  journal/finish-failure/replay tests; actual CLI PTY input, Ctrl-C, resize
+  forwarding, exit 137 versus SIGKILL, failed launch, private/shared results,
+  configuration precedence, a 5,000-line tail beyond the old 32 KiB limit,
+  encrypted reopen and subsequent model-request capture. A background job
+  retaining the slave cannot hang return after shell exit. Lua exercises the
+  same retention, context delivery and exact-resume APIs on both protocols.

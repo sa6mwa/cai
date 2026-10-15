@@ -3,8 +3,10 @@
 #include <cai/models.h>
 #include <cai/version.h>
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void cai_cli_option_error(cai_cli_options *options, const char *format,
@@ -26,6 +28,8 @@ void cai_cli_options_init(cai_cli_options *options) {
   options->image_generation = 1;
   options->terminal = 1;
   options->shell_context = 1;
+  options->shell_context_max_lines = 5000U;
+  options->shell_context_max_bytes = 4U * 1024U * 1024U;
   options->review_subagent = 1;
   options->chrome = 1;
   options->web_search = 1;
@@ -107,9 +111,12 @@ static void cai_cli_help(void) {
       "      --chrome-remove         Remove CAI's own registration and exit\n"
       "      --chrome-manifest FILE  Alternate native-host registration path\n",
       stdout);
-  fputs("      --no-shell-context       Keep !COMMAND results out of model "
-        "context\n",
-        stdout);
+  fputs(
+      "      --[no-]shell-context     Share !COMMAND and PTY shell results\n"
+      "      --shell-context-max-lines N  Retain last N lines (default 5000)\n"
+      "      --shell-context-max-bytes N  Bound retained text (default "
+      "4194304)\n",
+      stdout);
   fputs("      --model-metadata FILE    Provider model metadata JSON\n",
         stdout);
   fputs("  -m, --model ID               Model (provider default if omitted)\n"
@@ -306,6 +313,33 @@ int cai_cli_read_options(int argc, char *const *argv,
     }
     if (strcmp(flag, "--no-shell-context") == 0) {
       options->shell_context = 0;
+      continue;
+    }
+    if (strcmp(flag, "--shell-context") == 0) {
+      options->shell_context = 1;
+      continue;
+    }
+    if (strcmp(flag, "--shell-context-max-lines") == 0 ||
+        strcmp(flag, "--shell-context-max-bytes") == 0) {
+      unsigned long number;
+      char *end;
+      int lines = strcmp(flag, "--shell-context-max-lines") == 0;
+      if (++i >= argc || argv[i][0] < '0' || argv[i][0] > '9') {
+        cai_cli_option_error(options, "cai: %s requires a positive integer",
+                             flag);
+        return -1;
+      }
+      errno = 0;
+      number = strtoul(argv[i], &end, 10);
+      if (errno != 0 || *end != '\0' || number > (size_t)-1 ||
+          number < (lines ? 1U : 4U)) {
+        cai_cli_option_error(options, "cai: invalid value for %s", flag);
+        return -1;
+      }
+      if (lines)
+        options->shell_context_max_lines = (size_t)number;
+      else
+        options->shell_context_max_bytes = (size_t)number;
       continue;
     }
     if (strcmp(flag, "-v") == 0 || strcmp(flag, "--verbose") == 0) {
@@ -662,6 +696,8 @@ const char *cai_cli_instruction_at(const cai_cli_options *options,
         strcmp(flag, "--revgeo-url") == 0 ||
         strcmp(flag, "--chrome-socket") == 0 ||
         strcmp(flag, "--chrome-manifest") == 0 ||
+        strcmp(flag, "--shell-context-max-lines") == 0 ||
+        strcmp(flag, "--shell-context-max-bytes") == 0 ||
         strcmp(flag, "--directory") == 0 || strcmp(flag, "-a") == 0 ||
         strcmp(flag, "--auth-json") == 0 || strcmp(flag, "-m") == 0 ||
         strcmp(flag, "--model") == 0 || strcmp(flag, "-r") == 0 ||

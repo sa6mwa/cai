@@ -138,6 +138,10 @@ F("agent", "developer_instructions", STR, RUNTIME,
   "Instructions appended to the preset.")
 F("agent", "codex_agents_md", BOOL, RUNTIME, codex_compat_agents_md, 0, NULL,
   "Load Codex global and ancestor AGENTS.md.")
+F("runtime", "shell_context_max_lines", SIZE, RUNTIME, shell_context_max_lines,
+  0, NULL, "Sanitized shell context tail; zero selects 5000 logical lines.")
+F("runtime", "shell_context_max_bytes", SIZE, RUNTIME, shell_context_max_bytes,
+  0, NULL, "Sanitized shell context byte bound; zero selects 4 MiB, minimum 4.")
 F("agent", "image_generation", BOOL, RUNTIME, enable_image_generation, 0, NULL,
   "Enable provider image generation.")
 F("agent", "terminal", NOTBOOL, RUNTIME, disable_terminal, 0, NULL,
