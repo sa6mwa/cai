@@ -295,8 +295,8 @@ commit and verification evidence.
 ## BUG-011: Idle core dump followed by an unreadable pouch index warning
 
 - **Priority:** critical.
-- **Status:** crash cause identified in liblockdc; upstream repair and regression
-  verification remain open.
+- **Status:** fixed by upgrading to liblockdc 0.20.0; static-musl background
+  compaction and storage recovery regressions pass.
 - **Reported:** CAI dumped core while idle. On the next startup it printed
   `cache.load.index.error: pouch query-index manifest is not readable`
   for namespace `cai.sessions`, code 1.
@@ -330,12 +330,23 @@ commit and verification evidence.
   executable identify a stack overflow in liblockdc's background compaction
   worker. `lc_pouch_state_copy_file_span_to_fd_crc` reserves a 128 KiB local
   buffer; its first stack write faults in the musl thread's guard page.
-  The current static build still contains the same allocation. The prior
+  The then-current 0.19.0 static build contained the same allocation. The prior
   index-recovery checks did not exercise this compaction path. See
   [the upstream report](docs/liblockdc-compaction-stack-overflow.md) for the
   verified backtrace, instruction/register evidence and required regression
   coverage. The index warning's relationship to this interrupted compaction
   has not been established. No upstream files or user storage were modified.
+- **Resolution (2026-10-17):** liblockdc 0.20.0 moves the compaction copy
+  buffer onto the heap. The packaged 0.19.0 archive reproduces the exact
+  `lc_pouch_state_copy_file_span_to_fd_crc` crash under GDB; 0.20.0 passes
+  `cai_cli_pouch_compaction` on static musl. This regression crosses the real
+  compaction byte threshold, observes a published encrypted session snapshot,
+  checks an 8 MiB live payload and credential readback after reopening, compares
+  JSONL/Markdown exports byte for byte, and resumes the original conversation.
+  Only the test executable shortens the worker's 30-minute wait; the real
+  default-stack worker and packaged storage code run unchanged. Existing
+  interrupted-writer, missing/empty/malformed-index and session tests also pass.
+  The historical index warning's precise causal relationship remains unproven.
 
 ## BUG-012: Capture PTY shell output for conversation context
 

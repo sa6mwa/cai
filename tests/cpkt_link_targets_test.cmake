@@ -130,7 +130,7 @@ endif()
 
 if(CAI_BUILD_CLI)
   cai_link_command(cai_cli cli_edge)
-  cai_require_contains("cai CLI link edge" "${cli_edge}" "liblockdc-0.19.0-${CAI_TARGET_ID}/lib/liblockdc.a")
+  cai_require_contains("cai CLI link edge" "${cli_edge}" "liblockdc-0.20.0-${CAI_TARGET_ID}/lib/liblockdc.a")
   cai_require_contains("cai CLI link edge" "${cli_edge}" "${static_curl}")
   foreach(forbidden IN ITEMS cpktdb cpktmisc libpq libsqlite libiodbc lockdc_postgres c.pkt.systems)
     cai_require_not_contains("cai CLI link edge" "${cli_edge}" "${forbidden}")

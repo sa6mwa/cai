@@ -2,9 +2,9 @@
 
 ## Status and impact
 
-Root cause identified from an actual CAI core dump on 2026-10-15. Repair belongs
-in liblockdc; this report does not change that repository or patch its packaged
-archive. CAI's current static musl build remains affected.
+Root cause identified from an actual CAI core dump on 2026-10-15. Fixed upstream
+in liblockdc 0.20.0 and consumed by CAI on 2026-10-17. CAI uses the released,
+checksum-pinned archive without patching it or the upstream checkout.
 
 Background Pouch compaction can terminate the entire application with SIGSEGV
 while its interactive UI is idle. The failure happens while writing a snapshot,
@@ -21,8 +21,8 @@ query-index warning was reported, but its causal relationship remains unproven.
   `456809159bdc061853da6543c65099541ffb7f840f48d8c586daa6915746aa8f`.
 - The core records `/home/mike/.local/bin/cai` as the original executable path.
   Its ELF entry point and load-segment addresses/sizes match `~/cai`.
-- CAI currently links the packaged liblockdc 0.19.0 static archive. The same
-  failing function and stack allocation are present in `build/cai/cai`.
+- At initial diagnosis CAI linked the packaged liblockdc 0.19.0 static archive.
+  The same failing function and stack allocation were present in that build.
 
 The installed binary and current build have been replaced since the crash.
 Using their symbols with this core produces incorrect function names. GDB must
@@ -107,10 +107,40 @@ gdb -nx -batch \
   "$HOME/core._home_mike__local_bin_cai.1000.cebc8433-f180-4a77-8bd5-a1e470e7f0cd.735738.204958272"
 ```
 
-This diagnoses the captured failure; a fresh isolated compaction reproducer has
-not been run as part of this investigation. Ten-second idle/index-publication
-checks previously run in CAI did not force a snapshot containing payload spans,
-so their success did not cover this failure.
+The initial investigation diagnosed the captured failure without a fresh
+compaction reproducer. Earlier ten-second idle/index-publication checks did not
+force a snapshot containing payload spans. The regression below now reproduces
+the old failure and verifies the upgrade.
+
+## Upgrade verification (2026-10-17)
+
+`tests/cli_pouch_compaction_test.c` exercises the packaged archive through CAI's
+encrypted backend, using only public liblockdc APIs. A test-only linker wrapper
+shortens the 30-minute condition-wait deadline to one second, preserving the
+actual background worker, its default pthread stack, and all snapshot I/O.
+Untimed musl waits and other deadlines pass through unchanged. Neither the
+production CAI executable nor the dependency is instrumented.
+
+The test crosses the real 64 MiB compaction threshold with bounded streamed
+input, retains small conversation records and an 8 MiB live document, and waits
+for the namespace manifest to publish a snapshot. It reopens the store and
+compares document and credential bytes. The shell fixture checks unchanged
+conversation listings, byte-identical JSONL/Markdown exports, an unchanged
+encryption key, and resumed requests containing the original conversation.
+
+- **0.19.0 control:** the corrected test linked against the previous packaged
+  headers/archive crashes at `lc_pouch_state_copy_file_span_to_fd_crc` with
+  `lc_pouch_state_write_snapshot` and `lc_pouch_compaction_worker` in the GDB
+  backtrace. Local evidence: `build/cai/compaction-0.19.0-gdb.log`.
+- **0.20.0:** `cai_cli_pouch_compaction` passes on static Linux x86_64 musl
+  (5.46 seconds). Local evidence: `build/cai/compaction-0.20.0.log`.
+- **Related checks:** storage streaming, interrupted-writer startup, derived
+  index recovery, conversation sessions, and static dependency link closure
+  all pass. Local evidence: `build/cai/lockdc-0.20.0-storage-checks.log`.
+
+The broader upstream failure-mode recommendations below remain useful, but
+these local results do not claim to re-run every upstream test or establish
+why the original interrupted process left an unreadable derived index.
 
 ## Recommended upstream repair and proof
 

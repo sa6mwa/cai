@@ -309,12 +309,12 @@ endfunction()
 if(CAI_BUILD_CLI)
   if(CAI_TARGET_ID STREQUAL "x86_64-linux-gnu")
     set(_cai_liblql_sha256 "fafb04f9af5d9610f77380ac1f848d1edd3d60dcf7ce6a098f6a04e30dd2b47a")
-    set(_cai_lockdc_sha256 "8ddf238f08aae7f47a1d4be65e06a6f397e21bf84983e646105e55491c354527")
+    set(_cai_lockdc_sha256 "e8efa3c4142319e5f5c13249a8c12f63c816eef68c307c79d7fb52373e45b940")
     set(_cai_softline_sha256 "dbe96138bb9fbbb40c2aaff1dc307568458180155d534656ff04e4a752e5d2d6")
     set(_cai_libmdf_sha256 "b250a82e2562897102aee69bca2c946e53eadffddd1d85131975eaea00651b65")
   else()
     set(_cai_liblql_sha256 "e33a57e5d97337304c8541efaf8ab33bff9060cae600d1fe744a6734dca74ad4")
-    set(_cai_lockdc_sha256 "93f0bfd9fd7eb2a253e5bac1ca2cd41eb3f1557d58b1817cda0bd7032d320ada")
+    set(_cai_lockdc_sha256 "628a6672e70bf38a62e9d3b47fd37b437d62a1f025ebe771defe29e72239f71b")
     set(_cai_softline_sha256 "1fbd56ec0006b06d3cd66c5ad7ef6f03f6bdde7a2dc187508d03e8b544335854")
     set(_cai_libmdf_sha256 "144827811d9e1477a6e0835b8a94492c2a1ba7eb7fa6d091ee0e0c73f2e7b2ee")
   endif()
@@ -328,13 +328,13 @@ if(CAI_BUILD_CLI)
     "${_cai_liblql_archive}" "${_cai_liblql_prefix}"
     "${_cai_liblql_sha256}"
     "${_cai_liblql_prefix}/include/lql/lql.h")
-  set(_cai_lockdc_name "liblockdc-0.19.0-${CAI_TARGET_ID}")
+  set(_cai_lockdc_name "liblockdc-0.20.0-${CAI_TARGET_ID}")
   set(_cai_lockdc_prefix "${CAI_DEPS_DIR}/${_cai_lockdc_name}")
   cai_dependency_archive_path("${_cai_lockdc_name}.tar.gz"
     "${_cai_lockdc_sha256}"
     _cai_lockdc_archive)
-  cai_download_tarball("liblockdc 0.19.0 ${CAI_TARGET_ID}"
-    "https://github.com/sa6mwa/liblockdc/releases/download/v0.19.0/${_cai_lockdc_name}.tar.gz"
+  cai_download_tarball("liblockdc 0.20.0 ${CAI_TARGET_ID}"
+    "https://github.com/sa6mwa/liblockdc/releases/download/v0.20.0/${_cai_lockdc_name}.tar.gz"
     "${_cai_lockdc_archive}" "${_cai_lockdc_prefix}"
     "${_cai_lockdc_sha256}"
     "${_cai_lockdc_prefix}/include/lc/lc.h")
