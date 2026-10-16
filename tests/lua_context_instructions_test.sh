@@ -15,6 +15,10 @@ jq -s '.[1]' "$root/peer/requests.jsonl" >"$root/second"
 jq -s '.[2]' "$root/peer/requests.jsonl" >"$root/third"
 contains "$root/first" LUA_CODEX_ORIGINAL
 contains "$root/second" LUA_CODEX_UPDATED
+contains "$root/second" '# AGENTS.md instructions from'
+contains "$root/second" "current user's instructions and working context"
+contains "$root/second" '<INSTRUCTIONS>'
+contains "$root/second" '</INSTRUCTIONS>'
 absent "$root/second" LUA_CODEX_ORIGINAL
 absent "$root/third" LUA_CODEX_UPDATED
 for file in first second third; do

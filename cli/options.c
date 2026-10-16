@@ -138,15 +138,16 @@ static void cai_cli_help(void) {
   fputs("      --install-skill DIR     Install a SKILL.md package and exit\n"
         "      --replace               Explicitly replace an installed skill\n",
         stdout);
-  fputs("      --codex-agents-md       Discover ancestor AGENTS.md files\n"
-        "      --no-image-generation   Disable hosted image generation\n"
-        "      --no-terminal           Disable terminal tools\n"
-        "      --no-review-subagent    Disable the built-in reviewer\n"
-        "  -v, --verbose                Print runtime events (repeat for "
-        "sequences)\n"
-        "  -h, --help                   Show this help\n"
-        "      --version                Show version\n",
-        stdout);
+  fputs(
+      "      --codex-agents-md       Load Codex global and ancestor AGENTS.md\n"
+      "      --no-image-generation   Disable hosted image generation\n"
+      "      --no-terminal           Disable terminal tools\n"
+      "      --no-review-subagent    Disable the built-in reviewer\n"
+      "  -v, --verbose                Print runtime events (repeat for "
+      "sequences)\n"
+      "  -h, --help                   Show this help\n"
+      "      --version                Show version\n",
+      stdout);
 }
 
 static int cai_cli_one_of(const char *value, const char *const *values) {

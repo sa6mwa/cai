@@ -25782,6 +25782,15 @@ static void test_smith_profile(test_state *state) {
       const char *workspace_policy = strstr(
           CAI_AGENT_IMPL(agent)->developer_instructions, "Workspace policy.");
 
+      expect_substr(state, "smith_codex_compat_current_user_context",
+                    CAI_AGENT_IMPL(agent)->developer_instructions,
+                    "current user's instructions and working context");
+      expect_substr(state, "smith_codex_compat_instruction_frame",
+                    CAI_AGENT_IMPL(agent)->developer_instructions,
+                    "<INSTRUCTIONS>\nCodex policy.");
+      expect_substr(state, "smith_codex_compat_instruction_source",
+                    CAI_AGENT_IMPL(agent)->developer_instructions,
+                    policy_codex_dir);
       if (global_policy == NULL || codex_policy == NULL ||
           ancestor_policy == NULL || workspace_policy == NULL ||
           global_policy >= codex_policy || codex_policy >= ancestor_policy ||

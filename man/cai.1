@@ -347,6 +347,9 @@ Load
 .I ${CODEX_HOME:-$HOME/.codex}/AGENTS.md
 after cai's global AGENTS.md, then discover ancestor AGENTS.md files from the
 repository root to the workspace.
+Each loaded source is identified as current user-provided AGENTS.md instructions
+and working context, including any stated user role or preferences. Complete
+file contents and loading order are preserved when resuming a conversation.
 .TP
 .B \-\-no-image-generation
 Disable hosted image generation.

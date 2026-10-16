@@ -162,8 +162,8 @@ commit and verification evidence.
 ## BUG-007: Codex global instructions appear missing after session replay
 
 - **Priority:** high.
-- **Status:** current startup and replay paths verified, including actual user
-  configuration and global instructions; no replay suppression found.
+- **Status:** resolved with explicit current-user AGENTS.md framing; C, CLI,
+  Lua and live ChatGPT resume checks pass.
 - **Reported:** enabling `[agent] codex_agents_md = true` in `config.ini` does
   not appear to load the global Codex `AGENTS.md` when resuming a session.
   The user confirms restarting CAI after editing the configuration.
@@ -182,7 +182,8 @@ commit and verification evidence.
   and Chat Completions: enabling compatibility on an existing encrypted
   conversation, edited instructions, explicit CODEX_HOME, and disabling it
   again all affect the actual outbound instructions. The reported real-session
-  case remains unaccounted for; these passing probes do not close the report.
+  case was still unaccounted for at that stage; those passing probes alone
+  did not close the report.
   The CLI pouch adapter stores sessions, scope coordination, and credentials;
   it does not supply CAI startup configuration.
 - **Added evidence and diagnostics:** current instructions also survive saved
@@ -209,6 +210,27 @@ commit and verification evidence.
   require a restart. The original subjective model report was not reproduced;
   current outbound requests are verified rather than inferring behavior from
   whether an assistant says it read an instruction.
+- **Behavioral reproduction and resolution (2026-10-17):** the user's check
+  was asking "Who am I?", expecting the production-executive role stated in
+  the global file. Live `gpt-6-luna` with medium reasoning recognized that role
+  in a fresh CAI conversation, but answered generically after resuming a
+  conversation originally created with Codex instructions disabled. Logs still
+  showed the complete 13,961-byte file loaded. Codex 0.162.0-alpha.18 recognized
+  the role after adding the same file and resuming an equivalent conversation.
+- **Fix and evidence:** libcai now identifies each loaded source as AGENTS.md,
+  frames its complete contents in an `INSTRUCTIONS` block, and explicitly
+  identifies it as the current user's instructions and working context,
+  including stated role/preferences. File order and instruction authority are
+  unchanged; model switches retain the framing. The live CAI disabled-to-enabled
+  resume case now answers "You're the production executive for this workspace".
+  These observations establish the reported behavioral improvement, rather
+  than proving the previous generic answer meant that loading failed.
+  Native prompt/review/model-switch tests, full multi-chunk file capture over
+  both wire protocols, interactive resume, and Lua resume checks pass.
+  Local live evidence is in `build/cai/agents-live-resume-probe.log`,
+  `build/cai/codex-agents-live-probe.log`, and
+  `build/cai/agents-framing-live-probe.log`. Auth copies and fixture state were
+  isolated; no user conversation or original credential file was changed.
 
 ## BUG-008: Enable the existing todo/kanban tool in CAI
 

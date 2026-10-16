@@ -6,6 +6,10 @@ config="$root/config/cai/config.ini"
 mkdir -p "$(dirname "$config")" "$root/.codex" "$root/custom-codex" "$work/.git" "$work/nested"
 printf 'CAI_GLOBAL_MARKER\n' >"$root/config/cai/AGENTS.md"
 printf 'CODEX_DEFAULT_MARKER\n' >"$root/.codex/AGENTS.md"
+# Exercise complete multi-chunk user context, not merely a short marker.
+for ((i=0;i<180;i++)); do
+  printf 'User context row %03d: literal "quotes", backslashes \\ and Unicode café.\n' "$i"
+done >>"$root/.codex/AGENTS.md"
 printf 'CODEX_CUSTOM_MARKER\n' >"$root/custom-codex/AGENTS.md"
 printf 'ANCESTOR_MARKER\n' >"$work/AGENTS.md"
 printf 'WORKSPACE_MARKER\n' >"$work/nested/AGENTS.md"
@@ -41,6 +45,13 @@ write_config true
 turn -ni 'resume with Codex instructions'
 contains "$root/request" 'before enabling Codex instructions'
 contains "$root/instructions" CODEX_DEFAULT_MARKER
+contains "$root/instructions" '# AGENTS.md instructions from'
+contains "$root/instructions" "current user's instructions and working context"
+contains "$root/instructions" '<INSTRUCTIONS>'
+contains "$root/instructions" '</INSTRUCTIONS>'
+jq -e --rawfile expected "$root/.codex/AGENTS.md" \
+  '.instructions // ([.messages[] | select(.role == "system" or .role == "developer") | .content] | join("\n")) | contains($expected)' \
+  "$root/request" >/dev/null
 contains "$root/instructions" ANCESTOR_MARKER
 awk '/CAI_GLOBAL_MARKER/{c=NR} /CODEX_DEFAULT_MARKER/{d=NR} /ANCESTOR_MARKER/{a=NR} /WORKSPACE_MARKER/{w=NR} END{exit !(c<d && d<a && a<w)}' "$root/instructions"
 # File edits and CODEX_HOME are resolved again on the next startup/replay.

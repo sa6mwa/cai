@@ -576,6 +576,38 @@ static int cai_smith_read_instructions_fd(const cai_allocator *allocator,
   return CAI_OK;
 }
 
+static int cai_smith_frame_instruction_file(const cai_allocator *allocator,
+                                            const char *source, char **text,
+                                            cai_error *error) {
+  cai_buffer_builder builder;
+  int rc;
+  if (*text == NULL || (*text)[0] == '\0')
+    return CAI_OK;
+  memset(&builder, 0, sizeof(builder));
+  builder.allocator = allocator;
+  rc =
+      cai_buffer_append_cstr(&builder, "# AGENTS.md instructions from ", error);
+  if (rc == CAI_OK)
+    rc = cai_buffer_append_cstr(&builder, source, error);
+  if (rc == CAI_OK)
+    rc = cai_buffer_append_cstr(
+        &builder,
+        "\n\nThese are the current user's instructions and working context "
+        "for this conversation. Apply any stated user role and preferences "
+        "when interpreting their requests.\n\n<INSTRUCTIONS>\n",
+        error);
+  if (rc == CAI_OK)
+    rc = cai_buffer_append_cstr(&builder, *text, error);
+  if (rc == CAI_OK)
+    rc = cai_buffer_append_cstr(&builder, "\n</INSTRUCTIONS>", error);
+  if (rc == CAI_OK) {
+    cai_free_mem(allocator, *text);
+    *text = builder.data;
+  } else
+    cai_free_mem(allocator, builder.data);
+  return rc;
+}
+
 static int
 cai_smith_load_workspace_instruction_file(const cai_allocator *allocator,
                                           const char *workspace, char **out,
@@ -600,6 +632,8 @@ cai_smith_load_workspace_instruction_file(const cai_allocator *allocator,
                                "failed to read repository instructions");
   }
   rc = cai_smith_read_instructions_fd(allocator, instructions_fd, out, error);
+  if (rc == CAI_OK)
+    rc = cai_smith_frame_instruction_file(allocator, workspace, out, error);
   return rc;
 }
 
@@ -752,6 +786,8 @@ static int cai_smith_load_global_instruction_file(
         logger, fd >= 0 ? "Global AGENTS.md loaded" : "Global AGENTS.md absent",
         fields, 3U);
   }
+  if (rc == CAI_OK)
+    rc = cai_smith_frame_instruction_file(allocator, path, out, error);
   return rc;
 }
 
@@ -813,7 +849,8 @@ cai_smith_load_global_instruction_store(const cai_allocator *allocator,
     return rc;
   }
   cai_error_cleanup(&source_error);
-  return CAI_OK;
+  return cai_smith_frame_instruction_file(allocator, "global instruction store",
+                                          out, error);
 }
 
 static int cai_smith_load_repository_instructions(

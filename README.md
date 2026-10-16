@@ -761,6 +761,9 @@ Smith loads cai's global `AGENTS.md` from
 loads `${CODEX_HOME:-$HOME/.codex}/AGENTS.md` after the cai global file and
 before repository ancestor `AGENTS.md` files. `-I TEXT` or
 `--developer-instructions TEXT` appends developer instructions.
+Loaded AGENTS.md sources are explicitly framed as the current user's instructions
+and working context, including any stated role or preferences. Their complete
+contents and loading order are preserved on resume and model changes.
 
 ## Release Scope
 
