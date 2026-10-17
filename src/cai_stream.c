@@ -3122,6 +3122,8 @@ retry_request:
     *out_caller_output_seen = 1;
   }
   cai_stream_event_json_cleanup(&state);
+  if (rc == CAI_ERR_SERVER)
+    cai_log_provider_stream_error(impl, "WS", error);
   return rc;
 }
 
@@ -3454,6 +3456,7 @@ retry_request:
     if (http_status > 0L && (http_status < 200L || http_status >= 300L)) {
       rc = cai_set_openai_error(
           error, http_status, state.body != NULL ? state.body : "", request_id);
+      cai_log_provider_stream_error(CAI_CLIENT_IMPL(client), "POST", error);
       cai_free_mem(NULL, state.body);
       cai_free_mem(NULL, request_id);
       return rc;
@@ -3461,11 +3464,14 @@ retry_request:
     cai_free_mem(NULL, state.body);
     if (state.failed) {
       rc = cai_sse_failure(&state, request_id);
-      cai_log_http_transport_error(
-          CAI_CLIENT_IMPL(client), "POST", "responses",
-          error != NULL && error->detail != NULL    ? error->detail
-          : error != NULL && error->message != NULL ? error->message
-                                                    : state.failed_message);
+      if (rc == CAI_ERR_SERVER)
+        cai_log_provider_stream_error(CAI_CLIENT_IMPL(client), "POST", error);
+      else
+        cai_log_http_transport_error(
+            CAI_CLIENT_IMPL(client), "POST", "responses",
+            error != NULL && error->detail != NULL    ? error->detail
+            : error != NULL && error->message != NULL ? error->message
+                                                      : state.failed_message);
       cai_free_mem(NULL, request_id);
       return rc;
     }
@@ -3479,6 +3485,7 @@ retry_request:
   if (!http_success) {
     rc = cai_set_openai_error(error, http_status,
                               state.body != NULL ? state.body : "", request_id);
+    cai_log_provider_stream_error(CAI_CLIENT_IMPL(client), "POST", error);
     cai_free_mem(NULL, state.body);
     cai_free_mem(NULL, request_id);
     return rc;
@@ -3486,11 +3493,14 @@ retry_request:
   if (state.failed) {
     cai_free_mem(NULL, state.body);
     rc = cai_sse_failure(&state, request_id);
-    cai_log_http_transport_error(
-        CAI_CLIENT_IMPL(client), "POST", "responses",
-        error != NULL && error->detail != NULL    ? error->detail
-        : error != NULL && error->message != NULL ? error->message
-                                                  : state.failed_message);
+    if (rc == CAI_ERR_SERVER)
+      cai_log_provider_stream_error(CAI_CLIENT_IMPL(client), "POST", error);
+    else
+      cai_log_http_transport_error(
+          CAI_CLIENT_IMPL(client), "POST", "responses",
+          error != NULL && error->detail != NULL    ? error->detail
+          : error != NULL && error->message != NULL ? error->message
+                                                    : state.failed_message);
     cai_free_mem(NULL, request_id);
     return rc;
   }

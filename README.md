@@ -232,6 +232,11 @@ Ctrl-C/Escape cancellation, and clipboard failures. Cancellation keeps the
 interactive session open so another turn can start. Responses stream errors
 preserve the provider message, code, and request ID in both libcai streaming
 APIs and CAI diagnostics; diagnostic messages are bounded to 1023 bytes.
+Responses provider failures, including cybersecurity policy errors, produce an error-level
+`cai.response.provider_error` log with the provider code, message, HTTP status,
+and request ID when supplied. Interactive sessions write this to the session
+log and show an error notice; non-interactive sessions log to stderr. The failed
+turn stops and interactive sessions remain available for the next user input.
 
 The default `chatgpt` provider imports `~/.codex/auth.json` first when present,
 otherwise it loads credentials from cai's lockd store. `--auth-json` selects

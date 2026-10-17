@@ -569,6 +569,7 @@ if(CAI_BUILD_TESTS)
     stream_responses_websocket_large_frame
     stream_responses_websocket_transient_retry
     stream_responses_websocket_midstream_drop
+    stream_responses_websocket_provider_error
     stream_responses_websocket_https_fallback
     stream_responses_websocket_upgrade_failure_no_fallback
     stream_responses_websocket_no_fallback_after_output

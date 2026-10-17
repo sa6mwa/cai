@@ -104,6 +104,23 @@ void cai_log_http_transport_error(const cai_client_impl *client,
               client->base_url != NULL ? client->base_url : "");
 }
 
+void cai_log_provider_stream_error(const cai_client_impl *client,
+                                   const char *method, const cai_error *error) {
+  pslog_logger *log = cai_logger(client);
+  if (log == NULL || log->errorf == NULL || error == NULL)
+    return;
+  log->errorf(log, "cai.response.provider_error",
+              "method=%s path=%s status=%d provider_code=%s request_id=%s "
+              "error=%s detail=%s base_url=%s",
+              method, "responses", (int)error->http_status,
+              error->server_code != NULL ? error->server_code : "",
+              error->request_id != NULL ? error->request_id : "",
+              error->message != NULL ? error->message
+                                     : "provider stream failed",
+              error->detail != NULL ? error->detail : "",
+              client->base_url != NULL ? client->base_url : "");
+}
+
 void cai_log_http_response_limit(const cai_client_impl *client,
                                  const char *method, const char *path,
                                  size_t limit) {

@@ -20632,7 +20632,7 @@ static int mock_websocket_listen_and_publish_port(int pipe_fd,
   return 0;
 }
 
-static void mock_websocket_drop_after_delta_child(int pipe_fd) {
+static void mock_websocket_after_delta_child(int pipe_fd, const char *failure) {
   static const char delta[] =
       "{\"type\":\"response.output_text.delta\",\"delta\":\"partial ws\"}";
   char request[4096];
@@ -20661,10 +20661,23 @@ static void mock_websocket_drop_after_delta_child(int pipe_fd) {
   if (mock_websocket_write_text(client_fd, delta) != 0) {
     _exit(5);
   }
+  if (failure != NULL && mock_websocket_write_text(client_fd, failure) != 0)
+    _exit(6);
   close(client_fd);
   close(server_fd);
   alarm(0U);
   _exit(0);
+}
+
+static void mock_websocket_drop_after_delta_child(int pipe_fd) {
+  mock_websocket_after_delta_child(pipe_fd, NULL);
+}
+
+static void mock_websocket_provider_error_child(int pipe_fd) {
+  mock_websocket_after_delta_child(
+      pipe_fd, "{\"type\":\"response.failed\",\"request_id\":\"req_ws_policy\","
+               "\"response\":{\"error\":{\"code\":\"cyber_policy\","
+               "\"message\":\"Provider cybersecurity notice\"}}}");
 }
 
 static void mock_websocket_sink_failure_no_fallback_child(int pipe_fd) {
@@ -45222,6 +45235,74 @@ cleanup:
   }
 }
 
+static void test_stream_responses_websocket_provider_error(test_state *state) {
+  websocket_mock_server server;
+  cai_client_config config;
+  cai_response_create_params *params = NULL;
+  cai_client *client = NULL;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink = NULL;
+  cai_stream_sinks sinks;
+  write_state writer;
+  cai_error error;
+  test_log_capture logs;
+  pslog_logger *logger;
+  int rc;
+
+  if (websocket_mock_server_open_child(state, "stream_ws_provider_error",
+                                       mock_websocket_provider_error_child,
+                                       &server) != 0)
+    return;
+  logger = test_log_open(&logs);
+  cai_error_init(&error);
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = server.base_url;
+  config.timeout_ms = 500L;
+  config.logger = logger;
+  memset(&writer, 0, sizeof(writer));
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = test_write;
+  callbacks.context = &writer;
+  rc = cai_client_open(&config, &client, &error);
+  if (rc == CAI_OK)
+    rc = cai_response_create_params_new(&params, &error);
+  if (rc == CAI_OK)
+    rc = params->set_model(params, CAI_MODEL_GPT_5_NANO, &error);
+  if (rc == CAI_OK)
+    rc = params->set_previous_response_id(params, "resp_ws_prev", &error);
+  if (rc == CAI_OK)
+    rc = params->add_text(params, "user", "ws user turn", &error);
+  if (rc == CAI_OK)
+    rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+  cai_stream_sinks_init(&sinks);
+  sinks.output_text = sink;
+  if (rc == CAI_OK)
+    rc = cai_client_stream_response_websocket_test(client, params, &sinks, NULL,
+                                                   NULL, &error);
+  expect_int(state, "ws_provider_error_return", rc, CAI_ERR_SERVER);
+  expect_str(state, "ws_provider_error_partial", writer.buffer, "partial ws");
+  expect_str(state, "ws_provider_error_code", error.server_code,
+             "cyber_policy");
+  test_expect_log(state, "ws_provider_error_log", &logs,
+                  "cai.response.provider_error", "error",
+                  "\"provider_code\":\"cyber_policy\"");
+  test_expect_log(state, "ws_provider_error_details", &logs,
+                  "cai.response.provider_error", "error",
+                  "\"detail\":\"Provider cybersecurity notice\"");
+  test_expect_log(state, "ws_provider_error_request", &logs,
+                  "cai.response.provider_error", "error",
+                  "\"request_id\":\"req_ws_policy\"");
+  cai_sink_close(sink);
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  if (logger != NULL)
+    logger->destroy(logger);
+  expect_child_exit(state, "stream_ws_provider_error", server.pid,
+                    &server.child_status);
+}
+
 static void test_stream_responses_websocket_https_fallback(test_state *state) {
   websocket_mock_server server;
   test_env_snapshot force_ws_env;
@@ -46417,6 +46498,16 @@ static void test_stream_provider_failure_details(test_state *state) {
        "\"generation failed\",\"code\":\"server_error\"}}}\n\n",
        "generation failed", "server_error", 200L, "req_sse_error", -1L,
        CAI_ERR_SERVER},
+      {"event: response.failed\ndata: "
+       "{\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":"
+       "\"This request was flagged for cyber policy.\","
+       "\"code\":\"cyber_policy\"}}}\n\n",
+       "This request was flagged for cyber policy.", "cyber_policy", 200L,
+       "req_sse_error", -1L, CAI_ERR_SERVER},
+      {"event: error\ndata: {\"type\":\"error\",\"code\":\"cyber_notice\","
+       "\"message\":\"Provider cybersecurity notice\"}\n\n",
+       "Provider cybersecurity notice", "cyber_notice", 200L, "req_sse_error",
+       -1L, CAI_ERR_SERVER},
       {"data: {\"type\":\"error\",\"error\":{\"message\":\"type "
        "inferred\",\"code\":null}}\n\n",
        "type inferred", NULL, 200L, "req_sse_error", -1L, CAI_ERR_SERVER},
@@ -46446,6 +46537,8 @@ static void test_stream_provider_failure_details(test_state *state) {
       cai_sink_callbacks callbacks;
       cai_error error;
       write_state writer;
+      test_log_capture logs;
+      pslog_logger *logger;
       int rc;
       if (event == NULL) {
         memset(long_message, 'x', sizeof(long_message) - 1U);
@@ -46472,7 +46565,9 @@ static void test_stream_provider_failure_details(test_state *state) {
                                        1U, &server) != 0)
         continue;
       cai_error_init(&error);
+      logger = test_log_open(&logs);
       cai_client_config_init(&config);
+      config.logger = logger;
       config.api_key = "fixture";
       config.base_url = server.base_url;
       config.http_2_disabled = 1;
@@ -46531,10 +46626,36 @@ static void test_stream_provider_failure_details(test_state *state) {
                    1);
       expect_str(state, "sse_error_request_id", error.request_id,
                  cases[i].request_id);
+      if (cases[i].result == CAI_ERR_SERVER) {
+        char field[256];
+        const char *event_name = "cai.response.provider_error";
+        snprintf(field, sizeof(field), "\"status\":%ld", cases[i].status);
+        test_expect_log(state, "sse_provider_error_logged", &logs, event_name,
+                        "error", field);
+        snprintf(field, sizeof(field), "\"request_id\":\"%s\"",
+                 cases[i].request_id);
+        test_expect_log(state, "sse_provider_request_id_logged", &logs,
+                        event_name, "error", field);
+        if (cases[i].code != NULL) {
+          snprintf(field, sizeof(field), "\"provider_code\":\"%s\"",
+                   cases[i].code);
+          test_expect_log(state, "sse_provider_code_logged", &logs, event_name,
+                          "error", field);
+        }
+        if (cases[i].detail != NULL) {
+          snprintf(field, sizeof(field), "\"detail\":\"%s\"", cases[i].detail);
+          test_expect_log(state, "sse_provider_detail_logged", &logs,
+                          event_name, "error", field);
+        }
+        expect_int(state, "sse_provider_not_transport_error",
+                   strstr(logs.buffer, "cai.http.transport_error") == NULL, 1);
+      }
       cai_source_close(source);
       cai_sink_close(sink);
       cai_response_create_params_destroy(params);
       cai_client_close(client);
+      if (logger != NULL)
+        logger->destroy(logger);
       cai_error_cleanup(&error);
       expect_child_exit(state, "stream_provider_error", server.pid,
                         &server.child_status);
@@ -51968,6 +52089,8 @@ static const test_entry test_entries[] = {
     {"stream_output_item_failure", test_stream_output_item_failure},
     {"stream_output_suffix_segments", test_stream_output_suffix_segments},
     {"stream_provider_failure_details", test_stream_provider_failure_details},
+    {"stream_responses_websocket_provider_error",
+     test_stream_responses_websocket_provider_error},
     {"stream_http_error_preserves_openai_error",
      test_stream_http_error_preserves_openai_error},
     {"stream_source_error_preserves_openai_error",

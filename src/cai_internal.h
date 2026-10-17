@@ -233,6 +233,8 @@ void cai_log_http_request_done(const cai_client_impl *client,
 void cai_log_http_transport_error(const cai_client_impl *client,
                                   const char *method, const char *path,
                                   const char *detail);
+void cai_log_provider_stream_error(const cai_client_impl *client,
+                                   const char *method, const cai_error *error);
 void cai_log_http_response_limit(const cai_client_impl *client,
                                  const char *method, const char *path,
                                  size_t limit);

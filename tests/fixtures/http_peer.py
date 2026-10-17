@@ -68,6 +68,8 @@ class Peer(http.server.BaseHTTPRequestHandler):
             return
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
+        if isinstance(item, dict) and item.get('error_request_id'):
+            self.send_header('x-request-id', item['error_request_id'])
         if isinstance(item, dict) and item.get('truncated'):
             self.send_header('Content-Length', '10000')
         self.end_headers()
@@ -117,7 +119,11 @@ class Peer(http.server.BaseHTTPRequestHandler):
         if item.get('truncated'):
             return
         if item.get('error'):
-            self.event('error', code='fixture_error', message=item['error'])
+            error = dict(code=item.get('error_code', 'fixture_error'), message=item['error'])
+            if item.get('error_event') == 'response.failed':
+                self.event('response.failed', response={'error': error})
+            else:
+                self.event('error', **error)
         elif chat:
             delta({}, 'tool_calls' if 'tool' in item else 'stop')
             if config.get('usage'):

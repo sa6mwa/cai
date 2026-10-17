@@ -123,6 +123,8 @@ static const char *notice_message(const char *event) {
            "recovery from stored records";
   if (strcmp(event, "cai.http.transport_error") == 0)
     return "HTTP transport failed";
+  if (strcmp(event, "cai.response.provider_error") == 0)
+    return "Provider rejected the response";
   if (strcmp(event, "cai.http.request.done") == 0)
     return "HTTP request failed";
   if (strcmp(event, "cai.models.catalog") == 0)

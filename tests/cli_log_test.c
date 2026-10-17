@@ -105,6 +105,19 @@ static int structured_notices(cai_cli_log *log) {
         strstr(observed.text[2], "retryable: true") != NULL);
   CHECK(strchr(observed.text[2], '\n') == NULL);
 
+  log->logger->errorf(log->logger, "cai.response.provider_error",
+                      "provider_code=%s detail=%s request_id=%s",
+                      "cyber_policy", "Provider cybersecurity notice",
+                      "req_cyber");
+  memset(&observed, 0, sizeof(observed));
+  CHECK(cai_cli_log_notices(log, collect, &observed) == 0 &&
+        observed.count == 1U);
+  CHECK(strstr(observed.text[0], "* ERROR: Provider rejected the response") !=
+        NULL);
+  CHECK(strstr(observed.text[0], "cyber_policy") != NULL &&
+        strstr(observed.text[0], "Provider cybersecurity notice") != NULL &&
+        strstr(observed.text[0], "req_cyber") != NULL);
+
   fields[0] = pslog_str("sys", "storage.pouch");
   fields[1] = pslog_str("ns", "cai.sessions");
   fields[2] = pslog_str("error", "pouch query-index manifest is not readable");
