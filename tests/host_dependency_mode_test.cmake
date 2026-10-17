@@ -114,6 +114,16 @@ if(DEFINED CAI_GENERATOR AND NOT CAI_GENERATOR STREQUAL "")
   list(APPEND auto_configure_command -G "${CAI_GENERATOR}")
 endif()
 
+# Model cached transitive package locations left behind by an SDK upgrade.
+# Falling back to the pinned SDK must replace all three stale locations.
+foreach(package IN ITEMS ZLIB nghttp2 Libssh2)
+  set(stale_dir "${auto_dir}/stale-sdk/${package}")
+  file(MAKE_DIRECTORY "${stale_dir}")
+  file(WRITE "${stale_dir}/${package}Config.cmake"
+    "message(FATAL_ERROR \"stale SDK ${package} package selected\")\n")
+  list(APPEND auto_configure_command "-D${package}_DIR=${stale_dir}")
+endforeach()
+
 execute_process(
   COMMAND ${auto_configure_command}
   RESULT_VARIABLE auto_configure_result

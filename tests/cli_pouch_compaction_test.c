@@ -27,10 +27,13 @@ int __wrap_pthread_cond_timedwait(pthread_cond_t *condition,
   if (deadline == NULL)
     return __real_pthread_cond_timedwait(condition, mutex, deadline);
   assert(clock_gettime(CLOCK_REALTIME, &now) == 0);
-  if (deadline->tv_sec - now.tv_sec >= 1799 &&
+  /* Repeated mutation wakeups reuse the original absolute deadline. Recognize
+   * it for this fixture's entire 60-second budget, and translate that deadline
+   * rather than resetting the shortened wait on every wakeup. */
+  if (deadline->tv_sec - now.tv_sec >= 1740 &&
       deadline->tv_sec - now.tv_sec <= 1800) {
-    shortened = now;
-    shortened.tv_sec++;
+    shortened = *deadline;
+    shortened.tv_sec -= 1799;
     deadline = &shortened;
   }
   return __real_pthread_cond_timedwait(condition, mutex, deadline);

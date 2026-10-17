@@ -53,7 +53,7 @@ option(CAI_INSTALL "Enable install rules." ON)
 set(CAI_VERSION_OVERRIDE "" CACHE STRING "Override detected cai package version.")
 set(CAI_DIST_DIR "${CMAKE_BINARY_DIR}/dist" CACHE PATH "Distribution output directory.")
 set(CAI_TARGET_ID "" CACHE STRING "Release archive target id.")
-set(CAI_CPKT_VERSION "0.3.0" CACHE STRING
+set(CAI_CPKT_VERSION "0.4.0" CACHE STRING
     "Pinned cpkt release used for curl/native dependencies." FORCE)
 # Consumer compatibility is independent of the producer's exact archive pin.
 set(CAI_MINIMUM_CPKT_VERSION "0.3.0")
@@ -135,19 +135,19 @@ endif()
 
 function(cai_cpkt_sha256 target_id out_var)
   if(target_id STREQUAL "x86_64-linux-gnu")
-    set(_sha256 "7b59ac702da1aab906c48c33a67954954c074f591d714085f3e4bd7a23619a66")
+    set(_sha256 "19709d1a3c25036778e6be6fabc0dde66502d7eafa9e79374093c2e91b7678bc")
   elseif(target_id STREQUAL "x86_64-linux-musl")
-    set(_sha256 "61c6e657cefd916b5f500374917ccc7e039d27b2ef1353a45a8f6f22d91c75ed")
+    set(_sha256 "54e937f7f2d10d90c6d70e79192c84f1c492f050b5f6a384d764b3c2cab53d9e")
   elseif(target_id STREQUAL "aarch64-linux-gnu")
-    set(_sha256 "4f1f964e5e54f191162d42871815a74afd9da02c77adce304a52dd03397d4740")
+    set(_sha256 "c0be196e9b72c700611d1a885d907cb2c259de52bfc9a9c99735573a470505dd")
   elseif(target_id STREQUAL "aarch64-linux-musl")
-    set(_sha256 "7e25be64d73bc7140f01659c0c0e11e066990c88587fce2ca49ba8bf874a31aa")
+    set(_sha256 "afed8dd521a271e3597b08dfed3e73316d84e90c2ab6b309dbf0a2a128f0c43b")
   elseif(target_id STREQUAL "armhf-linux-gnu")
-    set(_sha256 "2b57c7090186ed06a1df2525407e0cc222d6be1b40e3d7ff09c62e25354bee42")
+    set(_sha256 "4cea6c97d530f45a719ea4c54d5aa6a40a7fa0b620e6acc862c194c92ee7bfa9")
   elseif(target_id STREQUAL "armhf-linux-musl")
-    set(_sha256 "dcc7d29a6536382ce05fc1351917bb7118b8db13a4fb52e3cb96d4a91ff977f5")
+    set(_sha256 "6928b2cd5dea2b4cf4697c099a0371833c372be42c4083ef0d920c7dee0b052f")
   elseif(target_id STREQUAL "arm64-apple-darwin")
-    set(_sha256 "5bf571b6dfeb19a8dc796cb584fd8e770eb1a10a3d2b98ab46269d7c8e895fce")
+    set(_sha256 "dcadf54b6d50d47f366c8e6db87694b3c3ff2e5b055b6a070a0f809a56acddfc")
   else()
     message(FATAL_ERROR "No pinned cpkt checksum for target ${target_id}")
   endif()
@@ -448,6 +448,14 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
       CACHE PATH "curl package directory" FORCE)
   set(OpenSSL_DIR "${CAI_CPKT_PREFIX}/lib/cmake/OpenSSL"
       CACHE PATH "OpenSSL package directory" FORCE)
+  # Keep transitive package discovery in the selected SDK after an upgrade;
+  # CMake otherwise retains *_DIR entries from the previous cpkt prefix.
+  set(ZLIB_DIR "${CAI_CPKT_PREFIX}/lib/cmake/zlib"
+      CACHE PATH "zlib package directory" FORCE)
+  set(nghttp2_DIR "${CAI_CPKT_PREFIX}/lib/cmake/nghttp2"
+      CACHE PATH "nghttp2 package directory" FORCE)
+  set(Libssh2_DIR "${CAI_CPKT_PREFIX}/lib/cmake/libssh2"
+      CACHE PATH "libssh2 package directory" FORCE)
   set(CpktCore_DIR "${CAI_CPKT_PREFIX}/lib/cmake/CpktCore"
       CACHE PATH "cpkt core package directory" FORCE)
   find_package(CpktCore ${CAI_CPKT_VERSION} EXACT CONFIG REQUIRED)
