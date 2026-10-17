@@ -1856,6 +1856,36 @@ int cai_tool_registry_deliver_result(cai_tool_registry *registry,
                                 out_delivered, error);
 }
 
+static int cai_tool_entry_add_params(const cai_tool_entry *entry,
+                                     cai_response_create_params *params,
+                                     cai_error *error) {
+  if (entry->kind == CAI_TOOL_CUSTOM) {
+    cai_custom_tool_format format = entry->raw_input.format;
+    return params->add_custom_tool(params, entry->name, entry->description,
+                                   &format, error);
+  }
+  return params->add_function_tool(params, entry->name, entry->description,
+                                   entry->schema_json, entry->strict, error);
+}
+
+int cai_tool_registry_add_named_params(const cai_tool_registry *registry,
+                                       const char *name,
+                                       cai_response_create_params *params,
+                                       cai_error *error) {
+  const cai_tool_registry_impl *impl =
+      cai_tool_registry_impl_from_const_public(registry);
+  size_t i;
+  if (impl == NULL || name == NULL || params == NULL)
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "tool registry, name and response params are required");
+  for (i = 0U; i < impl->count; i++)
+    if (strcmp(impl->entries[i].name, name) == 0)
+      return cai_tool_entry_add_params(&impl->entries[i], params, error);
+  /* Disabled tools remain unavailable in restricted requests too. */
+  return CAI_OK;
+}
+
 int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,
                                              cai_response_create_params *params,
                                              cai_error *error) {
@@ -1872,18 +1902,7 @@ int cai_tool_registry_add_to_response_params(const cai_tool_registry *registry,
     return cai_set_error(error, CAI_ERR_INVALID, "tool registry is closed");
   }
   for (i = 0U; i < impl->count; i++) {
-    if (impl->entries[i].kind == CAI_TOOL_CUSTOM) {
-      cai_custom_tool_format format;
-
-      format = impl->entries[i].raw_input.format;
-      rc =
-          params->add_custom_tool(params, impl->entries[i].name,
-                                  impl->entries[i].description, &format, error);
-    } else {
-      rc = params->add_function_tool(
-          params, impl->entries[i].name, impl->entries[i].description,
-          impl->entries[i].schema_json, impl->entries[i].strict, error);
-    }
+    rc = cai_tool_entry_add_params(&impl->entries[i], params, error);
     if (rc != CAI_OK) {
       return rc;
     }

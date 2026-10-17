@@ -170,7 +170,14 @@ typedef enum cai_agent_runtime_event_type {
    * Bounded chunks may split rows; an empty chunk ends the locations stream.
    * Adds start at line one. No file contents or VCS comparisons are included.
    */
-  CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS = 31
+  CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS = 31,
+  /** Automatic explanation-only prompt after a provider cybersecurity error.
+   * The same session/model may inspect workspace source using read_file and
+   * list_files (at most eight sequential tool rounds) before reporting.
+   * RUN_FAILED retains the original error. Goal state remains unchanged;
+   * callers can explicitly submit a normal turn after the diagnostic ends.
+   */
+  CAI_AGENT_EVENT_POLICY_DIAGNOSTIC_STARTED = 32
 } cai_agent_runtime_event_type;
 
 /**

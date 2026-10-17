@@ -66,6 +66,13 @@ class Peer(http.server.BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({'error': {'message': 'quota exhausted' if status == 429 else 'fixture error',
                 'type': 'rate_limit_error', 'code': 'rate_limit_exceeded'}}).encode())
             return
+        if isinstance(item, dict) and item.get('http_status', 200) >= 400:
+            self.send_response(item['http_status'])
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('x-request-id', item.get('error_request_id', 'req_policy_http'))
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': {'code': item['error_code'], 'message': item['error']}}).encode())
+            return
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         if isinstance(item, dict) and item.get('error_request_id'):
@@ -120,7 +127,9 @@ class Peer(http.server.BaseHTTPRequestHandler):
             return
         if item.get('error'):
             error = dict(code=item.get('error_code', 'fixture_error'), message=item['error'])
-            if item.get('error_event') == 'response.failed':
+            if chat:
+                self.wfile.write(('data: ' + json.dumps({'error': error}) + '\n\n').encode())
+            elif item.get('error_event') == 'response.failed':
                 self.event('response.failed', response={'error': error})
             else:
                 self.event('error', **error)

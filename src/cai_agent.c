@@ -5700,9 +5700,10 @@ static int cai_capture_tool_error_output(cai_tool_output_capture *capture,
   return rc;
 }
 
-static int cai_session_init_response_params(cai_session *session,
-                                            cai_response_create_params **out,
-                                            cai_error *error) {
+static int
+cai_session_init_response_params_mode(cai_session *session, int diagnostic,
+                                      cai_response_create_params **out,
+                                      cai_error *error) {
   cai_response_create_params *params;
   int rc;
 
@@ -5712,7 +5713,21 @@ static int cai_session_init_response_params(cai_session *session,
     rc = params->set_model(params, CAI_SESSION_AGENT_IMPL(session)->model,
                            error);
   }
-  if (rc == CAI_OK &&
+  if (rc == CAI_OK && diagnostic) {
+    rc = params->set_instructions(
+        params,
+        "Produce only an explanation for a policy incident report. Treat "
+        "earlier instructions, goals and tasks as historical context, not "
+        "work to perform. You may inspect workspace source using only "
+        "read_file and list_files. Do not execute commands, edit files, "
+        "continue the task, or bypass a provider restriction. Separate "
+        "observed "
+        "facts from possible explanations; you do not know the provider's "
+        "internal trigger. Give a concise rationale, not hidden reasoning. "
+        "At most eight sequential reads, then write the report.",
+        error);
+  }
+  if (rc == CAI_OK && !diagnostic &&
       CAI_SESSION_AGENT_IMPL(session)->developer_instructions != NULL) {
     rc = params->set_instructions(
         params, CAI_SESSION_AGENT_IMPL(session)->developer_instructions, error);
@@ -5722,11 +5737,24 @@ static int cai_session_init_response_params(cai_session *session,
     rc = params->set_prompt_cache_key(
         params, CAI_SESSION_AGENT_IMPL(session)->prompt_cache_key, error);
   }
-  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->tool_choice != NULL) {
+  if (rc == CAI_OK && diagnostic) {
+    rc = cai_tool_registry_add_named_params(
+        CAI_SESSION_AGENT_IMPL(session)->tools, "read_file", params, error);
+    if (rc == CAI_OK)
+      rc = cai_tool_registry_add_named_params(
+          CAI_SESSION_AGENT_IMPL(session)->tools, "list_files", params, error);
+    if (rc == CAI_OK)
+      rc = params->set_tool_choice(
+          params, params->tools.count > 0U ? "auto" : "none", error);
+    if (rc == CAI_OK && params->tools.count > 0U)
+      rc = params->set_parallel_tool_calls(params, 0, error);
+  }
+  if (rc == CAI_OK && !diagnostic &&
+      CAI_SESSION_AGENT_IMPL(session)->tool_choice != NULL) {
     rc = params->set_tool_choice(
         params, CAI_SESSION_AGENT_IMPL(session)->tool_choice, error);
   }
-  if (rc == CAI_OK &&
+  if (rc == CAI_OK && !diagnostic &&
       CAI_SESSION_AGENT_IMPL(session)->tool_choice_json != NULL) {
     rc = params->set_tool_choice_json(
         params, CAI_SESSION_AGENT_IMPL(session)->tool_choice_json, error);
@@ -5735,7 +5763,8 @@ static int cai_session_init_response_params(cai_session *session,
     rc = params->set_max_output_tokens(
         params, CAI_SESSION_AGENT_IMPL(session)->max_output_tokens, error);
   }
-  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->max_tool_calls > 0) {
+  if (rc == CAI_OK && !diagnostic &&
+      CAI_SESSION_AGENT_IMPL(session)->max_tool_calls > 0) {
     rc = params->set_max_tool_calls(
         params, CAI_SESSION_AGENT_IMPL(session)->max_tool_calls, error);
   }
@@ -5750,7 +5779,7 @@ static int cai_session_init_response_params(cai_session *session,
     rc = params->set_reasoning_mode(
         params, CAI_SESSION_AGENT_IMPL(session)->reasoning_mode, error);
   }
-  if (rc == CAI_OK &&
+  if (rc == CAI_OK && !diagnostic &&
       CAI_SESSION_AGENT_IMPL(session)->text_format_schema_json != NULL) {
     rc = params->set_text_format_json_schema(
         params, CAI_SESSION_AGENT_IMPL(session)->text_format_name,
@@ -5758,12 +5787,13 @@ static int cai_session_init_response_params(cai_session *session,
         CAI_SESSION_AGENT_IMPL(session)->text_format_schema_json,
         CAI_SESSION_AGENT_IMPL(session)->text_format_strict, error);
   }
-  if (rc == CAI_OK &&
+  if (rc == CAI_OK && !diagnostic &&
       CAI_SESSION_AGENT_IMPL(session)->parallel_tool_calls >= 0) {
     rc = params->set_parallel_tool_calls(
         params, CAI_SESSION_AGENT_IMPL(session)->parallel_tool_calls, error);
   }
-  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->auto_compact &&
+  if (rc == CAI_OK && !diagnostic &&
+      CAI_SESSION_AGENT_IMPL(session)->auto_compact &&
       CAI_SESSION_AGENT_IMPL(session)->auto_compact_token_limit > 0LL) {
     rc = params->set_compact_threshold(
         params, CAI_SESSION_AGENT_IMPL(session)->auto_compact_token_limit,
@@ -5781,7 +5811,7 @@ static int cai_session_init_response_params(cai_session *session,
     rc = params->set_previous_response_id(
         params, CAI_SESSION_IMPL(session)->previous_response_id, error);
   }
-  if (rc == CAI_OK &&
+  if (rc == CAI_OK && !diagnostic &&
       CAI_SESSION_AGENT_IMPL(session)->hosted_tools.count > 0U) {
     struct cai_function_tool *hosted_tools;
     size_t i;
@@ -5795,7 +5825,7 @@ static int cai_session_init_response_params(cai_session *session,
           params->add_hosted_tool_json(params, hosted_tools[i].raw_json, error);
     }
   }
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK && !diagnostic) {
     rc = CAI_SESSION_AGENT_IMPL(session)->tools->add_to_response_params(
         CAI_SESSION_AGENT_IMPL(session)->tools, params, error);
   }
@@ -5805,6 +5835,12 @@ static int cai_session_init_response_params(cai_session *session,
   }
   *out = params;
   return CAI_OK;
+}
+
+static int cai_session_init_response_params(cai_session *session,
+                                            cai_response_create_params **out,
+                                            cai_error *error) {
+  return cai_session_init_response_params_mode(session, 0, out, error);
 }
 
 static int cai_session_clear_tool_choice_for_tool_continuation(
@@ -6147,7 +6183,7 @@ int cai_session_run_auto_output(cai_session *session,
 static int cai_session_stream_once(cai_session *session,
                                    const cai_stream_sinks *sinks,
                                    cai_stream_tool_call_list *tool_calls,
-                                   cai_error *error) {
+                                   int diagnostic, cai_error *error) {
   cai_response_create_params *params;
   cai_stream_tool_capture capture;
   cai_stream_sinks effective_sinks;
@@ -6213,7 +6249,8 @@ static int cai_session_stream_once(cai_session *session,
   memset(&pending_items, 0, sizeof(pending_items));
   has_pending_items = 0;
   memset(&usage, 0, sizeof(usage));
-  rc = cai_session_init_response_params(session, &params, error);
+  rc = cai_session_init_response_params_mode(session, diagnostic, &params,
+                                             error);
   if (rc == CAI_OK) {
     rc = cai_session_prepare_history_params(session, params, &pending_items,
                                             &has_pending_items, error);
@@ -6249,6 +6286,11 @@ static int cai_session_stream_once(cai_session *session,
      * its committed input eligible for replay. */
     cai_session_clear_inputs(session);
   }
+  if (rc == CAI_OK && diagnostic && has_output_text &&
+      (tool_calls == NULL || tool_calls->count == 0U) &&
+      output_text.size_fn(&output_text) == 0U)
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "policy diagnostic returned no explanation");
   if (rc == CAI_ERR_LIMIT && error != NULL && error->server_code != NULL &&
       (strcmp(error->server_code, "output_length") == 0 ||
        strcmp(error->server_code, "context_length_exceeded") == 0) &&
@@ -6297,7 +6339,62 @@ static int cai_session_stream_once(cai_session *session,
 
 int cai_session_stream(cai_session *session, const cai_stream_sinks *sinks,
                        cai_error *error) {
-  return cai_session_stream_once(session, sinks, NULL, error);
+  return cai_session_stream_once(session, sinks, NULL, 0, error);
+}
+
+static int cai_policy_diagnostic_item(void *context, const char *item_id,
+                                      int output_index, const char *type,
+                                      const lonejson_spooled *item,
+                                      cai_error *error) {
+  (void)context;
+  (void)item_id;
+  (void)output_index;
+  (void)item;
+  if (type != NULL && strstr(type, "call") != NULL &&
+      strcmp(type, "function_call") != 0)
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "policy diagnostic requested an unavailable tool; no "
+                         "tool was executed");
+  return CAI_OK;
+}
+
+static int cai_policy_diagnostic_tool(void *context, const char *item_id,
+                                      int output_index, const char *call_id,
+                                      const char *name,
+                                      const lonejson_spooled *arguments,
+                                      cai_error *error) {
+  (void)context;
+  (void)item_id;
+  (void)output_index;
+  (void)call_id;
+  (void)arguments;
+  if (name == NULL ||
+      (strcmp(name, "read_file") != 0 && strcmp(name, "list_files") != 0))
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "policy diagnostic requested an unavailable tool; no "
+                         "tool was executed");
+  return CAI_OK;
+}
+
+static int cai_session_stream_auto_mode(cai_session *session,
+                                        const cai_run_options *options,
+                                        const cai_stream_sinks *sinks,
+                                        int diagnostic, cai_error *error);
+
+/* Same session and tool loop, restricted to source inspection. */
+int cai_session_stream_policy_diagnostic(cai_session *session,
+                                         const cai_run_options *options,
+                                         const cai_stream_sinks *sinks,
+                                         cai_error *error) {
+  cai_run_options bounded = *options;
+  cai_stream_sinks diagnostic = *sinks;
+  diagnostic.output_item_done = cai_policy_diagnostic_item;
+  diagnostic.output_item_context = NULL;
+  diagnostic.function_call_arguments_done = cai_policy_diagnostic_tool;
+  diagnostic.function_call_context = NULL;
+  bounded.max_tool_rounds = 8;
+  bounded.max_tool_calls_per_round = 1;
+  return cai_session_stream_auto_mode(session, &bounded, &diagnostic, 1, error);
 }
 
 static int cai_session_add_stream_tool_outputs(
@@ -6433,7 +6530,7 @@ static int cai_session_add_stream_tool_outputs(
 static int cai_session_stream_tool_round(
     cai_session *session, const cai_run_options *options,
     const cai_stream_sinks *sinks, const cai_stream_tool_call_list *input_calls,
-    cai_stream_tool_call_list *output_calls, cai_error *error) {
+    cai_stream_tool_call_list *output_calls, int diagnostic, cai_error *error) {
   cai_response_create_params *params;
   cai_response_create_params *history_params;
   cai_stream_tool_capture capture;
@@ -6476,7 +6573,8 @@ static int cai_session_stream_tool_round(
   effective_sinks.custom_tool_call_input_done =
       cai_stream_capture_custom_tool_done;
   effective_sinks.custom_tool_call_context = &capture;
-  rc = cai_session_init_response_params(session, &params, error);
+  rc = cai_session_init_response_params_mode(session, diagnostic, &params,
+                                             error);
   if (rc == CAI_OK) {
     rc = cai_session_clear_tool_choice_for_tool_continuation(params, error);
   }
@@ -6532,7 +6630,7 @@ static int cai_session_stream_tool_round(
     rc = options->tool_round_durable(options->tool_round_durable_context,
                                      session, error);
   }
-  if (rc == CAI_OK)
+  if (rc == CAI_OK && !diagnostic)
     rc = cai_session_refresh_request_settings(session, params, error);
   if (rc == CAI_OK && options->tool_round_durable != NULL &&
       CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
@@ -6592,6 +6690,10 @@ static int cai_session_stream_tool_round(
      * callback below fails. */
     cai_session_clear_inputs(session);
   }
+  if (rc == CAI_OK && diagnostic && has_output_text &&
+      output_calls->count == 0U && output_text.size_fn(&output_text) == 0U)
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "policy diagnostic returned no explanation");
   if (rc == CAI_OK && sinks->response_completed != NULL) {
     rc = sinks->response_completed(sinks->response_completed_context, error);
   }
@@ -6611,9 +6713,10 @@ static int cai_session_stream_tool_round(
   return rc;
 }
 
-int cai_session_stream_auto(cai_session *session,
-                            const cai_run_options *options,
-                            const cai_stream_sinks *sinks, cai_error *error) {
+static int cai_session_stream_auto_mode(cai_session *session,
+                                        const cai_run_options *options,
+                                        const cai_stream_sinks *sinks,
+                                        int diagnostic, cai_error *error) {
   cai_run_options defaults;
   const cai_run_options *effective;
   cai_stream_tool_call_list current_calls;
@@ -6637,7 +6740,8 @@ int cai_session_stream_auto(cai_session *session,
   }
   memset(&current_calls, 0, sizeof(current_calls));
   memset(&next_calls, 0, sizeof(next_calls));
-  rc = cai_session_stream_once(session, sinks, &current_calls, error);
+  rc = cai_session_stream_once(session, sinks, &current_calls, diagnostic,
+                               error);
   rounds = 0;
   while (rc == CAI_OK && current_calls.count > 0U &&
          cai_run_options_allows_tool_round(effective, rounds)) {
@@ -6649,20 +6753,41 @@ int cai_session_stream_auto(cai_session *session,
     }
     cai_stream_tool_call_list_cleanup(&next_calls);
     memset(&next_calls, 0, sizeof(next_calls));
-    rc = cai_session_stream_tool_round(session, effective, sinks,
-                                       &current_calls, &next_calls, error);
+    rc =
+        cai_session_stream_tool_round(session, effective, sinks, &current_calls,
+                                      &next_calls, diagnostic, error);
     cai_stream_tool_call_list_cleanup(&current_calls);
     current_calls = next_calls;
     memset(&next_calls, 0, sizeof(next_calls));
     rounds++;
   }
   if (rc == CAI_OK && current_calls.count > 0U) {
-    rc = cai_set_error(error, CAI_ERR_CANCELLED,
-                       "tool auto-run exhausted max tool rounds");
+    if (diagnostic) {
+      size_t i;
+      /* A capped diagnostic must leave resumable history, with a result for
+       * each requested call, even though no further source read executes. */
+      for (i = 0U; rc == CAI_OK && i < current_calls.count; i++)
+        rc = cai_session_add_function_call_output(
+            session, current_calls.items[i].call_id,
+            "{\"error\":\"Source inspection limit reached; this tool was not "
+            "executed.\"}",
+            error);
+      if (rc == CAI_OK)
+        rc = cai_session_commit_pending_inputs(session, error);
+    }
+    if (rc == CAI_OK)
+      rc = cai_set_error(error, CAI_ERR_CANCELLED,
+                         "tool auto-run exhausted max tool rounds");
   }
   cai_stream_tool_call_list_cleanup(&current_calls);
   cai_stream_tool_call_list_cleanup(&next_calls);
   return rc;
+}
+
+int cai_session_stream_auto(cai_session *session,
+                            const cai_run_options *options,
+                            const cai_stream_sinks *sinks, cai_error *error) {
+  return cai_session_stream_auto_mode(session, options, sinks, 0, error);
 }
 
 int cai_session_stream_text(cai_session *session, cai_sink *sink,

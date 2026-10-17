@@ -243,6 +243,13 @@
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_failures_test.sh"
         "$<TARGET_FILE:cai_cli>")
     set_tests_properties(cai_cli_terminal_failures PROPERTIES TIMEOUT 60)
+    foreach(_policy_protocol responses chat_completions)
+      add_test(NAME cai_cli_policy_diagnostic_${_policy_protocol}
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_policy_diagnostic_test.sh"
+          "$<TARGET_FILE:cai_cli>" "${_policy_protocol}")
+      set_tests_properties(cai_cli_policy_diagnostic_${_policy_protocol}
+        PROPERTIES TIMEOUT 45)
+    endforeach()
     add_test(NAME cai_cli_lockd_endpoint
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_lockd_endpoint_test.sh"
         "$<TARGET_FILE:cai_cli>")

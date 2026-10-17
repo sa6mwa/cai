@@ -1146,6 +1146,11 @@ if(CAI_BUILD_TESTS)
           "${CAI_LUA_EXECUTABLE}" "${_cai_lua_context_protocol}")
       set_tests_properties(cai_lua_context_instructions_${_cai_lua_context_protocol}
         PROPERTIES LABELS "unit;local;offline" ENVIRONMENT "${CAI_LUA_TEST_ENV}" TIMEOUT 20)
+      add_test(NAME cai_lua_policy_diagnostic_${_cai_lua_context_protocol}
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_policy_diagnostic_test.sh"
+          "${CAI_LUA_EXECUTABLE}" "${_cai_lua_context_protocol}")
+      set_tests_properties(cai_lua_policy_diagnostic_${_cai_lua_context_protocol}
+        PROPERTIES LABELS "unit;local;offline" ENVIRONMENT "${CAI_LUA_TEST_ENV}" TIMEOUT 20)
     endforeach()
     add_test(NAME cai_lua_chrome
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/chrome_test.sh"

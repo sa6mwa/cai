@@ -12,7 +12,11 @@ for mode in malformed truncated provider_error cyber_policy cyber_notice cancel 
       ;;
     *) item='{"pause":true,"text":"STALE cancelled tail."}' ;;
   esac
-  plan "{\"plan\":[$item]}"
+  if [[ "$mode" == cyber_policy || "$mode" == cyber_notice ]]; then
+    plan "{\"plan\":[$item,\"Diagnostic explanation for this incident\"]}"
+  else
+    plan "{\"plan\":[$item]}"
+  fi
   send "exercise $mode\r"
   if [[ "$mode" == cancel || "$mode" == escape ]]; then
     expect 'STREAM in flight'
@@ -27,6 +31,7 @@ for mode in malformed truncated provider_error cyber_policy cyber_notice cancel 
     expect 'Provider rejected the response'
     expect 'Provider cybersecurity notice'
     expect "req_$mode"
+    expect 'Diagnostic explanation for this incident'
     logs
     jq -se --arg code "$mode" 'any(.[]; .lvl == "error" and .msg == "cai.response.provider_error" and .provider_code == $code and .request_id == ("req_" + $code) and .detail == "Provider cybersecurity notice")' "$root/logs.jsonl" >/dev/null
   fi
@@ -35,18 +40,56 @@ for mode in malformed truncated provider_error cyber_policy cyber_notice cancel 
   absent "$term/text" 'STALE cancelled tail.'
   terminal_close
 done
+
+# Cancellation during the explanation ends it without a recursive diagnostic.
+terminal_start -N
+plan '{"plan":[{"error":"Provider incident","error_code":"cyber_policy"},{"pause":true,"text":"CANCELLED DIAGNOSTIC TAIL"}]}'
+before=$(requests)
+send 'diagnostic cancellation\r'
+expect 'STREAM in flight'
+send '\003'
+expect 'Worked for'
+release
+[[ $(requests) == $((before+2)) ]]
+absent "$term/text" 'CANCELLED DIAGNOSTIC TAIL'
+terminal_close
+
+# Policy diagnostics stop automation, while an explicit user turn remains a
+# normal agent turn even when a goal exists; restrictions must not leak.
+terminal_start -N
+plan '{"plan":[{"error":"Provider incident","error_code":"cyber_policy"},"Goal diagnostic finished"]}'
+before=$(requests)
+send '/goal new Diagnose interrupted goal\r'
+expect 'Goal diagnostic finished'
+expect 'Worked for'
+[[ $(requests) == $((before+2)) ]]
+printf 'MANUAL_READ_MARKER\n' >"$work/tracked.txt"
+plan '{"plan":["__read_file__","Manual followup finished"]}'
+send 'Please proceed with my next task\r'
+expect_assistant 'Manual followup finished'
+jq -s '.[-1]' "$root/peer/requests.jsonl" >"$root/manual-request"
+contains "$root/manual-request" MANUAL_READ_MARKER
+json "$root/manual-request" 'any(.tools[]; .name == "apply_patch")'
+terminal_close
+before=$(requests)
+terminal_start
+[[ $(requests) == "$before" ]] || fail 'Resume restarted work automatically'
+plan '{"plan":["Manual resumed followup finished"]}'
+send 'Another explicit user request\r'
+expect_assistant 'Manual resumed followup finished'
+terminal_close
 logs
 jq -se '[.[]|select(.event == "run_cancelled")]|length == 2' "$root/logs.jsonl" >/dev/null
 
 # Headless invocations report provider failures through pslog on stderr and
-# exit unsuccessfully; they leave stdout empty if no assistant text arrived.
+# exit unsuccessfully even when the automatic diagnostic succeeds.
 for code in cyber_policy cyber_notice; do
-  plan "{\"plan\":[{\"error\":\"Provider cybersecurity notice\",\"error_code\":\"$code\",\"error_request_id\":\"req_$code\"}]}"
+  plan "{\"plan\":[{\"error\":\"Provider cybersecurity notice\",\"error_code\":\"$code\",\"error_request_id\":\"req_$code\"},\"Diagnostic explanation\"]}"
   before=$(requests)
   run -Nn -i "exercise $code"
   bad
-  [[ ! -s "$root/stdout" ]] || fail 'Failure without assistant text wrote stdout'
-  [[ $(requests) == $((before+1)) ]] || fail 'Unexpected provider request count'
+  [[ $(stdout_text) == 'Diagnostic explanation' ]] || fail 'Missing diagnostic final output'
+  [[ $(requests) == $((before+2)) ]] || fail 'Unexpected provider request count'
   jq -se --arg code "$code" 'any(.[]; .lvl == "error" and .msg == "cai.response.provider_error" and .provider_code == $code and .request_id == ("req_" + $code) and .detail == "Provider cybersecurity notice")' "$root/stderr" >/dev/null
   absent "$root/stderr" cai.http.transport_error
 done

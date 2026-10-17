@@ -5043,6 +5043,135 @@ static void cai_runtime_promote_resumed_steering(cai_agent_runtime *runtime) {
   runtime->steering_count = 0U;
 }
 
+static int cai_runtime_policy_checkpoint(void *context, cai_session *session,
+                                         cai_error *error) {
+  cai_agent_runtime *runtime = (cai_agent_runtime *)context;
+  (void)session;
+  if (cai_runtime_cancel_requested(runtime))
+    return cai_set_error(error, CAI_ERR_CANCELLED,
+                         "policy diagnostic was cancelled");
+  return cai_runtime_checkpoint(runtime, 1, error);
+}
+
+static void cai_runtime_policy_diagnostic(cai_agent_runtime *runtime,
+                                          const cai_error *failure,
+                                          const cai_stream_sinks *sinks) {
+  cai_error error;
+  cai_error checkpoint_error;
+  cai_run_options options;
+  char prompt[4096];
+  unsigned long long sequence = 0U;
+  const char *task =
+      "CAI automatic policy diagnostic (explanation only).\n"
+      "The preceding turn was interrupted by a provider cybersecurity error. "
+      "The original task and goal remain stopped. For a bug report, summarize "
+      "the intended task and relevant preceding work visible in this "
+      "conversation. Describe what possibly triggered the notice and assess ";
+  const char *assessment =
+      "whether the visible context supports a cybersecurity concern or "
+      "legitimate maintenance/security fixes. Separate observed facts from "
+      "hypotheses and explain uncertainty; you cannot know the provider's "
+      "internal trigger or certify a false positive. Include a concise "
+      "description of what happened that the user can include in a report. ";
+  const char *limits =
+      "You may inspect relevant workspace source using read_file and "
+      "list_files, one at a time, at most eight tool rounds. Do not repeat "
+      "sensitive data or credentials, execute commands, edit files, continue "
+      "the task, or provide a workaround for the restriction. "
+      "Return only the diagnostic explanation, then stop.\n";
+  int length;
+  int rc;
+  int checkpoint_rc;
+
+  if (failure->code != CAI_ERR_SERVER || failure->server_code == NULL ||
+      (strcmp(failure->server_code, "cyber_policy") != 0 &&
+       strcmp(failure->server_code, "cyber_notice") != 0) ||
+      cai_runtime_cancel_requested(runtime))
+    return;
+  cai_error_init(&error);
+  pthread_mutex_lock(&runtime->lock);
+  runtime->accepting_steering = 0;
+  pthread_mutex_unlock(&runtime->lock);
+  rc = CAI_OK;
+  length = snprintf(
+      prompt, sizeof(prompt),
+      "%s%s%sProvider code: %s\nHTTP status: %ld\nRequest ID: %s\n"
+      "Provider message: %s\nDetail: %s",
+      task, assessment, limits, failure->server_code, failure->http_status,
+      failure->request_id != NULL ? failure->request_id : "unavailable",
+      failure->message != NULL ? failure->message : "unavailable",
+      failure->detail != NULL ? failure->detail : "unavailable");
+  if (rc == CAI_OK && (length < 0 || (size_t)length >= sizeof(prompt)))
+    rc = cai_set_error(&error, CAI_ERR_LIMIT,
+                       "policy diagnostic prompt exceeds its limit");
+  if (rc == CAI_OK && runtime->record_transcript) {
+    pthread_mutex_lock(&runtime->lock);
+    rc = cai_runtime_append_journal_event_locked(runtime, "assistant_text_end",
+                                                 NULL, NULL, &error);
+    pthread_mutex_unlock(&runtime->lock);
+  }
+  if (rc == CAI_OK)
+    rc = cai_session_add_user_text(runtime->session, prompt, &error);
+  if (rc == CAI_OK)
+    rc = cai_session_commit_pending_inputs(runtime->session, &error);
+  if (rc == CAI_OK) {
+    pthread_mutex_lock(&runtime->lock);
+    rc = cai_runtime_append_journal_event_locked(runtime, "policy_diagnostic",
+                                                 prompt, &sequence, &error);
+    if (rc == CAI_OK)
+      cai_runtime_mark_checkpoint_event_locked(runtime, sequence);
+    pthread_mutex_unlock(&runtime->lock);
+  }
+  if (rc == CAI_OK)
+    rc = cai_runtime_checkpoint(runtime, 1, &error);
+  if (rc == CAI_OK) {
+    pthread_mutex_lock(&runtime->lock);
+    rc = cai_runtime_enqueue_locked(
+        runtime, CAI_AGENT_EVENT_POLICY_DIAGNOSTIC_STARTED, prompt,
+        (size_t)length, NULL, NULL, runtime->state, &error);
+    pthread_mutex_unlock(&runtime->lock);
+  }
+  if (rc == CAI_OK) {
+    cai_run_options_init(&options);
+    options.tool_event = cai_runtime_tool_event;
+    options.tool_event_context = runtime;
+    options.tool_round_durable = cai_runtime_policy_checkpoint;
+    options.tool_round_durable_context = runtime;
+    rc = cai_session_stream_policy_diagnostic(runtime->session, &options, sinks,
+                                              &error);
+  }
+  /* Successful inspections can consume usage and change history even when
+   * a later response fails or reaches the diagnostic limit. */
+  cai_error_init(&checkpoint_error);
+  checkpoint_rc =
+      cai_runtime_refresh_goal_projection(runtime, &checkpoint_error);
+  if (checkpoint_rc == CAI_OK)
+    checkpoint_rc = cai_runtime_checkpoint(runtime, 1, &checkpoint_error);
+  if (checkpoint_rc != CAI_OK) {
+    cai_error_cleanup(&error);
+    error = checkpoint_error;
+    cai_error_init(&checkpoint_error);
+    rc = checkpoint_rc;
+  }
+  cai_error_cleanup(&checkpoint_error);
+  if (!runtime->logger_disabled && runtime->logger != NULL) {
+    if (rc == CAI_OK && runtime->logger->infof != NULL)
+      runtime->logger->infof(
+          runtime->logger, "cai.agent.policy_diagnostic",
+          "provider_code=%s request_id=%s status=%s", failure->server_code,
+          failure->request_id != NULL ? failure->request_id : "", "completed");
+    else if (rc != CAI_OK && runtime->logger->errorf != NULL)
+      runtime->logger->errorf(
+          runtime->logger, "cai.agent.policy_diagnostic",
+          "provider_code=%s request_id=%s status=%s error=%s detail=%s",
+          failure->server_code,
+          failure->request_id != NULL ? failure->request_id : "", "failed",
+          error.message != NULL ? error.message : "diagnostic failed",
+          error.detail != NULL ? error.detail : "");
+  }
+  cai_error_cleanup(&error);
+}
+
 static void *cai_runtime_worker(void *context) {
   cai_agent_runtime *runtime;
   cai_stream_sinks sinks;
@@ -5409,6 +5538,8 @@ static void *cai_runtime_worker(void *context) {
       }
       cai_error_cleanup(&cleanup_error);
     }
+    if (rc != CAI_OK)
+      cai_runtime_policy_diagnostic(runtime, &error, &sinks);
     cancelled_turn = 0;
     pthread_mutex_lock(&runtime->lock);
     if (runtime->turn_cancel_requested && rc == CAI_OK) {

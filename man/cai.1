@@ -555,6 +555,20 @@ Full pslog records remain in the log file; truncated notices
 refer to that file. Startup records are moved into the
 selected session log; failed startup logs remain in a startup-* file.
 .PP
+Provider errors with code cyber_policy or cyber_notice trigger one automatic
+explanation-only prompt in the same conversation, using the selected model.
+Only enabled workspace-scoped read_file and list_files tools are available,
+with at most eight sequential tool rounds. Commands, edits, MCP, hosted tools,
+and goal actions are unavailable. The prompt asks for a bug-report summary, possible
+triggers, and an assessment of the visible security context, distinguishing
+facts from hypotheses. The model cannot determine the provider's internal
+trigger or certify a false positive. The prompt and response are recorded
+in the conversation and logs. The original error still fails the run;
+the interrupted task is not automatically continued. Goal state remains
+unchanged. In interactive mode, an explicit next user prompt runs normally
+with the configured tools; diagnostic restrictions do not persist into it.
+If the explanation fails, that failure is logged without another attempt.
+.PP
 With
 .BR \-n ,
 .BR \-\-review ,

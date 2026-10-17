@@ -117,6 +117,13 @@ static int structured_notices(cai_cli_log *log) {
   CHECK(strstr(observed.text[0], "cyber_policy") != NULL &&
         strstr(observed.text[0], "Provider cybersecurity notice") != NULL &&
         strstr(observed.text[0], "req_cyber") != NULL);
+  log->logger->errorf(log->logger, "cai.agent.policy_diagnostic", "error=%s",
+                      "diagnostic also blocked");
+  memset(&observed, 0, sizeof(observed));
+  CHECK(cai_cli_log_notices(log, collect, &observed) == 0 &&
+        observed.count == 1U);
+  CHECK(strstr(observed.text[0], "Policy explanation unavailable") != NULL &&
+        strstr(observed.text[0], "diagnostic also blocked") != NULL);
 
   fields[0] = pslog_str("sys", "storage.pouch");
   fields[1] = pslog_str("ns", "cai.sessions");

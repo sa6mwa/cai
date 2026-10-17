@@ -235,8 +235,26 @@ APIs and CAI diagnostics; diagnostic messages are bounded to 1023 bytes.
 Responses provider failures, including cybersecurity policy errors, produce an error-level
 `cai.response.provider_error` log with the provider code, message, HTTP status,
 and request ID when supplied. Interactive sessions write this to the session
-log and show an error notice; non-interactive sessions log to stderr. The failed
-turn stops and interactive sessions remain available for the next user input.
+log and show an error notice; non-interactive sessions log to stderr.
+For `cyber_policy` or `cyber_notice` error codes, the runtime sends one automatic
+explanation-only prompt in the same conversation, using the selected model.
+Only the enabled workspace-scoped `read_file` and
+`list_files` tools are available, with at most eight sequential tool rounds;
+execution, edits, MCP, hosted tools and goal actions remain unavailable.
+It asks for a bug-report summary of the preceding work, possible triggers,
+and a tentative assessment
+of the visible security context, separating facts from hypotheses. The model
+cannot know the provider's internal trigger or certify a false positive.
+The prompt and answer are recorded normally and can be exported. A failed
+diagnostic is logged without another diagnostic attempt. The original error
+still fails the run, including non-interactive invocations, and no original
+task or goal is automatically resumed. Goal state remains unchanged, and an
+explicit next user prompt runs normally with the user's configured tools.
+The diagnostic's restrictions do not carry into that turn. The public runtime
+event
+`CAI_AGENT_EVENT_POLICY_DIAGNOSTIC_STARTED`
+(`cai.AGENT_EVENT_POLICY_DIAGNOSTIC_STARTED` in Lua) identifies the generated
+prompt before its response streams.
 
 The default `chatgpt` provider imports `~/.codex/auth.json` first when present,
 otherwise it loads credentials from cai's lockd store. `--auth-json` selects

@@ -125,6 +125,8 @@ static const char *notice_message(const char *event) {
     return "HTTP transport failed";
   if (strcmp(event, "cai.response.provider_error") == 0)
     return "Provider rejected the response";
+  if (strcmp(event, "cai.agent.policy_diagnostic") == 0)
+    return "Policy explanation unavailable";
   if (strcmp(event, "cai.http.request.done") == 0)
     return "HTTP request failed";
   if (strcmp(event, "cai.models.catalog") == 0)

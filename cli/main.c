@@ -920,7 +920,8 @@ static void cli_log_event(cli_state *state,
                                       "compaction_completed",
                                       "run_cancelled",
                                       "tool_patch",
-                                      "tool_patch_locations"};
+                                      "tool_patch_locations",
+                                      "policy_diagnostic"};
   pslog_field fields[16];
   size_t count;
   const char *name;
@@ -936,10 +937,13 @@ static void cli_log_event(cli_state *state,
   role = "runtime";
   kind = NULL;
   level = PSLOG_LEVEL_INFO;
-  if (event->type == CAI_AGENT_EVENT_RUN_STARTED ||
-      event->type == CAI_AGENT_EVENT_TURN_QUEUED ||
-      event->type == CAI_AGENT_EVENT_STEERING_QUEUED ||
-      event->type == CAI_AGENT_EVENT_STEERING_DELIVERED) {
+  if (event->type == CAI_AGENT_EVENT_POLICY_DIAGNOSTIC_STARTED) {
+    role = "user";
+    kind = "policy_diagnostic";
+  } else if (event->type == CAI_AGENT_EVENT_RUN_STARTED ||
+             event->type == CAI_AGENT_EVENT_TURN_QUEUED ||
+             event->type == CAI_AGENT_EVENT_STEERING_QUEUED ||
+             event->type == CAI_AGENT_EVENT_STEERING_DELIVERED) {
     role = "user";
     kind = event->type == CAI_AGENT_EVENT_RUN_STARTED   ? "normal"
            : event->type == CAI_AGENT_EVENT_TURN_QUEUED ? "queued"
@@ -1008,6 +1012,15 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
   cli_state *state;
   state = (cli_state *)context;
   cli_log_event(state, event);
+  if (event->type == CAI_AGENT_EVENT_POLICY_DIAGNOSTIC_STARTED) {
+    if (!state->batch &&
+        (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0))
+      return CAI_ERR_TRANSPORT;
+    cai_cli_response_boundary(&state->final_response);
+    cai_cli_reasoning_reset(&state->reasoning);
+    if (!state->batch && cli_prompt(state, event->data) != 0)
+      return CAI_ERR_TRANSPORT;
+  }
   if (event->type == CAI_AGENT_EVENT_REVIEW_REPORT &&
       event->parent_tool_call_id == NULL && state->options.review) {
     char *report;
@@ -1330,7 +1343,8 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
                : CAI_ERR_TRANSPORT;
   }
   if (event->data != NULL &&
-      (strcmp(event->type, "turn_submitted") == 0 ||
+      (strcmp(event->type, "policy_diagnostic") == 0 ||
+       strcmp(event->type, "turn_submitted") == 0 ||
        strcmp(event->type, "turn_queued") == 0 ||
        strcmp(event->type, "steering_queued") == 0 ||
        strcmp(event->type, "assistant_text_delta") == 0)) {
@@ -1338,16 +1352,19 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
     int assistant = strcmp(event->type, "assistant_text_delta") == 0;
     fields[0] = pslog_bool("replay", 1);
     fields[1] = pslog_str(
-        "prompt_kind", strcmp(event->type, "steering_queued") == 0 ? "steering"
-                       : strcmp(event->type, "turn_queued") == 0   ? "queued"
-                                                                   : "normal");
+        "prompt_kind",
+        strcmp(event->type, "policy_diagnostic") == 0 ? "policy_diagnostic"
+        : strcmp(event->type, "steering_queued") == 0 ? "steering"
+        : strcmp(event->type, "turn_queued") == 0     ? "queued"
+                                                      : "normal");
     cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, event->type,
                         assistant ? "assistant" : "user", event->data,
                         strlen(event->data), fields, 2U);
   }
   if (state->batch)
     return CAI_OK;
-  if ((strcmp(event->type, "turn_submitted") == 0 ||
+  if ((strcmp(event->type, "policy_diagnostic") == 0 ||
+       strcmp(event->type, "turn_submitted") == 0 ||
        strcmp(event->type, "turn_queued") == 0 ||
        strcmp(event->type, "steering_queued") == 0) &&
       event->data != NULL) {

@@ -561,6 +561,10 @@ int cai_tool_registry_run_spooled(cai_tool_registry *registry, const char *name,
                                   lonejson_spooled *arguments_json,
                                   cai_sink *output, cai_error *error);
 size_t cai_tool_registry_count(const cai_tool_registry *registry);
+int cai_tool_registry_add_named_params(const cai_tool_registry *registry,
+                                       const char *name,
+                                       cai_response_create_params *params,
+                                       cai_error *error);
 void cai_tool_registry_truncate(cai_tool_registry *registry, size_t count);
 const char *cai_tool_registry_name_at(const cai_tool_registry *registry,
                                       size_t index);
@@ -594,6 +598,10 @@ void cai_configure_curl_tls(CURL *curl, int insecure_skip_verify,
 int cai_conversation_parse_json(const char *json, cai_conversation **out,
                                 cai_error *error);
 int cai_session_commit_pending_inputs(cai_session *session, cai_error *error);
+int cai_session_stream_policy_diagnostic(cai_session *session,
+                                         const cai_run_options *options,
+                                         const cai_stream_sinks *sinks,
+                                         cai_error *error);
 /* Insert steering into the active model cycle without creating a user turn. */
 int cai_session_add_steering_text(cai_session *session, const char *text,
                                   cai_error *error);
