@@ -669,8 +669,9 @@ still reported explicitly.
 The UI escapes binary/control bytes. Terminal tool results and JSON logs preserve
 valid UTF-8 and replace malformed bytes with `?`.
 
-Successful `apply_patch` calls display the **agent's submitted patch**, without
-comparing files or querying Git. A gutter shows actual file line numbers:
+Successful `apply_patch` calls display the **agent's submitted changes**, with
+one neighboring unchanged line from the current edit's snapshot when the patch
+omits context. No VCS comparison is used. A gutter shows actual file line numbers:
 removed rows use the original file, while added and context rows use the result.
 Matched hunk starts come from the native patch application, including adjustments
 for earlier hunks. Added rows have a green background and removed rows a red
@@ -681,7 +682,7 @@ the unnumbered format. Compact mode keeps
 one context row on either side of changes and uses `⋮` between separated change
 blocks; outer context is trimmed without an ellipsis. Full mode retains all
 supplied context. `NO_COLOR` disables these colors. Non-interactive invocations
-log the full submitted patch and tool activity as pslog records on stderr,
+log the full patch preview and tool activity as pslog records on stderr,
 regardless of the preview setting; stdout still contains only the final reply.
 
 SDK hosts can use `<cai/display.h>` without softline or libmdf. Create a
@@ -696,9 +697,15 @@ next logical patch row, including within an active call.
 Successful native patch calls emit `CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS` first:
 bounded chunks of ASCII `old new\n` rows, one per update hunk in submitted order,
 then an empty chunk. These are one-based matched original/result file positions.
-Added files start at one. Next come bounded `CAI_AGENT_EVENT_TOOL_PATCH` chunks
-containing the exact submitted bytes, followed by an empty chunk. Rejected
-patches emit neither locations nor patch bytes.
+The positions include any added leading preview context. Added files start at
+one. Next come bounded `CAI_AGENT_EVENT_TOOL_PATCH` chunks
+containing submitted changes and neighboring preview context, followed by an
+empty chunk. Rejected patches emit neither locations nor patch bytes.
+
+`CAI_AGENT_EVENT_REASONING_SUMMARY_STARTED` precedes each provider summary
+section, so a status renderer can replace its heading instead of concatenating
+unrelated titles. Lua exposes the same event constant.
+
 `cai_patch_render(source, &config, &error)` also renders a patch directly from
 a source to a sink, with bounded line buffers and no rewind or full-body
 materialization. `cai_patch_render_width(source, &config, columns, &error)`

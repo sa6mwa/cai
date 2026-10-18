@@ -100,6 +100,11 @@ class Peer(http.server.BaseHTTPRequestHandler):
         for summary in item.get('reasoning', []):
             if chat: delta({'reasoning_content': summary})
             else: self.event('response.reasoning_summary_text.delta', delta=summary)
+        for index, part in enumerate(item.get('reasoning_parts', [])):
+            for summary in part:
+                self.event('response.reasoning_summary_text.delta',
+                           summary_index=index, delta=summary)
+            self.event('response.reasoning_summary_part.done', summary_index=index)
         if item.get('pause'):
             if chat: delta({'role': 'assistant', 'content': 'STREAM in flight\n\n'})
             else: self.event('response.output_text.delta', delta='STREAM in flight\n\n')

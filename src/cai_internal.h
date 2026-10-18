@@ -524,6 +524,9 @@ void *cai_tool_registry_custom_context(cai_tool_registry *registry,
 int cai_patch_tool_write_locations(cai_tool_registry *registry,
                                    const char *name, cai_sink *sink,
                                    cai_error *error);
+int cai_patch_tool_write_preview(cai_tool_registry *registry,
+                                 const cai_tool_event *event, cai_sink *sink,
+                                 cai_error *error);
 typedef struct cai_skill_catalog cai_skill_catalog;
 int cai_smith_prepare_model_instructions(cai_agent *agent, const char *model,
                                          const char *identity, char **out,

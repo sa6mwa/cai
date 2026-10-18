@@ -702,6 +702,7 @@ struct cai_agent_runtime {
   cai_mcp_tool_registration_config mcp_tool_config;
   char *mcp_tool_name_prefix;
   int has_mcp_tool_config;
+  int reasoning_summary_start_pending;
 };
 
 typedef struct cai_runtime_subagent_execution {
@@ -3710,6 +3711,12 @@ static int cai_runtime_output_text_delta(void *context, const char *item_id,
 /* Stream summaries through the same owner-thread event queue as visible
  * response text.  The provider chooses the summary content; CAI never exposes
  * hidden reasoning or attempts to synthesize a substitute. */
+static const char *cai_runtime_reasoning_summary_start(void *context) {
+  cai_agent_runtime *runtime = context;
+  runtime->reasoning_summary_start_pending = 1;
+  return NULL;
+}
+
 static int cai_runtime_reasoning_summary_write(void *context, const void *bytes,
                                                size_t count, cai_error *error) {
   cai_agent_runtime *runtime;
@@ -3724,9 +3731,18 @@ static int cai_runtime_reasoning_summary_write(void *context, const void *bytes,
   }
   runtime = (cai_agent_runtime *)context;
   pthread_mutex_lock(&runtime->lock);
-  rc = cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_REASONING_SUMMARY,
-                                  (const char *)bytes, count, NULL, NULL,
-                                  runtime->state, error);
+  rc = CAI_OK;
+  if (runtime->reasoning_summary_start_pending) {
+    rc = cai_runtime_enqueue_locked(
+        runtime, CAI_AGENT_EVENT_REASONING_SUMMARY_STARTED, NULL, 0U, NULL,
+        NULL, runtime->state, error);
+    if (rc == CAI_OK)
+      runtime->reasoning_summary_start_pending = 0;
+  }
+  if (rc == CAI_OK)
+    rc = cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_REASONING_SUMMARY,
+                                    (const char *)bytes, count, NULL, NULL,
+                                    runtime->state, error);
   pthread_mutex_unlock(&runtime->lock);
   return rc;
 }
@@ -4253,7 +4269,8 @@ static int cai_runtime_emit_patch(cai_agent_runtime *runtime,
     rc = cai_runtime_patch_write(&stream, NULL, 0U, error);
   stream.type = CAI_AGENT_EVENT_TOOL_PATCH;
   if (rc == CAI_OK)
-    rc = cai_tool_event_write_arguments(event, sink, error);
+    rc = cai_patch_tool_write_preview(CAI_AGENT_IMPL(runtime->agent)->tools,
+                                      event, sink, error);
   cai_sink_close(sink);
   if (rc == CAI_OK)
     rc = cai_runtime_patch_write(&stream, NULL, 0U, error);
@@ -5221,6 +5238,8 @@ static void *cai_runtime_worker(void *context) {
     return NULL;
   }
   sinks.reasoning_summary = reasoning_sink;
+  sinks.reasoning_summary_prefix.callback = cai_runtime_reasoning_summary_start;
+  sinks.reasoning_summary_prefix.context = runtime;
   sinks.output_text_delta = cai_runtime_output_text_delta;
   sinks.output_text_context = runtime;
   sinks.response_completed = cai_runtime_response_completed;

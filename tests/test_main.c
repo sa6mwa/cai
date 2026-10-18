@@ -43516,9 +43516,21 @@ static void test_agent_runtime_patch_events(test_state *state) {
             expect_str(state, "runtime_patch_locations",
                        capture.locations.data != NULL ? capture.locations.data
                                                       : "",
-                       update ? "2 2\n" : "");
-            expect_str(state, "runtime_patch_exact_input", capture.bytes.data,
-                       patch.data);
+                       update ? "1 1\n" : "");
+            if (update) {
+              cai_buffer_builder preview;
+              const char *changed = strstr(patch.data, "-old\n");
+              memset(&preview, 0, sizeof(preview));
+              cai_buffer_append(&preview, patch.data,
+                                (size_t)(changed - patch.data), &error);
+              cai_buffer_append_cstr(&preview, " header\n", &error);
+              cai_buffer_append_cstr(&preview, changed, &error);
+              expect_str(state, "runtime_patch_preview", capture.bytes.data,
+                         preview.data);
+              cai_free_mem(NULL, preview.data);
+            } else
+              expect_str(state, "runtime_patch_exact_input", capture.bytes.data,
+                         patch.data);
             if (capture.chunks < 2U)
               test_fail(state, "runtime_patch_bounded_chunks",
                         "expected multiple chunks");

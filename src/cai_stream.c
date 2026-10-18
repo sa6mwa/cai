@@ -86,6 +86,7 @@ static const char *const cai_stream_json_event_names[] = {
     "response.reasoning_text.delta",
     "response.reasoning_summary_text.done",
     "response.reasoning_summary.done",
+    "response.reasoning_summary_part.done",
     "response.reasoning_text.done",
     "response.compaction.compacting",
     "response.function_call_arguments.delta",
@@ -1927,7 +1928,8 @@ static int cai_sse_emit_event(cai_sse_state *state,
   }
 
   if (strcmp(event_name, "response.reasoning_summary_text.done") == 0 ||
-      strcmp(event_name, "response.reasoning_summary.done") == 0) {
+      strcmp(event_name, "response.reasoning_summary.done") == 0 ||
+      strcmp(event_name, "response.reasoning_summary_part.done") == 0) {
     rc = cai_sse_finish_reasoning(state);
     goto done;
   }

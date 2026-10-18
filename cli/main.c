@@ -921,7 +921,8 @@ static void cli_log_event(cli_state *state,
                                       "run_cancelled",
                                       "tool_patch",
                                       "tool_patch_locations",
-                                      "policy_diagnostic"};
+                                      "policy_diagnostic",
+                                      "reasoning_summary_started"};
   pslog_field fields[16];
   size_t count;
   const char *name;
@@ -950,10 +951,12 @@ static void cli_log_event(cli_state *state,
                                                         : "steering";
   } else if (event->type == CAI_AGENT_EVENT_TEXT_DELTA ||
              event->type == CAI_AGENT_EVENT_REASONING_SUMMARY ||
+             event->type == CAI_AGENT_EVENT_REASONING_SUMMARY_STARTED ||
              event->type == CAI_AGENT_EVENT_REVIEW_REPORT ||
              event->type == CAI_AGENT_EVENT_SUBAGENT_STARTED) {
     role = "assistant";
-    kind = event->type == CAI_AGENT_EVENT_REASONING_SUMMARY
+    kind = event->type == CAI_AGENT_EVENT_REASONING_SUMMARY ||
+                   event->type == CAI_AGENT_EVENT_REASONING_SUMMARY_STARTED
                ? "reasoning_summary"
            : event->type == CAI_AGENT_EVENT_REVIEW_REPORT    ? "review_findings"
            : event->type == CAI_AGENT_EVENT_SUBAGENT_STARTED ? "delegation"
@@ -1100,6 +1103,10 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
                  ? cai_tool_display_event(state->tool_display, event, error)
                  : rc;
     }
+  } else if (event->type == CAI_AGENT_EVENT_REASONING_SUMMARY_STARTED) {
+    if (cli_finish_reasoning(state) != 0)
+      return CAI_ERR_TRANSPORT;
+    cai_cli_reasoning_end(&state->reasoning);
   } else if (event->type == CAI_AGENT_EVENT_REASONING_SUMMARY &&
              event->data != NULL && event->data_length > 0U) {
     if (cai_cli_reasoning_feed(&state->reasoning, event->data,

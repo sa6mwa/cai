@@ -160,9 +160,10 @@ typedef enum cai_agent_runtime_event_type {
   CAI_AGENT_EVENT_COMPACTION_COMPLETED = 28,
   /** Active turn stopped and its durable state was settled. */
   CAI_AGENT_EVENT_RUN_CANCELLED = 29,
-  /** Submitted native patch bytes after a successful call, in bounded chunks.
-   * An empty chunk terminates the patch. This is the agent's input, not a
-   * filesystem/VCS comparison. Chat Completions' JSON input wrapper is decoded.
+  /** Native patch preview after a successful call, in bounded chunks.
+   * An empty chunk terminates the patch. Submitted changes gain one adjacent
+   * unchanged line where available in this edit's file snapshot. No VCS diff
+   * is consulted. Chat Completions' JSON input wrapper is decoded.
    */
   CAI_AGENT_EVENT_TOOL_PATCH = 30,
   /** Matched update-hunk starts before TOOL_PATCH: ASCII "old new\n" rows,
@@ -177,7 +178,9 @@ typedef enum cai_agent_runtime_event_type {
    * RUN_FAILED retains the original error. Goal state remains unchanged;
    * callers can explicitly submit a normal turn after the diagnostic ends.
    */
-  CAI_AGENT_EVENT_POLICY_DIAGNOSTIC_STARTED = 32
+  CAI_AGENT_EVENT_POLICY_DIAGNOSTIC_STARTED = 32,
+  /** A new provider reasoning-summary section begins before its first delta. */
+  CAI_AGENT_EVENT_REASONING_SUMMARY_STARTED = 33
 } cai_agent_runtime_event_type;
 
 /**

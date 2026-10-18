@@ -243,10 +243,8 @@ static void numbered_patches(capture *c) {
   e.data = NULL;
   e.data_length = 0U;
   assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
-  assert(
-      strstr(c->bytes,
-             " 290  before\n 281 -old\n 291 +new\n 900 -last\n 910 +final\n") !=
-      NULL);
+  assert(strstr(c->bytes, " 290  before\n 281 -old\n 291 +new\n      ⋮\n 900 "
+                          "-last\n 910 +final\n") != NULL);
   e.type = CAI_AGENT_EVENT_TOOL_CALL_STARTED;
   assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
   e.type = CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS;

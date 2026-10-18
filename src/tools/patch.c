@@ -39,6 +39,7 @@ extern char *realpath(const char *path, char *resolved_path);
 
 typedef struct cai_patch_location {
   size_t old_line, new_line;
+  char *before, *after;
 } cai_patch_location;
 
 typedef struct cai_patch_context {
@@ -58,6 +59,7 @@ typedef struct cai_patch_hunk {
   char *context;
   int end_of_file;
   size_t old_line, new_line;
+  int first_kind, last_kind;
 } cai_patch_hunk;
 
 typedef struct cai_patch_change {
@@ -1268,6 +1270,9 @@ static int cai_patch_parse_change_spooled(cai_patch_plan *plan,
       rc = cai_set_error(error, CAI_ERR_INVALID, "invalid update hunk line");
       goto fail;
     }
+    if (hunk->first_kind == 0)
+      hunk->first_kind = line[0];
+    hunk->last_kind = line[0];
     rc = line[0] != '+' ? cai_patch_append_line(&old_text, line + 1U, error)
                         : CAI_OK;
     if (rc == CAI_OK && line[0] != '-') {
@@ -2073,6 +2078,17 @@ static int cai_patch_context_new(const cai_patch_tool_config *config,
   return CAI_OK;
 }
 
+static void cai_patch_locations_clear(cai_patch_context *ctx) {
+  size_t i;
+  for (i = 0U; i < ctx->location_count; i++) {
+    cai_free_mem(NULL, ctx->locations[i].before);
+    cai_free_mem(NULL, ctx->locations[i].after);
+  }
+  cai_free_mem(NULL, ctx->locations);
+  ctx->locations = NULL;
+  ctx->location_count = 0U;
+}
+
 static void cai_patch_context_cleanup(void *context) {
   cai_patch_context *ctx;
 
@@ -2084,7 +2100,7 @@ static void cai_patch_context_cleanup(void *context) {
     close(ctx->root_fd);
   }
   cai_free_mem(NULL, ctx->root_path);
-  cai_free_mem(NULL, ctx->locations);
+  cai_patch_locations_clear(ctx);
   cai_free_mem(NULL, ctx);
 }
 
@@ -2147,6 +2163,32 @@ int cai_apply_patch(const cai_patch_tool_config *config, const char *patch,
   return rc;
 }
 
+static size_t cai_patch_lines(const char *text, size_t length) {
+  size_t i, count = 0U;
+  for (i = 0U; i < length; i++)
+    if (text[i] == '\n')
+      count++;
+  return count;
+}
+
+static int cai_patch_neighbor(const char *text, size_t number, char **out,
+                              cai_error *error) {
+  const char *start = text, *end;
+  size_t line = 1U;
+  while (line < number && *start != '\0') {
+    if (*start++ == '\n')
+      line++;
+  }
+  if (line != number || *start == '\0')
+    return CAI_OK;
+  end = strchr(start, '\n');
+  *out = cai_strndup(NULL, start,
+                     end != NULL ? (size_t)(end - start) : strlen(start));
+  return *out != NULL ? CAI_OK
+                      : cai_set_error(error, CAI_ERR_NOMEM,
+                                      "cannot retain patch preview context");
+}
+
 static int cai_patch_tool_spooled_callback(void *context,
                                            lonejson_spooled *input,
                                            cai_sink *result, cai_error *error) {
@@ -2160,16 +2202,14 @@ static int cai_patch_tool_spooled_callback(void *context,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "apply_patch received invalid state");
   }
-  cai_free_mem(NULL, ctx->locations);
-  ctx->locations = NULL;
-  ctx->location_count = 0U;
+  cai_patch_locations_clear(ctx);
   memset(&plan, 0, sizeof(plan));
   rc = cai_patch_parse_spooled(ctx, input, &plan, error);
   if (rc == CAI_OK) {
     rc = cai_patch_preflight(ctx, &plan, error);
   }
-  /* Retain only positions, allocating before publication so allocation
-   * failure cannot turn a successfully applied edit into a reported failure. */
+  /* Allocate positions and neighboring lines before publication, so failure
+   * cannot turn a successfully applied edit into a reported failure. */
   if (rc == CAI_OK) {
     size_t count = 0U, index = 0U;
     for (i = 0U; i < plan.count; i++)
@@ -2181,15 +2221,44 @@ static int cai_patch_tool_spooled_callback(void *context,
       if (ctx->locations == NULL)
         rc = cai_set_error(error, CAI_ERR_NOMEM,
                            "cannot allocate patch hunk locations");
+      else {
+        memset(ctx->locations, 0, count * sizeof(*ctx->locations));
+        ctx->location_count = count;
+      }
     }
     if (rc == CAI_OK) {
-      for (i = 0U; i < plan.count; i++) {
-        for (j = 0U; j < plan.items[i].hunk_count; j++) {
-          ctx->locations[index].old_line = plan.items[i].hunks[j].old_line;
-          ctx->locations[index++].new_line = plan.items[i].hunks[j].new_line;
+      for (i = 0U; rc == CAI_OK && i < plan.count; i++) {
+        cai_patch_change *change = &plan.items[i];
+        for (j = 0U; rc == CAI_OK && j < change->hunk_count; j++) {
+          cai_patch_hunk *hunk = &change->hunks[j];
+          cai_patch_location *location = &ctx->locations[index++];
+          size_t end = hunk->new_line +
+                       cai_patch_lines(hunk->new_text, hunk->new_length);
+          size_t previous_end = 0U;
+          location->old_line = hunk->old_line;
+          location->new_line = hunk->new_line;
+          if (j != 0U) {
+            cai_patch_hunk *previous = &change->hunks[j - 1U];
+            previous_end =
+                previous->new_line +
+                cai_patch_lines(previous->new_text, previous->new_length);
+          }
+          if (hunk->first_kind != ' ' && hunk->new_line > 1U &&
+              (j == 0U || hunk->new_line - 1U > previous_end)) {
+            rc = cai_patch_neighbor(change->after, hunk->new_line - 1U,
+                                    &location->before, error);
+            if (rc == CAI_OK && location->before != NULL) {
+              location->old_line--;
+              location->new_line--;
+            }
+          }
+          if (rc == CAI_OK && hunk->last_kind != ' ' &&
+              (j + 1U == change->hunk_count ||
+               change->hunks[j + 1U].new_line > end))
+            rc =
+                cai_patch_neighbor(change->after, end, &location->after, error);
         }
       }
-      ctx->location_count = count;
     }
   }
   if (rc == CAI_OK) {
@@ -2199,8 +2268,91 @@ static int cai_patch_tool_spooled_callback(void *context,
     rc = cai_patch_write_result(result, &plan, error);
   }
   if (rc != CAI_OK)
-    ctx->location_count = 0U;
+    cai_patch_locations_clear(ctx);
   cai_patch_plan_cleanup(&plan);
+  return rc;
+}
+
+typedef struct cai_patch_preview {
+  cai_patch_context *patch;
+  cai_sink *sink;
+  size_t next, active;
+  int line_start, header;
+} cai_patch_preview;
+
+static int cai_patch_preview_neighbor(cai_patch_preview *preview, int before,
+                                      cai_error *error) {
+  cai_patch_location *location;
+  const char *text;
+  int rc;
+  if (preview->active == 0U)
+    return CAI_OK;
+  location = &preview->patch->locations[preview->active - 1U];
+  text = before ? location->before : location->after;
+  if (text == NULL)
+    return CAI_OK;
+  rc = cai_sink_write(preview->sink, " ", 1U, error);
+  if (rc == CAI_OK && text[0] != '\0')
+    rc = cai_sink_write(preview->sink, text, strlen(text), error);
+  return rc == CAI_OK ? cai_sink_write(preview->sink, "\n", 1U, error) : rc;
+}
+
+static int cai_patch_preview_write(void *context, const void *bytes,
+                                   size_t count, cai_error *error) {
+  cai_patch_preview *preview = context;
+  const char *text = bytes;
+  size_t i, start = 0U;
+  int rc = CAI_OK;
+  for (i = 0U; rc == CAI_OK && i < count; i++) {
+    if (preview->line_start && (text[i] == '@' || text[i] == '*')) {
+      if (i > start)
+        rc = cai_sink_write(preview->sink, text + start, i - start, error);
+      start = i;
+      if (rc == CAI_OK)
+        rc = cai_patch_preview_neighbor(preview, 0, error);
+      preview->active = 0U;
+      if (text[i] == '@' && preview->next < preview->patch->location_count) {
+        preview->active = ++preview->next;
+        preview->header = 1;
+      }
+    }
+    preview->line_start = text[i] == '\n';
+    if (rc == CAI_OK && text[i] == '\n' && preview->header) {
+      rc = cai_sink_write(preview->sink, text + start, i + 1U - start, error);
+      start = i + 1U;
+      if (rc == CAI_OK)
+        rc = cai_patch_preview_neighbor(preview, 1, error);
+      preview->header = 0;
+    }
+  }
+  return rc == CAI_OK && count > start
+             ? cai_sink_write(preview->sink, text + start, count - start, error)
+             : rc;
+}
+
+int cai_patch_tool_write_preview(cai_tool_registry *registry,
+                                 const cai_tool_event *event, cai_sink *sink,
+                                 cai_error *error) {
+  cai_patch_preview preview;
+  cai_sink_callbacks callbacks;
+  cai_sink *filter = NULL;
+  int rc;
+  memset(&preview, 0, sizeof(preview));
+  preview.patch = cai_tool_registry_custom_context(
+      registry, event->name, cai_patch_tool_spooled_callback);
+  if (preview.patch == NULL)
+    return cai_tool_event_write_arguments(event, sink, error);
+  preview.sink = sink;
+  preview.line_start = 1;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.context = &preview;
+  callbacks.write = cai_patch_preview_write;
+  rc = cai_sink_from_callbacks(&callbacks, &filter, error);
+  if (rc == CAI_OK)
+    rc = cai_tool_event_write_arguments(event, filter, error);
+  if (rc == CAI_OK)
+    rc = cai_patch_preview_neighbor(&preview, 0, error);
+  cai_sink_close(filter);
   return rc;
 }
 

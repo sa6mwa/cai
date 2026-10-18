@@ -5,6 +5,32 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-013: Sparse patches omit surrounding unchanged lines
+
+- **Reported:** isolated signature edits show only removed/added rows, with no
+  neighboring code to orient the reader.
+- **Resolution:** retain one adjacent unchanged line from the current edit's
+  snapshot when the supplied hunk omits context. Stream those preview lines
+  alongside the submitted changes; use no VCS comparison. Adjacent edits and
+  file edges must not fabricate unchanged context. Compact previews mark gaps
+  between hunks with `⋮` and retain the existing diff colors without syntax
+  highlighting.
+- **Verification:** cover sparse/separate and adjacent hunks, deletion, file
+  edges, native Responses and Chat Completions tools, and bounded event chunks.
+  Real CLI previews, native unit checks and Lua facade checks pass.
+
+## BUG-014: Reasoning status concatenates separate summary headings
+
+- **Reported:** `Planning full ANSI Tetris implementationConfirming build and
+  source setup` appears as one thinking title (`stash/thinking_bug.png`).
+- **Resolution:** preserve provider summary-section boundaries in the runtime,
+  expose the boundary event in C and Lua, and replace the status title when a
+  new section starts. Preserve body rendering and the current turn's timing.
+- **Verification:** stream two fragmented summary sections in one response and
+  assert that the latest title replaces the earlier title without becoming
+  reasoning-body output.
+  The real CLI multi-part regression and Lua event-constant check pass.
+
 ## BUG-001: Terminal resize corrupts the transcript and prompt position
 
 - **Priority:** critical; investigate first.

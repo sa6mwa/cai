@@ -26,6 +26,7 @@ typedef struct cai_display_call {
   size_t first_length;
   size_t last_length;
   size_t context_lines;
+  int had_hunk;
   int changed;
   int long_line;
   int clipped;
@@ -533,6 +534,7 @@ static int patch_line(cai_tool_display *d, cai_display_call *c, const char *s,
                       size_t n, cai_error *error) {
   const char *verb = NULL, *path = NULL;
   size_t number;
+  size_t previous_line;
   int rc;
   if (n >= 14U && strncmp(s, "*** Add File: ", 14U) == 0) {
     verb = "Added";
@@ -554,6 +556,7 @@ static int patch_line(cai_tool_display *d, cai_display_call *c, const char *s,
     if (rc != CAI_OK)
       return rc;
     if (verb != NULL) {
+      c->had_hunk = 0;
       if (strcmp(verb, "Added") == 0) {
         c->old_line = 0U;
         c->new_line = 1U;
@@ -563,6 +566,7 @@ static int patch_line(cai_tool_display *d, cai_display_call *c, const char *s,
     }
     if (n >= 3U && strncmp(s, "***", 3U) == 0)
       return CAI_OK;
+    previous_line = c->new_line;
     if (c->locations != NULL) {
       patch_location *location = c->locations;
       c->old_line = location->old_line;
@@ -573,6 +577,13 @@ static int patch_line(cai_tool_display *d, cai_display_call *c, const char *s,
       cai_free_mem(NULL, location);
     } else
       patch_header_location(c, s, n);
+    if (c->mode == CAI_TOOL_OUTPUT_COMPACT && c->had_hunk &&
+        previous_line != 0U && c->new_line > previous_line) {
+      rc = display_text(d, d->width != 0U ? "      ⋮\n" : " ⋮\n", error);
+      if (rc != CAI_OK)
+        return rc;
+    }
+    c->had_hunk = 1;
     return d->width != 0U ? CAI_OK : patch_piece(d, c, 0, 0U, s, n, 1, error);
   }
   number = patch_number(c, n != 0U ? s[0] : ' ');

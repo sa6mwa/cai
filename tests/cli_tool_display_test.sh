@@ -21,6 +21,7 @@ cat >"$root/patch" <<'PATCH'
  after1
 *** End Patch
 PATCH
+cp "$root/patch" "$root/full-patch"
 patch_plan() { plan "$(jq -n --rawfile patch "$root/patch" --arg text "$1" '{plan:[{tool:"apply_patch",arguments:$patch},$text]}')"; }
 cp "$root/original" "$work/file.c"
 patch_plan 'PATCH DONE'
@@ -38,6 +39,39 @@ cp "$root/original" "$work/file.c"; patch_plan 'FULL PATCH DONE'
 prompt 'full patch' 'FULL PATCH DONE'
 for marker in between1 before0 after1; do contains "$term/text" "$marker"; done
 send '/output compact\r'
+# Minimal model patches still need real unchanged neighbors. Each preview is
+# scoped to this call, including adjacent hunks, deletion and file edges.
+for variant in separated adjacent deletion edges blank; do
+  cp "$root/original" "$work/file.c"
+  case "$variant" in
+    separated) content=$'@@\n-old\n+minimal-new\n@@\n-old2\n+minimal-new2\n' ;;
+    adjacent) content=$'@@\n-old\n+adjacent-new\n@@\n-between0\n+adjacent-next\n' ;;
+    deletion) content=$'@@\n-old\n' ;;
+    edges) content=$'@@\n-before0\n+first-new\n@@\n-after1\n+last-new\n' ;;
+    blank)
+      printf 'before0\n\nold\n\nafter0\n' >"$work/file.c"
+      content=$'@@\n-old\n+blank-new\n' ;;
+  esac
+  printf '*** Begin Patch\n*** Update File: file.c\n%s*** End Patch\n' "$content" >"$root/patch"
+  patch_plan "CONTEXT $variant DONE"
+  offset=$(wc -c <"$term/feed")
+  prompt "context $variant" "CONTEXT $variant DONE"
+  tail -c +$((offset+1)) "$term/feed" | sed -E $'s/\033\[[0-?]*[ -/]*[@-~]//g' >"$root/preview"
+  case "$variant" in
+    separated)
+      for row in '2  before1' '4  between0' '7  between3' '9  after0' '⋮'; do contains "$root/preview" "$row"; done ;;
+    adjacent)
+      contains "$root/preview" '2  before1'; contains "$root/preview" '5  between1'
+      absent "$root/preview" '4  between0'; absent "$root/preview" '3  old' ;;
+    deletion)
+      contains "$root/preview" '2  before1'; contains "$root/preview" '3  between0' ;;
+    edges)
+      contains "$root/preview" '2  before1'; contains "$root/preview" '9  after0' ;;
+    blank)
+      contains "$root/preview" '2  '; contains "$root/preview" '4  '; contains "$root/preview" '+blank-new' ;;
+  esac
+done
+cp "$root/full-patch" "$root/patch"
 printf "printf 'OUT01\\nOUT02\\nOUT03\\nOUT04\\nOUT05\\nOUT06\\nOUT07\\n'\nexit 3\n" >"$work/command.sh"
 plan '{"plan":[{"tool":"exec_command","arguments":{"cmd":"sh command.sh","yield_time_ms":1000}},"COMMAND DONE"]}'
 offset=$(wc -c <"$term/text")

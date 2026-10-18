@@ -10,6 +10,14 @@ absent "$term/text" '? Applying patch'
 expect '! Applying patch to script path'
 release; expect 'ONE LINE DONE'; expect 'Worked for'
 terminal_close
+plan '{"plan":[{"reasoning_parts":[["**Planning full ANSI Tetris implementation**"],["**Confirming ","build and source setup**"]],"pause":true,"text":"PARTS DONE"}]}'
+terminal_start -N
+send 'separate reasoning sections\r'; expect 'STREAM in flight'
+expect '! Confirming build and source setup'
+absent "$term/text" 'implementationConfirming'
+absent "$term/text" '? Confirming'
+release; expect 'PARTS DONE'; expect 'Worked for'
+terminal_close
 plan '{"plan":[{"reasoning":["**Checking the change**\r","\n\n**Body line one.**\n\n","Body line two with `code`."],"pause":true,"text":"MULTILINE DONE"}]}'
 terminal_start -N
 send 'second\r'; expect 'STREAM in flight'
