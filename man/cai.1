@@ -427,6 +427,23 @@ Show or change model sharing for future explicit shell commands. Each command
 captures the setting at start. Disabling sharing does not disable execution,
 erase history or remove earlier model context.
 .TP
+.BR /trim " [COUNT]"
+Without COUNT, list the newest 20 whole conversation entries, newest first.
+Row 0 means keep current history. COUNT removes exactly that many newest entries;
+0 removes nothing and an excessive count fails unchanged. Use
+.B /trim list LIMIT
+to change the listing length. Summaries are single lines clipped to terminal
+width and rendered through libmdf.
+A turn includes its reasoning, steering, tool calls and results. Standalone
+recorded shell executions are entries; executions started during a model turn
+belong to that turn. Compacted context is one indivisible entry, never expanded
+into earlier turns. Boundaries are recovered from the active session's own
+journal when needed; no other conversation is inspected or changed.
+Requires an idle runtime with no pending work or open shell. The cut is durable
+for model context, restart replay and exports; checkpoint failure restores the
+original history. External effects, settings, goals and incurred usage remain.
+Old storage checkpoints and diagnostic logs are not erased.
+.TP
 .BR /shell , " " !sh
 With no arguments, hand the real terminal to $SHELL -i, falling back to
 /bin/sh -i when SHELL is unset or empty. Requires terminal input and output

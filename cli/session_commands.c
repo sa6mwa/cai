@@ -83,6 +83,21 @@ static int row_cells(const char *text) {
   return cells;
 }
 
+void cai_cli_history_row(char *out, size_t capacity,
+                         const cai_agent_history_entry *entry, int width) {
+  char line[1200];
+  size_t length;
+  snprintf(line, sizeof(line), "%lu. %s%s", (unsigned long)entry->remove_count,
+           entry->kind == CAI_AGENT_HISTORY_SHELL ? "Shell: " : "",
+           entry->summary);
+  if (capacity < 2U)
+    return;
+  row_field(out, capacity - 1U, line, width > 0 ? width : 1);
+  length = strlen(out);
+  out[length++] = '\n';
+  out[length] = '\0';
+}
+
 int cai_cli_sessions_print(cai_sink *destination,
                            const cai_cli_session *sessions, size_t count,
                            int numbered, int width, cai_error *error) {
@@ -383,7 +398,7 @@ int cai_cli_session_export(cai_cli_pouch *pouch, const char *id,
   if (rc == CAI_OK)
     rc = cai_sink_file(file, 0, &sink, error);
   if (rc == CAI_OK)
-    rc = cai_cli_pouch_export(pouch, id, sink, error);
+    rc = cai_cli_pouch_export(pouch, id, runtime, sink, error);
   cai_sink_close(sink);
   if (file != NULL) {
     if (fflush(file) != 0 || fsync(fileno(file)) != 0)

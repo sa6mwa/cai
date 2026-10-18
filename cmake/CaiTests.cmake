@@ -1,6 +1,12 @@
 
 if(CAI_BUILD_TESTS)
   enable_testing()
+  add_executable(cai_history_test tests/history_test.c)
+  cai_link_internal_consumer(cai_history_test)
+  cai_configure_c_target(cai_history_test)
+  target_compile_options(cai_history_test PRIVATE -UNDEBUG)
+  add_test(NAME cai_history COMMAND cai_history_test)
+  set_tests_properties(cai_history PROPERTIES LABELS "unit;local;offline" TIMEOUT 10)
   add_executable(cai_context_metadata_test tests/context_metadata_test.c)
   cai_link_internal_consumer(cai_context_metadata_test)
   cai_configure_c_target(cai_context_metadata_test)

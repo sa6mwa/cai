@@ -1255,6 +1255,23 @@ do
   assert_ok(custom_runtime:user_shell_finish(7, 1250))
   assert_eq(custom_runtime:state(), "idle", "Lua shell recording started a turn")
   assert_not_ok(custom_runtime:user_shell_finish(0, 0))
+  local history
+  for _ = 1, 1000 do
+    history = custom_runtime:history()
+    if history then break end
+    assert_ok(custom_runtime:pump(1))
+  end
+  assert(history and #history == 1, "shell capture must be one whole history entry")
+  assert_eq(history[1].kind, "shell")
+  assert_eq(history[1].remove_count, 1)
+  assert_eq(history[1].summary, "lua-recorded-shell")
+  assert_ok(custom_runtime:trim_history(0))
+  assert_eq(#assert_ok(custom_runtime:history(1)), 1)
+  assert_not_ok(custom_runtime:trim_history(2))
+  assert_throws(function() custom_runtime:trim_history(-1) end)
+  assert_throws(function() custom_runtime:history(-1) end)
+  assert_ok(custom_runtime:trim_history(1))
+  assert_eq(#assert_ok(custom_runtime:history()), 0)
 
   local custom_chunks = {}
   assert_ok(custom_runtime:export_markdown(function(chunk)

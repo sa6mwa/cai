@@ -3,6 +3,7 @@
 #include <pslog.h>
 
 #include <limits.h>
+#include <openssl/evp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -124,6 +125,26 @@ typedef struct cai_json_root_array_check {
 
 enum { CAI_COMPACTION_RETAINED_USER_BYTES = 80 * 1024 };
 
+static const lonejson_field cai_history_block_fields[] = {
+    LONEJSON_FIELD_I64_REQ(cai_history_block, first_item, "first_item"),
+    LONEJSON_FIELD_I64_REQ(cai_history_block, event_start, "event_start"),
+    LONEJSON_FIELD_I64_REQ(cai_history_block, input_sequence, "input_sequence"),
+    LONEJSON_FIELD_I64_REQ(cai_history_block, kind, "kind"),
+    LONEJSON_FIELD_STRING_FIXED(cai_history_block, summary, "summary",
+                                LONEJSON_OVERFLOW_FAIL)};
+LONEJSON_MAP_DEFINE(cai_history_block_map, cai_history_block,
+                    cai_history_block_fields);
+static const lonejson_field cai_history_hidden_fields[] = {
+    LONEJSON_FIELD_I64_REQ(cai_history_hidden_range, first, "first"),
+    LONEJSON_FIELD_I64_REQ(cai_history_hidden_range, last, "last")};
+LONEJSON_MAP_DEFINE(cai_history_hidden_map, cai_history_hidden_range,
+                    cai_history_hidden_fields);
+static const lonejson_field cai_history_owned_fields[] = {
+    LONEJSON_FIELD_I64_REQ(cai_history_owned_event, entry, "entry"),
+    LONEJSON_FIELD_I64_REQ(cai_history_owned_event, sequence, "sequence")};
+LONEJSON_MAP_DEFINE(cai_history_owned_map, cai_history_owned_event,
+                    cai_history_owned_fields);
+
 typedef struct cai_session_state_doc {
   long long version;
   char *model;
@@ -173,9 +194,23 @@ typedef struct cai_session_state_doc {
   long long context_usage_total_tokens;
   int has_context_usage_total_tokens;
   lonejson_json_value history;
+  lonejson_object_array history_blocks;
+  lonejson_object_array history_hidden_events;
+  lonejson_object_array history_owned_events;
 } cai_session_state_doc;
 
 static const lonejson_field cai_session_state_fields[] = {
+    LONEJSON_FIELD_OBJECT_ARRAY_OMIT_EMPTY(
+        cai_session_state_doc, history_blocks, "history_blocks",
+        cai_history_block, &cai_history_block_map, LONEJSON_OVERFLOW_FAIL),
+    LONEJSON_FIELD_OBJECT_ARRAY_OMIT_EMPTY(
+        cai_session_state_doc, history_hidden_events, "history_hidden_events",
+        cai_history_hidden_range, &cai_history_hidden_map,
+        LONEJSON_OVERFLOW_FAIL),
+    LONEJSON_FIELD_OBJECT_ARRAY_OMIT_EMPTY(
+        cai_session_state_doc, history_owned_events, "history_owned_events",
+        cai_history_owned_event, &cai_history_owned_map,
+        LONEJSON_OVERFLOW_FAIL),
     LONEJSON_FIELD_I64_REQ(cai_session_state_doc, version, "version"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc, model,
                                           "model"),
@@ -292,6 +327,10 @@ static void cai_history_replace(cai_session *session,
 static lonejson_read_result
 cai_history_spooled_reader(void *user, unsigned char *buffer, size_t capacity);
 static void cai_history_cleanup(cai_session *session);
+static int cai_history_validate_metadata(cai_session *session,
+                                         lonejson_spooled *history,
+                                         const cai_session_state_doc *doc,
+                                         cai_error *error);
 static int cai_token_usage_is_empty(const cai_token_usage *usage);
 static int cai_session_prepare_history_params(
     cai_session *session, cai_response_create_params *params,
@@ -2113,6 +2152,11 @@ cai_history_normalizer_finish_item(cai_history_normalizer *normalizer,
   if (status == LONEJSON_STATUS_OK) {
     normalizer->rc = cai_history_append_one_array_record_to_spool(
         normalizer->history, &normalizer->record, normalizer->error);
+    if (normalizer->rc == CAI_OK &&
+        normalizer->history ==
+            &CAI_SESSION_IMPL(normalizer->session)->history &&
+        CAI_SESSION_IMPL(normalizer->session)->history_items_known)
+      CAI_SESSION_IMPL(normalizer->session)->history_items++;
   }
   normalizer->record.cleanup(&normalizer->record);
   memset(&normalizer->record, 0, sizeof(normalizer->record));
@@ -2528,6 +2572,7 @@ static void cai_history_replace(cai_session *session,
 
   old_history = CAI_SESSION_IMPL(session)->history;
   CAI_SESSION_IMPL(session)->history = *next_history;
+  CAI_SESSION_IMPL(session)->history_items_known = 0;
   memset(next_history, 0, sizeof(*next_history));
   old_history.cleanup(&old_history);
 }
@@ -2553,6 +2598,9 @@ void cai_session_destroy(cai_session *session) {
   allocator = &CAI_SESSION_CLIENT_IMPL(session)->allocator;
   cai_session_clear_inputs(session);
   cai_history_cleanup(session);
+  cai_free_mem(NULL, impl->history_blocks.items);
+  cai_free_mem(NULL, impl->history_hidden_events.items);
+  cai_free_mem(NULL, impl->history_owned_events.items);
   cai_free_mem(allocator, impl->inputs);
   cai_free_mem(allocator, impl->previous_response_id);
   cai_free_mem(allocator, impl->conversation_id);
@@ -5113,6 +5161,7 @@ static int cai_session_compact_chat(cai_session *session,
     }
     if (rc == CAI_OK) {
       cai_history_replace(session, &next_history);
+      cai_session_history_compacted(session);
       cai_session_forget_context_usage(session);
     } else {
       next_history.cleanup(&next_history);
@@ -5294,6 +5343,7 @@ int cai_session_compact_with_sinks(cai_session *session,
   }
   if (rc == CAI_OK) {
     cai_history_replace(session, &next_history);
+    cai_session_history_compacted(session);
     has_next_history = 0;
     /* The compaction response usage bills the complete history sent to make
      * the summary. It is not a measurement of the smaller replacement
@@ -7345,6 +7395,10 @@ int cai_session_import_history_source(cai_session *session, cai_source *source,
   }
   if (rc == CAI_OK) {
     cai_history_replace(session, &next_history);
+    cai_free_mem(NULL, CAI_SESSION_IMPL(session)->history_blocks.items);
+    memset(&CAI_SESSION_IMPL(session)->history_blocks, 0,
+           sizeof(CAI_SESSION_IMPL(session)->history_blocks));
+    CAI_SESSION_IMPL(session)->history_owned_events.count = 0U;
     has_next_history = 0;
   }
   if (has_history_json) {
@@ -7385,6 +7439,9 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
   include_history = 0;
   rc = CAI_OK;
   doc.version = 1LL;
+  doc.history_blocks = CAI_SESSION_IMPL(session)->history_blocks;
+  doc.history_hidden_events = CAI_SESSION_IMPL(session)->history_hidden_events;
+  doc.history_owned_events = CAI_SESSION_IMPL(session)->history_owned_events;
   doc.model = CAI_SESSION_IMPL(session)->state_model != NULL
                   ? CAI_SESSION_IMPL(session)->state_model
                   : CAI_SESSION_AGENT_IMPL(session)->model;
@@ -7521,6 +7578,27 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
   return rc;
 }
 
+/* Mapped arrays are owned by lonejson, including its allocation headers.
+ * Session indexes use plain private allocations, so copy the flat records
+ * before the mapped document is cleaned up. */
+static int cai_history_metadata_copy(const lonejson_object_array *source,
+                                     size_t size, lonejson_object_array *out,
+                                     cai_error *error) {
+  if (source->count == 0U)
+    return CAI_OK;
+  if (source->count > (size_t)-1 / size)
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "history metadata exceeds addressable size");
+  out->items = cai_alloc(NULL, source->count * size);
+  if (out->items == NULL)
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "cannot preserve history metadata");
+  memcpy(out->items, source->items, source->count * size);
+  out->count = source->count;
+  out->capacity = source->count;
+  return CAI_OK;
+}
+
 int cai_session_import_state_source(cai_session *session, cai_source *source,
                                     cai_error *error) {
   cai_session_state_doc doc;
@@ -7528,6 +7606,9 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   lonejson_spooled next_history;
   lonejson_error json_error;
   cai_source_reader_context reader_context;
+  lonejson_object_array next_blocks = {0};
+  lonejson_object_array next_hidden = {0};
+  lonejson_object_array next_owned = {0};
   int has_history_json;
   int has_next_history;
   char *next_state_model;
@@ -7744,6 +7825,19 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
                                                     &history_json, error);
     }
   }
+  if (rc == CAI_OK && has_next_history)
+    rc = cai_history_validate_metadata(session, &next_history, &doc, error);
+  if (rc == CAI_OK)
+    rc = cai_history_metadata_copy(
+        &doc.history_blocks, sizeof(cai_history_block), &next_blocks, error);
+  if (rc == CAI_OK)
+    rc = cai_history_metadata_copy(&doc.history_hidden_events,
+                                   sizeof(cai_history_hidden_range),
+                                   &next_hidden, error);
+  if (rc == CAI_OK)
+    rc = cai_history_metadata_copy(&doc.history_owned_events,
+                                   sizeof(cai_history_owned_event), &next_owned,
+                                   error);
   if (rc == CAI_OK) {
     if (doc.conversation_id != NULL) {
       rc = cai_session_set_conversation_id(session, doc.conversation_id, error);
@@ -7759,6 +7853,15 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
     has_next_history = 0;
   }
   if (rc == CAI_OK) {
+    cai_free_mem(NULL, CAI_SESSION_IMPL(session)->history_blocks.items);
+    cai_free_mem(NULL, CAI_SESSION_IMPL(session)->history_hidden_events.items);
+    cai_free_mem(NULL, CAI_SESSION_IMPL(session)->history_owned_events.items);
+    CAI_SESSION_IMPL(session)->history_blocks = next_blocks;
+    CAI_SESSION_IMPL(session)->history_hidden_events = next_hidden;
+    CAI_SESSION_IMPL(session)->history_owned_events = next_owned;
+    memset(&next_blocks, 0, sizeof(next_blocks));
+    memset(&next_hidden, 0, sizeof(next_hidden));
+    memset(&next_owned, 0, sizeof(next_owned));
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
                  CAI_SESSION_IMPL(session)->state_model);
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
@@ -7869,6 +7972,9 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
 
 done:
   CAI_LJ->cleanup(CAI_LJ, &cai_session_state_map, &doc);
+  cai_free_mem(NULL, next_blocks.items);
+  cai_free_mem(NULL, next_hidden.items);
+  cai_free_mem(NULL, next_owned.items);
   if (has_history_json) {
     history_json.cleanup(&history_json);
   }
@@ -7960,6 +8066,9 @@ int cai_session_load_state_path(cai_session *session, const char *path,
   cai_source_close(source);
   return rc;
 }
+
+#include "cai_agent_history.inc"
+#include "cai_agent_history_rebuild.inc"
 
 static void cai_agent_init_methods(cai_agent *agent) {
   agent->register_tool = cai_agent_register_tool;

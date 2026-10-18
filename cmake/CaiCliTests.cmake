@@ -82,6 +82,10 @@
     target_link_libraries(cai_cli_shell_fixture PRIVATE cai_static
       softline::softline_static libmdf::mdf_static lockdc::static)
     cai_configure_cli_target(cai_cli_shell_fixture)
+    add_test(NAME cai_cli_trim
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_trim_test.sh"
+        "$<TARGET_FILE:cai_cli>" "$<TARGET_FILE:cai_cli_shell_fixture>")
+    set_tests_properties(cai_cli_trim PROPERTIES TIMEOUT 45)
     add_executable(cai_cli_settings_fixture tests/cli_settings_fixture.c
       cli/options.c cli/config.c cli/mcp.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
       cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c

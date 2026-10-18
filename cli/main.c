@@ -1511,7 +1511,8 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   config.event_context = state;
   if (!state->options.review) {
     state->pouch.replay_begin = cli_replay_begin;
-    state->pouch.replay_event = cli_replay_event;
+    config.replay_callback = cli_replay_event;
+    config.replay_context = state;
     state->pouch.replay_context = state;
     state->pouch.replay_scope = state->workspace;
   }
@@ -2048,6 +2049,73 @@ static int cli_tools_write(void *context, const char *bytes, size_t count) {
   return cli_text(context, bytes, count);
 }
 
+static int cli_trim_row(void *context, const cai_agent_history_entry *entry,
+                        cai_error *error) {
+  cli_state *state = context;
+  char row[1200];
+  cai_cli_history_row(row, sizeof(row), entry, cli_render_width() - 2);
+  return cli_text(state, row, strlen(row)) == 0
+             ? CAI_OK
+             : cai_cli_error(error, CAI_ERR_TRANSPORT, "display trim history");
+}
+
+static int cli_trim_command(cli_state *state, const char *arg,
+                            cai_error *error) {
+  unsigned long long value;
+  size_t count;
+  char *end;
+  char message[128];
+  int list, rc;
+  while (*arg == ' ' || *arg == '\t')
+    arg++;
+  list = *arg == '\0' || (strncmp(arg, "list", 4U) == 0 &&
+                          (arg[4] == '\0' || arg[4] == ' ' || arg[4] == '\t'));
+  if (*arg != '\0' && list)
+    arg += 4U;
+  while (*arg == ' ' || *arg == '\t')
+    arg++;
+  count = 20U;
+  if (*arg != '\0') {
+    if (*arg < '0' || *arg > '9')
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "Usage: /trim [COUNT | list [LIMIT]]");
+    errno = 0;
+    value = strtoull(arg, &end, 10);
+    while (*end == ' ' || *end == '\t')
+      end++;
+    if (errno != 0 || *end != '\0' || value > (unsigned long long)(size_t)-1)
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "trim count must be a nonnegative integer");
+    count = (size_t)value;
+  }
+  if (list) {
+    /* Use a literal Markdown block so summaries cannot become headings,
+     * nested lists, links or terminal escapes. libmdf owns all output. */
+    if (cli_text(
+            state, "## Trim history\n\n```text\n0. Keep current history\n",
+            strlen("## Trim history\n\n```text\n0. Keep current history\n")) !=
+        0)
+      return CAI_ERR_TRANSPORT;
+    rc = cai_agent_runtime_visit_history(state->runtime, count, cli_trim_row,
+                                         state, error);
+    if (cli_text(state, "```\n", 4U) != 0 && rc == CAI_OK)
+      rc = CAI_ERR_TRANSPORT;
+    if (cli_finish_response(state) != 0 && rc == CAI_OK)
+      rc = CAI_ERR_TRANSPORT;
+    return rc;
+  }
+  rc = cai_agent_runtime_trim_history(state->runtime, count, error);
+  if (rc == CAI_OK) {
+    snprintf(message, sizeof(message),
+             "Trimmed %lu newest history %s. External changes remain.",
+             (unsigned long)count, count == 1U ? "entry" : "entries");
+    if (cli_write(state, message) != 0)
+      return CAI_ERR_TRANSPORT;
+    rc = cli_sync_status(state, error);
+  }
+  return rc;
+}
+
 static int cli_handle_command(cli_state *state, const char *line,
                               cai_error *error, int *handled) {
   const char *arg;
@@ -2055,6 +2123,9 @@ static int cli_handle_command(cli_state *state, const char *line,
   unsigned long number;
   int rc;
   *handled = 1;
+  if (strcmp(line, "/trim") == 0 || strncmp(line, "/trim ", 6U) == 0 ||
+      strncmp(line, "/trim\t", 6U) == 0)
+    return cli_trim_command(state, line + 5U, error);
   if (cli_is_terminal_shell(line))
     return cli_terminal_shell(
         state, strcmp(line, "/shellshare") == 0 || strcmp(line, "!sh+") == 0,
@@ -2130,7 +2201,11 @@ static int cli_handle_command(cli_state *state, const char *line,
         "## Slash commands\n\n"
         "| Command | Action |\n"
         "| --- | --- |\n"
-        "| `/help` | Show this help. |\n"
+        "| `/help` | Show this help. |\n",
+        "| `/trim [COUNT]` | List 20 recent whole entries, or remove COUNT "
+        "newest entries; 0 removes nothing. |\n"
+        "| `/trim list [LIMIT]` | List a different number of entries; "
+        "compaction is indivisible. |\n"
         "| `/goal [COMMAND]` | Show a goal; new TEXT replaces it, pause/resume "
         "control pursuit, clear removes it, help explains commands. Prefer "
         "asking the agent to manage goals. |\n",

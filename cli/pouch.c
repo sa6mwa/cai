@@ -1660,7 +1660,8 @@ int cai_cli_pouch_unlock(lc_lease *lease, int result, cai_error *error) {
   return release(lease, result, error);
 }
 
-int cai_cli_pouch_export(cai_cli_pouch *pouch, const char *id, cai_sink *sink,
+int cai_cli_pouch_export(cai_cli_pouch *pouch, const char *id,
+                         cai_agent_runtime *runtime, cai_sink *sink,
                          cai_error *error) {
   cai_cli_session session;
   cli_record record;
@@ -1703,6 +1704,9 @@ int cai_cli_pouch_export(cai_cli_pouch *pouch, const char *id, cai_sink *sink,
     rc = event_attachments(pouch, id, &attachments, error);
   for (i = 0U; rc == CAI_OK && i < attachments.count; i++) {
     if (strncmp(attachments.items[i].name, "event-", 6U) != 0)
+      continue;
+    if (!cai_agent_runtime_history_event_visible(
+            runtime, strtoull(attachments.items[i].name + 6U, NULL, 10)))
       continue;
     source = NULL;
     rc = download_source(pouch->sessions, id, attachments.items[i].name,

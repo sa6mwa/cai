@@ -335,6 +335,7 @@ int main(int argc, char **argv) {
                                              &error) == CAI_OK);
     CHECK(cai_agent_runtime_user_shell_finish(runtime, 1, 100U, &error) ==
           CAI_OK);
+    wait_export(runtime, &exported, &error);
 
     /* A completed record survives a failed checkpoint. A consumption marker
      * beyond the saved watermark must not suppress recovery or start a turn. */

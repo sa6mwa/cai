@@ -6,6 +6,7 @@
 
 #include <cai/cai.h>
 #include <cai/chrome.h>
+#include <cai/history.h>
 #include <cai/session_store.h>
 #include <cai/skills.h>
 #include <cai/smith.h>
@@ -635,6 +636,12 @@ typedef struct cai_agent_runtime_config {
   cai_agent_runtime_event_fn event_callback;
   /** Context passed to event_callback. */
   void *event_context;
+  /** Optional synchronous owner-thread observer for retained journal events
+   * during resume. Trimmed events are excluded. No tools are executed by this
+   * observer. The event and strings are borrowed only during the callback. */
+  cai_agent_session_event_fn replay_callback;
+  /** Context for replay_callback. */
+  void *replay_context;
   /**
    * Optional runtime logger. NULL inherits the owning client's logger. The
    * logger is borrowed until runtime close; CAI logs lifecycle metrics and
@@ -721,6 +728,25 @@ int cai_agent_runtime_open(cai_client *client,
  */
 int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
                                 cai_error *error);
+/** Visit the newest retained whole entries, newest first. Zero limit selects
+ * twenty. Owner-thread-only; requires an idle runtime with no pending work.
+ * Compaction is one indivisible entry, never expanded into earlier turns. */
+int cai_agent_runtime_visit_history(cai_agent_runtime *runtime, size_t limit,
+                                    cai_agent_history_entry_fn visit,
+                                    void *context, cai_error *error);
+/** Remove exactly count newest whole entries, including their tool calls,
+ * results and steering. Zero is a no-op; an excessive count fails unchanged.
+ * Owner-thread-only, idle runtime, no pending inputs or open shell execution.
+ * The change is checkpointed before success. Failure restores live history.
+ * Does not undo external effects, selected settings, or incurred usage/cost.
+ * Compacted history is removed as a whole, without recovering older turns. */
+int cai_agent_runtime_trim_history(cai_agent_runtime *runtime, size_t count,
+                                   cai_error *error);
+/** Return whether a journal event belongs to retained history. Owner-thread
+ * query for hosts exporting a stable checkpoint and its journal together.
+ * NULL runtime returns false. Never use this to renumber journal sequences. */
+int cai_agent_runtime_history_event_visible(const cai_agent_runtime *runtime,
+                                            unsigned long long sequence);
 /** Return an owner-thread snapshot of the selected model, borrowed until the
  * next settings query/update or runtime close. NULL indicates that settings
  * are being applied or a snapshot could not be allocated. */

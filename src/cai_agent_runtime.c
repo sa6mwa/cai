@@ -402,6 +402,10 @@ cai_runtime_subagent_result_cleanup(cai_runtime_subagent_result *result);
 typedef struct cai_runtime_input_node {
   char *text;
   unsigned long long journal_sequence;
+  unsigned long long history_start_sequence;
+  unsigned long long history_tail_sequence;
+  int unshared_shell;
+  int merge_history;
   /* True once this input must enter the worker as a standalone user turn.
    * Restored steering is promoted to a standalone turn after a crash, but
    * remains outside the normal-turn capacity below. */
@@ -532,6 +536,11 @@ struct cai_agent_runtime {
   cai_agent_session_store local_store;
   const cai_agent_session_store *session_store;
   int record_transcript;
+  cai_agent_session_event_fn replay_callback;
+  void *replay_context;
+  int history_summary_started;
+  int history_turn_open;
+  cai_history_rebuild *history_rebuild;
   int owns_local_store;
   /* Provider-declared metadata recorded for the active model selection. */
   char *model_compaction_hash;
@@ -605,8 +614,11 @@ struct cai_agent_runtime {
   size_t shell_context_max_lines, shell_context_max_bytes;
   unsigned long long user_shell_bytes;
   int user_shell_shared;
+  int user_shell_merge_history;
+  unsigned long long user_shell_start_sequence;
   size_t user_shell_record_limit;
   int user_shell_tail_recorded;
+  unsigned long long user_shell_tail_sequence;
   size_t goal_control_limit;
   size_t goal_control_count;
   /* A control remains in flight until its session mutation is checkpointed. */
@@ -2916,8 +2928,32 @@ static int cai_runtime_deliver_shell_context(cai_agent_runtime *runtime,
   pthread_mutex_lock(&runtime->lock);
   while (rc == CAI_OK && runtime->shell_context_head != NULL) {
     input = runtime->shell_context_head;
-    rc = cai_session_add_steering_text(runtime->session, input->text, error);
+    if (!input->merge_history) {
+      const char *command = strstr(input->text, "<command>\n");
+      char summary[1024];
+      size_t n;
+      command = command != NULL ? command + 10U : input->text;
+      n = strcspn(command, "\r\n");
+      if (n >= sizeof(summary))
+        n = sizeof(summary) - 1U;
+      memcpy(summary, command, n);
+      summary[n] = '\0';
+      rc = cai_session_history_begin(runtime->session, CAI_AGENT_HISTORY_SHELL,
+                                     input->history_start_sequence,
+                                     input->journal_sequence, summary, error);
+    }
     if (rc == CAI_OK)
+      rc = cai_session_history_own_event(runtime->session,
+                                         input->history_start_sequence, error);
+    if (rc == CAI_OK)
+      rc = cai_session_history_own_event(runtime->session,
+                                         input->journal_sequence, error);
+    if (rc == CAI_OK)
+      rc = cai_session_history_own_event(runtime->session,
+                                         input->history_tail_sequence, error);
+    if (rc == CAI_OK && !input->unshared_shell)
+      rc = cai_session_add_steering_text(runtime->session, input->text, error);
+    if (rc == CAI_OK && !input->unshared_shell)
       rc = cai_session_commit_pending_inputs(runtime->session, error);
     if (rc == CAI_OK) {
       snprintf(acknowledgement, sizeof(acknowledgement), "%llu",
@@ -3118,6 +3154,7 @@ static void cai_runtime_turn_start_locked(cai_agent_runtime *runtime) {
 static void cai_runtime_turn_finish_locked(cai_agent_runtime *runtime) {
   struct timespec ended;
   time_t wall_time;
+  runtime->history_turn_open = 0;
   if (!runtime->turn_timing_active ||
       clock_gettime(CLOCK_MONOTONIC, &ended) != 0) {
     return;
@@ -3699,6 +3736,9 @@ static int cai_runtime_output_text_delta(void *context, const char *item_id,
   rc = cai_runtime_spooled_copy(delta, &data, &length, error);
   if (rc == CAI_OK && length > 0U) {
     pthread_mutex_lock(&runtime->lock);
+    cai_session_history_summary_delta(runtime->session, data, length,
+                                      !runtime->history_summary_started);
+    runtime->history_summary_started = 1;
     if (runtime->record_transcript && memchr(data, '\0', length) != NULL) {
       rc = cai_set_error(error, CAI_ERR_INVALID,
                          "assistant text contains an unsupported NUL byte");
@@ -3770,6 +3810,7 @@ static int cai_runtime_response_completed(void *context, cai_error *error) {
                          "response completion has no runtime");
   }
   pthread_mutex_lock(&runtime->lock);
+  runtime->history_summary_started = 0;
   rc = runtime->record_transcript
            ? cai_runtime_append_journal_event_locked(
                  runtime, "assistant_text_end", NULL, NULL, error)
@@ -3824,6 +3865,9 @@ static int cai_runtime_compact(cai_agent_runtime *runtime,
   snapshot = NULL;
   compaction_committed = 0;
   budget_limited = 0;
+  rc = cai_session_history_prepare(runtime->session, error);
+  if (rc != CAI_OK)
+    return rc;
   cai_runtime_log_compaction(runtime, 1, CAI_OK, NULL);
   if (runtime->session_store != NULL) {
     /* Responses V2 replaces live history before the durable checkpoint. Keep
@@ -4457,7 +4501,9 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
   pthread_mutex_lock(&runtime->lock);
   while (rc == CAI_OK && runtime->steering_head != NULL) {
     input = runtime->steering_head;
-    rc = cai_session_add_steering_text(session, input->text, error);
+    rc = cai_session_history_own_event(session, input->journal_sequence, error);
+    if (rc == CAI_OK)
+      rc = cai_session_add_steering_text(session, input->text, error);
     if (rc == CAI_OK) {
       runtime->steering_head = input->next;
       if (runtime->steering_head == NULL) {
@@ -4828,6 +4874,32 @@ static int cai_runtime_replay_journal_event(
   if (event->sequence > runtime->next_event_sequence) {
     runtime->next_event_sequence = event->sequence;
   }
+  if (!cai_session_history_visible(runtime->session, event->sequence))
+    return CAI_OK;
+  if (runtime->history_rebuild != NULL) {
+    int rebuild_rc =
+        cai_history_rebuild_feed(runtime->history_rebuild, event,
+                                 runtime->applied_event_sequence, error);
+    if (rebuild_rc != CAI_OK)
+      return rebuild_rc;
+  }
+  if (runtime->replay_callback != NULL) {
+    int replay_rc =
+        runtime->replay_callback(runtime->replay_context, event, error);
+    if (replay_rc != CAI_OK)
+      return replay_rc;
+  }
+  if (strcmp(event->type, "user_shell_group") == 0) {
+    runtime->user_shell_merge_history =
+        event->data != NULL && strcmp(event->data, "turn") == 0;
+    return CAI_OK;
+  }
+  if (strcmp(event->type, "user_shell_started") == 0) {
+    runtime->user_shell_start_sequence = event->sequence;
+    runtime->user_shell_tail_sequence = 0U;
+  }
+  if (strcmp(event->type, "user_shell_output_tail") == 0)
+    runtime->user_shell_tail_sequence = event->sequence;
   /* Stores replay in sequence order, so the first marker selects the new
    * acknowledgement rule before any record that uses it arrives. */
   if (strcmp(event->type, "input_journal_v2") == 0) {
@@ -4838,7 +4910,8 @@ static int cai_runtime_replay_journal_event(
   input_event = strcmp(event->type, "steering_queued") == 0 ||
                 strcmp(event->type, "turn_queued") == 0 ||
                 strcmp(event->type, "turn_submitted") == 0 ||
-                strcmp(event->type, "user_shell_completed") == 0;
+                strcmp(event->type, "user_shell_completed") == 0 ||
+                strcmp(event->type, "user_shell_unshared") == 0;
   if (strcmp(event->type, "user_shell_context_consumed") == 0) {
     const char *end;
     unsigned long long sequence;
@@ -4975,6 +5048,9 @@ static int cai_runtime_replay_journal_event(
   if (!input_event) {
     return CAI_OK;
   }
+  if (strcmp(event->type, "user_shell_unshared") == 0 &&
+      event->sequence <= runtime->applied_event_sequence)
+    return CAI_OK;
   /* Journals written before input_journal_v2 used the checkpoint watermark as
    * their acknowledgement. Keep that recovery rule for their records so an
    * upgrade never replays a steering instruction already in old state. */
@@ -5010,7 +5086,12 @@ static int cai_runtime_replay_journal_event(
   input->queued_turn = strcmp(event->type, "turn_queued") == 0 ||
                        strcmp(event->type, "turn_submitted") == 0;
   input->counts_toward_turn_limit = strcmp(event->type, "turn_queued") == 0;
-  if (strcmp(event->type, "user_shell_completed") == 0) {
+  if (strcmp(event->type, "user_shell_completed") == 0 ||
+      strcmp(event->type, "user_shell_unshared") == 0) {
+    input->unshared_shell = strcmp(event->type, "user_shell_unshared") == 0;
+    input->merge_history = runtime->user_shell_merge_history;
+    input->history_start_sequence = runtime->user_shell_start_sequence;
+    input->history_tail_sequence = runtime->user_shell_tail_sequence;
     if (runtime->shell_context_count >= CAI_RUNTIME_DEFAULT_STEERING_LIMIT) {
       cai_runtime_input_node_free(input);
       return cai_set_error(error, CAI_ERR_LIMIT, "shell context queue is full");
@@ -5430,6 +5511,19 @@ static void *cai_runtime_worker(void *context) {
       rc = cai_runtime_compact_before_request(runtime, &error);
     }
     if (rc == CAI_OK) {
+      unsigned long long start = 0U;
+      pthread_mutex_lock(&runtime->lock);
+      start = runtime->next_event_sequence + 1U;
+      pthread_mutex_unlock(&runtime->lock);
+      rc = cai_session_history_begin(runtime->session, CAI_AGENT_HISTORY_TURN,
+                                     start, input->journal_sequence,
+                                     input->text, &error);
+      pthread_mutex_lock(&runtime->lock);
+      runtime->history_turn_open = rc == CAI_OK;
+      pthread_mutex_unlock(&runtime->lock);
+      runtime->history_summary_started = 0;
+    }
+    if (rc == CAI_OK) {
       rc = cai_session_add_user_text(runtime->session, input->text, &error);
     }
     if (rc == CAI_OK) {
@@ -5448,6 +5542,13 @@ static void *cai_runtime_worker(void *context) {
     }
     if (rc == CAI_OK) {
       pthread_mutex_lock(&runtime->lock);
+      if (consumed_sequence != 0U &&
+          CAI_SESSION_IMPL(runtime->session)->history_blocks.count != 0U) {
+        cai_history_block *blocks =
+            CAI_SESSION_IMPL(runtime->session)->history_blocks.items;
+        blocks[CAI_SESSION_IMPL(runtime->session)->history_blocks.count - 1U]
+            .event_start = (long long)consumed_sequence;
+      }
       cai_runtime_mark_checkpoint_event_locked(runtime, consumed_sequence);
       pthread_mutex_unlock(&runtime->lock);
     }
@@ -6653,6 +6754,142 @@ cai_runtime_model_switch_ready_locked(const cai_agent_runtime *runtime,
   return CAI_OK;
 }
 
+static int cai_runtime_history_ready(cai_agent_runtime *runtime,
+                                     cai_error *error) {
+  int rc = cai_runtime_model_switch_ready_locked(runtime, error);
+  if (rc != CAI_OK || runtime->user_shell_command != NULL ||
+      runtime->turn_timing_active || runtime->compacting ||
+      runtime->shell_context_failed || runtime->pending_settings_failed ||
+      runtime->goal_control_failed)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "history inspection and trim require an idle runtime; "
+                         "finish or cancel pending work first");
+  return CAI_OK;
+}
+
+int cai_agent_runtime_visit_history(cai_agent_runtime *runtime, size_t limit,
+                                    cai_agent_history_entry_fn visit,
+                                    void *context, cai_error *error) {
+  int rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK)
+    return rc;
+  pthread_mutex_lock(&runtime->lock);
+  rc = cai_runtime_history_ready(runtime, error);
+  if (rc == CAI_OK) {
+    runtime->settings_applying = 1;
+    runtime->model_switching = 1;
+  }
+  pthread_mutex_unlock(&runtime->lock);
+  if (rc != CAI_OK)
+    return rc;
+  rc =
+      cai_session_history_visit(runtime->session, limit, visit, context, error);
+  pthread_mutex_lock(&runtime->lock);
+  runtime->settings_applying = 0;
+  runtime->model_switching = 0;
+  pthread_cond_broadcast(&runtime->condition);
+  pthread_mutex_unlock(&runtime->lock);
+  return rc;
+}
+
+int cai_agent_runtime_history_event_visible(const cai_agent_runtime *runtime,
+                                            unsigned long long sequence) {
+  return runtime != NULL &&
+         cai_session_history_visible(runtime->session, sequence);
+}
+
+int cai_agent_runtime_trim_history(cai_agent_runtime *runtime, size_t count,
+                                   cai_error *error) {
+  cai_source *snapshot = NULL;
+  cai_error rollback_error;
+  unsigned long long old_watermark;
+  unsigned long long through;
+  int changed = 0;
+  int rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK || count == 0U)
+    return rc;
+  pthread_mutex_lock(&runtime->lock);
+  rc = cai_runtime_history_ready(runtime, error);
+  old_watermark = runtime->checkpoint_event_sequence;
+  through = runtime->next_event_sequence;
+  if (rc == CAI_OK) {
+    runtime->settings_applying = 1;
+    runtime->model_switching = 1;
+  }
+  pthread_mutex_unlock(&runtime->lock);
+  if (rc != CAI_OK)
+    return rc;
+  rc = cai_session_export_state_source(runtime->session, &snapshot, error);
+  if (rc == CAI_OK) {
+    rc = cai_session_history_trim(runtime->session, count, through, error);
+    changed = rc == CAI_OK;
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_refresh_goal_projection(runtime, error);
+  }
+  if (rc == CAI_OK) {
+    pthread_mutex_lock(&runtime->lock);
+    cai_runtime_mark_checkpoint_event_locked(runtime, through);
+    pthread_mutex_unlock(&runtime->lock);
+    rc = cai_runtime_checkpoint(runtime, 1, error);
+  }
+  if (rc != CAI_OK && changed) {
+    int rollback_rc;
+    cai_error_init(&rollback_error);
+    rollback_rc = cai_source_reset(snapshot, &rollback_error);
+    if (rollback_rc == CAI_OK)
+      rollback_rc = cai_session_import_state_source(runtime->session, snapshot,
+                                                    &rollback_error);
+    if (rollback_rc == CAI_OK)
+      rollback_rc =
+          cai_runtime_refresh_goal_projection(runtime, &rollback_error);
+    if (rollback_rc != CAI_OK)
+      rc = cai_set_error_detail(error, rollback_rc,
+                                "trim checkpoint failed and original history "
+                                "could not be restored; reopen the session",
+                                rollback_error.message);
+    cai_error_cleanup(&rollback_error);
+  }
+  cai_source_close(snapshot);
+  pthread_mutex_lock(&runtime->lock);
+  if (rc != CAI_OK)
+    runtime->checkpoint_event_sequence = old_watermark;
+  else if (CAI_SESSION_IMPL(runtime->session)->history_items == 0U)
+    runtime->history_compaction_pending = 0;
+  runtime->settings_applying = 0;
+  runtime->model_switching = 0;
+  pthread_cond_broadcast(&runtime->condition);
+  pthread_mutex_unlock(&runtime->lock);
+  if (!runtime->logger_disabled && runtime->logger != NULL) {
+    pslog_field fields[3];
+    const char *message = rc == CAI_OK ? ""
+                          : error != NULL && error->message != NULL
+                              ? error->message
+                              : "history trim failed";
+    memset(fields, 0, sizeof(fields));
+    fields[0].key = "entries";
+    fields[0].key_len = strlen(fields[0].key);
+    fields[0].type = PSLOG_FIELD_UNSIGNED;
+    fields[0].as.unsigned_value = (pslog_uint64)count;
+    fields[1].key = "committed";
+    fields[1].key_len = strlen(fields[1].key);
+    fields[1].type = PSLOG_FIELD_BOOL;
+    fields[1].as.bool_value = rc == CAI_OK;
+    fields[2].key = "detail";
+    fields[2].key_len = strlen(fields[2].key);
+    fields[2].type = PSLOG_FIELD_STRING;
+    fields[2].as.string_value = message;
+    fields[2].value_len = strlen(message);
+    if (rc == CAI_OK && runtime->logger->info != NULL)
+      runtime->logger->info(runtime->logger, "Trimmed conversation history",
+                            fields, 3U);
+    else if (rc != CAI_OK && runtime->logger->warn != NULL)
+      runtime->logger->warn(runtime->logger,
+                            "Could not trim conversation history", fields, 3U);
+  }
+  return rc;
+}
+
 static int cai_runtime_model_switch_requires_compaction(
     const cai_agent_runtime *runtime, const char *next_hash,
     long long next_context_window, long long next_compact_limit) {
@@ -7055,6 +7292,8 @@ int cai_agent_runtime_open(cai_client *client,
                             : CAI_RUNTIME_DEFAULT_TURN_LIMIT;
   runtime->goal_control_limit = CAI_RUNTIME_DEFAULT_GOAL_CONTROL_LIMIT;
   runtime->event_callback = config->event_callback;
+  runtime->replay_callback = config->replay_callback;
+  runtime->replay_context = config->replay_context;
   runtime->record_transcript = config->record_transcript ? 1 : 0;
   runtime->event_context = config->event_context;
   if (config->logger != NULL) {
@@ -7436,10 +7675,21 @@ int cai_agent_runtime_open(cai_client *client,
         (config->resume_latest || config->resume_session_id != NULL)) {
       runtime->next_event_sequence = runtime->applied_event_sequence;
       runtime->journal_v2_start_sequence = ULLONG_MAX;
-      rc = runtime->session_store->load_events_after(
-          runtime->session_store->context, runtime->session_scope,
-          runtime->session_id, 0U, cai_runtime_replay_journal_event, runtime,
-          error);
+      if (CAI_SESSION_IMPL(runtime->session)->history_blocks.count == 0U &&
+          CAI_SESSION_IMPL(runtime->session)
+                  ->history.size_fn(
+                      &CAI_SESSION_IMPL(runtime->session)->history) != 0U)
+        rc = cai_history_rebuild_open(&runtime->history_rebuild, error);
+      if (rc == CAI_OK)
+        rc = runtime->session_store->load_events_after(
+            runtime->session_store->context, runtime->session_scope,
+            runtime->session_id, 0U, cai_runtime_replay_journal_event, runtime,
+            error);
+      if (rc == CAI_OK && runtime->history_rebuild != NULL)
+        rc = cai_history_rebuild_finish(runtime->history_rebuild,
+                                        runtime->session, error);
+      cai_history_rebuild_close(runtime->history_rebuild);
+      runtime->history_rebuild = NULL;
       if (rc == CAI_OK) {
         cai_runtime_promote_resumed_steering(runtime);
       }
@@ -10929,13 +11179,20 @@ int cai_agent_runtime_user_shell_begin(cai_agent_runtime *runtime,
                                 runtime->shell_context_max_lines, bytes, error);
     if (rc == CAI_OK)
       rc = cai_runtime_append_journal_event_locked(
-          runtime, "user_shell_started", copy, NULL, error);
+          runtime, "user_shell_group",
+          runtime->history_turn_open ? "turn" : "entry", NULL, error);
+    if (rc == CAI_OK)
+      rc = cai_runtime_append_journal_event_locked(
+          runtime, "user_shell_started", copy,
+          &runtime->user_shell_start_sequence, error);
     if (rc == CAI_OK) {
       runtime->user_shell_command = copy;
       runtime->user_shell_shared = share_with_model != 0;
+      runtime->user_shell_merge_history = runtime->history_turn_open;
       runtime->user_shell_bytes = 0U;
       runtime->user_shell_record_limit = json_config.max_dynamic_string_bytes;
       runtime->user_shell_tail_recorded = 0;
+      runtime->user_shell_tail_sequence = 0U;
       copy = NULL;
     } else
       cai_terminal_text_close(&runtime->user_shell_output);
@@ -11032,13 +11289,16 @@ int cai_agent_runtime_user_shell_finish(cai_agent_runtime *runtime,
   }
   snprintf(text, capacity, format, runtime->user_shell_command, exit_code,
            duration_ms / 1000U, duration_ms % 1000U, suffix, kept);
-  if (runtime->user_shell_shared) {
+  {
     node = cai_alloc(NULL, sizeof(*node));
     if (node == NULL) {
       rc = cai_set_error(error, CAI_ERR_NOMEM, "cannot queue shell context");
       goto done;
     }
     memset(node, 0, sizeof(*node));
+    node->unshared_shell = !runtime->user_shell_shared;
+    node->merge_history = runtime->user_shell_merge_history;
+    node->history_start_sequence = runtime->user_shell_start_sequence;
   }
   if (!runtime->user_shell_tail_recorded) {
     tail = cai_alloc(NULL, strlen(suffix) + strlen(kept) + 1U);
@@ -11049,7 +11309,8 @@ int cai_agent_runtime_user_shell_finish(cai_agent_runtime *runtime,
     strcpy(tail, suffix);
     strcat(tail, kept);
     rc = cai_runtime_append_journal_event_locked(
-        runtime, "user_shell_output_tail", tail, NULL, error);
+        runtime, "user_shell_output_tail", tail,
+        &runtime->user_shell_tail_sequence, error);
     if (rc != CAI_OK)
       goto done;
     runtime->user_shell_tail_recorded = 1;
@@ -11080,6 +11341,7 @@ int cai_agent_runtime_user_shell_finish(cai_agent_runtime *runtime,
   if (rc == CAI_OK) {
     if (node != NULL) {
       node->text = text;
+      node->history_tail_sequence = runtime->user_shell_tail_sequence;
       node->journal_sequence = sequence;
       if (runtime->shell_context_tail == NULL)
         runtime->shell_context_head = node;

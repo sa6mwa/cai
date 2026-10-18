@@ -2,7 +2,9 @@
 #define CAI_INTERNAL_H
 
 #include <cai/cai.h>
+#include <cai/history.h>
 #include <cai/quota.h>
+#include <cai/session_store.h>
 #include <cai/skills.h>
 
 #include "cai_lj.h"
@@ -127,6 +129,25 @@ typedef struct cai_session_text_input {
   int has_file_data;
 } cai_session_input;
 
+typedef struct cai_history_block {
+  long long first_item;
+  long long event_start;
+  long long input_sequence;
+  long long kind;
+  char summary[1024];
+} cai_history_block;
+
+typedef struct cai_history_hidden_range {
+  long long first;
+  long long last;
+} cai_history_hidden_range;
+
+typedef struct cai_history_owned_event {
+  long long entry;
+  long long sequence;
+} cai_history_owned_event;
+typedef struct cai_history_rebuild cai_history_rebuild;
+
 typedef struct cai_session_impl {
   cai_agent *agent;
   char *previous_response_id;
@@ -175,6 +196,11 @@ typedef struct cai_session_impl {
   cai_usage_limits usage_limits;
   cai_usage_accounting usage;
   lonejson_spooled history;
+  lonejson_object_array history_blocks;
+  lonejson_object_array history_hidden_events;
+  lonejson_object_array history_owned_events;
+  size_t history_items;
+  int history_items_known;
   cai_session_input *inputs;
   size_t input_count;
   size_t input_capacity;
@@ -182,6 +208,32 @@ typedef struct cai_session_impl {
    * data URL) must reach that request before local history can be compacted. */
   int request_only_tool_output_pending;
 } cai_session_impl;
+
+int cai_session_history_begin(cai_session *session, int kind,
+                              unsigned long long event_start,
+                              unsigned long long input_sequence,
+                              const char *summary, cai_error *error);
+int cai_session_history_prepare(cai_session *session, cai_error *error);
+void cai_session_history_compacted(cai_session *session);
+int cai_session_history_visible(const cai_session *session,
+                                unsigned long long sequence);
+int cai_session_history_visit(cai_session *session, size_t limit,
+                              cai_agent_history_entry_fn visit, void *context,
+                              cai_error *error);
+int cai_session_history_trim(cai_session *session, size_t count,
+                             unsigned long long through, cai_error *error);
+void cai_session_history_summary_delta(cai_session *session, const char *bytes,
+                                       size_t length, int first);
+int cai_session_history_own_event(cai_session *session,
+                                  unsigned long long sequence,
+                                  cai_error *error);
+int cai_history_rebuild_open(cai_history_rebuild **out, cai_error *error);
+int cai_history_rebuild_feed(cai_history_rebuild *rebuild,
+                             const cai_agent_session_event *event,
+                             unsigned long long watermark, cai_error *error);
+int cai_history_rebuild_finish(cai_history_rebuild *rebuild,
+                               cai_session *session, cai_error *error);
+void cai_history_rebuild_close(cai_history_rebuild *rebuild);
 
 #define CAI_CLIENT_IMPL(client) ((cai_client_impl *)((client)->impl))
 #define CAI_AGENT_IMPL(agent) ((cai_agent_impl *)((agent)->impl))

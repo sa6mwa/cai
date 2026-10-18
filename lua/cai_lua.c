@@ -4753,6 +4753,59 @@ static int cai_lua_agent_runtime_user_shell_finish(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_history_entry(void *context,
+                                 const cai_agent_history_entry *entry,
+                                 cai_error *error) {
+  lua_State *L = context;
+  (void)error;
+  lua_newtable(L);
+  lua_pushinteger(L, (lua_Integer)entry->remove_count);
+  lua_setfield(L, -2, "remove_count");
+  lua_pushstring(L, entry->kind == CAI_AGENT_HISTORY_SHELL        ? "shell"
+                    : entry->kind == CAI_AGENT_HISTORY_COMPACTION ? "compaction"
+                                                                  : "turn");
+  lua_setfield(L, -2, "kind");
+  lua_pushstring(L, entry->summary);
+  lua_setfield(L, -2, "summary");
+  lua_rawseti(L, -2, (lua_Integer)entry->remove_count);
+  return CAI_OK;
+}
+
+static int cai_lua_agent_runtime_history(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  lua_Integer limit = luaL_optinteger(L, 2, 20);
+  cai_error error;
+  int rc;
+  luaL_argcheck(L, limit >= 0 && (unsigned long long)limit <= (size_t)-1, 2,
+                "nonnegative history limit required");
+  cai_error_init(&error);
+  lua_newtable(L);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_visit_history(self->ptr, (size_t)limit,
+                                       cai_lua_history_entry, L, &error);
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK) {
+    lua_pop(L, 1);
+    return cai_lua_fail(L, rc, &error);
+  }
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_agent_runtime_trim_history(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  lua_Integer count = luaL_checkinteger(L, 2);
+  cai_error error;
+  int rc;
+  luaL_argcheck(L, count >= 0 && (unsigned long long)count <= (size_t)-1, 2,
+                "nonnegative trim count required");
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_trim_history(self->ptr, (size_t)count, &error);
+  cai_lua_agent_runtime_leave(self);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_agent_runtime_set_model(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_error error;
@@ -11725,6 +11778,8 @@ static const luaL_Reg cai_lua_client_methods[] = {
     {NULL, NULL}};
 
 static const luaL_Reg cai_lua_agent_runtime_methods[] = {
+    {"history", cai_lua_agent_runtime_history},
+    {"trim_history", cai_lua_agent_runtime_trim_history},
     {"submit", cai_lua_agent_runtime_submit},
     {"user_shell_begin", cai_lua_agent_runtime_user_shell_begin},
     {"user_shell_write", cai_lua_agent_runtime_user_shell_write},

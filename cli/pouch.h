@@ -2,6 +2,7 @@
 #define CAI_CLI_POUCH_H
 
 #include "pouch_stream.h"
+#include <cai/agent_runtime.h>
 #include <cai/blob_store.h>
 #include <cai/session_store.h>
 #include <cai/tools/todo.h>
@@ -58,7 +59,8 @@ int cai_cli_pouch_unlock(lc_lease *lease, int result, cai_error *error);
 const cai_todo_store_callbacks *cai_cli_pouch_todo_callbacks(void);
 /* Stream JSONL containing the current complete checkpoint and all journal
  * events. */
-int cai_cli_pouch_export(cai_cli_pouch *pouch, const char *id, cai_sink *sink,
+int cai_cli_pouch_export(cai_cli_pouch *pouch, const char *id,
+                         cai_agent_runtime *runtime, cai_sink *sink,
                          cai_error *error);
 int cai_cli_pouch_import(cai_cli_pouch *pouch, const char *path,
                          const char *workspace, char *id, size_t capacity,

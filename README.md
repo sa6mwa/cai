@@ -226,6 +226,54 @@ Both C runtime configuration and Lua runtime option tables accept
 `shell_context_max_lines` and `shell_context_max_bytes` with the defaults above.
 The shared INI parser exposes them under `[runtime]` to C and Lua hosts.
 
+### Trim conversation history
+
+`/trim` lists the newest 20 complete history entries, newest first. Row `0`
+means keep the current history; row `1` identifies the newest entry, row `2`
+the preceding one. `/trim N` removes exactly the newest N entries. `/trim 0`
+does nothing. `/trim list N` changes the listing length for that command.
+Summaries use the assistant response, falling back to the prompt or shell
+command, collapse whitespace, and fit the terminal width through libmdf.
+
+A turn includes its reasoning, steering, tool calls and tool results. A
+standalone recorded shell execution is one entry; an execution started during
+a model turn belongs to that turn. Compacted context is one indivisible entry,
+including any tail retained by the compactor. It is never expanded into the
+original turns. Boundaries are recovered from the active session's own journal
+when needed; steering records remain part of their turn.
+
+Listing and removal require an idle runtime with no queued work, open shell,
+pending settings, or review handoff. Removal checkpoints the retained context
+and journal visibility together. A checkpoint failure restores the live history.
+Restart, subsequent provider requests, and conversation exports exclude trimmed
+entries. Older storage checkpoints and diagnostic logs are not erased. Changes
+to files, tool stores, selected settings, goals, and incurred usage are not undone.
+CAI clears provider continuation handles so discarded context cannot return via
+an earlier response or conversation ID.
+
+The C API exposes `cai_agent_runtime_visit_history(runtime, limit, visitor,
+context, &error)` and `cai_agent_runtime_trim_history(runtime, count, &error)`.
+Both are owner-thread operations. Visitor views are borrowed only during the
+callback; callbacks must not mutate the runtime. A zero listing limit means 20;
+an excessive trim count fails without removing entries. Hosts can use the
+runtime configuration's `replay_callback` for retained journal replay, and
+`cai_agent_runtime_history_event_visible` when exporting a stable journal.
+
+Lua exposes the same behavior:
+
+```lua
+local entries = assert(runtime:history()) -- optional listing limit
+for _, entry in ipairs(entries) do
+  print(entry.remove_count, entry.kind, entry.summary)
+end
+assert(runtime:trim_history(1)) -- remove the newest whole entry
+```
+
+`kind` is `turn`, `shell`, or `compaction`. History and trimming do not issue
+provider requests or execute tools.
+
+### Build CAI
+
 ```sh
 scripts/cpkt-toolchains.sh ensure x86_64-linux-gnu
 scripts/cpkt-toolchains.sh ensure x86_64-linux-musl
