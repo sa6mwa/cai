@@ -9,6 +9,12 @@ chat=false
 printf 'LEGITIMATE_SOURCE_MARKER\n' >"$work/relevant.c"
 printf 'OUTSIDE_SECRET_MARKER\n' >"$root/outside.c"
 for mode in cyber_policy cyber_notice http read list outside bounded disabled tool failure empty ordinary near_match; do
+  # Only report/export cases need a persisted conversation. Other cases test
+  # diagnostic requests, tool restrictions and error routing directly.
+  case "$mode" in
+    cyber_policy|bounded|empty) unset CAI_TEST_VOLATILE_SESSION ;;
+    *) export CAI_TEST_VOLATILE_SESSION=1 ;;
+  esac
   code=$mode
   status=200
   expected=2

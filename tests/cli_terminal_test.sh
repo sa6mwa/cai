@@ -70,6 +70,7 @@ expect 'method: POST'; expect 'path: responses'
 absent "$term/text" cai.http.transport_error
 terminal_close
 # Fragmented links and table escapes must be rendered, not passed through.
+export CAI_TEST_VOLATILE_SESSION=1
 width=24
 plan '{"plan":[["abcdefghijklmnopqrst ([la","bel](https://","x.test", ")).\n\n","| Left | Right |\n| --- | --- |\n| `a\\","|b` | ok |\n\n","MARKDOWN DONE\n\n"]]}'
 terminal_start -N

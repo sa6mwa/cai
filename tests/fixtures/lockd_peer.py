@@ -8,6 +8,9 @@ import sys
 
 root = Path(sys.argv[1])
 class Peer(http.server.BaseHTTPRequestHandler):
+    # Answer Expect: 100-continue before reading a streamed request body.
+    # HTTP/1.0 made libcurl wait its one-second fallback on every POST.
+    protocol_version = 'HTTP/1.1'
     def log_message(self, *_args):
         pass
     def do_POST(self):

@@ -179,8 +179,10 @@ commit and verification evidence.
 - **Fix:** apply busy/spinner changes only at busy-state transitions, keeping
   the spinner active while the runtime reports an active turn.
 - **Verification:** `cai_cli_spinner` traces calls reaching the real softline
-  setters across timer ticks, mid-turn `/status`, successful and failed tool
-  calls, provider failure, cancellation, and a subsequent recovery turn.
+  setters using controlled runtime snapshots across repeated elapsed-time
+  updates, tool boundaries, completion, provider failure, cancellation and
+  subsequent turns. This directly exercises the production status projection
+  without an inference run or timer sleeps.
   The existing Responses and Chat Completions settings tests pass, including
   queued settings changes during a turn. Static musl terminal failure/recovery
   coverage also passes.

@@ -6,6 +6,7 @@ origin=${endpoint%/v1}
 mkdir -p "$root/config/cai"
 config="$root/config/cai/config.ini"
 export MCP_FIXTURE_KEY=fixture-mcp-secret
+export CAI_TEST_MCP_CONFIG_TRACE="$root/mcp-config"
 cat >"$config" <<INI
 [client]
 api_protocol = $protocol
@@ -24,6 +25,8 @@ INI
 unset MCP_UNSET_FIXTURE_KEY
 plan "$(jq -n --argjson chat "$([[ "$protocol" == chat_completions ]] && printf true || printf false)" '{chat:$chat,plan:[{pause:true,text:"INVENTORY TURN DONE"}]}')"
 terminal_start -N
+contains "$root/mcp-config" "$origin/mcp/alpha timeout=30000 discovery=1000"
+contains "$root/mcp-config" "$origin/mcp/beta timeout=30000 discovery=3000"
 send '/status\r'; expect 'MCP servers'; expect 'Agent tools'
 expect alpha; expect beta; expect missing_key
 before=$(wc -l <"$root/peer/mcp_requests.jsonl")
@@ -46,7 +49,7 @@ terminal_close
 jq -se 'all(.[]; (.request.method != "initialize" or .server != "alpha") or .authorization == "Bearer fixture-mcp-secret")' "$root/peer/mcp_requests.jsonl" >/dev/null
 jq -se 'all(.[]; .server != "disabled" and .server != "missing_key")' "$root/peer/mcp_requests.jsonl" >/dev/null
 # Both providers can execute namespaced tools; only Responses uses raw input.
-plan "$(jq -n --argjson chat "$([[ "$protocol" == chat_completions ]] && printf true || printf false)" '{chat:$chat,mcp:{alpha:{call_delay_ms:1200}},plan:[{tool:"mcp_alpha_echo",arguments:{text:"hello MCP"}},{tool:"mcp_beta_raw",arguments:(if $chat then {payload:"raw \"text\"\nsecond line"} else "raw \"text\"\nsecond line" end)},"MCP EXECUTION DONE"]}')"
+plan "$(jq -n --argjson chat "$([[ "$protocol" == chat_completions ]] && printf true || printf false)" '{chat:$chat,plan:[{tool:"mcp_alpha_echo",arguments:{text:"hello MCP"}},{tool:"mcp_beta_raw",arguments:(if $chat then {payload:"raw \"text\"\nsecond line"} else "raw \"text\"\nsecond line" end)},"MCP EXECUTION DONE"]}')"
 run -Nni 'exercise MCP tools'; ok
 [[ $(stdout_text) == 'MCP EXECUTION DONE' ]]
 jq -se 'any(.[]; .server == "alpha" and .request.method == "tools/call" and .request.params.name == "echo" and .request.params.arguments.text == "hello MCP")' "$root/peer/mcp_requests.jsonl" >/dev/null
@@ -57,11 +60,13 @@ run --list; ok
 [[ $(wc -l <"$root/peer/mcp_requests.jsonl") == "$before" ]]
 run --no-mcp -Nni 'disabled MCP'; ok
 [[ $(wc -l <"$root/peer/mcp_requests.jsonl") == "$before" ]]
-# Three seconds covers initialize plus both pages, not three seconds per HTTP
-# request. Other unavailable/empty servers do not block the prompt or tools.
+# The trace above proves the production default is three seconds and that
+# normal tool calls retain a separate timeout. Exercise the whole-discovery
+# deadline with a short fixture budget instead of sleeping through that default.
 cat >"$config" <<INI
 [mcp.slow]
 endpoint = "$origin/mcp/slow"
+discovery_timeout_ms = 100
 [mcp.broken]
 endpoint = "$origin/mcp/broken"
 [mcp.denied]
@@ -69,11 +74,8 @@ endpoint = "$origin/mcp/denied"
 [mcp.empty]
 endpoint = "$origin/mcp/empty"
 INI
-plan '{"mcp":{"slow":{"delay_ms":1200},"broken":{"malformed":true},"denied":{"status":401},"empty":{"empty":true}},"plan":[]}'
-start=$(date +%s%N)
+plan '{"mcp":{"slow":{"delay_ms":40},"broken":{"malformed":true},"denied":{"status":401},"empty":{"empty":true}},"plan":[]}'
 terminal_start -N
-elapsed=$(( $(date +%s%N) - start ))
-[[ "$elapsed" -ge 2600000000 && "$elapsed" -lt 4500000000 ]] || fail "MCP discovery took $elapsed ns"
 send '/tools\r'; expect 'discovery timed out'; expect broken; expect denied; expect empty
 expect 'read_file'
 terminal_close

@@ -981,6 +981,15 @@ fail with an explicit preparation command. Prepare fuzz tooling with
   live checks. `make test-all` includes the complete native suite, including
   example and packaging checks, once. `make test-cli` checks the CLI on the
   native GNU runtime.
+- CLI provider checks use a loopback OpenAI Responses/Chat Completions server
+  with scripted responses; they make no real inference calls. Presentation
+  and wire tests use the real runtime and tools. Stateless checks omit session
+  storage; replay/export checks retain encryption and session formats, using
+  a test client with per-event durable sync disabled. Pouch startup,
+  recovery, compaction and idle-publication checks still use the production
+  storage settings and remain in the same CLI suite. Spinner regressions use
+  controlled runtime snapshots; timeout configuration is checked at client
+  construction, with short budgets for actual timeout failures.
 - `make test-all` adds native CLI, Valgrind, fuzz, Lua and local service checks.
   It never builds the cross matrix or reruns the core suite in Release.
   Fuzz builds only its harnesses; Valgrind builds only its checked executable.

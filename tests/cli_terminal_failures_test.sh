@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/cli_test_common.sh"
 peer_start
+export CAI_TEST_VOLATILE_SESSION=1
 for mode in malformed truncated provider_error cyber_policy cyber_notice cancel escape; do
   terminal_start -N
   case "$mode" in
@@ -56,6 +57,7 @@ terminal_close
 
 # Policy diagnostics stop automation, while an explicit user turn remains a
 # normal agent turn even when a goal exists; restrictions must not leak.
+unset CAI_TEST_VOLATILE_SESSION
 terminal_start -N
 plan '{"plan":[{"error":"Provider incident","error_code":"cyber_policy"},"Goal diagnostic finished"]}'
 before=$(requests)

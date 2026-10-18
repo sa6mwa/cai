@@ -26,9 +26,9 @@ for mode in failure metadata; do
 done
 kill "$peer_pid"; wait "$peer_pid" 2>/dev/null || true; peer_pid=
 printf success >"$lockd/mode"
-openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=CAI test CA' -keyout "$lockd/ca.key" -out "$lockd/ca.crt" >"$lockd/openssl.log" 2>&1
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 -subj '/CN=CAI test CA' -keyout "$lockd/ca.key" -out "$lockd/ca.crt" >"$lockd/openssl.log" 2>&1
 for name in server client; do
-  openssl req -newkey rsa:2048 -nodes -subj "/CN=$name" -keyout "$lockd/$name.key" -out "$lockd/$name.csr" >>"$lockd/openssl.log" 2>&1
+  openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj "/CN=$name" -keyout "$lockd/$name.key" -out "$lockd/$name.csr" >>"$lockd/openssl.log" 2>&1
   extension='extendedKeyUsage=clientAuth'; [[ "$name" != server ]] || extension='subjectAltName=IP:127.0.0.1'
   printf '%s\n' "$extension" >"$lockd/$name.ext"
   openssl x509 -req -in "$lockd/$name.csr" -CA "$lockd/ca.crt" -CAkey "$lockd/ca.key" -CAcreateserial -days 1 -extfile "$lockd/$name.ext" -out "$lockd/$name.crt" >>"$lockd/openssl.log" 2>&1

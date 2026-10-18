@@ -4,16 +4,18 @@ peer_start
 export CAI_TEST_API_BASE_URL="$endpoint"
 catalog='{"models":[{"slug":"gpt-6-luna","context_window":272000},{"slug":"account-catalog-marker","context_window":272000}]}'
 config="$root/catalog.ini"
+export CAI_TEST_CLIENT_CONFIG_TRACE="$root/client-config"
 printf '[client]\ntimeout_ms = 4000\n' >"$config"
 base+=(--config "$config")
 catalog_plan() {
   rm -f "$root/peer/catalog_finished"
   plan "$(jq -n --argjson cat "$catalog" --argjson delay "$1" --argjson status "$2" '{catalog:$cat,catalog_delay_ms:$delay,catalog_status:$status,plan:[]}')"
 }
-# An explicitly configured request deadline must survive discovery-client
-# construction. The previous hardcoded 1.5 seconds fails this response.
-catalog_plan 1800 200
+# Assert the actual client configuration instead of delaying a response long
+# enough to outlast the old hardcoded 1.5-second discovery deadline.
+catalog_plan 0 200
 terminal_start -N
+awk 'BEGIN {n=0} {if ($0 != 4000) exit 1; n++} END {if (n != 2) exit 1}' "$root/client-config"
 send '/model\r'; expect account-catalog-marker
 absent "$term/feed" 'Model catalog unavailable'
 wait_for test -s "$root/peer/catalog_finished"
