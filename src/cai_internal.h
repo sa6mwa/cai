@@ -162,6 +162,7 @@ typedef struct cai_session_impl {
   char *state_request_model;
   char *state_reasoning_effort;
   char *state_reasoning_summary;
+  char *state_service_tier;
   /** Preset identity recorded in the imported/exported portable session state.
    */
   char *state_preset_name;

@@ -272,6 +272,34 @@ assert(runtime:trim_history(1)) -- remove the newest whole entry
 `kind` is `turn`, `shell`, or `compaction`. History and trimming do not issue
 provider requests or execute tools.
 
+### Service tiers
+
+`/tier` cycles available tiers; `/tier list` displays choices and the selected
+and pending tier. `/tier NAME` selects one. `/fast` toggles Fast (`priority`, or
+the provider's advertised `fast` ID) and explicit normal routing (`default`).
+Changes apply at the next safe model/tool boundary and persist with the session.
+`--service-tier NAME`, `CAI_SERVICE_TIER`, and `[agent] service_tier`
+provide startup overrides. An unset value restores saved routing, or leaves
+new-session routing to the provider. CAI never opts into a paid tier from a
+catalog default automatically.
+Explicit normal routing omits the tier on ChatGPT requests, matching Codex;
+the public OpenAI API receives `"service_tier":"default"`.
+
+ChatGPT's signed-in model catalog supplies `service_tiers` and
+`default_service_tier`. OpenAI's published API request options are shown when
+model metadata is absent; the provider still validates account/model access.
+For other providers, explicit tier IDs can be sent when metadata is missing;
+cycling and enabling Fast need known choices. A fallback models.json entry may
+declare `"service_tiers":["priority","flex"]` and an optional
+`"default_service_tier":"priority"`. Live metadata takes precedence.
+
+The C runtime settings API accepts `CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER` and
+`settings.service_tier`; the same string is available in Lua configuration,
+`runtime:settings()`, and `runtime:update_settings({service_tier="priority"})`.
+Low-level agent configuration also accepts `service_tier`, serialized by both
+Responses and Chat Completions, including tool continuations. Review and other
+child agents inherit the selected tier.
+
 ### Build CAI
 
 ```sh

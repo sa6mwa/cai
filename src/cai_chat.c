@@ -798,6 +798,9 @@ static int cai_chat_request_write(const cai_response_create_params *params,
     status = cai_chat_member(&writer, "reasoning_effort",
                              params->reasoning_effort, &json_error);
   }
+  if (status == LONEJSON_STATUS_OK && params->service_tier != NULL)
+    status = cai_chat_member(&writer, "service_tier", params->service_tier,
+                             &json_error);
   if (status == LONEJSON_STATUS_OK && params->max_output_tokens > 0) {
     status = cai_chat_key(&writer, "max_completion_tokens", &json_error);
     if (status == LONEJSON_STATUS_OK) {

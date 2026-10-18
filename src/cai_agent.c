@@ -153,6 +153,7 @@ typedef struct cai_session_state_doc {
   char *request_model;
   char *reasoning_effort;
   char *reasoning_summary;
+  char *service_tier;
   char *preset_name;
   char *preset_prompt_version;
   char *previous_response_id;
@@ -224,6 +225,8 @@ static const lonejson_field cai_session_state_fields[] = {
                                           reasoning_effort, "reasoning_effort"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(
         cai_session_state_doc, reasoning_summary, "reasoning_summary"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc, service_tier,
+                                          "service_tier"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc, preset_name,
                                           "preset_name"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(
@@ -679,6 +682,8 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
   impl->tool_choice = cai_strdup(&client_impl->allocator, config->tool_choice);
   impl->tool_choice_json =
       cai_strdup(&client_impl->allocator, config->tool_choice_json);
+  impl->service_tier =
+      cai_strdup(&client_impl->allocator, config->service_tier);
   impl->reasoning_effort =
       cai_strdup(&client_impl->allocator, config->reasoning_effort);
   impl->reasoning_mode =
@@ -763,6 +768,7 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
       (config->reasoning_effort != NULL && impl->reasoning_effort == NULL) ||
       (config->reasoning_mode != NULL && impl->reasoning_mode == NULL) ||
       (config->reasoning_summary != NULL && impl->reasoning_summary == NULL) ||
+      (config->service_tier != NULL && impl->service_tier == NULL) ||
       (config->text_format_name != NULL && impl->text_format_name == NULL) ||
       (config->text_format_description != NULL &&
        impl->text_format_description == NULL) ||
@@ -833,6 +839,7 @@ void cai_agent_destroy(cai_agent *agent) {
   cai_free_mem(allocator, impl->prompt_cache_key);
   cai_free_mem(allocator, impl->tool_choice);
   cai_free_mem(allocator, impl->tool_choice_json);
+  cai_free_mem(allocator, impl->service_tier);
   cai_free_mem(allocator, impl->reasoning_effort);
   cai_free_mem(allocator, impl->reasoning_mode);
   cai_free_mem(allocator, impl->reasoning_summary);
@@ -2609,6 +2616,7 @@ void cai_session_destroy(cai_session *session) {
   cai_free_mem(allocator, impl->state_request_model);
   cai_free_mem(allocator, impl->state_reasoning_effort);
   cai_free_mem(allocator, impl->state_reasoning_summary);
+  cai_free_mem(allocator, impl->state_service_tier);
   cai_free_mem(allocator, impl->state_preset_name);
   cai_free_mem(allocator, impl->state_preset_prompt_version);
   cai_free_mem(allocator, impl->goal_objective);
@@ -5813,6 +5821,11 @@ cai_session_init_response_params_mode(cai_session *session, int diagnostic,
     rc = params->set_max_output_tokens(
         params, CAI_SESSION_AGENT_IMPL(session)->max_output_tokens, error);
   }
+  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->service_tier != NULL &&
+      !(CAI_SESSION_CLIENT_IMPL(session)->chatgpt_auth != NULL &&
+        strcmp(CAI_SESSION_AGENT_IMPL(session)->service_tier, "default") == 0))
+    rc = params->set_service_tier(
+        params, CAI_SESSION_AGENT_IMPL(session)->service_tier, error);
   if (rc == CAI_OK && !diagnostic &&
       CAI_SESSION_AGENT_IMPL(session)->max_tool_calls > 0) {
     rc = params->set_max_tool_calls(
@@ -5911,6 +5924,15 @@ cai_session_refresh_request_settings(cai_session *session,
   if (rc == CAI_OK)
     rc = params->set_reasoning(params, agent->reasoning_effort,
                                agent->reasoning_summary, error);
+  if (rc == CAI_OK)
+    rc = params->set_service_tier(
+        params,
+        CAI_SESSION_CLIENT_IMPL(session)->chatgpt_auth != NULL &&
+                agent->service_tier != NULL &&
+                strcmp(agent->service_tier, "default") == 0
+            ? NULL
+            : agent->service_tier,
+        error);
   return rc;
 }
 
@@ -7450,6 +7472,7 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
   doc.request_model = CAI_SESSION_AGENT_IMPL(session)->model;
   doc.context_window_tokens = cai_session_context_window_tokens(session);
   doc.reasoning_effort = CAI_SESSION_AGENT_IMPL(session)->reasoning_effort;
+  doc.service_tier = CAI_SESSION_AGENT_IMPL(session)->service_tier;
   doc.reasoning_summary = CAI_SESSION_AGENT_IMPL(session)->reasoning_summary;
   doc.preset_name = CAI_SESSION_IMPL(session)->state_preset_name;
   doc.preset_prompt_version =
@@ -7615,6 +7638,7 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   char *next_state_model_compaction_hash;
   char *next_request_model = NULL;
   char *next_reasoning_effort = NULL;
+  char *next_service_tier = NULL;
   char *next_reasoning_summary = NULL;
   char *next_state_preset_name;
   char *next_state_preset_prompt_version;
@@ -7687,7 +7711,10 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
       (doc.reasoning_summary != NULL &&
        (doc.reasoning_summary[0] == '\0' ||
         strlen(doc.reasoning_summary) > 64U ||
-        strpbrk(doc.reasoning_summary, " \t\r\n") != NULL))) {
+        strpbrk(doc.reasoning_summary, " \t\r\n") != NULL)) ||
+      (doc.service_tier != NULL &&
+       (doc.service_tier[0] == '\0' || strlen(doc.service_tier) > 64U ||
+        strpbrk(doc.service_tier, " \t\r\n") != NULL))) {
     rc = cai_set_error(error, CAI_ERR_INVALID,
                        "session state has invalid request settings");
     goto done;
@@ -7696,10 +7723,13 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
                                   doc.request_model);
   next_reasoning_effort = cai_strdup(
       &CAI_SESSION_CLIENT_IMPL(session)->allocator, doc.reasoning_effort);
+  next_service_tier = cai_strdup(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+                                 doc.service_tier);
   next_reasoning_summary = cai_strdup(
       &CAI_SESSION_CLIENT_IMPL(session)->allocator, doc.reasoning_summary);
   if ((doc.request_model != NULL && next_request_model == NULL) ||
       (doc.reasoning_effort != NULL && next_reasoning_effort == NULL) ||
+      (doc.service_tier != NULL && next_service_tier == NULL) ||
       (doc.reasoning_summary != NULL && next_reasoning_summary == NULL)) {
     rc = cai_set_error(error, CAI_ERR_NOMEM,
                        "failed to preserve imported request settings");
@@ -7882,6 +7912,10 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
     CAI_SESSION_IMPL(session)->state_request_model = next_request_model;
     CAI_SESSION_IMPL(session)->state_reasoning_effort = next_reasoning_effort;
     CAI_SESSION_IMPL(session)->state_reasoning_summary = next_reasoning_summary;
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+                 CAI_SESSION_IMPL(session)->state_service_tier);
+    CAI_SESSION_IMPL(session)->state_service_tier = next_service_tier;
+    next_service_tier = NULL;
     next_request_model = next_reasoning_effort = next_reasoning_summary = NULL;
   }
   if (rc == CAI_OK) {
@@ -7986,6 +8020,7 @@ done:
                next_request_model);
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
                next_reasoning_effort);
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator, next_service_tier);
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
                next_reasoning_summary);
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,

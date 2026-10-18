@@ -25,7 +25,8 @@ typedef struct cai_agent_runtime cai_agent_runtime;
 typedef enum cai_agent_runtime_setting {
   CAI_AGENT_RUNTIME_SETTING_MODEL = 1U << 0,
   CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT = 1U << 1,
-  CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY = 1U << 2
+  CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY = 1U << 2,
+  CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER = 1U << 3
 } cai_agent_runtime_setting;
 
 /** Effective or pending runtime request settings. NULL fields are absent. */
@@ -34,6 +35,9 @@ typedef struct cai_agent_runtime_settings {
   const char *model;
   const char *reasoning_effort;
   const char *reasoning_summary;
+  /** Selected tier; NULL is unset. Use "default" for explicit normal routing.
+   */
+  const char *service_tier;
 } cai_agent_runtime_settings;
 
 /** Borrowed settings views and whether an update applied immediately. */
@@ -527,6 +531,9 @@ typedef struct cai_agent_runtime_config {
    * (Smith: provider-directed CAI_REASONING_SUMMARY_AUTO) for new sessions.
    */
   const char *reasoning_summary;
+  /** Optional service-tier override. NULL restores the saved tier on resume,
+   * otherwise leaves provider routing unset. No automatic paid-tier opt-in. */
+  const char *service_tier;
   /**
    * Optional model for review children launched from this Smith runtime. NULL
    * inherits model. Ignored by a directly opened smith-review runtime.

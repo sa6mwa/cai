@@ -170,6 +170,7 @@ typedef struct cai_runtime_settings_owned {
   char *model;
   char *reasoning_effort;
   char *reasoning_summary;
+  char *service_tier;
 } cai_runtime_settings_owned;
 
 typedef struct cai_runtime_path_doc {
@@ -636,6 +637,7 @@ struct cai_agent_runtime {
   char *smith_identity;
   char *smith_model;
   char *smith_reasoning_effort;
+  char *smith_service_tier;
   char *smith_reasoning_summary;
   char *smith_review_model;
   char *smith_review_reasoning_effort;
@@ -838,6 +840,7 @@ static void cai_runtime_settings_clear(cai_runtime_settings_owned *settings) {
   cai_free_mem(settings->allocator, settings->model);
   cai_free_mem(settings->allocator, settings->reasoning_effort);
   cai_free_mem(settings->allocator, settings->reasoning_summary);
+  cai_free_mem(settings->allocator, settings->service_tier);
   memset(settings, 0, sizeof(*settings));
 }
 
@@ -849,6 +852,7 @@ cai_runtime_settings_borrow(const cai_runtime_settings_owned *settings) {
   view.model = settings->model;
   view.reasoning_effort = settings->reasoning_effort;
   view.reasoning_summary = settings->reasoning_summary;
+  view.service_tier = settings->service_tier;
   return view;
 }
 
@@ -861,6 +865,9 @@ cai_runtime_effective_settings(const cai_agent_runtime *runtime) {
   view.model = agent->model;
   view.reasoning_effort = agent->reasoning_effort;
   view.reasoning_summary = agent->reasoning_summary;
+  view.service_tier = agent->service_tier;
+  if (view.service_tier != NULL)
+    view.present |= CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER;
   if (view.reasoning_effort != NULL) {
     view.present |= CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT;
   }
@@ -886,9 +893,12 @@ static int cai_runtime_settings_copy(cai_runtime_settings_owned *out,
   if (input->reasoning_summary != NULL) {
     out->reasoning_summary = cai_strdup(allocator, input->reasoning_summary);
   }
+  if (input->service_tier != NULL)
+    out->service_tier = cai_strdup(allocator, input->service_tier);
   if ((input->model != NULL && out->model == NULL) ||
       (input->reasoning_effort != NULL && out->reasoning_effort == NULL) ||
-      (input->reasoning_summary != NULL && out->reasoning_summary == NULL)) {
+      (input->reasoning_summary != NULL && out->reasoning_summary == NULL) ||
+      (input->service_tier != NULL && out->service_tier == NULL)) {
     cai_runtime_settings_clear(out);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to copy runtime settings");
@@ -1960,6 +1970,7 @@ static void cai_runtime_clear_smith_profile(cai_agent_runtime *runtime) {
   cai_free_mem(NULL, runtime->smith_identity);
   cai_free_mem(NULL, runtime->smith_model);
   cai_free_mem(NULL, runtime->smith_reasoning_effort);
+  cai_free_mem(NULL, runtime->smith_service_tier);
   cai_free_mem(NULL, runtime->smith_reasoning_summary);
   cai_free_mem(NULL, runtime->smith_review_model);
   cai_free_mem(NULL, runtime->smith_review_reasoning_effort);
@@ -1982,6 +1993,7 @@ static void cai_runtime_clear_smith_profile(cai_agent_runtime *runtime) {
   runtime->smith_identity = NULL;
   runtime->smith_model = NULL;
   runtime->smith_reasoning_effort = NULL;
+  runtime->smith_service_tier = NULL;
   runtime->smith_reasoning_summary = NULL;
   runtime->smith_review_model = NULL;
   runtime->smith_review_reasoning_effort = NULL;
@@ -2137,6 +2149,10 @@ static int cai_runtime_capture_preset_profile(
   if (rc == CAI_OK) {
     rc = cai_runtime_copy_optional_string(
         config->reasoning_summary, &runtime->smith_reasoning_summary, error);
+  }
+  if (rc == CAI_OK) {
+    rc = cai_runtime_copy_optional_string(config->service_tier,
+                                          &runtime->smith_service_tier, error);
   }
   if (rc == CAI_OK) {
     rc = cai_runtime_copy_optional_string(config->review_model,
@@ -7347,6 +7363,7 @@ int cai_agent_runtime_open(cai_client *client,
   smith.model = config->model;
   smith.reasoning_effort = config->reasoning_effort;
   smith.reasoning_summary = config->reasoning_summary;
+  smith.service_tier = config->service_tier;
   smith.developer_instructions_extension =
       config->developer_instructions_extension;
   memset(&terminal_config, 0, sizeof(terminal_config));
@@ -7595,6 +7612,8 @@ int cai_agent_runtime_open(cai_client *client,
           if (config->reasoning_summary == NULL &&
               saved->state_reasoning_summary != NULL)
             selected.reasoning_summary = saved->state_reasoning_summary;
+          if (config->service_tier == NULL && saved->state_service_tier != NULL)
+            selected.service_tier = saved->state_service_tier;
           memset(&active_copy, 0, sizeof(active_copy));
           memset(&smith_copy, 0, sizeof(smith_copy));
           model_instructions = NULL;
@@ -7623,15 +7642,21 @@ int cai_agent_runtime_open(cai_client *client,
                          agent->reasoning_effort);
             cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator,
                          agent->reasoning_summary);
+            cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator,
+                         agent->service_tier);
             cai_free_mem(NULL, runtime->smith_model);
             cai_free_mem(NULL, runtime->smith_reasoning_effort);
             cai_free_mem(NULL, runtime->smith_reasoning_summary);
+            cai_free_mem(NULL, runtime->smith_service_tier);
             agent->model = active_copy.model;
             agent->reasoning_effort = active_copy.reasoning_effort;
             agent->reasoning_summary = active_copy.reasoning_summary;
+            agent->service_tier = active_copy.service_tier;
             runtime->smith_model = smith_copy.model;
             runtime->smith_reasoning_effort = smith_copy.reasoning_effort;
             runtime->smith_reasoning_summary = smith_copy.reasoning_summary;
+            runtime->smith_service_tier = smith_copy.service_tier;
+            active_copy.service_tier = smith_copy.service_tier = NULL;
             active_copy.model = active_copy.reasoning_effort =
                 active_copy.reasoning_summary = NULL;
             smith_copy.model = smith_copy.reasoning_effort =
@@ -8049,6 +8074,7 @@ static int cai_runtime_set_model_internal(
   cai_runtime_settings_owned next_reasoning, next_smith_reasoning;
   cai_agent_runtime_settings reasoning;
   char *old_effort, *old_summary, *old_smith_effort, *old_smith_summary;
+  char *old_tier, *old_smith_tier;
   int model_changed;
   int requires_compaction;
   long long next_context_window;
@@ -8246,6 +8272,13 @@ static int cai_runtime_set_model_internal(
   old_summary = agent->reasoning_summary;
   old_smith_effort = runtime->smith_reasoning_effort;
   old_smith_summary = runtime->smith_reasoning_summary;
+  old_tier = agent->service_tier;
+  old_smith_tier = runtime->smith_service_tier;
+  if ((reasoning.present & CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER) != 0U) {
+    agent->service_tier = next_reasoning.service_tier;
+    runtime->smith_service_tier = next_smith_reasoning.service_tier;
+    next_reasoning.service_tier = next_smith_reasoning.service_tier = NULL;
+  }
   if ((reasoning.present & CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT) != 0U) {
     agent->reasoning_effort = next_reasoning.reasoning_effort;
     runtime->smith_reasoning_effort = next_smith_reasoning.reasoning_effort;
@@ -8357,6 +8390,23 @@ static int cai_runtime_set_model_internal(
       agent->reasoning_summary = old_summary;
       runtime->smith_reasoning_summary = old_smith_summary;
     }
+  }
+  if ((reasoning.present & CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER) != 0U) {
+    cai_free_mem(&CAI_CLIENT_IMPL(runtime->client)->allocator,
+                 rc == CAI_OK ? old_tier : agent->service_tier);
+    cai_free_mem(NULL,
+                 rc == CAI_OK ? old_smith_tier : runtime->smith_service_tier);
+    if (rc != CAI_OK) {
+      agent->service_tier = old_tier;
+      runtime->smith_service_tier = old_smith_tier;
+    }
+    if (!runtime->logger_disabled && runtime->logger != NULL &&
+        runtime->logger->infof != NULL)
+      runtime->logger->infof(runtime->logger, "cai.agent.service_tier.updated",
+                             "service_tier=%s committed=%d",
+                             agent->service_tier != NULL ? agent->service_tier
+                                                         : "unset",
+                             rc == CAI_OK);
   }
   pthread_mutex_lock(&runtime->lock);
   runtime->model_switching = 0;
@@ -8476,7 +8526,8 @@ int cai_agent_runtime_update_settings(
     cai_agent_runtime_control_result *result, cai_error *error) {
   const unsigned int all_fields = CAI_AGENT_RUNTIME_SETTING_MODEL |
                                   CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT |
-                                  CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY;
+                                  CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY |
+                                  CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER;
   cai_runtime_settings_owned candidate;
   cai_runtime_settings_owned effective_copy;
   cai_runtime_settings_owned pending_copy;
@@ -8504,7 +8555,11 @@ int cai_agent_runtime_update_settings(
            0U &&
        !cai_runtime_settings_value_valid(
            CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY,
-           requested->reasoning_summary))) {
+           requested->reasoning_summary)) ||
+      ((requested->present & CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER) != 0U &&
+       (!cai_runtime_settings_value_valid(
+            CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER, requested->service_tier) ||
+        strlen(requested->service_tier) > 64U))) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "runtime settings require selected valid values");
   }
@@ -8522,6 +8577,8 @@ int cai_agent_runtime_update_settings(
   }
   selected = cai_runtime_settings_borrow(&runtime->pending_settings);
   selected.present |= requested->present;
+  if ((requested->present & CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER) != 0U)
+    selected.service_tier = requested->service_tier;
   if ((requested->present & CAI_AGENT_RUNTIME_SETTING_MODEL) != 0U) {
     selected.model = requested->model;
   }
@@ -8543,6 +8600,10 @@ int cai_agent_runtime_update_settings(
       runtime->shell_context_head != NULL || runtime->shell_context_applying ||
       runtime->goal_control_count != 0U || runtime->goal_control_inflight != 0U;
   if (rc == CAI_OK && !active) {
+    if ((selected.present & CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER) != 0U) {
+      current.service_tier = selected.service_tier;
+      current.present |= CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER;
+    }
     if ((selected.present & CAI_AGENT_RUNTIME_SETTING_MODEL) != 0U) {
       current.model = selected.model;
       current.present |= CAI_AGENT_RUNTIME_SETTING_MODEL;
@@ -9163,6 +9224,7 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
   config.reasoning_summary = parent->smith_review_reasoning_summary != NULL
                                  ? parent->smith_review_reasoning_summary
                                  : parent->smith_reasoning_summary;
+  config.service_tier = parent->smith_service_tier;
   config.developer_instructions_extension =
       parent->smith_developer_instructions_extension;
   config.terminal_tool_config =
@@ -9723,6 +9785,7 @@ static int cai_runtime_open_tool_subagent(
   config.model = model;
   config.reasoning_effort = effort;
   config.reasoning_summary = summary;
+  config.service_tier = parent->smith_service_tier;
   config.logger = parent->logger;
   config.logger_disabled = parent->logger_disabled;
   config.developer_instructions_extension =

@@ -71,6 +71,8 @@ F("response", "reasoning_effort", STR, AGENT, reasoning_effort, 0, NULL,
   "Provider reasoning effort.")
 F("response", "reasoning_summary", STR, AGENT, reasoning_summary, 0,
   "none|auto|concise|detailed", "Reasoning-summary mode.")
+F("response", "service_tier", STR, AGENT, service_tier, 0, NULL,
+  "Provider service-tier request ID; empty leaves routing unset.")
 F("response", "reasoning_mode", STR, AGENT, reasoning_mode, 0, NULL,
   "Provider reasoning mode.")
 F("response", "text_format_name", STR, AGENT, text_format_name, 0, NULL,
@@ -133,6 +135,9 @@ F("agent", "reasoning_effort", STR, RUNTIME, reasoning_effort, 0,
   "New-conversation reasoning effort.")
 F("agent", "reasoning_summary", STR, RUNTIME, reasoning_summary, 0,
   "none|auto|concise|detailed", "New-conversation reasoning summary.")
+F("agent", "service_tier", STR, RUNTIME, service_tier, 0, NULL,
+  "Provider service tier; empty restores the saved tier or leaves routing "
+  "unset. Explicit default requests normal routing; priority requests Fast.")
 F("agent", "developer_instructions", STR, RUNTIME,
   developer_instructions_extension, 0, NULL,
   "Instructions appended to the preset.")

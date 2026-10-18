@@ -49,6 +49,9 @@ static void cai_cli_help(void) {
       "lists sessions for this directory and /resume N opens entry N.\n\n",
       stdout);
   fputs(
+      "      --service-tier NAME      Provider routing tier (see /tier list)\n",
+      stdout);
+  fputs(
       "  -N, --new                    Start a new session\n"
       "  -n, --non-interactive        Run supplied work and exit\n"
       "      --resume [ID]            List directory sessions or resume ID\n"
@@ -425,6 +428,8 @@ int cai_cli_read_options(int argc, char *const *argv,
       field = &options->reasoning_effort;
     else if (strcmp(flag, "--reasoning-summary") == 0)
       field = &options->reasoning_summary;
+    else if (strcmp(flag, "--service-tier") == 0)
+      field = &options->service_tier;
     else if (strcmp(flag, "--review-model") == 0)
       field = &options->review_model;
     else if (strcmp(flag, "--review-reasoning-effort") == 0)

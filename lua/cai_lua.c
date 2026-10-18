@@ -2165,6 +2165,8 @@ static void cai_lua_agent_config_from_table(lua_State *L, int index,
                                                     config->reasoning_mode);
   config->reasoning_summary = cai_lua_opt_string_field(
       L, index, "reasoning_summary", config->reasoning_summary);
+  config->service_tier =
+      cai_lua_opt_string_field(L, index, "service_tier", config->service_tier);
   config->max_output_tokens = cai_lua_opt_int_field(
       L, index, "max_output_tokens", config->max_output_tokens);
   config->max_tool_calls =
@@ -2967,6 +2969,19 @@ static int cai_lua_client_list_models(lua_State *L) {
       lua_pushstring(L, entry->default_reasoning_effort);
       lua_setfield(L, -2, "default_reasoning_effort");
     }
+    if (entry->service_tiers_known) {
+      size_t j;
+      lua_createtable(L, (int)entry->service_tier_count, 0);
+      for (j = 0U; j < entry->service_tier_count; j++) {
+        lua_pushstring(L, entry->service_tiers[j]);
+        lua_rawseti(L, -2, (lua_Integer)j + 1);
+      }
+      lua_setfield(L, -2, "service_tiers");
+    }
+    if (entry->default_service_tier != NULL) {
+      lua_pushstring(L, entry->default_service_tier);
+      lua_setfield(L, -2, "default_service_tier");
+    }
     lua_rawseti(L, -2, (lua_Integer)i + 1);
   }
   cai_model_catalog_close(catalog);
@@ -3038,6 +3053,7 @@ static int cai_lua_client_new_smith_agent(lua_State *L) {
       cai_lua_opt_string_field(L, 2, "reasoning_effort", NULL);
   config.reasoning_summary =
       cai_lua_opt_string_field(L, 2, "reasoning_summary", NULL);
+  config.service_tier = cai_lua_opt_string_field(L, 2, "service_tier", NULL);
   config.developer_instructions_extension =
       cai_lua_opt_string_field(L, 2, "developer_instructions_extension", NULL);
   config.disable_terminal = cai_lua_opt_int_field(L, 2, "disable_terminal", 0);
@@ -3721,6 +3737,7 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
       cai_lua_opt_string_field(L, 2, "reasoning_effort", NULL);
   config.reasoning_summary =
       cai_lua_opt_string_field(L, 2, "reasoning_summary", NULL);
+  config.service_tier = cai_lua_opt_string_field(L, 2, "service_tier", NULL);
   config.review_model = cai_lua_opt_string_field(L, 2, "review_model", NULL);
   config.review_reasoning_effort =
       cai_lua_opt_string_field(L, 2, "review_reasoning_effort", NULL);
@@ -4837,6 +4854,10 @@ cai_lua_push_runtime_settings(lua_State *L,
     lua_pushstring(L, settings->reasoning_summary);
     lua_setfield(L, -2, "reasoning_summary");
   }
+  if ((settings->present & CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER) != 0U) {
+    lua_pushstring(L, settings->service_tier);
+    lua_setfield(L, -2, "service_tier");
+  }
 }
 
 static int cai_lua_agent_runtime_settings(lua_State *L) {
@@ -4889,6 +4910,12 @@ static int cai_lua_agent_runtime_update_settings(lua_State *L) {
   if (!lua_isnil(L, -1)) {
     requested.present |= CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY;
     requested.reasoning_summary = luaL_checkstring(L, -1);
+  }
+  lua_pop(L, 1);
+  lua_getfield(L, 2, "service_tier");
+  if (!lua_isnil(L, -1)) {
+    requested.present |= CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER;
+    requested.service_tier = luaL_checkstring(L, -1);
   }
   lua_pop(L, 1);
   cai_error_init(&error);

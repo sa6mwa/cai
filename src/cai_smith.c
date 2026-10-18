@@ -1120,6 +1120,7 @@ int cai_client_new_preset_agent(cai_client *client,
   cai_agent_config_init(&agent_config);
   agent_config.model = model;
   agent_config.developer_instructions = instructions;
+  agent_config.service_tier = config->service_tier;
   agent_config.reasoning_effort = config->reasoning_effort != NULL
                                       ? config->reasoning_effort
                                       : preset->default_reasoning_effort;
@@ -1452,6 +1453,7 @@ review_instructions_ready:
   cai_agent_config_init(&agent_config);
   agent_config.model =
       config->model != NULL ? config->model : preset->default_model;
+  agent_config.service_tier = config->service_tier;
   agent_config.developer_instructions = instructions;
   agent_config.reasoning_effort = config->reasoning_effort != NULL
                                       ? config->reasoning_effort

@@ -93,6 +93,10 @@
     target_link_libraries(cai_cli_settings_fixture PRIVATE cai_static
       softline::softline_static libmdf::mdf_static lockdc::static)
     cai_configure_cli_target(cai_cli_settings_fixture)
+    add_test(NAME cai_cli_tier
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_tier_test.sh"
+        "$<TARGET_FILE:cai_cli_settings_fixture>")
+    set_tests_properties(cai_cli_tier PROPERTIES TIMEOUT 30)
     add_test(NAME cai_cli_spinner
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_spinner_test.sh"
         "$<TARGET_FILE:cai_cli_settings_fixture>")

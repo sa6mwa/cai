@@ -1490,6 +1490,7 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
                                  ? state->options.reasoning_summary
                                  : NULL;
   config.review_model = state->options.review_model;
+  config.service_tier = state->options.service_tier;
   config.review_reasoning_effort = state->options.review_reasoning_effort;
   config.review_reasoning_summary = state->options.review_reasoning_summary;
   if (state->options.config_dir != NULL)
@@ -1812,6 +1813,147 @@ static int cli_effort_known(const char *value) {
   return 0;
 }
 
+static int cli_tier_command(cli_state *state, const char *arguments, int fast,
+                            cai_error *error) {
+  cai_agent_runtime_settings effective, pending, requested;
+  cai_agent_runtime_control_result result;
+  cai_model_catalog *catalog = NULL;
+  const cai_model_catalog_entry *entry;
+  const char *choices[66], *current, *selected, *fast_tier = NULL;
+  char buffer[128], message[512], *argument, *extra, *save = NULL;
+  size_t count = 1U, i, j;
+  int known = 0, listing, rc;
+  pslog_field fields[2];
+  if (strlen(arguments) >= sizeof(buffer))
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "service-tier input is too long");
+  strcpy(buffer, arguments);
+  argument = strtok_r(buffer, " \t\r\n", &save);
+  extra = strtok_r(NULL, " \t\r\n", &save);
+  if (extra != NULL || (fast && argument != NULL))
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "Usage: /tier [list | NAME] or /fast");
+  rc = cai_agent_runtime_get_settings(state->runtime, &effective, &pending,
+                                      error);
+  if (rc != CAI_OK)
+    return rc;
+  current = pending.service_tier != NULL ? pending.service_tier
+                                         : effective.service_tier;
+  listing = argument != NULL && strcmp(argument, "list") == 0;
+  choices[0] = "default";
+  rc = cai_client_list_models(state->model_client,
+                              CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED,
+                              &catalog, error);
+  if (rc != CAI_OK) {
+    cai_error_cleanup(error);
+    cai_error_init(error);
+  }
+  entry = cai_model_catalog_find(
+      catalog, pending.model != NULL ? pending.model : effective.model);
+  if (entry != NULL && entry->service_tiers_known) {
+    known = 1;
+    for (i = 0U; i < entry->service_tier_count && count < 66U; i++) {
+      for (j = 0U; j < count; j++)
+        if (strcmp(choices[j], entry->service_tiers[i]) == 0)
+          break;
+      if (j == count)
+        choices[count++] = entry->service_tiers[i];
+    }
+  } else if (strcmp(state->options.provider, "openai") == 0) {
+    choices[count++] = "auto";
+    choices[count++] = "priority";
+    choices[count++] = "flex";
+  }
+  for (i = 0U; i < count; i++)
+    if (strcmp(choices[i], "priority") == 0 ||
+        strcmp(choices[i], "fast") == 0) {
+      fast_tier = choices[i];
+      break;
+    }
+  if (listing) {
+    snprintf(message, sizeof(message),
+             "## Service tiers\n\nSelected: `%s`\n\nPending: `%s`\n\n"
+             "| Tier | Routing |\n| --- | --- |\n",
+             effective.service_tier != NULL ? effective.service_tier
+                                            : "unset (provider routing)",
+             pending.service_tier != NULL ? pending.service_tier : "none");
+    rc = cli_text(state, message, strlen(message)) == 0 ? CAI_OK
+                                                        : CAI_ERR_TRANSPORT;
+    for (i = 0U; rc == CAI_OK && i < count; i++) {
+      snprintf(message, sizeof(message), "| `%s` | %s |\n", choices[i],
+               i == 0U ? "Explicit normal routing"
+               : known ? "Advertised by provider"
+                       : "Request option; provider validates account/model "
+                         "availability");
+      if (cli_text(state, message, strlen(message)) != 0)
+        rc = CAI_ERR_TRANSPORT;
+    }
+    if (rc == CAI_OK && !known && count == 1U) {
+      static const char note[] =
+          "\nTier metadata is unavailable. Explicit `/tier NAME` is "
+          "forwarded to the provider; cycling and `/fast` require known "
+          "choices.\n";
+      if (cli_text(state, note, sizeof(note) - 1U) != 0)
+        rc = CAI_ERR_TRANSPORT;
+    }
+    if (rc == CAI_OK && cli_finish_response(state) != 0)
+      rc = CAI_ERR_TRANSPORT;
+    cai_model_catalog_close(catalog);
+    return rc;
+  }
+  selected = argument;
+  if (fast) {
+    if (current != NULL &&
+        (strcmp(current, "priority") == 0 || strcmp(current, "fast") == 0))
+      selected = "default";
+    else
+      selected = fast_tier;
+  } else if (selected == NULL && count > 1U) {
+    for (i = 0U; i < count; i++)
+      if (current != NULL && strcmp(current, choices[i]) == 0)
+        break;
+    selected = choices[i < count ? (i + 1U) % count : 1U];
+  }
+  if (selected != NULL && strcmp(selected, "fast") == 0 && fast_tier != NULL)
+    selected = fast_tier;
+  if (selected == NULL) {
+    cai_model_catalog_close(catalog);
+    return cai_cli_error(
+        error, CAI_ERR_INVALID,
+        "no available tier choices; use /tier list or explicit /tier NAME");
+  }
+  if (known) {
+    for (i = 0U; i < count; i++)
+      if (strcmp(selected, choices[i]) == 0)
+        break;
+    if (i == count) {
+      cai_model_catalog_close(catalog);
+      return cai_cli_error(
+          error, CAI_ERR_INVALID,
+          "tier is not advertised for this model; use /tier list");
+    }
+  }
+  memset(&requested, 0, sizeof(requested));
+  requested.present = CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER;
+  requested.service_tier = selected;
+  rc = cai_agent_runtime_update_settings(state->runtime, &requested, &result,
+                                         error);
+  if (rc == CAI_OK) {
+    fields[0] = pslog_str("service_tier", selected);
+    fields[1] = pslog_bool("applied", result.applied);
+    state->log.logger->info(state->log.logger, "cai.service_tier.selected",
+                            fields, 2U);
+    snprintf(message, sizeof(message), "Service tier %s: `%s`.\n",
+             result.applied ? "selected" : "queued for the next safe boundary",
+             selected);
+    if (cli_text(state, message, strlen(message)) != 0 ||
+        cli_finish_response(state) != 0)
+      rc = CAI_ERR_TRANSPORT;
+  }
+  cai_model_catalog_close(catalog);
+  return rc;
+}
+
 static int cli_settings_command(cli_state *state, const char *arguments,
                                 int reasoning_only, cai_error *error) {
   cai_agent_runtime_settings effective, pending, requested;
@@ -2126,6 +2268,12 @@ static int cli_handle_command(cli_state *state, const char *line,
   if (strcmp(line, "/trim") == 0 || strncmp(line, "/trim ", 6U) == 0 ||
       strncmp(line, "/trim\t", 6U) == 0)
     return cli_trim_command(state, line + 5U, error);
+  if (strcmp(line, "/tier") == 0 || strncmp(line, "/tier ", 6U) == 0 ||
+      strncmp(line, "/tier\t", 6U) == 0)
+    return cli_tier_command(state, line + 5U, 0, error);
+  if (strcmp(line, "/fast") == 0 || strncmp(line, "/fast ", 6U) == 0 ||
+      strncmp(line, "/fast\t", 6U) == 0)
+    return cli_tier_command(state, line + 5U, 1, error);
   if (cli_is_terminal_shell(line))
     return cli_terminal_shell(
         state, strcmp(line, "/shellshare") == 0 || strcmp(line, "!sh+") == 0,
@@ -2218,6 +2366,9 @@ static int cli_handle_command(cli_state *state, const char *line,
         "model/tool boundary, keeping this conversation. |\n",
         "| `/reasoning [EFFORT]` | Show model-specific reasoning choices or "
         "change effort at the next safe model/tool boundary. |\n",
+        "| `/tier [list\\|NAME]` | Cycle service tiers, list choices, or "
+        "select a tier at the next safe boundary. |\n"
+        "| `/fast` | Toggle Fast/priority and explicit normal routing. |\n",
         "| `/output [compact\\|full]` | Show or change tool previews, starting "
         "with the next tool call. Compact commands show five lines; patches "
         "collapse unchanged context. |\n",

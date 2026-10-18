@@ -292,6 +292,12 @@ or
 The default is
 .BR medium .
 .TP
+.BI \-\-service-tier " NAME"
+Select provider routing, for example default (explicit normal), priority
+(Fast), or flex. With no selection, a saved tier resumes; new sessions leave
+routing unset. Environment CAI_SERVICE_TIER and [agent] service_tier
+configure the same setting. Account/model availability is provider-controlled.
+.TP
 .BI \-\-reasoning-summary " MODE"
 Set provider reasoning summary mode:
 .BR none ,
@@ -414,6 +420,17 @@ Catalog discovery uses a separate client and cache. Explicit model and reasoning
 listings refresh discovery using the configured client timeout. Failed refreshes
 preserve a previously loaded catalog when available. Repeat the command to retry
 immediately.
+.TP
+.BI /tier " [list|NAME]"
+Without arguments, cycle service tiers. Use list to display available request
+IDs and current/pending selection, or NAME to select one. ChatGPT uses its
+signed-in per-model catalog; OpenAI API request options do not guarantee
+account/model access. Changes apply at the next safe model/tool boundary and
+survive resume. Explicit unsupported advertised choices fail unchanged.
+.TP
+.B /fast
+Toggle Fast/priority and explicit normal routing. Requires a known Fast choice
+to enable it. This is a convenience over /tier; it does not change the model.
 .TP
 .BI /reasoning " [EFFORT]"
 Set reasoning effort, or list provider-advertised choices and the default for

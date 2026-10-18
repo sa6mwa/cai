@@ -30,6 +30,7 @@ typedef struct cai_cli_options {
   const char *model;
   const char *reasoning_effort;
   const char *reasoning_summary;
+  const char *service_tier;
   int model_explicit;
   int provider_explicit;
   int reasoning_effort_explicit;

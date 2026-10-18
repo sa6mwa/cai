@@ -295,6 +295,13 @@ typedef struct cai_model_catalog_entry {
   int reasoning_efforts_known;
   /** Provider's default reasoning effort, or NULL when omitted. */
   char *default_reasoning_effort;
+  /** Provider-advertised service-tier request IDs, owned by this catalog. */
+  char **service_tiers;
+  size_t service_tier_count;
+  /** Non-zero includes an explicitly empty advertised list. */
+  int service_tiers_known;
+  /** Provider's preferred tier, or NULL when omitted. No automatic opt-in. */
+  char *default_service_tier;
 } cai_model_catalog_entry;
 
 /** Owned model catalog returned by cai_client_list_models. */
@@ -340,6 +347,8 @@ typedef struct cai_agent_config {
   const char *reasoning_effort;
   /** Reasoning summary mode such as CAI_REASONING_SUMMARY_AUTO. */
   const char *reasoning_summary;
+  /** Optional provider service-tier request ID; NULL leaves routing unset. */
+  const char *service_tier;
   /** Structured output schema name. */
   const char *text_format_name;
   /** Structured output schema description. */

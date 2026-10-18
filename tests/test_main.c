@@ -10380,6 +10380,7 @@ static void mock_runtime_control_child(int pipe_fd) {
       if (strstr(request, i == 1 ? "steer after cancel" : "turn B") == NULL ||
           strstr(request, "\"model\":\"gpt-6-astra\"") == NULL ||
           strstr(request, "\"effort\":\"high\"") == NULL ||
+          strstr(request, "\"service_tier\":\"priority\"") == NULL ||
           mock_write_status_response(client_fd, 200, "OK", "text/event-stream",
                                      NULL, completed) != 0) {
         _exit(8);
@@ -28111,7 +28112,9 @@ static void test_agent_runtime_controls(test_state *state) {
   requested.model = CAI_MODEL_GPT_6_ASTRA;
   requested.present = CAI_AGENT_RUNTIME_SETTING_MODEL |
                       CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT |
-                      CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY;
+                      CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY |
+                      CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER;
+  requested.service_tier = "priority";
   requested.reasoning_effort = CAI_REASONING_EFFORT_HIGH;
   requested.reasoning_summary = CAI_REASONING_SUMMARY_CONCISE;
   expect_int(
@@ -28120,6 +28123,8 @@ static void test_agent_runtime_controls(test_state *state) {
       CAI_OK);
   expect_str(state, "runtime_control_pending_astra_value", result.pending.model,
              CAI_MODEL_GPT_6_ASTRA);
+  expect_str(state, "runtime_control_pending_tier", result.pending.service_tier,
+             "priority");
   expect_str(state, "runtime_control_still_luna", result.effective.model,
              CAI_MODEL_GPT_5_6_LUNA);
   expect_int(state, "runtime_control_goal_query_with_pending",
@@ -28174,6 +28179,8 @@ static void test_agent_runtime_controls(test_state *state) {
              CAI_MODEL_GPT_6_ASTRA);
   expect_str(state, "runtime_control_final_effort", effective.reasoning_effort,
              CAI_REASONING_EFFORT_HIGH);
+  expect_str(state, "runtime_control_final_tier", effective.service_tier,
+             "priority");
   expect_int(state, "runtime_control_pending_cleared", pending.present, 0L);
   expect_str(state, "runtime_control_session_stable",
              cai_agent_runtime_session_id(runtime), session_id);
@@ -28192,6 +28199,8 @@ static void test_agent_runtime_controls(test_state *state) {
                       CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT |
                       CAI_AGENT_RUNTIME_SETTING_REASONING_SUMMARY;
   requested.model = CAI_MODEL_GPT_6_LUNA;
+  requested.present |= CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER;
+  requested.service_tier = "flex";
   requested.reasoning_effort = CAI_REASONING_EFFORT_LOW;
   requested.reasoning_summary = CAI_REASONING_SUMMARY_DETAILED;
   expect_int(
@@ -28210,6 +28219,14 @@ static void test_agent_runtime_controls(test_state *state) {
              effective.reasoning_effort, CAI_REASONING_EFFORT_HIGH);
   expect_str(state, "runtime_control_checkpoint_keeps_summary",
              effective.reasoning_summary, CAI_REASONING_SUMMARY_CONCISE);
+  expect_str(state, "runtime_control_checkpoint_keeps_tier",
+             effective.service_tier, "priority");
+  requested.present = CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER;
+  requested.service_tier = "bad tier";
+  expect_int(
+      state, "runtime_control_invalid_tier",
+      cai_agent_runtime_update_settings(runtime, &requested, NULL, &error),
+      CAI_ERR_INVALID);
   requested.present = CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT;
   requested.reasoning_effort = CAI_REASONING_EFFORT_XHIGH;
   store_state.fail_checkpoint_once = 1;
@@ -28254,10 +28271,13 @@ static void test_agent_runtime_controls(test_state *state) {
                effective.reasoning_effort, CAI_REASONING_EFFORT_XHIGH);
     expect_str(state, "runtime_control_resume_summary",
                effective.reasoning_summary, CAI_REASONING_SUMMARY_CONCISE);
+    expect_str(state, "runtime_control_resume_tier", effective.service_tier,
+               "priority");
     cai_agent_runtime_close(runtime);
     runtime = NULL;
     runtime_config.model = CAI_MODEL_GPT_5_6_LUNA;
     runtime_config.reasoning_effort = CAI_REASONING_EFFORT_LOW;
+    runtime_config.service_tier = "default";
     expect_int(
         state, "runtime_control_resume_override",
         cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
@@ -28271,6 +28291,8 @@ static void test_agent_runtime_controls(test_state *state) {
                  effective.model, CAI_MODEL_GPT_5_6_LUNA);
       expect_str(state, "runtime_control_resume_override_effort",
                  effective.reasoning_effort, CAI_REASONING_EFFORT_LOW);
+      expect_str(state, "runtime_control_resume_override_tier",
+                 effective.service_tier, "default");
       expect_str(state, "runtime_control_resume_override_retains_summary",
                  effective.reasoning_summary, CAI_REASONING_SUMMARY_CONCISE);
     }
@@ -42667,22 +42689,39 @@ static void test_codex_catalog_validation(test_state *state) {
       "\"effort\":\"high\"},{\"effort\":\"high\"}]}]}",
       "{\"models\":[{\"slug\":\"m\\u0000n\"}]}",
       "{\"models\":[{\"slug\":\"m\",\"ignored\":\"\\uD800\"}]}",
+      "{\"models\":[{\"slug\":\"m\",\"service_tiers\":null}]}",
+      "{\"models\":[{\"slug\":\"m\",\"service_tiers\":[\"priority\"]}]}",
+      "{\"models\":[{\"slug\":\"m\",\"service_tiers\":[{}]}]}",
+      "{\"models\":[{\"slug\":\"m\",\"service_tiers\":[{\"id\":false}]}]}",
+      "{\"models\":[{\"slug\":\"m\",\"service_tiers\":[{\"id\":\"\"}]}]}",
+      "{\"models\":[{\"slug\":\"m\",\"service_tiers\":[{\"id\":\"bad "
+      "tier\"}]}]}",
+      "{\"models\":[{\"slug\":\"m\",\"service_tiers\":[{\"id\":\"priority\","
+      "\"id\":\"flex\"}]}]}",
+      "{\"models\":[{\"slug\":\"m\",\"service_tiers\":[{\"id\":\"flex\"},{"
+      "\"id\":\"flex\"}]}]}",
       "{\"models\":[{\"slug\":\"m\"}] trailing}"};
-  static const char valid[] =
+  static const char valid_prefix[] =
       "{\"models\":[{\"slug\":\"gpt-6.1-sol\",\"display_name\":null,"
       "\"description\":null,"
       "\"context_window\":272000,"
+      "\"service_tiers\":[{\"id\":\"priority\",\"name\":\"Fast\"},{\"id\":"
+      "\"future-tier\"}],"
+      "\"default_service_tier\":\"priority\","
       "\"default_reasoning_level\":\"low\",\"supported_reasoning_levels\":["
       "{\"effort\":\"low\"},{\"effort\":\"high\"},"
-      "{\"effort\":\"ultra\"}],"
+      "{\"effort\":\"ultra\"}],";
+  static const char valid_tail[] =
       "\"comp_hash\":null,\"auto_compact_token_limit\":null,\"supported_in_"
       "api\":true,"
       "\"model_messages\":{\"slug\":false,\"context_window\":\"ignored\"}},"
-      "{\"slug\":\"m1\",\"supported_reasoning_levels\":[]},{\"slug\":\"m2\"},{"
+      "{\"slug\":\"m1\",\"service_tiers\":[],\"supported_reasoning_levels\":[]}"
+      ",{\"slug\":\"m2\"},{"
       "\"slug\":\"m3\"},"
       "{\"slug\":\"m4\"},{\"slug\":\"m5\"},{\"slug\":\"m6\"},"
       "{\"slug\":\"m7\"},{\"slug\":\"m8\"}]}";
   mock_http_expectation script[sizeof(invalid) / sizeof(invalid[0]) + 2U];
+  char valid[2048];
   http_mock_server server;
   cai_chatgpt_auth auth;
   cai_client_config config;
@@ -42690,6 +42729,7 @@ static void test_codex_catalog_validation(test_state *state) {
   cai_model_catalog *catalog = NULL;
   cai_error error;
   size_t i;
+  snprintf(valid, sizeof(valid), "%s%s", valid_prefix, valid_tail);
   cai_error_init(&error);
   memset(script, 0, sizeof(script));
   for (i = 0U; i < sizeof(script) / sizeof(script[0]); i++) {
@@ -42745,6 +42785,19 @@ static void test_codex_catalog_validation(test_state *state) {
                  catalog->entries[0].context_window_tokens, 272000L);
       expect_int(state, "catalog_validation_efforts_known",
                  catalog->entries[0].reasoning_efforts_known, 1L);
+      expect_int(state, "catalog_validation_tiers_known",
+                 catalog->entries[0].service_tiers_known, 1L);
+      expect_int(state, "catalog_validation_tiers_count",
+                 catalog->entries[0].service_tier_count, 2L);
+      if (catalog->entries[0].service_tier_count == 2U)
+        expect_str(state, "catalog_validation_future_tier",
+                   catalog->entries[0].service_tiers[1], "future-tier");
+      expect_str(state, "catalog_validation_default_tier",
+                 catalog->entries[0].default_service_tier, "priority");
+      expect_int(state, "catalog_validation_empty_tiers_known",
+                 catalog->entries[1].service_tiers_known, 1L);
+      expect_int(state, "catalog_validation_missing_tiers_unknown",
+                 catalog->entries[2].service_tiers_known, 0L);
       expect_int(state, "catalog_validation_efforts_count",
                  catalog->entries[0].reasoning_effort_count, 3L);
       if (catalog->entries[0].reasoning_effort_count == 3U)

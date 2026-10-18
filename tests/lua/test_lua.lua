@@ -462,6 +462,7 @@ do
       '"id":"zai-org/GLM-5.3-Flash","model_type":"text",' ..
       '"context_window_tokens":131072,' ..
       '"reasoning_efforts":["low","high"],"default_reasoning_effort":"low",' ..
+      '"service_tiers":["priority","flex"],"default_service_tier":"priority",' ..
       '"pricing":{"currency":"EUR","input":1,"output":2}}]}',
   }))
   local catalog = assert_ok(berget_client:list_models("offline"))
@@ -475,6 +476,8 @@ do
   assert_eq(#catalog[1].reasoning_efforts, 2, "Lua catalog reasoning choices")
   assert_eq(catalog[1].reasoning_efforts[2], "high", "Lua catalog reasoning choice")
   assert_eq(catalog[1].default_reasoning_effort, "low", "Lua catalog reasoning default")
+  assert_eq(catalog[1].service_tiers[2], "flex", "Lua catalog tier choices")
+  assert_eq(catalog[1].default_service_tier, "priority", "Lua catalog tier default")
   assert_eq(berget_client:usage().estimated_spend_eur, 0,
     "Lua provider EUR accounting")
   berget_client:close()
@@ -1504,12 +1507,17 @@ do
   assert(next(before.pending) == nil, "Lua Smith runtime has no pending update")
   local updated = assert_ok(runtime:update_settings({
     reasoning_effort = "high", reasoning_summary = "concise",
+    service_tier = "priority",
   }))
   assert(updated.applied, "Lua Smith runtime applies idle update")
   assert_eq(updated.effective.reasoning_effort, "high",
     "Lua Smith runtime effective reasoning effort")
   assert_eq(updated.effective.reasoning_summary, "concise",
     "Lua Smith runtime effective reasoning summary")
+  assert_eq(updated.effective.service_tier, "priority", "Lua runtime tier")
+  assert_not_ok(runtime:update_settings({service_tier = "bad tier"}))
+  assert_eq(assert_ok(runtime:settings()).effective.service_tier, "priority",
+    "Lua invalid tier leaves selection intact")
   assert_not_ok(runtime:update_settings({reasoning_effort = "invalid"}),
     "Lua Smith runtime rejects invalid reasoning effort")
   assert_eq(assert_ok(runtime:settings()).effective.reasoning_effort, "high",

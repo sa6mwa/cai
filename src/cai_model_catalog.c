@@ -135,6 +135,8 @@ typedef struct cai_provider_model_doc {
   char *comp_hash;
   lonejson_string_array reasoning_efforts;
   char *default_reasoning_effort;
+  lonejson_string_array service_tiers;
+  char *default_service_tier;
   long long context_window_tokens;
   int has_context_window_tokens;
   long long auto_compact_token_limit;
@@ -176,6 +178,14 @@ LONEJSON_MAP_DEFINE(cai_provider_pricing_map, cai_provider_pricing_doc,
                     cai_provider_pricing_fields);
 
 static const lonejson_field cai_provider_model_fields[] = {
+    {"service_tiers", LONEJSON__KEY_LEN("service_tiers"),
+     LONEJSON__KEY_FIRST("service_tiers"), LONEJSON__KEY_LAST("service_tiers"),
+     offsetof(cai_provider_model_doc, service_tiers),
+     LONEJSON_FIELD_KIND_STRING_ARRAY, LONEJSON_STORAGE_DYNAMIC,
+     LONEJSON_OVERFLOW_FAIL, 0U, 0U, 0U, NULL, NULL, 0U,
+     LONEJSON_SPOOL_CLASS_DEFAULT},
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(
+        cai_provider_model_doc, default_service_tier, "default_service_tier"),
     {"reasoning_efforts", LONEJSON__KEY_LEN("reasoning_efforts"),
      LONEJSON__KEY_FIRST("reasoning_efforts"),
      LONEJSON__KEY_LAST("reasoning_efforts"),
@@ -237,6 +247,10 @@ static void cai_model_catalog_destroy(cai_model_catalog *catalog) {
         cai_free_mem(&impl->allocator, impl->entries[i].reasoning_efforts[j]);
       cai_free_mem(&impl->allocator, impl->entries[i].reasoning_efforts);
       cai_free_mem(&impl->allocator, impl->entries[i].default_reasoning_effort);
+      for (j = 0U; j < impl->entries[i].service_tier_count; j++)
+        cai_free_mem(&impl->allocator, impl->entries[i].service_tiers[j]);
+      cai_free_mem(&impl->allocator, impl->entries[i].service_tiers);
+      cai_free_mem(&impl->allocator, impl->entries[i].default_service_tier);
       cai_free_mem(&impl->allocator, impl->entries[i].slug);
       cai_free_mem(&impl->allocator, impl->entries[i].display_name);
       cai_free_mem(&impl->allocator, impl->entries[i].description);
@@ -312,11 +326,40 @@ static int cai_model_catalog_allocate(const cai_allocator *allocator,
   return CAI_OK;
 }
 
+static int cai_catalog_copy_tiers(const cai_allocator *allocator,
+                                  cai_model_catalog_entry *destination,
+                                  const cai_model_catalog_entry *source,
+                                  cai_error *error) {
+  size_t i;
+  destination->service_tiers_known = source->service_tiers_known;
+  if (source->service_tier_count != 0U) {
+    destination->service_tiers =
+        cai_alloc(allocator, source->service_tier_count * sizeof(char *));
+    if (destination->service_tiers == NULL)
+      return cai_set_error(error, CAI_ERR_NOMEM, "copy service tiers");
+    for (i = 0U; i < source->service_tier_count; i++) {
+      char *tier = cai_strdup(allocator, source->service_tiers[i]);
+      if (tier == NULL)
+        return cai_set_error(error, CAI_ERR_NOMEM, "copy service tier");
+      destination->service_tiers[destination->service_tier_count++] = tier;
+    }
+  }
+  return CAI_OK;
+}
+
 static int cai_model_catalog_copy_entry(const cai_allocator *allocator,
                                         cai_model_catalog_entry *destination,
                                         const cai_model_catalog_entry *source,
                                         cai_error *error) {
   size_t i;
+  int rc = cai_catalog_copy_tiers(allocator, destination, source, error);
+  if (rc != CAI_OK)
+    return rc;
+  destination->default_service_tier =
+      cai_strdup(allocator, source->default_service_tier);
+  if (source->default_service_tier != NULL &&
+      destination->default_service_tier == NULL)
+    return cai_set_error(error, CAI_ERR_NOMEM, "copy default service tier");
   destination->reasoning_efforts_known = source->reasoning_efforts_known;
   destination->default_reasoning_effort =
       cai_strdup(allocator, source->default_reasoning_effort);
@@ -540,6 +583,10 @@ static int cai_model_catalog_parse_provider(cai_client *client,
     source.reasoning_effort_count = models[i].reasoning_efforts.count;
     source.reasoning_efforts_known = source.reasoning_effort_count != 0U;
     source.default_reasoning_effort = models[i].default_reasoning_effort;
+    source.service_tiers = models[i].service_tiers.items;
+    source.service_tier_count = models[i].service_tiers.count;
+    source.service_tiers_known = source.service_tier_count != 0U;
+    source.default_service_tier = models[i].default_service_tier;
     source.display_name = models[i].name;
     source.description = models[i].description;
     source.model_type = models[i].model_type;
@@ -763,7 +810,14 @@ static int cai_model_catalog_merge_fallback(cai_client *client,
     CAI_FILL_CATALOG_STRING(lifecycle_status)
     CAI_FILL_CATALOG_STRING(compaction_compatibility_hash)
     CAI_FILL_CATALOG_STRING(default_reasoning_effort)
+    CAI_FILL_CATALOG_STRING(default_service_tier)
 #undef CAI_FILL_CATALOG_STRING
+    if (!entries[i].service_tiers_known && fallback->service_tiers_known) {
+      int tier_rc = cai_catalog_copy_tiers(&impl->allocator, &entries[i],
+                                           fallback, error);
+      if (tier_rc != CAI_OK)
+        return tier_rc;
+    }
     if (!entries[i].reasoning_efforts_known &&
         fallback->reasoning_efforts_known) {
       size_t j;
@@ -809,6 +863,7 @@ typedef struct cai_codex_catalog_reader {
   size_t capacity;
   unsigned int seen;
   int reasoning_seen;
+  int tier_seen;
   int models_seen;
   int field;
   int rc;
@@ -839,17 +894,23 @@ static int cai_codex_catalog_field(const lonejson_value_path *path) {
                                       "auto_compact_token_limit",
                                       "supported_in_api",
                                       "default_reasoning_level",
-                                      "supported_reasoning_levels"};
+                                      "supported_reasoning_levels",
+                                      "default_service_tier",
+                                      "service_tiers"};
   size_t i;
   if (path->segment_count == 5U && cai_catalog_segment(path, 0U, "models") &&
       cai_catalog_segment(path, 2U, "supported_reasoning_levels") &&
       cai_catalog_segment(path, 4U, "effort"))
     return 10;
+  if (path->segment_count == 5U && cai_catalog_segment(path, 0U, "models") &&
+      cai_catalog_segment(path, 2U, "service_tiers") &&
+      cai_catalog_segment(path, 4U, "id"))
+    return 13;
   if (path->segment_count != 3U || !cai_catalog_segment(path, 0U, "models"))
     return 0;
   for (i = 0U; i < sizeof(names) / sizeof(names[0]); i++)
     if (cai_catalog_segment(path, 2U, names[i]))
-      return (int)i + 1;
+      return i < 9U ? (int)i + 1 : (int)i + 2;
   return 0;
 }
 
@@ -868,7 +929,8 @@ static lonejson_status cai_codex_catalog_begin(cai_codex_catalog_reader *reader,
       return cai_codex_catalog_invalid(
           reader, "Codex models must be an array of objects");
     if (path->segment_count == 4U &&
-        cai_catalog_segment(path, 2U, "supported_reasoning_levels") &&
+        (cai_catalog_segment(path, 2U, "supported_reasoning_levels") ||
+         cai_catalog_segment(path, 2U, "service_tiers")) &&
         type != 'o')
       return cai_codex_catalog_invalid(reader,
                                        "reasoning levels must be objects");
@@ -882,17 +944,24 @@ static lonejson_status cai_codex_catalog_begin(cai_codex_catalog_reader *reader,
     reader->reasoning_seen = 1;
     return LONEJSON_STATUS_OK;
   }
+  if (field == 13) {
+    if (reader->tier_seen || type != 's')
+      return cai_codex_catalog_invalid(reader,
+                                       "invalid or duplicate service tier ID");
+    reader->tier_seen = 1;
+    return LONEJSON_STATUS_OK;
+  }
   mask = 1U << (unsigned int)field;
   if ((reader->seen & mask) != 0U)
     return cai_codex_catalog_invalid(reader,
                                      "duplicate Codex model catalog field");
   reader->seen |= mask;
-  if (((field <= 4 || field == 8) && type == 's') ||
-      (field == 9 && type == 'a') ||
+  if (((field <= 4 || field == 8 || field == 11) && type == 's') ||
+      ((field == 9 || field == 12) && type == 'a') ||
       ((field == 5 || field == 6) && type == 'n') ||
       (field == 7 && type == 'b') ||
-      (type == 'z' &&
-       (field == 2 || field == 3 || field == 4 || field == 6 || field == 8)))
+      (type == 'z' && (field == 2 || field == 3 || field == 4 || field == 6 ||
+                       field == 8 || field == 11)))
     return LONEJSON_STATUS_OK;
   return cai_codex_catalog_invalid(reader,
                                    "invalid Codex model catalog field type");
@@ -906,6 +975,12 @@ static lonejson_status cai_codex_catalog_object(void *context,
   cai_model_catalog_entry *entries;
   size_t capacity;
   (void)error;
+  if (status == LONEJSON_STATUS_OK && path->segment_count == 4U &&
+      cai_catalog_segment(path, 0U, "models") &&
+      cai_catalog_segment(path, 2U, "service_tiers")) {
+    reader->tier_seen = 0;
+    return status;
+  }
   if (status == LONEJSON_STATUS_OK && path->segment_count == 4U &&
       cai_catalog_segment(path, 0U, "models") &&
       cai_catalog_segment(path, 2U, "supported_reasoning_levels")) {
@@ -945,6 +1020,11 @@ cai_codex_catalog_object_end(void *context, const lonejson_value_path *path,
   const char *slug;
   (void)error;
   if (path->segment_count == 4U && cai_catalog_segment(path, 0U, "models") &&
+      cai_catalog_segment(path, 2U, "service_tiers"))
+    return reader->tier_seen ? LONEJSON_STATUS_OK
+                             : cai_codex_catalog_invalid(
+                                   reader, "service tier requires an ID");
+  if (path->segment_count == 4U && cai_catalog_segment(path, 0U, "models") &&
       cai_catalog_segment(path, 2U, "supported_reasoning_levels"))
     return reader->reasoning_seen
                ? LONEJSON_STATUS_OK
@@ -965,6 +1045,8 @@ static lonejson_status cai_codex_catalog_array(void *context,
   cai_codex_catalog_reader *reader = (cai_codex_catalog_reader *)context;
   lonejson_status status = cai_codex_catalog_begin(reader, path, 'a');
   (void)error;
+  if (status == LONEJSON_STATUS_OK && reader->field == 12)
+    reader->impl->entries[reader->catalog->count - 1U].service_tiers_known = 1;
   if (status == LONEJSON_STATUS_OK && reader->field == 9)
     reader->impl->entries[reader->catalog->count - 1U].reasoning_efforts_known =
         1;
@@ -1026,7 +1108,29 @@ cai_codex_catalog_value_end(void *context, const lonejson_value_path *path,
   if (field == 0)
     return LONEJSON_STATUS_OK;
   entry = reader->impl->entries + reader->catalog->count - 1U;
-  if (field == 10) {
+  if (field == 13) {
+    char **tiers;
+    char *tier;
+    size_t i;
+    if (reader->text.length == 0U || reader->text.length > 64U ||
+        strpbrk(reader->text.data, " \t\r\n") != NULL ||
+        entry->service_tier_count >= 64U)
+      return cai_codex_catalog_invalid(reader, "invalid service tier ID");
+    for (i = 0U; i < entry->service_tier_count; i++)
+      if (strcmp(entry->service_tiers[i], reader->text.data) == 0)
+        return cai_codex_catalog_invalid(reader, "duplicate service tier ID");
+    tier = cai_strdup(&reader->impl->allocator, reader->text.data);
+    if (tier == NULL)
+      goto allocation_failed;
+    tiers = cai_realloc_mem(&reader->impl->allocator, entry->service_tiers,
+                            (entry->service_tier_count + 1U) * sizeof(char *));
+    if (tiers == NULL) {
+      cai_free_mem(&reader->impl->allocator, tier);
+      goto allocation_failed;
+    }
+    entry->service_tiers = tiers;
+    entry->service_tiers[entry->service_tier_count++] = tier;
+  } else if (field == 10) {
     char **efforts;
     char *effort;
     size_t i;
@@ -1051,12 +1155,13 @@ cai_codex_catalog_value_end(void *context, const lonejson_value_path *path,
     }
     entry->reasoning_efforts = efforts;
     entry->reasoning_efforts[entry->reasoning_effort_count++] = effort;
-  } else if (field <= 4 || field == 8) {
-    destination = field == 1   ? &entry->slug
-                  : field == 2 ? &entry->display_name
-                  : field == 3 ? &entry->description
-                  : field == 4 ? &entry->compaction_compatibility_hash
-                               : &entry->default_reasoning_effort;
+  } else if (field <= 4 || field == 8 || field == 11) {
+    destination = field == 1    ? &entry->slug
+                  : field == 2  ? &entry->display_name
+                  : field == 3  ? &entry->description
+                  : field == 4  ? &entry->compaction_compatibility_hash
+                  : field == 11 ? &entry->default_service_tier
+                                : &entry->default_reasoning_effort;
     *destination =
         cai_strdup(&reader->impl->allocator,
                    reader->text.length != 0U ? reader->text.data : "");

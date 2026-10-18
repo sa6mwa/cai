@@ -350,7 +350,8 @@ different declared hashes compact non-empty local history, while equal or
 missing hashes retain it. The successful selection is checkpointed with the
 compacted history, if any.
 
-`update_settings` accepts model, reasoning effort, and reasoning-summary mode
+`update_settings` accepts model, reasoning effort, reasoning-summary mode, and
+service tier
 together. Applied selections are checkpointed atomically; a checkpoint failure
 restores the previous effective settings. During an active turn, changes merge
 into pending settings and apply at the next durable tool-round or turn boundary.

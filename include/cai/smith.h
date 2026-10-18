@@ -143,6 +143,8 @@ typedef struct cai_agent_preset_config {
   const char *reasoning_effort;
   /** Optional reasoning-summary mode; NULL selects the preset default. */
   const char *reasoning_summary;
+  /** Optional provider service-tier request ID; NULL leaves routing unset. */
+  const char *service_tier;
   /** Optional host-owned extension appended after the rendered template. */
   const char *developer_instructions_extension;
   /** In-memory bytes retained by each file reader before spill. */
