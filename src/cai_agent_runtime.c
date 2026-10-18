@@ -699,6 +699,8 @@ struct cai_agent_runtime {
   unsigned long chrome_turn_sequence;
   cai_mcp_client **mcp_clients;
   size_t mcp_client_count;
+  size_t mcp_tool_begin;
+  size_t *mcp_tool_ends;
   cai_mcp_tool_registration_config mcp_tool_config;
   char *mcp_tool_name_prefix;
   int has_mcp_tool_config;
@@ -2005,8 +2007,10 @@ static void cai_runtime_clear_smith_profile(cai_agent_runtime *runtime) {
  * caller's stack- or language-owned configuration container. */
 static void cai_runtime_clear_mcp_config(cai_agent_runtime *runtime) {
   cai_free_mem(NULL, runtime->mcp_clients);
+  cai_free_mem(NULL, runtime->mcp_tool_ends);
   cai_free_mem(NULL, runtime->mcp_tool_name_prefix);
   runtime->mcp_clients = NULL;
+  runtime->mcp_tool_ends = NULL;
   runtime->mcp_client_count = 0U;
   memset(&runtime->mcp_tool_config, 0, sizeof(runtime->mcp_tool_config));
   runtime->mcp_tool_name_prefix = NULL;
@@ -2037,6 +2041,13 @@ cai_runtime_capture_mcp_config(cai_agent_runtime *runtime,
     }
     memcpy(runtime->mcp_clients, config->mcp_clients, bytes);
     runtime->mcp_client_count = config->mcp_client_count;
+    runtime->mcp_tool_ends = cai_alloc(
+        NULL, config->mcp_client_count * sizeof(*runtime->mcp_tool_ends));
+    if (runtime->mcp_tool_ends == NULL)
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "failed to allocate MCP tool ownership");
+    memset(runtime->mcp_tool_ends, 0,
+           config->mcp_client_count * sizeof(*runtime->mcp_tool_ends));
   }
   if (config->mcp_tool_config == NULL) {
     return CAI_OK;
@@ -4068,22 +4079,14 @@ static int cai_runtime_tool_action(const cai_agent_runtime *runtime,
     return CAI_AGENT_TOOL_ACTION_IMAGE_GENERATION;
   }
   if (runtime != NULL) {
-    const char *prefix = runtime->mcp_tool_name_prefix != NULL
-                             ? runtime->mcp_tool_name_prefix
-                             : "";
-    size_t prefix_length = strlen(prefix);
-    if (strncmp(name, prefix, prefix_length) == 0) {
-      for (i = 0U; i < runtime->mcp_client_count; i++) {
-        size_t j;
-        for (j = 0U; j < cai_mcp_client_tool_count(runtime->mcp_clients[i]);
-             j++) {
-          const cai_mcp_client_tool *tool =
-              cai_mcp_client_tool_at(runtime->mcp_clients[i], j);
-          if (tool != NULL && tool->name != NULL &&
-              strcmp(name + prefix_length, tool->name) == 0)
-            return CAI_AGENT_TOOL_ACTION_MCP;
-        }
-      }
+    size_t begin = runtime->mcp_tool_begin;
+    for (i = 0U; i < runtime->mcp_client_count; i++) {
+      size_t j;
+      for (j = begin; j < runtime->mcp_tool_ends[i]; j++)
+        if (strcmp(name, cai_tool_registry_name_at(
+                             CAI_AGENT_IMPL(runtime->agent)->tools, j)) == 0)
+          return CAI_AGENT_TOOL_ACTION_MCP;
+      begin = runtime->mcp_tool_ends[i];
     }
   }
   return CAI_AGENT_TOOL_ACTION_EXTERNAL;
@@ -7163,6 +7166,9 @@ int cai_agent_runtime_open(cai_client *client,
     rc = cai_set_error(error, CAI_ERR_INVALID,
                        "agent preset does not enable image generation");
   }
+  if (rc == CAI_OK)
+    runtime->mcp_tool_begin =
+        cai_tool_registry_count(CAI_AGENT_IMPL(runtime->agent)->tools);
   for (i = 0U; rc == CAI_OK && i < runtime->mcp_client_count; i++) {
     if (runtime->mcp_clients[i] == NULL) {
       rc = cai_set_error(error, CAI_ERR_INVALID,
@@ -7172,6 +7178,8 @@ int cai_agent_runtime_open(cai_client *client,
           runtime->agent, runtime->mcp_clients[i],
           runtime->has_mcp_tool_config ? &runtime->mcp_tool_config : NULL,
           error);
+      runtime->mcp_tool_ends[i] =
+          cai_tool_registry_count(CAI_AGENT_IMPL(runtime->agent)->tools);
     }
   }
   if (rc == CAI_OK && config->enable_image_generation &&
@@ -11488,6 +11496,72 @@ int cai_agent_runtime_context_percent(cai_agent_runtime *runtime, double *out,
   *out = runtime->context_projection_percent;
   pthread_mutex_unlock(&runtime->lock);
   return CAI_OK;
+}
+
+typedef struct cai_runtime_hosted_info {
+  char type[128];
+} cai_runtime_hosted_info;
+static const lonejson_field cai_runtime_hosted_fields[] = {
+    LONEJSON_FIELD_STRING_FIXED_REQ(cai_runtime_hosted_info, type, "type",
+                                    LONEJSON_OVERFLOW_FAIL)};
+LONEJSON_MAP_DEFINE(cai_runtime_hosted_map, cai_runtime_hosted_info,
+                    cai_runtime_hosted_fields);
+
+int cai_agent_runtime_visit_tools(cai_agent_runtime *runtime,
+                                  cai_agent_tool_visitor visitor, void *context,
+                                  cai_error *error) {
+  cai_agent_impl *agent;
+  cai_agent_tool_info info;
+  size_t i, j;
+  int rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (visitor == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID, "tool visitor is required");
+  /* Registration is completed before the worker starts. Tool execution and
+   * model/effort updates do not mutate this registry. */
+  agent = CAI_AGENT_IMPL(runtime->agent);
+  for (i = 0U; rc == CAI_OK && i < cai_tool_registry_count(agent->tools); i++) {
+    memset(&info, 0, sizeof(info));
+    info.name = cai_tool_registry_name_at(agent->tools, i);
+    info.description = cai_tool_registry_description_at(agent->tools, i);
+    info.input_format =
+        cai_tool_registry_schema_at(agent->tools, i) == NULL ||
+                cai_tool_registry_raw_input_at(agent->tools, i) != NULL
+            ? "text"
+            : "json";
+    info.mcp_client_index = (size_t)-1;
+    if (i >= runtime->mcp_tool_begin) {
+      for (j = 0U; j < runtime->mcp_client_count; j++) {
+        if (i < runtime->mcp_tool_ends[j]) {
+          info.source = CAI_AGENT_TOOL_MCP;
+          info.mcp_client_index = j;
+          break;
+        }
+      }
+    }
+    rc = visitor(context, &info, error);
+  }
+  for (i = 0U; rc == CAI_OK && i < agent->hosted_tools.count; i++) {
+    struct cai_function_tool *tools = agent->hosted_tools.items;
+    cai_runtime_hosted_info hosted;
+    lonejson_error local;
+    memset(&hosted, 0, sizeof(hosted));
+    lonejson_error_init(&local);
+    rc = CAI_LJ->parse_cstr(CAI_LJ, &cai_runtime_hosted_map, &hosted,
+                            tools[i].raw_json, &local);
+    if (rc != LONEJSON_STATUS_OK)
+      return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                  "read hosted tool inventory", local.message);
+    memset(&info, 0, sizeof(info));
+    info.name = hosted.type;
+    info.description = "Provider-hosted tool";
+    info.input_format = "hosted";
+    info.source = CAI_AGENT_TOOL_HOSTED;
+    info.mcp_client_index = (size_t)-1;
+    rc = visitor(context, &info, error);
+  }
+  return rc;
 }
 
 int cai_agent_runtime_get_metrics(cai_agent_runtime *runtime,

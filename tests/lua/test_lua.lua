@@ -1467,6 +1467,14 @@ do
   assert(table.concat(runtime_logger_chunks):find("cai.agent.runtime.opened", 1, true),
     "Lua Smith runtime accepts and retains a native pslog logger")
   assert_eq(runtime:state(), "idle", "Lua Smith runtime initial state")
+  local inventory = assert_ok(runtime:tools())
+  local found_read = false
+  for _, tool in ipairs(inventory) do
+    if tool.name == "read_file" then
+      found_read = tool.source == "local" and tool.input_format == "json"
+    end
+  end
+  assert(found_read, "Lua inventory includes actual installed read_file")
   assert_eq(runtime:model(), cai.MODEL_GPT_5_6_TERRA,
     "Lua Smith runtime initial model")
   assert_ok(runtime:set_model(cai.MODEL_GPT_6_ASTRA), nil,
@@ -2748,6 +2756,12 @@ end
 do
   local config = assert_ok(cai.config())
   assert_ok(config:set("agent", "model", "lua-config-model"))
+  assert_ok(config:set("mcp.team", "endpoint", "http://127.0.0.1:1/mcp"))
+  assert_ok(config:set("mcp.other", "enabled", false))
+  local sections = config:sections()
+  assert_eq(sections[1], "agent", "section insertion order")
+  assert_eq(sections[2], "mcp.team", "named MCP section")
+  assert_eq(sections[3], "mcp.other", "second MCP section")
   assert_throws(function() config:set("agent", "model", "prefix\0suffix") end)
   assert_throws(function() config:set("env", "CAI_REVIEW_NUL", "prefix\0secret") end)
   assert_throws(function() config:get("agent\0invalid", "model") end)

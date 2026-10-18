@@ -5297,6 +5297,75 @@ static int cai_lua_agent_runtime_state(lua_State *L) {
   return 1;
 }
 
+typedef struct cai_lua_tool_inventory {
+  lua_State *L;
+  lua_Integer count;
+  const cai_agent_tool_info *tool;
+} cai_lua_tool_inventory;
+static int cai_lua_tool_inventory_build(lua_State *L) {
+  const cai_lua_tool_inventory *out = lua_touserdata(L, 2);
+  const cai_agent_tool_info *tool = out->tool;
+  lua_Integer index = lua_tointeger(L, 3);
+  lua_newtable(L);
+  lua_pushstring(L, tool->name);
+  lua_setfield(L, -2, "name");
+  lua_pushstring(L, tool->description != NULL ? tool->description : "");
+  lua_setfield(L, -2, "description");
+  lua_pushstring(L, tool->input_format);
+  lua_setfield(L, -2, "input_format");
+  lua_pushstring(L, tool->source == CAI_AGENT_TOOL_MCP      ? "mcp"
+                    : tool->source == CAI_AGENT_TOOL_HOSTED ? "hosted"
+                                                            : "local");
+  lua_setfield(L, -2, "source");
+  if (tool->source == CAI_AGENT_TOOL_MCP) {
+    lua_pushinteger(L, (lua_Integer)tool->mcp_client_index + 1);
+    lua_setfield(L, -2, "mcp_client_index");
+  }
+  lua_rawseti(L, 1, index);
+  return 0;
+}
+static int cai_lua_tool_inventory_row(void *context,
+                                      const cai_agent_tool_info *tool,
+                                      cai_error *error) {
+  cai_lua_tool_inventory *out = context;
+  lua_State *L = out->L;
+  int rc;
+  /* Keep Lua allocation failures inside the callback boundary so the outer
+   * facade always releases its runtime busy guard. */
+  lua_pushcfunction(L, cai_lua_tool_inventory_build);
+  lua_pushvalue(L, -2);
+  out->tool = tool;
+  lua_pushlightuserdata(L, out);
+  lua_pushinteger(L, ++out->count);
+  rc = lua_pcall(L, 3, 0, 0);
+  if (rc != LUA_OK) {
+    rc = cai_lua_set_error(error,
+                           rc == LUA_ERRMEM ? CAI_ERR_NOMEM : CAI_ERR_INVALID,
+                           "cannot construct Lua tool inventory");
+    lua_pop(L, 1);
+    return rc;
+  }
+  return CAI_OK;
+}
+static int cai_lua_agent_runtime_tools(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  cai_lua_tool_inventory out;
+  cai_error error;
+  int rc;
+  out.L = L;
+  out.count = 0;
+  lua_newtable(L);
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_visit_tools(self->ptr, cai_lua_tool_inventory_row,
+                                     &out, &error);
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK)
+    return cai_lua_fail(L, rc, &error);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
 static int cai_lua_agent_runtime_metrics(lua_State *L) {
   cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
   cai_agent_runtime_metrics metrics;
@@ -9339,6 +9408,8 @@ static int cai_lua_mcp_client_new(lua_State *L) {
   cai_error_init(&error);
   cai_mcp_streamable_http_client_config_init(&config);
   config.url = cai_lua_opt_string_field(L, 1, "url", config.url);
+  config.discovery_timeout_ms = cai_lua_opt_long_field(
+      L, 1, "discovery_timeout_ms", config.discovery_timeout_ms);
   config.client_name =
       cai_lua_opt_string_field(L, 1, "client_name", config.client_name);
   config.client_version =
@@ -11680,6 +11751,7 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"pump", cai_lua_agent_runtime_pump},
     {"state", cai_lua_agent_runtime_state},
     {"metrics", cai_lua_agent_runtime_metrics},
+    {"tools", cai_lua_agent_runtime_tools},
     {"session_id", cai_lua_agent_runtime_session_id},
     {"model", cai_lua_agent_runtime_model},
     {"export_markdown", cai_lua_agent_runtime_export_markdown},

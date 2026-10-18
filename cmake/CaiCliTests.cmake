@@ -12,7 +12,7 @@
     target_link_libraries(cai_cli_softline_resize_repro PRIVATE softline::softline_static)
     cai_configure_cli_target(cai_cli_softline_resize_repro)
     add_executable(cai_cli_resize_fixture tests/cli_resize_fixture.c
-      cli/options.c cli/config.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
+      cli/options.c cli/config.c cli/mcp.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
       cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c
       cli/session_commands.c cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
     target_link_libraries(cai_cli_resize_fixture PRIVATE cai_static
@@ -49,6 +49,13 @@
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_config_test.sh"
         "$<TARGET_FILE:cai_cli>")
     set_tests_properties(cai_cli_config PROPERTIES TIMEOUT 45)
+    foreach(_cai_mcp_protocol responses chat_completions)
+      add_test(NAME cai_cli_mcp_inventory_${_cai_mcp_protocol}
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_mcp_inventory_test.sh"
+          "$<TARGET_FILE:cai_cli>" "${_cai_mcp_protocol}")
+      set_tests_properties(cai_cli_mcp_inventory_${_cai_mcp_protocol}
+        PROPERTIES TIMEOUT 45)
+    endforeach()
     foreach(_cai_agents_protocol responses chat_completions)
       add_test(NAME cai_cli_tool_policy_${_cai_agents_protocol}
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_tool_policy_test.sh"
@@ -69,14 +76,14 @@
     set_tests_properties(cai_cli_chrome PROPERTIES LABELS "integration;local;offline" TIMEOUT 90)
 
     add_executable(cai_cli_shell_fixture tests/cli_shell_fixture.c
-      cli/options.c cli/config.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
+      cli/options.c cli/config.c cli/mcp.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
       cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c
       cli/session_commands.c cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
     target_link_libraries(cai_cli_shell_fixture PRIVATE cai_static
       softline::softline_static libmdf::mdf_static lockdc::static)
     cai_configure_cli_target(cai_cli_shell_fixture)
     add_executable(cai_cli_settings_fixture tests/cli_settings_fixture.c
-      cli/options.c cli/config.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
+      cli/options.c cli/config.c cli/mcp.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
       cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c
       cli/session_commands.c cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
     target_link_libraries(cai_cli_settings_fixture PRIVATE cai_static
@@ -125,7 +132,7 @@
     add_test(NAME cai_cli_storage_stream COMMAND cai_cli_storage_stream_test)
     set_tests_properties(cai_cli_storage_stream PROPERTIES TIMEOUT 30)
     add_executable(cai_cli_reasoning_test tests/cli_reasoning_test.c
-      cli/options.c cli/config.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c cli/review_report.c
+      cli/options.c cli/config.c cli/mcp.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c cli/review_report.c
       cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
     target_link_libraries(cai_cli_reasoning_test PRIVATE cai_static
       softline::softline_static libmdf::mdf_static lockdc::static)
@@ -137,7 +144,7 @@
     cai_configure_cli_target(cai_cli_log_test)
     add_test(NAME cai_cli_log COMMAND cai_cli_log_test "${CMAKE_CURRENT_BINARY_DIR}")
     add_executable(cai_cli_startup_fixture tests/cli_startup_fixture.c
-      cli/options.c cli/config.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c cli/review_report.c cli/pouch.c
+      cli/options.c cli/config.c cli/mcp.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c cli/review_report.c cli/pouch.c
       cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c cli/log.c
       cli/response.c cli/chrome_host.c cli/chrome_setup.c)
     target_link_libraries(cai_cli_startup_fixture PRIVATE cai_static

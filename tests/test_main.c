@@ -27682,6 +27682,51 @@ static void test_smith_review_pause_checkpoint_failure(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+typedef struct inventory_test {
+  test_state *state;
+  cai_agent_runtime *runtime;
+  int local_count, hosted_count, mcp_count, fail, rc;
+} inventory_test;
+static int test_inventory_row(void *context, const cai_agent_tool_info *tool,
+                              cai_error *error) {
+  inventory_test *inventory = context;
+  (void)error;
+  if (inventory->fail)
+    return CAI_ERR_TRANSPORT;
+  expect_int(inventory->state, "inventory_name", tool->name != NULL, 1);
+  expect_int(inventory->state, "inventory_input_format",
+             tool->input_format != NULL, 1);
+  if (tool->source == CAI_AGENT_TOOL_MCP) {
+    inventory->mcp_count++;
+    expect_int(inventory->state, "inventory_mcp_index",
+               (long long)tool->mcp_client_index, 0);
+    expect_int(inventory->state, "inventory_mcp_prefix",
+               strncmp(tool->name, "mcp__", 5U), 0);
+  } else if (tool->source == CAI_AGENT_TOOL_HOSTED) {
+    inventory->hosted_count++;
+    expect_str(inventory->state, "inventory_hosted_input", tool->input_format,
+               "hosted");
+  } else {
+    inventory->local_count++;
+    expect_int(inventory->state, "inventory_local_mcp_index",
+               tool->mcp_client_index == (size_t)-1, 1);
+  }
+  return CAI_OK;
+}
+static void *test_inventory_wrong_thread(void *context) {
+  inventory_test *inventory = context;
+  cai_error error;
+  cai_error_init(&error);
+  inventory->rc = cai_agent_runtime_visit_tools(
+      inventory->runtime, test_inventory_row, inventory, &error);
+  cai_error_cleanup(&error);
+  return NULL;
+}
+static size_t test_inventory_empty_transport(const cai_mcp_client *client) {
+  (void)client;
+  return 0U;
+}
+
 static void test_agent_runtime_lifecycle(test_state *state) {
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
@@ -27755,6 +27800,40 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   session_open_after = time(NULL);
   expect_int(state, "runtime_mcp_refresh", mcp_fake.refresh_count, 1L);
   if (runtime != NULL) {
+    inventory_test inventory;
+    pthread_t thread;
+    size_t (*saved_count)(const cai_mcp_client *);
+    memset(&inventory, 0, sizeof(inventory));
+    inventory.state = state;
+    inventory.runtime = runtime;
+    saved_count = mcp_fake.public_client.tool_count;
+    mcp_fake.public_client.tool_count = test_inventory_empty_transport;
+    expect_int(state, "inventory_visit",
+               cai_agent_runtime_visit_tools(runtime, test_inventory_row,
+                                             &inventory, &error),
+               CAI_OK);
+    expect_int(state, "inventory_local_tools", inventory.local_count > 0, 1);
+    expect_int(state, "inventory_hosted_tools", inventory.hosted_count > 0, 1);
+    expect_int(state, "inventory_mcp_tools", inventory.mcp_count > 0, 1);
+    expect_int(state, "inventory_does_not_refresh", mcp_fake.refresh_count, 1);
+    mcp_fake.public_client.tool_count = saved_count;
+    inventory.fail = 1;
+    expect_int(state, "inventory_visitor_error",
+               cai_agent_runtime_visit_tools(runtime, test_inventory_row,
+                                             &inventory, &error),
+               CAI_ERR_TRANSPORT);
+    expect_int(state, "inventory_null_visitor",
+               cai_agent_runtime_visit_tools(runtime, NULL, NULL, &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    if (pthread_create(&thread, NULL, test_inventory_wrong_thread,
+                       &inventory) == 0) {
+      pthread_join(thread, NULL);
+      expect_int(state, "inventory_owner_thread", inventory.rc,
+                 CAI_ERR_INVALID);
+    } else
+      test_fail(state, "inventory_owner_thread", "cannot start test thread");
     session_id = cai_agent_runtime_session_id(runtime);
     expect_int(state, "runtime_session_id_xid",
                test_xid_session_id_valid(session_id, session_open_before,

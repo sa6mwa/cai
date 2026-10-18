@@ -13,6 +13,7 @@ typedef struct cai_cli_options {
   int chrome;
   int chrome_explicit;
   int web_search;
+  int mcp;
   int todo;
   int searxng;
   int revgeo;

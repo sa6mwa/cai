@@ -495,7 +495,12 @@ NO_COLOR disables colors.
 .B /status
 Show a Markdown table of provider, model, reasoning, context, and available
 cost or quota metrics. For ChatGPT, fetch quota immediately and update the
-status line.
+status line. Summarize installed local, hosted and MCP tools and server status.
+.TP
+.B /tools
+Show the installed tool inventory, descriptions, input formats and MCP server
+ownership, including disabled servers and discovery failures. Available during
+a turn; inspecting cached metadata does not trigger more network discovery.
 .TP
 .BR /quit , " " /exit
 Exit the agent.
@@ -657,6 +662,21 @@ Default cai global instructions when
 is set; otherwise
 .IR ~/.config/cai/AGENTS.md .
 .SH CONFIGURATION
+The --mcp and --no-mcp flags control configured MCP servers (default enabled).
+.PP
+Named [mcp.NAME] sections configure Streamable HTTP tool servers. Enabled
+servers require endpoint; api_key_env optionally names a Bearer-token
+environment variable. enabled defaults to true. discovery_timeout_ms defaults
+to 3000 for the complete initialization and paginated tools refresh;
+timeout_ms defaults to 30000 for normal calls. Discovery failures warn and
+leave other tools usable. Catalogs are cached until restart. Server names use
+ASCII letters, digits, underscores and hyphens. Exposed tool names are
+mcp_NAME_TOOL (at most 64 bytes).
+.PP
+--no-mcp, CAI_MCP=false or [agent] mcp=false disables configured servers;
+--mcp enables them. Utility commands and isolated --review skip MCP discovery.
+The generated template includes a commented [mcp.example] section.
+.PP
 The generated template documents all supported settings. Explanatory comments
 start with ##; commented assignments start with #. Remove one marker to select
 the value explicitly. Automatic global instruction, skills and export paths

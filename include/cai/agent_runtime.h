@@ -954,6 +954,30 @@ typedef struct cai_agent_runtime_metrics {
 int cai_agent_runtime_get_metrics(cai_agent_runtime *runtime,
                                   cai_agent_runtime_metrics *out,
                                   cai_error *error);
+typedef enum cai_agent_tool_source {
+  CAI_AGENT_TOOL_LOCAL = 0,
+  CAI_AGENT_TOOL_HOSTED = 1,
+  CAI_AGENT_TOOL_MCP = 2
+} cai_agent_tool_source;
+/** One installed tool. Strings are borrowed only during the visitor call. */
+typedef struct cai_agent_tool_info {
+  const char *name;
+  const char *description;
+  const char *input_format;
+  cai_agent_tool_source source;
+  /** Index in config.mcp_clients for MCP tools; otherwise (size_t)-1. */
+  size_t mcp_client_index;
+} cai_agent_tool_info;
+typedef int (*cai_agent_tool_visitor)(void *context,
+                                      const cai_agent_tool_info *tool,
+                                      cai_error *error);
+/** Visit the actual registered local, hosted and MCP tools on the owner
+ * thread, including during a turn. Does no discovery or tool execution.
+ * The visitor returns CAI_OK to continue, or an error to stop; it must not
+ * mutate, close or re-enter the runtime. */
+int cai_agent_runtime_visit_tools(cai_agent_runtime *runtime,
+                                  cai_agent_tool_visitor visitor, void *context,
+                                  cai_error *error);
 /** Return the runtime's stable session identifier, borrowed until close. */
 const char *cai_agent_runtime_session_id(const cai_agent_runtime *runtime);
 /**

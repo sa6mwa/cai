@@ -24,6 +24,7 @@ typedef struct cli_field {
 #define B(s, k, m, d)                                                          \
   {s, k, offsetof(cai_cli_options, m), CAI_CONFIG_BOOL, 0U, NULL, d}
 static const cli_field fields[] = {
+    B("agent", "mcp", mcp, "Connect named [mcp.NAME] HTTP servers."),
     S("paths", "directory", directory, CAI_CONFIG_PATH,
       "Empty uses the current working directory on each invocation; explicit "
       "-C wins."),
@@ -284,6 +285,9 @@ static int tool_environment(cai_config *cfg, cai_error *error) {
                                      "shell_context_max_lines",
                                      "shell_context_max_bytes"};
   size_t i;
+  if (getenv("CAI_MCP") != NULL &&
+      cai_config_set(cfg, "agent", "mcp", getenv("CAI_MCP"), error) != CAI_OK)
+    return fail(error, "CAI_MCP", "invalid environment setting");
   for (i = 0U; i < sizeof(env) / sizeof(env[0]); i++) {
     const char *value = getenv(env[i]);
     if (value != NULL &&

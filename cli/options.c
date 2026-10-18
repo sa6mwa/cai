@@ -33,6 +33,7 @@ void cai_cli_options_init(cai_cli_options *options) {
   options->review_subagent = 1;
   options->chrome = 1;
   options->web_search = 1;
+  options->mcp = 1;
   options->read_file = options->list_files = options->apply_patch = 1;
   options->view_image = options->goals = options->skills = 1;
 }
@@ -85,8 +86,11 @@ static void cai_cli_help(void) {
         "      --api-key-env NAME       Custom API key variable (default "
         "CAI_API_KEY)\n",
         stdout);
+  fputs("      --chrome / --no-chrome   Chrome extension tools (default on)\n"
+        "      --mcp / --no-mcp         Configured HTTP MCP servers (default "
+        "on)\n",
+        stdout);
   fputs(
-      "      --chrome / --no-chrome   Chrome extension tools (default on)\n"
       "      --web-search / --no-web-search  Hosted Responses search (default "
       "on)\n"
       "      --todo / --no-todo       Encrypted kanban tool (default off)\n"
@@ -207,13 +211,22 @@ int cai_cli_read_options(int argc, char *const *argv,
       continue;
     }
     if (strncmp(flag, "--", 2U) == 0) {
-      static const char *const names[] = {
-          "web-search",      "todo",           "searxng",
-          "revgeo",          "read-file",      "list-files",
-          "apply-patch",     "view-image",     "goals",
-          "skills",          "terminal",       "image-generation",
-          "review-subagent", "codex-agents-md"};
-      int *values[14];
+      static const char *const names[] = {"web-search",
+                                          "todo",
+                                          "searxng",
+                                          "revgeo",
+                                          "read-file",
+                                          "list-files",
+                                          "apply-patch",
+                                          "view-image",
+                                          "goals",
+                                          "skills",
+                                          "terminal",
+                                          "image-generation",
+                                          "review-subagent",
+                                          "codex-agents-md",
+                                          "mcp"};
+      int *values[15];
       size_t k;
       int enabled = strncmp(flag, "--no-", 5U) != 0;
       const char *name = flag + (enabled ? 2U : 5U);
@@ -231,6 +244,7 @@ int cai_cli_read_options(int argc, char *const *argv,
       values[11] = &options->image_generation;
       values[12] = &options->review_subagent;
       values[13] = &options->codex_agents_md;
+      values[14] = &options->mcp;
       for (k = 0U; k < sizeof(names) / sizeof(names[0]); k++)
         if (strncmp(flag, "--", 2U) == 0 && strcmp(name, names[k]) == 0) {
           *values[k] = enabled;

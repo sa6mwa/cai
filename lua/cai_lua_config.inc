@@ -211,7 +211,18 @@ static int cai_lua_config_template_file(lua_State *L) {
   lua_pushboolean(L, 1);
   return 1;
 }
+static int cai_lua_config_sections(lua_State *L) {
+  cai_config *self = cai_lua_config_check(L);
+  size_t i, count = self->section_count(self);
+  lua_newtable(L);
+  for (i = 0U; i < count; i++) {
+    lua_pushstring(L, self->section_at(self, i));
+    lua_rawseti(L, -2, (lua_Integer)i + 1);
+  }
+  return 1;
+}
 static const luaL_Reg cai_lua_config_methods[] = {
+    {"sections", cai_lua_config_sections},
     {"load", cai_lua_config_load},
     {"load_file", cai_lua_config_load_file},
     {"write_template", cai_lua_config_template},

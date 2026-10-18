@@ -61,6 +61,18 @@ static const config_binding bindings[] = {
 };
 #undef F
 static const cai_config_field globals[] = {
+    {"mcp.*", "enabled", CAI_CONFIG_BOOL, "true",
+     "Enable this named HTTP MCP server. Copy the example section per server.",
+     NULL, 0U},
+    {"mcp.*", "endpoint", CAI_CONFIG_STRING, "",
+     "Streamable HTTP MCP URL; required for enabled servers.", NULL, 0U},
+    {"mcp.*", "api_key_env", CAI_CONFIG_STRING, "",
+     "Optional environment variable containing a Bearer API key.", NULL, 0U},
+    {"mcp.*", "discovery_timeout_ms", CAI_CONFIG_INTEGER, "3000",
+     "Whole initialize/tools-list discovery budget per server in milliseconds.",
+     NULL, 0U},
+    {"mcp.*", "timeout_ms", CAI_CONFIG_INTEGER, "30000",
+     "Normal MCP tool HTTP request timeout in milliseconds.", NULL, 0U},
     {"", "config_env_has_precedence", CAI_CONFIG_BOOL, "false",
      "Config [env] replaces existing process variables when true.", NULL, 0U},
     {"client", "provider", CAI_CONFIG_STRING, "openai",
@@ -142,11 +154,29 @@ void cai_config_close(cai_config *self) {
   }
   cai_free_mem(NULL, self);
 }
+static int section_matches(const char *pattern, const char *section) {
+  size_t n = strlen(pattern);
+  const unsigned char *p;
+  if (strcmp(pattern, section) == 0)
+    return 1;
+  if (n < 3U || strcmp(pattern + n - 2U, ".*") != 0 ||
+      strncmp(pattern, section, n - 1U) != 0)
+    return 0;
+  p = (const unsigned char *)section + n - 1U;
+  if (*p == '\0')
+    return 0;
+  for (; *p != '\0'; p++)
+    if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+          (*p >= '0' && *p <= '9') || *p == '_' || *p == '-'))
+      return 0;
+  return 1;
+}
+
 static const cai_config_field *
 find_field(const config_impl *impl, const char *section, const char *key) {
   size_t i;
   for (i = 0U; i < impl->field_count; i++)
-    if (strcmp(impl->fields[i].field.section, section) == 0 &&
+    if (section_matches(impl->fields[i].field.section, section) &&
         strcmp(impl->fields[i].field.key, key) == 0)
       return &impl->fields[i].field;
   return NULL;
@@ -168,6 +198,18 @@ static int name_valid(const char *name, int env) {
     return 0;
   for (; *p; p++)
     if (!(isalnum(*p) || *p == '_' || (!env && (*p == '.' || *p == '-'))))
+      return 0;
+  return 1;
+}
+static int section_pattern_valid(const char *name) {
+  size_t i, n = strlen(name);
+  if (name_valid(name, 0))
+    return 1;
+  if (n < 3U || strcmp(name + n - 2U, ".*") != 0)
+    return 0;
+  for (i = 0U; i < n - 2U; i++)
+    if (!(isalnum((unsigned char)name[i]) || name[i] == '_' || name[i] == '-' ||
+          name[i] == '.'))
       return 0;
   return 1;
 }
@@ -281,6 +323,9 @@ static int put_value(config_impl *impl, const char *section, const char *key,
   char *copy;
   char **values;
   config_entry *entries;
+  if (strchr(section, '*') != NULL)
+    return config_error(error, impl->origin, line, section, key,
+                        "named section requires an instance name");
   if (strcmp(section, "env") == 0) {
     if (!name_valid(key, 1))
       return config_error(error, impl->origin, line, section, key,
@@ -359,6 +404,36 @@ const char *cai_config_get(const cai_config *self, const char *section,
   entry = find_entry(IMPL(self), section, key);
   return entry != NULL ? entry->values[entry->count - 1U] : NULL;
 }
+const char *cai_config_section_at(const cai_config *self, size_t index) {
+  const config_impl *impl;
+  size_t i, j;
+  if (self == NULL)
+    return NULL;
+  impl = IMPL(self);
+  for (i = 0U; i < impl->count; i++) {
+    for (j = 0U; j < i; j++)
+      if (strcmp(impl->entries[i].section, impl->entries[j].section) == 0)
+        break;
+    if (j == i && index-- == 0U)
+      return impl->entries[i].section;
+  }
+  return NULL;
+}
+size_t cai_config_section_count(const cai_config *self) {
+  size_t count = 0U, i, j;
+  const config_impl *impl;
+  if (self == NULL)
+    return 0U;
+  impl = IMPL(self);
+  for (i = 0U; i < impl->count; i++) {
+    for (j = 0U; j < i; j++)
+      if (strcmp(impl->entries[i].section, impl->entries[j].section) == 0)
+        break;
+    if (j == i)
+      count++;
+  }
+  return count;
+}
 const char *const *cai_config_get_list(const cai_config *self,
                                        const char *section, const char *key,
                                        size_t *count) {
@@ -421,7 +496,7 @@ static int parse_line(config_impl *impl, char *bytes, char **section,
                           "invalid section declaration");
     if (strcmp(key, "env") != 0) {
       for (i = 0U; i < impl->field_count; i++)
-        if (strcmp(impl->fields[i].field.section, key) == 0)
+        if (section_matches(impl->fields[i].field.section, key))
           break;
       if (i == impl->field_count)
         return config_error(error, impl->origin, line, key, NULL,
@@ -617,7 +692,7 @@ static int add_field(config_impl *impl, const cai_config_field *field,
   const char *native_choices = NULL;
   if (field->section == NULL || field->key == NULL ||
       !name_valid(field->key, 0) ||
-      (field->section[0] != '\0' && !name_valid(field->section, 0)) ||
+      (field->section[0] != '\0' && !section_pattern_valid(field->section)) ||
       strcmp(field->section, "env") == 0 || field->type < CAI_CONFIG_STRING ||
       field->type > CAI_CONFIG_STRINGS ||
       (field->flags &
@@ -765,6 +840,8 @@ static int config_open(const cai_config_field *extensions, size_t count,
                          "create configuration numeric locale");
   }
   self->field_count = cai_config_field_count;
+  self->section_count = cai_config_section_count;
+  self->section_at = cai_config_section_at;
   self->field_at = cai_config_field_at;
   self->load = cai_config_load;
   self->load_file = cai_config_load_file;
@@ -919,9 +996,17 @@ int cai_config_write_template(const cai_config *self, cai_sink *sink,
         continue;
       section = f->section;
       if (section[0] != '\0') {
-        rc = write_literal(sink, "\n[", error);
+        size_t n = strlen(section);
+        int named = n > 2U && strcmp(section + n - 2U, ".*") == 0;
+        rc = write_literal(
+            sink,
+            named ? "\n## Copy and name each server section.\n# [" : "\n[",
+            error);
         if (rc == CAI_OK)
-          rc = write_literal(sink, section, error);
+          rc = named ? cai_sink_write(sink, section, n - 1U, error)
+                     : write_literal(sink, section, error);
+        if (rc == CAI_OK && named)
+          rc = write_literal(sink, "example", error);
         if (rc == CAI_OK)
           rc = write_literal(sink, "]\n", error);
       }

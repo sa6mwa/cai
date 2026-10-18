@@ -146,8 +146,15 @@ int main(int argc, char **argv) {
       "reasoning_effort=high\nterminal=false\n[review]\nallowed_models="
       "one\nallowed_models=two\n"
       "[response]\nmax_output_tokens=123\n[terminal]\noutput_max_bytes=4096\n"
-      "[env]\nCAI_TEST_CONFIG_VALUE=\"secret-DO-NOT-LOG\\nline\"\n";
+      "[env]\nCAI_TEST_CONFIG_VALUE=\"secret-DO-NOT-LOG\\nline\"\n"
+      "[mcp.team]\nendpoint=http://127.0.0.1:1/mcp\n"
+      "enabled=true\n[mcp.other]\nenabled=false\n";
   static const char *const invalid[] = {
+      "[mcp.]\nendpoint=x",
+      "[mcp.team.other]\nendpoint=x",
+      "[mcp.team]\nenabled=maybe",
+      "[mcp.team]\ndiscovery_timeout_ms=-1",
+      "[mcp.team]\nunknown=x",
       "[unknown]\nx=y",
       "[client]\ntimeout_ms=-1",
       "[client]\ntimeout_ms=xx",
@@ -182,6 +189,10 @@ int main(int argc, char **argv) {
     list = cai_config_get_list(config, "review", "allowed_models", &count);
     assert(count == 2U && strcmp(list[0], "one") == 0 &&
            strcmp(list[1], "two") == 0);
+    assert(config->section_count(config) == 9U);
+    assert(strcmp(config->section_at(config, 7U), "mcp.team") == 0);
+    assert(strcmp(config->section_at(config, 8U), "mcp.other") == 0);
+    assert(config->section_at(config, 9U) == NULL);
   }
   cai_client_config_init(&client);
   assert(config->apply_client(config, &client, &error) == CAI_OK);
@@ -260,8 +271,8 @@ int main(int argc, char **argv) {
   assert(strstr(bytes, "\n## Config [env]") != NULL);
   assert(strstr(bytes, "\n## Optional literal environment assignments;") !=
          NULL);
-  /* Every single-# line is an assignment; documentation uses ##, even when
-   * it contains '=' or a newline supplied by a host schema. */
+  /* Single-# lines are assignments or a named-section example. Documentation
+   * uses ##, even with '=' or a newline supplied by a host schema. */
   {
     const char *line = bytes, *end;
     while (*line != '\0') {
@@ -270,7 +281,10 @@ int main(int argc, char **argv) {
         end = line + strlen(line);
       if (line[0] == '#' && line[1] != '#') {
         assert(line[1] == ' ');
-        assert(memchr(line, '=', (size_t)(end - line)) != NULL);
+        assert(
+            memchr(line, '=', (size_t)(end - line)) != NULL ||
+            ((size_t)(end - line) == strlen("# [mcp.example]") &&
+             memcmp(line, "# [mcp.example]", strlen("# [mcp.example]")) == 0));
       }
       line = *end != '\0' ? end + 1 : end;
     }

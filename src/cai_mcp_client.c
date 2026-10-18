@@ -90,6 +90,8 @@ typedef struct cai_mcp_streamable_http_client_impl {
   char *client_version;
   char *protocol_version;
   long timeout_ms;
+  long discovery_timeout_ms;
+  long long discovery_deadline_ms;
   int insecure_skip_verify;
   char *ca_bundle_path;
   char *ca_path;
@@ -1740,21 +1742,31 @@ static size_t cai_mcp_upload_read(char *ptr, size_t size, size_t nmemb,
   return result.bytes_read;
 }
 
+static long long cai_mcp_monotonic_ms(void) {
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+    return -1;
+  return (long long)now.tv_sec * 1000LL + now.tv_nsec / 1000000L;
+}
+
 static int cai_mcp_curl_cancel_progress(void *user, curl_off_t down_total,
                                         curl_off_t down_now,
                                         curl_off_t up_total,
                                         curl_off_t up_now) {
-  (void)user;
+  const cai_mcp_streamable_http_client_impl *impl = user;
   (void)down_total;
   (void)down_now;
   (void)up_total;
   (void)up_now;
-  return cai_stream_thread_cancel_requested();
+  return cai_stream_thread_cancel_requested() ||
+         (impl != NULL && impl->discovery_deadline_ms != 0 &&
+          cai_mcp_monotonic_ms() >= impl->discovery_deadline_ms);
 }
 
 static void
 cai_mcp_configure_curl_common(CURL *curl,
                               const cai_mcp_streamable_http_client_impl *impl) {
+  long timeout;
   if (curl == NULL || impl == NULL) {
     return;
   }
@@ -1762,8 +1774,17 @@ cai_mcp_configure_curl_common(CURL *curl,
   curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
   curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION,
                    cai_mcp_curl_cancel_progress);
-  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, impl->timeout_ms);
-  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, impl->timeout_ms);
+  curl_easy_setopt(curl, CURLOPT_XFERINFODATA, impl);
+  timeout = impl->timeout_ms;
+  if (impl->discovery_deadline_ms != 0) {
+    long long remaining = impl->discovery_deadline_ms - cai_mcp_monotonic_ms();
+    if (remaining <= 0)
+      timeout = 1L;
+    else if (remaining < timeout)
+      timeout = (long)remaining;
+  }
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, timeout);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, timeout);
   cai_configure_curl_tls(curl, impl->insecure_skip_verify, impl->ca_bundle_path,
                          impl->ca_path);
 }
@@ -9699,8 +9720,8 @@ static int cai_mcp_streamable_ping(cai_mcp_client *client, cai_error *error) {
   return rc;
 }
 
-static int cai_mcp_streamable_refresh_tools(cai_mcp_client *client,
-                                            cai_error *error) {
+static int cai_mcp_streamable_refresh_tools_impl(cai_mcp_client *client,
+                                                 cai_error *error) {
   cai_mcp_streamable_http_client_impl *impl;
   cai_mcp_http_response_capture response;
   lonejson_spooled request;
@@ -9742,6 +9763,36 @@ static int cai_mcp_streamable_refresh_tools(cai_mcp_client *client,
   if (rc != CAI_OK) {
     cai_mcp_client_clear_tools(impl);
   }
+  return rc;
+}
+
+static int cai_mcp_streamable_refresh_tools(cai_mcp_client *client,
+                                            cai_error *error) {
+  cai_mcp_streamable_http_client_impl *impl = cai_mcp_streamable_impl(client);
+  long long saved, now;
+  int rc;
+  if (impl == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID, "MCP client is required");
+  saved = impl->discovery_deadline_ms;
+  if (impl->discovery_timeout_ms > 0L) {
+    now = cai_mcp_monotonic_ms();
+    if (now < 0)
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "cannot time MCP tools discovery");
+    impl->discovery_deadline_ms = now > INT64_MAX - impl->discovery_timeout_ms
+                                      ? INT64_MAX
+                                      : now + impl->discovery_timeout_ms;
+    if (saved != 0 && saved < impl->discovery_deadline_ms)
+      impl->discovery_deadline_ms = saved;
+  }
+  rc = cai_mcp_streamable_refresh_tools_impl(client, error);
+  if (impl->discovery_deadline_ms != 0 &&
+      cai_mcp_monotonic_ms() >= impl->discovery_deadline_ms) {
+    cai_mcp_client_clear_tools(impl);
+    rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                       "MCP tools discovery timed out");
+  }
+  impl->discovery_deadline_ms = saved;
   return rc;
 }
 
@@ -10227,6 +10278,9 @@ int cai_mcp_streamable_http_client_open(
     return cai_set_error(error, CAI_ERR_INVALID,
                          "MCP Streamable HTTP URL is required");
   }
+  if (effective->discovery_timeout_ms < 0L)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "MCP discovery timeout cannot be negative");
   rc = cai_mcp_auth_mode_effective(effective, &auth_mode, error);
   if (rc != CAI_OK) {
     return rc;
@@ -10288,6 +10342,7 @@ int cai_mcp_streamable_http_client_open(
                                        : CAI_MCP_PROTOCOL_VERSION);
   impl->timeout_ms = effective->timeout_ms > 0L ? effective->timeout_ms
                                                 : CAI_DEFAULT_HTTP_TIMEOUT_MS;
+  impl->discovery_timeout_ms = effective->discovery_timeout_ms;
   impl->insecure_skip_verify = effective->insecure_skip_verify;
   impl->ca_bundle_path =
       cai_strdup(&impl->allocator, effective->ca_bundle_path);

@@ -481,7 +481,42 @@ conversation and execution context, never the credential namespace.
 `--import FILE` validates a JSONL export, assigns a new session ID in the
 current directory, and exits. Failed imports never appear in the list.
 Existing cai JSONL files are not automatically migrated.
-MCP client configuration is planned for a later CLI release.
+
+### Configured MCP tools
+
+`/status` summarizes the registered local, hosted and MCP tools. `/tools` shows
+their names, descriptions, input formats and server ownership, plus disabled
+or unavailable servers and discovery errors. Both render through libmdf and
+remain available during a turn.
+
+Add a named Streamable HTTP server to `config.ini`:
+
+```ini
+[mcp.example]
+enabled = true
+endpoint = https://example.com/mcp
+api_key_env = EXAMPLE_MCP_API_KEY
+discovery_timeout_ms = 3000
+timeout_ms = 30000
+```
+
+The endpoint is required for enabled servers. `api_key_env` is optional; when
+set, its environment variable supplies a Bearer token. `[env]` can supply that
+variable under the normal configuration precedence rules. Server names accept
+ASCII letters, digits, underscores and hyphens. Tools are exposed as
+`mcp_example_TOOL`; the complete name must fit 64 bytes and use the same
+characters. The existing raw-input bridge honors server metadata for Responses
+and supplies ordinary JSON function arguments for Chat Completions.
+
+Discovery runs once when the first runtime opens. Each server's default
+three-second budget covers initialization and all tools-list pages together;
+normal tool calls use the separate `timeout_ms`. Transport, authentication or
+catalog failures warn and leave that server unavailable while other tools
+remain usable. Catalogs are cached for this invocation, including across
+session switches; restart to rediscover. Utility commands and isolated
+`--review` runs do not connect MCP servers. `[agent] mcp = false`, `CAI_MCP=false`
+or `--no-mcp` disables configured servers; `--mcp` explicitly enables them.
+The generated template contains a commented `[mcp.example]` section to copy.
 
 CAI creates `${XDG_CONFIG_HOME:-$HOME/.config}/cai/config.ini` on first
 startup (help/version do not create it). The private file is the configuration
@@ -521,8 +556,12 @@ locale. Schema extensions retain native field types and constraints, and
 templates place globals before named sections. An explicit `--config-dir`
 remains anchored to its original location when a configured workspace changes
 the working directory.
+`section_count`/`section_at` enumerate distinct explicitly configured sections
+in first-setting order. Schema sections ending in `.*` accept named instances;
+the SDK includes the `mcp.*` settings, which embedding hosts can enumerate to
+construct clients explicitly. Applying runtime settings does not open transports.
 Lua exposes `cai.config()` with `load(text_or_chunk_reader, origin)`,
-`load_file`, typed getters, `set`, `resolve_path`, `apply_environment`,
+`load_file`, `sections()`, typed getters, `set`, `resolve_path`, `apply_environment`,
 `write_template(chunk_writer)` and `create_template_file`. Lua configuration
 strings reject embedded NUL bytes instead of silently truncating them.
 
@@ -1047,6 +1086,11 @@ see [Chrome integration](docs/chrome.md).
 Lua runtime tables also accept all `disable_*` policies and `enable_todo`,
 `enable_searxng`, `enable_revgeo` with their corresponding tool configuration
 tables. `todo.store` may be a native store; the runtime borrows it until close.
+`runtime:tools()` returns the installed inventory as rows with `name`,
+`description`, `input_format`, and `source` (`local`, `hosted` or `mcp`). MCP
+rows also identify their client with a one-based `mcp_client_index`. This wraps
+the owner-thread C API `cai_agent_runtime_visit_tools`; inspection performs no
+network discovery or tool execution and is available while a turn runs.
 
 Build and run the local LuaRock test:
 
@@ -1595,6 +1639,10 @@ The HTTP client config owns transport details: endpoint URL, client identity,
 protocol version, timeout, TLS verification behavior, optional CA bundle/path,
 receiver callbacks, and allocator. When CA bundle/path are unset,
 libcurl/OpenSSL resolve their default trust store.
+`discovery_timeout_ms` optionally bounds a complete tools refresh, including
+initialization and pagination. Zero preserves per-request timeouts. A positive
+budget does not change subsequent tool-call timeouts. Lua `cai.mcp_client`
+accepts the same field.
 
 Remote MCP tools can be registered into a local `cai_tool_registry` with
 `cai_mcp_client_register_tools`. The registry keeps a non-owning client pointer,

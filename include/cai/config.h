@@ -44,6 +44,9 @@ typedef struct cai_config cai_config;
  * until successful load, set, resolve_path or close. This owner-thread object
  * has no implicit environment, authentication or transport side effects. */
 struct cai_config {
+  /** Distinct explicitly configured sections, in first-setting order. */
+  size_t (*section_count)(const cai_config *self);
+  const char *(*section_at)(const cai_config *self, size_t index);
   size_t (*field_count)(const cai_config *self);
   const cai_config_field *(*field_at)(const cai_config *self, size_t index);
   int (*load)(cai_config *self, cai_source *source, const char *origin,
@@ -96,6 +99,11 @@ int cai_config_open_schema(const cai_config_field *fields, size_t count,
 /** Borrow schema metadata until set_default or close. NULL/out-of-range is
  * accepted and returns zero/NULL. */
 size_t cai_config_field_count(const cai_config *self);
+/** Borrow explicit section names until load/set/resolve_path/close. Schema
+ * sections ending in .* accept named instances, such as mcp.team. Empty
+ * example sections have no settings and are omitted. */
+size_t cai_config_section_count(const cai_config *self);
+const char *cai_config_section_at(const cai_config *self, size_t index);
 const cai_config_field *cai_config_field_at(const cai_config *self,
                                             size_t index);
 /** Incrementally read source, borrowing it without closing. Entire-file

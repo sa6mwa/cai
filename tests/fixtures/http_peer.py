@@ -36,7 +36,22 @@ class Peer(http.server.BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def do_POST(self):
-        request = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
+        if self.headers.get('Transfer-Encoding', '').lower() == 'chunked':
+            chunks = []
+            while True:
+                length = int(self.rfile.readline().split(b';')[0], 16)
+                if length == 0:
+                    while self.rfile.readline().strip():
+                        pass
+                    break
+                chunks.append(self.rfile.read(length))
+                self.rfile.read(2)
+            body = b''.join(chunks)
+        else:
+            body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+        request = json.loads(body)
+        if self.path.startswith('/mcp/'):
+            return self.mcp(request)
         self.server.sequence += 1
         with (root / 'requests.jsonl').open('a') as output:
             output.write(json.dumps(request) + '\n')
@@ -147,6 +162,55 @@ class Peer(http.server.BaseHTTPRequestHandler):
         else:
             self.event('response.completed', response={'id': 'resp_fixture_' + str(time.monotonic_ns()),
                 'usage': {'input_tokens': 10, 'output_tokens': 10, 'total_tokens': 20}})
+
+    def mcp(self, request):
+        config = json.loads((root / 'config.json').read_text())
+        name = self.path.split('/')[-1]
+        spec = config.get('mcp', {}).get(name, {})
+        method = request.get('method')
+        with (root / 'mcp_requests.jsonl').open('a') as output:
+            output.write(json.dumps(dict(server=name, request=request,
+                                          authorization=self.headers.get('Authorization'),
+                                          time_ns=time.monotonic_ns())) + '\n')
+        time.sleep(spec.get('delay_ms', 0) / 1000 if method != 'notifications/initialized' else 0)
+        self.send_response(spec.get('status', 202 if method == 'notifications/initialized' else 200))
+        notify = method == 'tools/call' and spec.get('notify_tools_changed')
+        self.send_header('Content-Type', 'text/event-stream' if notify else 'application/json')
+        self.end_headers()
+        if method == 'notifications/initialized':
+            return
+        if spec.get('malformed'):
+            self.wfile.write(b'{broken')
+            return
+        if method == 'initialize':
+            result = dict(protocolVersion=request['params']['protocolVersion'],
+                          capabilities={'tools': {}}, serverInfo={'name': name, 'version': '1'})
+        elif method == 'tools/list':
+            page = 1 if request.get('params', {}).get('cursor') else 0
+            tools = [dict(name='echo', description='Echo | user text\nplain',
+                          inputSchema={'type': 'object', 'properties': {'text': {'type': 'string'}},
+                                       'required': ['text'], 'additionalProperties': False})] if page == 0 else [
+                dict(name='raw', description='Accept raw text',
+                     inputSchema={'type': 'object', 'properties': {'payload': {'type': 'string'}},
+                                  'required': ['payload'], 'additionalProperties': False},
+                     _meta={'systems.c89.cai/raw-input': {'field': 'payload', 'framing': 'text'}})]
+            result = dict(tools=tools)
+            if page == 0 and not spec.get('empty'):
+                result['nextCursor'] = 'second-page'
+            if spec.get('empty'):
+                result['tools'] = []
+        elif method == 'tools/call':
+            time.sleep(spec.get('call_delay_ms', 0) / 1000)
+            result = dict(content=[{'type': 'text', 'text': 'MCP TOOL RESULT ' + json.dumps(request['params'])}])
+        else:
+            result = {}
+        response = dict(jsonrpc='2.0', id=request.get('id'), result=result)
+        if notify:
+            notice = dict(jsonrpc='2.0', method='notifications/tools/list_changed')
+            self.wfile.write(('data: ' + json.dumps(notice) + '\n\n' +
+                              'data: ' + json.dumps(response) + '\n\n').encode())
+        else:
+            self.wfile.write(json.dumps(response).encode())
 
 class Server(http.server.ThreadingHTTPServer):
     def handle_error(self, request, client_address):

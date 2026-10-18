@@ -69,6 +69,7 @@ cai_agent_runtime_update_settings
 cai_agent_runtime_user_shell_begin
 cai_agent_runtime_user_shell_finish
 cai_agent_runtime_user_shell_write
+cai_agent_runtime_visit_tools
 cai_agent_runtime_wakeup_fd
 cai_agent_set_session_usage_limits
 cai_agent_usage
@@ -152,6 +153,8 @@ cai_config_load_file
 cai_config_open
 cai_config_open_schema
 cai_config_resolve_path
+cai_config_section_at
+cai_config_section_count
 cai_config_set
 cai_config_set_default
 cai_config_write_template

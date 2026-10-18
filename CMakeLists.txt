@@ -830,7 +830,7 @@ endfunction()
 
 if(CAI_BUILD_CLI)
   find_package(lockdc CONFIG REQUIRED COMPONENTS static)
-  add_executable(cai_cli cli/main.c cli/options.c cli/config.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
+  add_executable(cai_cli cli/main.c cli/options.c cli/config.c cli/mcp.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
     cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c
     cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
   set_target_properties(cai_cli PROPERTIES OUTPUT_NAME cai)

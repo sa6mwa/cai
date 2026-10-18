@@ -316,6 +316,10 @@ typedef struct cai_mcp_streamable_http_client_config {
   const char *protocol_version;
   /** Overall HTTP timeout in milliseconds; zero uses cai default. */
   long timeout_ms;
+  /** Optional whole tools-discovery budget, including initialize and every
+   * tools/list page. Zero retains ordinary per-request timeouts. Tool calls
+   * continue to use timeout_ms. */
+  long discovery_timeout_ms;
   /** Non-zero disables TLS certificate verification. */
   int insecure_skip_verify;
   /** Optional PEM CA bundle path for TLS verification. */

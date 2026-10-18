@@ -6,6 +6,7 @@
 #include "literal.h"
 #include "log.h"
 #include "login.h"
+#include "mcp.h"
 #include "options.h"
 #include "pouch.h"
 #include "quota_refresh.h"
@@ -75,6 +76,8 @@ typedef struct cli_state {
   pslog_logger *model_log;
   cai_client *quota_client;
   cai_agent_runtime *runtime;
+  cai_cli_mcp mcp;
+  int mcp_initialized;
   sl_t *sl;
   mdf *renderer;
   mdf *notice_renderer;
@@ -1475,6 +1478,16 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
     state->pouch.replay_context = state;
     state->pouch.replay_scope = state->workspace;
   }
+  if (!state->mcp_initialized) {
+    rc = cai_cli_mcp_open(&state->mcp, state->configuration,
+                          state->options.mcp && !state->options.review,
+                          state->log.logger, error);
+    if (rc != CAI_OK)
+      return rc;
+    state->mcp_initialized = 1;
+  }
+  config.mcp_clients = state->mcp.clients;
+  config.mcp_client_count = state->mcp.client_count;
   rc = cai_agent_runtime_open(state->client, &config, &state->runtime, error);
   state->pouch.replay_begin = NULL;
   state->pouch.replay_event = NULL;
@@ -1994,6 +2007,10 @@ static int cli_settings_command(cli_state *state, const char *arguments,
   return cli_write(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
 }
 
+static int cli_tools_write(void *context, const char *bytes, size_t count) {
+  return cli_text(context, bytes, count);
+}
+
 static int cli_handle_command(cli_state *state, const char *line,
                               cai_error *error, int *handled) {
   const char *arg;
@@ -2089,7 +2106,10 @@ static int cli_handle_command(cli_state *state, const char *line,
         "with the next tool call. Compact commands show five lines; patches "
         "collapse unchanged context. |\n",
         "| `/status` | Show model, reasoning, context, and available cost or "
-        "quota metrics. Refresh ChatGPT quota immediately. |\n"
+        "quota metrics and the tool summary. Refresh ChatGPT quota "
+        "immediately. |\n"
+        "| `/tools` | List installed tools, MCP servers, discovery errors and "
+        "tool descriptions. |\n"
         "| `/resume` | List conversations for the current directory. |\n",
         "| `/resume NUMBER` | Resume a listed conversation and replay prompts "
         "and assistant text. |\n"
@@ -2137,6 +2157,15 @@ static int cli_handle_command(cli_state *state, const char *line,
   if (strcmp(line, "/new") == 0) {
     return cli_switch_session(state, NULL, 1, error);
   }
+  if (strcmp(line, "/tools") == 0) {
+    if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
+      return CAI_ERR_TRANSPORT;
+    rc = cai_cli_tools_markdown(&state->mcp, state->runtime, 1, cli_tools_write,
+                                state, error);
+    if (rc == CAI_OK && cli_finish_response(state) != 0)
+      rc = CAI_ERR_TRANSPORT;
+    return rc;
+  }
   if (strcmp(line, "/status") == 0) {
     cai_agent_runtime_settings settings;
     cai_agent_runtime_metrics metrics;
@@ -2162,6 +2191,8 @@ static int cli_handle_command(cli_state *state, const char *line,
             markdown, sizeof(markdown), model, effort, state->options.provider,
             &metrics, state->auth != NULL ? &state->quota : NULL) != 0 ||
         cli_text(state, markdown, strlen(markdown)) != 0 ||
+        cai_cli_tools_markdown(&state->mcp, state->runtime, 0, cli_tools_write,
+                               state, error) != CAI_OK ||
         cli_finish_response(state) != 0) {
       return CAI_ERR_TRANSPORT;
     }
@@ -2963,6 +2994,7 @@ cleanup:
   cai_cli_response_close(&state.final_response);
   if (state.runtime != NULL)
     cli_close_runtime(&state);
+  cai_cli_mcp_close(&state.mcp);
   if (state.has_log_watch)
     (void)sl_watch_remove(state.sl, state.log_watch_id);
   if (state.has_timer_watch)
