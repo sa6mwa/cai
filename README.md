@@ -152,9 +152,9 @@ and output, cannot be queued or steered, and leave the draft editable if the
 agent is busy. The shell runs with normal user permissions in the workspace.
 On exit, CAI restores terminal ownership, prompt settings and current geometry,
 including after a screen clear or resize. CAI relays a real PTY, including
-window changes and foreground-job control. Output is journaled as it arrives;
-the sanitized tail becomes shell-result context after exit, using the same
-sharing controls as `!COMMAND`. Replaying never launches the shell again.
+window changes and foreground-job control. Terminal output stays local: it is
+neither journaled, logged nor sent to the model, including with
+`--shell-context` enabled. Logs retain only shell start/exit metadata.
 A failed launch or nonzero shell exit reports details and returns to CAI.
 
 Other `!COMMAND` inputs run captured commands as described below.
@@ -189,9 +189,10 @@ Markdown export uses
 the existing libcai exporter of retained model context.
 
 `--no-shell-context`, `CAI_SHELL_CONTEXT=false`, `[ui] shell_context=false`,
-or `/shell-context off` keeps future shell results out of
+or `/shell-context off` keeps future `!COMMAND` results out of
 model context while still executing, displaying and saving them.
 `/shell-context on` enables sharing; `/shell-context` shows the setting.
+These controls never enable recording or sharing for `/shell` or `!sh`.
 The setting is captured when each command starts. Earlier shared results stay
 in context. Unshared results replay locally and remain in JSONL exports.
 

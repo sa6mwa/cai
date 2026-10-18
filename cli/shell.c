@@ -229,9 +229,11 @@ int cai_cli_shell_handoff(const char *path, const char *directory,
     if ((fds[0].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
       n = read(master, buffer, sizeof(buffer));
       if (n > 0) {
-        rc = output(context, buffer, (size_t)n, error);
-        if (rc != CAI_OK)
-          break;
+        if (output != NULL) {
+          rc = output(context, buffer, (size_t)n, error);
+          if (rc != CAI_OK)
+            break;
+        }
         if (handoff_write(STDOUT_FILENO, buffer, (size_t)n) != 0) {
           failure = errno;
           break;

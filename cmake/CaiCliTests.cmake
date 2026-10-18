@@ -163,6 +163,10 @@
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_pouch_startup_test.sh"
         "$<TARGET_FILE:cai_cli_pouch_startup_test>" "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(cai_cli_pouch_startup PROPERTIES TIMEOUT 60)
+    add_test(NAME cai_cli_replay_limits
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_replay_limits_test.sh"
+        "$<TARGET_FILE:cai_cli>" "$<TARGET_FILE:cai_cli_pouch_startup_test>")
+    set_tests_properties(cai_cli_replay_limits PROPERTIES TIMEOUT 30)
     add_executable(cai_cli_pouch_compaction_test tests/cli_pouch_compaction_test.c
       cli/pouch_stream.c)
     target_link_libraries(cai_cli_pouch_compaction_test PRIVATE cai_static lockdc::static)

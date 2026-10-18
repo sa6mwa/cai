@@ -40,7 +40,8 @@ int cai_cli_shell_plain(cai_cli_shell *shell, const char *bytes, size_t length,
                         int final, cai_cli_shell_output_fn output,
                         void *context, cai_error *error);
 /* Called with the editor released. Relay a real PTY in the foreground;
- * output observes raw chunks, before they are written unchanged to the TTY.
+ * Optional output observes raw chunks before they reach the TTY. NULL relays
+ * directly without recording terminal output.
  * Restores termios, signal dispositions and window handling on every exit.
  * status is the waitpid status (distinguishes exit 137 from SIGKILL). */
 int cai_cli_shell_handoff(const char *path, const char *directory,

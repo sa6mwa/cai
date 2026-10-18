@@ -230,6 +230,108 @@ static void todo_transactions(cai_cli_pouch *pouch, cai_error *error) {
   assert(store->commit(pouch, txn, error) == CAI_OK);
 }
 
+static void oversized_events(cai_cli_pouch *pouch, const char *scope,
+                             const char *id, cai_error *error) {
+  cai_agent_session_event event;
+  lonejson_config config = lonejson_default_config();
+  char *data = malloc(config.max_dynamic_string_bytes + 2U);
+  assert(data != NULL);
+  memset(data, 'Z', config.max_dynamic_string_bytes + 1U);
+  data[config.max_dynamic_string_bytes + 1U] = '\0';
+  event.type = "assistant_text_delta";
+  event.sequence = 1000000U;
+  event.data = "Before omitted terminal transcript";
+  assert(append_event(pouch, scope, id, &event, error) == CAI_OK);
+  event.sequence++;
+  event.type = "user_shell_completed";
+  event.data = data;
+  assert(append_event(pouch, scope, id, &event, error) == CAI_OK);
+  event.sequence++;
+  event.type = "assistant_text_delta";
+  event.data = "After omitted terminal transcript";
+  assert(append_event(pouch, scope, id, &event, error) == CAI_OK);
+  event.sequence++;
+  event.type = "turn_submitted";
+  event.data = data;
+  assert(append_event(pouch, scope, id, &event, error) == CAI_OK);
+  free(data);
+}
+
+static int recovered_event(void *context, const cai_agent_session_event *event,
+                           cai_error *error) {
+  unsigned long long *last = context;
+  (void)error;
+  assert(event->sequence == *last + 1U);
+  *last = event->sequence;
+  if (*last == 1000001U || *last == 1000003U) {
+    assert(strcmp(event->type, "replay_event_omitted") == 0);
+    assert(event->data == NULL);
+  } else {
+    assert(strcmp(event->type, "assistant_text_delta") == 0);
+    assert(event->data != NULL);
+  }
+  return CAI_OK;
+}
+
+static void replay_limits(cai_cli_pouch *pouch, cai_error *error) {
+  lonejson_config config = lonejson_default_config();
+  cli_record original, parsed;
+  cai_source *source;
+  unsigned long long last;
+  size_t length;
+  int limited, rc;
+  char *data = malloc(config.max_dynamic_string_bytes + 2U);
+  assert(data != NULL);
+  for (length = config.max_dynamic_string_bytes - 1U;
+       length <= config.max_dynamic_string_bytes + 1U; length++) {
+    memset(data, 'x', length);
+    data[length] = '\0';
+    memset(&original, 0, sizeof(original));
+    strcpy(original.record_type, "event");
+    original.sequence = 1U;
+    original.type = "assistant_text_delta";
+    original.data = data;
+    memset(&parsed, 0, sizeof(parsed));
+    assert(mapped_source(&event_map, &original, &source, error) == CAI_OK);
+    rc = parse_source_optional(source, &event_map, &parsed, NULL, &limited,
+                               error);
+    assert(limited == (length > config.max_dynamic_string_bytes));
+    assert((rc == CAI_OK) == !limited);
+    if (!limited)
+      assert(strlen(parsed.data) == length);
+    cai_source_close(source);
+    lonejson_cleanup(&event_map, &parsed);
+    cai_error_cleanup(error);
+    cai_error_init(error);
+  }
+  free(data);
+  save(pouch, "/work/oversized", "oversized", error);
+  oversized_events(pouch, "/work/oversized", "oversized", error);
+  last = 999999U;
+  assert(load_events(pouch, "/work/oversized", "oversized", last,
+                     recovered_event, &last, error) == CAI_OK);
+  assert(last == 1000003U && error->code == CAI_OK);
+  /* Invalid identities are not size-limit recovery cases. */
+  memset(&original, 0, sizeof(original));
+  strcpy(original.record_type, "not-an-event");
+  original.sequence = 1000004U;
+  original.type = "assistant_text_delta";
+  original.data = "invalid identity";
+  assert(mapped_source(&event_map, &original, &source, error) == CAI_OK);
+  {
+    lc_lease *lease = NULL;
+    assert(acquire(pouch->sessions, "oversized", &lease, error) == CAI_OK);
+    rc = attach(lease, "event-00000000000001000004", source, error);
+    assert(release(lease, rc, error) == CAI_OK);
+  }
+  cai_source_close(source);
+  assert(load_events(pouch, "/work/oversized", "oversized", last,
+                     recovered_event, &last, error) == CAI_ERR_INVALID);
+  assert(strstr(error->message, "invalid stored event identity") != NULL);
+  cai_error_cleanup(error);
+  cai_error_init(error);
+}
+
 int main(int argc, char **argv) {
   char directory[PATH_MAX];
   cai_cli_pouch pouch;
@@ -242,6 +344,14 @@ int main(int argc, char **argv) {
   unsigned long long sequence;
   char id[CAI_AGENT_SESSION_ID_MAX];
   int i;
+  if (argc == 4 && strcmp(argv[1], "--oversized-replay-event") == 0) {
+    cai_error_init(&error);
+    assert(cai_cli_pouch_open(&pouch, NULL, NULL, NULL, &error) == CAI_OK);
+    oversized_events(&pouch, argv[3], argv[2], &error);
+    cai_cli_pouch_close(&pouch);
+    cai_error_cleanup(&error);
+    return 0;
+  }
   assert(argc == 2);
   assert(snprintf(directory, sizeof(directory), "%s/pouch-startup-XXXXXX",
                   argv[1]) > 0);
@@ -418,6 +528,7 @@ int main(int argc, char **argv) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
   todo_transactions(&pouch, &error);
+  replay_limits(&pouch, &error);
   cai_cli_pouch_close(&pouch);
   cai_error_cleanup(&error);
   interrupted_idle_writer();

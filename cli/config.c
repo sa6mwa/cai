@@ -55,7 +55,7 @@ static const cli_field fields[] = {
       "${XDG_STATE_HOME:-$HOME/.local/state}/cai/pouch; "
       "explicit values are lockd endpoint URLs."),
     B("ui", "shell_context", shell_context,
-      "Share sanitized output from !COMMAND, !sh and /shell with the model."),
+      "Share sanitized !COMMAND output; /shell and !sh always stay local."),
     {"ui", "tool_output", offsetof(cai_cli_options, tool_output),
      CAI_CONFIG_STRING, 0U, "compact|full",
      "Tool previews; empty selects compact."}};

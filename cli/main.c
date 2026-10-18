@@ -788,18 +788,6 @@ static int cli_shell_restore_foreground(pid_t foreground, cai_error *error) {
   return cai_cli_error(error, CAI_ERR_TRANSPORT, message);
 }
 
-static int cli_terminal_shell_output(void *context, const char *bytes,
-                                     size_t length, cai_error *error) {
-  cli_state *state = context;
-  pslog_field kind = pslog_str("prompt_kind", "shell_output");
-  int rc =
-      cai_agent_runtime_user_shell_write(state->runtime, bytes, length, error);
-  if (rc == CAI_OK)
-    cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO,
-                        "user_shell_output", "user", bytes, length, &kind, 1U);
-  return rc;
-}
-
 static int cli_terminal_shell(cli_state *state, cai_error *error) {
   pslog_field fields[3];
   char message[256];
@@ -812,10 +800,6 @@ static int cli_terminal_shell(cli_state *state, cai_error *error) {
     return rc;
   if (shell == NULL || shell[0] == '\0')
     shell = "/bin/sh";
-  rc = cai_agent_runtime_user_shell_begin(state->runtime, shell,
-                                          state->options.shell_context, error);
-  if (rc != CAI_OK)
-    return rc;
   (void)clock_gettime(CLOCK_MONOTONIC, &state->shell.started);
   foreground = tcgetpgrp(STDIN_FILENO);
   if (cli_flush_command(state, 1) != 0 || cli_finish_response(state) != 0 ||
@@ -830,20 +814,8 @@ static int cli_terminal_shell(cli_state *state, cai_error *error) {
                       "terminal_shell_started", "user", "Interactive shell",
                       strlen("Interactive shell"), fields, 1U);
   cai_error_init(&shell_error);
-  shell_rc =
-      cai_cli_shell_handoff(shell, state->workspace, cli_terminal_shell_output,
-                            state, &status, &shell_error);
-  rc = cai_agent_runtime_user_shell_finish(
-      state->runtime,
-      shell_rc != CAI_OK  ? 127
-      : WIFEXITED(status) ? WEXITSTATUS(status)
-                          : 128 + WTERMSIG(status),
-      cai_cli_shell_elapsed(&state->shell), error);
-  if (rc != CAI_OK) {
-    cai_error_cleanup(&shell_error);
-    state->exit_requested = 1;
-    return rc;
-  }
+  shell_rc = cai_cli_shell_handoff(shell, state->workspace, NULL, NULL, &status,
+                                   &shell_error);
   /* Recover ownership before any logger or renderer can write to the TTY.
    * A killed shell cannot restore its previous foreground process group. */
   rc = cli_shell_restore_foreground(foreground, error);
@@ -2107,7 +2079,7 @@ static int cli_handle_command(cli_state *state, const char *line,
         "control pursuit, clear removes it, help explains commands. Prefer "
         "asking the agent to manage goals. |\n",
         "| `/shell`, `!sh` | Open your interactive shell between turns; return "
-        "to CAI when it exits. |\n",
+        "to CAI when it exits. Terminal output stays local. |\n",
         "| `/model [MODEL [EFFORT]]` | Show models or change model/effort at "
         "the next safe "
         "model/tool boundary, keeping this conversation. |\n",
@@ -2132,7 +2104,8 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| Ctrl-J | Insert a newline. |\n"
         "| `!COMMAND` | Run a user shell command without a PTY; save its "
         "literal output. |\n",
-        "| `/shell-context [on\\|off]` | Share future shell results with the "
+        "| `/shell-context [on\\|off]` | Share future `!COMMAND` results with "
+        "the "
         "model, or keep them local. |\n"
         "| Up / Down | Recall prompts for this directory. |\n"
         "| Ctrl-R | Search history; Enter selects for editing, Enter again "

@@ -412,7 +412,8 @@ commit and verification evidence.
 ## BUG-012: Capture PTY shell output for conversation context
 
 - **Priority:** normal; feature backlog.
-- **Status:** implemented; native/CLI/Lua and static-musl feature checks pass.
+- **Status:** superseded by BUG-015: terminal handoff output stays local.
+  The original requirements and implementation record below are historical.
 - **Required behavior:** `!sh` and `/shell` must run with a real PTY and retain
   the last 5,000 lines of terminal output by default. Discard older lines and
   make the retained-line limit configurable through CLI flags, environment and
@@ -460,3 +461,27 @@ commit and verification evidence.
   encrypted reopen and subsequent model-request capture. A background job
   retaining the slave cannot hang return after shell exit. Lua exercises the
   same retention, context delivery and exact-resume APIs on both protocols.
+
+## BUG-015: Terminal handoff transcripts prevent session replay
+
+- **Priority:** high.
+- **Status:** fixed; seven native/CLI checks pass, including real PTY and
+  encrypted replay/continuation/export coverage.
+- **Report:** playing Tetris inside `/shell` recorded terminal frames; the next
+  startup failed with `string field 'data' exceeds configured max dynamic string
+  bytes` when replaying a stored event.
+- **Decision:** `/shell` and `!sh` are local terminal handoffs. Their terminal
+  output must never enter the journal, model context or logs. This supersedes
+  the PTY propagation requirements in BUG-012. Ordinary `!COMMAND` sharing and
+  configurable retention remain available.
+- **Recovery:** omit journal events that exceed lonejson's dynamic-string
+  ceiling, warn with session ID and event sequence, and continue replay. Advance
+  the journal sequence even if the final event is omitted, without modifying
+  stored records. JSONL export still contains the original records. Other
+  malformed records, identity errors and storage/transport failures remain
+  errors. This does not remove oversized content already inside a checkpoint.
+- **Verification:** boundary tests at and around the parser ceiling; encrypted
+  journal recovery with oversized input and shell-result events; repeated idle
+  resume, continuation and reopen; lossless JSONL export and sequence safety;
+  real PTY output above the ceiling excluded from requests, exports and logs;
+  ordinary pipe commands still shared; terminal handoff/job-control regressions.

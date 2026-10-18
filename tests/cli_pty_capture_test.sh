@@ -1,78 +1,58 @@
 #!/usr/bin/env bash
+# Terminal handoffs are deliberately never journaled or shared with the model.
 source "$(dirname "$0")/cli_test_common.sh"
 peer_start
-export SHELL="$root/capture-shell"
-cat >"$SHELL" <<'SH'
+export SHELL="$root/local-shell"
+cat >"$SHELL" <<'SHELL'
 #!/bin/sh
 if [ "$1" != -i ]; then exec /bin/sh "$@"; fi
 test -t 0 && test -t 1 && test -t 2 || exit 77
 stty -echo
-printf 'CAPTURE_PTY_READY\n'
+printf 'LOCAL_PTY_READY\n'
 exec /bin/sh -i
-SH
+SHELL
 chmod 700 "$SHELL"
-config="$root/capture.ini"
-printf '[runtime]\nshell_context_max_lines = 3\nshell_context_max_bytes = 4096\n' >"$config"
-base+=(--config "$config")
-terminal_start -N
-send '/shell\r'; expect CAPTURE_PTY_READY
-send 'printf "DISCARDED_HEAD\\nkeep-a\\n\\033[31mkeep-b\\033[0m\\nkeep-c\\n"; exit\r'
+# Even explicit sharing and generous retention settings cannot enable PTY capture.
+terminal_start -N --shell-context --shell-context-max-bytes 4194304
+for command in /shell '!sh'; do
+  send "$command\r"; expect LOCAL_PTY_READY
+  send 'printf "\\033[31mPRIVATE_PTY_RESULT\\033[0m\\n"; exit\r'
+  expect 'Shell exited 0.'
+  [[ $(requests) == 0 ]]
+done
+# A screen-oriented program can emit more than the journal parser's per-string
+# ceiling. Its frames must not enter either the journal or model context.
+send '/shell\r'; expect LOCAL_PTY_READY
+send 'i=0; while [ "$i" -lt 2000 ]; do printf "\\033[31mPRIVATE_GAME_FRAME_%04d_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz_abcdefghijklmnopqrstuvwxyz\\033[0m\\n" "$i"; i=$((i+1)); done; exit\r'
 expect 'Shell exited 0.'
-[[ $(requests) == 0 ]]
-plan '{"plan":["CaptureContextDone"]}'
-prompt 'inspect shell context' CaptureContextDone
-tail -1 "$root/peer/requests.jsonl" >"$root/request"
-contains "$root/request" 'keep-a'
-contains "$root/request" 'keep-b'
-contains "$root/request" 'keep-c'
-contains "$root/request" 'Earlier output truncated'
-absent "$root/request" DISCARDED_HEAD
-jq -e '(.input // .messages) | tostring | contains("\u001b") | not' "$root/request" >/dev/null
-send '/shell-context off\r'; expect 'off'
-send '!sh\r'; expect CAPTURE_PTY_READY
-send 'printf "PRIVATE_PTY_RESULT\\n"; exit\r'; expect 'Shell exited 0.'
-plan '{"plan":["PrivateContextDone"]}'
-prompt 'inspect private shell setting' PrivateContextDone
+plan '{"plan":["LocalHandoffDone"]}'
+prompt 'continue after playing a terminal game' LocalHandoffDone
 tail -1 "$root/peer/requests.jsonl" >"$root/request"
 absent "$root/request" PRIVATE_PTY_RESULT
+absent "$root/request" PRIVATE_GAME_FRAME
+absent "$root/request" '<user_shell_command>'
+# The ordinary pipe command path still shares its results.
+send '!printf SHARED_PIPE_RESULT\r'; expect 'Shell command exited 0'
+plan '{"plan":["PipeContextDone"]}'
+prompt 'inspect the pipe command result' PipeContextDone
+tail -1 "$root/peer/requests.jsonl" >"$root/request"
+contains "$root/request" SHARED_PIPE_RESULT
 terminal_close
-# Restart/replay must preserve the shared text without executing a shell again.
-plan '{"plan":["ReplayContextDone"]}'
+plan '{"plan":["LocalReplayDone"]}'
 terminal_start
-prompt 'inspect persisted shell context' ReplayContextDone
+prompt 'continue after resuming' LocalReplayDone
 tail -1 "$root/peer/requests.jsonl" >"$root/request"
-contains "$root/request" keep-c
 absent "$root/request" PRIVATE_PTY_RESULT
+absent "$root/request" PRIVATE_GAME_FRAME
 terminal_close
-# Environment narrows INI retention; the explicit CLI value wins over both.
-export CAI_SHELL_CONTEXT_MAX_LINES=1 CAI_SHELL_CONTEXT=false
-terminal_start -N --shell-context --shell-context-max-lines 2
-send '!sh\r'; expect CAPTURE_PTY_READY
-send 'printf "ENV_OMITTED\\nCLI_KEPT_ONE\\nCLI_KEPT_TWO\\n"; exit\r'; expect 'Shell exited 0.'
-plan '{"plan":["PrecedenceDone"]}'
-prompt 'inspect configured retention' PrecedenceDone
-tail -1 "$root/peer/requests.jsonl" >"$root/request"
-absent "$root/request" ENV_OMITTED
-contains "$root/request" CLI_KEPT_ONE
-contains "$root/request" CLI_KEPT_TWO
-terminal_close
-# Exercise the real default tail beyond the former 32 KiB runtime cap, then
-# reopen the encrypted store to verify that the larger completion is resumable.
-terminal_start -N --shell-context --shell-context-max-lines 5000 --shell-context-max-bytes 4194304
-send '!sh\r'; expect CAPTURE_PTY_READY
-send 'i=0; while [ "$i" -lt 5100 ]; do printf "TAIL_%04d\\n" "$i"; i=$((i+1)); done; exit\r'
-expect 'Shell exited 0.'
-plan '{"plan":["LargeTailDone"]}'
-prompt 'inspect large tail' LargeTailDone
-tail -1 "$root/peer/requests.jsonl" >"$root/request"
-absent "$root/request" TAIL_0099
-contains "$root/request" TAIL_0100
-contains "$root/request" TAIL_5099
-terminal_close
-plan '{"plan":["LargeTailReplayDone"]}'
-terminal_start --shell-context
-prompt 'inspect large tail after replay' LargeTailReplayDone
-tail -1 "$root/peer/requests.jsonl" >"$root/request"
-contains "$root/request" TAIL_0100
-contains "$root/request" TAIL_5099
-terminal_close
+run --list; ok
+id=$(awk 'NR == 1 {print $1}' "$root/stdout")
+run --export "$id"; ok
+journal="$root/data/cai/exports/$id/$id.jsonl"
+absent "$journal" PRIVATE_PTY_RESULT
+absent "$journal" PRIVATE_GAME_FRAME
+contains "$journal" SHARED_PIPE_RESULT
+logs
+absent "$root/logs.jsonl" PRIVATE_PTY_RESULT
+absent "$root/logs.jsonl" PRIVATE_GAME_FRAME
+jq -se 'any(.[]; .event == "terminal_shell_started") and any(.[]; .event == "terminal_shell_completed")' "$root/logs.jsonl" >/dev/null

@@ -23,8 +23,8 @@ expect '30 48'
 [[ -f "$root/normal-permissions" && $(requests) == 0 ]]
 plan '{"plan":["POST HANDOFF ANSWER\n\nword word word word word word word word word word word word word word word word word word word word\n\n"]}'
 send 'continue after the handoff\r'; expect 'POST HANDOFF ANSWER'; expect 'Worked for'
-contains "$root/peer/requests.jsonl" SHARED_TERMINAL_OUTPUT
-contains "$root/peer/requests.jsonl" '<user_shell_command>'
+absent "$root/peer/requests.jsonl" SHARED_TERMINAL_OUTPUT
+absent "$root/peer/requests.jsonl" '<user_shell_command>'
 # Ctrl-C reaches the foreground job on the inner PTY and leaves its shell
 # usable; it does not cancel CAI or leak a sleeping command.
 send '!sh\r'; expect SHELL_HANDOFF_READY

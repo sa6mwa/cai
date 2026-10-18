@@ -314,13 +314,16 @@ static lonejson_read_result parse_read(void *context, unsigned char *bytes,
 }
 
 static int parse_source_optional(cai_source *source, const lonejson_map *map,
-                                 void *doc, int *has_body, cai_error *error) {
+                                 void *doc, int *has_body, int *string_limit,
+                                 cai_error *error) {
   lonejson *json;
   lonejson_error local;
   int rc;
   lonejson_status status;
   char message[512];
   parse_input input;
+  if (string_limit != NULL)
+    *string_limit = 0;
   json = lonejson_new(NULL, &local);
   if (json == NULL)
     return cai_cli_lj_error(error, &local);
@@ -328,6 +331,14 @@ static int parse_source_optional(cai_source *source, const lonejson_map *map,
   input.bytes_read = 0U;
   cai_error_init(&input.error);
   status = lonejson_parse_reader(json, map, doc, parse_read, &input, &local);
+  /* lonejson reports all size overflows with one status. Restrict recovery to
+   * its dynamic-string ceiling; malformed JSON, fixed identity overflow and
+   * source/transport errors must still fail normally. */
+  if (string_limit != NULL && input.error.code == CAI_OK &&
+      local.code == LONEJSON_STATUS_OVERFLOW &&
+      strstr(local.message, "exceeds configured max dynamic string bytes") !=
+          NULL)
+    *string_limit = 1;
   if (has_body != NULL)
     *has_body = input.bytes_read != 0U;
   rc = status == LONEJSON_STATUS_OK ||
@@ -347,7 +358,7 @@ static int parse_source_optional(cai_source *source, const lonejson_map *map,
 
 static int parse_source(cai_source *source, const lonejson_map *map, void *doc,
                         cai_error *error) {
-  return parse_source_optional(source, map, doc, NULL, error);
+  return parse_source_optional(source, map, doc, NULL, NULL, error);
 }
 
 static int session_read(cai_cli_pouch *pouch, const char *id,
@@ -358,7 +369,8 @@ static int session_read(cai_cli_pouch *pouch, const char *id,
   source = NULL;
   rc = download_source(pouch->sessions, id, NULL, &source, error);
   if (rc == CAI_OK)
-    rc = parse_source_optional(source, &session_map, out, has_body, error);
+    rc =
+        parse_source_optional(source, &session_map, out, has_body, NULL, error);
   if (rc != CAI_OK) {
     char message[640];
     long http_status;
@@ -845,7 +857,8 @@ static int load_latest(void *context, const char *scope, char *id,
     rc = download_source_ns(pouch->sessions, "cai.scopes", key, NULL, &source,
                             error);
   if (rc == CAI_OK)
-    rc = parse_source_optional(source, &latest_map, &index, &has_body, error);
+    rc = parse_source_optional(source, &latest_map, &index, &has_body, NULL,
+                               error);
   cai_source_close(source);
   if (rc != CAI_OK && error->http_status == 404) {
     cai_error_cleanup(error);
@@ -1020,6 +1033,7 @@ static int load_events(void *context, const char *scope, const char *id,
   int rc;
   int exists;
   int observe;
+  int string_limit;
   pouch = (cai_cli_pouch *)context;
   observe = pthread_equal(pthread_self(), pouch->owner_thread) &&
             pouch->replay_scope != NULL &&
@@ -1043,12 +1057,36 @@ static int load_events(void *context, const char *scope, const char *id,
     if (sequence <= after)
       continue;
     source = NULL;
+    string_limit = 0;
     memset(&record, 0, sizeof(record));
     rc = download_source(pouch->sessions, id, attachments.items[i].name,
                          &source, error);
     if (rc == CAI_OK)
-      rc = parse_source(source, &event_map, &record, error);
+      rc = parse_source_optional(source, &event_map, &record, NULL,
+                                 &string_limit, error);
     cai_source_close(source);
+    if (rc != CAI_OK && string_limit) {
+      pslog_field fields[3];
+      fields[0] = pslog_str("session_id", id);
+      fields[1] = pslog_u64("sequence", sequence);
+      fields[2] = pslog_str("reason", error->message);
+      if (pouch->logger != NULL)
+        pouch->logger->warn(
+            pouch->logger,
+            "Skipped oversized session event during replay; stored record "
+            "preserved, continuing with the remaining conversation",
+            fields, 3U);
+      cai_error_cleanup(error);
+      cai_error_init(error);
+      /* Advance the runtime's journal watermark even when the final record
+       * is omitted. Never reuse its sequence and overwrite stored history. */
+      event.sequence = sequence;
+      event.type = "replay_event_omitted";
+      event.data = NULL;
+      rc = visit(visitor, &event, error);
+      lonejson_cleanup(&event_map, &record);
+      continue;
+    }
     if (rc == CAI_OK && (record.sequence != sequence ||
                          strcmp(record.record_type, "event") != 0))
       rc = cai_cli_error(error, CAI_ERR_INVALID,

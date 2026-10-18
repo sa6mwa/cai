@@ -112,7 +112,8 @@ static void cai_cli_help(void) {
       "      --chrome-manifest FILE  Alternate native-host registration path\n",
       stdout);
   fputs(
-      "      --[no-]shell-context     Share !COMMAND and PTY shell results\n"
+      "      --[no-]shell-context     Share !COMMAND results (not /shell, "
+      "!sh)\n"
       "      --shell-context-max-lines N  Retain last N lines (default 5000)\n"
       "      --shell-context-max-bytes N  Bound retained text (default "
       "4194304)\n",

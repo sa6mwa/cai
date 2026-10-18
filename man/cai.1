@@ -212,7 +212,8 @@ Validate a JSONL export, assign a new ID in the current directory, and exit.
 Failed imports are not published in conversation lists.
 .TP
 .B \-\-no-shell-context
-Keep future !COMMAND, !sh and /shell results out of model context.
+Keep future !COMMAND results out of model context.
+Terminal handoffs (!sh and /shell) always remain local and are never recorded.
 The positive --shell-context enables sharing. CAI_SHELL_CONTEXT and
 [ui] shell_context supply startup defaults. Commands still execute with
 normal user permissions, display literal output and save full raw history.
@@ -432,9 +433,9 @@ and an idle agent. These commands cannot be queued or steered; a busy draft
 remains editable. The shell uses normal user permissions in the workspace.
 CAI restores terminal ownership, prompt state and geometry after exit, even
 following a screen clear or resize. A real PTY relays output and foreground
-job control. Output is captured through libcai, with the same sharing controls
-and retained context bounds as !COMMAND. Replay never executes the shell.
-Logs record the executable, output and exit metadata.
+job control. Terminal output is never journaled, logged or shared with the model,
+regardless of shell-context settings. Logs record only the executable and exit
+metadata.
 Launch failures and nonzero exits report details and return to CAI.
 .TP
 .BI ! COMMAND
