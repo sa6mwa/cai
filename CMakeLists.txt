@@ -830,15 +830,20 @@ endfunction()
 
 if(CAI_BUILD_CLI)
   find_package(lockdc CONFIG REQUIRED COMPONENTS static)
-  add_executable(cai_cli cli/main.c cli/options.c cli/config.c cli/mcp.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
+  # The product and fixture entrypoints share these exact sources/options.
+  # Compile them once per configuration; keep fixture substitutions in main.
+  add_library(cai_cli_support OBJECT cli/options.c cli/config.c cli/runtime_options.c cli/mcp.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
     cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c
     cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
+  target_link_libraries(cai_cli_support PUBLIC cai_static
+    softline::softline_static libmdf::mdf_static lockdc::static)
+  cai_configure_c_target(cai_cli_support)
+  add_executable(cai_cli cli/main.c)
   set_target_properties(cai_cli PROPERTIES OUTPUT_NAME cai)
   if(CAI_TARGET_ID STREQUAL "x86_64-linux-musl")
     set_target_properties(cai_cli PROPERTIES SKIP_BUILD_RPATH ON)
   endif()
-  target_link_libraries(cai_cli PRIVATE cai_static
-    softline::softline_static libmdf::mdf_static lockdc::static)
+  target_link_libraries(cai_cli PRIVATE cai_cli_support)
   cai_configure_cli_target(cai_cli)
   if(CAI_INSTALL)
     install(TARGETS cai_cli RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"

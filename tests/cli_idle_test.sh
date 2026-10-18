@@ -2,6 +2,9 @@
 # Exercise real background index publication while the terminal is idle.
 source "$(dirname "$0")/cli_test_common.sh"
 peer_start
+# Exercise the same real background publisher with a short interval in this
+# disposable root. Keep durable writes, crypto and indexing enabled.
+base+=(--lockd "pouch://$root/state/cai/pouch?indexer_flush_interval_seconds=1")
 terminal_start -N
 for cycle in 1 2; do
   plan "{\"plan\":[\"IDLE CYCLE $cycle DONE\"]}"
@@ -10,7 +13,7 @@ for cycle in 1 2; do
   [[ -n "$log" ]]
   offset=$(wc -c <"$log")
   flushed=0
-  # liblockdc's default publication interval is ten seconds. Wait for its
+  # The fixture's publication interval is one second. Wait for its
   # completion event instead of sending input that could force a flush.
   for ((n=0;n<400;n++)); do
     [[ ! -s "$term/status" ]] || fail 'CAI exited while idle'

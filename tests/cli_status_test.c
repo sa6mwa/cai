@@ -31,44 +31,91 @@ int main(void) {
   memset(&quota, 0, sizeof(quota));
   cai_cli_status_init(&status, "/home/alice/project", "/home/alice");
   status.branch[0] = '\0';
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       0.0, "openai", &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
+                       0.0, 0.0, "openai", &goal);
   failures += check(status.count == 3U, "unknown quota hidden");
   failures += check(strcmp(status.elements[0], "gpt-6-luna medium") == 0,
                     "model effort");
+  {
+    const char *tiers[] = {"default", "priority", "flex", "auto",
+                           "bad\033tier"};
+    const char *expected[] = {"gpt-6-luna high", "gpt-6-luna high fast",
+                              "gpt-6-luna high flex", "gpt-6-luna high auto",
+                              "gpt-6-luna high bad tier"};
+    size_t i;
+    for (i = 0U; i < sizeof(tiers) / sizeof(tiers[0]); i++) {
+      cai_cli_status_build(&status, "gpt-6-luna", "high", tiers[i], 0.0, 0,
+                           &quota, 0.0, 0.0, "openai", &goal);
+      failures += check(strcmp(status.elements[0], expected[i]) == 0,
+                        "selected tier suffix and sanitized label");
+    }
+  }
+  {
+    cai_agent_instruction_status sources;
+    char rendered[1024];
+    memset(&sources, 0, sizeof(sources));
+    failures += check(
+        cai_cli_instruction_status_markdown(rendered, sizeof(rendered),
+                                            &sources) == 0 &&
+            strstr(rendered, "CAI global AGENTS.md | No (missing or empty)") !=
+                NULL &&
+            strstr(rendered, "Codex global AGENTS.md | No (disabled)") !=
+                NULL &&
+            strstr(rendered, "Repository AGENTS.md | 0 file(s)") != NULL,
+        "status distinguishes missing from disabled instruction files");
+    sources.global_agents_md_loaded = sources.codex_agents_md_loaded = 1;
+    sources.codex_agents_md_enabled = 1;
+    sources.repository_agents_md_count = 2U;
+    failures +=
+        check(cai_cli_instruction_status_markdown(rendered, sizeof(rendered),
+                                                  &sources) == 0 &&
+                  strstr(rendered, "Codex global AGENTS.md | Yes") != NULL &&
+                  strstr(rendered, "Repository AGENTS.md | 2 file(s)") != NULL,
+              "status shows captured instruction sources");
+    sources.codex_agents_md_loaded = 0;
+    failures += check(
+        cai_cli_instruction_status_markdown(rendered, sizeof(rendered),
+                                            &sources) == 0 &&
+            strstr(rendered,
+                   "Codex global AGENTS.md | No (missing or empty)") != NULL &&
+            cai_cli_instruction_status_markdown(rendered, 1U, &sources) != 0 &&
+            cai_cli_instruction_status_markdown(rendered, sizeof(rendered),
+                                                NULL) != 0,
+        "instruction status handles absent files and bounded output");
+  }
   failures +=
       check(strcmp(status.elements[1], "ctx --") == 0, "unknown context");
   failures += check(strcmp(status.elements[2], "~/project") == 0, "home path");
   quota.has_credit_balance = 1;
   quota.credit_balance = 42.75;
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       0.0, "openai", &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
+                       0.0, 0.0, "openai", &goal);
   failures +=
       check(status.count == 4U && status.usage[0] == '\0' &&
                 strcmp(status.elements[3], "crd 43") == 0,
             "available fractional credits round up without quota windows");
   quota.credit_balance = 42.0;
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       0.0, "openai", &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
+                       0.0, 0.0, "openai", &goal);
   failures +=
       check(status.count == 4U && strcmp(status.elements[3], "crd 42") == 0,
             "whole credits have no decimal suffix");
   quota.credit_balance = 42.25;
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       0.0, "openai", &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
+                       0.0, 0.0, "openai", &goal);
   failures +=
       check(status.count == 4U && strcmp(status.elements[3], "crd 42") == 0,
             "fractional credits round down");
   quota.credit_balance = 0.0;
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       0.0, "openai", &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
+                       0.0, 0.0, "openai", &goal);
   failures +=
       check(status.count == 4U && strcmp(status.elements[3], "crd 0") == 0,
             "zero credit balance remains visible");
   quota.credits_unlimited = 1;
   quota.has_credit_balance = 0;
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       0.0, "openai", &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
+                       0.0, 0.0, "openai", &goal);
   failures += check(status.count == 4U &&
                         strcmp(status.elements[3], "crd unlimited") == 0,
                     "unlimited credits without numeric balance");
@@ -84,8 +131,8 @@ int main(void) {
   quota.short_window_remaining_percent = 48.0;
   quota.has_weekly = 1;
   quota.weekly_remaining_percent = 72.0;
-  cai_cli_status_build(&status, "gpt-6-luna", "high", 37.4, 1, &quota, 0.0, 0.0,
-                       "openai", &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "high", NULL, 37.4, 1, &quota,
+                       0.0, 0.0, "openai", &goal);
   failures += check(status.count == 7U, "full element count");
   failures +=
       check(strcmp(status.elements[1], "ctx 37%") == 0, "context rounded");
@@ -104,8 +151,8 @@ int main(void) {
   }
   goal.objective = "Line\nBreak";
   memset(&quota, 0, sizeof(quota));
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       0.0, "openai", &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
+                       0.0, 0.0, "openai", &goal);
   failures += check(status.count == 5U && status.credits[0] == '\0',
                     "unavailable credits cleared on refresh");
   failures += check(strcmp(status.elements[4], "goal active: Line Break") == 0,
@@ -113,42 +160,42 @@ int main(void) {
   cai_cli_status_refresh_branch(&status, "/proc");
   failures += check(status.branch[0] == '\0', "nonrepository branch hidden");
   goal.status = "complete";
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       0.0, "openai", &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
+                       0.0, 0.0, "openai", &goal);
   failures += check(status.count == 3U, "completed goal hidden");
   quota.has_weekly = 1;
   quota.weekly_remaining_percent = 73.0;
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       0.0, "openai", &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
+                       0.0, 0.0, "openai", &goal);
   failures += check(strcmp(status.usage, "w 73%") == 0, "weekly only");
   quota.has_short_window = 1;
   quota.short_window_seconds = 3600;
   quota.short_window_remaining_percent = 55.0;
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       0.0, "openai", &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
+                       0.0, 0.0, "openai", &goal);
   failures += check(strcmp(status.usage, "w 73% 1h 55%") == 0, "hourly label");
   quota.has_credit_balance = 1;
   quota.credit_balance = 42.5;
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, &quota, 0.0,
-                       0.0, "openai", &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
+                       0.0, 0.0, "openai", &goal);
   failures += check(status.count == 5U && status.credits[0] != '\0',
                     "credits present before provider switch");
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 20.0, 1, NULL, 1.25,
-                       0.0, "openai", &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 20.0, 1, NULL,
+                       1.25, 0.0, "openai", &goal);
   failures +=
       check(strcmp(status.usage, "cost ~$1.2500") == 0, "API cost status");
   failures += check(status.count == 4U, "API status element count");
   failures += check(status.credits[0] == '\0', "API provider hides credits");
-  cai_cli_status_build(&status, "gpt-6-luna", "medium", 0.0, 0, NULL, 0.0, 0.0,
-                       "openai", &goal);
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, NULL, 0.0,
+                       0.0, "openai", &goal);
   failures += check(strcmp(status.usage, "cost ?$") == 0,
                     "unknown API cost placeholder");
-  cai_cli_status_build(&status, "zai-org/GLM-5.3-Flash", "medium", 0.0, 0, NULL,
-                       0.0, 1.25, "berget", &goal);
+  cai_cli_status_build(&status, "zai-org/GLM-5.3-Flash", "medium", NULL, 0.0, 0,
+                       NULL, 0.0, 1.25, "berget", &goal);
   failures += check(strcmp(status.usage, "cost ~€1.2500") == 0,
                     "Berget cost status uses EUR");
-  cai_cli_status_build(&status, "zai-org/GLM-5.3-Flash", "medium", 0.0, 0, NULL,
-                       0.0, 0.0, "berget", &goal);
+  cai_cli_status_build(&status, "zai-org/GLM-5.3-Flash", "medium", NULL, 0.0, 0,
+                       NULL, 0.0, 0.0, "berget", &goal);
   failures += check(strcmp(status.usage, "cost ?€") == 0,
                     "Berget unknown cost uses EUR");
   metrics.context_window_tokens = 200000;

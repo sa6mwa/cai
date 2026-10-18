@@ -196,20 +196,26 @@ void cai_cli_status_refresh_branch(cai_cli_status *status,
 }
 
 void cai_cli_status_build(cai_cli_status *status, const char *model,
-                          const char *effort, double context_percent,
-                          int has_context, const cai_chatgpt_quota *quota,
+                          const char *effort, const char *tier,
+                          double context_percent, int has_context,
+                          const cai_chatgpt_quota *quota,
                           double estimated_spend_usd,
                           double estimated_spend_eur, const char *provider,
                           const cai_agent_goal_snapshot *goal) {
   char safe_model[128];
   char safe_effort[32];
+  char safe_tier[32];
   char safe_objective[120];
   char safe_status[32];
   size_t n;
   cai_cli_status_copy(safe_model, sizeof(safe_model), model);
   cai_cli_status_copy(safe_effort, sizeof(safe_effort), effort);
-  snprintf(status->model_effort, sizeof(status->model_effort), "%s %s",
-           safe_model, safe_effort);
+  cai_cli_status_copy(safe_tier, sizeof(safe_tier),
+                      tier == NULL || strcmp(tier, "default") == 0 ? ""
+                      : strcmp(tier, "priority") == 0              ? "fast"
+                                                                   : tier);
+  snprintf(status->model_effort, sizeof(status->model_effort), "%s %s%s%s",
+           safe_model, safe_effort, safe_tier[0] != '\0' ? " " : "", safe_tier);
   if (has_context) {
     snprintf(status->context, sizeof(status->context), "ctx %.0f%%",
              context_percent < 0.0     ? 0.0
@@ -298,6 +304,28 @@ static int cai_cli_table_row(char *out, size_t capacity, size_t *used,
   }
   *used += (size_t)written;
   return 0;
+}
+
+int cai_cli_instruction_status_markdown(
+    char *out, size_t capacity, const cai_agent_instruction_status *status) {
+  int n;
+  if (out == NULL || capacity == 0U || status == NULL)
+    return -1;
+  n = snprintf(
+      out, capacity,
+      "\n## Instruction files in context\n\n"
+      "| Source | Loaded |\n| --- | --- |\n"
+      "| CAI global AGENTS.md | %s |\n"
+      "| Codex global AGENTS.md | %s |\n"
+      "| Repository AGENTS.md | %lu file(s) |\n\n"
+      "Files are read at startup, including when resuming. Missing or empty "
+      "files are not loaded. Restart CAI to read file changes.\n\n",
+      status->global_agents_md_loaded ? "Yes" : "No (missing or empty)",
+      !status->codex_agents_md_enabled ? "No (disabled)"
+      : status->codex_agents_md_loaded ? "Yes"
+                                       : "No (missing or empty)",
+      (unsigned long)status->repository_agents_md_count);
+  return n < 0 || (size_t)n >= capacity ? -1 : 0;
 }
 
 int cai_cli_status_markdown(char *out, size_t capacity, const char *model,

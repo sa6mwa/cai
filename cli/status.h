@@ -22,8 +22,9 @@ void cai_cli_status_init(cai_cli_status *status, const char *workspace,
 void cai_cli_status_refresh_branch(cai_cli_status *status,
                                    const char *workspace);
 void cai_cli_status_build(cai_cli_status *status, const char *model,
-                          const char *effort, double context_percent,
-                          int has_context, const cai_chatgpt_quota *quota,
+                          const char *effort, const char *tier,
+                          double context_percent, int has_context,
+                          const cai_chatgpt_quota *quota,
                           double estimated_spend_usd,
                           double estimated_spend_eur, const char *provider,
                           const cai_agent_goal_snapshot *goal);
@@ -32,6 +33,9 @@ int cai_cli_status_markdown(char *out, size_t capacity, const char *model,
                             const char *effort, const char *provider,
                             const cai_agent_runtime_metrics *metrics,
                             const cai_chatgpt_quota *quota);
+/** Summarize files captured in the agent context, without probing the disk. */
+int cai_cli_instruction_status_markdown(
+    char *out, size_t capacity, const cai_agent_instruction_status *status);
 /** Format the active summary or most recent turn duration for softline. */
 int cai_cli_turn_status_message(char *out, size_t capacity,
                                 const char *reasoning_summary,

@@ -23,39 +23,15 @@ turn --no-chrome --no-web-search --no-read-file --no-list-files --no-apply-patch
 for tool in chrome web_search read_file list_files apply_patch view_image create_goal get_goal update_goal clear_goal run_review read_skill; do absent "$root/tools" "$tool"; done
 turn --todo --searxng --revgeo
 for tool in todo_kanban searxng_search reverse_geocode; do contains "$root/tools" "$tool"; done
-# Environment overrides INI; explicit CLI overrides environment. [env] follows
-# the existing config_env_has_precedence rule before policy is resolved.
+# Flag/config/environment precedence is checked directly in
+# cai_cli_runtime_options, without provider calls or encrypted session opens.
 cat >>"$config" <<'INI'
 [agent]
-todo = false
-searxng = false
-revgeo = false
+todo = true
 web_search = false
 [chrome]
 enabled = false
 INI
-(
-  export CAI_TODO=true CAI_SEARXNG=true CAI_REVGEO=true CAI_WEB_SEARCH=true CAI_CHROME=true
-  turn
-  for tool in todo_kanban searxng_search reverse_geocode chrome; do contains "$root/tools" "$tool"; done
-  turn --no-todo --no-searxng --no-revgeo --no-chrome --no-web-search
-  for tool in todo_kanban searxng_search reverse_geocode chrome web_search; do absent "$root/tools" "$tool"; done
-)
-(
-  export CAI_TODO=invalid
-  run -ni never; bad; contains "$root/stderr" CAI_TODO
-)
-cat >>"$config" <<'INI'
-[env]
-CAI_TODO = true
-INI
-turn; contains "$root/tools" todo_kanban
-(
-  export CAI_TODO=false
-  turn; absent "$root/tools" todo_kanban
-  sed -i '1i config_env_has_precedence = true' "$config"
-  turn; contains "$root/tools" todo_kanban
-)
 # Execute a real kanban operation and reopen the encrypted store on the next
 # invocation. Only normal assistant final text belongs on stdout.
 plan "$(jq -n --argjson chat "$([[ $protocol == chat_completions ]] && printf true || printf false)" '{chat:$chat,plan:[{tool:"todo_kanban",arguments:{operation:"add_item",title:"PERSISTENT TASK"}},"TASK ADDED"]}')"

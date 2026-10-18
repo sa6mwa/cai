@@ -30,8 +30,15 @@ contains() { grep -Fq -- "$2" "$1" || fail "Missing '$2' in $1"; }
 absent() { if grep -Fq -- "$2" "$1"; then fail "Unexpected '$2' in $1"; fi; }
 json() { jq -e "$2" "$1" >/dev/null || fail "JSON assertion failed: $2 ($1)"; }
 wait_for() {
-  local n
-  for ((n=0;n<200;n++)); do if "$@"; then return; fi; sleep .05; done
+  local wait_deadline=$((SECONDS+10)) progress_byte
+  while ((SECONDS < wait_deadline)); do
+    if "$@"; then return; fi
+    if [[ -n "${terminal_events:-}" ]]; then
+      IFS= read -r -N 1 -t .05 -u "$terminal_event_fd" progress_byte || :
+    else
+      sleep .01
+    fi
+  done
   fail "Timed out: $*"
 }
 has() {
@@ -63,7 +70,11 @@ terminal_launch() {
   send_feed_offset=0
   term="$root/terminal-${terminal_sequence:-0}"
   terminal_sequence=$((${terminal_sequence:-0}+1))
-  mkdir -p "$term"; mkfifo "$term/input"; exec 7<>"$term/input"
+  mkdir -p "$term"; mkfifo "$term/input" "$term/events"
+  exec 7<>"$term/input"
+  exec {terminal_event_fd}<>"$term/events"
+  terminal_events=1
+  export CAI_TEST_TERMINAL_EVENT_FD=$terminal_event_fd
   "$CAI_TERMINAL_PEER" "$term" "${width:-120}" "${base[@]}" "$@" <"$term/input" & terminal_pid=$!
 }
 terminal_start() { terminal_launch "$@"; wait_for has "$term/text" 'Welcome to CAI'; }
@@ -109,5 +120,8 @@ terminal_close() {
   [[ $(cat "$term/status") == 0 ]] || fail 'Nonzero terminal exit'
   [[ ! -s "$term/stderr" ]] || fail 'Unexpected terminal stderr'
   exec 7>&-
+  exec {terminal_event_fd}>&-
+  terminal_events=
+  unset CAI_TEST_TERMINAL_EVENT_FD
 }
 logs() { find "$root/cache/cai" -maxdepth 1 -name '*.log' -exec cat {} + >"$root/logs.jsonl"; }

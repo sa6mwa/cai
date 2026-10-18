@@ -8411,10 +8411,11 @@ static int mock_accept_with_deadline(int server_fd) {
   return client_fd;
 }
 
-static ssize_t mock_read_with_deadline(int fd, char *buffer, size_t capacity) {
+static ssize_t mock_read_with_timeout(int fd, char *buffer, size_t capacity,
+                                      unsigned int timeout_ms) {
   ssize_t nread;
 
-  if (mock_wait_fd(fd, 0, MOCK_IO_TIMEOUT_MS) != 0) {
+  if (mock_wait_fd(fd, 0, timeout_ms) != 0) {
     return -1;
   }
   do {
@@ -8423,7 +8424,12 @@ static ssize_t mock_read_with_deadline(int fd, char *buffer, size_t capacity) {
   return nread;
 }
 
-static int mock_read_request(int fd, char *request, size_t capacity) {
+static ssize_t mock_read_with_deadline(int fd, char *buffer, size_t capacity) {
+  return mock_read_with_timeout(fd, buffer, capacity, MOCK_IO_TIMEOUT_MS);
+}
+
+static int mock_read_request_timeout(int fd, char *request, size_t capacity,
+                                     unsigned int timeout_ms) {
   size_t length;
   char *headers_end;
 
@@ -8432,8 +8438,8 @@ static int mock_read_request(int fd, char *request, size_t capacity) {
   while (length + 1U < capacity && headers_end == NULL) {
     ssize_t nread;
 
-    nread =
-        mock_read_with_deadline(fd, request + length, capacity - length - 1U);
+    nread = mock_read_with_timeout(fd, request + length, capacity - length - 1U,
+                                   timeout_ms);
     if (nread <= 0) {
       return -1;
     }
@@ -8458,8 +8464,8 @@ static int mock_read_request(int fd, char *request, size_t capacity) {
       while (line_end == NULL && length + 1U < capacity) {
         ssize_t nread;
 
-        nread = mock_read_with_deadline(fd, request + length,
-                                        capacity - length - 1U);
+        nread = mock_read_with_timeout(fd, request + length,
+                                       capacity - length - 1U, timeout_ms);
         if (nread <= 0) {
           return -1;
         }
@@ -8477,8 +8483,8 @@ static int mock_read_request(int fd, char *request, size_t capacity) {
              length + 1U < capacity) {
         ssize_t nread;
 
-        nread = mock_read_with_deadline(fd, request + length,
-                                        capacity - length - 1U);
+        nread = mock_read_with_timeout(fd, request + length,
+                                       capacity - length - 1U, timeout_ms);
         if (nread <= 0) {
           return -1;
         }
@@ -8511,8 +8517,8 @@ static int mock_read_request(int fd, char *request, size_t capacity) {
       while (length < header_len + body_len && length + 1U < capacity) {
         ssize_t nread;
 
-        nread = mock_read_with_deadline(fd, request + length,
-                                        capacity - length - 1U);
+        nread = mock_read_with_timeout(fd, request + length,
+                                       capacity - length - 1U, timeout_ms);
         if (nread <= 0) {
           return -1;
         }
@@ -8525,6 +8531,10 @@ static int mock_read_request(int fd, char *request, size_t capacity) {
     }
   }
   return 0;
+}
+
+static int mock_read_request(int fd, char *request, size_t capacity) {
+  return mock_read_request_timeout(fd, request, capacity, MOCK_IO_TIMEOUT_MS);
 }
 
 static int mock_write_status_response(int fd, int status,
@@ -10833,7 +10843,7 @@ static void mock_stall_oauth_child(int pipe_fd, const char *request_prefix) {
   int server_fd;
   int client_fd;
   int port;
-  struct timespec delay;
+  ssize_t count;
 
   signal(SIGALRM, mock_child_timeout_handler);
   alarm(2U);
@@ -10880,10 +10890,13 @@ static void mock_stall_oauth_child(int pipe_fd, const char *request_prefix) {
     close(client_fd);
     _exit(9);
   }
-  delay.tv_sec = 1;
-  delay.tv_nsec = 0;
-  while (nanosleep(&delay, &delay) != 0 && errno == EINTR) {
-  }
+  /* A real client timeout closes the connection. Observe that event instead
+   * of keeping the fixture alive for an unrelated one-second sleep. */
+  do {
+    count = mock_read_with_deadline(client_fd, request, sizeof(request));
+  } while (count > 0);
+  if (count < 0)
+    _exit(10);
   close(client_fd);
   close(server_fd);
   alarm(0U);
@@ -20681,6 +20694,7 @@ static void mock_websocket_provider_error_child(int pipe_fd) {
                "\"message\":\"Provider cybersecurity notice\"}}}");
 }
 
+static int mock_no_fallback_completion[2] = {-1, -1};
 static void mock_websocket_sink_failure_no_fallback_child(int pipe_fd) {
   static const char delta[] =
       "{\"type\":\"response.output_text.delta\",\"delta\":\"rejected ws\"}";
@@ -20689,9 +20703,11 @@ static void mock_websocket_sink_failure_no_fallback_child(int pipe_fd) {
   int server_fd;
   int client_fd;
   int fallback_fd;
+  char completed;
 
   signal(SIGALRM, mock_child_timeout_handler);
   alarm(2U);
+  close(mock_no_fallback_completion[1]);
   server_fd = -1;
   client_fd = -1;
   fallback_fd = -1;
@@ -20714,9 +20730,14 @@ static void mock_websocket_sink_failure_no_fallback_child(int pipe_fd) {
   }
   close(client_fd);
   client_fd = -1;
-  fallback_fd = mock_accept_with_deadline(server_fd);
-  if (fallback_fd >= 0) {
-    close(fallback_fd);
+  /* The synchronous operation has ended when the parent closes this pipe.
+   * Any forbidden fallback connection must already be queued by then. */
+  if (mock_read_with_deadline(mock_no_fallback_completion[0], &completed, 1U) !=
+      0)
+    _exit(7);
+  close(mock_no_fallback_completion[0]);
+  fallback_fd = mock_wait_fd(server_fd, 0, 0U);
+  if (fallback_fd == 0) {
     close(server_fd);
     _exit(6);
   }
@@ -24421,9 +24442,10 @@ static void test_http_mock_incomplete_request_timeout(test_state *state) {
     return;
   }
   started = test_now_seconds();
-  expect_int(state, "http_mock_incomplete_read",
-             (long)mock_read_request(sockets[1], request, sizeof(request)),
-             -1L);
+  expect_int(
+      state, "http_mock_incomplete_read",
+      (long)mock_read_request_timeout(sockets[1], request, sizeof(request), 1U),
+      -1L);
   elapsed = test_now_seconds() - started;
   if (elapsed > 3.0) {
     test_fail(state, "http_mock_incomplete_deadline",
@@ -25766,6 +25788,18 @@ static void test_smith_profile(test_state *state) {
                cai_client_new_smith_agent(mock.client, &config, &agent, &error),
                CAI_OK);
     if (agent != NULL) {
+      cai_agent_instruction_status loaded;
+      expect_int(state, "smith_instruction_status",
+                 cai_agent_get_instruction_status(agent, &loaded, &error),
+                 CAI_OK);
+      expect_int(state, "smith_global_loaded", loaded.global_agents_md_loaded,
+                 1);
+      expect_int(state, "smith_codex_disabled", loaded.codex_agents_md_enabled,
+                 0);
+      expect_int(state, "smith_codex_not_loaded", loaded.codex_agents_md_loaded,
+                 0);
+      expect_int(state, "smith_workspace_loaded",
+                 (long)loaded.repository_agents_md_count, 1);
       expect_substr(state, "smith_global_instructions_visible",
                     CAI_AGENT_IMPL(agent)->developer_instructions,
                     "Global policy.");
@@ -25795,6 +25829,16 @@ static void test_smith_profile(test_state *state) {
           CAI_AGENT_IMPL(agent)->developer_instructions, "Codex policy.");
       const char *workspace_policy = strstr(
           CAI_AGENT_IMPL(agent)->developer_instructions, "Workspace policy.");
+      cai_agent_instruction_status loaded;
+
+      expect_int(state, "smith_codex_instruction_status",
+                 cai_agent_get_instruction_status(agent, &loaded, &error),
+                 CAI_OK);
+      expect_int(state, "smith_codex_enabled", loaded.codex_agents_md_enabled,
+                 1);
+      expect_int(state, "smith_codex_loaded", loaded.codex_agents_md_loaded, 1);
+      expect_int(state, "smith_ancestor_loaded",
+                 (long)loaded.repository_agents_md_count, 2);
 
       expect_substr(state, "smith_codex_compat_current_user_context",
                     CAI_AGENT_IMPL(agent)->developer_instructions,
@@ -43070,6 +43114,19 @@ static void test_model_catalog_outage_recovery(test_state *state) {
   }
 }
 
+static long test_chat_retry_elapsed_ms;
+static int test_chat_retry_sleep(const struct timespec *delay,
+                                 struct timespec *remaining) {
+  (void)remaining;
+  test_chat_retry_elapsed_ms +=
+      delay->tv_sec * 1000L + delay->tv_nsec / 1000000L;
+  return 0;
+}
+static int test_chat_retry_cancel(void *context) {
+  (void)context;
+  return test_chat_retry_elapsed_ms >= 150L;
+}
+
 static void test_chat_transient_retries(test_state *state) {
   static const char good[] =
       "data: "
@@ -43133,7 +43190,6 @@ static void test_chat_transient_retries(test_state *state) {
     pslog_logger *logger;
     cai_error error;
     char header[256];
-    double deadline, started;
     size_t j;
     int rc;
     memset(script, 0, sizeof(script));
@@ -43190,10 +43246,10 @@ static void test_chat_transient_retries(test_state *state) {
       rc = params->set_model(params, "test-model", &error);
     if (rc == CAI_OK)
       rc = params->add_text(params, "user", "retry prompt", &error);
-    started = test_now_seconds();
-    deadline = started + 0.15;
-    cancel.check = test_chat_cancel_deadline;
-    cancel.context = &deadline;
+    test_chat_retry_elapsed_ms = 0L;
+    cai_chat_test_set_retry_sleep_fn(test_chat_retry_sleep);
+    cancel.check = test_chat_retry_cancel;
+    cancel.context = NULL;
     if (cases[i].cancel == 1)
       (void)cai_stream_set_thread_cancel_scope(&cancel);
     if (rc == CAI_OK)
@@ -43202,6 +43258,7 @@ static void test_chat_transient_retries(test_state *state) {
           cases[i].cancel == 2 ? NULL : &error);
     if (cases[i].cancel == 1)
       (void)cai_stream_set_thread_cancel_scope(NULL);
+    cai_chat_test_set_retry_sleep_fn(NULL);
     expect_int(state, "chat_retry_result", rc, cases[i].expected);
     if (rc == CAI_OK) {
       expect_str(state, "chat_retry_output_once", output.buffer, "recovered");
@@ -43210,14 +43267,14 @@ static void test_chat_transient_retries(test_state *state) {
       if (cases[i].retry_after != NULL &&
           strcmp(cases[i].retry_after, "1") == 0)
         expect_int(state, "chat_retry_after_seconds",
-                   test_now_seconds() - started >= 0.99, 1L);
+                   test_chat_retry_elapsed_ms >= 1000L, 1L);
       if (cases[i].retry_after != NULL &&
           strcmp(cases[i].retry_after, "date") == 0)
         expect_int(state, "chat_retry_after_date",
-                   test_now_seconds() - started >= 1.9, 1L);
+                   test_chat_retry_elapsed_ms >= 1900L, 1L);
     } else if (cases[i].cancel == 1) {
       expect_int(state, "chat_retry_cancel_prompt",
-                 test_now_seconds() - started < 0.8, 1L);
+                 test_chat_retry_elapsed_ms == 150L, 1L);
     }
     if (cases[i].failures == 1 && cases[i].expected != CAI_OK &&
         cases[i].cancel != 1)
@@ -45748,12 +45805,19 @@ static void test_stream_responses_websocket_no_fallback_after_sink_failure(
   server_opened = 0;
   test_env_capture(&force_ws_env, "CAI_TEST_FORCE_RESPONSES_WEBSOCKET");
 
+  if (pipe(mock_no_fallback_completion) != 0) {
+    test_fail(state, "stream_ws_completion_pipe", "pipe failed");
+    goto cleanup;
+  }
+
   if (websocket_mock_server_open_child(
           state, "stream_ws_no_fallback_after_sink_failure_mock",
           mock_websocket_sink_failure_no_fallback_child, &server) != 0) {
     goto cleanup;
   }
   server_opened = 1;
+  close(mock_no_fallback_completion[0]);
+  mock_no_fallback_completion[0] = -1;
   setenv("CAI_TEST_FORCE_RESPONSES_WEBSOCKET", "1", 1);
 
   cai_client_config_init(&config);
@@ -45802,6 +45866,11 @@ cleanup:
   cai_client_close(client);
   cai_error_cleanup(&error);
   test_env_restore(&force_ws_env);
+  if (mock_no_fallback_completion[0] >= 0)
+    close(mock_no_fallback_completion[0]);
+  if (mock_no_fallback_completion[1] >= 0)
+    close(mock_no_fallback_completion[1]);
+  mock_no_fallback_completion[0] = mock_no_fallback_completion[1] = -1;
   if (server_opened) {
     expect_child_exit(state, "stream_ws_no_fallback_after_sink_failure_mock",
                       server.pid, &server.child_status);

@@ -24,6 +24,23 @@ extern "C" {
 /** Version of the developer-instruction asset rendered by this preset. */
 #define CAI_SMITH_PROMPT_VERSION "smith-7"
 
+/** Instruction files actually appended to this agent's current developer
+ * context at construction. Files are read again on every runtime open,
+ * including resume; these values are not restored from session storage.
+ * Empty or missing files do not count as loaded. */
+typedef struct cai_agent_instruction_status {
+  int global_agents_md_loaded;
+  int codex_agents_md_enabled;
+  int codex_agents_md_loaded;
+  size_t repository_agents_md_count;
+} cai_agent_instruction_status;
+
+/** Copy the captured instruction status. Plain agents have all-zero status.
+ * Call on the agent's owning thread; no file access or model request occurs. */
+int cai_agent_get_instruction_status(const cai_agent *agent,
+                                     cai_agent_instruction_status *out,
+                                     cai_error *error);
+
 /** Tool capabilities selected by an agent preset.
  *
  * The runtime realizes every capability for which it has the required host

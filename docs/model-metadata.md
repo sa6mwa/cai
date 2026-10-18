@@ -33,6 +33,15 @@ close. Lua `client:list_models()` exposes `reasoning_efforts` when known and
 `/reasoning` and validates effort changes against them, including `ultra` when
 advertised; it does not infer model support from the accepted vocabulary.
 
+The adapter also preserves `service_tiers[].id` and `default_service_tier` as
+owned catalog strings. `service_tiers_known` distinguishes an explicit empty
+list from missing metadata. JSON fallback entries accept a `service_tiers`
+array of strings and `default_service_tier`. Lua exposes the same fields.
+`/tier list` uses advertised choices; the preferred catalog tier never opts
+users into paid priority routing automatically. `/fast` selects `priority` or
+explicit normal `default`; the status bar labels priority as `fast` and omits
+the normal default suffix. Other selected tiers appear by their provider ID.
+
 Automatic refresh (`CAI_MODEL_CATALOG_REFRESH_ONLINE_IF_UNCACHED`) retains the
 last successful live catalog if a refresh fails and marks it `is_stale`. That
 catalog takes precedence over a configured fallback. Failed automatic refreshes

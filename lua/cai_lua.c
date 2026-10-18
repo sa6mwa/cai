@@ -4860,6 +4860,52 @@ cai_lua_push_runtime_settings(lua_State *L,
   }
 }
 
+static void
+cai_lua_push_instruction_status(lua_State *L,
+                                const cai_agent_instruction_status *status) {
+  lua_newtable(L);
+  lua_pushboolean(L, status->global_agents_md_loaded);
+  lua_setfield(L, -2, "global_agents_md_loaded");
+  lua_pushboolean(L, status->codex_agents_md_enabled);
+  lua_setfield(L, -2, "codex_agents_md_enabled");
+  lua_pushboolean(L, status->codex_agents_md_loaded);
+  lua_setfield(L, -2, "codex_agents_md_loaded");
+  lua_pushinteger(L, (lua_Integer)status->repository_agents_md_count);
+  lua_setfield(L, -2, "repository_agents_md_count");
+}
+
+static int cai_lua_agent_instruction_status(lua_State *L) {
+  cai_lua_agent *self = cai_lua_check_agent(L, 1);
+  cai_agent_instruction_status status;
+  cai_error error;
+  int rc;
+  cai_error_init(&error);
+  cai_lua_agent_enter(self);
+  rc = cai_agent_get_instruction_status(self->ptr, &status, &error);
+  cai_lua_agent_leave(self);
+  if (rc != CAI_OK)
+    return cai_lua_fail(L, rc, &error);
+  cai_lua_push_instruction_status(L, &status);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
+static int cai_lua_agent_runtime_instruction_status(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  cai_agent_instruction_status status;
+  cai_error error;
+  int rc;
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_get_instruction_status(self->ptr, &status, &error);
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK)
+    return cai_lua_fail(L, rc, &error);
+  cai_lua_push_instruction_status(L, &status);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
 static int cai_lua_agent_runtime_settings(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_agent_runtime_settings effective;
@@ -11814,6 +11860,7 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"submit_interactive", cai_lua_agent_runtime_submit_interactive},
     {"set_model", cai_lua_agent_runtime_set_model},
     {"settings", cai_lua_agent_runtime_settings},
+    {"instruction_status", cai_lua_agent_runtime_instruction_status},
     {"update_settings", cai_lua_agent_runtime_update_settings},
     {"cancel_turn", cai_lua_agent_runtime_cancel_turn},
     {"submit_review", cai_lua_agent_runtime_submit_review},
@@ -11843,6 +11890,7 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {NULL, NULL}};
 
 static const luaL_Reg cai_lua_agent_methods[] = {
+    {"instruction_status", cai_lua_agent_instruction_status},
     {"new_session", cai_lua_agent_new_session},
     {"new_conversation_session", cai_lua_agent_new_conversation_session},
     {"new_session_for_conversation",

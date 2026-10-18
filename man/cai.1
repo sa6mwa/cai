@@ -476,7 +476,8 @@ Launch failures and nonzero exits report details and return to CAI.
 .BR /shellshare , " " !sh+
 Open the same interactive shell, explicitly sharing its newest sanitized output
 after exit, even when ordinary bang-command sharing is disabled. Older output
-falls out of a rolling buffer. Only the retained tail is saved and logged;
+falls out of a ring buffer bounded by the configured line, byte and replay
+parser limits. Only the newest text that fits is saved and logged;
 an unfinished shell's capture is discarded. The saved completion includes exit
 status, duration and a truncation notice when needed. Each saved string fits
 the replay parser limit, including metadata.
@@ -541,6 +542,10 @@ NO_COLOR disables colors.
 Show a Markdown table of provider, model, reasoning, context, and available
 cost or quota metrics. For ChatGPT, fetch quota immediately and update the
 status line. Summarize installed local, hosted and MCP tools and server status.
+List whether CAI global and Codex global AGENTS.md instructions were loaded,
+whether Codex compatibility was disabled, and how many repository instruction
+files were captured. These values describe the current developer context,
+including after resume; they do not merely check whether a file exists now.
 .TP
 .B /tools
 Show the installed tool inventory, descriptions, input formats and MCP server

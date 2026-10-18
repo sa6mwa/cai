@@ -11,7 +11,9 @@ export DISPLAY="$(cat "$root/clipboard/display")" XAUTHORITY="$root/no-authority
 terminal_start -N
 absent "$term/text" 'Cai Smith. Enter sends'
 probes=$(grep -ao $'\033\[6n' "$term/raw" | wc -l || true)
-[[ "$probes" -le 1 ]]
+# A responsive terminal permits startup observation and native-surface
+# acquisition. The previous fixture timed out once and disabled all probes.
+[[ "$probes" -ge 1 && "$probes" -le 2 ]]
 began=$SECONDS
 send '/help\r'; expect 'Run cai --help'
 [[ $((SECONDS-began)) -lt 2 ]]

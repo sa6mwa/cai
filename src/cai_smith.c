@@ -98,6 +98,16 @@ void cai_agent_preset_from_smith(cai_agent_preset *preset) {
 
 const char *cai_smith_prompt_version(void) { return CAI_SMITH_PROMPT_VERSION; }
 
+int cai_agent_get_instruction_status(const cai_agent *agent,
+                                     cai_agent_instruction_status *out,
+                                     cai_error *error) {
+  if (agent == NULL || CAI_AGENT_IMPL(agent) == NULL || out == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "agent and instruction status output are required");
+  *out = CAI_AGENT_IMPL(agent)->instruction_status;
+  return CAI_OK;
+}
+
 static int cai_preset_render_template(
     const cai_allocator *allocator, const char *template_text,
     const cai_agent_preset *preset, const cai_agent_preset_config *config,
@@ -855,7 +865,8 @@ cai_smith_load_global_instruction_store(const cai_allocator *allocator,
 
 static int cai_smith_load_repository_instructions(
     const cai_allocator *allocator, const cai_agent_preset_config *config,
-    pslog_logger *logger, char **out, cai_error *error) {
+    pslog_logger *logger, char **out, cai_agent_instruction_status *status,
+    cai_error *error) {
   char resolved[PATH_MAX];
   char workspace_path[PATH_MAX];
   char canonical_workspace[PATH_MAX];
@@ -870,6 +881,8 @@ static int cai_smith_load_repository_instructions(
   int rc;
 
   *out = NULL;
+  memset(status, 0, sizeof(*status));
+  status->codex_agents_md_enabled = config->codex_compat_agents_md != 0;
   if (config->global_instruction_store != NULL &&
       ((config->global_agents_md_path != NULL &&
         config->global_agents_md_path[0] != '\0') ||
@@ -941,6 +954,7 @@ static int cai_smith_load_repository_instructions(
   }
   cai_free_mem(allocator, global_path);
   global_part = part;
+  status->global_agents_md_loaded = part != NULL && part[0] != '\0';
   part = NULL;
   if (rc == CAI_OK) {
     rc = cai_smith_append_instructions(allocator, out, global_part, 0, error);
@@ -951,6 +965,7 @@ static int cai_smith_load_repository_instructions(
   if (config->codex_compat_agents_md) {
     rc = cai_smith_load_codex_global_instructions(allocator, &part, logger,
                                                   error);
+    status->codex_agents_md_loaded = part != NULL && part[0] != '\0';
     if (rc == CAI_OK)
       rc = cai_smith_append_instructions(allocator, out, part, 0, error);
     cai_free_mem(allocator, part);
@@ -964,6 +979,7 @@ static int cai_smith_load_repository_instructions(
                    NULL, 0U);
     rc = cai_smith_load_workspace_instruction_file(
         allocator, config->workspace_directory, &part, error);
+    status->repository_agents_md_count = part != NULL && part[0] != '\0';
     if (rc == CAI_OK)
       rc = cai_smith_append_instructions(allocator, out, part, 0, error);
     cai_free_mem(allocator, part);
@@ -1000,6 +1016,7 @@ static int cai_smith_load_repository_instructions(
   if (!rc) {
     rc = cai_smith_load_workspace_instruction_file(
         allocator, canonical_workspace, &part, error);
+    status->repository_agents_md_count = part != NULL && part[0] != '\0';
     if (rc == CAI_OK) {
       rc = cai_smith_append_instructions(allocator, out, part, 0, error);
     }
@@ -1014,6 +1031,8 @@ static int cai_smith_load_repository_instructions(
     workspace_part = NULL;
     rc = cai_smith_load_workspace_instruction_file(allocator, cursor, &part,
                                                    error);
+    if (rc == CAI_OK && part != NULL && part[0] != '\0')
+      status->repository_agents_md_count++;
     if (rc == CAI_OK) {
       workspace_part = part;
       part = NULL;
@@ -1046,6 +1065,7 @@ int cai_client_new_preset_agent(cai_client *client,
                                 cai_agent **out, cai_error *error) {
   cai_client_impl *client_impl;
   cai_agent_config agent_config;
+  cai_agent_instruction_status instruction_status;
   cai_read_tool_config read_config;
   cai_patch_tool_config patch_config;
   cai_terminal_tool_config terminal_config;
@@ -1091,9 +1111,9 @@ int cai_client_new_preset_agent(cai_client *client,
   if (!cai_model_supports(model, CAI_MODEL_CAP_IMAGE_INPUT)) {
     tool_capabilities &= ~CAI_AGENT_PRESET_TOOL_VIEW_IMAGE;
   }
-  rc = cai_smith_load_repository_instructions(&client_impl->allocator, config,
-                                              client_impl->logger,
-                                              &repository_instructions, error);
+  rc = cai_smith_load_repository_instructions(
+      &client_impl->allocator, config, client_impl->logger,
+      &repository_instructions, &instruction_status, error);
   if (rc == CAI_OK &&
       (tool_capabilities & CAI_AGENT_PRESET_TOOL_SKILLS) != 0UL) {
     rc = cai_smith_prepare_skills(config->skills,
@@ -1146,6 +1166,7 @@ int cai_client_new_preset_agent(cai_client *client,
     }
     return rc;
   }
+  CAI_AGENT_IMPL(*out)->instruction_status = instruction_status;
   CAI_AGENT_IMPL(*out)->smith_prompt_prefix_length = prompt_prefix_length;
   CAI_AGENT_IMPL(*out)->smith_prompt_capabilities = tool_capabilities;
   if (!config->disable_terminal &&
@@ -1231,6 +1252,7 @@ int cai_client_new_preset_review_agent(cai_client *client,
                                        cai_agent **out, cai_error *error) {
   cai_client_impl *client_impl;
   cai_agent_config agent_config;
+  cai_agent_instruction_status instruction_status;
   cai_read_tool_config read_config;
   cai_terminal_tool_config terminal_config;
   cai_view_image_tool_config view_image_config;
@@ -1341,9 +1363,9 @@ int cai_client_new_preset_review_agent(cai_client *client,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "review agent identity is invalid");
   }
-  rc = cai_smith_load_repository_instructions(&client_impl->allocator, config,
-                                              client_impl->logger,
-                                              &repository_instructions, error);
+  rc = cai_smith_load_repository_instructions(
+      &client_impl->allocator, config, client_impl->logger,
+      &repository_instructions, &instruction_status, error);
   if (rc == CAI_OK && (preset->review_tool_capabilities &
                        CAI_AGENT_PRESET_TOOL_SKILLS) != 0UL) {
     rc = cai_smith_prepare_skills(config->skills,
@@ -1532,6 +1554,7 @@ review_instructions_ready:
     }
     return rc;
   }
+  CAI_AGENT_IMPL(*out)->instruction_status = instruction_status;
   memset(&read_config, 0, sizeof(read_config));
   read_config.root_path = config->workspace_directory;
   read_config.default_workdir = config->workspace_directory;

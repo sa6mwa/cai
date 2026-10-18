@@ -83,6 +83,7 @@ static void prompt_control(const char *csi, char *prompt, size_t capacity,
 int main(int argc, char **argv) {
   int master, slave, raw, text, feed, diagnostics, status_fd, status, state = 0;
   int alive = 1, input = 1, control, foreground, width;
+  int events = -1, frame_changed;
   pid_t child;
   char path[4096], state_path[4096], data[8192], plain[8192], feed_bytes[8192],
       *name;
@@ -102,6 +103,11 @@ int main(int argc, char **argv) {
     return 2;
   }
   width = atoi(argv[2]);
+  if (getenv("CAI_TEST_TERMINAL_EVENT_FD") != NULL) {
+    events = atoi(getenv("CAI_TEST_TERMINAL_EVENT_FD"));
+    if (events < 3 || fcntl(events, F_SETFL, O_NONBLOCK) < 0)
+      return 2;
+  }
   master = posix_openpt(O_RDWR | O_NOCTTY);
   if (master < 0 || grantpt(master) || unlockpt(master)) {
     perror("open PTY");
@@ -136,6 +142,8 @@ int main(int argc, char **argv) {
   if (child < 0)
     return 2;
   if (child == 0) {
+    if (events >= 0)
+      close(events);
     close(master);
     if (setsid() < 0 || ioctl(slave, TIOCSCTTY, 0) < 0 || dup2(slave, 0) < 0 ||
         dup2(slave, 1) < 0 ||
@@ -158,6 +166,7 @@ int main(int argc, char **argv) {
   signal(SIGTERM, stop_signal);
   signal(SIGINT, stop_signal);
   while (alive && !stopped) {
+    frame_changed = 0;
     if (resized) {
       resized = 0;
       snprintf(path, sizeof(path), "%s/width", argv[1]);
@@ -188,6 +197,7 @@ int main(int argc, char **argv) {
         break;
     }
     if (control > 0 && FD_ISSET(master, &reads)) {
+      frame_changed = 1;
       count = read(master, data, sizeof(data));
       if (count <= 0)
         break;
@@ -207,6 +217,16 @@ int main(int argc, char **argv) {
             csi[csi_length++] = (char)ch;
           if (ch >= 0x40 && ch <= 0x7e) {
             csi[csi_length] = '\0';
+            /* Answer the standard DSR query as a terminal does, rather than
+             * making every editor open/handoff wait for its probe timeout. */
+            if (strcmp(csi, "6n") == 0) {
+              char reply[64];
+              int length = snprintf(reply, sizeof(reply), "\033[%d;%dR",
+                                    cursor_row, cursor_column);
+              if (length < 0 || (size_t)length >= sizeof(reply) ||
+                  write_all(master, reply, (size_t)length) != 0)
+                stopped = 1;
+            }
             prompt_control(csi, prompt, sizeof(prompt), window.ws_row, width,
                            &cursor_row, &cursor_column, &scroll_bottom);
             state = 0;
@@ -285,6 +305,12 @@ int main(int argc, char **argv) {
     }
     /* Reap after draining the PTY: closure is reported by read, including EIO.
      */
+    /* Wake the Bash test after publishing a frame, without polling delays.
+     * This is only a readiness hint: a full pipe already means work is ready.
+     */
+    if (frame_changed && events >= 0 && write(events, ".", 1U) < 0 &&
+        errno != EAGAIN && errno != EINTR)
+      break;
   }
   if (stopped)
     kill(-child, SIGKILL);
@@ -301,5 +327,9 @@ int main(int argc, char **argv) {
   snprintf(data, sizeof(data), "%d\n", status);
   write_all(status_fd, data, strlen(data));
   close(status_fd);
+  if (events >= 0) {
+    (void)write(events, ".", 1U);
+    close(events);
+  }
   return status;
 }

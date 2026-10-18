@@ -51,6 +51,34 @@ static int storage_options(void) {
   return 0;
 }
 
+static int help_columns(void) {
+  FILE *stream = tmpfile();
+  char line[512];
+  size_t rows = 0U;
+  int failed = 0;
+  if (stream == NULL)
+    return 1;
+  cai_cli_print_help(stream);
+  rewind(stream);
+  if (fgets(line, sizeof(line), stream) == NULL ||
+      strcmp(line, "cai and libcai Copyright (C) 2026 C89 Systems AB "
+                   "https://c89.systems\n") != 0 ||
+      fgets(line, sizeof(line), stream) == NULL || strcmp(line, "\n") != 0 ||
+      fgets(line, sizeof(line), stream) == NULL ||
+      strcmp(line, "Usage: cai [options]\n") != 0)
+    failed = 1;
+  while (fgets(line, sizeof(line), stream) != NULL) {
+    if (strncmp(line, "  ", 2U) != 0)
+      continue;
+    rows++;
+    if (strlen(line) <= 40U || line[38] != ' ' || line[39] == ' ' ||
+        line[39] == '\n')
+      failed = 1;
+  }
+  fclose(stream);
+  return failed || rows < 60U;
+}
+
 static int capture_options(void) {
   char flag0[] = "cai", flag1[] = "--shell-context-max-lines";
   char flag2[] = "--shell-context-max-bytes", prompt[] = "-i";
@@ -399,6 +427,6 @@ int main(void) {
       cai_cli_parse_options(3, invalid_legacy_instructions, &options) != -1 ||
       cai_cli_parse_options(3, invalid_legacy_workspace, &options) != -1)
     return 1;
-  return shell_options() || storage_options() || tool_options() ||
-         capture_options();
+  return help_columns() || shell_options() || storage_options() ||
+         tool_options() || capture_options();
 }

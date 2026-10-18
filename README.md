@@ -1181,6 +1181,15 @@ rows also identify their client with a one-based `mcp_client_index`. This wraps
 the owner-thread C API `cai_agent_runtime_visit_tools`; inspection performs no
 network discovery or tool execution and is available while a turn runs.
 
+`runtime:instruction_status()` and `agent:instruction_status()` report
+`global_agents_md_loaded`, `codex_agents_md_enabled`, `codex_agents_md_loaded`
+and `repository_agents_md_count`. The C equivalents are
+`cai_agent_runtime_get_instruction_status` and `cai_agent_get_instruction_status`.
+These describe nonempty files actually captured in the developer context,
+not filesystem existence. `/status` shows this evidence too. Opening a resumed
+session reads the current startup configuration and instruction files again;
+editing files while CAI runs requires restarting or reopening the runtime.
+
 Build and run the local LuaRock test:
 
 ```sh

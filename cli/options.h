@@ -2,6 +2,9 @@
 #define CAI_CLI_OPTIONS_H
 
 #include <stddef.h>
+#include <stdio.h>
+
+void cai_cli_print_help(FILE *out);
 
 typedef struct cai_cli_options {
   const char *provider;

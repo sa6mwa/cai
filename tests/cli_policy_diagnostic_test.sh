@@ -66,6 +66,10 @@ for mode in cyber_policy cyber_notice http read list outside bounded disabled to
     *) [[ $(stdout_text) == 'Diagnostic explanation only.' ]] || fail 'Diagnostic missing from stdout' ;;
   esac
   jq -se 'any(.[]; .event == "run_failed" and (.msg | contains("cyber_policy") or contains("cyber_notice")))' "$root/stderr" >/dev/null
+  # Persist/export one successful report, one bounded-tool failure and one
+  # empty-report failure. The remaining cases above prove their distinct
+  # wire/diagnostic behavior; reopening and exporting again adds no coverage.
+  case "$mode" in cyber_policy|bounded|empty) ;; *) continue ;; esac
   run --list; ok
   id=$(awk 'NR==1 {print $1}' "$root/stdout")
   run --export "$id"; ok

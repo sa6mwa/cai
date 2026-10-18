@@ -103,4 +103,8 @@ send '/resume 1\r'; expect 'session'
 prompt 'check instructions after manual resume' InteractiveAgentsDone
 tail -1 "$root/peer/requests.jsonl" >"$root/request"
 contains "$root/request" CODEX_INTERACTIVE_MARKER
+send '/status\r'; expect 'Instruction files in context'
+expect 'CAI global AGENTS.md'; expect 'Codex global AGENTS.md'
+expect 'Repository AGENTS.md'
+has "$term/text" 'Yes' || fail 'Captured global instruction sources not reported'
 terminal_close

@@ -11867,6 +11867,16 @@ int cai_agent_runtime_context_percent(cai_agent_runtime *runtime, double *out,
   return CAI_OK;
 }
 
+int cai_agent_runtime_get_instruction_status(cai_agent_runtime *runtime,
+                                             cai_agent_instruction_status *out,
+                                             cai_error *error) {
+  int rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK)
+    return rc;
+  /* The captured source status is immutable after construction. */
+  return cai_agent_get_instruction_status(runtime->agent, out, error);
+}
+
 typedef struct cai_runtime_hosted_info {
   char type[128];
 } cai_runtime_hosted_info;

@@ -6,6 +6,7 @@
 #include <cai/quota.h>
 #include <cai/session_store.h>
 #include <cai/skills.h>
+#include <cai/smith.h>
 
 #include "cai_lj.h"
 
@@ -21,6 +22,11 @@ struct curl_slist;
 #define CAI_DEFAULT_HTTP_TIMEOUT_MS 60000L
 #define CAI_DEFAULT_JSON_RESPONSE_LIMIT (1024UL * 1024UL)
 #define CAI_DEFAULT_SSE_EVENT_LIMIT (4UL * 1024UL * 1024UL)
+
+#ifdef CAI_TESTING
+void cai_chat_test_set_retry_sleep_fn(int (*fn)(const struct timespec *,
+                                                struct timespec *));
+#endif
 
 typedef struct cai_client_impl {
   cai_allocator allocator;
@@ -82,6 +88,7 @@ typedef struct cai_agent_impl {
   cai_client *client;
   char *model;
   char *developer_instructions;
+  cai_agent_instruction_status instruction_status;
   /* Model-owned prefix; the capability/policy/skills suffix stays captured. */
   size_t smith_prompt_prefix_length;
   unsigned long smith_prompt_capabilities;

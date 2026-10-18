@@ -11,6 +11,24 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#ifdef CAI_TESTING
+static int (*cai_chat_retry_sleep_fn)(const struct timespec *,
+                                      struct timespec *);
+void cai_chat_test_set_retry_sleep_fn(int (*fn)(const struct timespec *,
+                                                struct timespec *)) {
+  cai_chat_retry_sleep_fn = fn;
+}
+#endif
+
+static int cai_chat_retry_sleep(const struct timespec *delay,
+                                struct timespec *remaining) {
+#ifdef CAI_TESTING
+  if (cai_chat_retry_sleep_fn != NULL)
+    return cai_chat_retry_sleep_fn(delay, remaining);
+#endif
+  return nanosleep(delay, remaining);
+}
+
 typedef struct cai_chat_content_doc {
   char *type;
   lonejson_spooled text;
@@ -2288,7 +2306,7 @@ static int cai_chat_stream_retries(cai_client *client,
       if (cai_stream_thread_cancel_requested())
         return cai_set_error(error, CAI_ERR_CANCELLED,
                              "agent turn was cancelled during retry wait");
-      while (nanosleep(&pause, &pause) != 0) {
+      while (cai_chat_retry_sleep(&pause, &pause) != 0) {
         if (errno != EINTR)
           return cai_set_error(error, CAI_ERR_TRANSPORT,
                                "Chat retry wait failed");

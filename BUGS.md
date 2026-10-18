@@ -188,8 +188,11 @@ commit and verification evidence.
 ## BUG-007: Codex global instructions appear missing after session replay
 
 - **Priority:** high.
-- **Status:** resolved with explicit current-user AGENTS.md framing; C, CLI,
-  Lua and live ChatGPT resume checks pass.
+- **Status:** reopened after another report on an older conversation. Request
+  capture tests include current files after resume, but the reported omission
+  has not been reproduced. `/status` now reports CAI global, Codex global and
+  repository files actually captured in the current agent instructions. This
+  evidence is read from libcai, not inferred from configuration or file existence.
 - **Reported:** enabling `[agent] codex_agents_md = true` in `config.ini` does
   not appear to load the global Codex `AGENTS.md` when resuming a session.
   The user confirms restarting CAI after editing the configuration.

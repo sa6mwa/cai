@@ -13,6 +13,7 @@
 #include "reasoning.h"
 #include "response.h"
 #include "review_report.h"
+#include "runtime_options.h"
 #include "session_commands.h"
 #include "shell.h"
 #include "skills.h"
@@ -1171,6 +1172,7 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
   int has_context;
   const char *model;
   const char *effort;
+  const char *tier;
   const char *reasoning_title;
   int busy;
   int rc;
@@ -1183,6 +1185,7 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
   }
   model = state->options.model;
   effort = state->options.reasoning_effort;
+  tier = state->options.service_tier;
   memset(&settings, 0, sizeof(settings));
   cai_error_init(&optional_error);
   if (cai_agent_runtime_get_settings(state->runtime, &settings, NULL,
@@ -1193,6 +1196,7 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
     if (settings.reasoning_effort != NULL) {
       effort = settings.reasoning_effort;
     }
+    tier = settings.service_tier;
   }
   cai_error_cleanup(&optional_error);
   rc = cai_agent_runtime_context_percent(state->runtime, &context_percent,
@@ -1237,7 +1241,7 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
   if (rc != CAI_OK) {
     return rc;
   }
-  cai_cli_status_build(&state->status, model, effort, context_percent,
+  cai_cli_status_build(&state->status, model, effort, tier, context_percent,
                        has_context, state->auth != NULL ? &state->quota : NULL,
                        metrics.session_usage.estimated_spend_usd,
                        metrics.session_usage.estimated_spend_eur,
@@ -1444,31 +1448,7 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
                                            error) != CAI_OK)
     return error->code;
   config.terminal_tool_config = &terminal;
-  cai_agent_preset_from_smith(&preset);
-  preset.default_model = state->options.model;
-  preset.default_reasoning_effort = state->options.reasoning_effort;
-  preset.default_reasoning_summary = state->options.reasoning_summary;
-  config.preset_descriptor = &preset;
-  cai_skill_config_init(&skills);
-  if (state->options.review)
-    config.preset = CAI_SMITH_REVIEW_PRESET;
-  skills.skills_directory = state->options.skills_dir;
-  config.disable_chrome = state->options.review || !state->options.chrome;
-  config.chrome_config.socket_path = state->options.chrome_socket;
-  config.disable_web_search = !state->options.web_search;
-  config.disable_read_file = !state->options.read_file;
-  config.disable_list_files = !state->options.list_files;
-  config.disable_apply_patch = !state->options.apply_patch;
-  config.disable_view_image = !state->options.view_image;
-  config.disable_goals = !state->options.goals;
-  config.disable_skills = !state->options.skills;
-  config.enable_todo = !state->options.review && state->options.todo;
-  config.enable_searxng = !state->options.review && state->options.searxng;
-  config.enable_revgeo = !state->options.review && state->options.revgeo;
-  if (state->options.searxng_url != NULL)
-    config.searxng.base_url = state->options.searxng_url;
-  if (state->options.revgeo_url != NULL)
-    config.revgeo.base_url = state->options.revgeo_url;
+  cai_cli_apply_runtime_options(&state->options, &config, &preset, &skills);
   if (config.enable_todo) {
     config.todo.store = cai_cli_pouch_todo_callbacks();
     config.todo.store_context = &state->pouch;
@@ -1482,32 +1462,6 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
       !state->options.review && !new_session && resume_id == NULL;
   config.resume_session_id = state->options.review ? NULL : resume_id;
   config.record_transcript = 1;
-  config.model = state->options.model_explicit ? state->options.model : NULL;
-  config.reasoning_effort = state->options.reasoning_effort_explicit
-                                ? state->options.reasoning_effort
-                                : NULL;
-  config.reasoning_summary = state->options.reasoning_summary_explicit
-                                 ? state->options.reasoning_summary
-                                 : NULL;
-  config.review_model = state->options.review_model;
-  config.service_tier = state->options.service_tier;
-  config.review_reasoning_effort = state->options.review_reasoning_effort;
-  config.review_reasoning_summary = state->options.review_reasoning_summary;
-  if (state->options.config_dir != NULL)
-    config.agent_config_directory = state->options.config_dir;
-  if (state->options.agents_md != NULL)
-    config.global_agents_md_path = state->options.agents_md;
-  config.skills = state->options.skills_dir != NULL ? &skills : NULL;
-  config.agent_identity = state->options.identity;
-  config.developer_instructions_extension =
-      state->options.developer_instructions;
-  config.codex_compat_agents_md = state->options.codex_agents_md;
-  config.shell_context_max_lines = state->options.shell_context_max_lines;
-  config.shell_context_max_bytes = state->options.shell_context_max_bytes;
-  config.enable_image_generation =
-      !state->options.review && state->options.image_generation;
-  config.disable_terminal = !state->options.terminal;
-  config.disable_review_subagent = !state->options.review_subagent;
   config.event_callback = cli_event;
   config.event_context = state;
   if (!state->options.review) {
@@ -2359,8 +2313,10 @@ static int cli_handle_command(cli_state *state, const char *line,
         "asking the agent to manage goals. |\n",
         "| `/shell`, `!sh` | Open your interactive shell between turns; return "
         "to CAI when it exits. Terminal output stays local. |\n",
-        "| `/shellshare`, `!sh+` | Open a shell and share only its newest "
-        "sanitized output when it exits. Older output is discarded. |\n",
+        "| `/shellshare`, `!sh+` | Open a shell and share sanitized output "
+        "when it exits. A ring buffer retains only the newest text that fits "
+        "the configured line, byte and replay limits; older text falls out. "
+        "|\n",
         "| `/model [MODEL [EFFORT]]` | Show models or change model/effort at "
         "the next safe "
         "model/tool boundary, keeping this conversation. |\n",
@@ -2405,7 +2361,7 @@ static int cli_handle_command(cli_state *state, const char *line,
         "cai -N -C ./project                  # new conversation\n"
         "cai -i 'Explain this project'        # send a prompt at startup\n"
         "cai -Nni 'Fix the failing tests'     # run non-interactively\n"
-        "cai --review                        # review current changes\n"
+        "cai --review                         # review current changes\n"
         "```\n\n"
         "Run `cai --help` for all startup options or `man cai` for the "
         "manual.\n"};
@@ -2434,6 +2390,7 @@ static int cli_handle_command(cli_state *state, const char *line,
     return rc;
   }
   if (strcmp(line, "/status") == 0) {
+    cai_agent_instruction_status instructions;
     cai_agent_runtime_settings settings;
     cai_agent_runtime_metrics metrics;
     cai_error optional_error;
@@ -2453,10 +2410,17 @@ static int cli_handle_command(cli_state *state, const char *line,
     rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
     if (rc != CAI_OK)
       return rc;
+    rc = cai_agent_runtime_get_instruction_status(state->runtime, &instructions,
+                                                  error);
+    if (rc != CAI_OK)
+      return rc;
     cli_refresh_quota(state, 1);
     if (cai_cli_status_markdown(
             markdown, sizeof(markdown), model, effort, state->options.provider,
             &metrics, state->auth != NULL ? &state->quota : NULL) != 0 ||
+        cli_text(state, markdown, strlen(markdown)) != 0 ||
+        cai_cli_instruction_status_markdown(markdown, sizeof(markdown),
+                                            &instructions) != 0 ||
         cli_text(state, markdown, strlen(markdown)) != 0 ||
         cai_cli_tools_markdown(&state->mcp, state->runtime, 0, cli_tools_write,
                                state, error) != CAI_OK ||

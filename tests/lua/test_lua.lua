@@ -1487,6 +1487,11 @@ do
   assert(table.concat(runtime_logger_chunks):find("cai.agent.runtime.opened", 1, true),
     "Lua Smith runtime accepts and retains a native pslog logger")
   assert_eq(runtime:state(), "idle", "Lua Smith runtime initial state")
+  local instruction_status = assert_ok(runtime:instruction_status())
+  assert_eq(type(instruction_status.global_agents_md_loaded), "boolean")
+  assert_eq(instruction_status.codex_agents_md_enabled, false)
+  assert_eq(instruction_status.codex_agents_md_loaded, false)
+  assert(type(instruction_status.repository_agents_md_count) == "number")
   local inventory = assert_ok(runtime:tools())
   local found_read = false
   for _, tool in ipairs(inventory) do
@@ -1620,6 +1625,10 @@ local dummy_agent = assert_ok(dummy_client:new_agent({
   session_usage_limits = { max_total_tokens = 100 },
 }))
 assert_ok(dummy_agent:set_session_usage_limits({ max_total_tokens = 120 }))
+local plain_instructions = assert_ok(dummy_agent:instruction_status())
+assert_eq(plain_instructions.global_agents_md_loaded, false)
+assert_eq(plain_instructions.codex_agents_md_loaded, false)
+assert_eq(plain_instructions.repository_agents_md_count, 0)
 assert_not_ok(dummy_agent:set_session_usage_limits({ max_total_tokens = -1 }),
   "negative Lua agent session usage limit must fail")
 do

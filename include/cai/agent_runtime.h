@@ -1014,6 +1014,13 @@ typedef int (*cai_agent_tool_visitor)(void *context,
 int cai_agent_runtime_visit_tools(cai_agent_runtime *runtime,
                                   cai_agent_tool_visitor visitor, void *context,
                                   cai_error *error);
+/** Copy the instruction-file status for the current agent on the owner
+ * thread. Available while idle or running. This describes the captured
+ * developer context, not current filesystem existence; restart/reopen reads
+ * changed files. Never loaded from a saved conversation. */
+int cai_agent_runtime_get_instruction_status(cai_agent_runtime *runtime,
+                                             cai_agent_instruction_status *out,
+                                             cai_error *error);
 /** Return the runtime's stable session identifier, borrowed until close. */
 const char *cai_agent_runtime_session_id(const cai_agent_runtime *runtime);
 /**
