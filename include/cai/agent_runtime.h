@@ -691,8 +691,9 @@ typedef struct cai_agent_runtime_config {
   /** Retained sanitized shell context: zero selects 5000 logical lines. */
   size_t shell_context_max_lines;
   /** Retained UTF-8 bytes: zero selects 4 MiB, minimum explicit value 4.
-   * Old complete lines are discarded first; an oversized line keeps its
-   * scalar-aligned suffix. Raw shell journal records remain independent. */
+   * Also bounded by lonejson's default dynamic-string replay limit, including
+   * completion metadata. Oldest text is discarded at UTF-8 scalar boundaries;
+   * only the newest sanitized tail is journaled when finish succeeds. */
   size_t shell_context_max_bytes;
 } cai_agent_runtime_config;
 
@@ -847,23 +848,25 @@ int cai_agent_runtime_submit_queued_threadsafe(cai_agent_runtime *runtime,
 int cai_agent_runtime_user_shell_begin(cai_agent_runtime *runtime,
                                        const char *command,
                                        int share_with_model, cai_error *error);
-/** Stream raw command output into the durable journal, in bounded chunks.
- * Binary bytes are preserved as hex journal records. No complete output is
- * buffered: a bounded sanitized tail is retained for model context. ANSI/VT
- * controls are consumed incrementally; CR/backspace and horizontal editing
+/** Incrementally consume raw command output into a bounded rolling tail.
+ * Older output is discarded as new text arrives; write does not journal or
+ * log raw bytes. ANSI/VT controls are consumed incrementally; CR/backspace
+ * and horizontal editing
  * update the current logical line. This is not a full screen emulator. A
- * successful return durably acknowledges every supplied byte. On failure,
- * an already acknowledged prefix may remain; do not retry the same chunk. */
+ * successful return acknowledges capture, not persistence. Only finish saves
+ * the retained tail. After a partial finish has saved it, writes are rejected;
+ * retry finish to complete the recording. */
 int cai_agent_runtime_user_shell_write(cai_agent_runtime *runtime,
                                        const void *bytes, size_t length,
                                        cai_error *error);
 /** Complete the recording. Shared results become tagged user-role context at
  * the next safe boundary, including while idle, without a model request,
  * steering event or goal turn. Invalid UTF-8 is replaced; control strings
- * and non-text controls are removed; truncation is explicit. Raw output stays
- * in the journal. Completion survives restart; execution is never replayed. A
- * failed completion may be retried. Close discards an unfinished recording but
- * retains its acknowledged journal bytes. duration_ms is monotonic time. */
+ * and non-text controls are removed; truncation is explicit. Both the saved
+ * tail and completion fit the default replay parser's dynamic-string limit.
+ * Completion survives restart; execution is never replayed. A failed
+ * completion may be retried. Close discards an unfinished recording but
+ * retains any tail already saved by finish. duration_ms is monotonic time. */
 int cai_agent_runtime_user_shell_finish(cai_agent_runtime *runtime,
                                         int exit_code,
                                         unsigned long long duration_ms,

@@ -26,5 +26,6 @@ for file in first second third; do
   contains "$root/$file" kept-lua-one
   contains "$root/$file" kept-lua-two
   absent "$root/$file" DROPPED_LUA_LINE
+  absent "$root/$file" DROPPED_LUA_PREFIX
   jq -e '(.input // .messages) | tostring | contains("\u001b") | not' "$root/$file" >/dev/null
 done

@@ -5,7 +5,7 @@
 /* Bounded, sanitized logical-line tail. Not a screen/alternate-screen emulator.
  * Both the runtime and PTY host consume raw bytes incrementally. */
 typedef struct cai_terminal_text {
-  char *rows, *line;
+  char *rows, *line, *line_storage;
   size_t byte_limit, line_limit, start, length, lines;
   size_t line_length, cursor;
   unsigned char utf8[4];

@@ -605,6 +605,8 @@ struct cai_agent_runtime {
   size_t shell_context_max_lines, shell_context_max_bytes;
   unsigned long long user_shell_bytes;
   int user_shell_shared;
+  size_t user_shell_record_limit;
+  int user_shell_tail_recorded;
   size_t goal_control_limit;
   size_t goal_control_count;
   /* A control remains in flight until its session mutation is checkpointed. */
@@ -10893,12 +10895,18 @@ int cai_agent_runtime_user_shell_begin(cai_agent_runtime *runtime,
                                        const char *command,
                                        int share_with_model, cai_error *error) {
   char *copy;
+  lonejson_config json_config;
+  size_t bytes;
   int rc = cai_runtime_owner(runtime, error);
   if (rc != CAI_OK)
     return rc;
   if (command == NULL || command[0] == '\0' || strlen(command) > 8192U)
     return cai_set_error(error, CAI_ERR_INVALID,
                          "shell command must contain 1 to 8192 bytes");
+  json_config = lonejson_default_config();
+  if (json_config.max_dynamic_string_bytes <= strlen(command) + 512U)
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "session parser limit is too small for shell context");
   copy = cai_strdup(NULL, command);
   if (copy == NULL)
     return cai_set_error(error, CAI_ERR_NOMEM, "cannot copy shell command");
@@ -10914,9 +10922,11 @@ int cai_agent_runtime_user_shell_begin(cai_agent_runtime *runtime,
         error, CAI_ERR_LIMIT,
         "shell context is unavailable; wait or reopen the session");
   } else {
+    bytes = runtime->shell_context_max_bytes;
+    if (bytes > json_config.max_dynamic_string_bytes)
+      bytes = json_config.max_dynamic_string_bytes;
     rc = cai_terminal_text_init(&runtime->user_shell_output,
-                                runtime->shell_context_max_lines,
-                                runtime->shell_context_max_bytes, error);
+                                runtime->shell_context_max_lines, bytes, error);
     if (rc == CAI_OK)
       rc = cai_runtime_append_journal_event_locked(
           runtime, "user_shell_started", copy, NULL, error);
@@ -10924,6 +10934,8 @@ int cai_agent_runtime_user_shell_begin(cai_agent_runtime *runtime,
       runtime->user_shell_command = copy;
       runtime->user_shell_shared = share_with_model != 0;
       runtime->user_shell_bytes = 0U;
+      runtime->user_shell_record_limit = json_config.max_dynamic_string_bytes;
+      runtime->user_shell_tail_recorded = 0;
       copy = NULL;
     } else
       cai_terminal_text_close(&runtime->user_shell_output);
@@ -10936,10 +10948,6 @@ int cai_agent_runtime_user_shell_begin(cai_agent_runtime *runtime,
 int cai_agent_runtime_user_shell_write(cai_agent_runtime *runtime,
                                        const void *bytes, size_t length,
                                        cai_error *error) {
-  static const char hex[] = "0123456789abcdef";
-  const unsigned char *data = bytes;
-  char encoded[8193];
-  size_t offset, count, i;
   int rc = cai_runtime_owner(runtime, error);
   if (rc != CAI_OK)
     return rc;
@@ -10950,27 +10958,17 @@ int cai_agent_runtime_user_shell_write(cai_agent_runtime *runtime,
     pthread_mutex_unlock(&runtime->lock);
     return cai_set_error(error, CAI_ERR_INVALID, "no shell recording is open");
   }
+  if (runtime->user_shell_tail_recorded) {
+    pthread_mutex_unlock(&runtime->lock);
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "shell capture is finalizing; retry finish");
+  }
   if ((unsigned long long)length > ULLONG_MAX - runtime->user_shell_bytes) {
     pthread_mutex_unlock(&runtime->lock);
     return cai_set_error(error, CAI_ERR_LIMIT, "shell byte count overflow");
   }
-  for (offset = 0U; rc == CAI_OK && offset < length; offset += count) {
-    count = length - offset;
-    if (count > 4096U)
-      count = 4096U;
-    for (i = 0U; i < count; i++) {
-      encoded[2U * i] = hex[data[offset + i] >> 4];
-      encoded[2U * i + 1U] = hex[data[offset + i] & 15U];
-    }
-    encoded[2U * count] = '\0';
-    rc = cai_runtime_append_journal_event_locked(
-        runtime, "user_shell_output_hex", encoded, NULL, error);
-    if (rc == CAI_OK) {
-      cai_terminal_text_write(&runtime->user_shell_output, data + offset,
-                              count);
-      runtime->user_shell_bytes += (unsigned long long)count;
-    }
-  }
+  cai_terminal_text_write(&runtime->user_shell_output, bytes, length);
+  runtime->user_shell_bytes += (unsigned long long)length;
   pthread_mutex_unlock(&runtime->lock);
   return rc;
 }
@@ -10982,8 +10980,14 @@ int cai_agent_runtime_user_shell_finish(cai_agent_runtime *runtime,
   cai_runtime_input_node *node = NULL;
   char *text = NULL;
   char *plain = NULL;
+  char *tail = NULL;
+  const char *kept;
+  static const char format[] =
+      "<user_shell_command>\n<command>\n%s\n</command>\n<result>\n"
+      "Exit code: %d\nDuration: %llu.%03llu seconds\nOutput:\n%s%s"
+      "\n</result>\n</user_shell_command>";
   char suffix[160];
-  size_t capacity;
+  size_t capacity, overhead, length, skip;
   unsigned long long sequence = 0U;
   int rc = cai_runtime_owner(runtime, error);
   if (rc != CAI_OK)
@@ -11002,25 +11006,32 @@ int cai_agent_runtime_user_shell_finish(cai_agent_runtime *runtime,
   if (rc != CAI_OK)
     goto done;
   suffix[0] = '\0';
+  length = strlen(plain);
+  overhead =
+      (size_t)snprintf(NULL, 0U, format, runtime->user_shell_command, exit_code,
+                       duration_ms / 1000U, duration_ms % 1000U, "", "");
+  if (length > runtime->user_shell_record_limit - overhead)
+    runtime->user_shell_output.truncated = 1;
   if (runtime->user_shell_output.truncated)
-    snprintf(
-        suffix, sizeof(suffix),
-        "[Earlier output truncated for model context; %llu raw bytes total. "
-        "Full output is retained in the session journal.]\n",
-        runtime->user_shell_bytes);
-  capacity = strlen(runtime->user_shell_command) + strlen(plain) +
-             strlen(suffix) + 256U;
+    snprintf(suffix, sizeof(suffix),
+             "[Earlier output truncated; only the newest output is retained; "
+             "%llu raw bytes total.]\n",
+             runtime->user_shell_bytes);
+  overhead += strlen(suffix);
+  skip = length > runtime->user_shell_record_limit - overhead
+             ? length - (runtime->user_shell_record_limit - overhead)
+             : 0U;
+  while (skip < length && ((unsigned char)plain[skip] & 0xc0U) == 0x80U)
+    skip++;
+  kept = plain + skip;
+  capacity = overhead + strlen(kept) + 1U;
   text = cai_alloc(NULL, capacity);
   if (text == NULL) {
     rc = cai_set_error(error, CAI_ERR_NOMEM, "cannot allocate shell context");
     goto done;
   }
-  snprintf(text, capacity,
-           "<user_shell_command>\n<command>\n%s\n</command>\n<result>\n"
-           "Exit code: %d\nDuration: %llu.%03llu seconds\nOutput:\n%s%s"
-           "\n</result>\n</user_shell_command>",
-           runtime->user_shell_command, exit_code, duration_ms / 1000U,
-           duration_ms % 1000U, suffix, plain);
+  snprintf(text, capacity, format, runtime->user_shell_command, exit_code,
+           duration_ms / 1000U, duration_ms % 1000U, suffix, kept);
   if (runtime->user_shell_shared) {
     node = cai_alloc(NULL, sizeof(*node));
     if (node == NULL) {
@@ -11028,6 +11039,38 @@ int cai_agent_runtime_user_shell_finish(cai_agent_runtime *runtime,
       goto done;
     }
     memset(node, 0, sizeof(*node));
+  }
+  if (!runtime->user_shell_tail_recorded) {
+    tail = cai_alloc(NULL, strlen(suffix) + strlen(kept) + 1U);
+    if (tail == NULL) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM, "cannot allocate shell tail");
+      goto done;
+    }
+    strcpy(tail, suffix);
+    strcat(tail, kept);
+    rc = cai_runtime_append_journal_event_locked(
+        runtime, "user_shell_output_tail", tail, NULL, error);
+    if (rc != CAI_OK)
+      goto done;
+    runtime->user_shell_tail_recorded = 1;
+    if (runtime->logger != NULL && runtime->logger->info != NULL) {
+      pslog_field fields[3];
+      size_t field_index;
+      memset(fields, 0, sizeof(fields));
+      fields[0].key = "role";
+      fields[0].as.string_value = "user";
+      fields[1].key = "prompt_kind";
+      fields[1].as.string_value = "shell_output";
+      fields[2].key = "event";
+      fields[2].as.string_value = "user_shell_output_tail";
+      for (field_index = 0U; field_index < 3U; field_index++) {
+        fields[field_index].key_len = strlen(fields[field_index].key);
+        fields[field_index].type = PSLOG_FIELD_STRING;
+        fields[field_index].value_len =
+            strlen(fields[field_index].as.string_value);
+      }
+      runtime->logger->info(runtime->logger, tail, fields, 3U);
+    }
   }
   rc = cai_runtime_append_journal_event_locked(runtime,
                                                runtime->user_shell_shared
@@ -11087,6 +11130,7 @@ done:
   cai_runtime_input_node_free(node);
   cai_free_mem(NULL, text);
   cai_free_mem(NULL, plain);
+  cai_free_mem(NULL, tail);
   return rc;
 }
 

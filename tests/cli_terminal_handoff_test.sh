@@ -43,6 +43,8 @@ plan '{"plan":[{"text":"BusyHandoffDone","pause":true}]}'
 send 'busy turn\r'; expect 'STREAM in flight'
 count=$(wc -c <"$root/launches")
 send '/shell\r'; expect 'Shell is available only between turns'
+send '\025/shellshare\r'; expect_prompt /shellshare
+send '\025!sh+\r'; expect_prompt '!sh+'
 send '\t\033\r'; expect 'Use Enter to open the shell'
 [[ $(wc -c <"$root/launches") == "$count" ]]
 send '\025'; release; expect BusyHandoffDone
@@ -63,7 +65,7 @@ for fallback in unset empty; do
   send 'touch fallback-shell; exit\r'; expect 'Shell exited 0.'; canonical 0; [[ -f "$work/fallback-shell" ]]
   rm "$work/fallback-shell"; terminal_close
 done
-for command in /shell '!sh'; do
+for command in /shell '!sh' /shellshare '!sh+'; do
   printf '%s\n/quit\n' "$command" | "${base[@]}" >"$root/stdout" 2>"$root/stderr"
   cat "$root/stdout" "$root/stderr" >"$root/combined"
   contains "$root/combined" 'interactive shell requires terminal input and output'

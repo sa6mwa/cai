@@ -588,7 +588,6 @@ static int cli_shell_literal(void *context, const char *bytes, size_t length,
 static int cli_shell_output(void *context, const char *bytes, size_t length,
                             cai_error *error) {
   cli_state *state = context;
-  pslog_field field = pslog_str("prompt_kind", "shell_output");
   int rc =
       cai_agent_runtime_user_shell_write(state->runtime, bytes, length, error);
   if (rc != CAI_OK)
@@ -596,8 +595,6 @@ static int cli_shell_output(void *context, const char *bytes, size_t length,
   if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
     return cai_cli_error(error, CAI_ERR_TRANSPORT,
                          "cannot finish output before shell text");
-  cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, "user_shell_output",
-                      "user", bytes, length, &field, 1U);
   return cai_cli_shell_plain(&state->shell, bytes, length, 0, cli_shell_literal,
                              state, error);
 }
@@ -719,7 +716,8 @@ static int cli_shell_start(cli_state *state, const char *command,
 }
 
 static int cli_is_terminal_shell(const char *line) {
-  return strcmp(line, "!sh") == 0 || strcmp(line, "/shell") == 0;
+  return strcmp(line, "!sh") == 0 || strcmp(line, "/shell") == 0 ||
+         strcmp(line, "!sh+") == 0 || strcmp(line, "/shellshare") == 0;
 }
 
 static int cli_terminal_shell_ready(cli_state *state, cai_error *error) {
@@ -791,7 +789,14 @@ static int cli_shell_restore_foreground(pid_t foreground, cai_error *error) {
   return cai_cli_error(error, CAI_ERR_TRANSPORT, message);
 }
 
-static int cli_terminal_shell(cli_state *state, cai_error *error) {
+static int cli_terminal_shell_output(void *context, const char *bytes,
+                                     size_t length, cai_error *error) {
+  cli_state *state = context;
+  return cai_agent_runtime_user_shell_write(state->runtime, bytes, length,
+                                            error);
+}
+
+static int cli_terminal_shell(cli_state *state, int share, cai_error *error) {
   pslog_field fields[3];
   char message[256];
   const char *shell = getenv("SHELL");
@@ -803,6 +808,11 @@ static int cli_terminal_shell(cli_state *state, cai_error *error) {
     return rc;
   if (shell == NULL || shell[0] == '\0')
     shell = "/bin/sh";
+  if (share) {
+    rc = cai_agent_runtime_user_shell_begin(state->runtime, shell, 1, error);
+    if (rc != CAI_OK)
+      return rc;
+  }
   (void)clock_gettime(CLOCK_MONOTONIC, &state->shell.started);
   foreground = tcgetpgrp(STDIN_FILENO);
   if (cli_flush_command(state, 1) != 0 || cli_finish_response(state) != 0 ||
@@ -817,8 +827,9 @@ static int cli_terminal_shell(cli_state *state, cai_error *error) {
                       "terminal_shell_started", "user", "Interactive shell",
                       strlen("Interactive shell"), fields, 1U);
   cai_error_init(&shell_error);
-  shell_rc = cai_cli_shell_handoff(shell, state->workspace, NULL, NULL, &status,
-                                   &shell_error);
+  shell_rc = cai_cli_shell_handoff(shell, state->workspace,
+                                   share ? cli_terminal_shell_output : NULL,
+                                   state, &status, &shell_error);
   /* Recover ownership before any logger or renderer can write to the TTY.
    * A killed shell cannot restore its previous foreground process group. */
   rc = cli_shell_restore_foreground(foreground, error);
@@ -842,6 +853,19 @@ static int cli_terminal_shell(cli_state *state, cai_error *error) {
                          "restore CAI terminal after interactive shell");
   }
   cai_cli_status_refresh_branch(&state->status, state->workspace);
+  if (share) {
+    rc = cai_agent_runtime_user_shell_finish(
+        state->runtime,
+        shell_rc != CAI_OK  ? 127
+        : WIFEXITED(status) ? WEXITSTATUS(status)
+                            : 128 + WTERMSIG(status),
+        cai_cli_shell_elapsed(&state->shell), error);
+    if (rc != CAI_OK) {
+      cai_error_cleanup(&shell_error);
+      state->exit_requested = 1;
+      return rc;
+    }
+  }
   if (shell_rc != CAI_OK) {
     rc = cai_cli_error(error, shell_rc, shell_error.message);
     cai_error_cleanup(&shell_error);
@@ -1275,6 +1299,19 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
   cli_state *state;
   (void)error;
   state = (cli_state *)context;
+  if (event->data != NULL &&
+      strcmp(event->type, "user_shell_output_tail") == 0) {
+    pslog_field fields[2];
+    fields[0] = pslog_bool("replay", 1);
+    fields[1] = pslog_str("prompt_kind", "shell_output");
+    cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO,
+                        "user_shell_output_tail", "user", event->data,
+                        strlen(event->data), fields, 2U);
+    return state->batch ? CAI_OK
+                        : cai_cli_shell_plain(&state->shell, event->data,
+                                              strlen(event->data), 1,
+                                              cli_shell_literal, state, error);
+  }
   if (!state->batch && event->data != NULL &&
       strcmp(event->type, "user_shell_started") == 0) {
     char command[8194];
@@ -2019,7 +2056,9 @@ static int cli_handle_command(cli_state *state, const char *line,
   int rc;
   *handled = 1;
   if (cli_is_terminal_shell(line))
-    return cli_terminal_shell(state, error);
+    return cli_terminal_shell(
+        state, strcmp(line, "/shellshare") == 0 || strcmp(line, "!sh+") == 0,
+        error);
   if (line[0] == '!')
     return cli_shell_start(state, line + 1U, error);
   if (strcmp(line, "/shell-context") == 0 ||
@@ -2097,6 +2136,8 @@ static int cli_handle_command(cli_state *state, const char *line,
         "asking the agent to manage goals. |\n",
         "| `/shell`, `!sh` | Open your interactive shell between turns; return "
         "to CAI when it exits. Terminal output stays local. |\n",
+        "| `/shellshare`, `!sh+` | Open a shell and share only its newest "
+        "sanitized output when it exits. Older output is discarded. |\n",
         "| `/model [MODEL [EFFORT]]` | Show models or change model/effort at "
         "the next safe "
         "model/tool boundary, keeping this conversation. |\n",

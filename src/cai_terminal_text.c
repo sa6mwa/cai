@@ -8,7 +8,7 @@ void cai_terminal_text_close(cai_terminal_text *t) {
   if (t == NULL)
     return;
   cai_free_mem(NULL, t->rows);
-  cai_free_mem(NULL, t->line);
+  cai_free_mem(NULL, t->line_storage);
   memset(t, 0, sizeof(*t));
 }
 
@@ -19,7 +19,8 @@ int cai_terminal_text_init(cai_terminal_text *t, size_t lines, size_t bytes,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "shell capture requires positive lines and >=4 bytes");
   t->rows = cai_alloc(NULL, bytes);
-  t->line = cai_alloc(NULL, bytes + 1U);
+  t->line_storage = cai_alloc(NULL, bytes * 2U + 1U);
+  t->line = t->line_storage;
   if (t->rows == NULL || t->line == NULL) {
     cai_terminal_text_close(t);
     return cai_set_error(error, CAI_ERR_NOMEM,
@@ -42,6 +43,19 @@ static void discard_row(cai_terminal_text *t) {
   t->truncated = 1;
 }
 
+static void discard_bytes(cai_terminal_text *t, size_t count) {
+  while (t->length != 0U &&
+         (count != 0U || ((unsigned char)t->rows[t->start] & 0xc0U) == 0x80U)) {
+    if (t->rows[t->start] == '\n')
+      t->lines--;
+    t->start = (t->start + 1U) % t->byte_limit;
+    t->length--;
+    if (count != 0U)
+      count--;
+    t->truncated = 1;
+  }
+}
+
 static size_t scalar_end(const char *line, size_t at, size_t length) {
   if (at < length)
     at++;
@@ -53,13 +67,14 @@ static size_t scalar_end(const char *line, size_t at, size_t length) {
 static void put_scalar(cai_terminal_text *t, const char *data, size_t size) {
   size_t end = scalar_end(t->line, t->cursor, t->line_length);
   size_t next = t->line_length - (end - t->cursor) + size;
-  while (t->lines != 0U &&
-         (t->lines >= t->line_limit || t->length + next > t->byte_limit))
+  while (t->lines != 0U && t->lines >= t->line_limit)
     discard_row(t);
+  if (t->length + next > t->byte_limit)
+    discard_bytes(t, t->length + next - t->byte_limit);
   /* One oversized logical line retains its UTF-8 suffix, also under the bound.
    */
   while (next > t->byte_limit) {
-    size_t drop = t->byte_limit / 4U;
+    size_t drop = next - t->byte_limit;
     if (drop > t->line_length)
       drop = t->line_length;
     while (drop < t->line_length &&
@@ -67,12 +82,18 @@ static void put_scalar(cai_terminal_text *t, const char *data, size_t size) {
       drop++;
     if (drop == 0U)
       drop = scalar_end(t->line, 0U, t->line_length);
-    memmove(t->line, t->line + drop, t->line_length - drop);
+    t->line += drop;
     t->line_length -= drop;
     t->cursor = t->cursor >= drop ? t->cursor - drop : 0U;
     end = scalar_end(t->line, t->cursor, t->line_length);
     next = t->line_length - (end - t->cursor) + size;
     t->truncated = 1;
+  }
+  /* Sliding storage avoids shifting a full line on every appended byte while
+   * retaining the exact newest suffix, including an unterminated long line. */
+  if ((size_t)(t->line - t->line_storage) + next > t->byte_limit * 2U) {
+    memmove(t->line_storage, t->line, t->line_length);
+    t->line = t->line_storage;
   }
   memmove(t->line + t->cursor + size, t->line + end, t->line_length - end);
   memcpy(t->line + t->cursor, data, size);
@@ -82,12 +103,13 @@ static void put_scalar(cai_terminal_text *t, const char *data, size_t size) {
 
 static void newline(cai_terminal_text *t) {
   size_t i;
-  while (t->lines != 0U && (t->lines >= t->line_limit ||
-                            t->length + t->line_length + 1U > t->byte_limit))
+  while (t->lines != 0U && t->lines >= t->line_limit)
     discard_row(t);
+  if (t->length + t->line_length + 1U > t->byte_limit)
+    discard_bytes(t, t->length + t->line_length + 1U - t->byte_limit);
   if (t->line_length == t->byte_limit) {
     size_t drop = scalar_end(t->line, 0U, t->line_length);
-    memmove(t->line, t->line + drop, t->line_length - drop);
+    t->line += drop;
     t->line_length -= drop;
     t->truncated = 1;
   }
@@ -96,6 +118,7 @@ static void newline(cai_terminal_text *t) {
   t->rows[(t->start + t->length++) % t->byte_limit] = '\n';
   t->lines++;
   t->line_length = t->cursor = 0U;
+  t->line = t->line_storage;
 }
 
 static void csi_finish(cai_terminal_text *t, unsigned char ch) {

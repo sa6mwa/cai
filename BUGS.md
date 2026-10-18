@@ -485,3 +485,20 @@ commit and verification evidence.
   resume, continuation and reopen; lossless JSONL export and sequence safety;
   real PTY output above the ceiling excluded from requests, exports and logs;
   ordinary pipe commands still shared; terminal handoff/job-control regressions.
+
+## BUG-016: Opt-in terminal sharing must retain only the newest replayable tail
+
+- **Status:** fixed; native/CLI/Lua checks pass. Both native capture checks
+  also pass Valgrind with zero errors and zero leaked bytes.
+- `/shellshare` and `!sh+` explicitly share an interactive shell's output for
+  that invocation. `/shell` and `!sh` remain local.
+- Both shared terminal handoffs and ordinary `!COMMAND` recordings consume
+  output into a bounded rolling buffer. Older text is discarded as output
+  arrives, including prefixes of long lines and partial oldest rows.
+- Only the newest sanitized tail is saved and logged at finish. Completion
+  metadata and the truncation notice count toward the default replay parser's
+  dynamic-string ceiling. No complete raw transcript is journaled.
+- Tests cover exact byte suffixes, UTF-8/control sequence boundaries, long
+  commands and extreme exit/time metadata, failed tail/completion writes and
+  retries, real PTYs, ordinary pipe output, exports, logs, replay and the Lua
+  facade on both provider protocols.

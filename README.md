@@ -157,6 +157,12 @@ neither journaled, logged nor sent to the model, including with
 `--shell-context` enabled. Logs retain only shell start/exit metadata.
 A failed launch or nonzero shell exit reports details and returns to CAI.
 
+`/shellshare` and `!sh+` explicitly share the shell's newest sanitized output
+when it exits. This applies to that invocation even if ordinary bang-command
+sharing is disabled. The same rolling-tail storage described below applies;
+older output is discarded as new text arrives. A shell that has not finished
+does not save its captured output.
+
 Other `!COMMAND` inputs run captured commands as described below.
 
 Enter `!COMMAND` to run your shell (`$SHELL`, falling back to `/bin/sh`) with
@@ -169,22 +175,26 @@ shell first; quit also cancels it. Commands have a one-hour timeout, and their
 background descendants are terminated at completion. Ordinary prompts entered
 while a shell runs are durably queued until its result has been recorded.
 
-Commands and full raw output are journaled as they arrive. Replay displays them
-without executing commands. By default, a completed result becomes tagged
+Commands are journaled at start; only the newest sanitized output is saved at
+completion. Replay displays that tail without executing commands. By default,
+a completed result becomes tagged
 user-role context, including exit code and elapsed time, at the next safe
 model/tool boundary. It does not start inference, steer the agent or advance a
-goal turn. The model copy retains the last 5,000 logical lines, bounded by
-4 MiB of UTF-8, with an explicit marker when earlier output was discarded.
+goal turn. A rolling buffer retains up to 5,000 logical lines and the configured
+byte ceiling (4 MiB by default), further limited by the replay parser's
+dynamic-string bound (currently 128 KiB), including completion metadata and a
+truncation notice. The newest text that fits is kept; earlier text falls out
+of the buffer. The saved tail, logged output and model copy use that same text.
 `--shell-context-max-lines N` and `--shell-context-max-bytes N` override
 `CAI_SHELL_CONTEXT_MAX_LINES` / `CAI_SHELL_CONTEXT_MAX_BYTES`, which override
 `[runtime] shell_context_max_lines` / `shell_context_max_bytes` in `config.ini`.
 Zero in SDK/INI selects the default; CLI values must be positive (bytes >=4).
-An oversized line keeps a bounded suffix, discarding prefixes in chunks.
+An oversized line keeps its newest UTF-8-aligned suffix.
 ANSI/VT colors, CSI and OSC/DCS/control strings are removed before retention;
 CR, backspace and horizontal cursor/erase controls update the current logical
 line. Incomplete controls are dropped, invalid UTF-8 is replaced, and split
 controls/UTF-8 are handled across reads. This is a text transcript, not a full
-screen or alternate-screen emulator. JSONL retains the complete raw stream.
+screen or alternate-screen emulator. JSONL contains only the retained tail.
 Markdown export uses
 the existing libcai exporter of retained model context.
 
@@ -192,7 +202,8 @@ the existing libcai exporter of retained model context.
 or `/shell-context off` keeps future `!COMMAND` results out of
 model context while still executing, displaying and saving them.
 `/shell-context on` enables sharing; `/shell-context` shows the setting.
-These controls never enable recording or sharing for `/shell` or `!sh`.
+These controls never enable recording or sharing for `/shell` or `!sh`;
+`/shellshare` and `!sh+` explicitly opt in for one invocation.
 The setting is captured when each command starts. Earlier shared results stay
 in context. Unshared results replay locally and remain in JSONL exports.
 
@@ -200,12 +211,14 @@ SDK hosts provide execution and call the owner-thread APIs
 `cai_agent_runtime_user_shell_begin(runtime, command, share, &error)`,
 `cai_agent_runtime_user_shell_write(runtime, bytes, length, &error)` for each
 chunk, and `cai_agent_runtime_user_shell_finish(runtime, exit_code, duration_ms,
-&error)`. Writing acknowledges bounded journal chunks without buffering the
-whole output. After a write failure, do not retry the same chunk: a prefix may
-already be durable. A failed finish can be retried. Newly submitted turns wait
+&error)`. Writes update the bounded rolling capture; they do not journal or log
+raw chunks. Finish saves the sanitized tail, then its completion. A failed
+finish can be retried; once the tail is saved, further writes are rejected.
+Newly submitted turns wait
 for finish; an existing model turn continues. Closing an unfinished recording
-retains its acknowledged output without scheduling execution or shared context
-on recovery. Lua exposes `runtime:user_shell_begin(command, share)` (sharing
+discards any unsaved capture without scheduling execution or shared context on
+recovery. A tail already saved by an interrupted finish remains replayable.
+Lua exposes `runtime:user_shell_begin(command, share)` (sharing
 defaults to true), `runtime:user_shell_write(bytes)` (binary strings accepted),
 and `runtime:user_shell_finish(exit_code, duration_ms)`. libcai never executes
 these explicitly user-run commands itself.

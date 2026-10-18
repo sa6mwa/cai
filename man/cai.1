@@ -216,7 +216,8 @@ Keep future !COMMAND results out of model context.
 Terminal handoffs (!sh and /shell) always remain local and are never recorded.
 The positive --shell-context enables sharing. CAI_SHELL_CONTEXT and
 [ui] shell_context supply startup defaults. Commands still execute with
-normal user permissions, display literal output and save full raw history.
+normal user permissions, display literal output and save only the newest
+sanitized tail that fits the replay parser limit.
 Earlier shared results remain in context.
 .TP
 .BI \-\-shell-context-max-lines " N"
@@ -438,6 +439,14 @@ regardless of shell-context settings. Logs record only the executable and exit
 metadata.
 Launch failures and nonzero exits report details and return to CAI.
 .TP
+.BR /shellshare , " " !sh+
+Open the same interactive shell, explicitly sharing its newest sanitized output
+after exit, even when ordinary bang-command sharing is disabled. Older output
+falls out of a rolling buffer. Only the retained tail is saved and logged;
+an unfinished shell's capture is discarded. The saved completion includes exit
+status, duration and a truncation notice when needed. Each saved string fits
+the replay parser limit, including metadata.
+.TP
 .BI ! COMMAND
 For other bang commands, run $SHELL (or /bin/sh) with -c in the workspace using normal user permissions,
 outside the agent sandbox. Stdin is closed; stdout and stderr use one pipe,
@@ -446,14 +455,16 @@ newlines and tabs are preserved; invalid bytes and other controls appear as
 \\xNN. Ctrl-C or Escape cancels the shell first, and quit cancels it too.
 The timeout is one hour. Background descendants are terminated at completion.
 Ordinary prompts entered while it runs are durably queued until completion.
-Full raw output is journaled in bounded chunks. Resume replays it without
-execution. Shared results become tagged user-role context, with exit code and
+Only the newest sanitized tail is journaled on completion. Resume replays it
+without execution. Shared results become tagged user-role context, with exit code and
 duration, at a safe model/tool boundary without starting a model turn. At most
-5000 logical lines and 4 MiB of text are retained for inference by default,
-with an explicit truncation marker. ANSI/VT colors and control strings are
+5000 logical lines and the configured byte ceiling (default 4 MiB) are retained,
+further limited by the replay parser's dynamic-string bound (currently 128 KiB)
+including completion metadata and a truncation marker. Oldest text is discarded
+as new output arrives. ANSI/VT colors and control strings are
 removed before buffering; carriage return, backspace and horizontal editing
 update the current logical line. This is not a full screen emulator;
-JSONL exports preserve the complete raw stream. Markdown exports use retained
+JSONL exports contain only the retained tail. Markdown exports use retained
 model context. Slash commands echo as plain $ input rows; normal user prompts
 keep their > prefix. The gray ! message line receives ANSI-free libmdf text.
 .TP

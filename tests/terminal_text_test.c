@@ -78,6 +78,24 @@ int main(void) {
   assert(strlen(out) <= 8U && strcmp(out, "€€") == 0 && t.truncated);
   free(out);
   cai_terminal_text_close(&t);
+  /* A byte ceiling retains an exact suffix, even part of the oldest row. */
+  assert(cai_terminal_text_init(&t, 20U, 8U, &error) == CAI_OK);
+  cai_terminal_text_write(&t, "abcde\nfgh\n", 10U);
+  assert(cai_terminal_text_finish(&t, &out, &error) == CAI_OK);
+  assert(strcmp(out, "cde\nfgh\n") == 0 && t.truncated);
+  free(out);
+  cai_terminal_text_close(&t);
+  assert(cai_terminal_text_init(&t, 20U, 17U, &error) == CAI_OK);
+  for (i = 0U; i < 100000U; i++) {
+    char byte = (char)('a' + i % 26U);
+    cai_terminal_text_write(&t, &byte, 1U);
+  }
+  assert(cai_terminal_text_finish(&t, &out, &error) == CAI_OK);
+  assert(strlen(out) == 17U && t.truncated);
+  for (i = 0U; i < 17U; i++)
+    assert(out[i] == (char)('a' + (100000U - 17U + i) % 26U));
+  free(out);
+  cai_terminal_text_close(&t);
   assert(cai_terminal_text_init(&t, 0U, 8U, &error) == CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   return 0;

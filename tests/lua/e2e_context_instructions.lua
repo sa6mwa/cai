@@ -38,6 +38,10 @@ local runtime = open(first, nil, config:get_bool("agent", "codex_agents_md"))
 assert(ok(runtime:metrics()).context_window_tokens == 272000)
 local id = runtime:session_id()
 ok(runtime:user_shell_begin("lua-hosted-pty", true))
+ok(runtime:user_shell_write("DROPPED_LUA_PREFIX"))
+local raw_chunk = string.rep("old output", 512)
+for _=1,40 do ok(runtime:user_shell_write(raw_chunk)) end
+ok(runtime:user_shell_write("\n"))
 for _,piece in ipairs({"DROPPED_LUA_LINE\nkept-lua-one\n\27[3", "1mkept-lua-two\27[0m\n"}) do
   ok(runtime:user_shell_write(piece))
 end

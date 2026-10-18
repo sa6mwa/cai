@@ -36,8 +36,8 @@ typedef struct fixture {
   size_t count;
   const char *fail_type;
   int fail_checkpoint;
-  int fail_output_at;
   size_t output_bytes;
+  size_t output_events;
   int turns;
   int steering;
   int failed;
@@ -114,9 +114,7 @@ static int append(void *context, const char *scope, const char *id,
   (void)scope;
   (void)id;
   pthread_mutex_lock(&f->lock);
-  if ((f->fail_type != NULL && strcmp(event->type, f->fail_type) == 0) ||
-      (strcmp(event->type, "user_shell_output_hex") == 0 &&
-       f->fail_output_at > 0 && --f->fail_output_at == 0)) {
+  if (f->fail_type != NULL && strcmp(event->type, f->fail_type) == 0) {
     f->fail_type = NULL;
     pthread_mutex_unlock(&f->lock);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
@@ -128,9 +126,14 @@ static int append(void *context, const char *scope, const char *id,
   r->type = strdup(event->type);
   r->data = event->data != NULL ? strdup(event->data) : NULL;
   CHECK(r->type != NULL && (event->data == NULL || r->data != NULL));
-  if (strcmp(event->type, "user_shell_output_hex") == 0) {
-    CHECK(strlen(r->data) <= 8192U && strlen(r->data) % 2U == 0U);
-    f->output_bytes += strlen(r->data) / 2U;
+  CHECK(strcmp(event->type, "user_shell_output_hex") != 0);
+  if (r->data != NULL) {
+    lonejson_config config = lonejson_default_config();
+    CHECK(strlen(r->data) <= config.max_dynamic_string_bytes);
+  }
+  if (strcmp(event->type, "user_shell_output_tail") == 0) {
+    f->output_bytes += strlen(r->data);
+    f->output_events++;
   }
   pthread_mutex_unlock(&f->lock);
   return CAI_OK;
@@ -287,13 +290,18 @@ int main(int argc, char **argv) {
           CAI_OK);
     CHECK(cai_agent_runtime_user_shell_write(
               runtime, raw + 4U, sizeof(raw) - 4U, &error) == CAI_OK);
-    CHECK(f.output_bytes == sizeof(raw));
+    CHECK(f.output_bytes == 0U);
     failed_append(&f, "user_shell_completed");
     CHECK(cai_agent_runtime_user_shell_finish(runtime, 7, 1234U, &error) ==
           CAI_ERR_TRANSPORT);
     clear_error(&error);
+    CHECK(f.output_events == 1U);
+    CHECK(cai_agent_runtime_user_shell_write(runtime, "late", 4U, &error) ==
+          CAI_ERR_INVALID);
+    clear_error(&error);
     CHECK(cai_agent_runtime_user_shell_finish(runtime, 7, 1234U, &error) ==
           CAI_OK);
+    CHECK(f.output_events == 1U);
     wait_export(runtime, &exported, &error);
     CHECK(strstr(exported.data, "\\x1b") == NULL);
     CHECK(strstr(exported.data, "Exit code: 7") != NULL &&
@@ -313,16 +321,16 @@ int main(int argc, char **argv) {
     wait_export(runtime, &exported, &error);
     CHECK(strstr(exported.data, "private-result") == NULL);
 
-    CHECK(cai_agent_runtime_user_shell_begin(runtime, "partial-failed-write", 0,
+    CHECK(cai_agent_runtime_user_shell_begin(runtime, "failed-tail-save", 0,
                                              &error) == CAI_OK);
-    pthread_mutex_lock(&f.lock);
-    f.fail_output_at = 2;
     i = f.output_bytes;
-    pthread_mutex_unlock(&f.lock);
     CHECK(cai_agent_runtime_user_shell_write(runtime, raw, 9000U, &error) ==
+          CAI_OK);
+    CHECK(f.output_bytes == i);
+    failed_append(&f, "user_shell_output_tail");
+    CHECK(cai_agent_runtime_user_shell_finish(runtime, 1, 100U, &error) ==
           CAI_ERR_TRANSPORT);
     clear_error(&error);
-    CHECK(f.output_bytes == i + 4096U);
     CHECK(cai_agent_runtime_user_shell_write(runtime, "new bytes", 9U,
                                              &error) == CAI_OK);
     CHECK(cai_agent_runtime_user_shell_finish(runtime, 1, 100U, &error) ==
@@ -381,6 +389,42 @@ int main(int argc, char **argv) {
               runtime, "after unfinished recording", 0, &error) == CAI_OK);
     CHECK(cai_agent_runtime_user_shell_finish(runtime, 0, 0U, &error) ==
           CAI_OK);
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+    /* The replay bound includes long commands, exit/time metadata and the
+     * truncation notice, even with a larger configured retention ceiling. */
+    config.shell_context_max_bytes = 4U * 1024U * 1024U;
+    CHECK(cai_agent_runtime_open(client, &config, &runtime, &error) == CAI_OK);
+    {
+      char command[8193];
+      size_t j, limit;
+      lonejson_config json_config = lonejson_default_config();
+      limit = json_config.max_dynamic_string_bytes;
+      memset(command, 'c', sizeof(command) - 1U);
+      command[sizeof(command) - 1U] = '\0';
+      CHECK(cai_agent_runtime_user_shell_begin(runtime, command, 0, &error) ==
+            CAI_OK);
+      CHECK(cai_agent_runtime_user_shell_write(runtime, "DISCARDED_HEAD", 14U,
+                                               &error) == CAI_OK);
+      memset(raw, 'X', sizeof(raw));
+      for (j = 0U; j < 10U; j++)
+        CHECK(cai_agent_runtime_user_shell_write(runtime, raw, sizeof(raw),
+                                                 &error) == CAI_OK);
+      CHECK(cai_agent_runtime_user_shell_write(runtime, "NEWEST_SUFFIX", 13U,
+                                               &error) == CAI_OK);
+      CHECK(cai_agent_runtime_user_shell_finish(runtime, INT_MIN, ULLONG_MAX,
+                                                &error) == CAI_OK);
+      pthread_mutex_lock(&f.lock);
+      for (j = f.count; j > 0U; j--)
+        if (strcmp(f.records[j - 1U].type, "user_shell_unshared") == 0)
+          break;
+      CHECK(j > 0U);
+      CHECK(strlen(f.records[j - 1U].data) == limit);
+      CHECK(strstr(f.records[j - 1U].data, "NEWEST_SUFFIX") != NULL);
+      CHECK(strstr(f.records[j - 1U].data, "DISCARDED_HEAD") == NULL);
+      CHECK(strstr(f.records[j - 1U].data, "Earlier output truncated") != NULL);
+      pthread_mutex_unlock(&f.lock);
+    }
     cai_agent_runtime_close(runtime);
     runtime = NULL;
     cai_client_close(client);

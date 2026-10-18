@@ -44,7 +44,7 @@ send '!printf replay-once >> executions; cat executions\r'; expect 'Shell comman
 send '!awk "BEGIN {for (i=0;i<70000;i++) printf \"L\"; print \"\\nRAW-END\"}"\r'; expect 'Shell command exited 0'; contains "$term/text" RAW-END
 plan '{"plan":["BOUNDED DONE"]}'
 prompt 'bounded shell context' 'BOUNDED DONE'
-contains "$root/peer/requests.jsonl" 'Earlier output truncated for model context;'
+contains "$root/peer/requests.jsonl" 'Earlier output truncated;'
 terminal_close
 logs
 jq -se 'any(.[]; .msg == "cai.user_shell.completed" and (.duration_ms|type) == "number" and (.bytes|type) == "number" and .role == "user")' "$root/logs.jsonl" >/dev/null
