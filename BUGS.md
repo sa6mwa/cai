@@ -336,6 +336,19 @@ commit and verification evidence.
   export and resume preserve the conversation, and the encryption key remains
   unchanged. A subsequent open no longer emits the warning. The diagnostic now
   explains that indexed queries will attempt recovery from stored records.
+- **Follow-up (2026-10-18):** with liblockdc 0.21.0, auto-resume followed by
+  `/quit` repeatedly reported the invalid index. A prompted turn repaired it.
+  Auto-resume can use the directory cache and direct reads without an indexed
+  query, so the previous listing-driven recovery test missed this path.
+  The regression reproduced the warning on the second auto-resume/quit cycle.
+  Local Pouch startup now calls liblockdc's public wait flush, retaining the
+  healthy-index fast path and repairing derived state before replay. Repair
+  errors remain nonfatal and emit a diagnostic. Remote lockd startup is
+  unchanged. Regression coverage includes missing, empty and malformed indexes,
+  repeated auto-resume/quit cycles with no model requests, and an unusable
+  index path that must not prevent direct replay.
+  The expanded recovery regression and ten related startup, storage, auth,
+  idle, endpoint and package checks pass with liblockdc 0.21.0.
 - **Crash coverage:** an idle writer killed without closing its pouch can be
   reopened and resumed. The static musl CAI also survives two real ten-second
   background index-publication cycles while interactive and idle. Neither test

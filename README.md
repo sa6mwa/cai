@@ -427,9 +427,11 @@ liblockdc Pouch root at `$XDG_STATE_HOME/cai/pouch`, or
 `~/.local/state/cai/pouch`. Session metadata is indexed in `cai.sessions`;
 checkpoints and journal events are immutable attachments streamed into and
 out of that namespace. Credentials are stored separately in `cai.auth`.
-Pouch's query indexes are derived caches. If startup cannot read an index
-manifest, it reports a warning; indexed queries such as `--list` or `/resume`
-attempt to rebuild it from stored records. Index-cache recovery does not
+Pouch's query indexes are derived caches. Local startup prepares the session
+index through liblockdc's wait flush, repairing missing or invalid manifests
+without requiring a prompt or a session listing. A repair failure reports a
+warning while direct session replay remains available. Indexed queries such
+as `--list` or `/resume` can retry recovery. Index-cache recovery does not
 replace the encryption key or discard conversation history. An unreadable
 index warning alone does not identify the cause of a preceding process crash.
 One lockd client serves all namespaces. A derived `cai.scopes` index records the

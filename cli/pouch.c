@@ -1311,6 +1311,32 @@ static int ensure_parents(char *path, cai_error *error) {
   return CAI_OK;
 }
 
+/* Auto-resume reads the directory cache and checkpoint directly, so it need
+ * not execute a query that repairs a retired/corrupt search index. The public
+ * wait flush keeps a healthy index's trusted fast path and repairs derived
+ * state when needed. Failure must not prevent direct conversation replay. */
+static void prepare_session_index(cai_cli_pouch *pouch) {
+  lc_index_flush_req request;
+  lc_index_flush_res result;
+  lc_error local;
+  lc_index_flush_req_init(&request);
+  memset(&result, 0, sizeof(result));
+  lc_error_init(&local);
+  request.ns = "cai.sessions";
+  request.mode = "wait";
+  if (lc_flush_index(pouch->sessions, &request, &result, &local) != LC_OK &&
+      pouch->logger != NULL)
+    pouch->logger->warnf(
+        pouch->logger,
+        "Session search index recovery failed; session replay remains "
+        "available",
+        "ns=%s code=%d error=%s detail=%s", request.ns, local.code,
+        local.message != NULL ? local.message : "index flush failed",
+        local.detail != NULL ? local.detail : "");
+  lc_index_flush_res_cleanup(&result);
+  lc_error_cleanup(&local);
+}
+
 int cai_cli_pouch_open(cai_cli_pouch *pouch, const char *selected_endpoint,
                        const char *client_pem, pslog_logger *logger,
                        cai_error *error) {
@@ -1433,6 +1459,8 @@ int cai_cli_pouch_open(cai_cli_pouch *pouch, const char *selected_endpoint,
     return rc;
   }
   pouch->owner_thread = pthread_self();
+  if (local_pouch)
+    prepare_session_index(pouch);
   pouch->store.context = pouch;
   pouch->store.checkpoint = checkpoint;
   pouch->store.load_latest = load_latest;

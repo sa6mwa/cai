@@ -36,13 +36,40 @@ contains "$root/stdout" 'RESUMED AFTER INDEX RECOVERY'
 tail -1 "$root/peer/requests.jsonl" >"$root/request"
 contains "$root/request" 'durable conversation prompt'
 contains "$root/request" 'DURABLE CONVERSATION ANSWER'
-# Real interactive startup must explain the cache warning, replay history
-# without a model call, and recover when /resume asks for an indexed listing.
-printf 'interrupted derived index\n' >"$manifest"
+# Auto-resume followed immediately by /quit must complete recovery without
+# a user prompt, /resume listing, or a checkpoint-producing model turn.
 count=$(requests)
+# An unusable derived-index path must report the repair failure without
+# preventing direct auto-resume of the intact conversation.
+rm "$manifest"
+mkdir "$manifest"
 terminal_start
-expect 'Search index cache unavailable'
-expect 'recovery from stored records'
+expect 'Session search index recovery failed'
+expect 'RESUMED AFTER INDEX RECOVERY'
+terminal_close
+rmdir "$manifest"
+printf 'interrupted derived index\n' >"$manifest"
+for mode in missing empty malformed; do
+  case "$mode" in
+    missing) rm "$manifest" ;;
+    empty) : >"$manifest" ;;
+    malformed) printf 'interrupted derived index\n' >"$manifest" ;;
+  esac
+  terminal_start
+  expect 'RESUMED AFTER INDEX RECOVERY'
+  if [[ "$mode" != missing ]]; then
+    expect 'Search index cache unavailable'
+    expect 'recovery from stored records'
+  fi
+  terminal_close
+  for restart in 1 2; do
+    terminal_start
+    expect 'RESUMED AFTER INDEX RECOVERY'
+    absent "$term/text" 'Search index cache unavailable'
+    terminal_close
+  done
+done
+terminal_start
 send '/resume\r'; expect "$id"
 terminal_close
 [[ $(requests) == "$count" ]]
