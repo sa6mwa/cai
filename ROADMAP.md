@@ -141,7 +141,7 @@ Recent hardening runs have covered:
 ## Active First-Release Work
 
 The first `cai` CLI release targets a single static x86_64 Linux musl binary.
-It uses the Smith runtime, softline 0.11.0, libmdf 0.14.0, ChatGPT auth, and
+It uses the Smith runtime, softline 0.11.0, libmdf 0.15.0, ChatGPT auth, and
 workspace-scoped JSONL sessions. CLI MCP connection configuration is deferred
 to a later release; the `libcai` MCP client API remains available to embedders.
 Ship a `cai(1)` manual page in the binary archive alongside the executable,
@@ -195,9 +195,10 @@ Track an upstream libmdf wrapping issue when OSC8 is disabled: at width 24 with
 a left margin of 2, `abcdefghijklmnopqrst ([label](https://x.test)).` renders
 the visible URL on a row without the left margin and inserts margin spaces
 before the final period. A direct public-API reproduction produced identical
-output with libmdf 0.13.0 and 0.14.0, for whole and fragmented input. Recheck
-this case during future renderer upgrades; the current upgrade preserves the
-existing behavior. OSC8 rendering is a separate path.
+output with libmdf 0.13.0, 0.14.0 and 0.15.0, for whole and fragmented input.
+Rechecked on 2026-10-19 with the public 0.15.0 API; the wrapping issue remains.
+The 0.15.0 upgrade fixes parenthesized link destinations, which the CLI tests
+cover in whole and fragmented deltas. OSC8 rendering is a separate path.
 
 ## Deferred: Embeddable application on Darwin
 

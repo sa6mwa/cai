@@ -77,6 +77,22 @@ terminal_start -N
 send 'render markdown\r'; expect 'MARKDOWN DONE'; expect 'Worked for'
 contains "$term/text" label; contains "$term/text" '(https://x.test))'; contains "$term/text" 'a|b'; absent "$term/text" 'a\|b'
 terminal_close
+# Parenthesized link destinations must survive whole and fragmented deltas.
+# These use the real runtime/libmdf/softline path against a local provider.
+width=120
+for chunks in \
+  '["[DOI](https://doi.org/10.1016/S0031-3203(01)00020-5)\n\n[Escaped](https://example.test/a\\(b\\))\n\nLINK DONE"]' \
+  '["[DOI](https://doi.org/10.1016/S0031-3203(","01",")00020-5",")\n\n[Escaped](https://example.test/a\\","(b\\","))\n\nLINK DONE"]'; do
+  plan "{\"plan\":[$chunks]}"
+  terminal_start -N
+  send 'render parenthesized links\r'; expect 'LINK DONE'; expect 'Worked for'
+  contains "$term/feed" 'DOI (https://doi.org/10.1016/S0031-3203(01)00020-5)'
+  contains "$term/feed" 'Escaped (https://example.test/a(b))'
+  absent "$term/feed" '[DOI]('
+  absent "$term/feed" '[Escaped]('
+  terminal_close
+done
+width=24
 # Image capability boundaries: workspace and clipboard, no siblings/escapes.
 cp "$image" "$work/allowed.png"
 cp "$image" "$root/cache/cai/other.png"
