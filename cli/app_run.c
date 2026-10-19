@@ -3010,14 +3010,15 @@ int cai_cli_app_main(int argc, char **argv, const cai_app_config *application) {
       goto cleanup;
     }
     state.has_timer_watch = 1;
-    if (sl_watch_add(state.sl, state.log.wakeup_fd,
+    if (state.log.wakeup_fd >= 0 &&
+        sl_watch_add(state.sl, state.log.wakeup_fd,
                      SL_WATCH_READ | SL_WATCH_ERROR | SL_WATCH_HANGUP,
                      cli_log_wakeup, &state, &state.log_watch_id) != SL_OK) {
       cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
                      "watch interactive log notices");
       goto cleanup;
     }
-    state.has_log_watch = 1;
+    state.has_log_watch = state.log.wakeup_fd >= 0;
   }
   cai_client_config_init(&client_config);
   client_config.logger = state.log.logger;

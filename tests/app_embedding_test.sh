@@ -26,3 +26,14 @@ send '/quit\r'
 two_banners() { [[ $(grep -o EMBEDDED_STARTUP_BANNER "$term/raw" | wc -l) == 2 ]]; }
 wait_for two_banners
 terminal_close
+unset CAI_TEST_APP_REPEAT
+export CAI_TEST_APP_LOG_PATH="$root/host.log"
+export XDG_CACHE_HOME="$root/borrowed-cache"
+export LOG_OUTPUT="$root/unused-env.log"
+plan '{"plan":["BORROWED LOGGER TURN"]}'
+terminal_start -N
+prompt 'test host logger' 'BORROWED LOGGER TURN'
+terminal_close
+jq -se 'any(.[]; .role == "assistant" and .msg == "BORROWED LOGGER TURN") and any(.[]; .msg == "HOST_LOGGER_STILL_OPEN")' "$root/host.log" >/dev/null
+[[ ! -e "$root/unused-env.log" ]]
+[[ -z $(find "$root/borrowed-cache" -type f -name '*.log' -print) ]]
