@@ -1,0 +1,7 @@
+include(CMakeFindDependencyMacro)
+find_dependency(cai CONFIG)
+find_dependency(pslog @CAI_PSLOG_VERSION@ EXACT CONFIG)
+find_dependency(softline @CAI_SOFTLINE_VERSION@ EXACT CONFIG)
+find_dependency(libmdf @CAI_LIBMDF_VERSION@ EXACT CONFIG)
+find_dependency(lockdc @CAI_LOCKDC_VERSION@ EXACT CONFIG COMPONENTS static)
+include("${CMAKE_CURRENT_LIST_DIR}/cai-app-targets.cmake")

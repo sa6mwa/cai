@@ -15,6 +15,7 @@ typedef struct cai_cli_log {
   int wakeup_fd;
   int failed;
   int bootstrap;
+  int borrowed;
   char directory[4096];
   char path[4096];
   char prefix[4096];
@@ -29,6 +30,9 @@ typedef struct cai_cli_log {
 int cai_cli_cache_directory(char *directory, size_t capacity, cai_error *error);
 int cai_cli_log_open(cai_cli_log *log, pslog_level default_level,
                      int interactive, cai_error *error);
+int cai_cli_log_open_with_logger(cai_cli_log *log, pslog_level default_level,
+                                 int interactive, pslog_logger *logger,
+                                 cai_error *error);
 int cai_cli_log_interactive(cai_cli_log *log, cai_error *error);
 int cai_cli_log_session(cai_cli_log *log, const char *id, cai_error *error);
 int cai_cli_log_notices(cai_cli_log *log, int (*visit)(void *, const char *),

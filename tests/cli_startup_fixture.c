@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
 #include "../cli/log.h"
+#include "../src/cai_chrome_host.h"
 #include <cai/quota.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -52,10 +53,7 @@ static int fixture_log_interactive(cai_cli_log *log, cai_error *error) {
 #define cai_cli_log_interactive fixture_log_interactive
 #define cai_client_list_models cai_test_list_models
 #define cai_client_chatgpt_quota blocked_quota
-#define main cai_cli_app_main
-int cai_cli_app_main(int argc, char **argv);
-#include "../cli/main.c"
-#undef main
+#include "../cli/app_run.c"
 #undef cai_client_chatgpt_quota
 #undef cai_client_list_models
 #undef cai_cli_log_interactive
@@ -73,5 +71,5 @@ int main(int argc, char **argv) {
     cai_error_cleanup(&error);
     return rc == CAI_OK ? 0 : 1;
   }
-  return cai_cli_app_main(argc, argv);
+  return cai_cli_app_main(argc, argv, NULL);
 }

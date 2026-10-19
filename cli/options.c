@@ -38,108 +38,6 @@ void cai_cli_options_init(cai_cli_options *options) {
   options->view_image = options->goals = options->skills = 1;
 }
 
-void cai_cli_print_help(FILE *out) {
-  static const struct {
-    const char *option;
-    const char *description;
-  } rows[] = {
-      {"    --service-tier NAME", "Provider routing tier (see /tier list)"},
-      {"-N, --new", "Start a new session"},
-      {"-n, --non-interactive", "Run supplied work and exit"},
-      {"    --resume [ID]", "List directory sessions or resume ID"},
-      {"-l, --list", "List conversations in all directories"},
-      {"    --export ID", "Export resumable JSONL and Markdown"},
-      {"    --import FILE", "Import JSONL as a new session and exit"},
-      {"    --export-dir DIR",
-       "Export root (default $XDG_DATA_HOME/cai/exports)"},
-      {"-C, --directory DIR", "Change to DIR before starting"},
-      {"    --config FILE", "Select config.ini"},
-      {"    --no-config", "Skip configuration and creation"},
-      {"-i, --instruction TEXT", "Submit a prompt (repeatable)"},
-      {"-g, --goal TEXT", "Start or replace a durable goal"},
-      {"    --review", "Run one isolated review and exit"},
-      {"    --review-and-fix", "Review and fix in a new goal session"},
-      {"    --base REF", "Review changes against REF"},
-      {"-o, --out FILE", "Write review findings to FILE"},
-      {"-T, --output-type TYPE", "Review findings: markdown|json"},
-      {"    --tool-output MODE",
-       "Tool previews: compact|full (interactive default compact)"},
-      {"-a, --auth-json PATH", "ChatGPT auth file (default ~/.codex/auth.json, "
-                               "then encrypted cai store)"},
-      {"    --login", "Log in to ChatGPT and exit"},
-      {"    --lockd ENDPOINT", "Storage endpoint (default state/cai/pouch)"},
-      {"    --lockd-client-pem FILE", "Remote lockd mTLS PEM bundle"},
-      {"-p, --provider NAME", "chatgpt|openai|openrouter|berget|custom"},
-      {"    --endpoint URL", "Custom provider API base URL"},
-      {"    --api-key-env NAME",
-       "Custom API key variable (default CAI_API_KEY)"},
-      {"    --[no-]chrome", "Chrome extension tools (default on)"},
-      {"    --[no-]mcp", "Configured HTTP MCP servers (default on)"},
-      {"    --[no-]web-search", "Hosted Responses search (default on)"},
-      {"    --[no-]todo", "Encrypted kanban tool (default off)"},
-      {"    --[no-]searxng", "Local search tool (default off)"},
-      {"    --searxng-url URL", "Search base (default http://127.0.0.1:8888)"},
-      {"    --[no-]revgeo", "Reverse geocoding (default off)"},
-      {"    --revgeo-url URL", "Reverse geocoding provider base URL"},
-      {"    --[no-]read-file", "File reading (default on)"},
-      {"    --[no-]list-files", "File listing (default on)"},
-      {"    --[no-]apply-patch", "Workspace patching (default on)"},
-      {"    --[no-]view-image", "Image inspection (default on)"},
-      {"    --[no-]goals", "Goal tools (default on)"},
-      {"    --[no-]skills", "Skill discovery and reading (default on)"},
-      {"    --chrome-socket PATH", "Select a connected CAI Chrome host"},
-      {"    --chrome-setup", "Register CAI as Chrome native host and exit"},
-      {"    --chrome-remove", "Remove CAI's own registration and exit"},
-      {"    --chrome-manifest FILE", "Alternate native-host registration path"},
-      {"    --[no-]shell-context", "Share !COMMAND results (not /shell, !sh)"},
-      {"    --shell-context-max-lines N", "Retain last N lines (default 5000)"},
-      {"    --shell-context-max-bytes N",
-       "Bound retained text (default 4194304)"},
-      {"    --model-metadata FILE", "Provider model metadata JSON"},
-      {"-m, --model ID", "Model (provider default if omitted)"},
-      {"-r, --reasoning-effort LEVEL",
-       "none|minimal|low|medium|high|xhigh|max|ultra"},
-      {"    --reasoning-summary MODE",
-       "none|auto|concise|detailed (default concise)"},
-      {"    --review-model ID", "Model for review children"},
-      {"    --review-reasoning-effort LEVEL",
-       "Reasoning effort for review children"},
-      {"    --review-reasoning-summary MODE",
-       "Reasoning summaries for review children"},
-      {"    --agents-md PATH", "Global AGENTS.md path"},
-      {"    --config-dir DIR", "Global agent config directory"},
-      {"    --skills-dir DIR", "Global skills directory"},
-      {"    --identity TEXT", "Visible agent identity"},
-      {"-I, --developer-instructions TEXT", "Append developer instructions"},
-      {"    --install-skill DIR", "Install a SKILL.md package and exit"},
-      {"    --replace", "Explicitly replace an installed skill"},
-      {"    --codex-agents-md", "Load Codex global and ancestor AGENTS.md"},
-      {"    --no-image-generation", "Disable hosted image generation"},
-      {"    --no-terminal", "Disable terminal tools"},
-      {"    --no-review-subagent", "Disable the built-in reviewer"},
-      {"-v, --verbose", "Print runtime events (repeat for sequences)"},
-      {"-h, --help", "Show this help"},
-      {"    --version", "Show version"}};
-  size_t i;
-  fputs(
-      "cai and libcai Copyright (C) 2026 C89 Systems AB https://c89.systems\n",
-      out);
-  fputs("\n", out);
-  fputs("Usage: cai [options]\n", out);
-  fputs("\n", out);
-  fputs("Start Cai Smith in the workspace directory. The newest session "
-        "resumes\n",
-        out);
-  fputs(
-      "automatically; use --new to start a fresh one. In the prompt, /resume\n",
-      out);
-  fputs("lists sessions for this directory and /resume N opens entry N.\n",
-        out);
-  fputs("\n", out);
-  for (i = 0U; i < sizeof(rows) / sizeof(rows[0]); i++)
-    fprintf(out, "  %-36s %s\n", rows[i].option, rows[i].description);
-}
-
 static int cai_cli_one_of(const char *value, const char *const *values) {
   size_t i;
   for (i = 0U; values[i] != NULL; i++) {
@@ -273,11 +171,11 @@ int cai_cli_read_options(int argc, char *const *argv,
         continue;
     }
     if (strcmp(flag, "-h") == 0 || strcmp(flag, "--help") == 0) {
-      cai_cli_print_help(stdout);
+      options->help = 1;
       return 0;
     }
     if (strcmp(flag, "--version") == 0) {
-      puts(CAI_VERSION_STRING);
+      options->version = 1;
       return 0;
     }
     if (strcmp(flag, "-N") == 0 || strcmp(flag, "--new") == 0) {

@@ -1,7 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #define _GNU_SOURCE
-#include "../src/cai_chrome_protocol.h"
-#include "chrome.h"
+#include "cai_chrome_host.h"
+#include "cai_chrome_protocol.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -362,13 +362,15 @@ done:
   CAI_LJ_CHROME->cleanup(CAI_LJ_CHROME, &cai_chrome_rpc_map, &rpc);
   return rc;
 }
-int cai_cli_chrome_host(const char *origin, pslog_logger *logger,
-                        cai_error *error) {
+int cai_chrome_native_host_run(const char *origin, pslog_logger *logger,
+                               cai_error *error) {
   chrome_host h;
   char directory[4096], path[4096];
   struct sockaddr_un address;
   struct pollfd fds[4];
   int listener = -1, rc, ready, accept_fd, old_in, old_out;
+  int pipe_changed = 0;
+  struct sigaction old_pipe, ignore_pipe;
   mode_t old_mask;
   long long now;
   memset(&h, 0, sizeof(h));
@@ -416,8 +418,17 @@ int cai_cli_chrome_host(const char *origin, pslog_logger *logger,
                        "Cannot configure Chrome native messaging pipes");
     goto done;
   }
-  /* This is a dedicated host process; stdout contains framed JSON only. */
-  (void)signal(SIGPIPE, SIG_IGN);
+  /* stdout contains framed JSON only; restore host signal ownership on return.
+   */
+  memset(&ignore_pipe, 0, sizeof(ignore_pipe));
+  ignore_pipe.sa_handler = SIG_IGN;
+  sigemptyset(&ignore_pipe.sa_mask);
+  if (sigaction(SIGPIPE, &ignore_pipe, &old_pipe) != 0) {
+    rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                       "Cannot configure Chrome native messaging signals");
+    goto done;
+  }
+  pipe_changed = 1;
   if (logger != NULL)
     logger->infof(logger, "CAI Chrome native host ready", "socket=%s", path);
   rc = CAI_OK;
@@ -523,6 +534,9 @@ int cai_cli_chrome_host(const char *origin, pslog_logger *logger,
     }
   }
 done:
+  if (pipe_changed && sigaction(SIGPIPE, &old_pipe, NULL) != 0)
+    rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                       "Cannot restore Chrome native messaging signals");
   if (old_in >= 0)
     (void)fcntl(STDIN_FILENO, F_SETFL, old_in);
   if (old_out >= 0)

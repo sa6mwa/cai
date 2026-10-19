@@ -32,7 +32,8 @@ static int resolve(const char *file, const char *flag, int expected) {
   if (flag != NULL)
     args[count++] = strdup(flag);
   cai_error_init(&error);
-  result = cai_cli_configure(count, args, &options, &configuration, &error);
+  result =
+      cai_cli_configure(count, args, &options, &configuration, NULL, &error);
   if (expected < 0) {
     result = result < 0 && error.message != NULL &&
                      strstr(error.message, "CAI_TODO") != NULL

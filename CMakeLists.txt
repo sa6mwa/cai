@@ -44,6 +44,10 @@ option(CAI_REGISTER_API_KEY_EXAMPLE_SMOKE
        OFF)
 option(CAI_BUILD_EXAMPLES "Build cai examples." ON)
 option(CAI_BUILD_CLI "Build the standalone cai terminal agent." OFF)
+option(CAI_BUILD_APP "Build the embeddable CAI terminal application." OFF)
+if(CAI_BUILD_CLI)
+  set(CAI_BUILD_APP ON)
+endif()
 option(CAI_BUILD_LUA "Build the Lua 5.5 binding and Lua tests." OFF)
 option(CAI_BUILD_FUZZERS "Build fuzz harnesses." OFF)
 option(CAI_ENABLE_COVERAGE "Build tests with coverage instrumentation." OFF)
@@ -77,9 +81,11 @@ set(CAI_LONEJSON_ABI_VERSION "26")
 set(CAI_PSLOG_VERSION "0.12.0")
 set(CAI_SOFTLINE_VERSION "0.10.0")
 set(CAI_LIBMDF_VERSION "0.14.0")
+set(CAI_LOCKDC_VERSION "0.21.0")
+set(CAI_LIBLQL_VERSION "0.3.0")
 
-if(CAI_BUILD_CLI AND NOT CAI_BUILD_STATIC)
-  message(FATAL_ERROR "The cai CLI requires CAI_BUILD_STATIC=ON")
+if(CAI_BUILD_APP AND NOT CAI_BUILD_STATIC)
+  message(FATAL_ERROR "The CAI application requires CAI_BUILD_STATIC=ON")
 endif()
 
 if(NOT CAI_BUILD_STATIC AND NOT CAI_BUILD_SHARED)
@@ -127,7 +133,7 @@ if(CAI_TARGET_ID STREQUAL "")
 endif()
 set(CAI_TARGET_ID "${CAI_TARGET_ID}" CACHE STRING "Release archive target id." FORCE)
 
-if(CAI_BUILD_CLI AND (NOT CAI_TARGET_ID MATCHES "^x86_64-linux-(gnu|musl)$" OR
+if(CAI_BUILD_APP AND (NOT CAI_TARGET_ID MATCHES "^x86_64-linux-(gnu|musl)$" OR
                       NOT CAI_DEPENDENCY_MODE STREQUAL "cpkt"))
   message(FATAL_ERROR
     "The cai CLI requires x86_64 Linux and cpkt dependencies (GNU for development, musl for distribution)")
@@ -306,7 +312,7 @@ function(cai_set_pslog_from_target)
   endif()
 endfunction()
 
-if(CAI_BUILD_CLI)
+if(CAI_BUILD_APP)
   if(CAI_TARGET_ID STREQUAL "x86_64-linux-gnu")
     set(_cai_liblql_sha256 "fafb04f9af5d9610f77380ac1f848d1edd3d60dcf7ce6a098f6a04e30dd2b47a")
     set(_cai_lockdc_sha256 "87d1829895977b407a5f205df0016679b62021a986f885a2bcbbe53b94e06ba5")
@@ -318,23 +324,23 @@ if(CAI_BUILD_CLI)
     set(_cai_softline_sha256 "1fbd56ec0006b06d3cd66c5ad7ef6f03f6bdde7a2dc187508d03e8b544335854")
     set(_cai_libmdf_sha256 "144827811d9e1477a6e0835b8a94492c2a1ba7eb7fa6d091ee0e0c73f2e7b2ee")
   endif()
-  set(_cai_liblql_name "liblql-0.3.0-${CAI_TARGET_ID}")
+  set(_cai_liblql_name "liblql-${CAI_LIBLQL_VERSION}-${CAI_TARGET_ID}")
   set(_cai_liblql_prefix "${CAI_DEPS_DIR}/${_cai_liblql_name}")
   cai_dependency_archive_path("${_cai_liblql_name}.tar.gz"
     "${_cai_liblql_sha256}"
     _cai_liblql_archive)
-  cai_download_tarball("liblql 0.3.0 ${CAI_TARGET_ID}"
-    "https://github.com/sa6mwa/liblql/releases/download/v0.3.0/${_cai_liblql_name}.tar.gz"
+  cai_download_tarball("liblql ${CAI_LIBLQL_VERSION} ${CAI_TARGET_ID}"
+    "https://github.com/sa6mwa/liblql/releases/download/v${CAI_LIBLQL_VERSION}/${_cai_liblql_name}.tar.gz"
     "${_cai_liblql_archive}" "${_cai_liblql_prefix}"
     "${_cai_liblql_sha256}"
     "${_cai_liblql_prefix}/include/lql/lql.h")
-  set(_cai_lockdc_name "liblockdc-0.21.0-${CAI_TARGET_ID}")
+  set(_cai_lockdc_name "liblockdc-${CAI_LOCKDC_VERSION}-${CAI_TARGET_ID}")
   set(_cai_lockdc_prefix "${CAI_DEPS_DIR}/${_cai_lockdc_name}")
   cai_dependency_archive_path("${_cai_lockdc_name}.tar.gz"
     "${_cai_lockdc_sha256}"
     _cai_lockdc_archive)
-  cai_download_tarball("liblockdc 0.21.0 ${CAI_TARGET_ID}"
-    "https://github.com/sa6mwa/liblockdc/releases/download/v0.21.0/${_cai_lockdc_name}.tar.gz"
+  cai_download_tarball("liblockdc ${CAI_LOCKDC_VERSION} ${CAI_TARGET_ID}"
+    "https://github.com/sa6mwa/liblockdc/releases/download/v${CAI_LOCKDC_VERSION}/${_cai_lockdc_name}.tar.gz"
     "${_cai_lockdc_archive}" "${_cai_lockdc_prefix}"
     "${_cai_lockdc_sha256}"
     "${_cai_lockdc_prefix}/include/lc/lc.h")
@@ -687,6 +693,12 @@ set(CAI_SOURCES
 
 set(CAI_PUBLIC_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  list(APPEND CAI_SOURCES src/cai_chrome_host.c src/cai_chrome_setup.c)
+else()
+  list(APPEND CAI_SOURCES src/cai_chrome_host_stub.c)
+endif()
+
 if(CAI_BUILD_STATIC)
   add_library(cai_static STATIC ${CAI_SOURCES})
   add_library(cai::static ALIAS cai_static)
@@ -828,22 +840,26 @@ function(cai_configure_cli_target target)
   cai_configure_c_target(${target})
 endfunction()
 
-if(CAI_BUILD_CLI)
+if(CAI_BUILD_APP)
   find_package(lockdc CONFIG REQUIRED COMPONENTS static)
   # The product and fixture entrypoints share these exact sources/options.
   # Compile them once per configuration; keep fixture substitutions in main.
-  add_library(cai_cli_support OBJECT cli/options.c cli/config.c cli/runtime_options.c cli/mcp.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
+  add_library(cai_cli_support OBJECT cli/options.c cli/help.c cli/config.c cli/runtime_options.c cli/mcp.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
     cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c
-    cli/log.c cli/response.c cli/chrome_host.c cli/chrome_setup.c)
+    cli/log.c cli/response.c)
   target_link_libraries(cai_cli_support PUBLIC cai_static
     softline::softline_static libmdf::mdf_static lockdc::static)
   cai_configure_c_target(cai_cli_support)
+  include(CaiApp)
+endif()
+
+if(CAI_BUILD_CLI)
   add_executable(cai_cli cli/main.c)
   set_target_properties(cai_cli PROPERTIES OUTPUT_NAME cai)
   if(CAI_TARGET_ID STREQUAL "x86_64-linux-musl")
     set_target_properties(cai_cli PROPERTIES SKIP_BUILD_RPATH ON)
   endif()
-  target_link_libraries(cai_cli PRIVATE cai_cli_support)
+  target_link_libraries(cai_cli PRIVATE cai_app_static)
   cai_configure_cli_target(cai_cli)
   if(CAI_INSTALL)
     install(TARGETS cai_cli RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
@@ -860,7 +876,12 @@ if(CAI_BUILD_CLI)
       COMPONENT cai-cli)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/model-metadata.md"
       "${CMAKE_CURRENT_SOURCE_DIR}/docs/chrome.md"
+      "${CMAKE_CURRENT_SOURCE_DIR}/docs/embedding.md"
       DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/docs"
+      COMPONENT cai-cli)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cli/main.c"
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/app.lua"
+      DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/examples"
       COMPONENT cai-cli)
     foreach(_cai_cli_dep_doc
         "${CAI_DEPS_DIR}/libpslog-${CAI_PSLOG_VERSION}-${CAI_TARGET_ID}/share/doc/libpslog"
@@ -945,6 +966,48 @@ if(CAI_BUILD_LUA)
     set(_cai_lua_link_target cai_shared)
   endif()
   add_library(cai_lua MODULE lua/cai_lua.c)
+  if(CAI_BUILD_APP)
+    if(NOT TARGET cai_app_shared)
+      message(FATAL_ERROR "The cai.app Lua facade requires the public shared application library")
+    endif()
+    add_library(cai_app_lua MODULE lua/app_lua.c)
+    set_target_properties(cai_app_lua PROPERTIES OUTPUT_NAME app PREFIX ""
+      LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/lua/cai")
+    target_include_directories(cai_app_lua PRIVATE "${CAI_LUA_INCLUDE_DIR}"
+      "${CAI_PSLOG_LUA_INCLUDE_DIR}" "${CAI_PSLOG_INCLUDE_DIR}")
+    target_link_libraries(cai_app_lua PRIVATE cai_app_shared ${CMAKE_DL_LIBS})
+    target_link_options(cai_app_lua PRIVATE "-Wl,--allow-shlib-undefined")
+    cai_configure_c_target(cai_app_lua)
+    cai_apply_export_policy(cai_app_lua "${CMAKE_CURRENT_SOURCE_DIR}/lua/cai_app.exports")
+    if(CAI_INSTALL)
+      install(TARGETS cai_app_lua LIBRARY
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/lua/5.5/cai" COMPONENT cai-app-lua)
+    endif()
+    if(TARGET cai_cli_tests)
+      add_dependencies(cai_cli_tests cai_app_lua cai_lua_runner)
+    endif()
+    if(CAI_BUILD_TESTS)
+      add_test(NAME cai_app_lua COMMAND ${CAI_LUA_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/app_test.lua")
+      set_tests_properties(cai_app_lua PROPERTIES LABELS "cli;local;offline" TIMEOUT 10
+        ENVIRONMENT "${CAI_LUA_TEST_ENV}")
+      add_test(NAME cai_app_lua_exports COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/shared_export_policy_test.sh"
+        "${CMAKE_NM}" "$<TARGET_FILE:cai_app_lua>"
+        "${CMAKE_CURRENT_SOURCE_DIR}/lua/cai_app.exports" linux)
+      set_tests_properties(cai_app_lua_exports PROPERTIES LABELS "cli;local;offline" TIMEOUT 5)
+      if(CAI_BUILD_CLI)
+        file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host"
+          CONTENT "#!/usr/bin/env bash\nexec \"${CAI_LUA_EXECUTABLE}\" \"${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/app_host.lua\" \"\$@\"\n"
+          FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+        add_test(NAME cai_app_lua_embedding COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_embedding_test.sh"
+          "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host")
+        set_tests_properties(cai_app_lua_embedding PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
+          ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
+      endif()
+    endif()
+  endif()
   set_target_properties(cai_lua PROPERTIES
     OUTPUT_NAME cai
     PREFIX ""
@@ -1136,7 +1199,8 @@ if(CAI_INSTALL)
     "${CMAKE_CURRENT_BINARY_DIR}/dependencies.json"
     @ONLY)
 
-  install(DIRECTORY "${CAI_PUBLIC_INCLUDE_DIR}/" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+  install(DIRECTORY "${CAI_PUBLIC_INCLUDE_DIR}/" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+    PATTERN "app.h" EXCLUDE)
   install(DIRECTORY "${CAI_GENERATED_INCLUDE_DIR}/" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
   install(FILES "$<TARGET_FILE:cai_yaml_static>" DESTINATION "${CMAKE_INSTALL_LIBDIR}/cai")
   install(FILES "${CAI_LIBYAML_SOURCE}/License"
@@ -1171,6 +1235,7 @@ if(CAI_INSTALL)
   install(FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/model-metadata.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/chrome.md"
+    "${CMAKE_CURRENT_SOURCE_DIR}/docs/embedding.md"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/docs")
   install(FILES "${CMAKE_CURRENT_BINARY_DIR}/dependencies.json"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/cai")

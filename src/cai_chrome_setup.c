@@ -1,7 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
-#include "../src/cai_chrome_protocol.h"
-#include "chrome.h"
+#include "cai_chrome_host.h"
+#include "cai_chrome_protocol.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -155,8 +155,8 @@ int cai_cli_chrome_directory(char *out, size_t capacity, int create,
   }
   return cai_chrome_private_directory(out, error);
 }
-int cai_cli_chrome_setup(const char *override, int remove, pslog_logger *logger,
-                         cai_error *error) {
+int cai_chrome_native_host_setup(const char *override, int remove,
+                                 pslog_logger *logger, cai_error *error) {
   char manifest_path[4096], executable[4096], leaf[200], temporary[200];
   const char *root;
   const char *suffix;

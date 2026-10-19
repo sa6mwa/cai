@@ -29,7 +29,10 @@ foreach(required_doc
         "share/man/man1/cai.1"
         "share/doc/libcai/README.md"
         "share/doc/libcai/LICENSE"
-        "share/doc/libcai/docs/model-metadata.md")
+        "share/doc/libcai/docs/model-metadata.md"
+        "share/doc/libcai/docs/embedding.md"
+        "share/doc/libcai/examples/main.c"
+        "share/doc/libcai/examples/app.lua")
   if(NOT EXISTS "${package_root}/${required_doc}")
     message(FATAL_ERROR "failed to stage cai CLI file: ${required_doc}")
   endif()

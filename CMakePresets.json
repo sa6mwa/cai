@@ -14,6 +14,7 @@
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "CAI_BUILD_STATIC": "ON",
+        "CAI_BUILD_APP": "OFF",
         "CAI_BUILD_SHARED": "ON",
         "CAI_BUILD_TESTS": "ON",
         "CAI_BUILD_INTEGRATION_TESTS": "OFF",
@@ -117,7 +118,8 @@
       "inherits": "release",
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
-        "CPKT_TARGET_ID": "x86_64-linux-gnu"
+        "CPKT_TARGET_ID": "x86_64-linux-gnu",
+        "CAI_BUILD_APP": "ON"
       }
     },
     {
@@ -127,7 +129,8 @@
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
         "CPKT_TARGET_ID": "x86_64-linux-musl",
         "CAI_TARGET_ID": "x86_64-linux-musl",
-        "CAI_BUILD_TESTS": "OFF"
+        "CAI_BUILD_TESTS": "OFF",
+        "CAI_BUILD_APP": "ON"
       }
     },
     {

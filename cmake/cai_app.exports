@@ -1,0 +1,7 @@
+cai_app_close
+cai_app_config_init
+cai_app_open
+cai_app_option_at
+cai_app_option_count
+cai_app_run
+cai_app_write_help

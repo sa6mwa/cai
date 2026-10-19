@@ -83,11 +83,22 @@ fi
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
 
-cmake -S "$repo_root" -B "$tmpdir/version-override" -G Ninja \
-  "-DCMAKE_TOOLCHAIN_FILE=$repo_root/cmake/toolchains/linux-bootlin.cmake" \
-  -DCPKT_TARGET_ID=x86_64-linux-gnu -DCAI_TARGET_ID=x86_64-linux-gnu \
-  "-DCAI_VERSION_OVERRIDE=$expected" \
-  -DCAI_BUILD_TESTS=OFF -DCAI_BUILD_EXAMPLES=OFF -DCAI_BUILD_LUA=OFF >/dev/null
+# Exercise the actual resolver and package templates without configuring a
+# compiler or acquiring dependencies for a version-only regression.
+mkdir -p "$tmpdir/version-source"
+cat >"$tmpdir/version-source/CMakeLists.txt" <<'CMAKE'
+cmake_minimum_required(VERSION 3.21)
+include("${CAI_SOURCE_DIR}/cmake/CaiVersion.cmake")
+cai_detect_version(CAI_PACKAGE_VERSION "${CAI_SOURCE_DIR}")
+string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" CAI_CMAKE_PROJECT_VERSION "${CAI_PACKAGE_VERSION}")
+project(version_fixture VERSION ${CAI_CMAKE_PROJECT_VERSION} LANGUAGES NONE)
+set(CMAKE_SIZEOF_VOID_P 8)
+configure_file("${CAI_SOURCE_DIR}/cmake/cai_version.h.in" "generated/include/cai/version.h" @ONLY)
+configure_file("${CAI_SOURCE_DIR}/cmake/cai.pc.in" "cai.pc" @ONLY)
+configure_file("${CAI_SOURCE_DIR}/cmake/cai-config-version.cmake.in" "cai-config-version.cmake" @ONLY)
+CMAKE
+cmake -S "$tmpdir/version-source" -B "$tmpdir/version-override" \
+  "-DCAI_SOURCE_DIR=$repo_root" "-DCAI_VERSION_OVERRIDE=$expected" >/dev/null
 if ! grep -F "#define CAI_VERSION_STRING \"$expected\"" \
   "$tmpdir/version-override/generated/include/cai/version.h" >/dev/null; then
   printf '%s\n' 'CMake version override did not reach generated package metadata' >&2
@@ -140,11 +151,8 @@ CMAKE
 cmake -DVERSION_FILE="$tmpdir/version-override/cai-config-version.cmake" \
   -P "$tmpdir/check-cmake-package-version.cmake"
 
-cmake -S "$repo_root" -B "$tmpdir/stable-build-metadata-override" -G Ninja \
-  "-DCMAKE_TOOLCHAIN_FILE=$repo_root/cmake/toolchains/linux-bootlin.cmake" \
-  -DCPKT_TARGET_ID=x86_64-linux-gnu -DCAI_TARGET_ID=x86_64-linux-gnu \
-  "-DCAI_VERSION_OVERRIDE=$expected_stable_build" \
-  -DCAI_BUILD_TESTS=OFF -DCAI_BUILD_EXAMPLES=OFF -DCAI_BUILD_LUA=OFF >/dev/null
+cmake -S "$tmpdir/version-source" -B "$tmpdir/stable-build-metadata-override" \
+  "-DCAI_SOURCE_DIR=$repo_root" "-DCAI_VERSION_OVERRIDE=$expected_stable_build" >/dev/null
 cat >"$tmpdir/check-cmake-package-build-metadata.cmake" <<'CMAKE'
 set(PACKAGE_FIND_VERSION "7.8.9")
 set(PACKAGE_FIND_VERSION_EXACT TRUE)
@@ -164,12 +172,8 @@ endif()
 CMAKE
 cmake -DVERSION_FILE="$tmpdir/stable-build-metadata-override/cai-config-version.cmake" \
   -P "$tmpdir/check-cmake-package-build-metadata.cmake"
-if cmake -S "$repo_root" -B "$tmpdir/invalid-version-override" -G Ninja \
-  "-DCMAKE_TOOLCHAIN_FILE=$repo_root/cmake/toolchains/linux-bootlin.cmake" \
-  -DCPKT_TARGET_ID=x86_64-linux-gnu -DCAI_TARGET_ID=x86_64-linux-gnu \
-  -DCAI_VERSION_OVERRIDE=1.2.3/foo \
-  -DCAI_BUILD_TESTS=OFF -DCAI_BUILD_EXAMPLES=OFF \
-  -DCAI_BUILD_LUA=OFF >/dev/null 2>&1; then
+if cmake -S "$tmpdir/version-source" -B "$tmpdir/invalid-version-override" \
+  "-DCAI_SOURCE_DIR=$repo_root" -DCAI_VERSION_OVERRIDE=1.2.3/foo >/dev/null 2>&1; then
   printf '%s\n' 'CMake accepted an invalid release version override' >&2
   exit 1
 fi

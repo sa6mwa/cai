@@ -571,6 +571,16 @@ conversation and execution context, never the credential namespace.
 current directory, and exits. Failed imports never appear in the list.
 Existing cai JSONL files are not automatically migrated.
 
+### Embedding the terminal application
+
+`libcai_app` provides the complete CAI application as a synchronous C receiver
+and optional `cai.app` Lua 5.5 module. The `cai` executable is a thin C embedding
+example. Hosts can supply settings, forwarded arguments, a startup banner,
+custom help naming and an initialized pslog logger. See
+[Embedding CAI](docs/embedding.md) for ownership, process-state restoration,
+installation and C/Lua examples. Core libcai remains independent of the
+application's softline, libmdf and liblockdc dependencies.
+
 ### Configured MCP tools
 
 `/status` includes instruction-file loading, local/hosted/MCP tool counts, and

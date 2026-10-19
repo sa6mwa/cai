@@ -45,9 +45,6 @@ static int fixture_output(sl_t *sl, const char *bytes, size_t length) {
   return rc;
 }
 #define sl_output_stream_write fixture_output
-#define main cai_cli_app_main
-int cai_cli_app_main(int argc, char **argv);
-#include "../cli/main.c"
-#undef main
+#include "../cli/app_run.c"
 #undef sl_output_stream_write
-int main(int argc, char **argv) { return cai_cli_app_main(argc, argv); }
+int main(int argc, char **argv) { return cai_cli_app_main(argc, argv, NULL); }

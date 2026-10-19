@@ -1,6 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
 #include "config.h"
+#include "app_internal.h"
 #include <cai/models.h>
+#include <cai/version.h>
 #include <errno.h>
 #include <limits.h>
 #include <stddef.h>
@@ -156,7 +158,7 @@ static int template_paths(cai_config *cfg, const char *config_root,
     return -1;
   return 1;
 }
-static int open_schema(cai_config **out, cai_error *error) {
+int cai_cli_app_schema(cai_config **out, cai_error *error) {
   cai_config_field extension[sizeof(fields) / sizeof(fields[0])];
   cai_config *sdk = NULL;
   cai_config_field *selected;
@@ -304,7 +306,8 @@ static int tool_environment(cai_config *cfg, cai_error *error) {
   return 1;
 }
 int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
-                      cai_config **configuration, cai_error *error) {
+                      cai_config **configuration,
+                      const cai_app_config *application, cai_error *error) {
   cai_cli_options early, defaults;
   cai_config *cfg = NULL;
   const char *base, *value, *resolved;
@@ -316,7 +319,22 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   rc = cai_cli_read_options(argc, argv, NULL, &early);
   if (rc <= 0) {
     *options = early;
+    if (early.help)
+      return cai_cli_help_print(application != NULL ? application->program_name
+                                                    : "cai") == CAI_OK
+                 ? 0
+                 : -1;
+    if (early.version)
+      puts(CAI_VERSION_STRING);
     return rc;
+  }
+  if (application != NULL) {
+    if (early.config_file == NULL && !early.no_config) {
+      early.config_file = application->config_file;
+      early.no_config = application->no_config;
+    }
+    if (early.config_dir == NULL)
+      early.config_dir = application->config_directory;
   }
   if (early.directory != NULL && chdir(early.directory) != 0)
     return fail(error, early.directory, "cannot change workspace");
@@ -325,7 +343,7 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
       absolute_path(config_root, sizeof(config_root), early.config_dir, error) <
           0)
     return -1;
-  rc = open_schema(&cfg, error);
+  rc = cai_cli_app_schema(&cfg, error);
   if (rc < 0) {
     cai_config_close(cfg);
     return -1;
@@ -360,12 +378,27 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
     if (cfg->create_template_file(cfg, selected, error) != CAI_OK ||
         cai_config_load_file(cfg, selected, error) != CAI_OK)
       return -1;
-    if (cfg->apply_environment(cfg, error) != CAI_OK)
+  }
+  /* Host environment entries participate in the normal explicit env policy. */
+  for (i = 0U; application != NULL && i < application->setting_count; i++) {
+    const cai_app_setting *s = &application->settings[i];
+    if ((strcmp(s->section, "env") == 0 || s->section[0] == '\0') &&
+        cfg->set(cfg, s->section, s->key, s->value, error) != CAI_OK)
       return -1;
   }
+  if (cfg->apply_environment(cfg, error) != CAI_OK)
+    return -1;
   if (tool_environment(cfg, error) < 0)
     return -1;
+  for (i = 0U; application != NULL && i < application->setting_count; i++) {
+    const cai_app_setting *s = &application->settings[i];
+    if (strcmp(s->section, "env") != 0 && s->section[0] != '\0' &&
+        cfg->set(cfg, s->section, s->key, s->value, error) != CAI_OK)
+      return -1;
+  }
   cai_cli_options_init(&defaults);
+  defaults.config_file = early.config_file;
+  defaults.no_config = early.no_config;
   defaults.shell_context_max_lines = (size_t)cai_config_get_integer(
       cfg, "runtime", "shell_context_max_lines", 5000LL);
   defaults.shell_context_max_bytes = (size_t)cai_config_get_integer(

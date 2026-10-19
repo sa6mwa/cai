@@ -71,6 +71,7 @@ test-all:
 	$(MAKE) valgrind
 	$(MAKE) fuzz-smoke
 	$(MAKE) lua-test
+	$(MAKE) lua-app-test
 	$(MAKE) test-offline
 	$(MAKE) test-e2e
 
@@ -189,6 +190,12 @@ lua-env:
 lua-test: lua-runner
 	$(CMAKE) --build --preset debug-lua --target cai_lua cai_lua_native_todo_store_test cai_lua_runner cai_mcp_http_server
 	bash ./scripts/test.sh debug-lua -R '^cai_lua_' -LE live
+
+.PHONY: lua-app-test
+lua-app-test: $(LUA_PSLOG_ROCK_STAMP) $(LUA_LONEJSON_ROCK_STAMP)
+	$(CMAKE) --preset debug-cai -DCAI_BUILD_LUA=ON
+	$(CMAKE) --build --preset debug-cai --target cai_app_lua cai_lua_runner cai_app_host cai_terminal_peer
+	bash scripts/test.sh debug-cai -R '^cai_app_lua' -LE live
 
 release-lua-artifacts:
 	bash scripts/package_lua.sh "$(RELEASE_VERSION)"

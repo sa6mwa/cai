@@ -92,6 +92,7 @@ if [[ "$1" == --build ]]; then
   printf 'build\n' >>"$CAI_CONFIG_LOG"
 else
   printf 'configure\n' >>"$CAI_CONFIG_LOG"
+  [[ " $* " == *' -DCAI_BUILD_APP=ON '* ]] || exit 8
   while [[ $# -gt 0 ]]; do
     if [[ "$1" == -B ]]; then
       build=$2

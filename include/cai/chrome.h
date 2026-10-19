@@ -9,6 +9,19 @@ extern "C" {
 #endif
 /** Opaque, single-owner browser connection. */
 typedef struct cai_chrome cai_chrome;
+/** Run the Linux Chrome native-messaging bridge synchronously on stdin/stdout.
+ * origin must identify the supported ChatGPT extension. The host owns process
+ * dispatch and must route Chrome's extension-origin argument here. Logger is
+ * borrowed for this call. No browser is launched. */
+int cai_chrome_native_host_run(const char *origin, struct pslog_logger *logger,
+                               cai_error *error);
+/** Explicitly install/remove a user native-host manifest for the current
+ * executable on Linux. NULL selects the standard CAI registration filename.
+ * Conflicting registrations are rejected. The executable must dispatch native
+ * messaging to cai_chrome_native_host_run. Writes utility results to stdout;
+ * logger is borrowed for this call. Other platforms report unsupported. */
+int cai_chrome_native_host_setup(const char *manifest, int remove,
+                                 struct pslog_logger *logger, cai_error *error);
 /** Local browser connection settings; no Chrome configuration is changed. */
 typedef struct cai_chrome_config {
   /** Absolute socket path; NULL discovers exactly one host in directory. */

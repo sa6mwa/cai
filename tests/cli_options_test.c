@@ -1,3 +1,4 @@
+#include "../cli/app_internal.h"
 #include "../cli/options.h"
 
 #include <cai/models.h>
@@ -51,14 +52,28 @@ static int storage_options(void) {
   return 0;
 }
 
+static int help_file_write(void *context, const void *bytes, size_t count,
+                           cai_error *error) {
+  (void)error;
+  return fwrite(bytes, 1U, count, context) == count ? CAI_OK
+                                                    : CAI_ERR_TRANSPORT;
+}
 static int help_columns(void) {
   FILE *stream = tmpfile();
   char line[512];
   size_t rows = 0U;
   int failed = 0;
+  cai_sink *sink = NULL;
+  cai_sink_callbacks callbacks;
   if (stream == NULL)
     return 1;
-  cai_cli_print_help(stream);
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.context = stream;
+  callbacks.write = help_file_write;
+  if (cai_sink_from_callbacks(&callbacks, &sink, NULL) != CAI_OK ||
+      cai_cli_help_write("cai", sink, NULL) != CAI_OK)
+    failed = 1;
+  cai_sink_close(sink);
   rewind(stream);
   if (fgets(line, sizeof(line), stream) == NULL ||
       strcmp(line, "cai and libcai Copyright (C) 2026 C89 Systems AB "

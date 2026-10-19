@@ -1,8 +1,5 @@
 /* Drive the CLI's owner-thread event renderer with provider-shaped chunks. */
-#define main cai_cli_app_main
-int cai_cli_app_main(int argc, char **argv);
-#include "../cli/main.c"
-#undef main
+#include "../cli/app_run.c"
 
 typedef struct event_log_capture {
   char bytes[16384];

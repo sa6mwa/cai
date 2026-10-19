@@ -503,7 +503,7 @@ verify_linux_runpath() {
       printf '%s\n' "$dynamic" >&2
       fail "shared library links sanitizer runtime: $so"
     fi
-  done < <(find "$root_dir/lib" -maxdepth 1 -type f -name 'libcai.so*' -print)
+  done < <(find "$root_dir/lib" -maxdepth 1 -type f \( -name 'libcai.so*' -o -name 'libcai_app.so*' \) -print)
 }
 
 diagnostic_fail() {
@@ -1063,6 +1063,23 @@ verify_shared_exports() {
   [[ -n "$library" ]] || fail "missing shared library for export verification: $root_dir/lib"
   "$repo_root/tests/shared_export_policy_test.sh" \
     "$nm" "$library" "$repo_root/cmake/cai_shared.exports" "$platform"
+  if [[ "$target_id" == x86_64-linux-* ]]; then
+    library=$(find "$root_dir/lib" -maxdepth 1 -type f -name 'libcai_app.so.*' -print -quit)
+    [[ -n "$library" ]] || fail "missing application shared library: $root_dir/lib"
+    "$repo_root/tests/shared_export_policy_test.sh" \
+      "$nm" "$library" "$repo_root/cmake/cai_app.exports" "$platform"
+  fi
+}
+
+verify_application_sdk() {
+  local root_dir=$1 target_id=$2 path
+  [[ "$target_id" == x86_64-linux-* ]] || return 0
+  for path in include/cai/app.h lib/libcai_app.a lib/libcai_app.so \
+      lib/pkgconfig/cai-app.pc lib/cmake/cai_app/cai_app-config.cmake \
+      share/cai_app/dependencies.json share/doc/libcai_app/embedding.md \
+      share/doc/libcai_app/examples/main.c share/doc/libcai_app/examples/app.lua; do
+    require_file "$root_dir/$path"
+  done
 }
 
 verify_binary_archive() {
@@ -1090,6 +1107,7 @@ verify_binary_archive() {
   verify_no_host_paths "$root_dir"
   verify_no_sanitizer_artifacts "$root_dir"
   verify_dependency_manifest "$root_dir" "${root#cai-$version-}"
+  verify_application_sdk "$root_dir" "${root#cai-$version-}"
   verify_extracted_sdk_smoke "$root_dir" "${root#cai-$version-}"
   verify_shared_exports "$root_dir" "${root#cai-$version-}"
   if [[ "$root" == *-linux-* ]]; then
@@ -1192,7 +1210,8 @@ verify_cli_archive() {
   local doc
   for doc in share/man/man1/cai.1 share/doc/libcai/README.md \
       share/doc/libcai/LICENSE share/doc/libcai/docs/model-metadata.md \
-      share/doc/libcai/docs/chrome.md; do
+      share/doc/libcai/docs/chrome.md share/doc/libcai/docs/embedding.md \
+      share/doc/libcai/examples/main.c share/doc/libcai/examples/app.lua; do
     require_file "$root_dir/$doc"
   done
   local dependency

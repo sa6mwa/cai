@@ -66,6 +66,8 @@ endfunction()
 
 file(GLOB package_libraries
   "${package_root}/lib/libcai.a"
+  "${package_root}/lib/libcai_app.a"
+  "${package_root}/lib/libcai_app.so*"
   "${package_root}/lib/libcai.so*"
   "${package_root}/lib/libcai.*.dylib")
 foreach(package_library IN LISTS package_libraries)

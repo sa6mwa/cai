@@ -11,6 +11,9 @@ test -f "$stage/share/man/man1/cai.1"
 test -f "$stage/share/doc/libcai/README.md"
 test -f "$stage/share/doc/libcai/LICENSE"
 test -f "$stage/share/doc/libcai/docs/model-metadata.md"
+test -f "$stage/share/doc/libcai/docs/embedding.md"
+test -f "$stage/share/doc/libcai/examples/main.c"
+test -f "$stage/share/doc/libcai/examples/app.lua"
 for dependency in liblockdc liblql softline libmdf libpslog liblonejson curl openssl zlib nghttp2 libssh2; do
   test -f "$stage/share/doc/libcai/third_party/$dependency/LICENSE"
 done

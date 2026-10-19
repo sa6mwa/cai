@@ -69,7 +69,7 @@ build_root="$source_root/build"
 cmake -S "$source_root" -B "$build_root" -G Ninja \
   "-DCMAKE_TOOLCHAIN_FILE=$source_root/cmake/toolchains/linux-bootlin.cmake" \
   -DCPKT_TARGET_ID=x86_64-linux-gnu -DCAI_TARGET_ID=x86_64-linux-gnu \
-  -DCMAKE_BUILD_TYPE=Release -DCAI_BUILD_INTEGRATION_TESTS=OFF
+  -DCMAKE_BUILD_TYPE=Release -DCAI_BUILD_INTEGRATION_TESTS=OFF -DCAI_BUILD_APP=ON
 configured_version=$(sed -n 's/^#define CAI_VERSION_STRING "\(.*\)"/\1/p' \
   "$build_root/generated/include/cai/version.h")
 if [[ "$configured_version" != "$release_version" ]]; then

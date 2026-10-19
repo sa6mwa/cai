@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "project": "libcai_app",
+  "version": "@CAI_PACKAGE_VERSION@",
+  "targetId": "@CAI_TARGET_ID@",
+  "abiVersion": 0,
+  "libcaiAbiVersion": @CAI_ABI_VERSION@,
+  "dependencies": [
+    {"name":"softline","version":"@CAI_SOFTLINE_VERSION@","targetId":"@CAI_TARGET_ID@","sourceUrl":"https://github.com/sa6mwa/softline/releases/download/v@CAI_SOFTLINE_VERSION@/@_cai_softline_name@.tar.gz","sha256":"@_cai_softline_sha256@","bundled":false},
+    {"name":"libmdf","version":"@CAI_LIBMDF_VERSION@","targetId":"@CAI_TARGET_ID@","sourceUrl":"https://github.com/sa6mwa/libmdf/releases/download/v@CAI_LIBMDF_VERSION@/@_cai_libmdf_name@.tar.gz","sha256":"@_cai_libmdf_sha256@","bundled":false},
+    {"name":"liblockdc","version":"@CAI_LOCKDC_VERSION@","targetId":"@CAI_TARGET_ID@","sourceUrl":"https://github.com/sa6mwa/liblockdc/releases/download/v@CAI_LOCKDC_VERSION@/@_cai_lockdc_name@.tar.gz","sha256":"@_cai_lockdc_sha256@","bundled":false},
+    {"name":"liblql","version":"@CAI_LIBLQL_VERSION@","targetId":"@CAI_TARGET_ID@","sourceUrl":"https://github.com/sa6mwa/liblql/releases/download/v@CAI_LIBLQL_VERSION@/@_cai_liblql_name@.tar.gz","sha256":"@_cai_liblql_sha256@","bundled":false}
+  ]
+}

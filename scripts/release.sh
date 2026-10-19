@@ -56,7 +56,7 @@ case "$action" in
     source_lane=1
     # Different instrumentation and facade configurations have separate proof.
     phase=hardening
-    make valgrind fuzz-smoke lua-test test-offline
+    make valgrind fuzz-smoke lua-test lua-app-test test-offline
     phase=e2e
     "$root/scripts/run_mcp_everything_service.sh" "$native/cai_mcp_everything_e2e" "$("$root/scripts/devenv.sh" endpoint mcp-everything)"
     build_matrix

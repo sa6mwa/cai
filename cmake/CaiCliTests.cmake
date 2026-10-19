@@ -131,7 +131,8 @@
     target_compile_options(cai_cli_shell_runner_test PRIVATE -UNDEBUG)
     add_test(NAME cai_cli_shell_runner COMMAND cai_cli_shell_runner_test "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(cai_cli_shell_runner PROPERTIES TIMEOUT 15)
-    add_executable(cai_cli_options_test tests/cli_options_test.c cli/options.c)
+    add_executable(cai_cli_options_test tests/cli_options_test.c cli/options.c cli/help.c)
+    target_link_libraries(cai_cli_options_test PRIVATE cai_static)
     target_include_directories(cai_cli_options_test PRIVATE
       "${CAI_PUBLIC_INCLUDE_DIR}" "${CAI_GENERATED_INCLUDE_DIR}")
     cai_configure_cli_target(cai_cli_options_test)
@@ -280,6 +281,7 @@
     get_property(_cai_cli_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
     list(FILTER _cai_cli_targets INCLUDE REGEX "^cai_cli($|_)|^cai_terminal_peer$")
     add_custom_target(cai_cli_tests DEPENDS ${_cai_cli_targets})
+    add_dependencies(cai_cli_tests cai_app_test cai_app_host)
     get_property(_cai_cli_tests DIRECTORY PROPERTY TESTS)
     list(FILTER _cai_cli_tests INCLUDE REGEX "^cai_cli_")
     set_tests_properties(${_cai_cli_tests} PROPERTIES LABELS "cli;local;offline"

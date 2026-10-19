@@ -4,9 +4,8 @@
 #include <stddef.h>
 #include <stdio.h>
 
-void cai_cli_print_help(FILE *out);
-
 typedef struct cai_cli_options {
+  int help, version;
   const char *provider;
   const char *config_file;
   int no_config;

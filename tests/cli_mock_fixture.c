@@ -21,10 +21,7 @@ static int fixture_runtime_open(cai_client *client,
   return cai_agent_runtime_open(client, &selected, out, error);
 }
 #define cai_agent_runtime_open fixture_runtime_open
-#define main cai_cli_app_main
-int cai_cli_app_main(int argc, char **argv);
-#include "../cli/main.c"
-#undef main
+#include "../cli/app_run.c"
 #undef cai_agent_runtime_open
 
-int main(int argc, char **argv) { return cai_cli_app_main(argc, argv); }
+int main(int argc, char **argv) { return cai_cli_app_main(argc, argv, NULL); }

@@ -344,11 +344,22 @@ int cai_cli_cache_directory(char *directory, size_t capacity,
 
 int cai_cli_log_open(cai_cli_log *log, pslog_level default_level,
                      int interactive, cai_error *error) {
+  return cai_cli_log_open_with_logger(log, default_level, interactive, NULL,
+                                      error);
+}
+int cai_cli_log_open_with_logger(cai_cli_log *log, pslog_level default_level,
+                                 int interactive, pslog_logger *logger,
+                                 cai_error *error) {
   pslog_config config;
   memset(log, 0, sizeof(*log));
   log->fd = -1;
   log->interactive = interactive;
   log->wakeup_fd = -1;
+  if (logger != NULL) {
+    log->logger = logger;
+    log->borrowed = 1;
+    return CAI_OK;
+  }
   if (pthread_mutex_init(&log->lock, NULL) != 0)
     return cai_cli_error(error, CAI_ERR_TRANSPORT, "initialize logging lock");
   log->initialized = 1;
@@ -371,6 +382,8 @@ int cai_cli_log_open(cai_cli_log *log, pslog_level default_level,
 
 int cai_cli_log_interactive(cai_cli_log *log, cai_error *error) {
   int rc;
+  if (log->borrowed)
+    return CAI_OK;
   rc = cai_cli_cache_directory(log->directory, sizeof(log->directory), error);
   if (rc != CAI_OK)
     return rc;
@@ -496,6 +509,10 @@ int cai_cli_log_notices(cai_cli_log *log, int (*visit)(void *, const char *),
 
 int cai_cli_log_close(cai_cli_log *log) {
   int rc;
+  if (log->borrowed) {
+    log->logger = NULL;
+    return 0;
+  }
   rc = log->failed;
   if (log->logger != NULL && log->logger != log->root)
     log->logger->destroy(log->logger);

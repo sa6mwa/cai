@@ -34,3 +34,18 @@ grep -q 'Missing/nonregular selected artifact' "$scratch/err"
 export CAI_RELEASE_TARGETS=x86_64-linux-gnu
 require_complete_manifest "${names[@]}"
 if (require_complete_manifest "${names[@]:1}") >"$scratch/out" 2>"$scratch/err"; then exit 1; fi )
+# An x86_64 SDK must ship the app surface; other targets remain core only.
+( CAI_REPO_ROOT="$repo" CAI_VERSION="$version" source "$repo/scripts/verify_release_artifacts.sh" --self-test
+verify_application_sdk "$scratch/sdk" aarch64-linux-gnu
+paths=(include/cai/app.h lib/libcai_app.a lib/libcai_app.so
+  lib/pkgconfig/cai-app.pc lib/cmake/cai_app/cai_app-config.cmake
+  share/cai_app/dependencies.json share/doc/libcai_app/embedding.md
+  share/doc/libcai_app/examples/main.c share/doc/libcai_app/examples/app.lua)
+for path in "${paths[@]}"; do mkdir -p "$scratch/sdk/$(dirname "$path")"; touch "$scratch/sdk/$path"; done
+verify_application_sdk "$scratch/sdk" x86_64-linux-gnu
+for path in "${paths[@]}"; do
+  mv "$scratch/sdk/$path" "$scratch/missing"
+  if (verify_application_sdk "$scratch/sdk" x86_64-linux-musl) >"$scratch/out" 2>"$scratch/err"; then exit 1; fi
+  grep -Fq "missing required file: $scratch/sdk/$path" "$scratch/err"
+  mv "$scratch/missing" "$scratch/sdk/$path"
+done )

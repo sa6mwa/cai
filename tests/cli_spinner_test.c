@@ -70,10 +70,7 @@ static int fixture_spinner(sl_t *sl, int value) {
 #define cai_agent_runtime_get_goal fixture_get_goal
 #define sl_set_status_busy fixture_busy
 #define sl_set_status_spinner fixture_spinner
-#define main cai_cli_app_main
-int cai_cli_app_main(int argc, char **argv);
-#include "../cli/main.c"
-#undef main
+#include "../cli/app_run.c"
 
 int main(void) {
   static const cai_agent_run_state endings[] = {

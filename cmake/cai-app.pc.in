@@ -1,0 +1,10 @@
+prefix=${pcfiledir}/../..
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+Name: cai-app
+Description: Embeddable synchronous CAI terminal application
+Version: @CAI_PACKAGE_VERSION@
+Requires: cai pslog = @CAI_PSLOG_VERSION@
+Requires.private: softline = @CAI_SOFTLINE_VERSION@ libmdf = @CAI_LIBMDF_VERSION@ lockdc = @CAI_LOCKDC_VERSION@
+Libs: -L${libdir} -lcai_app
+Cflags: -I${includedir}
