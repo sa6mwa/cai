@@ -396,9 +396,16 @@ Current OpenRouter boundary:
 
 ## Deferred Integrations
 
-- Lockd-backed todo storage is not implemented in this repository. The
-  todo/kanban preset already exposes a transaction-oriented callback storage
-  interface so Vectis or lockd integration can live outside cai.
+- Conversation messaging comes before the live kanban UI. Use liblockdc LQ
+  with one stable queue per conversation on the shared backend. Runtime delivery
+  policy and the reusable standalone SDK adapter boundary must be settled before
+  implementation; default core libcai remains independent of liblockdc.
+- Named todo/kanban boards already share the application's encrypted
+  `cai.todo` Pouch document. The core preset exposes transactional storage
+  callbacks; the existing Pouch implementation is private to the application.
+  After conversation messaging is complete, expose shared-board access and an
+  automatically updating JavaScript/CSS board through an embeddable HTTP route
+  handler suitable for Kore in Vectis. Keep the HTTP server host-owned.
 - SMHI weather remains an example-only tool. It is not a public cai tool preset.
 - OpenAI organization billing/cost APIs are not used as a hard gate. cai uses
   local estimated spend limits from model pricing metadata for integration
