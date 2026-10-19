@@ -2415,12 +2415,10 @@ static int cli_handle_command(cli_state *state, const char *line,
     if (rc != CAI_OK)
       return rc;
     cli_refresh_quota(state, 1);
-    if (cai_cli_status_markdown(
-            markdown, sizeof(markdown), model, effort, state->options.provider,
-            &metrics, state->auth != NULL ? &state->quota : NULL) != 0 ||
-        cli_text(state, markdown, strlen(markdown)) != 0 ||
-        cai_cli_instruction_status_markdown(markdown, sizeof(markdown),
-                                            &instructions) != 0 ||
+    if (cai_cli_status_markdown(markdown, sizeof(markdown), model, effort,
+                                state->options.provider, &metrics,
+                                state->auth != NULL ? &state->quota : NULL,
+                                &instructions) != 0 ||
         cli_text(state, markdown, strlen(markdown)) != 0 ||
         cai_cli_tools_markdown(&state->mcp, state->runtime, 0, cli_tools_write,
                                state, error) != CAI_OK ||

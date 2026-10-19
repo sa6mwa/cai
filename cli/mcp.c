@@ -419,11 +419,12 @@ int cai_cli_tools_markdown(const cai_cli_mcp *mcp, cai_agent_runtime *runtime,
   out.write = write;
   out.context = context;
   out.detailed = detailed;
-  rc = literal(&out,
-               detailed ? "## Tools\n\n| Tool | Source | Input | Description "
-                          "|\n| --- | --- | --- | --- |\n"
-                        : "\n## Tools\n\n",
-               error);
+  rc = CAI_OK;
+  if (detailed)
+    rc = literal(&out,
+                 "## Tools\n\n| Tool | Source | Input | Description "
+                 "|\n| --- | --- | --- | --- |\n",
+                 error);
   if (rc == CAI_OK)
     rc = cai_agent_runtime_visit_tools(runtime, inventory_tool, &out, error);
   for (i = 0U; i < mcp->count; i++) {
@@ -436,7 +437,7 @@ int cai_cli_tools_markdown(const cai_cli_mcp *mcp, cai_agent_runtime *runtime,
   }
   if (rc == CAI_OK && !detailed) {
     snprintf(row, sizeof(row),
-             "| Source | Available |\n| --- | --- |\n| Local tools | %lu |\n"
+             "| Local tools | %lu |\n"
              "| Hosted tools | %lu |\n| MCP tools | %lu |\n"
              "| MCP servers | %lu ready, %lu unavailable, %lu disabled |\n\n"
              "Use `/tools` for the full inventory.\n",

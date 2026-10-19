@@ -573,7 +573,8 @@ Existing cai JSONL files are not automatically migrated.
 
 ### Configured MCP tools
 
-`/status` summarizes the registered local, hosted and MCP tools. `/tools` shows
+`/status` includes instruction-file loading, local/hosted/MCP tool counts, and
+MCP server availability in its main metrics table. `/tools` shows
 their names, descriptions, input formats and server ownership, plus disabled
 or unavailable servers and discovery errors. Both render through libmdf and
 remain available during a turn.

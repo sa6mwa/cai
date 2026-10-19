@@ -28,14 +28,13 @@ void cai_cli_status_build(cai_cli_status *status, const char *model,
                           double estimated_spend_usd,
                           double estimated_spend_eur, const char *provider,
                           const cai_agent_goal_snapshot *goal);
-/** Write a Markdown table into the caller's buffer; return 0 on success. */
+/** Write status rows, including captured instruction sources when supplied,
+ * into one Markdown table; return 0 on success. */
 int cai_cli_status_markdown(char *out, size_t capacity, const char *model,
                             const char *effort, const char *provider,
                             const cai_agent_runtime_metrics *metrics,
-                            const cai_chatgpt_quota *quota);
-/** Summarize files captured in the agent context, without probing the disk. */
-int cai_cli_instruction_status_markdown(
-    char *out, size_t capacity, const cai_agent_instruction_status *status);
+                            const cai_chatgpt_quota *quota,
+                            const cai_agent_instruction_status *instructions);
 /** Format the active summary or most recent turn duration for softline. */
 int cai_cli_turn_status_message(char *out, size_t capacity,
                                 const char *reasoning_summary,

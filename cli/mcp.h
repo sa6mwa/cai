@@ -19,6 +19,8 @@ int cai_cli_mcp_open(cai_cli_mcp *mcp, const cai_config *config, int enabled,
                      pslog_logger *logger, cai_error *error);
 void cai_cli_mcp_close(cai_cli_mcp *mcp);
 typedef int (*cai_cli_tools_write)(void *, const char *, size_t);
+/* Detailed output is standalone; the summary appends rows to /status's table
+ * before ending it and emitting the inventory hints. */
 int cai_cli_tools_markdown(const cai_cli_mcp *mcp, cai_agent_runtime *runtime,
                            int detailed, cai_cli_tools_write write,
                            void *context, cai_error *error);

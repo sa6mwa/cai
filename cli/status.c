@@ -306,32 +306,11 @@ static int cai_cli_table_row(char *out, size_t capacity, size_t *used,
   return 0;
 }
 
-int cai_cli_instruction_status_markdown(
-    char *out, size_t capacity, const cai_agent_instruction_status *status) {
-  int n;
-  if (out == NULL || capacity == 0U || status == NULL)
-    return -1;
-  n = snprintf(
-      out, capacity,
-      "\n## Instruction files in context\n\n"
-      "| Source | Loaded |\n| --- | --- |\n"
-      "| CAI global AGENTS.md | %s |\n"
-      "| Codex global AGENTS.md | %s |\n"
-      "| Repository AGENTS.md | %lu file(s) |\n\n"
-      "Files are read at startup, including when resuming. Missing or empty "
-      "files are not loaded. Restart CAI to read file changes.\n\n",
-      status->global_agents_md_loaded ? "Yes" : "No (missing or empty)",
-      !status->codex_agents_md_enabled ? "No (disabled)"
-      : status->codex_agents_md_loaded ? "Yes"
-                                       : "No (missing or empty)",
-      (unsigned long)status->repository_agents_md_count);
-  return n < 0 || (size_t)n >= capacity ? -1 : 0;
-}
-
 int cai_cli_status_markdown(char *out, size_t capacity, const char *model,
                             const char *effort, const char *provider,
                             const cai_agent_runtime_metrics *metrics,
-                            const cai_chatgpt_quota *quota) {
+                            const cai_chatgpt_quota *quota,
+                            const cai_agent_instruction_status *instructions) {
   char safe_model[128];
   char safe_effort[32];
   char safe_provider[32];
@@ -425,6 +404,24 @@ int cai_cli_status_markdown(char *out, size_t capacity, const char *model,
   } else if (quota != NULL && quota->has_credit_balance) {
     snprintf(value, sizeof(value), "%.2f", quota->credit_balance);
     if (cai_cli_table_row(out, capacity, &used, "Credits left", value) != 0)
+      return -1;
+  }
+  if (instructions != NULL) {
+    if (cai_cli_table_row(out, capacity, &used, "CAI global AGENTS.md",
+                          instructions->global_agents_md_loaded
+                              ? "Yes"
+                              : "No (missing or empty)") != 0 ||
+        cai_cli_table_row(out, capacity, &used, "Codex global AGENTS.md",
+                          !instructions->codex_agents_md_enabled
+                              ? "No (disabled)"
+                          : instructions->codex_agents_md_loaded
+                              ? "Yes"
+                              : "No (missing or empty)") != 0)
+      return -1;
+    snprintf(value, sizeof(value), "%lu file(s)",
+             (unsigned long)instructions->repository_agents_md_count);
+    if (cai_cli_table_row(out, capacity, &used, "Repository AGENTS.md",
+                          value) != 0)
       return -1;
   }
   return 0;

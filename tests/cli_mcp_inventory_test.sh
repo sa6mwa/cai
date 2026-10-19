@@ -28,6 +28,9 @@ terminal_start -N
 contains "$root/mcp-config" "$origin/mcp/alpha timeout=30000 discovery=1000"
 contains "$root/mcp-config" "$origin/mcp/beta timeout=30000 discovery=3000"
 send '/status\r'; expect 'MCP servers'; expect 'Agent tools'
+[[ $(grep -o '┌' "$term/feed" | wc -l) == 1 ]] || fail '/status split its metrics into multiple tables'
+absent "$term/feed" 'Instruction files in context'
+absent "$term/feed" '## Tools'
 expect alpha; expect beta; expect missing_key
 before=$(wc -l <"$root/peer/mcp_requests.jsonl")
 send '/tools\r'; expect mcp_alpha_echo; expect mcp_beta_echo; expect mcp_alpha_raw

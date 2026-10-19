@@ -55,33 +55,57 @@ int main(void) {
     char rendered[1024];
     memset(&sources, 0, sizeof(sources));
     failures += check(
-        cai_cli_instruction_status_markdown(rendered, sizeof(rendered),
-                                            &sources) == 0 &&
+        cai_cli_status_markdown(rendered, sizeof(rendered), "gpt-6-luna",
+                                "medium", "chatgpt", NULL, NULL,
+                                &sources) == 0 &&
             strstr(rendered, "CAI global AGENTS.md | No (missing or empty)") !=
                 NULL &&
             strstr(rendered, "Codex global AGENTS.md | No (disabled)") !=
                 NULL &&
-            strstr(rendered, "Repository AGENTS.md | 0 file(s)") != NULL,
+            strstr(rendered, "Repository AGENTS.md | 0 file(s)") != NULL &&
+            strstr(rendered, "| Metric | Value |") != NULL &&
+            strstr(rendered, "Instruction files in context") == NULL &&
+            strstr(rendered, "| Source |") == NULL &&
+            strstr(rendered, "Restart CAI") == NULL &&
+            strstr(strstr(rendered, "| Provider |"), "\n\n") == NULL,
         "status distinguishes missing from disabled instruction files");
     sources.global_agents_md_loaded = sources.codex_agents_md_loaded = 1;
     sources.codex_agents_md_enabled = 1;
     sources.repository_agents_md_count = 2U;
     failures +=
-        check(cai_cli_instruction_status_markdown(rendered, sizeof(rendered),
-                                                  &sources) == 0 &&
+        check(cai_cli_status_markdown(rendered, sizeof(rendered), "gpt-6-luna",
+                                      "medium", "chatgpt", NULL, NULL,
+                                      &sources) == 0 &&
                   strstr(rendered, "Codex global AGENTS.md | Yes") != NULL &&
                   strstr(rendered, "Repository AGENTS.md | 2 file(s)") != NULL,
               "status shows captured instruction sources");
     sources.codex_agents_md_loaded = 0;
     failures += check(
-        cai_cli_instruction_status_markdown(rendered, sizeof(rendered),
-                                            &sources) == 0 &&
+        cai_cli_status_markdown(rendered, sizeof(rendered), "gpt-6-luna",
+                                "medium", "chatgpt", NULL, NULL,
+                                &sources) == 0 &&
             strstr(rendered,
                    "Codex global AGENTS.md | No (missing or empty)") != NULL &&
-            cai_cli_instruction_status_markdown(rendered, 1U, &sources) != 0 &&
-            cai_cli_instruction_status_markdown(rendered, sizeof(rendered),
-                                                NULL) != 0,
+            cai_cli_status_markdown(rendered, 1U, "gpt-6-luna", "medium",
+                                    "chatgpt", NULL, NULL, &sources) != 0 &&
+            cai_cli_status_markdown(rendered, sizeof(rendered), "gpt-6-luna",
+                                    "medium", "chatgpt", NULL, NULL,
+                                    NULL) == 0 &&
+            strstr(rendered, "AGENTS.md") == NULL,
         "instruction status handles absent files and bounded output");
+    {
+      size_t capacity;
+      cai_cli_status_markdown(rendered, sizeof(rendered), "gpt-6-luna",
+                              "medium", "chatgpt", NULL, NULL, &sources);
+      capacity = strlen(rendered) + 1U;
+      failures += check(
+          cai_cli_status_markdown(rendered, capacity, "gpt-6-luna", "medium",
+                                  "chatgpt", NULL, NULL, &sources) == 0 &&
+              cai_cli_status_markdown(rendered, capacity - 1U, "gpt-6-luna",
+                                      "medium", "chatgpt", NULL, NULL,
+                                      &sources) != 0,
+          "combined status respects exact buffer capacity");
+    }
   }
   failures +=
       check(strcmp(status.elements[1], "ctx --") == 0, "unknown context");
@@ -204,10 +228,10 @@ int main(void) {
   metrics.session_usage.estimated_spend_usd = 1.25;
   quota.has_credit_balance = 1;
   quota.credit_balance = 42.5;
-  failures +=
-      check(cai_cli_status_markdown(markdown, sizeof(markdown), "gpt-6-luna",
-                                    "medium", "chatgpt", &metrics, &quota) == 0,
-            "status markdown builds");
+  failures += check(cai_cli_status_markdown(markdown, sizeof(markdown),
+                                            "gpt-6-luna", "medium", "chatgpt",
+                                            &metrics, &quota, NULL) == 0,
+                    "status markdown builds");
   failures +=
       check(strstr(markdown, "| Context window | 200000 tokens |") != NULL,
             "context window row");
@@ -228,21 +252,21 @@ int main(void) {
                     "credits row");
   metrics.session_usage.estimated_spend_usd = 0.0;
   metrics.session_usage.estimated_spend_eur = 1.25;
-  failures += check(cai_cli_status_markdown(markdown, sizeof(markdown),
-                                            "zai-org/GLM-5.3-Flash", "medium",
-                                            "berget", &metrics, NULL) == 0,
+  failures += check(cai_cli_status_markdown(
+                        markdown, sizeof(markdown), "zai-org/GLM-5.3-Flash",
+                        "medium", "berget", &metrics, NULL, NULL) == 0,
                     "Berget status markdown builds");
   failures += check(strstr(markdown, "| Cost estimate | €1.2500 EUR |") != NULL,
                     "Berget cost row uses EUR");
   metrics.session_usage.estimated_spend_usd = 1.25;
   metrics.session_usage.estimated_spend_eur = 0.0;
-  failures +=
-      check(cai_cli_status_markdown(markdown, sizeof(markdown), "gpt-6-luna",
-                                    "medium", "openai", &metrics, NULL) == 0 &&
-                strstr(markdown, "| Provider | openai |") != NULL &&
-                strstr(markdown, "| Cost estimate | $1.2500 USD |") != NULL &&
-                strstr(markdown, "Weekly limit") == NULL,
-            "API provider status rows");
+  failures += check(
+      cai_cli_status_markdown(markdown, sizeof(markdown), "gpt-6-luna",
+                              "medium", "openai", &metrics, NULL, NULL) == 0 &&
+          strstr(markdown, "| Provider | openai |") != NULL &&
+          strstr(markdown, "| Cost estimate | $1.2500 USD |") != NULL &&
+          strstr(markdown, "Weekly limit") == NULL,
+      "API provider status rows");
   memset(&metrics, 0, sizeof(metrics));
   failures +=
       check(cai_cli_turn_status_message(turn_message, sizeof(turn_message), "",
