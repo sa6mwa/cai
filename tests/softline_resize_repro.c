@@ -50,6 +50,10 @@ static int producer(sl_t *sl, const sl_watch_event_t *event, void *context) {
     if (ready <= 0 || read(control_fd, &command, 1U) != 1 || command != 'P')
       return SL_ERROR_IO;
   }
+  /* Explicit owner observation, outside the write itself, before continuing
+   * synchronous output after the driver has settled the terminal geometry. */
+  if (sl_output_stream_reconcile(sl) != SL_OK)
+    return SL_ERROR_IO;
   if (partial && emit(sl, "\n") != SL_OK)
     return SL_ERROR_IO;
   if (emit(sl, "* Edited snake.c\n") != SL_OK)

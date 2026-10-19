@@ -2,6 +2,12 @@
 
 ## Status
 
+**Resolved for the controlled sequence (2026-10-19):** CAI now consumes softline
+0.11.0 and calls `sl_output_stream_reconcile()` on the owner thread before
+resuming output after changed terminal dimensions. The retained/shrink regression
+is enabled and passes, alongside the other seven terminal resize scenarios.
+The historical diagnosis and captures below describe the 0.10.0 baseline.
+
 Reproduced twice with a softline-only C program on 2026-10-16, Linux x86_64,
 tmux 3.6, softline 0.10.0. The producer emits only ASCII, LF and valid ANSI SGR.
 The standalone program uses no libcai, libmdf, provider, tool runtime or Pouch.
@@ -10,10 +16,10 @@ This demonstrates the same form of stale-cell corruption reported in CAI.
 The original incident used xfce4-terminal on local X without tmux/SSH; this
 investigation cannot establish its exact sequence or exclude another trigger.
 
-The failing path is covered by softline's documented **Review exception:
+The original failing path was covered by softline's documented **Review exception:
 unobserved retained-frame resize**, rather than a newly discovered violation
-of its guaranteed input-owned resize behavior. CAI still needs a usable way to
-print after command submission and session replay without corrupting rows.
+of its guaranteed input-owned resize behavior. Version 0.11.0 supplies the
+explicit owner reconciliation needed for command submission and session replay.
 
 ## Build and reproduce
 
@@ -28,7 +34,8 @@ bash tests/softline_resize_repro.sh \
   120 30 60 18 retained partial late
 ```
 
-The driver returns **1**, reporting `Old source text contaminated the edit
+On the current checkout, the driver returns **0**. With the original 0.10.0
+fixture, it returned **1**, reporting `Old source text contaminated the edit
 heading`. Failure artifacts are retained in the printed `build/debug/cli-check.*`
 directory: `before-resize`, `after-resize-before-write`, `screen`, and
 `transcript`. The latter includes terminal scrollback. The driver owns a private
@@ -61,12 +68,13 @@ build. No adjacent repository was modified to obtain these results.
 5. Pause that producer on a control FIFO. The driver captures the real cells,
    resizes to 60 columns by 18 rows, then captures the resized cells before
    releasing the next write. This is a settled resize between writes.
-6. Continue with LF, `* Edited snake.c`, six numbered patch rows, and a final
-   answer. Stop the spinner, set a worked message, and enter the next prompt.
+6. On the fixed checkout, explicitly reconcile on the owner before the next
+   feed. Continue with LF, `* Edited snake.c`, six numbered patch rows, and a
+   final answer. Stop the spinner, set a worked message, and enter the next prompt.
 7. Type `draft survives resize` and inspect the actual cells.
 
-All checked softline output/status calls succeed. The failure is a displayed
-cell assertion, not an API error, missed provider event or parser error.
+All checked softline output/status calls succeeded. The original failure was a
+displayed cell assertion, not an API error, missed provider event or parser error.
 
 ## Expected versus actual
 
@@ -76,7 +84,7 @@ The heading must occupy a fresh row with exactly:
 * Edited snake.c
 ```
 
-The actual captured cells contain:
+The original 0.10.0 captured cells contained:
 
 ```text
 xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -122,9 +130,8 @@ width/height shrink distinguish this failing case. Removing those distinctions
 can make a simpler resize test pass.
 
 CAI processes command results and `/resume` replay synchronously after
-`sl_next_prompt` returns. Its output still uses softline's stream API, but that
-does not provide an input-owned observation at this boundary. No current public
-softline redraw/step API was found that lets CAI explicitly reconcile it.
+`sl_next_prompt` returns. The 0.10.0 stream API did not provide an input-owned
+observation at this boundary; 0.11.0 adds explicit reconciliation outside feeds.
 
 ## Positive controls and repair criteria
 
@@ -134,16 +141,14 @@ each edit/patch row and that the unique final prompt is the last nonblank row.
 The real CAI cell tests cover a settled provider pause and a resize between
 complete writes inside the actual runtime/renderer callback.
 
-Seven such cases pass. The known failing retained/shrink case remains visible
-in CTest but is explicitly disabled pending upstream work; the manual command
-above asserts correct behavior and continues to fail. Do not interpret the
-passing controls as closure of BUG-001.
+All eight cases pass with softline 0.11.0 and owner reconciliation, including the
+formerly disabled retained/shrink case. Assertions still require the exact edit
+heading, all patch rows, preserved draft and a unique prompt on the last nonblank
+row. The CAI unit regression separately proves that a reconciliation error blocks
+both ordinary output and quoted prompts, and that a later attempt can retry.
 
-A repair should supply a supported input-owned reconciliation path at this
-boundary, or improve the retained-frame behavior under an explicitly revised
-upstream contract. Preserve immediate feed writes; do not reintroduce the
-withdrawn feed cursor-report wait, simulated delays, hardcoded CAI clearing, or
-hidden transcript buffering/replay. Verify the formerly failing case with
-real cells, neighboring input-owned cases, status wrapping, unfinished lines,
-and the existing feed-latency tests. Then enable its CTest registration and
-consume the fixed dependency in CAI.
+Feed writes remain immediate. Only changed geometry triggers the explicit owner
+operation, whose required cursor reply can wait up to 100 ms. No simulated delay,
+hardcoded clearing or transcript buffering/replay was introduced. The original
+XFCE incident remains untraced; upstream's documented physical-write races and
+Unicode/tab reflow limits still apply.

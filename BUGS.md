@@ -33,9 +33,10 @@ commit and verification evidence.
 
 ## BUG-001: Terminal resize corrupts the transcript and prompt position
 
-- **Priority:** critical; investigate first.
-- **Status:** a matching form of corruption is reproduced in softline 0.10.0;
-  upstream repair remains open. The original XFCE incident is not traced.
+- **Priority:** critical.
+- **Status:** the controlled retained-frame corruption is fixed with softline
+  0.11.0 and owner-thread reconciliation. All eight terminal resize regressions
+  pass. The original intermittent XFCE incident's exact sequence is not traced.
 - **Reported:** after resizing CAI, old command/source text remains inside patch
   rows or below the input prompt. The status bar and prompt can appear in the
   middle of output. Subsequent output can overwrite existing text.
@@ -45,43 +46,38 @@ commit and verification evidence.
   the status/editor area, and resize updates both softline and libmdf geometry.
 - **Evidence:** normal interactive assistant, reasoning, tool, patch, notice,
   and command output uses the softline output stream. `/shell` deliberately
-  releases terminal ownership. CAI does not replace `SIGWINCH`; softline 0.10.0
+  releases terminal ownership. CAI does not replace `SIGWINCH`; softline
   checks terminal dimensions with `TIOCGWINSZ` in its editor and feed paths.
-- **Test in progress:** `tests/cli_terminal_resize_test.sh` uses a private tmux
-  terminal to inspect actual displayed cells and scrollback. Its first case
-  passes: long command output, shrink/grow while the provider is paused, then
-  a large patch and final assistant response. This does **not** reproduce the
-  reported corruption yet. Resizing during a producer callback and retained
-  prompt transitions still need investigation.
-- **Why existing coverage is insufficient:** the existing PTY peer records
+- **Terminal coverage:** `tests/cli_terminal_resize_test.sh` uses a private tmux
+  terminal to inspect actual displayed cells and scrollback after long command
+  output, shrink/grow, a large patch and the final assistant response. It covers
+  both a paused provider and a resize inside the runtime/renderer callback.
+  Six softline-only cases cover watch, yielded and retained owner contexts.
+- **Why byte-only coverage is insufficient:** the existing PTY peer records
   output bytes and a bounded input-row snapshot; it does not implement terminal
   reflow or verify the complete displayed transcript. It cannot prove that old
   source cells were cleared or that every row is positioned correctly.
-- **Closure:** reproduce the failing sequence; identify CAI versus softline
-  ownership; add a regression asserting actual screen cells, output ordering,
-  and prompt placement. If upstream, provide a minimal softline-only reproducer,
-  exact build/run steps, expected/actual captures, and the coverage gap. Do not
-  patch another repository as part of this task.
-- **Follow-up (2026-10-16):** a softline-only C reproducer now deterministically
-  appends old status-message cells to a subsequent edit heading after a retained
+- **Original reproduction (2026-10-16):** a softline-only C program on 0.10.0
+  deterministically appended old status-message cells to an edit heading after a retained
   prompt, unfinished ASCII line, and settled 120x30 -> 60x18 resize. The observed
   line is `* Edited snake.cize reproduction`, instead of `* Edited snake.c`.
   This needs no libcai, libmdf, provider, tools or concurrent physical write.
   The report and exact reproduction steps are in
   [the upstream diagnostic](docs/softline-retained-resize-report.md).
-- **Boundary:** softline documents approximate positioning after unobserved
-  retained-frame resizes as an accepted limitation. CAI has synchronous output
-  after `sl_next_prompt` returns, including command results and `/resume`
-  replay. The dependency's current public API has no explicit input-owned
-  resize-reconciliation call for that boundary. No hardcoded clear, artificial
-  feed delay or transcript replay was added to conceal the corruption.
-- **Coverage:** the existing actual-cell CAI test is now registered with CTest,
-  alongside a real-runtime/renderer callback resize fixture and six softline-only
-  boundary scenarios. Seven passing cases cover producer/input-owned resizes,
-  width/height shrink/growth, partial lines and drafts. The reproducible failing
-  retained-frame shrink case is registered but explicitly disabled pending
-  upstream repair; running its documented script still fails and preserves
-  screenshots. This is an open defect, not a passing resize fix.
+- **Fix (2026-10-19):** softline 0.11.0 supplies
+  `sl_output_stream_reconcile()`. CAI calls it on the UI owner thread before
+  writing after changed terminal dimensions, including synchronous output after
+  `sl_next_prompt` returns. Both feed fragments and quoted user prompts use this
+  boundary. Failed reconciliation prevents the next write and is not cached as
+  success. Ordinary fragments at unchanged dimensions do not reconcile again.
+- **Coverage:** the previously disabled retained/shrink test now gates and
+  passes without weakening its screen assertions. All eight terminal scenarios
+  verify output and prompt placement; a fast unit test covers width/height
+  changes, unchanged dimensions, redirected output, failure/retry and quoted
+  prompts. No artificial feed delay, transcript buffering or replay was added.
+- **Remaining boundary:** physical resizes can race a terminal write, and
+  softline still documents Unicode/tab reflow limitations. These tests prove
+  the controlled settled-resize repair, not every possible XFCE resize sequence.
 
 ## BUG-002: Missing blank row before some tool activity blocks
 

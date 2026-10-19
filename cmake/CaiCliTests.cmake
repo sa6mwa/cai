@@ -48,11 +48,10 @@
       set_tests_properties(cai_cli_softline_resize_${_cai_resize_mode}_shrink
         cai_cli_softline_resize_${_cai_resize_mode}_grow PROPERTIES TIMEOUT 20)
     endforeach()
-    # BUG-001: this diagnostic deterministically exposes softline 0.10.0's
-    # documented unobserved-retained-frame limitation. Keep it visible, but
-    # run its failing assertion manually until the upstream repair is consumed.
-    # See docs/softline-retained-resize-report.md; all other resize cases gate.
-    set_tests_properties(cai_cli_softline_resize_retained_shrink PROPERTIES DISABLED TRUE)
+    add_executable(cai_cli_geometry_test tests/cli_geometry_test.c)
+    target_link_libraries(cai_cli_geometry_test PRIVATE cai_cli_support)
+    cai_configure_cli_target(cai_cli_geometry_test)
+    add_test(NAME cai_cli_geometry COMMAND cai_cli_geometry_test)
     add_test(NAME cai_cli_help COMMAND cai_cli --help)
     add_test(NAME cai_cli_config
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_config_test.sh"

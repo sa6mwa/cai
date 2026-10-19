@@ -37,6 +37,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/timerfd.h>
 #include <sys/wait.h>
@@ -103,6 +104,8 @@ typedef struct cli_state {
   int timer_armed;
   int interactive;
   int width;
+  unsigned short output_columns;
+  unsigned short output_rows;
   int response_open;
   int documents_rendered;
   int reasoning_open;
@@ -253,6 +256,23 @@ static void cli_refresh_quota(cli_state *state, int force) {
   (void)cai_cli_quota_take(&state->quota_refresh, &state->quota);
 }
 
+/* Observe resize on the UI owner thread before entering a softline feed.
+ * Include height-only changes and synchronous output after readline returns.
+ * Ordinary fragments stay immediate; only changed geometry can need a CPR. */
+static int cli_reconcile_output(cli_state *state) {
+  struct winsize size;
+  if (state->batch || ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) != 0 ||
+      size.ws_col == 0 || size.ws_row == 0 ||
+      (size.ws_col == state->output_columns &&
+       size.ws_row == state->output_rows))
+    return 0;
+  if (sl_output_stream_reconcile(state->sl) != SL_OK)
+    return -1;
+  state->output_columns = size.ws_col;
+  state->output_rows = size.ws_row;
+  return 0;
+}
+
 static int cli_sink(void *context, const char *bytes, size_t count) {
   cli_state *state;
   size_t i;
@@ -261,7 +281,8 @@ static int cli_sink(void *context, const char *bytes, size_t count) {
     return 0;
   if (state->batch)
     return fwrite(bytes, 1U, count, stdout) == count ? 0 : -1;
-  if (sl_output_stream_write(state->sl, bytes, count) != SL_OK)
+  if (cli_reconcile_output(state) != 0 ||
+      sl_output_stream_write(state->sl, bytes, count) != SL_OK)
     return -1;
   for (i = 0U; i < count; i++) {
     unsigned char ch = (unsigned char)bytes[i];
@@ -534,7 +555,8 @@ static int cli_prompt(cli_state *state, const char *text) {
   if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0) {
     return -1;
   }
-  if (sl_output_stream_write_quoted_prompt(state->sl, text) != SL_OK)
+  if (cli_reconcile_output(state) != 0 ||
+      sl_output_stream_write_quoted_prompt(state->sl, text) != SL_OK)
     return -1;
   state->feed_breaks = 2;
   return 0;

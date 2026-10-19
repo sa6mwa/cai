@@ -141,7 +141,7 @@ Recent hardening runs have covered:
 ## Active First-Release Work
 
 The first `cai` CLI release targets a single static x86_64 Linux musl binary.
-It uses the Smith runtime, softline 0.10.0, libmdf 0.14.0, ChatGPT auth, and
+It uses the Smith runtime, softline 0.11.0, libmdf 0.14.0, ChatGPT auth, and
 workspace-scoped JSONL sessions. CLI MCP connection configuration is deferred
 to a later release; the `libcai` MCP client API remains available to embedders.
 Ship a `cai(1)` manual page in the binary archive alongside the executable,
