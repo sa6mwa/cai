@@ -176,7 +176,7 @@ _cai_find_configure_preset(cai _cai_cli_release_index)
 _cai_require_inherits(${_cai_cli_release_index} cai x86_64-linux-musl-release)
 _cai_require_cache_value(${_cai_cli_release_index} cai CAI_BUILD_TESTS ON)
 foreach(_cai_app_target IN ITEMS x86_64-linux-gnu x86_64-linux-musl
-    aarch64-linux-gnu aarch64-linux-musl)
+    aarch64-linux-gnu aarch64-linux-musl armhf-linux-gnu armhf-linux-musl)
   _cai_find_configure_preset(${_cai_app_target}-release _cai_app_index)
   _cai_require_cache_value(${_cai_app_index} ${_cai_app_target}-release CAI_BUILD_APP ON)
 endforeach()

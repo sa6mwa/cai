@@ -1098,7 +1098,7 @@ verify_shared_exports() {
   [[ -n "$library" ]] || fail "missing shared library for export verification: $root_dir/lib"
   "$repo_root/tests/shared_export_policy_test.sh" \
     "$nm" "$library" "$repo_root/cmake/cai_shared.exports" "$platform"
-  if [[ "$target_id" == x86_64-linux-* || "$target_id" == aarch64-linux-* ]]; then
+  if [[ "$target_id" == *-linux-* ]]; then
     library=$(find "$root_dir/lib" -maxdepth 1 -type f -name 'libcai_app.so.*' -print -quit)
     [[ -n "$library" ]] || fail "missing application shared library: $root_dir/lib"
     "$repo_root/tests/shared_export_policy_test.sh" \
@@ -1108,7 +1108,7 @@ verify_shared_exports() {
 
 verify_application_sdk() {
   local root_dir=$1 target_id=$2 path
-  [[ "$target_id" == x86_64-linux-* || "$target_id" == aarch64-linux-* ]] || return 0
+  [[ "$target_id" == *-linux-* ]] || return 0
   for path in include/cai/app.h lib/libcai_app.a lib/libcai_app.so \
       lib/pkgconfig/cai-app.pc lib/cmake/cai_app/cai_app-config.cmake \
       share/cai_app/dependencies.json share/doc/libcai_app/embedding.md \

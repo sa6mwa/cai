@@ -34,16 +34,15 @@ grep -q 'Missing/nonregular selected artifact' "$scratch/err"
 export CAI_RELEASE_TARGETS=x86_64-linux-gnu
 require_complete_manifest "${names[@]}"
 if (require_complete_manifest "${names[@]:1}") >"$scratch/out" 2>"$scratch/err"; then exit 1; fi )
-# All four 64-bit Linux SDKs must ship the static/shared app surface.
+# All six Linux SDKs must ship the static/shared app surface.
 ( CAI_REPO_ROOT="$repo" CAI_VERSION="$version" source "$repo/scripts/verify_release_artifacts.sh" --self-test
-verify_application_sdk "$scratch/sdk" armhf-linux-gnu
 verify_application_sdk "$scratch/sdk" arm64-apple-darwin
 paths=(include/cai/app.h lib/libcai_app.a lib/libcai_app.so
   lib/pkgconfig/cai-app.pc lib/cmake/cai_app/cai_app-config.cmake
   share/cai_app/dependencies.json share/doc/libcai_app/embedding.md
   share/doc/libcai_app/examples/main.c share/doc/libcai_app/examples/app.lua)
 for path in "${paths[@]}"; do mkdir -p "$scratch/sdk/$(dirname "$path")"; touch "$scratch/sdk/$path"; done
-for target in x86_64-linux-gnu x86_64-linux-musl aarch64-linux-gnu aarch64-linux-musl; do
+for target in x86_64-linux-gnu x86_64-linux-musl aarch64-linux-gnu aarch64-linux-musl armhf-linux-gnu armhf-linux-musl; do
   verify_application_sdk "$scratch/sdk" "$target"
   for path in "${paths[@]}"; do
     mv "$scratch/sdk/$path" "$scratch/missing"

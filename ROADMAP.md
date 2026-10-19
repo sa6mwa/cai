@@ -199,6 +199,17 @@ output with libmdf 0.13.0 and 0.14.0, for whole and fragmented input. Recheck
 this case during future renderer upgrades; the current upgrade preserves the
 existing behavior. OSC8 rendering is a separate path.
 
+## Deferred: Embeddable application on Darwin
+
+`libcai_app` ships static/shared SDK libraries for Linux x86_64, aarch64 and
+armhf, each with glibc and musl. The standalone binary remains x86_64 musl.
+Darwin arm64 application dependency packages are available, but application
+notification/timer descriptors, PTY handoff, environment restoration, Chrome
+host registration and Mach-O/Lua packaging need a deliberate port. Keep the
+application disabled there until the public embedding contract and native
+terminal behavior are verified. The concrete assessment is in
+[the embedding guide](docs/embedding.md#darwin-port-assessment).
+
 ## Supported: Responses WebSocket
 
 Status: implemented for OpenAI API-key and ChatGPT subscription-auth streaming

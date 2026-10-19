@@ -3,7 +3,7 @@
 `libcai_app` contains the complete CAI terminal application: softline/libmdf,
 configuration, encrypted sessions/auth, tools, MCP, slash commands, review and
 non-interactive work. Core `libcai` remains independently usable without the
-application dependencies. The application supports Linux x86_64 and aarch64,
+application dependencies. The application supports Linux x86_64, aarch64 and armhf,
 with both glibc and musl. The standalone `cai` binary remains Linux x86_64 musl.
 
 Build with `CAI_BUILD_APP=ON`; `CAI_BUILD_CLI=ON` also selects it. The `cai`
@@ -112,7 +112,7 @@ archive includes the optional application facade for native embedders.
 `make lua-app-test` builds this optional surface against the native application
 and runs its ownership, error, export and mock-provider embedding checks.
 
-The four Linux x86_64/aarch64 GNU/musl SDK presets each include `libcai_app.a`,
+The six Linux x86_64/aarch64/armhf GNU/musl SDK presets each include `libcai_app.a`,
 `libcai_app.so` (ABI 0), the public header and CMake/pkg-config metadata. They
 ship inside the corresponding `cai-<version>-<target>.tar.gz` SDK archive:
 
@@ -120,6 +120,7 @@ ship inside the corresponding `cai-<version>-<target>.tar.gz` SDK archive:
 | --- | --- | --- |
 | x86_64 | `x86_64-linux-gnu-release` | `x86_64-linux-musl-release` |
 | aarch64 | `aarch64-linux-gnu-release` | `aarch64-linux-musl-release` |
+| armhf (ARMv7 hard float) | `armhf-linux-gnu-release` | `armhf-linux-musl-release` |
 
 Other SDK targets retain core libcai only. Application dependency pins are recorded
 in `share/cai_app/dependencies.json`; core dependency metadata remains in
@@ -130,3 +131,28 @@ Chrome native-host registration records the current executable path. An
 embedding executable that offers `--chrome-setup` must also dispatch Chrome's
 extension-origin invocation to CAI's run entrypoint, or directly to the public
 `cai_chrome_native_host_run` API, rather than its normal host option parser.
+
+## Darwin port assessment
+
+Core libcai already has a Darwin arm64 SDK. All four application dependencies
+also publish Darwin arm64 SDKs at the pinned versions. The application remains disabled
+for Darwin until these boundaries are implemented and verified:
+
+| Boundary | Current implementation | Port work |
+| --- | --- | --- |
+| Worker/log notifications | Linux `eventfd` | Use a nonblocking pipe or Darwin notification backend; keep softline's descriptor-watch interface |
+| Turn/status and shell deadlines | Linux `timerfd` | Provide monotonic timers with idle disarming and cancellation; preserve existing deadlines |
+| Shell handoff | `pipe2`, `ptsname_r`, Linux PTY setup | Use Darwin PTY and descriptor setup while preserving terminal restoration, child cleanup and bounded capture |
+| Host environment restoration | GNU `clearenv`, process `environ` | Use Darwin `_NSGetEnviron()` and portable environment clearing/restoration without changing the host ownership contract |
+| Agent command sandbox | Core exec already selects experimental `sandbox-exec` on Darwin | Verify Smith's tool defaults, permissions and failure behavior on a native Mac; Linux cgroups remain unavailable |
+| Chrome native host | Linux host/setup code; Darwin currently returns unsupported | Implement executable/manifest discovery, socket flags and peer credentials, or explicitly keep this capability unavailable |
+| Shared/module packaging | ELF `.so`, GNU linker flags | Add Mach-O `.dylib` identities, export rules and the appropriate Lua module linking rules |
+
+Recommended implementation: keep one application runtime and put notification,
+timer, PTY and environment differences behind small private platform helpers.
+Local osxcross SDK probes confirm the missing `sys/eventfd.h`, `sys/timerfd.h`,
+`clearenv` and `pipe2` interfaces. The port requires source changes.
+Use the existing osxcross lane for build/link/export/relocation checks, then a
+native macOS host for real softline input, resize, shell handoff, cancellation
+and repeated embedded-run checks. Cross compilation cannot establish that
+terminal behavior. See the [roadmap](../ROADMAP.md) for the deferred port.
