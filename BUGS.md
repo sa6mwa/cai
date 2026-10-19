@@ -5,6 +5,22 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-015: Extra blank row before the first quoted user prompt
+
+- **Status:** reproduced in softline 0.11.0; upstream fix needed.
+- **Required behavior:** one empty row between the first quoted user prompt
+  and preceding terminal content, including the launching shell or host banner.
+- **Cause:** a fresh stream initializes its trailing-newline count to zero.
+  `sl_output_stream_write_quoted_prompt_impl()` therefore inserts two LFs even
+  when the startup cursor report already places output at column zero.
+- **Evidence (2026-10-19):** a standalone public-softline C probe in a private
+  tmux terminal shows exactly two blank rows after both a shell marker and a
+  host banner. No CAI runtime, Markdown renderer or provider is involved.
+- **Repair boundary:** account for the existing line boundary when acquiring
+  a fresh native stream with a confirmed column-zero cursor. Preserve later
+  quote spacing, unfinished-line handling and known spacing across reopen.
+  CAI should continue using softline's quoted-prompt API.
+
 ## BUG-013: Sparse patches omit surrounding unchanged lines
 
 - **Reported:** isolated signature edits show only removed/added rows, with no
