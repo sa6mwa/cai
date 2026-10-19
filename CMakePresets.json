@@ -140,6 +140,7 @@
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
         "CPKT_TARGET_ID": "aarch64-linux-gnu",
         "CAI_TARGET_ID": "aarch64-linux-gnu",
+        "CAI_BUILD_APP": "ON",
         "CAI_BUILD_TESTS": "OFF"
       }
     },
@@ -150,6 +151,7 @@
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
         "CPKT_TARGET_ID": "aarch64-linux-musl",
         "CAI_TARGET_ID": "aarch64-linux-musl",
+        "CAI_BUILD_APP": "ON",
         "CAI_BUILD_TESTS": "OFF"
       }
     },
@@ -466,7 +468,7 @@
       "configurePreset": "debug-cai",
       "filter": {
         "include": {
-          "name": "^cai_cli_"
+          "name": "^cai_(cli_|app)"
         }
       },
       "execution": {

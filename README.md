@@ -580,6 +580,8 @@ custom help naming and an initialized pslog logger. See
 [Embedding CAI](docs/embedding.md) for ownership, process-state restoration,
 installation and C/Lua examples. Core libcai remains independent of the
 application's softline, libmdf and liblockdc dependencies.
+The x86_64 and aarch64 Linux SDK archives include both static and shared
+application libraries for glibc and musl.
 
 ### Configured MCP tools
 

@@ -3,7 +3,8 @@
 `libcai_app` contains the complete CAI terminal application: softline/libmdf,
 configuration, encrypted sessions/auth, tools, MCP, slash commands, review and
 non-interactive work. Core `libcai` remains independently usable without the
-application dependencies. The application currently supports Linux x86_64.
+application dependencies. The application supports Linux x86_64 and aarch64,
+with both glibc and musl. The standalone `cai` binary remains Linux x86_64 musl.
 
 Build with `CAI_BUILD_APP=ON`; `CAI_BUILD_CLI=ON` also selects it. The `cai`
 executable is the small C embedding example in `cli/main.c`. Install the
@@ -111,8 +112,16 @@ archive includes the optional application facade for native embedders.
 `make lua-app-test` builds this optional surface against the native application
 and runs its ownership, error, export and mock-provider embedding checks.
 
-The Linux x86_64 GNU/musl SDK presets include the application libraries; other
-SDK targets retain core libcai only. Application dependency pins are recorded
+The four Linux x86_64/aarch64 GNU/musl SDK presets each include `libcai_app.a`,
+`libcai_app.so` (ABI 0), the public header and CMake/pkg-config metadata. They
+ship inside the corresponding `cai-<version>-<target>.tar.gz` SDK archive:
+
+| Architecture | glibc preset | musl preset |
+| --- | --- | --- |
+| x86_64 | `x86_64-linux-gnu-release` | `x86_64-linux-musl-release` |
+| aarch64 | `aarch64-linux-gnu-release` | `aarch64-linux-musl-release` |
+
+Other SDK targets retain core libcai only. Application dependency pins are recorded
 in `share/cai_app/dependencies.json`; core dependency metadata remains in
 `share/cai/dependencies.json`. The standalone binary archive includes the C/Lua
 embedding examples and this guide alongside `bin/cai` and `cai(1)`.

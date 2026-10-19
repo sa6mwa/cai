@@ -650,11 +650,20 @@ write_extracted_sdk_smoke_source() {
 #include <cai/tools/searxng.h>
 #include <cai/tools/todo.h>
 #include <lonejson.h>
+#ifdef CAI_SMOKE_WITH_APP
+#include <cai/app.h>
+#endif
 
 int main(void) {
   cai_client_config config;
   cai_error error;
   int (*open_fn)(const cai_client_config *, cai_client **, cai_error *);
+#ifdef CAI_SMOKE_WITH_APP
+  cai_app_config application;
+  cai_app_config_init(&application);
+  if (application.program_name == 0)
+    return 1;
+#endif
 
   cai_client_config_init(&config);
   cai_error_init(&error);
@@ -677,6 +686,11 @@ if(NOT TARGET "${CAI_SMOKE_TARGET}")
 endif()
 add_executable(cai_extracted_sdk_smoke main.c)
 target_link_libraries(cai_extracted_sdk_smoke PRIVATE "${CAI_SMOKE_TARGET}")
+if(CAI_SMOKE_APP_TARGET)
+  find_package(cai_app CONFIG REQUIRED)
+  target_link_libraries(cai_extracted_sdk_smoke PRIVATE "${CAI_SMOKE_APP_TARGET}")
+  target_compile_definitions(cai_extracted_sdk_smoke PRIVATE CAI_SMOKE_WITH_APP)
+endif()
 EOF
 }
 
@@ -730,6 +744,9 @@ verify_extracted_sdk_cmake_variant() {
     "-DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH"
     "-DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH"
   )
+  if [[ -f "$root_dir/include/cai/app.h" ]]; then
+    cmake_args+=("-DCAI_SMOKE_APP_TARGET=cai::app_$variant_name")
+  fi
   cache_value=$(build_cache_value "$target_id" CMAKE_SYSROOT || true)
   if [[ -n "$cache_value" ]]; then
     cmake_args+=("-DCMAKE_SYSROOT=$cache_value")
@@ -828,6 +845,8 @@ verify_extracted_sdk_pkg_config_variant() {
   local cache_value
   local rpath_link_flags=()
   local static_link_flags=()
+  local package=cai
+  local application_flags=()
 
   command -v pkg-config >/dev/null 2>&1 || diagnostic_fail \
     package-verify extracted-sdk-smoke external-tool-unavailable \
@@ -835,13 +854,17 @@ verify_extracted_sdk_pkg_config_variant() {
     "$root_dir" \
     "install pkg-config and rerun make package-verify"
 
-  cflags=$(PKG_CONFIG_PATH="$pkg_config_path" pkg-config --cflags cai) ||
+  if [[ -f "$root_dir/include/cai/app.h" ]]; then
+    package=cai-app
+    application_flags=(-DCAI_SMOKE_WITH_APP)
+  fi
+  cflags=$(PKG_CONFIG_PATH="$pkg_config_path" pkg-config --cflags "$package") ||
     diagnostic_fail package-verify extracted-sdk-smoke package-unusable \
       "failed to resolve extracted SDK pkg-config cflags" \
       "$root_dir" \
       "inspect $root_dir/lib/pkgconfig/cai.pc"
   if [[ "$link_mode" == "static" ]]; then
-    libs=$(PKG_CONFIG_PATH="$pkg_config_path" pkg-config --static --libs cai) ||
+    libs=$(PKG_CONFIG_PATH="$pkg_config_path" pkg-config --static --libs "$package") ||
       diagnostic_fail package-verify extracted-sdk-smoke package-unusable \
         "failed to resolve extracted SDK static pkg-config libs" \
         "$root_dir" \
@@ -850,7 +873,7 @@ verify_extracted_sdk_pkg_config_variant() {
       static_link_flags=(-static)
     fi
   else
-    libs=$(PKG_CONFIG_PATH="$pkg_config_path" pkg-config --libs cai) ||
+    libs=$(PKG_CONFIG_PATH="$pkg_config_path" pkg-config --libs "$package") ||
       diagnostic_fail package-verify extracted-sdk-smoke package-unusable \
         "failed to resolve extracted SDK pkg-config libs" \
         "$root_dir" \
@@ -878,7 +901,7 @@ verify_extracted_sdk_pkg_config_variant() {
 
   # shellcheck disable=SC2086
   if ! PATH="$tool_path" PKG_CONFIG_PATH="$pkg_config_path" "$cc" -std=c89 -Wall -Wextra \
-    -Werror "${static_link_flags[@]}" "${rpath_link_flags[@]}" \
+    -Werror "${static_link_flags[@]}" "${rpath_link_flags[@]}" "${application_flags[@]}" \
     $cflags "$source" $libs -o "$output"; then
     diagnostic_fail package-verify extracted-sdk-smoke package-unusable \
       "failed to build extracted SDK $link_mode pkg-config consumer" \
@@ -909,6 +932,7 @@ verify_extracted_sdk_smoke() {
   local cc_dir
   local tool_path
   local smoke_workspace
+  local dependency_names dependency_prefix dependency
 
   cpkt_version=$(pc_value "$pc" cpkt_version)
   lonejson_version=$(pc_value "$pc" lonejson_version)
@@ -938,6 +962,17 @@ verify_extracted_sdk_smoke() {
   fi
   if [[ -d "$cpkt_prefix/include" ]]; then
     include_dirs+=("-I$cpkt_prefix/include")
+  fi
+  if [[ -f "$root_dir/include/cai/app.h" ]]; then
+    command -v jq >/dev/null || fail 'jq is required to read application dependency metadata'
+    dependency_names=$(jq -er '.dependencies[] | [.name, .version, .targetId] | join("-")' \
+      "$root_dir/share/cai_app/dependencies.json") || fail 'invalid application dependency metadata'
+    while IFS= read -r dependency; do
+      dependency_prefix="$repo_root/.cache/deps/$dependency"
+      require_dependency_prefix "$dependency_prefix" "$dependency" "$root_dir"
+      cmake_prefixes+=("$dependency_prefix")
+      pkg_config_dirs+=("$dependency_prefix/lib/pkgconfig")
+    done <<<"$dependency_names"
   fi
 
   cmake_prefix_path=$(join_by ';' "${cmake_prefixes[@]}")
@@ -1063,7 +1098,7 @@ verify_shared_exports() {
   [[ -n "$library" ]] || fail "missing shared library for export verification: $root_dir/lib"
   "$repo_root/tests/shared_export_policy_test.sh" \
     "$nm" "$library" "$repo_root/cmake/cai_shared.exports" "$platform"
-  if [[ "$target_id" == x86_64-linux-* ]]; then
+  if [[ "$target_id" == x86_64-linux-* || "$target_id" == aarch64-linux-* ]]; then
     library=$(find "$root_dir/lib" -maxdepth 1 -type f -name 'libcai_app.so.*' -print -quit)
     [[ -n "$library" ]] || fail "missing application shared library: $root_dir/lib"
     "$repo_root/tests/shared_export_policy_test.sh" \
@@ -1073,7 +1108,7 @@ verify_shared_exports() {
 
 verify_application_sdk() {
   local root_dir=$1 target_id=$2 path
-  [[ "$target_id" == x86_64-linux-* ]] || return 0
+  [[ "$target_id" == x86_64-linux-* || "$target_id" == aarch64-linux-* ]] || return 0
   for path in include/cai/app.h lib/libcai_app.a lib/libcai_app.so \
       lib/pkgconfig/cai-app.pc lib/cmake/cai_app/cai_app-config.cmake \
       share/cai_app/dependencies.json share/doc/libcai_app/embedding.md \
