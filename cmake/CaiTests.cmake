@@ -463,6 +463,7 @@ if(CAI_BUILD_TESTS)
     agent_client_history_continuity
     global_skills_catalog
     smith_profile
+    smith_compaction_instructions
     smith_model_prompts
     smith_review_runtime
     smith_review_parent_handoff

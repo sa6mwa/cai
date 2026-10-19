@@ -29326,11 +29326,15 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
       "\"resp_auto_compact_steering\",\"usage\":{\"input_tokens\":330000,"
       "\"output_tokens\":10,\"total_tokens\":330010}}}\n\n";
   static const char *tool_required[] = {"long tool continuation",
-                                        "\"name\":\"list_files\""};
+                                        "\"name\":\"list_files\"",
+                                        "AUTO_COMPACTION_POLICY_MARKER"};
   static const char *budget_tool_required[] = {"long tool continuation",
                                                "\"name\":\"list_files\""};
   static const char *compact_required[] = {"\"type\":\"compaction_trigger\""};
-  static const char *final_required[] = {"opaque-summary"};
+  static const char *policy_compact_required[] = {
+      "\"type\":\"compaction_trigger\"", "AUTO_COMPACTION_POLICY_MARKER"};
+  static const char *policy_final_required[] = {
+      "opaque-summary", "AUTO_COMPACTION_POLICY_MARKER"};
   static const char *final_forbidden[] = {"\"type\":\"compaction_trigger\""};
   static const char *image_tool_required[] = {"image compaction source",
                                               "\"name\":\"view_image\""};
@@ -29346,13 +29350,13 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
       {"POST /v1/responses HTTP/", tool_required,
        sizeof(tool_required) / sizeof(tool_required[0]), NULL, 0U, 200, "OK",
        "text/event-stream", NULL, tool_response},
-      {"POST /v1/responses HTTP/", compact_required,
-       sizeof(compact_required) / sizeof(compact_required[0]), NULL, 0U, 200,
-       "OK", "text/event-stream", NULL, compact_response},
-      {"POST /v1/responses HTTP/", final_required,
-       sizeof(final_required) / sizeof(final_required[0]), final_forbidden,
-       sizeof(final_forbidden) / sizeof(final_forbidden[0]), 200, "OK",
-       "text/event-stream", NULL, final_response}};
+      {"POST /v1/responses HTTP/", policy_compact_required,
+       sizeof(policy_compact_required) / sizeof(policy_compact_required[0]),
+       NULL, 0U, 200, "OK", "text/event-stream", NULL, compact_response},
+      {"POST /v1/responses HTTP/", policy_final_required,
+       sizeof(policy_final_required) / sizeof(policy_final_required[0]),
+       final_forbidden, sizeof(final_forbidden) / sizeof(final_forbidden[0]),
+       200, "OK", "text/event-stream", NULL, final_response}};
   static const mock_http_expectation steering_script[] = {
       {"POST /v1/responses HTTP/", steering_required,
        sizeof(steering_required) / sizeof(steering_required[0]), NULL, 0U, 200,
@@ -29376,13 +29380,13 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
        sizeof(compact_required) / sizeof(compact_required[0]), NULL, 0U, 200,
        "OK", "text/event-stream", NULL, compact_response}};
   static const mock_http_expectation resume_script[] = {
-      {"POST /v1/responses HTTP/", compact_required,
-       sizeof(compact_required) / sizeof(compact_required[0]), NULL, 0U, 200,
-       "OK", "text/event-stream", NULL, compact_response},
-      {"POST /v1/responses HTTP/", final_required,
-       sizeof(final_required) / sizeof(final_required[0]), final_forbidden,
-       sizeof(final_forbidden) / sizeof(final_forbidden[0]), 200, "OK",
-       "text/event-stream", NULL, final_response}};
+      {"POST /v1/responses HTTP/", policy_compact_required,
+       sizeof(policy_compact_required) / sizeof(policy_compact_required[0]),
+       NULL, 0U, 200, "OK", "text/event-stream", NULL, compact_response},
+      {"POST /v1/responses HTTP/", policy_final_required,
+       sizeof(policy_final_required) / sizeof(policy_final_required[0]),
+       final_forbidden, sizeof(final_forbidden) / sizeof(final_forbidden[0]),
+       200, "OK", "text/event-stream", NULL, final_response}};
   http_mock_client mock;
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
@@ -29422,6 +29426,8 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
   expect_int(state, "runtime_auto_compact_tool_client",
              cai_client_open(&client_config, &client, &error), CAI_OK);
   cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.developer_instructions_extension =
+      "AUTO_COMPACTION_POLICY_MARKER";
   runtime_config.workspace_directory = "/tmp";
   runtime_config.model = CAI_MODEL_GPT_5_NANO;
   runtime_config.disable_default_session_store = 1;
@@ -29810,6 +29816,8 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
   expect_int(state, "runtime_auto_compact_resume_client",
              cai_client_open(&client_config, &client, &error), CAI_OK);
   cai_agent_runtime_config_init(&runtime_config);
+  runtime_config.developer_instructions_extension =
+      "AUTO_COMPACTION_POLICY_MARKER";
   memset(&events, 0, sizeof(events));
   events.owner = pthread_self();
   runtime_config.workspace_directory = "/tmp";
@@ -39831,6 +39839,207 @@ static void test_agent_tool_manual_step(test_state *state) {
   } else if (!WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) {
     test_fail(state, "agent_manual_mock", "mock child failed");
   }
+}
+
+/* Inspect real wire requests, not merely the agent's loaded-file flags.
+ * Compaction must not make file policies or the skill catalog depend on what
+ * the summarizer chooses to retain. No provider inference or clock waits. */
+static void test_smith_compaction_instructions(test_state *state) {
+  static const char *directories[] = {"cai", "codex", "work", "cai/skills",
+                                      "cai/skills/continuity"};
+  static const char *files[] = {"cai/AGENTS.md", "codex/AGENTS.md",
+                                "work/AGENTS.md",
+                                "cai/skills/continuity/SKILL.md"};
+  static const char *contents[] = {
+      "COMPACT_CAI_ORIGINAL", "COMPACT_CODEX_POLICY", "COMPACT_REPO_POLICY",
+      "---\nname: continuity\ndescription: COMPACT_SKILL_CATALOG\n---\n"
+      "Read the complete skill when needed.\n"};
+  static const char *loaded[] = {
+      "COMPACT_CAI_ORIGINAL",        "COMPACT_CODEX_POLICY",
+      "COMPACT_REPO_POLICY",         "COMPACT_SKILL_CATALOG",
+      "COMPACT_DEVELOPER_EXTENSION", "<INSTRUCTIONS>"};
+  static const char *continued[] = {
+      "COMPACT_CAI_ORIGINAL",        "COMPACT_CODEX_POLICY",
+      "COMPACT_REPO_POLICY",         "COMPACT_SKILL_CATALOG",
+      "COMPACT_DEVELOPER_EXTENSION", "opaque-summary"};
+  static const char *resumed[] = {
+      "COMPACT_CAI_UPDATED",         "COMPACT_CODEX_POLICY",
+      "COMPACT_REPO_POLICY",         "COMPACT_SKILL_CATALOG",
+      "COMPACT_DEVELOPER_EXTENSION", "opaque-summary"};
+  static const char *stale[] = {"COMPACT_CAI_ORIGINAL"};
+  static const char responses_body[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"reply\","
+      "\"usage\":{\"input_tokens\":10,\"output_tokens\":1,\"total_tokens\":11}}"
+      "}\n\n";
+  static const char compact_body[] =
+      "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
+      "\"item\":{\"id\":\"cmp_policy\",\"type\":\"compaction\","
+      "\"encrypted_content\":\"opaque-summary\"}}\n\n"
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"compact\","
+      "\"usage\":{\"input_tokens\":20,\"output_tokens\":1,\"total_tokens\":21}}"
+      "}\n\n";
+  static const char chat_body[] =
+      "data: {\"id\":\"reply\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+  static const char chat_compact_body[] =
+      "data: {\"id\":\"summary\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"content\":\"opaque-summary\"},\"finish_reason\":\"stop\"}]}\n\n"
+      "data: [DONE]\n\n";
+  char root[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-compact-policy-XXXXXX";
+  char path[PATH_MAX], config_dir[PATH_MAX], codex_dir[PATH_MAX];
+  char workspace[PATH_MAX];
+  test_env_snapshot codex_env;
+  cai_error error;
+  size_t i;
+  int chat;
+
+  if (mkdtemp(root) == NULL) {
+    test_fail(state, "compact_instructions_setup", "mkdtemp failed");
+    return;
+  }
+  test_env_capture(&codex_env, "CODEX_HOME");
+  cai_error_init(&error);
+  for (i = 0U; i < sizeof(directories) / sizeof(directories[0]); i++) {
+    snprintf(path, sizeof(path), "%s/%s", root, directories[i]);
+    if (mkdir(path, 0700) != 0) {
+      test_fail(state, "compact_instructions_setup", "mkdir failed");
+      goto cleanup;
+    }
+  }
+  snprintf(config_dir, sizeof(config_dir), "%s/cai", root);
+  snprintf(codex_dir, sizeof(codex_dir), "%s/codex", root);
+  snprintf(workspace, sizeof(workspace), "%s/work", root);
+  expect_int(state, "compact_instructions_codex_home",
+             setenv("CODEX_HOME", codex_dir, 1), 0);
+  for (chat = 0; chat < 2; chat++) {
+    mock_http_expectation script[6];
+    http_mock_server server;
+    cai_client_config client_config;
+    cai_smith_config smith;
+    cai_client *client = NULL;
+    cai_agent *agent = NULL;
+    cai_session *session = NULL;
+    cai_source *saved = NULL;
+    cai_sink *sink = NULL;
+    cai_sink_callbacks callbacks;
+    write_state output;
+    int phase, rc;
+    const char *name =
+        chat ? "compact_instructions_chat" : "compact_instructions_responses";
+    for (i = 0U; i < sizeof(files) / sizeof(files[0]); i++) {
+      snprintf(path, sizeof(path), "%s/%s", root, files[i]);
+      write_file_or_die(path, contents[i]);
+    }
+    memset(script, 0, sizeof(script));
+    for (i = 0U; i < 6U; i++) {
+      script[i].request_prefix =
+          chat ? "POST /v1/chat/completions HTTP/" : "POST /v1/responses HTTP/";
+      script[i].required = loaded;
+      script[i].required_count = sizeof(loaded) / sizeof(loaded[0]);
+      script[i].status = 200;
+      script[i].status_text = "OK";
+      script[i].content_type = "text/event-stream";
+      script[i].body = chat ? chat_body : responses_body;
+    }
+    script[1].status = 400;
+    script[1].status_text = "Bad Request";
+    script[1].content_type = "application/json";
+    script[1].body = "{\"error\":{\"message\":\"compaction rejected\"}}";
+    script[3].body = chat ? chat_compact_body : compact_body;
+    if (chat) {
+      /* The separate summarizer deliberately gets its own instructions;
+       * normal requests must still carry the complete active policy. */
+      script[1].required = script[3].required = NULL;
+      script[1].required_count = script[3].required_count = 0U;
+    }
+    script[4].required = continued;
+    script[4].required_count = sizeof(continued) / sizeof(continued[0]);
+    script[5].required = resumed;
+    script[5].required_count = sizeof(resumed) / sizeof(resumed[0]);
+    script[5].forbidden = stale;
+    script[5].forbidden_count = 1U;
+    if (http_mock_server_open_script(state, name, script, 6U, &server) != 0)
+      break;
+    cai_client_config_init(&client_config);
+    client_config.api_key = "fixture";
+    client_config.base_url = server.base_url;
+    client_config.http_2_disabled = 1;
+    client_config.timeout_ms = 500L;
+    client_config.chat_max_attempts = 1U;
+    if (chat)
+      client_config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
+    cai_smith_config_init(&smith);
+    smith.workspace_directory = workspace;
+    smith.agent_config_directory = config_dir;
+    smith.codex_compat_agents_md = 1;
+    smith.disable_terminal = 1;
+    smith.developer_instructions_extension = "COMPACT_DEVELOPER_EXTENSION";
+    memset(&output, 0, sizeof(output));
+    memset(&callbacks, 0, sizeof(callbacks));
+    callbacks.write = test_write;
+    callbacks.context = &output;
+    rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+    if (rc == CAI_OK)
+      rc = cai_client_open(&client_config, &client, &error);
+    if (rc == CAI_OK)
+      rc = cai_client_new_smith_agent(client, &smith, &agent, &error);
+    if (rc == CAI_OK)
+      rc = cai_agent_new_session(agent, &session, &error);
+    for (phase = 0; phase < 4 && rc == CAI_OK; phase++) {
+      rc = cai_session_add_user_text(session, "check current policy", &error);
+      if (rc == CAI_OK)
+        rc = cai_session_stream_text(session, sink, &error);
+      if (rc != CAI_OK)
+        break;
+      if (phase == 0) {
+        expect_int(state, "compact_instructions_rejected",
+                   cai_session_compact(session, &error), CAI_ERR_SERVER);
+        cai_error_cleanup(&error);
+        cai_error_init(&error);
+      } else if (phase == 1) {
+        rc = cai_session_compact(session, &error);
+      } else if (phase == 2) {
+        rc = cai_session_export_state_source(session, &saved, &error);
+        cai_session_destroy(session);
+        session = NULL;
+        cai_agent_destroy(agent);
+        agent = NULL;
+        snprintf(path, sizeof(path), "%s/cai/AGENTS.md", root);
+        write_file_or_die(path, "COMPACT_CAI_UPDATED");
+        if (rc == CAI_OK)
+          rc = cai_client_new_smith_agent(client, &smith, &agent, &error);
+        if (rc == CAI_OK)
+          rc = cai_agent_new_session(agent, &session, &error);
+        if (rc == CAI_OK)
+          rc = cai_session_import_state_source(session, saved, &error);
+      }
+    }
+    expect_int(state, name, rc, CAI_OK);
+    if (rc != CAI_OK)
+      test_fail(state, name,
+                error.message != NULL ? error.message : "no error detail");
+    cai_source_close(saved);
+    cai_sink_close(sink);
+    cai_session_destroy(session);
+    cai_agent_destroy(agent);
+    cai_client_close(client);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_child_exit(state, name, server.pid, &server.child_status);
+  }
+cleanup:
+  for (i = 0U; i < sizeof(files) / sizeof(files[0]); i++) {
+    snprintf(path, sizeof(path), "%s/%s", root, files[i]);
+    (void)unlink(path);
+  }
+  for (i = sizeof(directories) / sizeof(directories[0]); i > 0U; i--) {
+    snprintf(path, sizeof(path), "%s/%s", root, directories[i - 1U]);
+    (void)rmdir(path);
+  }
+  (void)rmdir(root);
+  test_env_restore(&codex_env);
+  cai_error_cleanup(&error);
 }
 
 static void test_agent_auto_compaction(test_state *state) {
@@ -52135,6 +52344,7 @@ static const test_entry test_entries[] = {
     {"global_skills_catalog", test_global_skills_catalog},
     {"smith_profile", test_smith_profile},
     {"smith_model_prompts", test_smith_model_prompts},
+    {"smith_compaction_instructions", test_smith_compaction_instructions},
     {"smith_review_runtime", test_smith_review_runtime},
     {"smith_review_parent_handoff", test_smith_review_parent_handoff},
     {"agent_runtime_subagent", test_agent_runtime_subagent},

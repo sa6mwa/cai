@@ -262,6 +262,18 @@ commit and verification evidence.
   `build/cai/codex-agents-live-probe.log`, and
   `build/cai/agents-framing-live-probe.log`. Auth copies and fixture state were
   isolated; no user conversation or original credential file was changed.
+- **Compaction hypothesis (2026-10-19):** not reproduced. A native wire-level
+  regression loads real CAI global, Codex global and workspace AGENTS.md files,
+  a skill catalog and a developer extension. Both Responses and Chat Completions
+  retain them in ordinary requests after rejected and successful compaction.
+  Exporting compacted state and importing it into a newly constructed Smith
+  agent sends the updated global file, without restoring its old contents.
+  Runtime request assertions also preserve the active instruction extension
+  during automatic compaction at a tool boundary and immediately after resume.
+  Compaction replaces conversation history, not the separately retained active
+  instructions; it does not reload edited files from disk. These request checks
+  establish delivery, not whether a model follows every supplied instruction.
+  The latest user-reported behavioral discrepancy remains unaccounted for.
 
 ## BUG-008: Enable the existing todo/kanban tool in CAI
 
