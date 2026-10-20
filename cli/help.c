@@ -59,6 +59,8 @@ static const cai_app_option options[] = {
      "Configured HTTP MCP servers (default on)", 0, 1},
     {"--messaging", '\0', CAI_APP_FLAG, NULL,
      "Shared Pouch conversation messaging (default on)", 0, 1},
+    {"--message-queue", '\0', CAI_APP_STRING, "NAME",
+     "Named mailbox (default basename + short path hash)", 0, 0},
     {"--autoqueue", '\0', CAI_APP_FLAG, NULL,
      "TUI auto-approval of incoming prompts (default off)", 0, 1},
     {"--message-ack-timeout-ms", '\0', CAI_APP_INTEGER, "MS",

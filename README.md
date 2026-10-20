@@ -944,8 +944,12 @@ contents and loading order are preserved on resume and model changes.
 
 ### Messages between conversations
 
-CAI conversations on a shared Pouch backend can use `agent_message` to list
-conversations and send messages. Incoming messages use softline's normal
+CAI apps on a shared Pouch backend can use `agent_message` to discover named
+workspace mailboxes and send by queue name. The default is
+`cai.<basename>.<six-hex-path-hash>`; override it with `--message-queue NAME`,
+`CAI_MESSAGE_QUEUE`, or `[messaging] queue_name`. `/status` shows the name.
+The newest app start owns new deliveries for that name; already delivered
+messages stay in their original conversation. Incoming messages use softline's normal
 approval queue: Alt+A focuses approval, Alt+Y approves, Alt+N rejects, and
 Alt+E edits. Approved messages start a new turn after current work completes.
 `/autoqueue [on|off]` controls automatic approval (default off). Delivery is

@@ -17,6 +17,7 @@ typedef struct cai_cli_options {
   int web_search;
   int mcp;
   int messaging;
+  const char *message_queue;
   int enable_auto_enqueue;
   long message_ack_timeout_ms;
   int todo;

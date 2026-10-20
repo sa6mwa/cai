@@ -6,7 +6,7 @@ assert(not application.open {settings = {agent = {model = "bad\0model"}}})
 assert(not application.open {settings = {agent = {unknown_setting = "bad"}}})
 local messaging_app = assert(application.open {
   no_config = true,
-  settings = {messaging = {enabled = true, enable_auto_enqueue = false, ack_timeout_ms = 300000}},
+  settings = {messaging = {enabled = true, enable_auto_enqueue = false, ack_timeout_ms = 300000, queue_name = "lua-mailbox"}},
 })
 messaging_app:close()
 assert(not application.open {settings = {messaging = {enable_auto_enqueue = "not-a-bool"}}})

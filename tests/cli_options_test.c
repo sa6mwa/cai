@@ -57,17 +57,24 @@ static int messaging_options(void) {
   char first[] = "cai", flag[] = "--message-ack-timeout-ms";
   char off[] = "--no-messaging", on[] = "--autoqueue";
   char valid[] = "7", invalid[] = "86400001";
-  char *args[5];
+  char queue_flag[] = "--message-queue", queue[] = "custom-mailbox";
+  char *args[7];
   args[0] = first;
   args[1] = off;
   args[2] = on;
   args[3] = flag;
   args[4] = valid;
+  args[5] = queue_flag;
+  args[6] = queue;
   if (cai_cli_parse_options(1, args, &options) != 1 || !options.messaging ||
       options.enable_auto_enqueue || options.message_ack_timeout_ms != 300000L)
     return 1;
   if (cai_cli_parse_options(5, args, &options) != 1 || options.messaging ||
       !options.enable_auto_enqueue || options.message_ack_timeout_ms != 7L)
+    return 1;
+  if (cai_cli_parse_options(7, args, &options) != 1 ||
+      options.message_queue == NULL ||
+      strcmp(options.message_queue, queue) != 0)
     return 1;
   args[4] = invalid;
   if (cai_cli_parse_options(5, args, &options) != -1 ||

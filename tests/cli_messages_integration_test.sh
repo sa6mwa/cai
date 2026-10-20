@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/cli_test_common.sh"
 peer_start
+base+=(--message-queue receiver-workspace)
 sender_pid=
 finish() {
   local status=$?
@@ -13,7 +14,7 @@ printf '%s\n' '{"plan":[]}' >"$root/sender-peer/config.json"
 "${CAI_TEST_PYTHON:-python3}" "$support/fixtures/http_peer.py" "$root/sender-peer" >"$root/sender-peer/stdout" 2>"$root/sender-peer/stderr" & sender_pid=$!
 wait_for test -s "$root/sender-peer/port"
 sender_endpoint="http://127.0.0.1:$(cat "$root/sender-peer/port")/v1"
-sender_base=("$cli" -p custom --endpoint "$sender_endpoint" -m gpt-5.6-luna --no-terminal --no-image-generation --message-ack-timeout-ms 2000 -C "$root/sender-work")
+sender_base=("$cli" -p custom --endpoint "$sender_endpoint" -m gpt-5.6-luna --no-terminal --no-image-generation --message-ack-timeout-ms 2000 --message-queue sender-workspace -C "$root/sender-work")
 plan '{"plan":["RECEIVER READY"]}'
 run -Nni 'receiver setup'; ok
 run --list; ok
@@ -21,7 +22,7 @@ receiver=$(awk 'NF {print $1; exit}' "$root/stdout")
 [[ -n "$receiver" ]]
 send_message() {
   local text=$1
-  jq -n --arg recipient "$receiver" --arg text "$text" '{plan:[{tool:"agent_message",arguments:{operation:"send",recipient:$recipient,text:$text}},"SENDER DONE"]}' >"$root/sender-peer/config.tmp"
+  jq -n --arg recipient receiver-workspace --arg text "$text" '{plan:[{tool:"agent_message",arguments:{operation:"send",recipient:$recipient,text:$text}},"SENDER DONE"]}' >"$root/sender-peer/config.tmp"
   mv "$root/sender-peer/config.tmp" "$root/sender-peer/config.json"
   "${sender_base[@]}" -Nni 'send the agent message' >"$root/sender.stdout" 2>"$root/sender.stderr" || { cat "$root/sender.stderr" >&2; fail 'Sender failed'; }
   contains "$root/sender.stdout" 'SENDER DONE'

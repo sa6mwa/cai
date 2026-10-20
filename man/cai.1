@@ -54,10 +54,23 @@ document, with streamed transactional updates, rather than a todo.json file.
 .TP
 .BR \-\-messaging " / " \-\-no-messaging
 Enable/disable shared-Pouch conversation messaging (default on). Each active
-conversation listens on cai.session.<id> in namespace cai.messages using a
-managed consumer service. The agent_message tool lists conversations or sends
-text to another conversation. Delivery ACK means durable acceptance, not user
+workspace listens on cai.<basename>.<six-hex-path-hash> in namespace cai.messages
+using managed consumer services. The hash uses the canonical full path; it is
+stable across new conversations and distinguishes identical basenames.
+The agent_message tool lists named mailboxes or sends text by recipient queue
+name. Delivery ACK means durable acceptance, not user
 approval or model completion. Isolated review does not enable messaging.
+.TP
+.BI \-\-message-queue " NAME"
+Override the derived workspace mailbox name. Also CAI_MESSAGE_QUEUE or
+[messaging] queue_name. Names are lowercased, allow ASCII letters, digits,
+dot, underscore and hyphen, and have at most 128 characters. Empty keeps
+automatic naming. /status shows the name. The newest app start claims new
+deliveries; already delivered messages stay in their original conversation.
+Exiting an older instance cannot release a newer owner's binding.
+Default-name hash collisions with another canonical directory fail and ask
+for an explicit override. Destination discovery includes offline mailboxes;
+only delivery ACK confirms acceptance.
 .TP
 .BR \-\-autoqueue " / " \-\-no-autoqueue
 Automatically approve incoming TUI messages (default off). Alt-A focuses

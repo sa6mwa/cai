@@ -1,8 +1,10 @@
 #define _POSIX_C_SOURCE 200809L
+#define _XOPEN_SOURCE 700
 #include "messages.h"
 #include "log.h"
 #include "session_commands.h"
 #include <errno.h>
+#include <openssl/evp.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +20,8 @@
 typedef struct message_doc {
   char kind[16], id[LC_XID_STRING_SIZE], sender[129], recipient[129];
   char pending_for[129];
+  char sender_session[129], instance[LC_XID_STRING_SIZE];
+  char recipient_instance[LC_XID_STRING_SIZE], workspace[PATH_MAX];
   char *text;
   lonejson_int64 deadline_ms;
 } message_doc;
@@ -30,6 +34,14 @@ static const lonejson_field message_fields[] = {
     LONEJSON_FIELD_STRING_FIXED(message_doc, recipient, "recipient",
                                 LONEJSON_OVERFLOW_FAIL),
     LONEJSON_FIELD_STRING_FIXED(message_doc, pending_for, "pending_for",
+                                LONEJSON_OVERFLOW_FAIL),
+    LONEJSON_FIELD_STRING_FIXED(message_doc, sender_session, "sender_session",
+                                LONEJSON_OVERFLOW_FAIL),
+    LONEJSON_FIELD_STRING_FIXED(message_doc, instance, "instance",
+                                LONEJSON_OVERFLOW_FAIL),
+    LONEJSON_FIELD_STRING_FIXED(message_doc, recipient_instance,
+                                "recipient_instance", LONEJSON_OVERFLOW_FAIL),
+    LONEJSON_FIELD_STRING_FIXED(message_doc, workspace, "workspace",
                                 LONEJSON_OVERFLOW_FAIL),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(message_doc, text, "text"),
     LONEJSON_FIELD_I64(message_doc, deadline_ms, "deadline_ms")};
@@ -52,13 +64,13 @@ typedef struct message_link {
 } message_link;
 struct cai_cli_messages {
   cai_cli_pouch *pouch;
-  lc_consumer_service *service;
+  lc_consumer_service *service, *receipts_service;
   pthread_mutex_t lock;
   pthread_cond_t condition;
-  int fd, stopping, dirty, receipt, cancelled;
+  int fd, stopping, dirty, receipt, cancelled, claimed, lost;
   long timeout_ms;
-  char session[129], queue[160], waiting[LC_XID_STRING_SIZE],
-      waiting_recipient[129];
+  char session[129], queue[129], instance[LC_XID_STRING_SIZE], receipts[160],
+      workspace[PATH_MAX], waiting[LC_XID_STRING_SIZE], waiting_recipient[129];
   message_link *links;
 };
 static lonejson_int64 realtime_ms(void) {
@@ -77,6 +89,57 @@ static int safe_id(const char *id) {
             id[i]) == NULL)
       return 0;
   return 1;
+}
+static int queue_name(const char *input, char out[129]) {
+  size_t i, length = strlen(input);
+  if (length == 0U || length > 128U)
+    return 0;
+  for (i = 0U; i < length; i++) {
+    char c = input[i];
+    if (c >= 'A' && c <= 'Z')
+      c = (char)(c - 'A' + 'a');
+    if (strchr("abcdefghijklmnopqrstuvwxyz0123456789._-", c) == NULL)
+      return 0;
+    out[i] = c;
+  }
+  out[length] = '\0';
+  return 1;
+}
+static int workspace_queue(const char *workspace, char out[129],
+                           cai_error *error) {
+  unsigned char digest[EVP_MAX_MD_SIZE];
+  unsigned int count = 0U;
+  char canonical[PATH_MAX], slug[118];
+  const char *base;
+  size_t used = 0U;
+  if (realpath(workspace, canonical) == NULL)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "messaging workspace must be an existing directory");
+  if (EVP_Digest(canonical, strlen(canonical), digest, &count, EVP_sha256(),
+                 NULL) != 1 ||
+      count < 3U)
+    return cai_cli_error(error, CAI_ERR_PROTOCOL,
+                         "hash messaging workspace path");
+  base = strrchr(canonical, '/');
+  base = base != NULL ? base + 1 : canonical;
+  while (*base != '\0' && used < sizeof(slug) - 1U) {
+    unsigned char c = (unsigned char)*base++;
+    if (c >= 'A' && c <= 'Z')
+      c = (unsigned char)(c - 'A' + 'a');
+    if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' ||
+        c == '_')
+      slug[used++] = (char)c;
+    else if (used > 0U && slug[used - 1U] != '-')
+      slug[used++] = '-';
+  }
+  while (used > 0U && slug[used - 1U] == '-')
+    used--;
+  slug[used] = '\0';
+  if (used == 0U)
+    strcpy(slug, "root");
+  snprintf(out, 129U, "cai.%s.%02x%02x%02x", slug, (unsigned int)digest[0],
+           (unsigned int)digest[1], (unsigned int)digest[2]);
+  return CAI_OK;
 }
 static int valid_text(const char *text) {
   const unsigned char *p = (const unsigned char *)text;
@@ -100,7 +163,7 @@ static int lease_open(cai_cli_messages *m, const char *key, lc_lease **out,
   lc_acquire_req_init(&req);
   req.ns = MESSAGE_NS;
   req.key = key;
-  req.owner = m->queue;
+  req.owner = m->instance;
   req.ttl_seconds = 30;
   req.block_seconds = 5;
   return lc_acquire(m->pouch->sessions, &req, out, error);
@@ -122,6 +185,154 @@ static int lease_finish(lc_lease *lease, int result, lc_error *error) {
   }
   lc_error_cleanup(&cleanup);
   return result == LC_OK ? rc : result;
+}
+static void notify_owner(cai_cli_messages *m) {
+  uint64_t one = 1;
+  pthread_mutex_lock(&m->lock);
+  m->dirty = 1;
+  pthread_mutex_unlock(&m->lock);
+  /* eventfd saturation already means a notification is pending. */
+  while (write(m->fd, &one, sizeof(one)) < 0 && errno == EINTR) {
+  }
+}
+static int mailbox_load(lc_lease *lease, message_doc *doc, lc_error *error) {
+  lc_get_res result;
+  int rc = LC_OK;
+  memset(doc, 0, sizeof(*doc));
+  memset(&result, 0, sizeof(result));
+  if (lease->state_etag != NULL && lease->state_etag[0] != '\0')
+    rc = lc_lease_load(lease, &message_map, doc, NULL, &result, error);
+  lc_get_res_cleanup(&result);
+  return rc;
+}
+static int mailbox_claim(cai_cli_messages *m, int automatic, cai_error *error) {
+  lc_lease *lease = NULL;
+  lc_error local;
+  message_doc *doc;
+  char key[160];
+  int rc;
+  doc = calloc(1U, sizeof(*doc));
+  if (doc == NULL)
+    return cai_cli_error(error, CAI_ERR_NOMEM, "allocate mailbox binding");
+  snprintf(key, sizeof(key), "mailbox.%s", m->queue);
+  lc_error_init(&local);
+  rc = lease_open(m, key, &lease, &local);
+  if (rc == LC_OK) {
+    rc = mailbox_load(lease, doc, &local);
+    if (rc == LC_OK && automatic && doc->workspace[0] != '\0' &&
+        strcmp(doc->workspace, m->workspace) != 0)
+      rc = lc_error_set(&local, LC_ERR_INVALID, 0,
+                        "Generated mailbox name collides with another "
+                        "directory; use --message-queue NAME",
+                        m->queue, NULL, NULL);
+    if (rc == LC_OK) {
+      strcpy(doc->kind, "mailbox");
+      strcpy(doc->recipient, m->queue);
+      strcpy(doc->sender_session, m->session);
+      strcpy(doc->instance, m->instance);
+      strcpy(doc->workspace, m->workspace);
+      rc = lc_lease_save(lease, &message_map, doc, &local);
+    }
+    rc = lease_finish(lease, rc, &local);
+  }
+  if (rc == LC_OK) {
+    m->claimed = 1;
+    if (m->pouch->logger != NULL) {
+      pslog_field fields[3];
+      fields[0] = pslog_str("queue", m->queue);
+      fields[1] = pslog_str("session_id", m->session);
+      fields[2] = pslog_str("workspace", m->workspace);
+      m->pouch->logger->info(m->pouch->logger, "Workspace mailbox claimed",
+                             fields, 3U);
+    }
+  } else
+    rc = fail_lc(error, &local);
+  lc_error_cleanup(&local);
+  lonejson_cleanup(&message_map, doc);
+  free(doc);
+  return rc;
+}
+/* Hold this binding lease through durable inbox acceptance. A takeover and an
+ * acceptance are ordered by the same lease, so a superseded process can never
+ * accept a new delivery into its old conversation. */
+static int mailbox_guard(cai_cli_messages *m, lc_lease **out, lc_error *error) {
+  message_doc *doc;
+  char key[160];
+  int rc;
+  *out = NULL;
+  doc = calloc(1U, sizeof(*doc));
+  if (doc == NULL)
+    return lc_error_set(error, LC_ERR_NOMEM, 0, "allocate mailbox owner check",
+                        NULL, NULL, NULL);
+  snprintf(key, sizeof(key), "mailbox.%s", m->queue);
+  rc = lease_open(m, key, out, error);
+  if (rc == LC_OK)
+    rc = mailbox_load(*out, doc, error);
+  if (rc == LC_OK && strcmp(doc->instance, m->instance) != 0) {
+    int first;
+    pthread_mutex_lock(&m->lock);
+    first = !m->lost;
+    m->lost = 1;
+    pthread_mutex_unlock(&m->lock);
+    if (first && m->pouch->logger != NULL) {
+      pslog_field fields[2];
+      fields[0] = pslog_str("queue", m->queue);
+      fields[1] = pslog_str("new_session_id", doc->sender_session);
+      m->pouch->logger->warn(
+          m->pouch->logger,
+          "Workspace mailbox taken over; new messages go to its new owner. "
+          "Already delivered messages remain here.",
+          fields, 2U);
+    }
+    notify_owner(m);
+    rc =
+        lc_error_set(error, LC_ERR_INVALID, 0,
+                     "Workspace mailbox was taken over by another CAI instance",
+                     m->queue, "mailbox_taken_over", NULL);
+  }
+  if (rc != LC_OK && *out != NULL) {
+    rc = lease_finish(*out, rc, error);
+    *out = NULL;
+  }
+  lonejson_cleanup(&message_map, doc);
+  free(doc);
+  return rc;
+}
+static void mailbox_release(cai_cli_messages *m) {
+  lc_error error;
+  lc_lease *lease = NULL;
+  message_doc *doc;
+  char key[160];
+  int rc;
+  if (!m->claimed)
+    return;
+  m->claimed = 0;
+  doc = calloc(1U, sizeof(*doc));
+  if (doc == NULL)
+    return;
+  snprintf(key, sizeof(key), "mailbox.%s", m->queue);
+  lc_error_init(&error);
+  rc = lease_open(m, key, &lease, &error);
+  if (rc == LC_OK) {
+    rc = mailbox_load(lease, doc, &error);
+    if (rc == LC_OK && strcmp(doc->instance, m->instance) == 0) {
+      doc->instance[0] = '\0';
+      rc = lc_lease_save(lease, &message_map, doc, &error);
+    }
+    rc = lease_finish(lease, rc, &error);
+  }
+  if (rc != LC_OK && m->pouch->logger != NULL) {
+    pslog_field fields[2];
+    fields[0] = pslog_str("queue", m->queue);
+    fields[1] = pslog_str("detail", error.message != NULL ? error.message
+                                                          : "unknown error");
+    m->pouch->logger->warn(m->pouch->logger,
+                           "Cannot release workspace mailbox binding", fields,
+                           2U);
+  }
+  lc_error_cleanup(&error);
+  lonejson_cleanup(&message_map, doc);
+  free(doc);
 }
 static void inbox_key(char key[300], const message_doc *doc) {
   snprintf(key, 300U, "inbox.%s.%s", doc->recipient, doc->id);
@@ -152,7 +363,10 @@ static int enqueue(cai_cli_messages *m, const message_doc *doc,
   lc_error local;
   char queue[160];
   int rc;
-  snprintf(queue, sizeof(queue), "cai.session.%s", doc->recipient);
+  if (strcmp(doc->kind, "receipt") == 0)
+    snprintf(queue, sizeof(queue), "cai.receipts.%s", doc->recipient_instance);
+  else
+    snprintf(queue, sizeof(queue), "%s", doc->recipient);
   lc_error_init(&local);
   lc_enqueue_req_init(&req);
   memset(&res, 0, sizeof(res));
@@ -207,11 +421,11 @@ static int consume(void *context, lc_consumer_message *delivery,
   message_doc doc, receipt;
   message_reader reader;
   lc_lease *lease = NULL;
+  lc_lease *binding = NULL;
   lonejson *json;
   lonejson_error parse_error;
   cai_error local;
   char key[300];
-  uint64_t one = 1;
   int rc = LC_OK, fresh = 0;
   memset(&doc, 0, sizeof(doc));
   memset(&reader, 0, sizeof(reader));
@@ -223,12 +437,18 @@ static int consume(void *context, lc_consumer_message *delivery,
       lonejson_parse_reader(json, &message_map, &doc, read_message, &reader,
                             &parse_error) != LONEJSON_STATUS_OK ||
       !lc_xid_is_valid(doc.id) || !safe_id(doc.sender) ||
-      strcmp(doc.recipient, m->session) != 0) {
+      strcmp(doc.recipient, m->queue) != 0) {
     rc = lc_error_set(error, LC_ERR_PROTOCOL, 0,
                       "Invalid agent message envelope", NULL, NULL, NULL);
     goto done;
   }
   if (strcmp(doc.kind, "receipt") == 0) {
+    if (strcmp(doc.recipient_instance, m->instance) != 0) {
+      rc = lc_error_set(error, LC_ERR_PROTOCOL, 0,
+                        "Receipt targets another application instance", NULL,
+                        NULL, NULL);
+      goto done;
+    }
     pthread_mutex_lock(&m->lock);
     if (strcmp(m->waiting, doc.id) == 0 &&
         strcmp(m->waiting_recipient, doc.sender) == 0) {
@@ -239,9 +459,35 @@ static int consume(void *context, lc_consumer_message *delivery,
     goto done;
   }
   if (strcmp(doc.kind, "message") != 0 || !valid_text(doc.text) ||
+      !safe_id(doc.sender_session) || !lc_xid_is_valid(doc.instance) ||
       doc.deadline_ms <= 0) {
     rc = lc_error_set(error, LC_ERR_PROTOCOL, 0,
                       "Invalid agent message content", NULL, NULL, NULL);
+    goto done;
+  }
+  rc = mailbox_guard(m, &binding, error);
+  if (rc != LC_OK) {
+    if (error->server_code != NULL &&
+        strcmp(error->server_code, "mailbox_taken_over") == 0) {
+      lc_nack_req defer;
+      lc_error deferred;
+      lc_nack_req_init(&defer);
+      lc_error_init(&deferred);
+      defer.intent = LC_NACK_INTENT_DEFER;
+      /* Intentional handoff must not consume the sender's failure budget. */
+      if (lc_message_nack(delivery->message, &defer, &deferred) != LC_OK)
+        rc = lc_error_set(error, deferred.code, deferred.http_status,
+                          deferred.message, deferred.detail, NULL, NULL);
+      else {
+        /* stop() only requests shutdown; never join the callback's worker.
+         * The explicitly deferred delivery is already terminal to the SDK. */
+        (void)lc_consumer_service_stop(m->service);
+        lc_error_cleanup(error);
+        lc_error_init(error);
+        rc = LC_OK;
+      }
+      lc_error_cleanup(&deferred);
+    }
     goto done;
   }
   inbox_key(key, &doc);
@@ -263,11 +509,16 @@ static int consume(void *context, lc_consumer_message *delivery,
   }
   if (rc != LC_OK)
     goto done;
+  rc = lease_finish(binding, rc, error);
+  binding = NULL;
+  if (rc != LC_OK)
+    goto done;
   memset(&receipt, 0, sizeof(receipt));
   strcpy(receipt.kind, "receipt");
   strcpy(receipt.id, doc.id);
-  strcpy(receipt.sender, m->session);
+  strcpy(receipt.sender, m->queue);
   strcpy(receipt.recipient, doc.sender);
+  strcpy(receipt.recipient_instance, doc.instance);
   /* Durable inbox acceptance is delivery. Approval and execution are separate.
    */
   rc = enqueue(m, &receipt, &local);
@@ -277,22 +528,19 @@ static int consume(void *context, lc_consumer_message *delivery,
                       NULL);
     goto done;
   }
-  pthread_mutex_lock(&m->lock);
-  m->dirty = 1;
-  pthread_mutex_unlock(&m->lock);
-  if (write(m->fd, &one, sizeof(one)) < 0 && errno != EAGAIN)
-    rc = lc_error_set(error, LC_ERR_TRANSPORT, 0,
-                      "Cannot notify agent message owner", strerror(errno),
-                      NULL, NULL);
+  notify_owner(m);
   if (fresh && m->pouch->logger != NULL) {
-    pslog_field fields[2];
-    fields[0] = pslog_str("sender_session_id", doc.sender);
+    pslog_field fields[3];
+    fields[0] = pslog_str("sender_session_id", doc.sender_session);
     fields[1] = pslog_str("message_id", doc.id);
+    fields[2] = pslog_str("sender_queue", doc.sender);
     cai_cli_log_message(m->pouch->logger, PSLOG_LEVEL_INFO,
                         "agent_message_received", "agent", doc.text,
-                        strlen(doc.text), fields, 2U);
+                        strlen(doc.text), fields, 3U);
   }
 done:
+  if (binding != NULL)
+    rc = lease_finish(binding, rc, error);
   lonejson_cleanup(&message_map, &doc);
   lonejson_free(json);
   lc_error_cleanup(&reader.error);
@@ -348,24 +596,43 @@ int cai_cli_messages_new(cai_cli_pouch *pouch, long timeout,
   return CAI_OK;
 }
 int cai_cli_messages_start(cai_cli_messages *m, const char *id,
-                           const char *workspace, cai_error *error) {
+                           const char *workspace, const char *name,
+                           cai_error *error) {
   lc_consumer_config consumer;
   lc_consumer_service_config config;
   lc_error local;
   int rc;
-  (void)workspace;
   if (!safe_id(id))
-    return cai_cli_error(
-        error, CAI_ERR_INVALID,
-        "conversation ID cannot be used as a messaging address");
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "conversation ID cannot be used as a messaging owner");
   strcpy(m->session, id);
-  snprintf(m->queue, sizeof(m->queue), "cai.session.%s", id);
+  if (realpath(workspace, m->workspace) == NULL)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "resolve messaging workspace directory");
+  if (name != NULL && name[0] != '\0') {
+    if (!queue_name(name, m->queue))
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "message queue name must be 1..128 ASCII letters, "
+                           "digits, '.', '_' or '-'");
+  } else if (workspace_queue(m->workspace, m->queue, error) != CAI_OK)
+    return error->code;
+  lc_error_init(&local);
+  rc = lc_xid_new(m->instance, &local);
+  if (rc != LC_OK)
+    rc = fail_lc(error, &local);
+  lc_error_cleanup(&local);
+  if (rc != LC_OK)
+    return rc;
+  snprintf(m->receipts, sizeof(m->receipts), "cai.receipts.%s", m->instance);
+  rc = mailbox_claim(m, name == NULL || name[0] == '\0', error);
+  if (rc != CAI_OK)
+    return rc;
   lc_consumer_config_init(&consumer);
   lc_consumer_service_config_init(&config);
   consumer.name = m->queue;
   consumer.request.ns = MESSAGE_NS;
   consumer.request.queue = m->queue;
-  consumer.request.owner = m->queue;
+  consumer.request.owner = m->instance;
   consumer.request.visibility_timeout_seconds = 30;
   consumer.handle = consume;
   consumer.on_error = service_error;
@@ -377,10 +644,21 @@ int cai_cli_messages_start(cai_cli_messages *m, const char *id,
                                       &local);
   if (rc == LC_OK)
     rc = lc_consumer_service_start(m->service, &local);
+  if (rc == LC_OK) {
+    consumer.name = m->receipts;
+    consumer.request.queue = m->receipts;
+    rc = lc_client_new_consumer_service(m->pouch->sessions, &config,
+                                        &m->receipts_service, &local);
+  }
+  if (rc == LC_OK)
+    rc = lc_consumer_service_start(m->receipts_service, &local);
   if (rc != LC_OK)
     rc = fail_lc(error, &local);
   lc_error_cleanup(&local);
   return rc;
+}
+const char *cai_cli_messages_name(const cai_cli_messages *m) {
+  return m != NULL ? m->queue : NULL;
 }
 int cai_cli_messages_fd(const cai_cli_messages *m) {
   return m != NULL ? m->fd : -1;
@@ -440,6 +718,81 @@ static int load_doc(cai_cli_messages *m, const char *key, message_doc *doc,
   lc_get_res_cleanup(&result);
   if (rc != LC_OK)
     rc = fail_lc(error, &local);
+  lc_error_cleanup(&local);
+  return rc;
+}
+static int list_mailboxes(cai_cli_messages *m, cai_sink *output,
+                          cai_error *error) {
+  lc_query_req query;
+  lc_query_res result;
+  lc_query_key_handler handler;
+  lc_error local;
+  message_page page;
+  message_doc *doc;
+  char *cursor = NULL;
+  size_t i;
+  int rc = CAI_OK;
+  doc = calloc(1U, sizeof(*doc));
+  if (doc == NULL)
+    return cai_cli_error(error, CAI_ERR_NOMEM, "allocate mailbox listing");
+  lc_error_init(&local);
+  {
+    static const char heading[] = "This application's mailbox: ";
+    static const char columns[] =
+        "\nKnown destinations (queue, directory, last-bound conversation; not "
+        "an online guarantee):\n";
+    rc = cai_sink_write(output, heading, sizeof(heading) - 1U, error);
+    if (rc == CAI_OK)
+      rc = cai_sink_write(output, m->queue, strlen(m->queue), error);
+    if (rc == CAI_OK)
+      rc = cai_sink_write(output, columns, sizeof(columns) - 1U, error);
+    if (rc != CAI_OK) {
+      free(doc);
+      lc_error_cleanup(&local);
+      return rc;
+    }
+  }
+  lc_query_req_init(&query);
+  memset(&handler, 0, sizeof(handler));
+  handler.begin = key_begin;
+  handler.chunk = key_chunk;
+  handler.end = key_end;
+  query.ns = MESSAGE_NS;
+  query.engine = "index";
+  query.refresh = "wait_for";
+  query.selector_lql = "eq{field=/kind,value=\"mailbox\"}";
+  query.limit = PAGE_KEYS;
+  do {
+    memset(&page, 0, sizeof(page));
+    memset(&result, 0, sizeof(result));
+    query.cursor = cursor;
+    if (lc_query_keys(m->pouch->sessions, &query, &handler, &page, &result,
+                      &local) != LC_OK)
+      rc = fail_lc(error, &local);
+    free(cursor);
+    cursor = result.cursor != NULL ? strdup(result.cursor) : NULL;
+    if (result.cursor != NULL && cursor == NULL)
+      rc = cai_cli_error(error, CAI_ERR_NOMEM, "copy mailbox listing cursor");
+    lc_query_res_cleanup(&result);
+    for (i = 0U; rc == CAI_OK && i < page.count; i++) {
+      rc = load_doc(m, page.keys[i], doc, error);
+      if (rc == CAI_OK) {
+        const char *parts[6];
+        size_t part;
+        parts[0] = doc->recipient;
+        parts[1] = "  ";
+        parts[2] = doc->workspace;
+        parts[3] = "  ";
+        parts[4] = doc->sender_session;
+        parts[5] = "\n";
+        for (part = 0U; rc == CAI_OK && part < 6U; part++)
+          rc = cai_sink_write(output, parts[part], strlen(parts[part]), error);
+      }
+      lonejson_cleanup(&message_map, doc);
+    }
+  } while (rc == CAI_OK && cursor != NULL);
+  free(cursor);
+  free(doc);
   lc_error_cleanup(&local);
   return rc;
 }
@@ -582,12 +935,12 @@ int cai_cli_messages_sync(cai_cli_messages *m, sl_t *sl, cai_error *error) {
         break;
       }
       if (strcmp(doc.kind, "pending") != 0 ||
-          strcmp(doc.recipient, m->session) != 0 ||
+          strcmp(doc.pending_for, m->session) != 0 ||
           find_doc(m, doc.id) != NULL) {
         lonejson_cleanup(&message_map, &doc);
         continue;
       }
-      capacity = strlen(doc.text != NULL ? doc.text : "") + 256U;
+      capacity = strlen(doc.text != NULL ? doc.text : "") + 384U;
       text = malloc(capacity);
       link = calloc(1U, sizeof(*link));
       if (text == NULL || link == NULL) {
@@ -598,8 +951,10 @@ int cai_cli_messages_sync(cai_cli_messages *m, sl_t *sl, cai_error *error) {
             cai_cli_error(error, CAI_ERR_NOMEM, "queue incoming agent message");
         break;
       }
-      snprintf(text, capacity, "[Agent message %s from conversation %s]\n\n%s",
-               doc.id, doc.sender, doc.text != NULL ? doc.text : "");
+      snprintf(text, capacity,
+               "[Agent message %s from %s (conversation %s)]\n\n%s", doc.id,
+               doc.sender, doc.sender_session,
+               doc.text != NULL ? doc.text : "");
       if (sl_inject_queued_prompt(sl, text, &link->prompt_id) != SL_OK) {
         free(text);
         free(link);
@@ -626,14 +981,18 @@ static int send_tool(void *context, const char *arguments, cai_sink *output,
   lonejson *json;
   lonejson_error parse_error;
   lc_error local;
+  lc_lease *binding = NULL;
   struct timespec deadline;
   char response[256];
   int rc, wait_result = 0;
   memset(&args, 0, sizeof(args));
   memset(&doc, 0, sizeof(doc));
+  lc_error_init(&local);
   json = lonejson_new(NULL, &parse_error);
-  if (json == NULL)
-    return cai_cli_lj_error(error, &parse_error);
+  if (json == NULL) {
+    rc = cai_cli_lj_error(error, &parse_error);
+    goto done;
+  }
   if (lonejson_parse_buffer(json, &arguments_map, &args, arguments,
                             strlen(arguments),
                             &parse_error) != LONEJSON_STATUS_OK) {
@@ -641,33 +1000,28 @@ static int send_tool(void *context, const char *arguments, cai_sink *output,
     goto done;
   }
   if (strcmp(args.operation, "list") == 0) {
-    cai_cli_session *sessions = NULL;
-    size_t count = 0U;
-    rc = cai_cli_pouch_list(m->pouch, NULL, &sessions, &count, error);
-    if (rc == CAI_OK)
-      rc = cai_cli_sessions_print(output, sessions, count, 0, 120, error);
-    free(sessions);
+    rc = list_mailboxes(m, output, error);
     goto done;
   }
-  if (strcmp(args.operation, "send") != 0 || !safe_id(args.recipient) ||
-      !valid_text(args.text)) {
+  if (strcmp(args.operation, "send") != 0 ||
+      !queue_name(args.recipient, doc.recipient) || !valid_text(args.text)) {
     rc = cai_cli_error(
         error, CAI_ERR_INVALID,
         "agent_message requires operation=send, a recipient "
-        "conversation ID, and 1..65536 text bytes (no terminal controls)");
+        "queue name, and 1..65536 text bytes (no terminal controls)");
     goto done;
   }
-  lc_error_init(&local);
-  rc = lc_xid_new(doc.id, &local);
+  rc = mailbox_guard(m, &binding, &local);
+  if (rc == LC_OK)
+    rc = lc_xid_new(doc.id, &local);
   if (rc != LC_OK) {
     rc = fail_lc(error, &local);
-    lc_error_cleanup(&local);
     goto done;
   }
-  lc_error_cleanup(&local);
   strcpy(doc.kind, "message");
-  strcpy(doc.sender, m->session);
-  strcpy(doc.recipient, args.recipient);
+  strcpy(doc.sender, m->queue);
+  strcpy(doc.sender_session, m->session);
+  strcpy(doc.instance, m->instance);
   doc.text = args.text;
   doc.deadline_ms = realtime_ms() + m->timeout_ms;
   deadline.tv_sec = (time_t)(doc.deadline_ms / 1000);
@@ -686,6 +1040,12 @@ static int send_tool(void *context, const char *arguments, cai_sink *output,
   m->cancelled = 0;
   pthread_mutex_unlock(&m->lock);
   rc = enqueue(m, &doc, error);
+  {
+    int released = lease_finish(binding, LC_OK, &local);
+    binding = NULL;
+    if (released != LC_OK && rc == CAI_OK)
+      rc = fail_lc(error, &local);
+  }
   pthread_mutex_lock(&m->lock);
   while (rc == CAI_OK && !m->receipt && !m->stopping && !m->cancelled &&
          wait_result == 0)
@@ -707,6 +1067,9 @@ static int send_tool(void *context, const char *arguments, cai_sink *output,
     rc = cai_sink_write(output, response, strlen(response), error);
   }
 done:
+  if (binding != NULL)
+    (void)lease_finish(binding, LC_OK, &local);
+  lc_error_cleanup(&local);
   lonejson_cleanup(&arguments_map, &args);
   lonejson_free(json);
   return rc;
@@ -715,8 +1078,10 @@ int cai_cli_messages_register(void *context, cai_agent *agent,
                               cai_error *error) {
   return cai_agent_register_raw_tool(
       agent, "agent_message",
-      "Use operation=list to discover stored CAI conversations on this "
-      "backend. Use operation=send with recipient conversation ID and text to "
+      "Use operation=list to discover named workspace mailboxes on this "
+      "backend (queue name, directory, last-bound conversation; a listing is "
+      "not an online guarantee). Use operation=send with recipient queue name "
+      "and text to "
       "send a message. Waits for durable delivery acknowledgement, not human "
       "approval or completion; a missing ACK fails after the configured "
       "deadline (default five minutes). Messages become ordinary next-turn "
@@ -741,6 +1106,14 @@ void cai_cli_messages_stop(cai_cli_messages *m) {
     (void)lc_consumer_service_wait(m->service, &local);
     lc_error_cleanup(&local);
   }
+  if (m->receipts_service != NULL) {
+    lc_error local;
+    lc_error_init(&local);
+    (void)lc_consumer_service_stop(m->receipts_service);
+    (void)lc_consumer_service_wait(m->receipts_service, &local);
+    lc_error_cleanup(&local);
+  }
+  mailbox_release(m);
 }
 void cai_cli_messages_cancel_send(cai_cli_messages *m) {
   if (m == NULL)
@@ -758,6 +1131,7 @@ void cai_cli_messages_close(cai_cli_messages *m) {
     return;
   cai_cli_messages_stop(m);
   lc_consumer_service_close(m->service);
+  lc_consumer_service_close(m->receipts_service);
   for (link = m->links; link != NULL; link = next) {
     next = link->next;
     lonejson_cleanup(&message_map, &link->doc);

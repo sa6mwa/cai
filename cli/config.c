@@ -32,6 +32,12 @@ static const cli_field fields[] = {
     B("agent", "mcp", mcp, "Connect named [mcp.NAME] HTTP servers."),
     B("messaging", "enabled", messaging,
       "Listen for and send conversation messages on the shared Pouch backend."),
+    S("messaging", "queue_name", message_queue, 0U,
+      "Empty derives cai.<directory-basename>.<six-hex-path-hash> from the "
+      "canonical workspace. "
+      "An explicit name overrides it. Newest app startup takes ownership of "
+      "new deliveries; "
+      "already delivered messages stay in their original conversation."),
     B("messaging", "enable_auto_enqueue", enable_auto_enqueue,
       "Automatically approve incoming TUI next-turn prompts; /autoqueue "
       "toggles "
@@ -308,6 +314,10 @@ static int tool_environment(cai_config *cfg, cai_error *error) {
       cai_config_set(cfg, "messaging", "enabled", getenv("CAI_MESSAGING"),
                      error) != CAI_OK)
     return fail(error, "CAI_MESSAGING", "invalid environment setting");
+  if (getenv("CAI_MESSAGE_QUEUE") != NULL &&
+      cai_config_set(cfg, "messaging", "queue_name",
+                     getenv("CAI_MESSAGE_QUEUE"), error) != CAI_OK)
+    return fail(error, "CAI_MESSAGE_QUEUE", "invalid environment setting");
   if (getenv("CAI_ENABLE_AUTO_ENQUEUE") != NULL &&
       cai_config_set(cfg, "messaging", "enable_auto_enqueue",
                      getenv("CAI_ENABLE_AUTO_ENQUEUE"), error) != CAI_OK)

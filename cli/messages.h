@@ -12,7 +12,9 @@ int cai_cli_messages_new(cai_cli_pouch *pouch, long ack_timeout_ms,
 int cai_cli_messages_register(void *context, cai_agent *agent,
                               cai_error *error);
 int cai_cli_messages_start(cai_cli_messages *messages, const char *session_id,
-                           const char *workspace, cai_error *error);
+                           const char *workspace, const char *queue_name,
+                           cai_error *error);
+const char *cai_cli_messages_name(const cai_cli_messages *messages);
 int cai_cli_messages_fd(const cai_cli_messages *messages);
 int cai_cli_messages_sync(cai_cli_messages *messages, sl_t *sl,
                           cai_error *error);

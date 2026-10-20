@@ -97,14 +97,12 @@ static int write_config(const char *path, int precedence) {
 }
 
 static int messaging_settings(const char *path) {
-  char *args[] = {NULL, NULL, NULL, NULL, NULL, NULL, NULL};
-  const char *fixed[] = {"cai",
-                         "--config",
-                         NULL,
-                         "--no-messaging",
-                         "--autoqueue",
-                         "--message-ack-timeout-ms",
-                         "7"};
+  char *args[] = {NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+  const char *fixed[] = {"cai",         "--config",
+                         NULL,          "--no-messaging",
+                         "--autoqueue", "--message-ack-timeout-ms",
+                         "7",           "--message-queue",
+                         "flag-mailbox"};
   cai_cli_options options;
   cai_config *configuration = NULL;
   cai_error error;
@@ -114,20 +112,25 @@ static int messaging_settings(const char *path) {
   if (stream == NULL)
     return 1;
   fputs("[messaging]\nenabled = false\nenable_auto_enqueue = "
-        "true\nack_timeout_ms = 123\n",
+        "true\nack_timeout_ms = 123\nqueue_name = ini-mailbox\n",
         stream);
   if (fclose(stream) != 0)
     return 1;
-  for (i = 0; i < 7; i++)
+  for (i = 0; i < 9; i++)
     args[i] = strdup(i == 2 ? path : fixed[i]);
   cai_error_init(&error);
   unsetenv("CAI_MESSAGING");
   unsetenv("CAI_ENABLE_AUTO_ENQUEUE");
   unsetenv("CAI_MESSAGE_ACK_TIMEOUT_MS");
+  unsetenv("CAI_MESSAGE_QUEUE");
   for (i = 0; i < 3; i++) {
-    int rc = cai_cli_configure(i == 2 ? 7 : 3, args, &options, &configuration,
+    int rc = cai_cli_configure(i == 2 ? 9 : 3, args, &options, &configuration,
                                NULL, &error);
-    if (rc != 1 || options.messaging != (i == 1) ||
+    if (rc != 1 || options.message_queue == NULL ||
+        strcmp(options.message_queue, i == 0   ? "ini-mailbox"
+                                      : i == 1 ? "env-mailbox"
+                                               : "flag-mailbox") != 0 ||
+        options.messaging != (i == 1) ||
         options.enable_auto_enqueue != (i != 1) ||
         options.message_ack_timeout_ms != (i == 0   ? 123L
                                            : i == 1 ? 456L
@@ -138,6 +141,7 @@ static int messaging_settings(const char *path) {
     setenv("CAI_MESSAGING", "true", 1);
     setenv("CAI_ENABLE_AUTO_ENQUEUE", "false", 1);
     setenv("CAI_MESSAGE_ACK_TIMEOUT_MS", "456", 1);
+    setenv("CAI_MESSAGE_QUEUE", "env-mailbox", 1);
   }
   setenv("CAI_MESSAGE_ACK_TIMEOUT_MS", "0", 1);
   if (cai_cli_configure(3, args, &options, &configuration, NULL, &error) !=
@@ -146,11 +150,12 @@ static int messaging_settings(const char *path) {
     failed = 1;
   cai_config_close(configuration);
   cai_error_cleanup(&error);
-  for (i = 0; i < 7; i++)
+  for (i = 0; i < 9; i++)
     free(args[i]);
   unsetenv("CAI_MESSAGING");
   unsetenv("CAI_ENABLE_AUTO_ENQUEUE");
   unsetenv("CAI_MESSAGE_ACK_TIMEOUT_MS");
+  unsetenv("CAI_MESSAGE_QUEUE");
   return failed;
 }
 

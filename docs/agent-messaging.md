@@ -1,23 +1,60 @@
 # Conversation messaging
 
-CAI and `libcai_app` expose the `agent_message` tool by default. Conversations
+CAI and `libcai_app` expose the `agent_message` tool by default. Workspaces
 using the same encrypted Pouch root can exchange messages, including across
 processes and working directories. Core `libcai` has no liblockdc or softline
 dependency.
 
 ## Sending and delivery
 
-Use `agent_message` with `{"operation":"list"}` to list stored conversations.
-Then use `{"operation":"send","recipient":"CONVERSATION_ID","text":"..."}`.
-The recipient must be running with messaging enabled to acknowledge delivery.
-An idle conversation listens too. Addresses are `cai.session.<conversation-id>`
-in the `cai.messages` namespace; `/new` gets a different address.
+Use `agent_message` with `{"operation":"list"}` to list named workspace
+mailboxes: queue name, canonical directory and last-bound conversation ID.
+Send with `{"operation":"send","recipient":"QUEUE_NAME","text":"..."}`.
+Conversation IDs are internal history/ownership metadata, not destinations.
+Discovery lists known mailboxes, including offline ones; delivery ACK confirms
+acceptance. An idle application listens too.
 
-Each listener runs liblockdc's managed consumer service. Filesystem queue
+The default queue is `cai.<basename>.<six-hex-path-hash>`, for example
+`cai.project.a1b2c3`. The suffix is the first six hexadecimal characters of the
+canonical full path's SHA-256. Symlink aliases resolve to the same queue;
+different paths with the same basename normally have different suffixes.
+The basename is lowercased, sanitized and shortened to fit lockd's 128-character
+name limit. A detected short-hash collision with another canonical directory
+fails explicitly and asks for `--message-queue NAME`.
+
+`/status` shows the queue name. Override it with `--message-queue NAME`,
+`CAI_MESSAGE_QUEUE`, or `[messaging] queue_name`. Empty keeps automatic naming.
+Explicit names are lowercased and must contain only ASCII letters, digits,
+`.`, `_` or `-`, with at most 128 characters. Deliberately using the same
+explicit name in another directory takes over that mailbox too.
+
+## Ownership and takeover
+
+A new app start claims the workspace mailbox for its active conversation,
+including after `/new` or resuming a different conversation. The address stays
+the same. Binding updates and durable message acceptance use the same lockd
+lease, so a superseded process cannot accept new deliveries into its old
+conversation. A stale consumer defers the message without consuming its retry
+budget and stops its mailbox service. It reports the ownership change through
+the normal logger. No application polling is used.
+
+Already delivered messages stay with their original conversation, including
+held approval entries. They can still be approved there or recovered by resuming
+that conversation. They are never transferred just because another app starts.
+The old conversation can keep running, but new sends through its displaced
+mailbox fail with an ownership error. Restart it to reclaim the mailbox, or
+choose a different name. Exiting the displaced app cannot clear the new binding;
+exiting the new owner does not automatically reactivate an older app.
+
+Each listener uses liblockdc's managed consumer services. Filesystem queue
 notifications wake that service; the application does not periodically query
 the queue. The service saves an incoming message to a durable encrypted inbox
 before sending a delivery receipt. An event descriptor then wakes the UI owner.
-Recovery queries use an indexed `pending_for` field, scoped to the recipient.
+Recovery queries use an indexed `pending_for` field scoped to the conversation
+that accepted the message. Bindings and pending records live in `cai.messages`.
+Private `cai.receipts.<instance-id>` channels deliver ACKs to the exact sending
+app instance, independently of mailbox takeover. They are internal return
+channels and are excluded from destination discovery.
 
 `send` waits for that receipt, with a five-minute deadline measured from sending.
 An offline recipient or absent receipt returns a tool error. Expired messages
@@ -63,6 +100,7 @@ The generated `config.ini` contains these commented defaults:
 [messaging]
 ## Shared conversation messaging.
 # enabled = true
+# queue_name = ""
 # enable_auto_enqueue = false
 # ack_timeout_ms = 300000
 ```
@@ -70,6 +108,7 @@ The generated `config.ini` contains these commented defaults:
 | INI key | Environment | Command line |
 | --- | --- | --- |
 | `messaging.enabled` | `CAI_MESSAGING` | `--messaging` / `--no-messaging` |
+| `messaging.queue_name` | `CAI_MESSAGE_QUEUE` | `--message-queue NAME` |
 | `messaging.enable_auto_enqueue` | `CAI_ENABLE_AUTO_ENQUEUE` | `--autoqueue` / `--no-autoqueue` |
 | `messaging.ack_timeout_ms` | `CAI_MESSAGE_ACK_TIMEOUT_MS` | `--message-ack-timeout-ms MS` |
 
@@ -109,9 +148,14 @@ destination discovery, a message in each direction, delivery ACKs before
 approval, and both approved messages reaching the receiving model context.
 The provider responses come from a local HTTP fixture; transport, storage,
 tools, approval and application instances use the production implementation.
+The same test starts another app on the original directory, confirms the same
+queue name routes new deliveries there, approves an older held message in the
+original conversation, and verifies that closing the displaced app leaves the
+new owner's binding intact. Native tests additionally exercise symlink naming,
+equal basenames, explicit names, collision refusal and stale-consumer deferral.
 
 The tested backend is shared local Pouch. Remote lockd fanout and the live
-kanban HTTP page remain future work. Use a distinct active conversation for
-each agent. Delivery is durable and queue redelivery is deduplicated; execution
+kanban HTTP page remain future work. Use different directories or explicit queue
+names for independently addressable agents. Delivery is durable and queue redelivery is deduplicated; execution
 is not claimed to be exactly once. A crash between persisting a runtime turn
 and marking its inbox entry consumed may present that message again on resume.

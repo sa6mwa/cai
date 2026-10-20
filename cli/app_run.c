@@ -1594,9 +1594,9 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
     return rc;
   }
   if (state->messages != NULL) {
-    rc = cai_cli_messages_start(state->messages,
-                                cai_agent_runtime_session_id(state->runtime),
-                                state->workspace, error);
+    rc = cai_cli_messages_start(
+        state->messages, cai_agent_runtime_session_id(state->runtime),
+        state->workspace, state->options.message_queue, error);
     if (rc != CAI_OK)
       return rc;
     if (state->interactive) {
@@ -2564,7 +2564,7 @@ static int cli_handle_command(cli_state *state, const char *line,
     cai_agent_runtime_settings settings;
     cai_agent_runtime_metrics metrics;
     cai_error optional_error;
-    char markdown[2048];
+    char markdown[2048], mailbox_row[256];
     const char *model = state->options.model;
     const char *effort = state->options.reasoning_effort;
     memset(&settings, 0, sizeof(settings));
@@ -2585,11 +2585,15 @@ static int cli_handle_command(cli_state *state, const char *line,
     if (rc != CAI_OK)
       return rc;
     cli_refresh_quota(state, 1);
+    snprintf(mailbox_row, sizeof(mailbox_row), "| Message queue | `%s` |\n",
+             state->messages != NULL ? cai_cli_messages_name(state->messages)
+                                     : "disabled");
     if (cai_cli_status_markdown(markdown, sizeof(markdown), model, effort,
                                 state->options.provider, &metrics,
                                 state->auth != NULL ? &state->quota : NULL,
                                 &instructions) != 0 ||
         cli_text(state, markdown, strlen(markdown)) != 0 ||
+        cli_text(state, mailbox_row, strlen(mailbox_row)) != 0 ||
         cai_cli_tools_markdown(&state->mcp, state->runtime, 0, cli_tools_write,
                                state, error) != CAI_OK ||
         cli_finish_response(state) != 0) {

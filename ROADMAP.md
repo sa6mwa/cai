@@ -398,7 +398,8 @@ Current OpenRouter boundary:
 ## Deferred Integrations
 
 - Shared-Pouch conversation messaging is implemented in libcai_app using a
-  managed LQ consumer per conversation, durable delivery ACKs, and softline's
+  managed LQ consumers, stable workspace mailbox names, takeover fencing,
+  durable delivery ACKs, and softline's
   normal approval queue. Core libcai offers generic tool-registration and
   next-turn hooks without depending on liblockdc. Remote lockd fanout remains
   deferred; see [messaging](docs/agent-messaging.md).
