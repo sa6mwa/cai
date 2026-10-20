@@ -1034,6 +1034,11 @@ if(CAI_BUILD_LUA)
           "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host")
         set_tests_properties(cai_app_lua_messages PROPERTIES LABELS "cli;local;offline" TIMEOUT 45
           ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
+        add_test(NAME cai_app_messages_roundtrip COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_messages_roundtrip_test.sh"
+          "$<TARGET_FILE:cai_app_host>" "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host")
+        set_tests_properties(cai_app_messages_roundtrip PROPERTIES LABELS "cli;local;offline" TIMEOUT 20
+          ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
       endif()
     endif()
   endif()

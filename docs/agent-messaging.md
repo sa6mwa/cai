@@ -102,6 +102,14 @@ a C interface, not a Lua callback running on a worker.
 
 ## Scope and recovery limits
 
+`cai_app_messages_roundtrip` runs a C embedder linked to the static application
+library alongside a Lua embedder using the shared application library. Both
+stay running against the same explicit encrypted Pouch root. It verifies
+destination discovery, a message in each direction, delivery ACKs before
+approval, and both approved messages reaching the receiving model context.
+The provider responses come from a local HTTP fixture; transport, storage,
+tools, approval and application instances use the production implementation.
+
 The tested backend is shared local Pouch. Remote lockd fanout and the live
 kanban HTTP page remain future work. Use a distinct active conversation for
 each agent. Delivery is durable and queue redelivery is deduplicated; execution
