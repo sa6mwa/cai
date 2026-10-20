@@ -79,7 +79,7 @@ set(CAI_MINIMUM_CURL_VERSION "7.86.0")
 set(CAI_LONEJSON_VERSION "0.45.0")
 set(CAI_LONEJSON_ABI_VERSION "26")
 set(CAI_PSLOG_VERSION "0.12.0")
-set(CAI_SOFTLINE_VERSION "0.11.0")
+set(CAI_SOFTLINE_VERSION "0.12.0")
 set(CAI_LIBMDF_VERSION "0.15.0")
 set(CAI_LOCKDC_VERSION "0.21.0")
 set(CAI_LIBLQL_VERSION "0.3.0")
@@ -319,32 +319,32 @@ if(CAI_BUILD_APP)
   if(CAI_TARGET_ID STREQUAL "x86_64-linux-gnu")
     set(_cai_liblql_sha256 "fafb04f9af5d9610f77380ac1f848d1edd3d60dcf7ce6a098f6a04e30dd2b47a")
     set(_cai_lockdc_sha256 "87d1829895977b407a5f205df0016679b62021a986f885a2bcbbe53b94e06ba5")
-    set(_cai_softline_sha256 "dd00f2d85a06856a4fb16131d75faf8910920b96aec1f0fc94695fbeb427e0b2")
+    set(_cai_softline_sha256 "98435850369adf75dbf49c20e6a741a34636f11ab70c67081c7e612ea1a55bbe")
     set(_cai_libmdf_sha256 "e5b6240ad4f0a864caf19a26e205745253fa7e2304f9908f1d53a71ba2e08d2b")
   elseif(CAI_TARGET_ID STREQUAL "x86_64-linux-musl")
     set(_cai_liblql_sha256 "e33a57e5d97337304c8541efaf8ab33bff9060cae600d1fe744a6734dca74ad4")
     set(_cai_lockdc_sha256 "c4316dc82ef203b540c6e074be9df47b5c036576187beaa04da86ecdd65ccd1c")
-    set(_cai_softline_sha256 "aad30b07ffcf0a5c884f769cff4130c07e31d1e57b6579f33239020f6bae7a4a")
+    set(_cai_softline_sha256 "caee5223b9eebe4fd824351af89e1ef275d2210c1dd9f00b123a3ea3a147687d")
     set(_cai_libmdf_sha256 "d802385afddd14f1c5d6de02efe82dbe1f44f3b7694b7497f11490a2257d0961")
   elseif(CAI_TARGET_ID STREQUAL "aarch64-linux-gnu")
     set(_cai_liblql_sha256 "becc67d67c9e50291d1cc0c7bfc124c7945576b773013b37f65e969bb32af4a8")
     set(_cai_lockdc_sha256 "8a3567d723aaf6bbff4b62b3e3779b3f4cfa5e3227b73724429dbed76c7ded95")
-    set(_cai_softline_sha256 "b1c7fccd8b65df8d672f55553bb574ec1e5395f07900923fcfa461681f70d6e7")
+    set(_cai_softline_sha256 "cca2a7c3003c178d003f55ee79d0edb6a91d59d53ebcf977a8dd91e4a681dc57")
     set(_cai_libmdf_sha256 "b2d2f54900831aeaa889930b4df400d3742afebef35611aaca44fcf5b4e8f987")
   elseif(CAI_TARGET_ID STREQUAL "aarch64-linux-musl")
     set(_cai_liblql_sha256 "8981ed9a6d938d1fdcb9da08ebc30df5d48d78bcad423bd1c64e858795d17ccf")
     set(_cai_lockdc_sha256 "0fa67915c04dc72eca398c9e066da0de8cd2ec7f85013a6d94bacb4ad98a6c7a")
-    set(_cai_softline_sha256 "0798150b42c7e5dd1ecb896396073808a4d2e1f5d84a62d59a0ae5d6e91b4ecf")
+    set(_cai_softline_sha256 "92bff94522a630232a5296e187257655c9f8b25e435d2ac50d4d6c5e8ae6645a")
     set(_cai_libmdf_sha256 "7236ae96fa9e48b2d7410a179ed2b99918b39c913384fa22a662ad9ce8b9e16e")
   elseif(CAI_TARGET_ID STREQUAL "armhf-linux-gnu")
     set(_cai_liblql_sha256 "3a022733ffa7ba808127d04669a6e091b2bdfcf39c9fd3092b9d0769d481db82")
     set(_cai_lockdc_sha256 "4133c3c49a367d6f2a8aee3839ef8b5c725b04f6cfb8d5c4b80309163822f75a")
-    set(_cai_softline_sha256 "bec93409ce044a79a2aca6aeb1ec811a5c60bce8c35f18f3cafb0d4c5409aa0c")
+    set(_cai_softline_sha256 "6ac83c5957580bd68c4f8af2e427cdcde2d6dc83100a4c6a6f818ae61eaac653")
     set(_cai_libmdf_sha256 "8b65d51c2f703335bb075a95b74e22ae4098aee8f646a249369bc130ff4a8ebe")
   elseif(CAI_TARGET_ID STREQUAL "armhf-linux-musl")
     set(_cai_liblql_sha256 "0eddb49271b137e1b5094d8954c7a16ef66f8a8ae009476402272a7e10d5b001")
     set(_cai_lockdc_sha256 "3596a2b2cb0319339942be6b758b77bb671ecff1feeff2262ff3db81163320d5")
-    set(_cai_softline_sha256 "ba9148b82fbdedc9c7a777fe798c33717d7db97873d10ac178b0449125cfb44e")
+    set(_cai_softline_sha256 "cf8658e3d7b3deb418df17ffe90b3a202ce7cabca9ab33f6b7b0f489304047ac")
     set(_cai_libmdf_sha256 "22fa276f975945797bbda44694a84ebcade0e0a7ea47d53590a4bcc2eceebc5d")
   endif()
   set(_cai_liblql_name "liblql-${CAI_LIBLQL_VERSION}-${CAI_TARGET_ID}")
@@ -869,7 +869,7 @@ if(CAI_BUILD_APP)
   # Compile them once per configuration; keep fixture substitutions in main.
   add_library(cai_cli_support OBJECT cli/options.c cli/help.c cli/config.c cli/runtime_options.c cli/mcp.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
     cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c
-    cli/log.c cli/response.c)
+    cli/log.c cli/response.c cli/messages.c)
   target_link_libraries(cai_cli_support PUBLIC cai_static
     softline::softline_static libmdf::mdf_static lockdc::static)
   cai_configure_c_target(cai_cli_support)
@@ -900,6 +900,7 @@ if(CAI_BUILD_CLI)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/model-metadata.md"
       "${CMAKE_CURRENT_SOURCE_DIR}/docs/chrome.md"
       "${CMAKE_CURRENT_SOURCE_DIR}/docs/embedding.md"
+      "${CMAKE_CURRENT_SOURCE_DIR}/docs/agent-messaging.md"
       DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/docs"
       COMPONENT cai-cli)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cli/main.c"
@@ -1027,6 +1028,11 @@ if(CAI_BUILD_LUA)
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_embedding_test.sh"
           "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host")
         set_tests_properties(cai_app_lua_embedding PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
+          ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
+        add_test(NAME cai_app_lua_messages COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_messages_integration_test.sh"
+          "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host")
+        set_tests_properties(cai_app_lua_messages PROPERTIES LABELS "cli;local;offline" TIMEOUT 45
           ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
       endif()
     endif()
@@ -1259,6 +1265,7 @@ if(CAI_INSTALL)
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/model-metadata.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/chrome.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/embedding.md"
+    "${CMAKE_CURRENT_SOURCE_DIR}/docs/agent-messaging.md"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/docs")
   install(FILES "${CMAKE_CURRENT_BINARY_DIR}/dependencies.json"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/cai")

@@ -4,6 +4,12 @@ assert(not application.open {unknown = true})
 assert(not application.open {program_name = "bad\0name"})
 assert(not application.open {settings = {agent = {model = "bad\0model"}}})
 assert(not application.open {settings = {agent = {unknown_setting = "bad"}}})
+local messaging_app = assert(application.open {
+  no_config = true,
+  settings = {messaging = {enabled = true, enable_auto_enqueue = false, ack_timeout_ms = 300000}},
+})
+messaging_app:close()
+assert(not application.open {settings = {messaging = {enable_auto_enqueue = "not-a-bool"}}})
 local app = assert(application.open {
   program_name = "vectis -a smith --",
   banner = "HIDDEN_BANNER",

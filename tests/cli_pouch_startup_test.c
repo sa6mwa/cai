@@ -292,7 +292,8 @@ static void replay_limits(cai_cli_pouch *pouch, cai_error *error) {
     original.type = "assistant_text_delta";
     original.data = data;
     memset(&parsed, 0, sizeof(parsed));
-    assert(mapped_source(&event_map, &original, &source, error) == CAI_OK);
+    assert(cai_cli_mapped_source(&event_map, &original, &source, error) ==
+           CAI_OK);
     rc = parse_source_optional(source, &event_map, &parsed, NULL, &limited,
                                error);
     assert(limited == (length > config.max_dynamic_string_bytes));
@@ -317,7 +318,8 @@ static void replay_limits(cai_cli_pouch *pouch, cai_error *error) {
   original.sequence = 1000004U;
   original.type = "assistant_text_delta";
   original.data = "invalid identity";
-  assert(mapped_source(&event_map, &original, &source, error) == CAI_OK);
+  assert(cai_cli_mapped_source(&event_map, &original, &source, error) ==
+         CAI_OK);
   {
     lc_lease *lease = NULL;
     assert(acquire(pouch->sessions, "oversized", &lease, error) == CAI_OK);

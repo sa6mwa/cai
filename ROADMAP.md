@@ -141,7 +141,7 @@ Recent hardening runs have covered:
 ## Active First-Release Work
 
 The first `cai` CLI release targets a single static x86_64 Linux musl binary.
-It uses the Smith runtime, softline 0.11.0, libmdf 0.15.0, ChatGPT auth, and
+It uses the Smith runtime, softline 0.12.0, libmdf 0.15.0, ChatGPT auth, and
 workspace-scoped JSONL sessions. CLI MCP connection configuration is deferred
 to a later release; the `libcai` MCP client API remains available to embedders.
 Ship a `cai(1)` manual page in the binary archive alongside the executable,
@@ -397,14 +397,15 @@ Current OpenRouter boundary:
 
 ## Deferred Integrations
 
-- Conversation messaging comes before the live kanban UI. Use liblockdc LQ
-  with one stable queue per conversation on the shared backend. Runtime delivery
-  policy and the reusable standalone SDK adapter boundary must be settled before
-  implementation; default core libcai remains independent of liblockdc.
+- Shared-Pouch conversation messaging is implemented in libcai_app using a
+  managed LQ consumer per conversation, durable delivery ACKs, and softline's
+  normal approval queue. Core libcai offers generic tool-registration and
+  next-turn hooks without depending on liblockdc. Remote lockd fanout remains
+  deferred; see [messaging](docs/agent-messaging.md).
 - Named todo/kanban boards already share the application's encrypted
   `cai.todo` Pouch document. The core preset exposes transactional storage
   callbacks; the existing Pouch implementation is private to the application.
-  After conversation messaging is complete, expose shared-board access and an
+  Next, expose shared-board access and an
   automatically updating JavaScript/CSS board through an embeddable HTTP route
   handler suitable for Kore in Vectis. Keep the HTTP server host-owned.
 - SMHI weather remains an example-only tool. It is not a public cai tool preset.

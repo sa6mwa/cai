@@ -52,6 +52,27 @@ Chat Completions has no hosted search; SearXNG is available separately.
 Enable/disable todo_kanban (default off). CAI uses a shared encrypted cai.todo
 document, with streamed transactional updates, rather than a todo.json file.
 .TP
+.BR \-\-messaging " / " \-\-no-messaging
+Enable/disable shared-Pouch conversation messaging (default on). Each active
+conversation listens on cai.session.<id> in namespace cai.messages using a
+managed consumer service. The agent_message tool lists conversations or sends
+text to another conversation. Delivery ACK means durable acceptance, not user
+approval or model completion. Isolated review does not enable messaging.
+.TP
+.BR \-\-autoqueue " / " \-\-no-autoqueue
+Automatically approve incoming TUI messages (default off). Alt-A focuses
+approval, Alt-Y approves, Alt-N rejects and Alt-E edits/requeues. Approved
+messages start ordinary turns after current work finishes; they do not steer.
+Pending messages survive restart. Non-interactive runs acknowledge delivery
+but leave incoming prompts pending for an interactive run.
+.TP
+.BI \-\-message-ack-timeout-ms " MS"
+Deadline from sending to delivery ACK, default 300000 (five minutes), range
+1..86400000. Unaccepted messages expire; a missing ACK is a tool error.
+Configuration keys are [messaging] enabled, enable_auto_enqueue, ack_timeout_ms;
+environment variables are CAI_MESSAGING, CAI_ENABLE_AUTO_ENQUEUE and
+CAI_MESSAGE_ACK_TIMEOUT_MS.
+.TP
 .BR \-\-searxng " / " \-\-no-searxng
 Enable/disable function-based SearXNG search (default off).
 .TP
@@ -402,6 +423,11 @@ Export the active session, or the supplied ID, as JSONL and Markdown.
 .TP
 .B /new
 Start a new session in the current workspace.
+.TP
+.BI /autoqueue " [on|off]"
+Toggle automatic approval of incoming conversation messages. Explicit on
+also approves waiting messages; off leaves existing approvals intact.
+The setting affects this live TUI and does not rewrite config.ini.
 .TP
 .BI /model " [MODEL [EFFORT]]"
 Show current and pending settings and the provider catalog, or select MODEL

@@ -16,6 +16,9 @@ typedef struct cai_cli_options {
   int chrome_explicit;
   int web_search;
   int mcp;
+  int messaging;
+  int enable_auto_enqueue;
+  long message_ack_timeout_ms;
   int todo;
   int searxng;
   int revgeo;

@@ -96,6 +96,64 @@ static int write_config(const char *path, int precedence) {
   return fclose(stream) != 0;
 }
 
+static int messaging_settings(const char *path) {
+  char *args[] = {NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+  const char *fixed[] = {"cai",
+                         "--config",
+                         NULL,
+                         "--no-messaging",
+                         "--autoqueue",
+                         "--message-ack-timeout-ms",
+                         "7"};
+  cai_cli_options options;
+  cai_config *configuration = NULL;
+  cai_error error;
+  FILE *stream;
+  int i, failed = 0;
+  stream = fopen(path, "w");
+  if (stream == NULL)
+    return 1;
+  fputs("[messaging]\nenabled = false\nenable_auto_enqueue = "
+        "true\nack_timeout_ms = 123\n",
+        stream);
+  if (fclose(stream) != 0)
+    return 1;
+  for (i = 0; i < 7; i++)
+    args[i] = strdup(i == 2 ? path : fixed[i]);
+  cai_error_init(&error);
+  unsetenv("CAI_MESSAGING");
+  unsetenv("CAI_ENABLE_AUTO_ENQUEUE");
+  unsetenv("CAI_MESSAGE_ACK_TIMEOUT_MS");
+  for (i = 0; i < 3; i++) {
+    int rc = cai_cli_configure(i == 2 ? 7 : 3, args, &options, &configuration,
+                               NULL, &error);
+    if (rc != 1 || options.messaging != (i == 1) ||
+        options.enable_auto_enqueue != (i != 1) ||
+        options.message_ack_timeout_ms != (i == 0   ? 123L
+                                           : i == 1 ? 456L
+                                                    : 7L))
+      failed = 1;
+    cai_config_close(configuration);
+    configuration = NULL;
+    setenv("CAI_MESSAGING", "true", 1);
+    setenv("CAI_ENABLE_AUTO_ENQUEUE", "false", 1);
+    setenv("CAI_MESSAGE_ACK_TIMEOUT_MS", "456", 1);
+  }
+  setenv("CAI_MESSAGE_ACK_TIMEOUT_MS", "0", 1);
+  if (cai_cli_configure(3, args, &options, &configuration, NULL, &error) !=
+          -1 ||
+      error.message == NULL)
+    failed = 1;
+  cai_config_close(configuration);
+  cai_error_cleanup(&error);
+  for (i = 0; i < 7; i++)
+    free(args[i]);
+  unsetenv("CAI_MESSAGING");
+  unsetenv("CAI_ENABLE_AUTO_ENQUEUE");
+  unsetenv("CAI_MESSAGE_ACK_TIMEOUT_MS");
+  return failed;
+}
+
 int main(int argc, char **argv) {
   static const char *const env[] = {"CAI_TODO",       "CAI_CHROME",
                                     "CAI_WEB_SEARCH", "CAI_SEARXNG",
@@ -136,6 +194,7 @@ int main(int argc, char **argv) {
   failed |= write_config(path, 1);
   failed |= resolve(path, NULL, 4);
   failed |= resolve(path, "--no-todo", 0);
+  failed |= messaging_settings(path);
   unlink(path);
   return failed != 0;
 }

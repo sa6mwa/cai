@@ -52,7 +52,26 @@
     target_link_libraries(cai_cli_geometry_test PRIVATE cai_cli_support)
     cai_configure_cli_target(cai_cli_geometry_test)
     add_test(NAME cai_cli_geometry COMMAND cai_cli_geometry_test)
+    add_executable(cai_cli_messages_test tests/cli_messages_test.c
+      cli/pouch.c cli/pouch_stream.c cli/session_commands.c cli/log.c)
+    target_link_libraries(cai_cli_messages_test PRIVATE cai_static
+      softline::softline_static lockdc::static)
+    cai_configure_cli_target(cai_cli_messages_test)
+    target_compile_options(cai_cli_messages_test PRIVATE -UNDEBUG)
+    cai_cli_use_storage_fixture(cai_cli_messages_test)
+    add_test(NAME cai_cli_messages_native COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_messages_test.sh"
+      "$<TARGET_FILE:cai_cli_messages_test>")
+    set_tests_properties(cai_cli_messages_native PROPERTIES TIMEOUT 15)
+    add_test(NAME cai_cli_messages_integration COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_messages_integration_test.sh"
+      "$<TARGET_FILE:cai_cli_mock_fixture>")
+    set_tests_properties(cai_cli_messages_integration PROPERTIES TIMEOUT 45)
     add_test(NAME cai_cli_help COMMAND cai_cli --help)
+    add_test(NAME cai_cli_startup_spacing COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_startup_spacing_test.sh"
+      "$<TARGET_FILE:cai_cli_mock_fixture>" "$<TARGET_FILE:cai_app_host>")
+    set_tests_properties(cai_cli_startup_spacing PROPERTIES TIMEOUT 15)
     add_test(NAME cai_cli_config
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_config_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>")

@@ -709,6 +709,16 @@ typedef struct cai_agent_runtime_config {
    * completion metadata. Oldest text is discarded at UTF-8 scalar boundaries;
    * only the newest sanitized tail is journaled when finish succeeds. */
   size_t shell_context_max_bytes;
+  /** Optional owner-thread registration hook, called once during open after
+   * built-in tools have been installed and before the runtime worker starts.
+   * The agent is borrowed for this call only. Registered tool contexts must
+   * remain valid until runtime close; their handlers run on native workers.
+   * Not inherited by child agents; rejected by isolated review mode.
+   * Transport integrations can register their sending tool here and use
+   * submit_queued_threadsafe for incoming, approved next-turn input. */
+  int (*register_agent_tools)(void *context, cai_agent *agent,
+                              cai_error *error);
+  void *register_agent_tools_context;
 } cai_agent_runtime_config;
 
 /** Initialize a zero-defaultable runtime configuration. */

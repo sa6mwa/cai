@@ -7518,6 +7518,13 @@ int cai_agent_runtime_open(cai_client *client,
   if (rc == CAI_OK && !review_mode) {
     rc = cai_runtime_register_subagent_tool(runtime, error);
   }
+  if (rc == CAI_OK && config->register_agent_tools != NULL) {
+    rc = review_mode
+             ? cai_set_error(error, CAI_ERR_INVALID,
+                             "isolated review does not support host tools")
+             : config->register_agent_tools(
+                   config->register_agent_tools_context, runtime->agent, error);
+  }
   if (rc == CAI_OK) {
     const char *scope;
     char session_id[CAI_AGENT_SESSION_ID_MAX];

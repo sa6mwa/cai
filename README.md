@@ -105,7 +105,7 @@ runtime, review, storage, and presentation contracts.
 ## Cai terminal agent
 
 The `cai` preset builds the terminal coding agent as a statically linked
-Linux x86_64 musl executable. It adds pinned softline 0.11.0 for the prompt and
+Linux x86_64 musl executable. It adds pinned softline 0.12.0 for the prompt and
 libmdf 0.15.0 for streamed Markdown rendering, and liblockdc 0.21.0 with
 liblql 0.3.0 for durable storage. It uses libpslog 0.12.0 for logging.
 The native dependency SDK is cpkt 0.5.0 from
@@ -941,6 +941,17 @@ before repository ancestor `AGENTS.md` files. `-I TEXT` or
 Loaded AGENTS.md sources are explicitly framed as the current user's instructions
 and working context, including any stated role or preferences. Their complete
 contents and loading order are preserved on resume and model changes.
+
+### Messages between conversations
+
+CAI conversations on a shared Pouch backend can use `agent_message` to list
+conversations and send messages. Incoming messages use softline's normal
+approval queue: Alt+A focuses approval, Alt+Y approves, Alt+N rejects, and
+Alt+E edits. Approved messages start a new turn after current work completes.
+`/autoqueue [on|off]` controls automatic approval (default off). Delivery is
+acknowledged before approval, with a default five-minute ACK deadline.
+See [conversation messaging](docs/agent-messaging.md) for configuration, the
+dependency-free core integration hook, and recovery semantics.
 
 ## Release Scope
 

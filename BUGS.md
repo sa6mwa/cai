@@ -7,7 +7,7 @@ commit and verification evidence.
 
 ## BUG-015: Extra blank row before the first quoted user prompt
 
-- **Status:** reproduced in softline 0.11.0; upstream fix needed.
+- **Status:** fixed by softline 0.12.0.
 - **Required behavior:** one empty row between the first quoted user prompt
   and preceding terminal content, including the launching shell or host banner.
 - **Cause:** a fresh stream initializes its trailing-newline count to zero.
@@ -20,6 +20,9 @@ commit and verification evidence.
   a fresh native stream with a confirmed column-zero cursor. Preserve later
   quote spacing, unfinished-line handling and known spacing across reopen.
   CAI should continue using softline's quoted-prompt API.
+- **Verification (2026-10-20):** `cai_cli_startup_spacing` checks actual tmux
+  terminal rows after replay, both following a shell marker and after an
+  embedded host banner. Exactly one blank row precedes the first quoted prompt.
 
 ## BUG-013: Sparse patches omit surrounding unchanged lines
 

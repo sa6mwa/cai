@@ -52,6 +52,32 @@ static int storage_options(void) {
   return 0;
 }
 
+static int messaging_options(void) {
+  cai_cli_options options;
+  char first[] = "cai", flag[] = "--message-ack-timeout-ms";
+  char off[] = "--no-messaging", on[] = "--autoqueue";
+  char valid[] = "7", invalid[] = "86400001";
+  char *args[5];
+  args[0] = first;
+  args[1] = off;
+  args[2] = on;
+  args[3] = flag;
+  args[4] = valid;
+  if (cai_cli_parse_options(1, args, &options) != 1 || !options.messaging ||
+      options.enable_auto_enqueue || options.message_ack_timeout_ms != 300000L)
+    return 1;
+  if (cai_cli_parse_options(5, args, &options) != 1 || options.messaging ||
+      !options.enable_auto_enqueue || options.message_ack_timeout_ms != 7L)
+    return 1;
+  args[4] = invalid;
+  if (cai_cli_parse_options(5, args, &options) != -1 ||
+      strstr(options.diagnostic, "1..86400000") == NULL ||
+      cai_cli_parse_options(4, args, &options) != -1 ||
+      strstr(options.diagnostic, "requires") == NULL)
+    return 1;
+  return 0;
+}
+
 static int help_file_write(void *context, const void *bytes, size_t count,
                            cai_error *error) {
   (void)error;
@@ -443,5 +469,5 @@ int main(void) {
       cai_cli_parse_options(3, invalid_legacy_workspace, &options) != -1)
     return 1;
   return help_columns() || shell_options() || storage_options() ||
-         tool_options() || capture_options();
+         tool_options() || capture_options() || messaging_options();
 }

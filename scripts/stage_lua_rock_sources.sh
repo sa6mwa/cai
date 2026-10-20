@@ -58,6 +58,7 @@ files=(
   README.md
   docs/model-metadata.md
   docs/embedding.md
+  docs/agent-messaging.md
   examples/app.lua
   cli/main.c
   cai.rockspec.in

@@ -15,6 +15,10 @@ contains "$config" "# agents_md = \"$root/config/cai/AGENTS.md\""
 contains "$config" "# skills_dir = \"$root/config/cai/skills\""
 contains "$config" "# export_dir = \"$root/data/cai/exports\""
 contains "$config" '# tool_output = "compact"'
+contains "$config" '[messaging]'
+contains "$config" '# enabled = true'
+contains "$config" '# enable_auto_enqueue = false'
+contains "$config" '# ack_timeout_ms = 300000'
 contains "$config" '## Empty checks ~/.codex/auth.json first, then encrypted cai auth.'
 contains "$config" '## Empty optionally loads config_dir/models.json;'
 contains "$config" '## Remote lockd mTLS client PEM; empty supplies no client certificate.'

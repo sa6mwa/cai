@@ -7,6 +7,7 @@
 #include "log.h"
 #include "login.h"
 #include "mcp.h"
+#include "messages.h"
 #include "options.h"
 #include "pouch.h"
 #include "quota_refresh.h"
@@ -81,6 +82,9 @@ typedef struct cli_state {
   cai_agent_runtime *runtime;
   cai_cli_mcp mcp;
   int mcp_initialized;
+  cai_cli_messages *messages;
+  sl_watch_id_t message_watch_id;
+  int has_message_watch;
   sl_t *sl;
   mdf *renderer;
   mdf *notice_renderer;
@@ -141,6 +145,7 @@ typedef struct cli_state {
 } cli_state;
 
 static int cli_advance_automation(cli_state *state, cai_error *error);
+static int cli_messages_process(cli_state *state, cai_error *error);
 static int cli_flush_command(cli_state *state, int ok);
 static int cli_submit_automation(cli_state *state, const char *instruction,
                                  cai_error *error);
@@ -1298,6 +1303,71 @@ static int cli_timer_wakeup(sl_t *sl, const sl_watch_event_t *event,
   return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
 }
 
+/* Queue delivery is owned by the UI, not by a consumer thread. Approved
+ * injected prompts remain editable until a normal turn can begin. */
+static int cli_messages_process(cli_state *state, cai_error *error) {
+  cai_agent_runtime_metrics metrics;
+  cai_agent_run_state run_state;
+  sl_prompt_queue_entry_info_t info;
+  size_t index;
+  char *text;
+  int rc;
+  if (state->messages == NULL || state->batch || state->runtime == NULL)
+    return CAI_OK;
+  rc = cai_cli_messages_sync(state->messages, state->sl, error);
+  if (rc != CAI_OK)
+    return rc;
+  rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
+  if (rc == CAI_OK)
+    rc = cai_agent_runtime_state(state->runtime, &run_state, error);
+  if (rc != CAI_OK || metrics.turn_active || state->awaiting_turn ||
+      state->shell.pid > 0 || run_state == CAI_AGENT_SAMPLING ||
+      run_state == CAI_AGENT_DISPATCHING_TOOL)
+    return rc;
+  for (index = 0U; index < sl_prompt_queue_count(state->sl); index++) {
+    if (sl_prompt_queue_info(state->sl, index, &info) != SL_OK)
+      return cai_cli_error(error, CAI_ERR_TRANSPORT, "inspect queued prompt");
+    if (info.held || info.mode != SL_PROMPT_QUEUE_MODE_QUEUED)
+      continue;
+    text = NULL;
+    if (sl_prompt_queue_take(state->sl, index, &text) != SL_OK)
+      return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                           "take approved queued prompt");
+    rc = cli_prompt(state, text) == 0
+             ? cai_agent_runtime_submit_queued(state->runtime, text, error)
+             : CAI_ERR_TRANSPORT;
+    if (rc == CAI_OK) {
+      state->awaiting_turn = 1;
+      rc = cai_cli_messages_consumed(state->messages, info.id, error);
+    } else {
+      sl_prompt_id_t replacement;
+      if (sl_prompt_queue_insert(state->sl, index, text, 0, &replacement) ==
+          SL_OK)
+        cai_cli_messages_rebind(state->messages, info.id, replacement);
+    }
+    sl_free_string(state->sl, text);
+    return rc;
+  }
+  return CAI_OK;
+}
+static int cli_message_wakeup(sl_t *sl, const sl_watch_event_t *event,
+                              void *context) {
+  cli_state *state = context;
+  cai_error error;
+  int rc;
+  (void)sl;
+  (void)event;
+  cai_error_init(&error);
+  rc = cli_messages_process(state, &error);
+  if (rc != CAI_OK)
+    cli_print_error(state, "receive agent message", &error);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
+}
+static void cli_message_idle(sl_t *sl, void *context) {
+  (void)cli_message_wakeup(sl, NULL, context);
+}
+
 static int cli_wakeup(sl_t *sl, const sl_watch_event_t *event, void *context) {
   cli_state *state;
   cai_error error;
@@ -1309,6 +1379,8 @@ static int cli_wakeup(sl_t *sl, const sl_watch_event_t *event, void *context) {
   rc = cli_geometry(state) == 0
            ? cai_agent_runtime_pump(state->runtime, 0L, &error)
            : CAI_ERR_TRANSPORT;
+  if (rc == CAI_OK)
+    rc = cli_messages_process(state, &error);
   if (rc == CAI_OK)
     rc = cli_advance_automation(state, &error);
   if (rc == CAI_OK) {
@@ -1472,6 +1544,15 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
     return error->code;
   config.terminal_tool_config = &terminal;
   cai_cli_apply_runtime_options(&state->options, &config, &preset, &skills);
+  if (state->options.messaging && !state->options.review) {
+    rc = cai_cli_messages_new(&state->pouch,
+                              state->options.message_ack_timeout_ms,
+                              &state->messages, error);
+    if (rc != CAI_OK)
+      return rc;
+    config.register_agent_tools = cai_cli_messages_register;
+    config.register_agent_tools_context = state->messages;
+  }
   if (config.enable_todo) {
     config.todo.store = cai_cli_pouch_todo_callbacks();
     config.todo.store_context = &state->pouch;
@@ -1511,6 +1592,26 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   state->pouch.replay_scope = NULL;
   if (rc != CAI_OK) {
     return rc;
+  }
+  if (state->messages != NULL) {
+    rc = cai_cli_messages_start(state->messages,
+                                cai_agent_runtime_session_id(state->runtime),
+                                state->workspace, error);
+    if (rc != CAI_OK)
+      return rc;
+    if (state->interactive) {
+      if (sl_set_auto_approval(state->sl, state->options.enable_auto_enqueue) !=
+              SL_OK ||
+          sl_set_prompt_queue_delivery(
+              state->sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) != SL_OK ||
+          sl_set_idle_callback(state->sl, cli_message_idle, state) != SL_OK ||
+          sl_watch_add(state->sl, cai_cli_messages_fd(state->messages),
+                       SL_WATCH_READ | SL_WATCH_ERROR, cli_message_wakeup,
+                       state, &state->message_watch_id) != SL_OK)
+        return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                             "watch agent message service");
+      state->has_message_watch = 1;
+    }
   }
   rc = cai_cli_log_session(&state->log,
                            cai_agent_runtime_session_id(state->runtime), error);
@@ -1573,6 +1674,15 @@ static int cli_prepare_clipboard(cli_state *state, cai_error *error) {
 }
 
 static void cli_close_runtime(cli_state *state) {
+  if (state->has_message_watch) {
+    (void)sl_watch_remove(state->sl, state->message_watch_id);
+    state->has_message_watch = 0;
+  }
+  if (state->messages != NULL && state->sl != NULL) {
+    (void)sl_set_idle_callback(state->sl, NULL, NULL);
+    cai_cli_messages_detach(state->messages, state->sl);
+  }
+  cai_cli_messages_stop(state->messages);
   if (state->timer_fd >= 0 && state->timer_armed) {
     struct itimerspec stopped;
     memset(&stopped, 0, sizeof(stopped));
@@ -1585,6 +1695,8 @@ static void cli_close_runtime(cli_state *state) {
   }
   cai_agent_runtime_close(state->runtime);
   state->runtime = NULL;
+  cai_cli_messages_close(state->messages);
+  state->messages = NULL;
   state->goal_starts_pending = 0U;
   cai_cli_reasoning_reset(&state->reasoning);
 }
@@ -2242,6 +2354,38 @@ static int cli_handle_command(cli_state *state, const char *line,
   unsigned long number;
   int rc;
   *handled = 1;
+  if (strcmp(line, "/autoqueue") == 0 ||
+      strncmp(line, "/autoqueue ", 11U) == 0) {
+    int enabled;
+    if (state->messages == NULL)
+      return cai_cli_error(error, CAI_ERR_INVALID, "Messaging is disabled.");
+    if (sl_get_auto_approval(state->sl, &enabled) != SL_OK)
+      return cai_cli_error(error, CAI_ERR_TRANSPORT, "read autoqueue setting");
+    arg = line + 10U;
+    while (*arg == ' ')
+      arg++;
+    if (*arg == '\0')
+      enabled = !enabled;
+    else if (strcmp(arg, "on") == 0)
+      enabled = 1;
+    else if (strcmp(arg, "off") == 0)
+      enabled = 0;
+    else
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "Usage: /autoqueue [on|off]");
+    if (sl_set_auto_approval(state->sl, enabled) != SL_OK)
+      return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                           "set incoming message approval");
+    return cli_write(
+               state,
+               enabled
+                   ? "Autoqueue on: waiting and future incoming prompts are "
+                     "automatically approved."
+                   : "Autoqueue off: new incoming prompts require approval "
+                     "(Alt-A, then Alt-Y; Alt-N rejects, Alt-E edits).") == 0
+               ? CAI_OK
+               : CAI_ERR_TRANSPORT;
+  }
   if (strcmp(line, "/trim") == 0 || strncmp(line, "/trim ", 6U) == 0 ||
       strncmp(line, "/trim\t", 6U) == 0)
     return cli_trim_command(state, line + 5U, error);
@@ -2327,6 +2471,9 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| Command | Action |\n"
         "| --- | --- |\n"
         "| `/help` | Show this help. |\n",
+        "| `/autoqueue [on\\|off]` | Toggle automatic approval of incoming "
+        "next-turn messages (default off). Alt-A reviews; Alt-Y approves; "
+        "Alt-N rejects; Alt-E edits. |\n",
         "| `/trim [COUNT]` | List 20 recent whole entries, or remove COUNT "
         "newest entries; 0 removes nothing. |\n"
         "| `/trim list [LIMIT]` | List a different number of entries; "
@@ -2954,6 +3101,8 @@ int cai_cli_app_main(int argc, char **argv, const cai_app_config *application) {
       goto cleanup;
     }
     sl_config_init(&prompt_config);
+    prompt_config.prompt_queue = 1;
+    prompt_config.line_max_len = 65536U + 512U;
     prompt_config.history_max_len = 1000;
     prompt_config.image_paste_path_template =
         "{{XDG_CACHE_HOME}}/cai/clipboard/*";
@@ -3187,6 +3336,7 @@ int cai_cli_app_main(int argc, char **argv, const cai_app_config *application) {
           cai_cli_shell_cancel(&state.shell);
           continue;
         }
+        cai_cli_messages_cancel_send(state.messages);
         rc = cai_agent_runtime_cancel_turn(state.runtime, &error);
         if (rc != CAI_OK) {
           cai_error_cleanup(&error);
@@ -3211,11 +3361,16 @@ int cai_cli_app_main(int argc, char **argv, const cai_app_config *application) {
         if (cli_prompt(&state, line) != 0) {
           rc = CAI_ERR_TRANSPORT;
         } else {
-          if (state.shell.pid > 0)
+          if (state.shell.pid > 0 ||
+              cai_cli_messages_is_message(state.messages,
+                                          sl_last_prompt_id(state.sl)))
             rc = cai_agent_runtime_submit_queued(state.runtime, line, &error);
           else
             rc = cai_agent_runtime_submit_interactive(state.runtime, line,
                                                       &error);
+          if (rc == CAI_OK)
+            rc = cai_cli_messages_consumed(state.messages,
+                                           sl_last_prompt_id(state.sl), &error);
         }
       }
       if (rc != CAI_OK) {
@@ -3261,6 +3416,10 @@ cleanup:
   cai_cli_response_close(&state.final_response);
   if (state.runtime != NULL)
     cli_close_runtime(&state);
+  else {
+    cai_cli_messages_close(state.messages);
+    state.messages = NULL;
+  }
   cai_cli_mcp_close(&state.mcp);
   if (state.has_log_watch)
     (void)sl_watch_remove(state.sl, state.log_watch_id);

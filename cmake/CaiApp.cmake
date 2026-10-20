@@ -98,6 +98,7 @@ if(CAI_INSTALL)
   install(FILES "${CMAKE_CURRENT_BINARY_DIR}/cai-app.pc"
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig" COMPONENT cai-app)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/embedding.md"
+    "${CMAKE_CURRENT_SOURCE_DIR}/docs/agent-messaging.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai_app" COMPONENT cai-app)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cli/main.c"

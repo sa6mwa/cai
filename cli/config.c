@@ -30,6 +30,17 @@ static const cli_field fields[] = {
       "Provider service tier; empty restores saved routing. Explicit default "
       "requests normal routing; priority requests Fast. Use /tier list."),
     B("agent", "mcp", mcp, "Connect named [mcp.NAME] HTTP servers."),
+    B("messaging", "enabled", messaging,
+      "Listen for and send conversation messages on the shared Pouch backend."),
+    B("messaging", "enable_auto_enqueue", enable_auto_enqueue,
+      "Automatically approve incoming TUI next-turn prompts; /autoqueue "
+      "toggles "
+      "this for the current conversation. Default false."),
+    {"messaging", "ack_timeout_ms",
+     offsetof(cai_cli_options, message_ack_timeout_ms), CAI_CONFIG_INTEGER, 0U,
+     NULL,
+     "Delivery ACK deadline in milliseconds, independent of human approval. "
+     "Default 300000 (five minutes); range 1..86400000."},
     S("paths", "directory", directory, CAI_CONFIG_PATH,
       "Empty uses the current working directory on each invocation; explicit "
       "-C wins."),
@@ -232,6 +243,9 @@ int cai_cli_app_schema(cai_config **out, cai_error *error) {
                                 error);
   if (rc == CAI_OK)
     rc = cai_config_set_default(*out, "ui", "tool_output", "compact", error);
+  if (rc == CAI_OK)
+    rc = cai_config_set_default(*out, "messaging", "ack_timeout_ms", "300000",
+                                error);
   return rc == CAI_OK ? 1 : -1;
 }
 static void optional_string(const cai_config *cfg, const char *section,
@@ -290,6 +304,20 @@ static int tool_environment(cai_config *cfg, cai_error *error) {
                                      "shell_context_max_lines",
                                      "shell_context_max_bytes"};
   size_t i;
+  if (getenv("CAI_MESSAGING") != NULL &&
+      cai_config_set(cfg, "messaging", "enabled", getenv("CAI_MESSAGING"),
+                     error) != CAI_OK)
+    return fail(error, "CAI_MESSAGING", "invalid environment setting");
+  if (getenv("CAI_ENABLE_AUTO_ENQUEUE") != NULL &&
+      cai_config_set(cfg, "messaging", "enable_auto_enqueue",
+                     getenv("CAI_ENABLE_AUTO_ENQUEUE"), error) != CAI_OK)
+    return fail(error, "CAI_ENABLE_AUTO_ENQUEUE",
+                "invalid environment setting");
+  if (getenv("CAI_MESSAGE_ACK_TIMEOUT_MS") != NULL &&
+      cai_config_set(cfg, "messaging", "ack_timeout_ms",
+                     getenv("CAI_MESSAGE_ACK_TIMEOUT_MS"), error) != CAI_OK)
+    return fail(error, "CAI_MESSAGE_ACK_TIMEOUT_MS",
+                "invalid environment setting");
   if (getenv("CAI_MCP") != NULL &&
       cai_config_set(cfg, "agent", "mcp", getenv("CAI_MCP"), error) != CAI_OK)
     return fail(error, "CAI_MCP", "invalid environment setting");
@@ -436,6 +464,18 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   defaults.chrome =
       cai_config_get_bool(cfg, "chrome", "enabled", defaults.chrome);
   defaults.todo = cai_config_get_bool(cfg, "agent", "todo", defaults.todo);
+  defaults.messaging =
+      cai_config_get_bool(cfg, "messaging", "enabled", defaults.messaging);
+  defaults.enable_auto_enqueue =
+      cai_config_get_bool(cfg, "messaging", "enable_auto_enqueue", 0);
+  {
+    long long timeout =
+        cai_config_get_integer(cfg, "messaging", "ack_timeout_ms", 300000LL);
+    if (timeout <= 0 || timeout > 86400000LL)
+      return fail(error, NULL,
+                  "messaging.ack_timeout_ms must be between 1 and 86400000");
+    defaults.message_ack_timeout_ms = (long)timeout;
+  }
   defaults.searxng =
       cai_config_get_bool(cfg, "agent", "searxng", defaults.searxng);
   defaults.revgeo =

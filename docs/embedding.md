@@ -132,6 +132,14 @@ embedding executable that offers `--chrome-setup` must also dispatch Chrome's
 extension-origin invocation to CAI's run entrypoint, or directly to the public
 `cai_chrome_native_host_run` API, rather than its normal host option parser.
 
+## Conversation messaging
+
+The application includes shared-Pouch messaging with user approval through
+softline's normal prompt hook. Configure it through C app settings or Lua
+`settings = {messaging = {enabled = true, enable_auto_enqueue = false,
+ack_timeout_ms = 300000}}`. See [messaging](agent-messaging.md) for delivery,
+editing, ACK deadlines, and core C/Lua next-turn integration APIs.
+
 ## Darwin port assessment
 
 Core libcai already has a Darwin arm64 SDK. All four application dependencies

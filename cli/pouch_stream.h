@@ -32,5 +32,8 @@ lonejson_status cai_cli_json_write(void *context, const void *bytes,
                                    size_t count, lonejson_error *error);
 int cai_cli_lc_source(cai_source *source, lc_source **out, cai_error *error);
 int cai_cli_lc_sink(cai_sink *sink, lc_sink **out, cai_error *error);
+/* Mapped JSON source owns its generator, borrows doc until source close. */
+int cai_cli_mapped_source(const lonejson_map *map, const void *doc,
+                          cai_source **out, cai_error *error);
 
 #endif

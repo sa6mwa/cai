@@ -31,6 +31,7 @@ foreach(required_doc
         "share/doc/libcai/LICENSE"
         "share/doc/libcai/docs/model-metadata.md"
         "share/doc/libcai/docs/embedding.md"
+        "share/doc/libcai/docs/agent-messaging.md"
         "share/doc/libcai/examples/main.c"
         "share/doc/libcai/examples/app.lua")
   if(NOT EXISTS "${package_root}/${required_doc}")

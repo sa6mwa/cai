@@ -137,8 +137,8 @@ static void json_close(void *context) {
   free(source);
 }
 
-static int mapped_source(const lonejson_map *map, const void *doc,
-                         cai_source **out, cai_error *error) {
+int cai_cli_mapped_source(const lonejson_map *map, const void *doc,
+                          cai_source **out, cai_error *error) {
   json_source *source;
   cai_source_callbacks callbacks;
   lonejson_error local;
@@ -456,7 +456,7 @@ static int update_session(lc_lease *lease, cai_cli_session *session,
   cai_source *source;
   int rc;
   source = NULL;
-  rc = mapped_source(&session_map, session, &source, error);
+  rc = cai_cli_mapped_source(&session_map, session, &source, error);
   if (rc == CAI_OK)
     rc = update(lease, source, error);
   cai_source_close(source);
@@ -745,7 +745,7 @@ static int latest_write(cai_cli_pouch *pouch, lc_lease *guard,
   int rc =
       acquire_ns(pouch->sessions, "cai.scopes", guard->key + 5U, &lease, error);
   if (rc == CAI_OK)
-    rc = mapped_source(&latest_map, index, &source, error);
+    rc = cai_cli_mapped_source(&latest_map, index, &source, error);
   if (rc == CAI_OK)
     rc = update(lease, source, error);
   cai_source_close(source);
@@ -953,7 +953,7 @@ static int append_event(void *context, const char *scope, const char *id,
       (lease->state_etag == NULL || lease->state_etag[0] == '\0'))
     rc = update_session(lease, &session, error);
   if (rc == CAI_OK)
-    rc = mapped_source(&event_map, &record, &source, error);
+    rc = cai_cli_mapped_source(&event_map, &record, &source, error);
   if (rc == CAI_OK)
     rc = attach(lease, name, source, error);
   if (rc == CAI_OK && session.first_prompt[0] == '\0' && event->data != NULL &&
@@ -1471,8 +1471,9 @@ int cai_cli_pouch_open(cai_cli_pouch *pouch, const char *selected_endpoint,
       LC_POUCH_SETTING_SINGLE_WRITER | LC_POUCH_SETTING_DURABLE_SYNC |
       LC_POUCH_SETTING_QUERY_INDEXING | LC_POUCH_SETTING_QUERY_ENGINE |
       LC_POUCH_SETTING_CRYPTO_KEY_FILE |
-      LC_POUCH_SETTING_CRYPTO_GENERATE_KEY_FILE;
+      LC_POUCH_SETTING_CRYPTO_GENERATE_KEY_FILE | LC_POUCH_SETTING_QUEUE_WATCH;
   settings.single_writer = 0;
+  settings.queue_watch = 1;
   settings.durable_sync = 1;
   settings.query_indexing_enabled = 1;
   settings.query_engine = "index";
@@ -1605,7 +1606,7 @@ int cai_cli_pouch_seed_auth(cai_cli_pouch *pouch, const char *path,
     if (rc == CAI_OK)
       rc = auth_replace(pouch, "auth.json", source, error);
     if (rc == CAI_OK)
-      rc = mapped_source(&auth_origin_map, &current, &stored, error);
+      rc = cai_cli_mapped_source(&auth_origin_map, &current, &stored, error);
     if (rc == CAI_OK)
       rc = auth_replace(pouch, "source.json", stored, error);
   }
@@ -1691,7 +1692,7 @@ int cai_cli_pouch_export(cai_cli_pouch *pouch, const char *id,
                                        &local) != LONEJSON_STATUS_OK)
       rc = cai_cli_lj_error(error, &local);
     else
-      rc = mapped_source(&checkpoint_map, &record, &source, error);
+      rc = cai_cli_mapped_source(&checkpoint_map, &record, &source, error);
   }
   if (rc == CAI_OK)
     rc = cai_source_copy_to_sink(source, sink, error);

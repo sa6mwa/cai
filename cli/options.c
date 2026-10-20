@@ -34,6 +34,8 @@ void cai_cli_options_init(cai_cli_options *options) {
   options->chrome = 1;
   options->web_search = 1;
   options->mcp = 1;
+  options->messaging = 1;
+  options->message_ack_timeout_ms = 300000L;
   options->read_file = options->list_files = options->apply_patch = 1;
   options->view_image = options->goals = options->skills = 1;
 }
@@ -137,6 +139,34 @@ int cai_cli_read_options(int argc, char *const *argv,
     }
     if (strcmp(flag, "--chrome-setup") == 0) {
       options->chrome_setup = 1;
+      continue;
+    }
+    if (strcmp(flag, "--messaging") == 0 ||
+        strcmp(flag, "--no-messaging") == 0) {
+      options->messaging = strcmp(flag, "--messaging") == 0;
+      continue;
+    }
+    if (strcmp(flag, "--autoqueue") == 0 ||
+        strcmp(flag, "--no-autoqueue") == 0) {
+      options->enable_auto_enqueue = strcmp(flag, "--autoqueue") == 0;
+      continue;
+    }
+    if (strcmp(flag, "--message-ack-timeout-ms") == 0) {
+      char *end;
+      long timeout;
+      if (++i >= argc) {
+        cai_cli_option_error(
+            options, "cai: %s requires milliseconds (1..86400000)", flag);
+        return -1;
+      }
+      errno = 0;
+      timeout = strtol(argv[i], &end, 10);
+      if (errno != 0 || *end != '\0' || timeout <= 0 || timeout > 86400000L) {
+        cai_cli_option_error(
+            options, "cai: %s requires milliseconds (1..86400000)", flag);
+        return -1;
+      }
+      options->message_ack_timeout_ms = timeout;
       continue;
     }
     if (strcmp(flag, "--chrome-remove") == 0) {
