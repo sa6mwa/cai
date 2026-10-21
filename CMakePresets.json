@@ -17,6 +17,7 @@
         "CAI_BUILD_APP": "OFF",
         "CAI_BUILD_SHARED": "ON",
         "CAI_BUILD_TESTS": "ON",
+        "CAI_BUILD_EXAMPLES": "ON",
         "CAI_BUILD_INTEGRATION_TESTS": "OFF",
         "CAI_BUILD_LUA": "OFF",
         "CAI_ENABLE_COVERAGE": "OFF",

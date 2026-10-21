@@ -1335,4 +1335,6 @@ if(CAI_INSTALL)
 endif()
 
 include(CaiHostFixtures)
+# Register after the full target graph, including optional fuzzers and helpers.
+include(CaiRuntimeTests)
 include(CaiTestEnvironment)

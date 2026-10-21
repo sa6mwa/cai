@@ -181,6 +181,8 @@ foreach(_cai_app_target IN ITEMS x86_64-linux-gnu x86_64-linux-musl
   _cai_require_cache_value(${_cai_app_index} ${_cai_app_target}-release CAI_BUILD_APP ON)
 endforeach()
 _cai_find_configure_preset(base _cai_base_index)
+_cai_require_cache_value(${_cai_base_index} base CAI_BUILD_EXAMPLES ON)
+_cai_require_cache_value(${_cai_cli_native_index} debug-cai CAI_BUILD_EXAMPLES OFF)
 _cai_require_cache_value(${_cai_base_index} base CAI_BUILD_STATIC ON)
 _cai_require_cache_value(${_cai_base_index} base CAI_BUILD_SHARED ON)
 # Native application regressions must be selected alongside CLI regressions.

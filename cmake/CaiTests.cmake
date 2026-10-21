@@ -947,17 +947,17 @@ if(CAI_BUILD_TESTS)
       TIMEOUT 3)
     if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux" AND
        CAI_TARGET_ID STREQUAL "x86_64-linux-gnu")
-      cai_local_dependency_runtime_dirs(_cai_test_runtime_dirs)
-      add_test(NAME cai_local_bootlin_runtime_test
+      add_test(NAME cai_runtime_target_selection_test
         COMMAND "${CMAKE_COMMAND}"
+          "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
           "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+          "-DCAI_C_COMPILER=${CMAKE_C_COMPILER}"
           "-DCAI_READELF=${CMAKE_READELF}"
           "-DCAI_SYSROOT=${CMAKE_SYSROOT}"
-          "-DCAI_DEPENDENCY_RUNTIME_DIRS=${_cai_test_runtime_dirs}"
-          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/local_bootlin_runtime_test.cmake")
-      set_tests_properties(cai_local_bootlin_runtime_test PROPERTIES
-        LABELS "packaging;local"
-        TIMEOUT 3)
+          "-DCAI_BOOTLIN_ROOT=${CPKT_BOOTLIN_ROOT}"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime_target_selection_test.cmake")
+      set_tests_properties(cai_runtime_target_selection_test PROPERTIES
+        LABELS "unit;local;host" TIMEOUT 10)
       if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
         add_test(NAME cai_host_dependency_runtime_test
           COMMAND "${CMAKE_COMMAND}"
