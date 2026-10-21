@@ -205,7 +205,8 @@ static int mailbox_load(lc_lease *lease, message_doc *doc, lc_error *error) {
   lc_get_res_cleanup(&result);
   return rc;
 }
-static int mailbox_claim(cai_cli_messages *m, int automatic, cai_error *error) {
+static int mailbox_claim(cai_cli_messages *m, const char *name, int automatic,
+                         cai_error *error) {
   lc_lease *lease = NULL;
   lc_error local;
   message_doc *doc;
@@ -214,7 +215,7 @@ static int mailbox_claim(cai_cli_messages *m, int automatic, cai_error *error) {
   doc = calloc(1U, sizeof(*doc));
   if (doc == NULL)
     return cai_cli_error(error, CAI_ERR_NOMEM, "allocate mailbox binding");
-  snprintf(key, sizeof(key), "mailbox.%s", m->queue);
+  snprintf(key, sizeof(key), "mailbox.%s", name);
   lc_error_init(&local);
   rc = lease_open(m, key, &lease, &local);
   if (rc == LC_OK) {
@@ -224,10 +225,10 @@ static int mailbox_claim(cai_cli_messages *m, int automatic, cai_error *error) {
       rc = lc_error_set(&local, LC_ERR_INVALID, 0,
                         "Generated mailbox name collides with another "
                         "directory; use --message-queue NAME",
-                        m->queue, NULL, NULL);
+                        name, NULL, NULL);
     if (rc == LC_OK) {
       strcpy(doc->kind, "mailbox");
-      strcpy(doc->recipient, m->queue);
+      strcpy(doc->recipient, name);
       strcpy(doc->sender_session, m->session);
       strcpy(doc->instance, m->instance);
       strcpy(doc->workspace, m->workspace);
@@ -239,7 +240,7 @@ static int mailbox_claim(cai_cli_messages *m, int automatic, cai_error *error) {
     m->claimed = 1;
     if (m->pouch->logger != NULL) {
       pslog_field fields[3];
-      fields[0] = pslog_str("queue", m->queue);
+      fields[0] = pslog_str("queue", name);
       fields[1] = pslog_str("session_id", m->session);
       fields[2] = pslog_str("workspace", m->workspace);
       m->pouch->logger->info(m->pouch->logger, "Workspace mailbox claimed",
@@ -298,7 +299,7 @@ static int mailbox_guard(cai_cli_messages *m, lc_lease **out, lc_error *error) {
   free(doc);
   return rc;
 }
-static void mailbox_release(cai_cli_messages *m) {
+static void mailbox_release(cai_cli_messages *m, const char *name) {
   lc_error error;
   lc_lease *lease = NULL;
   message_doc *doc;
@@ -306,11 +307,10 @@ static void mailbox_release(cai_cli_messages *m) {
   int rc;
   if (!m->claimed)
     return;
-  m->claimed = 0;
   doc = calloc(1U, sizeof(*doc));
   if (doc == NULL)
     return;
-  snprintf(key, sizeof(key), "mailbox.%s", m->queue);
+  snprintf(key, sizeof(key), "mailbox.%s", name);
   lc_error_init(&error);
   rc = lease_open(m, key, &lease, &error);
   if (rc == LC_OK) {
@@ -323,7 +323,7 @@ static void mailbox_release(cai_cli_messages *m) {
   }
   if (rc != LC_OK && m->pouch->logger != NULL) {
     pslog_field fields[2];
-    fields[0] = pslog_str("queue", m->queue);
+    fields[0] = pslog_str("queue", name);
     fields[1] = pslog_str("detail", error.message != NULL ? error.message
                                                           : "unknown error");
     m->pouch->logger->warn(m->pouch->logger,
@@ -436,20 +436,22 @@ static int consume(void *context, lc_consumer_message *delivery,
   if (json == NULL ||
       lonejson_parse_reader(json, &message_map, &doc, read_message, &reader,
                             &parse_error) != LONEJSON_STATUS_OK ||
-      !lc_xid_is_valid(doc.id) || !safe_id(doc.sender) ||
-      strcmp(doc.recipient, m->queue) != 0) {
+      !lc_xid_is_valid(doc.id) || !safe_id(doc.sender)) {
     rc = lc_error_set(error, LC_ERR_PROTOCOL, 0,
                       "Invalid agent message envelope", NULL, NULL, NULL);
     goto done;
   }
   if (strcmp(doc.kind, "receipt") == 0) {
-    if (strcmp(doc.recipient_instance, m->instance) != 0) {
+    if (strcmp(doc.recipient_instance, m->instance) != 0 ||
+        !safe_id(doc.recipient)) {
       rc = lc_error_set(error, LC_ERR_PROTOCOL, 0,
                         "Receipt targets another application instance", NULL,
                         NULL, NULL);
       goto done;
     }
     pthread_mutex_lock(&m->lock);
+    /* The private return address survives /queue; a delayed duplicate may
+     * still name the former public mailbox. Only the active send matches. */
     if (strcmp(m->waiting, doc.id) == 0 &&
         strcmp(m->waiting_recipient, doc.sender) == 0) {
       m->receipt = 1;
@@ -458,7 +460,8 @@ static int consume(void *context, lc_consumer_message *delivery,
     pthread_mutex_unlock(&m->lock);
     goto done;
   }
-  if (strcmp(doc.kind, "message") != 0 || !valid_text(doc.text) ||
+  if (strcmp(doc.recipient, m->queue) != 0 ||
+      strcmp(doc.kind, "message") != 0 || !valid_text(doc.text) ||
       !safe_id(doc.sender_session) || !lc_xid_is_valid(doc.instance) ||
       doc.deadline_ms <= 0) {
     rc = lc_error_set(error, LC_ERR_PROTOCOL, 0,
@@ -551,8 +554,12 @@ static int service_error(void *context, const lc_consumer_error *event,
                          lc_error *error) {
   cai_cli_messages *m = context;
   pslog_field fields[2];
+  char name[129];
   (void)error;
-  fields[0] = pslog_str("queue", m->queue);
+  pthread_mutex_lock(&m->lock);
+  strcpy(name, m->queue);
+  pthread_mutex_unlock(&m->lock);
+  fields[0] = pslog_str("queue", name);
   fields[1] = pslog_str("detail", event->cause != NULL ? event->cause->message
                                                        : "unknown error");
   if (m->pouch->logger != NULL)
@@ -595,11 +602,28 @@ int cai_cli_messages_new(cai_cli_pouch *pouch, long timeout,
   *out = m;
   return CAI_OK;
 }
+static int new_consumer(cai_cli_messages *m, const char *name,
+                        lc_consumer_service **out, lc_error *error) {
+  lc_consumer_config consumer;
+  lc_consumer_service_config config;
+  lc_consumer_config_init(&consumer);
+  lc_consumer_service_config_init(&config);
+  consumer.name = name;
+  consumer.request.ns = MESSAGE_NS;
+  consumer.request.queue = name;
+  consumer.request.owner = m->instance;
+  consumer.request.visibility_timeout_seconds = 30;
+  consumer.handle = consume;
+  consumer.on_error = service_error;
+  consumer.context = m;
+  config.consumers = &consumer;
+  config.consumer_count = 1U;
+  return lc_client_new_consumer_service(m->pouch->sessions, &config, out,
+                                        error);
+}
 int cai_cli_messages_start(cai_cli_messages *m, const char *id,
                            const char *workspace, const char *name,
                            cai_error *error) {
-  lc_consumer_config consumer;
-  lc_consumer_service_config config;
   lc_error local;
   int rc;
   if (!safe_id(id))
@@ -624,31 +648,15 @@ int cai_cli_messages_start(cai_cli_messages *m, const char *id,
   if (rc != LC_OK)
     return rc;
   snprintf(m->receipts, sizeof(m->receipts), "cai.receipts.%s", m->instance);
-  rc = mailbox_claim(m, name == NULL || name[0] == '\0', error);
+  rc = mailbox_claim(m, m->queue, name == NULL || name[0] == '\0', error);
   if (rc != CAI_OK)
     return rc;
-  lc_consumer_config_init(&consumer);
-  lc_consumer_service_config_init(&config);
-  consumer.name = m->queue;
-  consumer.request.ns = MESSAGE_NS;
-  consumer.request.queue = m->queue;
-  consumer.request.owner = m->instance;
-  consumer.request.visibility_timeout_seconds = 30;
-  consumer.handle = consume;
-  consumer.on_error = service_error;
-  consumer.context = m;
-  config.consumers = &consumer;
-  config.consumer_count = 1U;
   lc_error_init(&local);
-  rc = lc_client_new_consumer_service(m->pouch->sessions, &config, &m->service,
-                                      &local);
+  rc = new_consumer(m, m->queue, &m->service, &local);
   if (rc == LC_OK)
     rc = lc_consumer_service_start(m->service, &local);
   if (rc == LC_OK) {
-    consumer.name = m->receipts;
-    consumer.request.queue = m->receipts;
-    rc = lc_client_new_consumer_service(m->pouch->sessions, &config,
-                                        &m->receipts_service, &local);
+    rc = new_consumer(m, m->receipts, &m->receipts_service, &local);
   }
   if (rc == LC_OK)
     rc = lc_consumer_service_start(m->receipts_service, &local);
@@ -659,6 +667,67 @@ int cai_cli_messages_start(cai_cli_messages *m, const char *id,
 }
 const char *cai_cli_messages_name(const cai_cli_messages *m) {
   return m != NULL ? m->queue : NULL;
+}
+/* Owner thread, between runtime turns: no send_tool call may be in flight.
+ * Keep the inbox links, eventfd and private receipt listener in place. */
+int cai_cli_messages_set_queue(cai_cli_messages *m, const char *name,
+                               cai_error *error) {
+  char normalized[129];
+  lc_consumer_service *next = NULL;
+  lc_error local;
+  int rc, sending;
+  if (!queue_name(name, normalized))
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "Usage: /queue NAME (1..128 ASCII letters, digits, "
+                         "'.', '_' or '-')");
+  pthread_mutex_lock(&m->lock);
+  sending = m->waiting[0] != '\0' || m->stopping;
+  pthread_mutex_unlock(&m->lock);
+  if (sending)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "Change the message queue between turns.");
+  lc_error_init(&local);
+  rc = new_consumer(m, normalized, &next, &local);
+  if (rc != LC_OK)
+    rc = fail_lc(error, &local);
+  else
+    rc = mailbox_claim(m, normalized, 0, error);
+  if (rc != CAI_OK) {
+    lc_consumer_service_close(next);
+    lc_error_cleanup(&local);
+    return rc;
+  }
+  (void)lc_consumer_service_stop(m->service);
+  rc = lc_consumer_service_wait(m->service, &local);
+  if (rc != LC_OK && m->pouch->logger != NULL) {
+    pslog_field field = pslog_str(
+        "detail", local.message != NULL ? local.message : "unknown error");
+    m->pouch->logger->warn(m->pouch->logger,
+                           "Previous mailbox listener stopped with an error",
+                           &field, 1U);
+  }
+  lc_consumer_service_close(m->service);
+  if (strcmp(m->queue, normalized) != 0)
+    mailbox_release(m, m->queue);
+  pthread_mutex_lock(&m->lock);
+  strcpy(m->queue, normalized);
+  m->lost = 0;
+  pthread_mutex_unlock(&m->lock);
+  m->service = next;
+  lc_error_cleanup(&local);
+  lc_error_init(&local);
+  rc = lc_consumer_service_start(m->service, &local);
+  if (rc != LC_OK) {
+    char message[512];
+    snprintf(message, sizeof(message),
+             "Queue '%s' selected, but its listener could not start: %s. "
+             "Use /queue NAME to retry.",
+             m->queue, local.message != NULL ? local.message : "unknown error");
+    rc = cai_cli_error(error, CAI_ERR_TRANSPORT, message);
+  }
+  lc_error_cleanup(&local);
+  notify_owner(m);
+  return rc;
 }
 int cai_cli_messages_fd(const cai_cli_messages *m) {
   return m != NULL ? m->fd : -1;
@@ -1113,7 +1182,8 @@ void cai_cli_messages_stop(cai_cli_messages *m) {
     (void)lc_consumer_service_wait(m->receipts_service, &local);
     lc_error_cleanup(&local);
   }
-  mailbox_release(m);
+  mailbox_release(m, m->queue);
+  m->claimed = 0;
 }
 void cai_cli_messages_cancel_send(cai_cli_messages *m) {
   if (m == NULL)

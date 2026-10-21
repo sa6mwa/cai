@@ -66,7 +66,7 @@ static int messaging_options(void) {
   args[4] = valid;
   args[5] = queue_flag;
   args[6] = queue;
-  if (cai_cli_parse_options(1, args, &options) != 1 || !options.messaging ||
+  if (cai_cli_parse_options(1, args, &options) != 1 || options.messaging ||
       options.enable_auto_enqueue || options.message_ack_timeout_ms != 300000L)
     return 1;
   if (cai_cli_parse_options(5, args, &options) != 1 || options.messaging ||

@@ -18,7 +18,7 @@ trap finish EXIT
 peer_start
 mkdir -p "$root/lua-work"
 common=(-p custom --endpoint "$endpoint" -m gpt-5.6-luna --no-terminal --no-image-generation
-        --message-ack-timeout-ms 2000 --lockd "pouch://$root/state/cai/pouch")
+        --messaging --message-ack-timeout-ms 2000 --lockd "pouch://$root/state/cai/pouch")
 base=("$cli" "${common[@]}" -C "$work")
 plan '{"plan":["C READY"]}'
 run -Nni 'C conversation'; ok

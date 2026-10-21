@@ -14,21 +14,27 @@ printf '%s\n' '{"plan":[]}' >"$root/sender-peer/config.json"
 "${CAI_TEST_PYTHON:-python3}" "$support/fixtures/http_peer.py" "$root/sender-peer" >"$root/sender-peer/stdout" 2>"$root/sender-peer/stderr" & sender_pid=$!
 wait_for test -s "$root/sender-peer/port"
 sender_endpoint="http://127.0.0.1:$(cat "$root/sender-peer/port")/v1"
-sender_base=("$cli" -p custom --endpoint "$sender_endpoint" -m gpt-5.6-luna --no-terminal --no-image-generation --message-ack-timeout-ms 2000 --message-queue sender-workspace -C "$root/sender-work")
+sender_base=("$cli" -p custom --endpoint "$sender_endpoint" -m gpt-5.6-luna --no-terminal --no-image-generation --messaging --message-ack-timeout-ms 2000 --message-queue sender-workspace -C "$root/sender-work")
 plan '{"plan":["RECEIVER READY"]}'
 run -Nni 'receiver setup'; ok
+jq -e 'all(.tools[]?; .name != "agent_message")' "$root/peer/requests.jsonl" >/dev/null
 run --list; ok
 receiver=$(awk 'NF {print $1; exit}' "$root/stdout")
 [[ -n "$receiver" ]]
 send_message() {
-  local text=$1
-  jq -n --arg recipient receiver-workspace --arg text "$text" '{plan:[{tool:"agent_message",arguments:{operation:"send",recipient:$recipient,text:$text}},"SENDER DONE"]}' >"$root/sender-peer/config.tmp"
+  local text=$1 recipient=${2:-receiver-workspace}
+  jq -n --arg recipient "$recipient" --arg text "$text" '{plan:[{tool:"agent_message",arguments:{operation:"send",recipient:$recipient,text:$text}},"SENDER DONE"]}' >"$root/sender-peer/config.tmp"
   mv "$root/sender-peer/config.tmp" "$root/sender-peer/config.json"
   "${sender_base[@]}" -Nni 'send the agent message' >"$root/sender.stdout" 2>"$root/sender.stderr" || { cat "$root/sender.stderr" >&2; fail 'Sender failed'; }
   contains "$root/sender.stdout" 'SENDER DONE'
   jq -se 'any(.[] | .. | strings; contains("\"status\":\"delivered\""))' "$root/sender-peer/requests.jsonl" >/dev/null
 }
 terminal_start --resume "$receiver"
+send '/queue\r'; expect 'Messaging is disabled'
+terminal_close
+base+=(--messaging)
+terminal_start --resume "$receiver"
+send '/queue\r'; expect 'Message queue: receiver-workspace'
 count=$(requests)
 send_message 'External hello one'
 expect 'approval'
@@ -49,6 +55,8 @@ contains "$root/request" '[Agent message '
 # goal continuation. It must not wait for the entire goal to finish.
 plan '{"plan":[{"pause":true,"text":"BUSY TURN DONE"}]}'
 send '/goal new coordinate with the sender\r'; expect 'STREAM in flight'
+send '/queue not-between-turns\r'; expect 'Change the message queue between turns'
+send '/queue\r'; expect 'Message queue: receiver-workspace'
 send_message 'External hello two'
 expect 'approval'
 send '\033a\033y'
@@ -72,12 +80,21 @@ offset=$(wc -c <"$term/text")
 send_message 'Automatically accepted incoming prompt'
 expect_turn "$offset" 'AUTOMATIC INBOUND DONE'
 send '/autoqueue off\r'; expect 'Autoqueue off'
+send '/queue New-Receiver\r'; expect 'Message queue: new-receiver'
+send '/queue bad/name\r'; expect 'Usage: /queue NAME'
+send '/queue two names\r'; expect 'Usage: /queue NAME'
+send '/queue\r'; expect 'Message queue: new-receiver'
+send '/status\r'; expect 'new-receiver'
 count=$(requests)
-send_message 'Rejected incoming prompt'
+send_message 'Rejected incoming prompt' new-receiver
 expect 'approval'
 send '\033a\033n'
 send '/status\r'; expect 'Metric'
 [[ $(requests) == "$count" ]]
+send '/new\r'
+send '/queue\r'; expect 'Message queue: new-receiver'
+send "/resume 1\r"
+send '/queue\r'; expect 'Message queue: new-receiver'
 terminal_close
 terminal_start --resume "$receiver"
 send '/status\r'; expect 'Metric'

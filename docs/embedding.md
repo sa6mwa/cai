@@ -134,12 +134,14 @@ extension-origin invocation to CAI's run entrypoint, or directly to the public
 
 ## Conversation messaging
 
-The application includes shared-Pouch messaging with user approval through
+The application includes optional shared-Pouch messaging (default off) with user approval through
 softline's normal prompt hook. Configure it through C app settings or Lua
 `settings = {messaging = {enabled = true, enable_auto_enqueue = false,
 ack_timeout_ms = 300000, queue_name = "smith"}}`. Omit `queue_name` to derive
 a stable basename plus canonical-path hash. The newest app start owns the
 named mailbox; old delivered messages stay in their original conversation.
+`/queue NAME` overrides the full name for this app between turns; `/queue`
+shows it. The override survives `/new` and `/resume`, without changing config.ini.
 See [messaging](agent-messaging.md) for delivery,
 editing, ACK deadlines, and core C/Lua next-turn integration APIs.
 

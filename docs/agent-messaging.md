@@ -1,6 +1,8 @@
 # Conversation messaging
 
-CAI and `libcai_app` expose the `agent_message` tool by default. Workspaces
+CAI and `libcai_app` enable messaging only when explicitly configured with
+`--messaging`, `CAI_MESSAGING=true`, or `[messaging] enabled = true`. The
+`agent_message` tool and queue listeners are disabled by default. Workspaces
 using the same encrypted Pouch root can exchange messages, including across
 processes and working directories. Core `libcai` has no liblockdc or softline
 dependency.
@@ -24,9 +26,19 @@ fails explicitly and asks for `--message-queue NAME`.
 
 `/status` shows the queue name. Override it with `--message-queue NAME`,
 `CAI_MESSAGE_QUEUE`, or `[messaging] queue_name`. Empty keeps automatic naming.
+Overrides replace the entire name; no prefix or path hash is appended.
 Explicit names are lowercased and must contain only ASCII letters, digits,
 `.`, `_` or `-`, with at most 128 characters. Deliberately using the same
 explicit name in another directory takes over that mailbox too.
+
+In the TUI, `/queue` shows the current mailbox and `/queue NAME` replaces its
+full name between turns, applying the same takeover rules. For example,
+`/queue Smith` selects `smith`. The override lasts for the running app,
+including `/new` and `/resume`; it does not rewrite `config.ini` or session
+settings. Delivered messages and their approvals remain in the conversation.
+The former destination stays listed as a known mailbox but no longer has this
+app as its active listener. If starting the new listener fails, the error names
+the selected queue; retry with `/queue NAME`.
 
 ## Ownership and takeover
 
@@ -99,7 +111,7 @@ The generated `config.ini` contains these commented defaults:
 ```ini
 [messaging]
 ## Shared conversation messaging.
-# enabled = true
+# enabled = false
 # queue_name = ""
 # enable_auto_enqueue = false
 # ack_timeout_ms = 300000

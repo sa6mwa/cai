@@ -16,7 +16,7 @@ contains "$config" "# skills_dir = \"$root/config/cai/skills\""
 contains "$config" "# export_dir = \"$root/data/cai/exports\""
 contains "$config" '# tool_output = "compact"'
 contains "$config" '[messaging]'
-contains "$config" '# enabled = true'
+contains "$config" '# enabled = false'
 contains "$config" '# enable_auto_enqueue = false'
 contains "$config" '# ack_timeout_ms = 300000'
 contains "$config" '# queue_name = ""'

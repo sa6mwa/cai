@@ -141,6 +141,7 @@ typedef struct cli_state {
   sl_watch_id_t shell_watches[3];
   int shell_watched[3];
   char workspace[PATH_MAX];
+  char message_queue_override[129];
   char clipboard_directory[PATH_MAX];
 } cli_state;
 
@@ -2354,6 +2355,55 @@ static int cli_handle_command(cli_state *state, const char *line,
   unsigned long number;
   int rc;
   *handled = 1;
+  if (strcmp(line, "/queue") == 0 || strncmp(line, "/queue ", 7U) == 0 ||
+      strncmp(line, "/queue\t", 7U) == 0) {
+    cai_agent_runtime_metrics metrics;
+    cai_agent_run_state run_state;
+    char name[129], message[256];
+    size_t length;
+    if (state->messages == NULL)
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "Messaging is disabled; start with --messaging "
+                           "or set [messaging] enabled = true.");
+    arg = line + 6U;
+    while (*arg == ' ' || *arg == '\t')
+      arg++;
+    length = strlen(arg);
+    while (length > 0U && (arg[length - 1U] == ' ' || arg[length - 1U] == '\t'))
+      length--;
+    if (length > 0U) {
+      if (length >= sizeof(name))
+        return cai_cli_error(error, CAI_ERR_INVALID,
+                             "Queue names must be at most 128 characters.");
+      memcpy(name, arg, length);
+      name[length] = '\0';
+      rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
+      if (rc == CAI_OK)
+        rc = cai_agent_runtime_state(state->runtime, &run_state, error);
+      if (rc != CAI_OK)
+        return rc;
+      if (metrics.turn_active || state->awaiting_turn ||
+          run_state == CAI_AGENT_SAMPLING ||
+          run_state == CAI_AGENT_DISPATCHING_TOOL)
+        return cai_cli_error(error, CAI_ERR_INVALID,
+                             "Change the message queue between turns.");
+      strcpy(message, cai_cli_messages_name(state->messages));
+      rc = cai_cli_messages_set_queue(state->messages, name, error);
+      /* A selected name survives /new and /resume in this app, never in
+       * config.ini or the conversation checkpoint. */
+      if (rc == CAI_OK ||
+          strcmp(cai_cli_messages_name(state->messages), message) != 0) {
+        strcpy(state->message_queue_override,
+               cai_cli_messages_name(state->messages));
+        state->options.message_queue = state->message_queue_override;
+      }
+      if (rc != CAI_OK)
+        return rc;
+    }
+    snprintf(message, sizeof(message), "Message queue: %s",
+             cai_cli_messages_name(state->messages));
+    return cli_write(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+  }
   if (strcmp(line, "/autoqueue") == 0 ||
       strncmp(line, "/autoqueue ", 11U) == 0) {
     int enabled;
@@ -2471,6 +2521,9 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| Command | Action |\n"
         "| --- | --- |\n"
         "| `/help` | Show this help. |\n",
+        "| `/queue [NAME]` | Show or replace the full mailbox name between "
+        "turns; requires --messaging. Applies to this app, including /new "
+        "and /resume; leaves config.ini unchanged. |\n",
         "| `/autoqueue [on\\|off]` | Toggle automatic approval of incoming "
         "next-turn messages (default off). Alt-A reviews; Alt-Y approves; "
         "Alt-N rejects; Alt-E edits. |\n",

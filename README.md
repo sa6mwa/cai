@@ -944,10 +944,13 @@ contents and loading order are preserved on resume and model changes.
 
 ### Messages between conversations
 
-CAI apps on a shared Pouch backend can use `agent_message` to discover named
+Enable messaging with `--messaging` (default off). CAI apps on a shared Pouch
+backend can then use `agent_message` to discover named
 workspace mailboxes and send by queue name. The default is
 `cai.<basename>.<six-hex-path-hash>`; override it with `--message-queue NAME`,
-`CAI_MESSAGE_QUEUE`, or `[messaging] queue_name`. `/status` shows the name.
+`CAI_MESSAGE_QUEUE`, or `[messaging] queue_name`. `/status` and `/queue` show
+the name. `/queue NAME` replaces the full name between turns for this app,
+including `/new` and `/resume`, without changing `config.ini`.
 The newest app start owns new deliveries for that name; already delivered
 messages stay in their original conversation. Incoming messages use softline's normal
 approval queue: Alt+A focuses approval, Alt+Y approves, Alt+N rejects, and

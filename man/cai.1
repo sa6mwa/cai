@@ -53,7 +53,7 @@ Enable/disable todo_kanban (default off). CAI uses a shared encrypted cai.todo
 document, with streamed transactional updates, rather than a todo.json file.
 .TP
 .BR \-\-messaging " / " \-\-no-messaging
-Enable/disable shared-Pouch conversation messaging (default on). Each active
+Enable/disable shared-Pouch conversation messaging (default off). Each active
 workspace listens on cai.<basename>.<six-hex-path-hash> in namespace cai.messages
 using managed consumer services. The hash uses the canonical full path; it is
 stable across new conversations and distinguishes identical basenames.
@@ -441,6 +441,14 @@ Start a new session in the current workspace.
 Toggle automatic approval of incoming conversation messages. Explicit on
 also approves waiting messages; off leaves existing approvals intact.
 The setting affects this live TUI and does not rewrite config.ini.
+.TP
+.BI /queue " [NAME]"
+Show the current message queue, or override its full name between turns.
+Requires messaging to be enabled. No prefix or hash is appended; names are
+lowercased. The override lasts for this app, including /new and /resume,
+without changing config.ini or session settings. A new owner takes over new
+deliveries; previously delivered messages and approvals stay in their original
+conversation. The old destination has no listener from this app after renaming.
 .TP
 .BI /model " [MODEL [EFFORT]]"
 Show current and pending settings and the provider catalog, or select MODEL

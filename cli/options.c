@@ -34,7 +34,7 @@ void cai_cli_options_init(cai_cli_options *options) {
   options->chrome = 1;
   options->web_search = 1;
   options->mcp = 1;
-  options->messaging = 1;
+  options->messaging = 0;
   options->message_ack_timeout_ms = 300000L;
   options->read_file = options->list_files = options->apply_patch = 1;
   options->view_image = options->goals = options->skills = 1;

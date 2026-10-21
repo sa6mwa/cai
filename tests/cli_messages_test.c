@@ -353,6 +353,98 @@ static void workspace_mailboxes(cai_cli_pouch *pouch, const char *root) {
   lc_error_cleanup(&local);
   cai_error_cleanup(&error);
 }
+static int fail_consumer(lc_client *client,
+                         const lc_consumer_service_config *config,
+                         lc_consumer_service **out, lc_error *error) {
+  (void)client;
+  (void)config;
+  *out = NULL;
+  return lc_error_set(error, LC_ERR_TRANSPORT, 0,
+                      "listener preparation unavailable", NULL, NULL, NULL);
+}
+static void queue_overrides(cai_cli_pouch *pouch, const char *workspace) {
+  cai_cli_messages *sender = NULL, *receiver = NULL, *other = NULL,
+                   *failed = NULL;
+  cai_cli_pouch fake_pouch;
+  lc_client fake_client;
+  cai_error error;
+  capture output;
+  message_doc doc;
+  sl_t *sl = message_editor();
+  sl_prompt_queue_entry_info_t held;
+  char too_long[130];
+  cai_error_init(&error);
+  assert(cai_cli_messages_new(pouch, 2000L, &sender, &error) == CAI_OK);
+  assert(cai_cli_messages_start(sender, "override-sender", workspace,
+                                "override-sender", &error) == CAI_OK);
+  assert(cai_cli_messages_new(pouch, 2000L, &receiver, &error) == CAI_OK);
+  assert(cai_cli_messages_start(receiver, "override-receiver", workspace,
+                                "before-rename", &error) == CAI_OK);
+  send_named(sender, "before-rename", "Keep this pending approval");
+  assert(cai_cli_messages_sync(receiver, sl, &error) == CAI_OK);
+  assert(sl_prompt_queue_info(sl, 0U, &held) == SL_OK && held.held);
+  assert(cai_cli_messages_set_queue(receiver, "bad/name", &error) != CAI_OK);
+  memset(too_long, 'a', sizeof(too_long) - 1U);
+  too_long[sizeof(too_long) - 1U] = '\0';
+  assert(cai_cli_messages_set_queue(receiver, too_long, &error) != CAI_OK);
+  assert(cai_cli_messages_set_queue(receiver, "", &error) != CAI_OK);
+  assert(strcmp(receiver->queue, "before-rename") == 0);
+  pthread_mutex_lock(&receiver->lock);
+  strcpy(receiver->waiting, "busy");
+  pthread_mutex_unlock(&receiver->lock);
+  assert(cai_cli_messages_set_queue(receiver, "busy-rename", &error) != CAI_OK);
+  pthread_mutex_lock(&receiver->lock);
+  receiver->waiting[0] = '\0';
+  pthread_mutex_unlock(&receiver->lock);
+  assert(cai_cli_messages_set_queue(receiver, "Full-Name", &error) == CAI_OK);
+  assert(strcmp(receiver->queue, "full-name") == 0);
+  memset(&doc, 0, sizeof(doc));
+  strcpy(doc.kind, "receipt");
+  strcpy(doc.id, receiver->links->doc.id);
+  strcpy(doc.sender, "override-sender");
+  strcpy(doc.recipient, "before-rename");
+  strcpy(doc.recipient_instance, receiver->instance);
+  assert(deliver_direct(receiver, &doc) == LC_OK);
+  assert(!receiver->receipt);
+  strcpy(doc.recipient_instance, sender->instance);
+  assert(deliver_direct(receiver, &doc) != LC_OK);
+  assert(load_doc(sender, "mailbox.before-rename", &doc, &error) == CAI_OK);
+  assert(doc.instance[0] == '\0');
+  lonejson_cleanup(&message_map, &doc);
+  assert(cai_cli_messages_is_message(receiver, held.id));
+  assert(cai_cli_messages_sync(receiver, sl, &error) == CAI_OK);
+  assert(sl_prompt_queue_count(sl) == 1U);
+  send_named(sender, "full-name", "Delivered to the new full name");
+  send_named(receiver, "override-sender", "Reply uses the new sender name");
+  assert(cai_cli_messages_sync(receiver, sl, &error) == CAI_OK);
+  assert(sl_prompt_queue_count(sl) == 2U);
+  assert(run_send(receiver, "{\"operation\":\"list\"}", &output, &error) ==
+         CAI_OK);
+  assert(strstr(output.text, "This application's mailbox: full-name") != NULL);
+  assert(cai_cli_messages_new(pouch, 2000L, &other, &error) == CAI_OK);
+  assert(cai_cli_messages_start(other, "takes-over", workspace, "full-name",
+                                &error) == CAI_OK);
+  /* Selecting the same name explicitly reclaims it after a takeover. */
+  assert(cai_cli_messages_set_queue(receiver, "full-name", &error) == CAI_OK);
+  send_named(sender, "full-name", "Reclaimed listener receives again");
+  assert(cai_cli_messages_sync(receiver, sl, &error) == CAI_OK);
+  assert(sl_prompt_queue_count(sl) == 3U);
+  memset(&fake_client, 0, sizeof(fake_client));
+  fake_pouch = *pouch;
+  fake_pouch.sessions = &fake_client;
+  fake_client.new_consumer_service = fail_consumer;
+  assert(cai_cli_messages_new(&fake_pouch, 2000L, &failed, &error) == CAI_OK);
+  strcpy(failed->queue, "unchanged-on-error");
+  assert(cai_cli_messages_set_queue(failed, "new-name", &error) != CAI_OK);
+  assert(strstr(error.message, "listener preparation unavailable") != NULL);
+  assert(strcmp(failed->queue, "unchanged-on-error") == 0);
+  cai_cli_messages_close(failed);
+  cai_cli_messages_close(other);
+  cai_cli_messages_close(receiver);
+  cai_cli_messages_close(sender);
+  sl_destroy(sl);
+  cai_error_cleanup(&error);
+}
 int main(int argc, char **argv) {
   cai_cli_pouch a, b;
   cai_cli_messages *sender = NULL, *receiver = NULL;
@@ -515,6 +607,7 @@ int main(int argc, char **argv) {
   cai_cli_messages_close(receiver);
   cai_cli_messages_close(sender);
   workspace_mailboxes(&a, argv[1]);
+  queue_overrides(&a, argv[1]);
   cai_cli_pouch_close(&b);
   cai_cli_pouch_close(&a);
   lc_error_cleanup(&local);
