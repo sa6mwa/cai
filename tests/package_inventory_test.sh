@@ -7,6 +7,9 @@ version=1.2.3
 names=(cai-1.2.3-x86_64-linux-gnu.tar.gz cai-1.2.3.tar.gz cai-lua-1.2.3.tar.gz cai-cli-1.2.3-x86_64-linux-musl.tar.gz cai-1.2.3-1.rockspec cai-1.2.3-1.src.rock)
 run() { cmake "-DCAI_DIST_DIR=$scratch/dist" "-DCAI_VERSION=$version" -DCAI_TARGETS=x86_64-linux-gnu "$@" -P "$repo/cmake/package_checksums.cmake"; }
 for name in "${names[@]}"; do printf 'fixture %s\n' "$name" >"$scratch/dist/$name"; done
+# Incremental preparation can retain a different version with the same prefix.
+printf '%s\n' obsolete >"$scratch/dist/cai-$version-flow.1-x86_64-linux-gnu.tar.gz"
+printf '%s\n' obsolete >"$scratch/dist/cai-$version-flow.1-1.src.rock"
 run
 [[ $(wc -l <"$scratch/dist/cai-$version-CHECKSUMS") == ${#names[@]} ]]
 (cd "$scratch/dist" && sha256sum -c "cai-$version-CHECKSUMS")
@@ -29,10 +32,14 @@ rm "$scratch/dist/${names[0]}"
 if run >"$scratch/out" 2>"$scratch/err"; then exit 1; fi
 cmp "$scratch/manifest" "$scratch/dist/cai-$version-CHECKSUMS"
 grep -q 'Missing/nonregular selected artifact' "$scratch/err"
+printf 'fixture %s\n' "${names[0]}" >"$scratch/dist/${names[0]}"
 # The final verifier rejects a checksum-valid but incomplete inventory.
 ( CAI_REPO_ROOT="$repo" CAI_VERSION="$version" source "$repo/scripts/verify_release_artifacts.sh" --self-test
 export CAI_RELEASE_TARGETS=x86_64-linux-gnu
+dist_dir="$scratch/dist"
+verify_manifest_artifacts "${names[@]}"
 require_complete_manifest "${names[@]}"
+if (require_complete_manifest "cai-$version-flow.1-x86_64-linux-gnu.tar.gz" "${names[@]:1}") >"$scratch/out" 2>"$scratch/err"; then exit 1; fi
 if (require_complete_manifest "${names[@]:1}") >"$scratch/out" 2>"$scratch/err"; then exit 1; fi )
 # All six Linux SDKs must ship the static/shared app surface.
 ( CAI_REPO_ROOT="$repo" CAI_VERSION="$version" source "$repo/scripts/verify_release_artifacts.sh" --self-test

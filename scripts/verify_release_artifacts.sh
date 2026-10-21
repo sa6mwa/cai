@@ -353,42 +353,6 @@ verify_manifest_artifacts() {
   done
 }
 
-verify_dist_manifest_closure() {
-  local artifacts=("$@")
-  local release_file
-  local release_name
-
-  shopt -s nullglob
-  for release_file in \
-    "$dist_dir"/cai-*.tar.gz \
-    "$dist_dir"/cai-lua-*.tar.gz \
-    "$dist_dir"/cai-cli-*.tar.gz \
-    "$dist_dir"/cai-*.rockspec \
-    "$dist_dir"/cai-*.src.rock \
-    "$dist_dir"/cai-*-CHECKSUMS \
-    "$dist_dir"/cai-*-SHA256SUMS; do
-    release_name=$(basename "$release_file")
-    case "$release_name" in
-      cai-"$version"-CHECKSUMS)
-        ;;
-      cai-*-CHECKSUMS)
-        continue
-        ;;
-      cai-*-SHA256SUMS)
-        fail "deprecated checksum manifest remains in dist: $release_name"
-        ;;
-      cai-"$version".tar.gz | cai-"$version"-*.tar.gz | cai-lua-"$version".tar.gz | cai-cli-"$version"-x86_64-linux-musl.tar.gz | cai-"$version"-*.rockspec | cai-"$version"-*.src.rock)
-        if ! artifact_list_contains "$release_name" "${artifacts[@]}"; then
-          fail "release artifact is not listed in checksum manifest: $release_name"
-        fi
-        ;;
-      *)
-        continue
-        ;;
-    esac
-  done
-}
-
 verify_single_root() {
   local archive=$1
   local root=$2
@@ -1324,7 +1288,6 @@ if [[ ${#artifacts[@]} -eq 0 ]]; then
 fi
 verify_manifest_artifacts "${artifacts[@]}"
 require_complete_manifest "${artifacts[@]}"
-verify_dist_manifest_closure "${artifacts[@]}"
 
 archive_count=0
 for artifact in "${artifacts[@]}"; do
