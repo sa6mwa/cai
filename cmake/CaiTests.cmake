@@ -925,7 +925,7 @@ if(CAI_BUILD_TESTS)
         "-DCAI_GENERATOR=${CMAKE_GENERATOR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_dependency_mode_test.cmake")
     set_tests_properties(cai_host_dependency_mode_unsupported_target PROPERTIES
-      LABELS "packaging;local"
+      LABELS "packaging;local;host"
       # Host/auto cases perform full SDK validation in fresh configurations.
       # Native completion was measured at 28 seconds after the provider split.
       TIMEOUT 60)
@@ -936,7 +936,7 @@ if(CAI_BUILD_TESTS)
         "-DCAI_GENERATOR=Unix Makefiles"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_dependency_mode_test.cmake")
     set_tests_properties(cai_host_dependency_mode_unsupported_target_makefiles PROPERTIES
-      LABELS "packaging;local"
+      LABELS "packaging;local;host"
       TIMEOUT 60)
     add_test(NAME cai_rpath_token_test
       COMMAND "${CMAKE_COMMAND}"
@@ -966,7 +966,7 @@ if(CAI_BUILD_TESTS)
             "-DCAI_PREFIXES=${CAI_CPKT_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_dependency_runtime_test.cmake")
         set_tests_properties(cai_host_dependency_runtime_test PROPERTIES
-          LABELS "packaging;local" TIMEOUT 120)
+          LABELS "packaging;local;host" TIMEOUT 120)
       endif()
     endif()
     add_test(NAME cai_target_tool_discovery_test

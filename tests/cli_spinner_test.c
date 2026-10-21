@@ -31,8 +31,9 @@ static int fixture_get_settings(cai_agent_runtime *runtime,
                                 cai_agent_runtime_settings *pending,
                                 cai_error *error) {
   (void)runtime;
-  (void)pending;
   (void)error;
+  if (pending != NULL)
+    memset(pending, 0, sizeof(*pending));
   memset(out, 0, sizeof(*out));
   out->model = "gpt-6-luna";
   out->reasoning_effort = "medium";
