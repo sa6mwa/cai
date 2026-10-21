@@ -228,7 +228,9 @@ verify_no_private_text() {
   local matches
   local toolchain_matches
 
-  matches=$(grep -R -I -n -E '/home/|/Users/|/opt/|\.cache/deps|\.\./' \
+  # Source text may contain relative includes and documentation links. Restrict
+  # parent-path rejection to actual paths in rockspecs and checksum manifests.
+  matches=$(grep -R -I -n -E '/home/|/Users/|/opt/|\.cache/deps' \
     "$root_dir" 2>/dev/null || true)
   if [[ -n "$matches" ]]; then
     printf '%s\n' "$matches" >&2

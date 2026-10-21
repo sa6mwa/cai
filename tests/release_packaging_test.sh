@@ -8,8 +8,7 @@ trap 'printf "packaging regression failed at line %s: %s\n" "$LINENO" "$BASH_COM
 fixture="$scratch/source"
 mkdir -p "$fixture/scripts" "$fixture/cmake" "$fixture/lua" "$fixture/include" "$fixture/docs" "$fixture/examples" "$fixture/cli"
 cp "$repo/"{LICENSE,README.md,cai.rockspec.in} "$fixture/"
-cp "$repo/docs/model-metadata.md" "$fixture/docs/"
-cp "$repo/docs/embedding.md" "$fixture/docs/"
+cp "$repo/docs/"{model-metadata,embedding,agent-messaging,kanban}.md "$fixture/docs/"
 cp "$repo/cli/main.c" "$fixture/cli/"
 cp "$repo/examples/app.lua" "$fixture/examples/"
 cp "$repo/scripts/"{package_lua,stage_lua_rock_sources,stage_release_sources,render_release_rockspec,build_lua_rock}.sh "$fixture/scripts/"
@@ -21,7 +20,7 @@ exec "$(dirname "$0")/stage_release_sources_real.sh" "$@"
 SH
 chmod +x "$fixture/scripts/stage_release_sources.sh"
 cp "$repo/cmake/cai-export-policy.cmake" "$fixture/cmake/"
-cp "$repo/lua/"{CMakeLists.txt,cai_lua.c,cai_lua_config.inc,cai_lua_skills.inc,cai_lua.exports,app_lua.c,cai_app.exports} "$fixture/lua/"
+cp "$repo/lua/"{CMakeLists.txt,cai_lua.c,cai_lua_config.inc,cai_lua_skills.inc,cai_lua.exports,app_lua.c,todo_lua.c,todo_lua.h,cai_app.exports} "$fixture/lua/"
 cp -r "$repo/include/cai" "$fixture/include/"
 (cd "$fixture" && find . -type f -print | sed 's|^./||' | sort >RELEASE_MANIFEST)
 version=1.2.3
@@ -42,11 +41,22 @@ luarocks lint "$rockspec"
 mkdir "$scratch/unpack"
 (cd "$scratch/unpack" && luarocks unpack "$rock")
 cmp "$fixture/lua/cai_lua.c" "$scratch/unpack/cai-$version-1/cai-$version/lua/cai_lua.c"
+for path in docs/agent-messaging.md docs/kanban.md lua/todo_lua.c lua/todo_lua.h; do
+  cmp "$fixture/$path" "$scratch/unpack/cai-$version-1/cai-$version/$path"
+done
 [[ ! -e "$fixture/build/lua-package" ]]
 (
   CAI_REPO_ROOT="$fixture" CAI_VERSION="$version" source "$repo/scripts/verify_release_artifacts.sh" --self-test
   verify_rockspec_file "$rockspec"
   verify_src_rock "$rock"
+  mkdir "$scratch/text"
+  printf '%s\n' 'See [roadmap](../ROADMAP.md).' >"$scratch/text/doc.md"
+  verify_no_private_text "$scratch/text"
+  for private in /home/builder/source /Users/builder/source /opt/toolchain .cache/deps/lib; do
+    printf '%s\n' "$private" >"$scratch/text/doc.md"
+    if (verify_no_private_text "$scratch/text") >"$scratch/out" 2>"$scratch/err"; then exit 1; fi
+    grep -q 'artifact contains host-specific' "$scratch/err"
+  done
   sed "s|https://github.com/sa6mwa/cai/releases/download/v$version/|file://|" "$rockspec" >"$scratch/private.rockspec"
   if (verify_rockspec_file "$scratch/private.rockspec") >"$scratch/out" 2>"$scratch/err"; then exit 1; fi
   grep -q 'rockspec contains host-specific' "$scratch/err"
