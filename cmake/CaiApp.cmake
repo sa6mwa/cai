@@ -1,4 +1,4 @@
-add_library(cai_app_objects OBJECT cli/app.c cli/app_run.c)
+add_library(cai_app_objects OBJECT cli/app.c cli/app_run.c cli/kanban.c)
 target_link_libraries(cai_app_objects PRIVATE cai_cli_support)
 cai_configure_c_target(cai_app_objects)
 add_library(cai_app_static STATIC $<TARGET_OBJECTS:cai_app_objects>
@@ -27,6 +27,17 @@ if(CAI_BUILD_SHARED)
   cai_configure_c_target(cai_app_shared)
 endif()
 if(CAI_BUILD_TESTS)
+  add_executable(cai_kanban_test tests/kanban_test.c)
+  target_sources(cai_kanban_test PRIVATE tests/cli_storage_fixture.c)
+  target_link_options(cai_kanban_test PRIVATE "-Wl,--wrap=lc_client_open")
+  target_link_libraries(cai_kanban_test PRIVATE cai_app_static)
+  target_include_directories(cai_kanban_test PRIVATE "${CAI_PSLOG_INCLUDE_DIR}")
+  cai_configure_cli_target(cai_kanban_test)
+  target_compile_options(cai_kanban_test PRIVATE -UNDEBUG)
+  add_test(NAME cai_app_kanban COMMAND bash
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/kanban_test.sh"
+    "$<TARGET_FILE:cai_kanban_test>" "${CMAKE_CURRENT_BINARY_DIR}")
+  set_tests_properties(cai_app_kanban PROPERTIES LABELS "cli;local;offline" TIMEOUT 15)
   add_executable(cai_app_test tests/app_test.c)
   if(TARGET cai_app_shared)
     target_link_libraries(cai_app_test PRIVATE cai_app_shared)
@@ -99,6 +110,7 @@ if(CAI_INSTALL)
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig" COMPONENT cai-app)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/embedding.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/agent-messaging.md"
+    "${CMAKE_CURRENT_SOURCE_DIR}/docs/kanban.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai_app" COMPONENT cai-app)
   install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cli/main.c"

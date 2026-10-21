@@ -1,4 +1,5 @@
 #include "cai_internal.h"
+#include <cai/tools/todo.h>
 
 #include <pslog.h>
 
@@ -154,6 +155,7 @@ typedef struct cai_session_state_doc {
   char *reasoning_effort;
   char *reasoning_summary;
   char *service_tier;
+  char *todo_board;
   char *preset_name;
   char *preset_prompt_version;
   char *previous_response_id;
@@ -227,6 +229,8 @@ static const lonejson_field cai_session_state_fields[] = {
         cai_session_state_doc, reasoning_summary, "reasoning_summary"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc, service_tier,
                                           "service_tier"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc, todo_board,
+                                          "todo_board"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_session_state_doc, preset_name,
                                           "preset_name"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(
@@ -2617,6 +2621,7 @@ void cai_session_destroy(cai_session *session) {
   cai_free_mem(allocator, impl->state_reasoning_effort);
   cai_free_mem(allocator, impl->state_reasoning_summary);
   cai_free_mem(allocator, impl->state_service_tier);
+  cai_free_mem(allocator, impl->state_todo_board);
   cai_free_mem(allocator, impl->state_preset_name);
   cai_free_mem(allocator, impl->state_preset_prompt_version);
   cai_free_mem(allocator, impl->goal_objective);
@@ -7435,6 +7440,7 @@ int cai_session_import_history_source(cai_session *session, cai_source *source,
 int cai_session_export_state_source(cai_session *session, cai_source **out,
                                     cai_error *error) {
   cai_session_state_doc doc;
+  char selected_board[CAI_TODO_BOARD_NAME_MAX + 1U];
   lonejson_spooled state_json;
   lonejson_spooled history_json;
   cai_history_sink_context sink_context;
@@ -7473,6 +7479,14 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
   doc.context_window_tokens = cai_session_context_window_tokens(session);
   doc.reasoning_effort = CAI_SESSION_AGENT_IMPL(session)->reasoning_effort;
   doc.service_tier = CAI_SESSION_AGENT_IMPL(session)->service_tier;
+  doc.todo_board = CAI_SESSION_IMPL(session)->state_todo_board;
+  if (CAI_SESSION_IMPL(session)->todo != NULL) {
+    rc = cai_todo_get_board(CAI_SESSION_IMPL(session)->todo, selected_board,
+                            sizeof(selected_board), error);
+    if (rc != CAI_OK)
+      return rc;
+    doc.todo_board = selected_board;
+  }
   doc.reasoning_summary = CAI_SESSION_AGENT_IMPL(session)->reasoning_summary;
   doc.preset_name = CAI_SESSION_IMPL(session)->state_preset_name;
   doc.preset_prompt_version =
@@ -7639,6 +7653,7 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   char *next_request_model = NULL;
   char *next_reasoning_effort = NULL;
   char *next_service_tier = NULL;
+  char *next_todo_board = NULL;
   char *next_reasoning_summary = NULL;
   char *next_state_preset_name;
   char *next_state_preset_prompt_version;
@@ -7798,6 +7813,25 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
                        "session state has invalid goal token accounting");
     goto done;
   }
+  if (doc.todo_board != NULL) {
+    const unsigned char *p = (const unsigned char *)doc.todo_board;
+    if (*p == 0U || strlen(doc.todo_board) > CAI_TODO_BOARD_NAME_MAX) {
+      rc = cai_set_error(error, CAI_ERR_INVALID, "invalid saved kanban board");
+      goto done;
+    }
+    for (; *p != 0U; p++)
+      if (*p < 32U || *p == 127U) {
+        rc =
+            cai_set_error(error, CAI_ERR_INVALID, "invalid saved kanban board");
+        goto done;
+      }
+    next_todo_board = cai_strdup(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+                                 doc.todo_board);
+    if (next_todo_board == NULL) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM, "copy saved kanban board");
+      goto done;
+    }
+  }
   if (doc.goal_objective != NULL) {
     next_goal_objective = cai_strdup(
         &CAI_SESSION_CLIENT_IMPL(session)->allocator, doc.goal_objective);
@@ -7915,6 +7949,10 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
                  CAI_SESSION_IMPL(session)->state_service_tier);
     CAI_SESSION_IMPL(session)->state_service_tier = next_service_tier;
+    cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
+                 CAI_SESSION_IMPL(session)->state_todo_board);
+    CAI_SESSION_IMPL(session)->state_todo_board = next_todo_board;
+    next_todo_board = NULL;
     next_service_tier = NULL;
     next_request_model = next_reasoning_effort = next_reasoning_summary = NULL;
   }
@@ -8021,6 +8059,7 @@ done:
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
                next_reasoning_effort);
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator, next_service_tier);
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator, next_todo_board);
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
                next_reasoning_summary);
   cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,

@@ -510,6 +510,7 @@ typedef struct cai_runtime_history_record_reader {
 } cai_runtime_history_record_reader;
 
 struct cai_agent_runtime {
+  cai_todo *todo;
   pthread_t owner_thread;
   pthread_t worker_thread;
   pthread_mutex_t lock;
@@ -6906,6 +6907,58 @@ int cai_agent_runtime_trim_history(cai_agent_runtime *runtime, size_t count,
   return rc;
 }
 
+cai_todo *cai_agent_runtime_todo(cai_agent_runtime *runtime) {
+  return runtime != NULL ? runtime->todo : NULL;
+}
+
+int cai_agent_runtime_select_board(cai_agent_runtime *runtime, const char *name,
+                                   int create, cai_error *error) {
+  char previous[CAI_TODO_BOARD_NAME_MAX + 1U];
+  cai_error rollback;
+  int changed = 0;
+  int rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (runtime->todo == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Kanban is disabled; enable --todo.");
+  pthread_mutex_lock(&runtime->lock);
+  rc = cai_runtime_model_switch_ready_locked(runtime, error);
+  if (rc == CAI_OK)
+    runtime->settings_applying = 1;
+  pthread_mutex_unlock(&runtime->lock);
+  if (rc != CAI_OK)
+    return cai_set_error(
+        error, rc,
+        "Change the kanban board between turns at a stable runtime boundary");
+  rc = cai_todo_get_board(runtime->todo, previous, sizeof(previous), error);
+  if (rc == CAI_OK) {
+    rc = cai_todo_select(runtime->todo, name, create, error);
+    changed = rc == CAI_OK;
+  }
+  if (rc == CAI_OK)
+    rc = cai_runtime_checkpoint(runtime, 1, error);
+  if (rc != CAI_OK && changed) {
+    cai_error_init(&rollback);
+    if (cai_todo_select(runtime->todo, previous, 1, &rollback) != CAI_OK) {
+      pthread_mutex_lock(&runtime->lock);
+      runtime->pending_settings_failed = 1;
+      pthread_mutex_unlock(&runtime->lock);
+      rc =
+          cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                               "Board checkpoint failed and previous selection "
+                               "could not be restored; reopen the session",
+                               rollback.message);
+    }
+    cai_error_cleanup(&rollback);
+  }
+  pthread_mutex_lock(&runtime->lock);
+  runtime->settings_applying = 0;
+  pthread_cond_broadcast(&runtime->condition);
+  pthread_mutex_unlock(&runtime->lock);
+  return rc;
+}
+
 static int cai_runtime_model_switch_requires_compaction(
     const cai_agent_runtime *runtime, const char *next_hash,
     long long next_context_window, long long next_compact_limit) {
@@ -7171,6 +7224,7 @@ void cai_agent_runtime_config_init(cai_agent_runtime_config *config) {
     memset(config, 0, sizeof(*config));
     config->shell_context_max_lines = 5000U;
     config->shell_context_max_bytes = 4U * 1024U * 1024U;
+    config->todo.default_board = CAI_TODO_DEFAULT_BOARD;
   }
 }
 
@@ -7476,8 +7530,15 @@ int cai_agent_runtime_open(cai_client *client,
     rc = cai_set_error(
         error, CAI_ERR_INVALID,
         "isolated review does not support optional stateful or network tools");
-  if (rc == CAI_OK && config->enable_todo)
-    rc = cai_agent_register_todo_tool(runtime->agent, &config->todo, error);
+  if (rc == CAI_OK && config->enable_todo) {
+    cai_todo_tool_config todo = config->todo;
+    todo.logger = runtime->logger;
+    rc = cai_todo_open(&todo, &runtime->todo, error);
+    if (rc == CAI_OK) {
+      todo.instance = runtime->todo;
+      rc = cai_agent_register_todo_tool(runtime->agent, &todo, error);
+    }
+  }
   if (rc == CAI_OK && config->enable_searxng)
     rc = cai_agent_register_searxng_tool(runtime->agent, &config->searxng,
                                          error);
@@ -7508,6 +7569,8 @@ int cai_agent_runtime_open(cai_client *client,
   if (rc == CAI_OK) {
     rc = cai_agent_new_session(runtime->agent, &runtime->session, error);
   }
+  if (rc == CAI_OK)
+    CAI_SESSION_IMPL(runtime->session)->todo = runtime->todo;
   if (rc == CAI_OK) {
     rc = cai_runtime_set_session_preset_metadata(runtime, error);
   }
@@ -7737,6 +7800,11 @@ int cai_agent_runtime_open(cai_client *client,
         pthread_mutex_unlock(&runtime->lock);
       }
     }
+    if (rc == CAI_OK && runtime->todo != NULL &&
+        CAI_SESSION_IMPL(runtime->session)->state_todo_board != NULL)
+      rc = cai_todo_select(runtime->todo,
+                           CAI_SESSION_IMPL(runtime->session)->state_todo_board,
+                           1, error);
     if (rc == CAI_OK && resumed_checkpoint) {
       rc = cai_runtime_recover_interrupted_subagent(runtime, error);
     }
@@ -7785,6 +7853,7 @@ int cai_agent_runtime_open(cai_client *client,
     if (runtime->agent != NULL) {
       cai_agent_destroy(runtime->agent);
     }
+    cai_todo_close(runtime->todo);
     if (runtime->owns_chrome)
       cai_chrome_close(runtime->chrome);
     if (runtime->owns_local_store) {
@@ -12229,6 +12298,7 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
   if (runtime->agent != NULL) {
     cai_agent_destroy(runtime->agent);
   }
+  cai_todo_close(runtime->todo);
   if (runtime->owns_chrome)
     cai_chrome_close(runtime->chrome);
   if (runtime->owns_local_store) {

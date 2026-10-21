@@ -341,7 +341,10 @@ int cai_cli_read_options(int argc, char *const *argv,
       field = &options->service_tier;
     else if (strcmp(flag, "--message-queue") == 0)
       field = &options->message_queue;
-    else if (strcmp(flag, "--review-model") == 0)
+    else if (strcmp(flag, "--board") == 0) {
+      field = &options->board;
+      options->board_explicit = 1;
+    } else if (strcmp(flag, "--review-model") == 0)
       field = &options->review_model;
     else if (strcmp(flag, "--review-reasoning-effort") == 0)
       field = &options->review_reasoning_effort;
@@ -624,7 +627,7 @@ const char *cai_cli_instruction_at(const cai_cli_options *options,
         strcmp(flag, "--provider") == 0 || strcmp(flag, "--endpoint") == 0 ||
         strcmp(flag, "--api-key-env") == 0 ||
         strcmp(flag, "--model-metadata") == 0 || strcmp(flag, "-C") == 0 ||
-        strcmp(flag, "--searxng-url") == 0 ||
+        strcmp(flag, "--board") == 0 || strcmp(flag, "--searxng-url") == 0 ||
         strcmp(flag, "--revgeo-url") == 0 ||
         strcmp(flag, "--chrome-socket") == 0 ||
         strcmp(flag, "--chrome-manifest") == 0 ||

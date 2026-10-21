@@ -21,6 +21,16 @@ extern "C" {
 
 typedef struct cai_agent_runtime cai_agent_runtime;
 
+/** Borrow the runtime's thread-safe kanban receiver until runtime close.
+ * NULL means the tool is disabled. Use select_board below for an immediately
+ * checkpointed owner-thread change; tool selection is saved at turn seams. */
+cai_todo *cai_agent_runtime_todo(cai_agent_runtime *runtime);
+/** Between-turn board selection; create also creates a missing named board.
+ * Selection is recorded with this conversation, independently of other agents.
+ * New boards remain in the shared store if checkpointing subsequently fails. */
+int cai_agent_runtime_select_board(cai_agent_runtime *runtime, const char *name,
+                                   int create, cai_error *error);
+
 /** Fields selected by a runtime settings update. */
 typedef enum cai_agent_runtime_setting {
   CAI_AGENT_RUNTIME_SETTING_MODEL = 1U << 0,

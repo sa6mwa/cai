@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
+#include "todo_lua.h"
 #include <cai/app.h>
 #include <dlfcn.h>
 #include <lauxlib.h>
@@ -384,6 +385,77 @@ static int help(lua_State *L) {
   cai_error_cleanup(&error);
   return rc == CAI_OK ? 1 : 2;
 }
+static int open_kanban(lua_State *L) {
+  static const char *const names[] = {"state_directory", "lockd",
+                                      "lockd_client_pem", "default_board"};
+  cai_app_kanban_config config;
+  const char **fields[4];
+  cai_todo *todo = NULL;
+  cai_error error;
+  app_lua *owner;
+  size_t i;
+  int rc, owner_index;
+  if (!lua_isnoneornil(L, 1) && !lua_istable(L, 1))
+    return failure(L, "kanban configuration must be a table");
+  cai_app_kanban_config_init(&config);
+  owner = lua_newuserdatauv(L, sizeof(*owner), 0);
+  memset(owner, 0, sizeof(*owner));
+  luaL_setmetatable(L, APP_MT);
+  owner_index = lua_gettop(L);
+  fields[0] = &config.state_directory;
+  fields[1] = &config.lockd;
+  fields[2] = &config.lockd_client_pem;
+  fields[3] = &config.default_board;
+  if (lua_istable(L, 1)) {
+    lua_pushnil(L);
+    while (lua_next(L, 1)) {
+      const char *key =
+          lua_type(L, -2) == LUA_TSTRING ? plain_string(L, -2) : NULL;
+      int known = key != NULL && (strcmp(key, "logger") == 0 ||
+                                  strcmp(key, "max_result_items") == 0);
+      for (i = 0U; key != NULL && i < 4U; i++)
+        if (strcmp(key, names[i]) == 0)
+          known = 1;
+      if (!known)
+        return failure(L, "unknown kanban configuration field");
+      lua_pop(L, 1);
+    }
+    for (i = 0U; i < 4U; i++) {
+      lua_getfield(L, 1, names[i]);
+      if (!lua_isnil(L, -1)) {
+        if (lua_type(L, -1) != LUA_TSTRING || plain_string(L, -1) == NULL)
+          return failure(L, "kanban text fields must be strings without NUL");
+        *fields[i] = plain_string(L, -1);
+      }
+      lua_pop(L, 1);
+    }
+    lua_getfield(L, 1, "max_result_items");
+    if (!lua_isnil(L, -1)) {
+      if (!lua_isinteger(L, -1) || lua_tointeger(L, -1) < 0 ||
+          (lua_Unsigned)lua_tointeger(L, -1) > (size_t)-1)
+        return failure(L, "max_result_items must be a nonnegative size");
+      config.max_result_items = (size_t)lua_tointeger(L, -1);
+    }
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "logger");
+    if (!lua_isnil(L, -1)) {
+      if (retain_logger(L, owner, -1) != 0)
+        return failure(L, "kanban logger must have a native sink");
+      config.logger = owner->logger.borrowed;
+    }
+    lua_pop(L, 1);
+  }
+  cai_error_init(&error);
+  rc = cai_app_kanban_open(&config, &todo, &error);
+  if (rc != CAI_OK) {
+    failure(L, error.message != NULL ? error.message : cai_status_string(rc));
+    cai_error_cleanup(&error);
+    return 2;
+  }
+  cai_error_cleanup(&error);
+  return cai_lua_todo_push(L, todo, owner_index);
+}
+
 int luaopen_cai_app(lua_State *L) {
   static const luaL_Reg methods[] = {
       {"run", run_app},     {"options", options}, {"help", help},
@@ -397,5 +469,7 @@ int luaopen_cai_app(lua_State *L) {
   lua_newtable(L);
   lua_pushcfunction(L, open_app);
   lua_setfield(L, -2, "open");
+  lua_pushcfunction(L, open_kanban);
+  lua_setfield(L, -2, "kanban");
   return 1;
 }

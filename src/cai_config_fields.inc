@@ -193,7 +193,8 @@ F("chrome", "max_response_bytes", SIZE, RUNTIME,
   chrome_config.max_response_bytes, 0, NULL,
   "Buffered Chrome response limit; zero selects 16 MiB, maximum 64 MiB.")
 F("todo", "default_board", STR, RUNTIME, todo.default_board, 0, NULL,
-  "Default kanban board; empty selects default.")
+  "Initial board for new conversations; resumed selections are restored. "
+  "--board overrides once.")
 F("todo", "max_title_bytes", SIZE, RUNTIME, todo.max_title_bytes, 0, NULL,
   "Task title bound; zero uses the tool default.")
 F("todo", "max_description_bytes", SIZE, RUNTIME, todo.max_description_bytes, 0,

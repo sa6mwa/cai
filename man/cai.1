@@ -52,6 +52,11 @@ Chat Completions has no hosted search; SearXNG is available separately.
 Enable/disable todo_kanban (default off). CAI uses a shared encrypted cai.todo
 document, with streamed transactional updates, rather than a todo.json file.
 .TP
+.BI \-\-board " NAME"
+Initial kanban board (CAI_BOARD or [todo] default_board; default "default").
+The flag selects or creates a board and overrides the resumed selection once.
+It does not enable the optional todo tool. Each conversation saves its selection.
+.TP
 .BR \-\-messaging " / " \-\-no-messaging
 Enable/disable shared-Pouch conversation messaging (default off). Each active
 workspace listens on cai.<basename>.<six-hex-path-hash> in namespace cai.messages
@@ -419,6 +424,11 @@ Show command-line help.
 .B \-\-version
 Show the version.
 .SH PROMPT COMMANDS
+.TP
+.BR "/todo" " [list|use NAME|new NAME|help]"
+Show the selected kanban board, list shared boards, select an existing board,
+or create/select a board. Changes require a stable boundary between turns.
+The selected board is included in /status and restored with the conversation.
 .TP
 .B /help
 Render help as Markdown tables of slash commands and prompt keys, with startup

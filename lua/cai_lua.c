@@ -1,3 +1,4 @@
+#include "todo_lua.h"
 #include <cai/agent_runtime.h>
 #include <cai/auth.h>
 #include <cai/cai.h>
@@ -4906,6 +4907,37 @@ static int cai_lua_agent_runtime_instruction_status(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_agent_runtime_select_board(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  size_t length;
+  const char *name = luaL_checklstring(L, 2, &length);
+  cai_error error;
+  int rc;
+  if (strlen(name) != length)
+    return luaL_error(L, "board contains NUL");
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_select_board(self->ptr, name, lua_toboolean(L, 3),
+                                      &error);
+  cai_lua_agent_runtime_leave(self);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_agent_runtime_todo_board(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  cai_todo *todo = cai_agent_runtime_todo(self->ptr);
+  char name[CAI_TODO_BOARD_NAME_MAX + 1U];
+  cai_error error;
+  int rc;
+  cai_error_init(&error);
+  rc = cai_todo_get_board(todo, name, sizeof(name), &error);
+  if (rc != CAI_OK)
+    return cai_lua_fail(L, rc, &error);
+  cai_error_cleanup(&error);
+  lua_pushstring(L, name);
+  return 1;
+}
+
 static int cai_lua_agent_runtime_settings(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_agent_runtime_settings effective;
@@ -7241,6 +7273,28 @@ static int cai_lua_agent_register_searxng(lua_State *L) {
   cai_error_init(&error);
   rc = cai_agent_register_searxng_tool(self->ptr, &config, &error);
   return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_todo_new(lua_State *L) {
+  cai_todo_tool_config config;
+  cai_lua_native_store *store = NULL;
+  cai_todo *todo = NULL;
+  cai_error error;
+  int rc;
+  if (!lua_isnoneornil(L, 1))
+    luaL_checktype(L, 1, LUA_TTABLE);
+  cai_error_init(&error);
+  rc = cai_lua_todo_config(L, 1, &config, &store, &error);
+  if (rc == CAI_OK && store != NULL)
+    rc = cai_lua_todo_store_prepare(store, &error);
+  if (rc == CAI_OK)
+    rc = cai_todo_open(&config, &todo, &error);
+  if (store != NULL)
+    cai_lua_todo_store_finish(store, rc == CAI_OK);
+  if (rc != CAI_OK)
+    return cai_lua_fail(L, rc, &error);
+  cai_error_cleanup(&error);
+  return cai_lua_todo_push(L, todo, 0);
 }
 
 static int cai_lua_agent_register_todo(lua_State *L) {
@@ -11860,6 +11914,8 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"submit_interactive", cai_lua_agent_runtime_submit_interactive},
     {"set_model", cai_lua_agent_runtime_set_model},
     {"settings", cai_lua_agent_runtime_settings},
+    {"select_board", cai_lua_agent_runtime_select_board},
+    {"todo_board", cai_lua_agent_runtime_todo_board},
     {"instruction_status", cai_lua_agent_runtime_instruction_status},
     {"update_settings", cai_lua_agent_runtime_update_settings},
     {"cancel_turn", cai_lua_agent_runtime_cancel_turn},
@@ -12249,6 +12305,8 @@ int luaopen_cai(lua_State *L) {
   lua_setfield(L, -2, "open");
   lua_pushcfunction(L, cai_lua_config_new);
   lua_setfield(L, -2, "config");
+  lua_pushcfunction(L, cai_lua_todo_new);
+  lua_setfield(L, -2, "todo");
   lua_pushcfunction(L, cai_lua_skill_metadata_new);
   lua_setfield(L, -2, "skill_metadata");
   lua_pushcfunction(L, cai_lua_patch_render);

@@ -1,5 +1,7 @@
 cai_app_close
 cai_app_config_init
+cai_app_kanban_config_init
+cai_app_kanban_open
 cai_app_open
 cai_app_option_at
 cai_app_option_count

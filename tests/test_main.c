@@ -37975,7 +37975,7 @@ static void test_todo_add_item_child(const char *store_path,
   memset(&writer, 0, sizeof(writer));
   config.store_path = store_path;
   config.lock_path = lock_path;
-  config.default_board = "main";
+  config.default_board = "default";
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
   sink_callbacks.context = &writer;
@@ -38114,7 +38114,7 @@ static void test_todo_tool(test_state *state) {
   memset(&config, 0, sizeof(config));
   config.store_path = store_path;
   config.lock_path = lock_path;
-  config.default_board = "main";
+  config.default_board = "default";
   config.max_result_items = 2U;
   sink_callbacks.write = test_write;
   sink_callbacks.close = test_write_close;
@@ -38144,7 +38144,7 @@ static void test_todo_tool(test_state *state) {
       strstr(cai_tool_registry_schema_at(registry, 0U),
              "Readable board-key sequence reference") == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U),
-             "default board key is DEF") == NULL ||
+             "board named default has key DEF") == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U),
              "\"enum\":[\"todo\",\"in_process\"]") == NULL ||
       strstr(cai_tool_registry_schema_at(registry, 0U),
@@ -38172,7 +38172,7 @@ static void test_todo_tool(test_state *state) {
   if (strstr(writer.buffer, "\"ok\":true") == NULL ||
       strstr(writer.buffer, "boards listed") == NULL ||
       strstr(writer.buffer, "\"boards\":[") == NULL ||
-      strstr(writer.buffer, "\"name\":\"main\"") == NULL ||
+      strstr(writer.buffer, "\"name\":\"default\"") == NULL ||
       strstr(writer.buffer, "\"key\":\"DEF\"") == NULL ||
       strstr(writer.buffer, "\"board_count\":1") == NULL ||
       strstr(writer.buffer, "\"items\"") != NULL) {
@@ -38206,7 +38206,7 @@ static void test_todo_tool(test_state *state) {
     if (strstr(writer.buffer, "\"ok\":true") == NULL ||
         strstr(writer.buffer, "boards listed") == NULL ||
         strstr(writer.buffer, "\"boards\":[") == NULL ||
-        strstr(writer.buffer, "\"name\":\"main\"") == NULL ||
+        strstr(writer.buffer, "\"name\":\"default\"") == NULL ||
         strstr(writer.buffer, "\"key\":\"DEF\"") == NULL ||
         strstr(writer.buffer, "\"board_count\":1") == NULL ||
         strstr(writer.buffer, "\"items\"") != NULL) {
@@ -38251,7 +38251,7 @@ static void test_todo_tool(test_state *state) {
   expect_int(state, "todo_create_board",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"create_board\","
-                                   "\"board_name\":\"main\","
+                                   "\"board_name\":\"default\","
                                    "\"wip_limit\":1}",
                                    sink, &error),
              CAI_OK);
@@ -38279,7 +38279,7 @@ static void test_todo_tool(test_state *state) {
                                    sink, &error),
              CAI_OK);
   if (strstr(writer.buffer, "\"ok\":true") == NULL ||
-      strstr(writer.buffer, "\"board_name\":\"main\"") == NULL ||
+      strstr(writer.buffer, "\"board_name\":\"default\"") == NULL ||
       strstr(writer.buffer, "\"board_key\":\"DEF\"") == NULL ||
       strstr(writer.buffer, "\"item_id\":\"DEF-001\"") == NULL ||
       strstr(writer.buffer, "\"item_id\"") == NULL) {
@@ -38297,7 +38297,7 @@ static void test_todo_tool(test_state *state) {
   expect_int(state, "todo_add_item",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"add_item\","
-                                   "\"board_name\":\"main\","
+                                   "\"board_name\":\"default\","
                                    "\"title\":\"first task\","
                                    "\"status\":\"in_process\"}",
                                    sink, &error),
@@ -38320,7 +38320,7 @@ static void test_todo_tool(test_state *state) {
   if (item_id[0] != '\0') {
     snprintf(todo_args, sizeof(todo_args),
              "{\"operation\":\"move_item\",\"item_id\":\"%s\","
-             "\"board_name\":\"main\",\"status\":\"in_process\"}",
+             "\"board_name\":\"default\",\"status\":\"in_process\"}",
              item_id);
     writer.buffer[0] = '\0';
     writer.length = 0U;
@@ -38340,7 +38340,7 @@ static void test_todo_tool(test_state *state) {
   expect_int(state, "todo_move_missing_item_at_wip_limit",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"move_item\","
-                                   "\"board_name\":\"main\","
+                                   "\"board_name\":\"default\","
                                    "\"item_id\":\"DEF-999\","
                                    "\"status\":\"in_process\"}",
                                    sink, &error),
@@ -38356,7 +38356,7 @@ static void test_todo_tool(test_state *state) {
   expect_int(state, "todo_wip_denial",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"add_item\","
-                                   "\"board_name\":\"main\","
+                                   "\"board_name\":\"default\","
                                    "\"title\":\"second task\","
                                    "\"status\":\"in_process\"}",
                                    sink, &error),
@@ -38371,7 +38371,7 @@ static void test_todo_tool(test_state *state) {
   expect_int(state, "todo_list_board",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"list_board\","
-                                   "\"board_name\":\"main\"}",
+                                   "\"board_name\":\"default\"}",
                                    sink, &error),
              CAI_OK);
   if (strstr(writer.buffer, "\"items\"") == NULL ||
@@ -38386,7 +38386,7 @@ static void test_todo_tool(test_state *state) {
 
     snprintf(complete_args, sizeof(complete_args),
              "{\"operation\":\"complete_item\",\"item_id\":\"%s\","
-             "\"board_name\":\"main\"}",
+             "\"board_name\":\"default\"}",
              item_id);
     writer.buffer[0] = '\0';
     writer.length = 0U;
@@ -38407,7 +38407,7 @@ static void test_todo_tool(test_state *state) {
   expect_int(state, "todo_add_after_complete",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"add_item\","
-                                   "\"board_name\":\"main\","
+                                   "\"board_name\":\"default\","
                                    "\"title\":\"second task\","
                                    "\"status\":\"in_process\"}",
                                    sink, &error),
@@ -38438,7 +38438,7 @@ static void test_todo_tool(test_state *state) {
   expect_int(state, "todo_set_wip_limit",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"set_wip_limit\","
-                                   "\"board_name\":\"main\","
+                                   "\"board_name\":\"default\","
                                    "\"wip_limit\":2}",
                                    sink, &error),
              CAI_OK);
@@ -38452,7 +38452,7 @@ static void test_todo_tool(test_state *state) {
   expect_int(state, "todo_add_third_in_process",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"add_item\","
-                                   "\"board_name\":\"main\","
+                                   "\"board_name\":\"default\","
                                    "\"title\":\"third task\","
                                    "\"status\":\"in_process\"}",
                                    sink, &error),
@@ -38471,7 +38471,7 @@ static void test_todo_tool(test_state *state) {
   expect_int(state, "todo_wip_denial_after_limit_update",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"add_item\","
-                                   "\"board_name\":\"main\","
+                                   "\"board_name\":\"default\","
                                    "\"title\":\"fourth task\","
                                    "\"status\":\"in_process\"}",
                                    sink, &error),
@@ -38484,7 +38484,7 @@ static void test_todo_tool(test_state *state) {
   if (third_item_id[0] != '\0') {
     snprintf(todo_args, sizeof(todo_args),
              "{\"operation\":\"move_item\",\"item_id\":\"%s\","
-             "\"board_name\":\"main\",\"status\":\"todo\"}",
+             "\"board_name\":\"default\",\"status\":\"todo\"}",
              third_item_id);
     writer.buffer[0] = '\0';
     writer.length = 0U;
@@ -38504,7 +38504,7 @@ static void test_todo_tool(test_state *state) {
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"move_item\","
                                    "\"item_id\":\"DEF4\","
-                                   "\"board_name\":\"main\","
+                                   "\"board_name\":\"default\","
                                    "\"status\":\"in_process\"}",
                                    sink, &error),
              CAI_OK);
@@ -38520,7 +38520,7 @@ static void test_todo_tool(test_state *state) {
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"move_item\","
                                    "\"item_id\":\"DEF004\","
-                                   "\"board_name\":\"main\","
+                                   "\"board_name\":\"default\","
                                    "\"status\":\"todo\"}",
                                    sink, &error),
              CAI_OK);
@@ -38536,7 +38536,7 @@ static void test_todo_tool(test_state *state) {
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"complete_item\","
                                    "\"item_id\":\"DEF#4\","
-                                   "\"board_name\":\"main\"}",
+                                   "\"board_name\":\"default\"}",
                                    sink, &error),
              CAI_OK);
   if (strstr(writer.buffer, "\"ok\":true") == NULL ||
@@ -38550,7 +38550,7 @@ static void test_todo_tool(test_state *state) {
   expect_int(state, "todo_add_after_move",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"add_item\","
-                                   "\"board_name\":\"main\","
+                                   "\"board_name\":\"default\","
                                    "\"title\":\"fourth task\","
                                    "\"status\":\"in_process\"}",
                                    sink, &error),
@@ -38578,7 +38578,7 @@ static void test_todo_tool(test_state *state) {
   }
   for (i = 0; i < 8; ++i) {
     snprintf(todo_args, sizeof(todo_args),
-             "{\"operation\":\"add_item\",\"board_name\":\"main\","
+             "{\"operation\":\"add_item\",\"board_name\":\"default\","
              "\"title\":\"backlog task %d\",\"status\":\"todo\"}",
              i);
     writer.buffer[0] = '\0';
@@ -38597,7 +38597,7 @@ static void test_todo_tool(test_state *state) {
   expect_int(state, "todo_list_board_truncated",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"list_board\","
-                                   "\"board_name\":\"main\"}",
+                                   "\"board_name\":\"default\"}",
                                    sink, &error),
              CAI_OK);
   if (strstr(writer.buffer, "\"truncated\":true") == NULL ||
@@ -38831,15 +38831,16 @@ static void test_todo_tool(test_state *state) {
   cai_error_init(&error);
   write_file_or_die(
       store_path,
-      "{\"version\":1,\"boards\":[{\"id\":\"legacy-board\",\"name\":\"main\"},"
+      "{\"version\":1,\"boards\":[{\"id\":\"legacy-board\",\"name\":"
+      "\"default\"},"
       "{\"id\":\"legacy-aux-board\",\"name\":\"aux\"}],\"items\":["
       "{\"id\":\"legacy-active\",\"board_id\":\"legacy-board\","
-      "\"board_name\":\"main\",\"status\":\"todo\","
+      "\"board_name\":\"default\",\"status\":\"todo\","
       "\"title\":\"legacy active\",\"description\":\"\"},"
       "{\"id\":\"legacy-aux-active\",\"board_id\":\"legacy-aux-board\","
       "\"board_name\":\"aux\",\"status\":\"todo\",\"title\":\"legacy aux\","
       "\"description\":\"\"}],\"done\":[{\"id\":\"legacy-done\","
-      "\"board_id\":\"legacy-board\",\"board_name\":\"main\","
+      "\"board_id\":\"legacy-board\",\"board_name\":\"default\","
       "\"status\":\"done\",\"title\":\"legacy done\",\"description\":\"\"}]}");
   writer.buffer[0] = '\0';
   writer.length = 0U;
@@ -38858,7 +38859,7 @@ static void test_todo_tool(test_state *state) {
   expect_int(state, "todo_legacy_opaque_move_returns_public_ref",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"move_item\","
-                                   "\"board_name\":\"main\","
+                                   "\"board_name\":\"default\","
                                    "\"item_id\":\"legacy-active\","
                                    "\"status\":\"in_process\"}",
                                    sink, &error),
@@ -38898,7 +38899,7 @@ static void test_todo_tool(test_state *state) {
   expect_int(state, "todo_move_wrong_board_internal_id",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"move_item\","
-                                   "\"board_name\":\"main\","
+                                   "\"board_name\":\"default\","
                                    "\"item_id\":\"legacy-aux-active\","
                                    "\"status\":\"in_process\"}",
                                    sink, &error),
@@ -38913,7 +38914,7 @@ static void test_todo_tool(test_state *state) {
   expect_int(state, "todo_complete_wrong_board_internal_id",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"complete_item\","
-                                   "\"board_name\":\"main\","
+                                   "\"board_name\":\"default\","
                                    "\"item_id\":\"legacy-aux-active\"}",
                                    sink, &error),
              CAI_OK);
@@ -39013,7 +39014,7 @@ static void test_todo_tool(test_state *state) {
   expect_int(state, "todo_corrupt_store",
              cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
                                    "{\"operation\":\"list_board\","
-                                   "\"board_name\":\"main\"}",
+                                   "\"board_name\":\"default\"}",
                                    sink, &error),
              CAI_ERR_PROTOCOL);
   cai_error_cleanup(&error);
@@ -39115,9 +39116,9 @@ static void test_todo_callback_store(test_state *state) {
   if (!extract_json_string_field(writer.buffer, "item_id", item_id,
                                  sizeof(item_id))) {
     test_fail(state, "todo_callback_item_id", "failed to capture item id");
-  } else if (strcmp(item_id, "DEF-001") != 0) {
+  } else if (strcmp(item_id, "CAL-001") != 0) {
     test_fail(state, "todo_callback_item_ref",
-              "callback store default board item did not use DEF-001");
+              "callback store default board item did not use CAL-001");
   }
   if (item_id[0] != '\0') {
     snprintf(args, sizeof(args),

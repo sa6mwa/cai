@@ -1378,6 +1378,13 @@ static void prepare_session_index(cai_cli_pouch *pouch) {
 int cai_cli_pouch_open(cai_cli_pouch *pouch, const char *selected_endpoint,
                        const char *client_pem, pslog_logger *logger,
                        cai_error *error) {
+  return cai_cli_pouch_open_at(pouch, NULL, selected_endpoint, client_pem,
+                               logger, error);
+}
+
+int cai_cli_pouch_open_at(cai_cli_pouch *pouch, const char *state_directory,
+                          const char *selected_endpoint, const char *client_pem,
+                          pslog_logger *logger, cai_error *error) {
   const char *base;
   char path[PATH_MAX];
   char root[PATH_MAX];
@@ -1397,7 +1404,9 @@ int cai_cli_pouch_open(cai_cli_pouch *pouch, const char *selected_endpoint,
   memset(pouch, 0, sizeof(*pouch));
   pouch->logger = logger;
   base = getenv("XDG_STATE_HOME");
-  if (base != NULL && base[0] != '\0')
+  if (state_directory != NULL)
+    rc = snprintf(path, sizeof(path), "%s", state_directory);
+  else if (base != NULL && base[0] != '\0')
     rc = snprintf(path, sizeof(path), "%s/cai", base);
   else {
     base = getenv("HOME");

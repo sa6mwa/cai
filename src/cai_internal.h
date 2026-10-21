@@ -170,6 +170,8 @@ typedef struct cai_session_impl {
   char *state_reasoning_effort;
   char *state_reasoning_summary;
   char *state_service_tier;
+  char *state_todo_board;
+  struct cai_todo *todo;
   /** Preset identity recorded in the imported/exported portable session state.
    */
   char *state_preset_name;
@@ -255,6 +257,8 @@ void cai_history_rebuild_close(cai_history_rebuild *rebuild);
 void *cai_alloc(const cai_allocator *allocator, size_t size);
 void *cai_realloc_mem(const cai_allocator *allocator, void *ptr, size_t size);
 void cai_free_mem(const cai_allocator *allocator, void *ptr);
+/** Release producer-owned mapped tool results (not lonejson parse storage). */
+void cai_tool_result_cleanup_plain(const lonejson_map *map, void *value);
 char *cai_strdup(const cai_allocator *allocator, const char *value);
 char *cai_strndup(const cai_allocator *allocator, const char *value,
                   size_t length);

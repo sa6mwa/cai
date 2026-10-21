@@ -764,6 +764,12 @@ search policy, but receive no Chrome connection or optional kanban/service tools
 The separate sandboxed exec preset remains an SDK alternative to the managed
 terminal pair; registering both under `exec_command` is not supported.
 
+`--board NAME`, `CAI_BOARD`, or `[todo] default_board` select the initial kanban
+board (`default` when unset). `/todo`, `/todo list`, `/todo use NAME` and
+`/todo new NAME` inspect or switch it; selection is remembered per conversation.
+The C/Lua receiver and read-only browser route share that same board engine.
+See [shared kanban](docs/kanban.md) for precedence and embedding APIs.
+
 The equivalent libcai runtime fields are `disable_web_search`, `disable_chrome`,
 `chrome_config`, `enable_todo`/`todo`, `enable_searxng`/`searxng`,
 `enable_revgeo`/`revgeo`, and the individual `disable_read_file`,

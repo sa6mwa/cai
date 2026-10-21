@@ -59,6 +59,7 @@ files=(
   docs/model-metadata.md
   docs/embedding.md
   docs/agent-messaging.md
+  docs/kanban.md
   examples/app.lua
   cli/main.c
   cai.rockspec.in
@@ -68,6 +69,8 @@ files=(
   cmake/cai-export-policy.cmake
   lua/cai_lua.c
   lua/app_lua.c
+  lua/todo_lua.c
+  lua/todo_lua.h
   lua/cai_app.exports
   lua/cai_lua_config.inc
   lua/cai_lua_skills.inc

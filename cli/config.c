@@ -310,6 +310,10 @@ static int tool_environment(cai_config *cfg, cai_error *error) {
                                      "shell_context_max_lines",
                                      "shell_context_max_bytes"};
   size_t i;
+  if (getenv("CAI_BOARD") != NULL &&
+      cai_config_set(cfg, "todo", "default_board", getenv("CAI_BOARD"),
+                     error) != CAI_OK)
+    return fail(error, "CAI_BOARD", "invalid environment setting");
   if (getenv("CAI_MESSAGING") != NULL &&
       cai_config_set(cfg, "messaging", "enabled", getenv("CAI_MESSAGING"),
                      error) != CAI_OK)
@@ -474,6 +478,7 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   defaults.chrome =
       cai_config_get_bool(cfg, "chrome", "enabled", defaults.chrome);
   defaults.todo = cai_config_get_bool(cfg, "agent", "todo", defaults.todo);
+  optional_string(cfg, "todo", "default_board", &defaults.board);
   defaults.messaging =
       cai_config_get_bool(cfg, "messaging", "enabled", defaults.messaging);
   defaults.enable_auto_enqueue =

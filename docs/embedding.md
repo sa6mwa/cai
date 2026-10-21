@@ -169,3 +169,11 @@ Use the existing osxcross lane for build/link/export/relocation checks, then a
 native macOS host for real softline input, resize, shell handoff, cancellation
 and repeated embedded-run checks. Cross compilation cannot establish that
 terminal behavior. See the [roadmap](../ROADMAP.md) for the deferred port.
+
+## Shared kanban and HTTP routes
+
+Use `cai_app_kanban_open` to open CAI's encrypted shared board engine independently
+of the terminal. It returns the core `cai_todo` receiver; `handle_http` serves an
+embedded read-only page, assets and live snapshots. The equivalent Lua helper is
+`require('cai.app').kanban`. See [shared kanban](kanban.md) for C/Lua ownership,
+routing, streaming, configuration and per-conversation selection.

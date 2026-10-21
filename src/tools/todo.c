@@ -1,10 +1,13 @@
 #include "../cai_internal.h"
 
+#include "todo_internal.h"
 #include <cai/tools/todo.h>
 
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <pslog.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,23 +40,29 @@
 #define CAI_TODO_DESCRIPTION                                                   \
   CAI_TODO_DESCRIPTION_1 CAI_TODO_DESCRIPTION_2 CAI_TODO_DESCRIPTION_3
 #define CAI_TODO_HELP_TEXT_1                                                   \
-  "todo_kanban usage: default board always exists; omit board_id, board_key "  \
-  "and board_name to use it. "
+  "todo_kanban: default board always exists; omitted selectors use the "       \
+  "selection. "
 #define CAI_TODO_HELP_TEXT_2                                                   \
-  "list_boards discovers IDs and keys. create_board accepts board_name, "      \
-  "optional unique board_key, and wip_limit. "
+  "list_boards lists boards; create_board creates; select_board selects; "     \
+  "current_board shows selection; snapshot_board includes done. "
 #define CAI_TODO_HELP_TEXT_3                                                   \
-  "add_item assigns item_id like DEF-001; callers cannot set sequence "        \
-  "numbers. Refs accept DEF-001, DEF#1, DEF001, or DEF1. "                     \
-  "current_work lists in_process; list_board lists active items. "
+  "add_item assigns refs; callers cannot set sequence numbers. "               \
+  "Refs accept DEF-001, DEF#1, DEF001, DEF1. list_board lists active; "        \
+  "current_work lists in_process. "
 #define CAI_TODO_HELP_TEXT_4                                                   \
-  "move_item/complete_item require item_id. WIP denial is "                    \
-  "code=wip_limit_exceeded. Use returned IDs and keys."
+  "move_item/complete_item require item_id; set_wip_limit sets WIP. "          \
+  "Denial: code=wip_limit_exceeded."
 #define CAI_TODO_HELP_TEXT                                                     \
   CAI_TODO_HELP_TEXT_1 CAI_TODO_HELP_TEXT_2 CAI_TODO_HELP_TEXT_3               \
       CAI_TODO_HELP_TEXT_4
 
 typedef struct cai_todo_context {
+  cai_todo receiver;
+  pthread_mutex_t lock;
+  int lock_initialized;
+  size_t references;
+  pslog_logger *logger;
+  int store_owned;
   cai_todo_store_callbacks store;
   void *store_context;
   char *default_board;
@@ -61,6 +70,40 @@ typedef struct cai_todo_context {
   size_t max_description_bytes;
   size_t max_result_items;
 } cai_todo_context;
+
+static int cai_todo_valid_name(const char *name) {
+  const unsigned char *p = (const unsigned char *)name;
+  size_t n = 0U;
+  unsigned int remaining = 0U, code = 0U, minimum = 0U;
+  if (p == NULL || *p == 0U)
+    return 0;
+  for (; *p != 0U; p++) {
+    if (*p < 32U || *p == 127U || ++n > CAI_TODO_BOARD_NAME_MAX)
+      return 0;
+    if (remaining != 0U) {
+      if ((*p & 0xc0U) != 0x80U)
+        return 0;
+      code = (code << 6U) | (*p & 0x3fU);
+      if (--remaining == 0U && (code < minimum || code > 0x10ffffU ||
+                                (code >= 0xd800U && code <= 0xdfffU)))
+        return 0;
+    } else if (*p >= 0xc2U && *p <= 0xdfU) {
+      remaining = 1U;
+      code = *p & 0x1fU;
+      minimum = 0x80U;
+    } else if (*p >= 0xe0U && *p <= 0xefU) {
+      remaining = 2U;
+      code = *p & 0x0fU;
+      minimum = 0x800U;
+    } else if (*p >= 0xf0U && *p <= 0xf4U) {
+      remaining = 3U;
+      code = *p & 0x07U;
+      minimum = 0x10000U;
+    } else if (*p >= 0x80U)
+      return 0;
+  }
+  return remaining == 0U;
+}
 
 typedef struct cai_todo_args {
   char *operation;
@@ -207,6 +250,7 @@ typedef struct cai_todo_list_state {
   const char *board_id;
   const char *board_name;
   int only_current;
+  int archived;
   size_t max_items;
   cai_error *error;
   int rc;
@@ -525,9 +569,13 @@ static int cai_todo_copy_string(char **out, const char *value,
 
 static int cai_todo_replace_string(char **out, const char *value,
                                    cai_error *error) {
+  char *next = NULL;
+  int rc = cai_todo_copy_string(&next, value, error);
+  if (rc != CAI_OK)
+    return rc;
   cai_free_mem(NULL, *out);
-  *out = NULL;
-  return cai_todo_copy_string(out, value, error);
+  *out = next;
+  return CAI_OK;
 }
 
 static void cai_todo_context_cleanup(void *context) {
@@ -537,10 +585,20 @@ static void cai_todo_context_cleanup(void *context) {
   if (ctx == NULL) {
     return;
   }
-  if (ctx->store.destroy != NULL) {
+  if (ctx->lock_initialized) {
+    pthread_mutex_lock(&ctx->lock);
+    if (--ctx->references != 0U) {
+      pthread_mutex_unlock(&ctx->lock);
+      return;
+    }
+    pthread_mutex_unlock(&ctx->lock);
+  }
+  if (ctx->store_owned && ctx->store.destroy != NULL) {
     ctx->store.destroy(ctx->store_context);
   }
   cai_free_mem(NULL, ctx->default_board);
+  if (ctx->lock_initialized)
+    pthread_mutex_destroy(&ctx->lock);
   cai_free_mem(NULL, ctx);
 }
 
@@ -693,6 +751,11 @@ static int cai_todo_context_new(const cai_todo_tool_config *config,
   int rc;
 
   *out = NULL;
+  if (config != NULL && config->default_board != NULL &&
+      config->default_board[0] != '\0' &&
+      !cai_todo_valid_name(config->default_board))
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "board name must be 1..256 bytes without controls");
   file_store = NULL;
   ctx = (cai_todo_context *)cai_alloc(NULL, sizeof(*ctx));
   if (ctx == NULL) {
@@ -700,6 +763,13 @@ static int cai_todo_context_new(const cai_todo_tool_config *config,
                          "failed to allocate todo tool context");
   }
   memset(ctx, 0, sizeof(*ctx));
+  if (pthread_mutex_init(&ctx->lock, NULL) != 0) {
+    cai_free_mem(NULL, ctx);
+    return cai_set_error(error, CAI_ERR_TRANSPORT, "initialize kanban lock");
+  }
+  ctx->lock_initialized = 1;
+  ctx->references = 1U;
+  ctx->logger = config != NULL ? config->logger : NULL;
   rc = CAI_OK;
   if (config != NULL && config->store != NULL) {
     ctx->store = *config->store;
@@ -739,6 +809,7 @@ static int cai_todo_context_new(const cai_todo_tool_config *config,
         ctx->store.rollback = cai_todo_file_store_rollback;
         ctx->store.destroy = cai_todo_file_store_destroy;
         ctx->store_context = file_store;
+        ctx->store_owned = 1;
         file_store = NULL;
       }
     }
@@ -756,7 +827,7 @@ static int cai_todo_context_new(const cai_todo_tool_config *config,
     rc = cai_todo_copy_string(
         &ctx->default_board,
         cai_todo_arg_string(config != NULL ? config->default_board : NULL,
-                            "default"),
+                            CAI_TODO_DEFAULT_BOARD),
         error);
   }
   if (rc != CAI_OK) {
@@ -774,6 +845,7 @@ static int cai_todo_context_new(const cai_todo_tool_config *config,
   ctx->max_result_items = config != NULL && config->max_result_items != 0U
                               ? config->max_result_items
                               : 100U;
+  ctx->store_owned = 1;
   *out = ctx;
   return CAI_OK;
 }
@@ -1850,7 +1922,7 @@ static int cai_todo_generate_board_key(const cai_todo_context *ctx, void *txn,
       return error != NULL ? error->code : CAI_ERR_INVALID;
     }
     if (cai_todo_streq(candidate, "DEF") &&
-        !cai_todo_streq(name, ctx->default_board)) {
+        !cai_todo_streq(name, CAI_TODO_DEFAULT_BOARD)) {
       return cai_set_error(error, CAI_ERR_INVALID,
                            "board_key DEF is reserved for the default board");
     }
@@ -1867,7 +1939,7 @@ static int cai_todo_generate_board_key(const cai_todo_context *ctx, void *txn,
   for (key_len = 3U; key_len < sizeof(candidate) - 1U; key_len++) {
     cai_todo_default_key_candidate(name, candidate, sizeof(candidate), key_len);
     if (cai_todo_streq(candidate, "DEF") &&
-        !cai_todo_streq(name, ctx->default_board)) {
+        !cai_todo_streq(name, CAI_TODO_DEFAULT_BOARD)) {
       continue;
     }
     exists =
@@ -2144,7 +2216,7 @@ static int cai_todo_ensure_board(cai_todo_context *ctx, void *txn,
         ctx, txn, name,
         requested_key != NULL && requested_key[0] != '\0'
             ? requested_key
-            : (cai_todo_streq(name, ctx->default_board) ? "DEF" : NULL),
+            : (cai_todo_streq(name, CAI_TODO_DEFAULT_BOARD) ? "DEF" : NULL),
         out->id, key, error);
   }
   if (rc == CAI_OK && (out->key == NULL || out->key[0] == '\0')) {
@@ -2193,7 +2265,7 @@ static int cai_todo_ensure_board(cai_todo_context *ctx, void *txn,
         ctx, txn, name,
         requested_key != NULL && requested_key[0] != '\0'
             ? requested_key
-            : (cai_todo_streq(name, ctx->default_board) ? "DEF" : NULL),
+            : (cai_todo_streq(name, CAI_TODO_DEFAULT_BOARD) ? "DEF" : NULL),
         NULL, key, error);
   }
   if (rc == CAI_OK) {
@@ -2847,6 +2919,7 @@ static int cai_todo_add_item(cai_todo_context *ctx, const cai_todo_args *args,
 static lonejson_status cai_todo_list_item_cb(void *user, void *dst) {
   cai_todo_list_state *state;
   cai_todo_item *item;
+  size_t before;
 
   state = (cai_todo_list_state *)user;
   item = (cai_todo_item *)dst;
@@ -2856,8 +2929,15 @@ static lonejson_status cai_todo_list_item_cb(void *user, void *dst) {
   if (cai_todo_streq(item->board_id, state->board_id) &&
       (!state->only_current ||
        cai_todo_streq(item->status, CAI_TODO_STATUS_IN_PROCESS))) {
+    before = state->result->items.count;
     state->rc = cai_todo_add_result_item(state->result, item, state->board_name,
                                          state->max_items, state->error);
+    if (state->rc == CAI_OK && state->archived &&
+        state->result->items.count > before) {
+      cai_todo_result_item *added = state->result->items.items;
+      state->rc =
+          cai_todo_replace_string(&added[before].status, "done", state->error);
+    }
     if (state->rc != CAI_OK) {
       return LONEJSON_STATUS_ALLOCATION_FAILED;
     }
@@ -2872,6 +2952,7 @@ static int cai_todo_list(cai_todo_context *ctx, const cai_todo_args *args,
   cai_todo_list_state list_state;
   long long in_process;
   long long items;
+  void *txn = NULL;
   int rc;
 
   cai_todo_board_init(&board);
@@ -2888,18 +2969,22 @@ static int cai_todo_list(cai_todo_context *ctx, const cai_todo_args *args,
     cai_todo_board_cleanup(&board);
     return rc;
   }
-  rc = cai_todo_find_board(
-      ctx, NULL, args->board_id, args->board_key,
-      cai_todo_arg_string(args->board_name, ctx->default_board), &board,
-      &in_process, &items, error);
-  if (rc == CAI_TODO_FOUND_NONE) {
-    cai_todo_board_cleanup(&board);
-    return cai_todo_set_result(result, args->operation, 0, "board_not_found",
-                               "board was not found", error);
-  }
+  rc = cai_todo_store_begin(ctx, &txn, error);
   if (rc != CAI_OK) {
     cai_todo_board_cleanup(&board);
     return rc;
+  }
+  rc = cai_todo_find_board(
+      ctx, txn, args->board_id, args->board_key,
+      cai_todo_arg_string(args->board_name, ctx->default_board), &board,
+      &in_process, &items, error);
+  if (rc == CAI_TODO_FOUND_NONE) {
+    rc = cai_todo_set_result(result, args->operation, 0, "board_not_found",
+                             "board was not found", error);
+    goto done;
+  }
+  if (rc != CAI_OK) {
+    goto done;
   }
   rc = cai_todo_copy_string(&result->board_id, board.id, error);
   if (rc == CAI_OK) {
@@ -2920,16 +3005,28 @@ static int cai_todo_list(cai_todo_context *ctx, const cai_todo_args *args,
     list_state.result = result;
     list_state.board_id = board.id;
     list_state.board_name = board.name;
-    list_state.only_current = only_current;
+    list_state.only_current = only_current == 1;
     list_state.max_items = ctx->max_result_items;
     list_state.error = error;
     list_state.rc = CAI_OK;
-    rc = cai_todo_stream_items_path(ctx, NULL, "items", cai_todo_list_item_cb,
+    rc = cai_todo_stream_items_path(ctx, txn, "items", cai_todo_list_item_cb,
                                     &list_state, error);
     if (rc == CAI_OK) {
       rc = list_state.rc;
     }
+    if (rc == CAI_OK && only_current == 2) {
+      list_state.archived = 1;
+      rc = cai_todo_stream_items_path(ctx, txn, "done", cai_todo_list_item_cb,
+                                      &list_state, error);
+      if (rc == CAI_OK)
+        rc = list_state.rc;
+    }
   }
+done:
+  if (rc == CAI_OK)
+    rc = cai_todo_store_commit(ctx, txn, error);
+  else
+    cai_todo_store_rollback(ctx, txn);
   cai_todo_board_cleanup(&board);
   return rc;
 }
@@ -3181,8 +3278,9 @@ static int cai_todo_help(const cai_todo_args *args, cai_todo_result *result,
 
 static int cai_todo_schema_new(cai_tool_schema **out, cai_error *error) {
   static const char *const operations[] = {
-      "help",       "create_board", "list_boards", "set_wip_limit", "add_item",
-      "list_board", "current_work", "move_item",   "complete_item"};
+      "help",          "create_board", "list_boards",   "set_wip_limit",
+      "add_item",      "list_board",   "current_work",  "move_item",
+      "complete_item", "select_board", "current_board", "snapshot_board"};
   cai_tool_schema *schema;
   int rc;
 
@@ -3191,15 +3289,16 @@ static int cai_todo_schema_new(cai_tool_schema **out, cai_error *error) {
   if (rc == CAI_OK) {
     rc = schema->string_enum(
         schema, "operation",
-        "Required operation. Use help first when unsure. help returns a usage "
-        "guide. The configured default board always exists and is used when "
-        "board_id/board_key/board_name are omitted. create_board creates or "
-        "returns a board. list_boards discovers boards, IDs, and keys. "
-        "set_wip_limit "
-        "configures in_process concurrency. add_item adds active work. "
-        "list_board lists all active work. current_work lists only "
-        "in_process work. move_item moves an item between todo and "
-        "in_process. complete_item archives an item to done.",
+        "Use help first when unsure. The default board always exists; omitted "
+        "board selectors use the current selection. create_board creates or "
+        "returns a board; list_boards discovers names/keys. select_board "
+        "selects; "
+        "current_board shows it; snapshot_board includes done. add_item "
+        "creates; "
+        "list_board lists active; current_work lists in_process. move_item "
+        "moves "
+        "todo/in_process; complete_item archives to done; set_wip_limit limits "
+        "WIP.",
         operations, sizeof(operations) / sizeof(operations[0]), 1, error);
   }
   if (rc == CAI_OK) {
@@ -3214,7 +3313,8 @@ static int cai_todo_schema_new(cai_tool_schema **out, cai_error *error) {
         schema, "board_key",
         "Short unique board key such as DEF or OPS. Optional for "
         "create_board; cai derives a unique key when omitted. The default "
-        "board key is DEF. Can be changed by calling create_board for an "
+        "board named default has key DEF. Can be changed by calling "
+        "create_board for an "
         "existing board with a new unique board_key. Item sequence numbers "
         "cannot be set by callers.",
         error);
@@ -3272,8 +3372,8 @@ static int cai_todo_schema_new(cai_tool_schema **out, cai_error *error) {
   return CAI_OK;
 }
 
-static int cai_todo_run(void *context, const void *params, void *out,
-                        cai_error *error) {
+static int cai_todo_run_locked(void *context, const void *params, void *out,
+                               cai_error *error) {
   cai_todo_context *ctx;
   const cai_todo_args *args;
   cai_todo_args normalized_args;
@@ -3284,6 +3384,9 @@ static int cai_todo_run(void *context, const void *params, void *out,
   ctx = (cai_todo_context *)context;
   args = (const cai_todo_args *)params;
   result = (cai_todo_result *)out;
+  if (args->board_name != NULL && !cai_todo_valid_name(args->board_name))
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "board name must be 1..256 bytes without controls");
   if (args->board_key != NULL && args->board_key[0] != '\0') {
     rc = cai_todo_normalize_board_key(args->board_key, normalized_board_key,
                                       sizeof(normalized_board_key), error);
@@ -3310,6 +3413,21 @@ static int cai_todo_run(void *context, const void *params, void *out,
   if (cai_todo_streq(args->operation, "list_board")) {
     return cai_todo_list(ctx, args, result, 0, error);
   }
+  if (cai_todo_streq(args->operation, "snapshot_board"))
+    return cai_todo_list(ctx, args, result, 2, error);
+  if (cai_todo_streq(args->operation, "current_board")) {
+    normalized_args = *args;
+    normalized_args.board_id = normalized_args.board_key = NULL;
+    normalized_args.board_name = ctx->default_board;
+    return cai_todo_list(ctx, &normalized_args, result, 0, error);
+  }
+  if (cai_todo_streq(args->operation, "select_board")) {
+    rc = cai_todo_list(ctx, args, result, 0, error);
+    if (rc == CAI_OK && result->ok)
+      rc = cai_todo_replace_string(&ctx->default_board, result->board_name,
+                                   error);
+    return rc;
+  }
   if (cai_todo_streq(args->operation, "list_boards")) {
     return cai_todo_list_boards(ctx, args, result, error);
   }
@@ -3329,10 +3447,263 @@ static int cai_todo_run(void *context, const void *params, void *out,
                              "unknown todo operation", error);
 }
 
+static int cai_todo_run(void *context, const void *params, void *out,
+                        cai_error *error) {
+  cai_todo_context *ctx = context;
+  const cai_todo_args *args = params;
+  const cai_todo_result *result = out;
+  int rc;
+  pthread_mutex_lock(&ctx->lock);
+  rc = cai_todo_run_locked(context, params, out, error);
+  if (ctx->logger != NULL) {
+    if (rc != CAI_OK)
+      ctx->logger->warnf(
+          ctx->logger, "Kanban operation failed",
+          "operation=%s board=%s error=%s",
+          args->operation != NULL ? args->operation : "(missing)",
+          ctx->default_board,
+          error != NULL && error->message != NULL ? error->message
+                                                  : cai_status_string(rc));
+    else if (result->ok && (cai_todo_streq(args->operation, "select_board") ||
+                            cai_todo_streq(args->operation, "create_board")))
+      ctx->logger->infof(ctx->logger, "Kanban board operation completed",
+                         "operation=%s board=%s", args->operation,
+                         result->board_name != NULL ? result->board_name
+                                                    : ctx->default_board);
+  }
+  pthread_mutex_unlock(&ctx->lock);
+  return rc;
+}
+
+cai_todo *cai_todo_retain(cai_todo *self) {
+  cai_todo_context *ctx;
+  if (self == NULL)
+    return NULL;
+  ctx = self->impl;
+  pthread_mutex_lock(&ctx->lock);
+  ctx->references++;
+  pthread_mutex_unlock(&ctx->lock);
+  return self;
+}
+
+void cai_todo_close(cai_todo *self) {
+  if (self != NULL)
+    cai_todo_context_cleanup(self->impl);
+}
+
+int cai_todo_get_board(cai_todo *self, char *name, size_t capacity,
+                       cai_error *error) {
+  cai_todo_context *ctx;
+  int rc = CAI_OK;
+  if (self == NULL || name == NULL || capacity == 0U)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "kanban and name buffer required");
+  ctx = self->impl;
+  pthread_mutex_lock(&ctx->lock);
+  if (strlen(ctx->default_board) >= capacity)
+    rc = cai_set_error(error, CAI_ERR_LIMIT, "kanban name buffer is too small");
+  else
+    strcpy(name, ctx->default_board);
+  pthread_mutex_unlock(&ctx->lock);
+  return rc;
+}
+
+int cai_todo_select(cai_todo *self, const char *name, int create,
+                    cai_error *error) {
+  char create_operation[] = "create_board";
+  char select_operation[] = "select_board";
+  cai_todo_args args;
+  cai_todo_result result;
+  cai_todo_context *ctx;
+  int rc = CAI_OK;
+  if (self == NULL || !cai_todo_valid_name(name))
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "board name must be 1..256 bytes without controls");
+  ctx = self->impl;
+  memset(&args, 0, sizeof(args));
+  memset(&result, 0, sizeof(result));
+  args.board_name = cai_strdup(NULL, name);
+  if (args.board_name == NULL)
+    return cai_set_error(error, CAI_ERR_NOMEM, "copy kanban board name");
+  pthread_mutex_lock(&ctx->lock);
+  if (create) {
+    args.operation = create_operation;
+    rc = cai_todo_run_locked(ctx, &args, &result, error);
+    if (rc == CAI_OK && !result.ok)
+      rc = cai_set_error(error, CAI_ERR_INVALID, result.message);
+    cai_tool_result_cleanup_plain(&cai_todo_result_map, &result);
+    memset(&result, 0, sizeof(result));
+  }
+  if (rc == CAI_OK) {
+    args.operation = select_operation;
+    rc = cai_todo_run_locked(ctx, &args, &result, error);
+    if (rc == CAI_OK && !result.ok)
+      rc = cai_set_error(error, CAI_ERR_INVALID, result.message);
+  }
+  if (ctx->logger != NULL) {
+    if (rc == CAI_OK)
+      ctx->logger->infof(ctx->logger, "Kanban board selected", "board=%s",
+                         name);
+    else
+      ctx->logger->warnf(ctx->logger, "Kanban board selection failed",
+                         "board=%s error=%s", name,
+                         error != NULL && error->message != NULL
+                             ? error->message
+                             : cai_status_string(rc));
+  }
+  pthread_mutex_unlock(&ctx->lock);
+  cai_tool_result_cleanup_plain(&cai_todo_result_map, &result);
+  cai_free_mem(NULL, args.board_name);
+  return rc;
+}
+
+typedef struct cai_todo_io {
+  cai_source *source;
+  cai_sink *sink;
+  cai_error *error;
+} cai_todo_io;
+static lonejson_read_result cai_todo_input(void *context, unsigned char *bytes,
+                                           size_t count) {
+  cai_todo_io *io = context;
+  lonejson_read_result result = lonejson_default_read_result();
+  result.bytes_read = cai_source_read(io->source, bytes, count, io->error);
+  result.eof = result.bytes_read == 0U && io->error->code == CAI_OK;
+  result.error_code = io->error->code == CAI_OK ? 0 : EIO;
+  return result;
+}
+static lonejson_status cai_todo_output(void *context, const void *bytes,
+                                       size_t count, lonejson_error *error) {
+  cai_todo_io *io = context;
+  (void)error;
+  return cai_sink_write(io->sink, bytes, count, io->error) == CAI_OK
+             ? LONEJSON_STATUS_OK
+             : LONEJSON_STATUS_IO_ERROR;
+}
+
+int cai_todo_http_snapshot(cai_todo *self, const char *board, int head,
+                           cai_todo_http_response *response, cai_error *error) {
+  char operation[] = "snapshot_board";
+  cai_todo_args args;
+  cai_todo_result result;
+  cai_todo_io io;
+  lonejson *json;
+  lonejson_error local;
+  int rc, written;
+  memset(&args, 0, sizeof(args));
+  memset(&result, 0, sizeof(result));
+  args.operation = operation;
+  args.board_name = board != NULL ? cai_strdup(NULL, board) : NULL;
+  if (board != NULL && args.board_name == NULL)
+    return cai_set_error(error, CAI_ERR_NOMEM, "copy kanban board name");
+  rc = cai_todo_run(self->impl, &args, &result, error);
+  response->status = rc == CAI_OK            ? (result.ok ? 200 : 404)
+                     : rc == CAI_ERR_INVALID ? 400
+                                             : 503;
+  response->content_type = "application/json; charset=utf-8";
+  written = response->begin != NULL
+                ? response->begin(response->context, response->status,
+                                  response->content_type, error)
+                : CAI_OK;
+  if (written == CAI_OK && !head) {
+    if (rc != CAI_OK) {
+      static const char failed[] =
+          "{\"ok\":false,\"message\":\"Kanban snapshot unavailable\"}";
+      written =
+          cai_sink_write(response->body, failed, sizeof(failed) - 1U, error);
+    } else {
+      json = lonejson_new(NULL, &local);
+      io.source = NULL;
+      io.sink = response->body;
+      io.error = error;
+      if (json == NULL)
+        written =
+            cai_set_error(error, CAI_ERR_NOMEM, "allocate kanban HTTP writer");
+      else if (lonejson_serialize_sink(json, &cai_todo_result_map, &result,
+                                       cai_todo_output, &io,
+                                       &local) != LONEJSON_STATUS_OK)
+        written = error->code != CAI_OK
+                      ? error->code
+                      : cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                             "write kanban HTTP snapshot",
+                                             local.message);
+      lonejson_free(json);
+    }
+  }
+  cai_tool_result_cleanup_plain(&cai_todo_result_map, &result);
+  cai_free_mem(NULL, args.board_name);
+  return written != CAI_OK ? written : rc;
+}
+
+int cai_todo_call(cai_todo *self, cai_source *arguments, cai_sink *output,
+                  cai_error *error) {
+  cai_todo_args args;
+  cai_todo_result result;
+  cai_todo_io io;
+  lonejson *json;
+  lonejson_error local;
+  int rc;
+  if (self == NULL || arguments == NULL || output == NULL || error == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "kanban, streams and error required");
+  memset(&args, 0, sizeof(args));
+  memset(&result, 0, sizeof(result));
+  io.source = arguments;
+  io.sink = output;
+  io.error = error;
+  json = lonejson_new(NULL, &local);
+  if (json == NULL)
+    return cai_set_error(error, CAI_ERR_NOMEM, "allocate kanban parser");
+  if (lonejson_parse_reader(json, &cai_todo_args_map, &args, cai_todo_input,
+                            &io, &local) != LONEJSON_STATUS_OK)
+    rc = error->code != CAI_OK
+             ? error->code
+             : cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                    "parse kanban request", local.message);
+  else {
+    rc = cai_todo_run(self->impl, &args, &result, error);
+    if (rc == CAI_OK && lonejson_serialize_sink(json, &cai_todo_result_map,
+                                                &result, cai_todo_output, &io,
+                                                &local) != LONEJSON_STATUS_OK)
+      rc = error->code != CAI_OK
+               ? error->code
+               : cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                      "write kanban result", local.message);
+  }
+  lonejson_cleanup(&cai_todo_args_map, &args);
+  cai_tool_result_cleanup_plain(&cai_todo_result_map, &result);
+  lonejson_free(json);
+  return rc;
+}
+
+int cai_todo_open(const cai_todo_tool_config *config, cai_todo **out,
+                  cai_error *error) {
+  cai_todo_context *ctx = NULL;
+  int rc;
+  if (out == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID, "kanban output required");
+  *out = NULL;
+  if (config != NULL && config->instance != NULL) {
+    *out = cai_todo_retain(config->instance);
+    return CAI_OK;
+  }
+  rc = cai_todo_context_new(config, &ctx, error);
+  if (rc != CAI_OK)
+    return rc;
+  ctx->receiver.call = cai_todo_call;
+  ctx->receiver.select = cai_todo_select;
+  ctx->receiver.get_board = cai_todo_get_board;
+  ctx->receiver.handle_http = cai_todo_handle_http;
+  ctx->receiver.close = cai_todo_close;
+  ctx->receiver.impl = ctx;
+  *out = &ctx->receiver;
+  return CAI_OK;
+}
+
 int cai_tool_registry_register_todo_tool(cai_tool_registry *registry,
                                          const cai_todo_tool_config *config,
                                          cai_error *error) {
   cai_todo_context *ctx;
+  cai_todo *receiver = NULL;
   cai_tool_schema *schema;
   const char *name;
   const char *description;
@@ -3342,10 +3713,11 @@ int cai_tool_registry_register_todo_tool(cai_tool_registry *registry,
     return cai_set_error(error, CAI_ERR_INVALID, "tool registry is required");
   }
   ctx = NULL;
-  rc = cai_todo_context_new(config, &ctx, error);
+  rc = cai_todo_open(config, &receiver, error);
   if (rc != CAI_OK) {
     return rc;
   }
+  ctx = receiver->impl;
   name = cai_todo_arg_string(config != NULL ? config->name : NULL,
                              CAI_TODO_DEFAULT_TOOL_NAME);
   description = cai_todo_arg_string(config != NULL ? config->description : NULL,

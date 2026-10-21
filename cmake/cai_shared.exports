@@ -54,6 +54,7 @@ cai_agent_runtime_pause_goal
 cai_agent_runtime_pump
 cai_agent_runtime_replace_goal
 cai_agent_runtime_resume_goal
+cai_agent_runtime_select_board
 cai_agent_runtime_session_id
 cai_agent_runtime_set_goal_objective
 cai_agent_runtime_set_goal_token_budget
@@ -68,6 +69,7 @@ cai_agent_runtime_submit_queued_threadsafe
 cai_agent_runtime_submit_review
 cai_agent_runtime_submit_steering
 cai_agent_runtime_submit_steering_threadsafe
+cai_agent_runtime_todo
 cai_agent_runtime_trim_history
 cai_agent_runtime_update_settings
 cai_agent_runtime_user_shell_begin
@@ -389,6 +391,13 @@ cai_source_reset
 cai_status_string
 cai_stream_sinks_init
 cai_string_destroy
+cai_todo_call
+cai_todo_close
+cai_todo_get_board
+cai_todo_handle_http
+cai_todo_open
+cai_todo_retain
+cai_todo_select
 cai_tool_display_close
 cai_tool_display_event
 cai_tool_display_new

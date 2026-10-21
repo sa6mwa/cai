@@ -403,12 +403,11 @@ Current OpenRouter boundary:
   normal approval queue. Core libcai offers generic tool-registration and
   next-turn hooks without depending on liblockdc. Remote lockd fanout remains
   deferred; see [messaging](docs/agent-messaging.md).
-- Named todo/kanban boards already share the application's encrypted
-  `cai.todo` Pouch document. The core preset exposes transactional storage
-  callbacks; the existing Pouch implementation is private to the application.
-  Next, expose shared-board access and an
-  automatically updating JavaScript/CSS board through an embeddable HTTP route
-  handler suitable for Kore in Vectis. Keep the HTTP server host-owned.
+- Shared kanban is implemented: per-conversation selection, `/todo`, C/Lua
+  receivers, and a read-only automatically updating browser handler. Board
+  storage uses the application's encrypted `cai.todo` Pouch document. HTTP
+  listeners, routing and access control remain host-owned; see
+  [kanban integration](docs/kanban.md).
 - SMHI weather remains an example-only tool. It is not a public cai tool preset.
 - OpenAI organization billing/cost APIs are not used as a hard gate. cai uses
   local estimated spend limits from model pricing metadata for integration

@@ -623,6 +623,17 @@ set(CAI_SMITH_PROMPT_GENERATOR
 include(cmake/CaiSmithPrompts.cmake)
 add_custom_target(cai_smith_prompt_asset
   DEPENDS ${CAI_SMITH_PROMPT_INC_PATHS})
+foreach(_kanban_asset html js css)
+  set(_kanban_inc "${CAI_SMITH_PRIVATE_INCLUDE_DIR}/cai_kanban_${_kanban_asset}.inc")
+  add_custom_command(OUTPUT "${_kanban_inc}"
+    COMMAND "${CMAKE_COMMAND}"
+      "-DCAI_ASSET_INPUT=${CMAKE_CURRENT_SOURCE_DIR}/src/tools/kanban.${_kanban_asset}"
+      "-DCAI_ASSET_OUTPUT=${_kanban_inc}" -DCAI_ASSET_MODE=c-string
+      -P "${CAI_SMITH_PROMPT_GENERATOR}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/tools/kanban.${_kanban_asset}"
+      "${CAI_SMITH_PROMPT_GENERATOR}" VERBATIM)
+  list(APPEND CAI_KANBAN_ASSETS "${_kanban_inc}")
+endforeach()
 
 if(NOT CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
   find_package(lonejson CONFIG QUIET COMPONENTS curl oidc openssl)
@@ -712,6 +723,8 @@ set(CAI_SOURCES
   src/tools/searxng.c
   src/tools/terminal.c
   src/tools/todo.c
+  src/tools/todo_http.c
+  ${CAI_KANBAN_ASSETS}
   src/tools/view_image.c)
 
 set(CAI_PUBLIC_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -869,7 +882,7 @@ if(CAI_BUILD_APP)
   # Compile them once per configuration; keep fixture substitutions in main.
   add_library(cai_cli_support OBJECT cli/options.c cli/help.c cli/config.c cli/runtime_options.c cli/mcp.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
     cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c
-    cli/log.c cli/response.c cli/messages.c)
+    cli/log.c cli/response.c cli/messages.c cli/todo.c)
   target_link_libraries(cai_cli_support PUBLIC cai_static
     softline::softline_static libmdf::mdf_static lockdc::static)
   cai_configure_c_target(cai_cli_support)
@@ -901,6 +914,7 @@ if(CAI_BUILD_CLI)
       "${CMAKE_CURRENT_SOURCE_DIR}/docs/chrome.md"
       "${CMAKE_CURRENT_SOURCE_DIR}/docs/embedding.md"
       "${CMAKE_CURRENT_SOURCE_DIR}/docs/agent-messaging.md"
+      "${CMAKE_CURRENT_SOURCE_DIR}/docs/kanban.md"
       DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/docs"
       COMPONENT cai-cli)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cli/main.c"
@@ -989,12 +1003,12 @@ if(CAI_BUILD_LUA)
   if(TARGET cai_shared)
     set(_cai_lua_link_target cai_shared)
   endif()
-  add_library(cai_lua MODULE lua/cai_lua.c)
+  add_library(cai_lua MODULE lua/cai_lua.c lua/todo_lua.c)
   if(CAI_BUILD_APP)
     if(NOT TARGET cai_app_shared)
       message(FATAL_ERROR "The cai.app Lua facade requires the public shared application library")
     endif()
-    add_library(cai_app_lua MODULE lua/app_lua.c)
+    add_library(cai_app_lua MODULE lua/app_lua.c lua/todo_lua.c)
     set_target_properties(cai_app_lua PROPERTIES OUTPUT_NAME app PREFIX ""
       LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/lua/cai")
     target_include_directories(cai_app_lua PRIVATE "${CAI_LUA_INCLUDE_DIR}"
@@ -1011,6 +1025,13 @@ if(CAI_BUILD_LUA)
       add_dependencies(cai_cli_tests cai_app_lua cai_lua_runner)
     endif()
     if(CAI_BUILD_TESTS)
+      add_test(NAME cai_app_lua_kanban COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/kanban_test.sh"
+        "${CAI_LUA_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/kanban_test.lua"
+        "${CMAKE_CURRENT_BINARY_DIR}")
+      set_tests_properties(cai_app_lua_kanban PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
+        ENVIRONMENT "${CAI_LUA_TEST_ENV}")
       add_test(NAME cai_app_lua COMMAND ${CAI_LUA_EXECUTABLE}
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/app_test.lua")
       set_tests_properties(cai_app_lua PROPERTIES LABELS "cli;local;offline" TIMEOUT 10
@@ -1271,6 +1292,7 @@ if(CAI_INSTALL)
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/chrome.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/embedding.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/agent-messaging.md"
+    "${CMAKE_CURRENT_SOURCE_DIR}/docs/kanban.md"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/docs")
   install(FILES "${CMAKE_CURRENT_BINARY_DIR}/dependencies.json"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/cai")

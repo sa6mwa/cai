@@ -2,6 +2,7 @@
 #define CAI_APP_H
 
 #include <cai/config.h>
+#include <cai/tools/todo.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -93,6 +94,32 @@ const cai_app_option *cai_app_option_at(const cai_app *self, size_t index);
 int cai_app_write_help(const cai_app *self, cai_sink *sink, cai_error *error);
 /** Close an idle application and copied settings. NULL is accepted. */
 void cai_app_close(cai_app *self);
+
+/** Independent shared kanban access for HTTP hosts and other embedders.
+ * This opens the same encrypted Pouch store as CAI without running a terminal
+ * application or changing environment/cwd. NULL paths use normal CAI defaults.
+ * The logger is borrowed through the final receiver close; if absent, a logger
+ * is created from LOG_ with warn as its default level. */
+typedef struct cai_app_kanban_config {
+  /** Absolute CAI state directory containing pouch.key; NULL uses XDG. */
+  const char *state_directory;
+  /** Same lockd endpoint as sessions; NULL selects state_directory/pouch. */
+  const char *lockd;
+  /** Optional client PEM for remote lockd mutual TLS. */
+  const char *lockd_client_pem;
+  /** Initial selection, or NULL for "default". Not shared with other receivers.
+   */
+  const char *default_board;
+  /** Maximum returned cards/boards; zero selects 100. */
+  size_t max_result_items;
+  /** Borrowed native logger, valid through the final receiver close. */
+  struct pslog_logger *logger;
+} cai_app_kanban_config;
+void cai_app_kanban_config_init(cai_app_kanban_config *config);
+/** Returns an owned core receiver with Pouch-backed transaction callbacks.
+ * Its retained references own the store; the caller closes the receiver. */
+int cai_app_kanban_open(const cai_app_kanban_config *config, cai_todo **out,
+                        cai_error *error);
 
 #ifdef __cplusplus
 }

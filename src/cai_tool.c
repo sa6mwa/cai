@@ -1138,8 +1138,7 @@ static int cai_tool_schema_add_field(cai_tool_schema *schema,
   return rc;
 }
 
-static void cai_tool_result_cleanup_plain(const lonejson_map *map,
-                                          void *value) {
+void cai_tool_result_cleanup_plain(const lonejson_map *map, void *value) {
   size_t i;
 
   if (map == NULL || value == NULL) {

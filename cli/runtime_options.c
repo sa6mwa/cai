@@ -23,6 +23,8 @@ void cai_cli_apply_runtime_options(const cai_cli_options *options,
   config->disable_goals = !options->goals;
   config->disable_skills = !options->skills;
   config->enable_todo = !options->review && options->todo;
+  if (options->board != NULL)
+    config->todo.default_board = options->board;
   config->enable_searxng = !options->review && options->searxng;
   config->enable_revgeo = !options->review && options->revgeo;
   if (options->searxng_url != NULL)

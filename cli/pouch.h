@@ -41,6 +41,9 @@ typedef struct cai_cli_pouch {
 int cai_cli_pouch_open(cai_cli_pouch *pouch, const char *endpoint,
                        const char *client_pem, pslog_logger *logger,
                        cai_error *error);
+int cai_cli_pouch_open_at(cai_cli_pouch *pouch, const char *state_directory,
+                          const char *endpoint, const char *client_pem,
+                          pslog_logger *logger, cai_error *error);
 void cai_cli_pouch_close(cai_cli_pouch *pouch);
 int cai_cli_pouch_seed_auth(cai_cli_pouch *pouch, const char *path,
                             cai_error *error);

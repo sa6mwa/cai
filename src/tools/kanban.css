@@ -1,0 +1,15 @@
+:root {color-scheme: dark; font: 16px system-ui,sans-serif; background:#111820; color:#e5edf5}
+body {margin:0; padding:2rem; max-width:1500px; margin-inline:auto}
+header {display:flex; align-items:baseline; justify-content:space-between; gap:1rem; flex-wrap:wrap}
+h1 {font-size:1.6rem; overflow-wrap:anywhere}
+header p {color:#aab7c4; font-size:.85rem}
+main {display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1.1rem; margin-top:1rem}
+section {background:#1a2530; border:1px solid #304253; border-radius:12px; padding:1rem; min-height:14rem}
+h2 {font-size:1rem; margin:0 0 1.1rem; color:#c9d8e5}
+h2 span {color:#8ba1b4; font-weight:400}
+article {background:#233343; border:1px solid #3c5266; border-radius:8px; margin-bottom:.8rem; padding:.8rem; overflow-wrap:anywhere}
+article small {color:#8bd3dd; font: .75rem ui-monospace,monospace}
+article p {margin:.5rem 0 0; white-space:pre-wrap; line-height:1.4}
+#in_process article {border-left:3px solid #e7b35b}
+#done article {border-left:3px solid #70bca1}
+@media(max-width:700px) {body{padding:1rem} main{grid-template-columns:1fr}}

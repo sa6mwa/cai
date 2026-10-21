@@ -21,6 +21,8 @@ typedef struct cai_cli_options {
   int enable_auto_enqueue;
   long message_ack_timeout_ms;
   int todo;
+  const char *board;
+  int board_explicit;
   int searxng;
   int revgeo;
   int read_file, list_files, apply_patch, view_image, goals, skills;

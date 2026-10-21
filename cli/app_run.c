@@ -19,6 +19,7 @@
 #include "shell.h"
 #include "skills.h"
 #include "status.h"
+#include "todo.h"
 #include <cai/chrome.h>
 #include <locale.h>
 
@@ -1594,6 +1595,13 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   if (rc != CAI_OK) {
     return rc;
   }
+  if (state->options.board_explicit && state->options.todo) {
+    rc = cai_agent_runtime_select_board(state->runtime, state->options.board, 1,
+                                        error);
+    if (rc != CAI_OK)
+      return rc;
+    state->options.board_explicit = 0;
+  }
   if (state->messages != NULL) {
     rc = cai_cli_messages_start(
         state->messages, cai_agent_runtime_session_id(state->runtime),
@@ -2355,6 +2363,14 @@ static int cli_handle_command(cli_state *state, const char *line,
   unsigned long number;
   int rc;
   *handled = 1;
+  if (strcmp(line, "/todo") == 0 || strncmp(line, "/todo ", 6U) == 0 ||
+      strncmp(line, "/todo\t", 6U) == 0) {
+    rc = cai_cli_todo_command(state->runtime, line + 5U, cli_tools_write, state,
+                              error);
+    if (rc == CAI_OK && cli_finish_response(state) != 0)
+      rc = CAI_ERR_TRANSPORT;
+    return rc;
+  }
   if (strcmp(line, "/queue") == 0 || strncmp(line, "/queue ", 7U) == 0 ||
       strncmp(line, "/queue\t", 7U) == 0) {
     cai_agent_runtime_metrics metrics;
@@ -2521,6 +2537,8 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| Command | Action |\n"
         "| --- | --- |\n"
         "| `/help` | Show this help. |\n",
+        "| `/todo [COMMAND]` | Show the selected board; list, use NAME, "
+        "new NAME, or help. Requires --todo. |\n",
         "| `/queue [NAME]` | Show or replace the full mailbox name between "
         "turns; requires --messaging. Applies to this app, including /new "
         "and /resume; leaves config.ini unchanged. |\n",
@@ -2647,6 +2665,8 @@ static int cli_handle_command(cli_state *state, const char *line,
                                 &instructions) != 0 ||
         cli_text(state, markdown, strlen(markdown)) != 0 ||
         cli_text(state, mailbox_row, strlen(mailbox_row)) != 0 ||
+        cai_cli_todo_status(state->runtime, cli_tools_write, state, error) !=
+            CAI_OK ||
         cai_cli_tools_markdown(&state->mcp, state->runtime, 0, cli_tools_write,
                                state, error) != CAI_OK ||
         cli_finish_response(state) != 0) {
