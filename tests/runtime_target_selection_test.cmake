@@ -36,10 +36,24 @@ if(NOT _rc EQUAL 0)
   message(FATAL_ERROR "fixture configuration failed: ${_out}\n${_err}")
 endif()
 execute_process(COMMAND "${CMAKE_COMMAND}" --build "${_root}/build" --parallel 1
-    --target selected late_helper
+    --target selected
   RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
 if(NOT _rc EQUAL 0)
   message(FATAL_ERROR "fixture build failed: ${_out}\n${_err}")
+endif()
+# A partial build must be able to select only its target's runtime check.
+execute_process(COMMAND "${CMAKE_CTEST_COMMAND}" --test-dir "${_root}/build"
+    -R "^cai_local_bootlin_runtime_test[.]selected$" --no-tests=error
+    --output-on-failure --stop-on-failure --parallel 1
+  RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
+if(NOT _rc EQUAL 0)
+  message(FATAL_ERROR "partial target runtime verification failed: ${_out}\n${_err}")
+endif()
+execute_process(COMMAND "${CMAKE_COMMAND}" --build "${_root}/build" --parallel 1
+    --target late_helper
+  RESULT_VARIABLE _rc OUTPUT_VARIABLE _out ERROR_VARIABLE _err)
+if(NOT _rc EQUAL 0)
+  message(FATAL_ERROR "helper build failed: ${_out}\n${_err}")
 endif()
 # These formerly matched the runtime check's glob. Keep them present and invalid.
 foreach(_stale cai_example_disabled cai_lua_runner cai_mcp_obsolete cai_old_fuzz)

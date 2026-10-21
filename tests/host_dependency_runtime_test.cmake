@@ -21,6 +21,7 @@ foreach(mode IN ITEMS host auto)
   run("${CMAKE_COMMAND}" --build "${build_dir}"
     --target cai_example_chatgpt_login)
   run("${CMAKE_CTEST_COMMAND}" --test-dir "${build_dir}"
-    -R "^cai_local_bootlin_runtime_test$" --output-on-failure)
+    -R "^cai_local_bootlin_runtime_test[.]cai_example_chatgpt_login$"
+    --no-tests=error --output-on-failure --stop-on-failure --parallel 1)
   run("${build_dir}/cai_example_chatgpt_login" --help)
 endforeach()
