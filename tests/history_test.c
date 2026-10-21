@@ -161,6 +161,42 @@ static size_t count(cai_agent_runtime *runtime, fixture *f, size_t limit,
   return f->entries;
 }
 
+static void test_acknowledgement_parsing(void) {
+  static const char *types[] = {"input_consumed",
+                                "user_shell_context_consumed"};
+  static const char *valid[] = {"1", "18446744073709551615"};
+  static const char *invalid[] = {"",
+                                  "0",
+                                  "-1",
+                                  "+1",
+                                  "12x",
+                                  "18446744073709551616",
+                                  "999999999999999999999999999999999999"};
+  cai_history_rebuild *rebuild;
+  cai_agent_session_event event;
+  cai_error error;
+  size_t i, j;
+  cai_error_init(&error);
+  assert(cai_history_rebuild_open(&rebuild, &error) == CAI_OK);
+  memset(&event, 0, sizeof(event));
+  event.sequence = 1U;
+  for (i = 0U; i < sizeof(types) / sizeof(types[0]); i++) {
+    event.type = types[i];
+    for (j = 0U; j < sizeof(valid) / sizeof(valid[0]); j++) {
+      event.data = valid[j];
+      assert(cai_history_rebuild_feed(rebuild, &event, 1U, &error) == CAI_OK);
+    }
+    for (j = 0U; j < sizeof(invalid) / sizeof(invalid[0]); j++) {
+      event.data = invalid[j];
+      assert(cai_history_rebuild_feed(rebuild, &event, 1U, &error) ==
+             CAI_ERR_INVALID);
+      clear(&error);
+    }
+  }
+  cai_history_rebuild_close(rebuild);
+  cai_error_cleanup(&error);
+}
+
 int main(void) {
   const char *const initial[] = {
       "{\"version\":1,\"model\":\"gpt-6-luna\",\"request_model\":\"gpt-6-"
@@ -195,6 +231,7 @@ int main(void) {
   char *before;
   int protocol, i, rc;
   struct timespec delay;
+  test_acknowledgement_parsing();
   for (protocol = 0; protocol < 4; protocol++) {
     memset(&f, 0, sizeof(f));
     f.state = cai_alloc(NULL, 2048U);

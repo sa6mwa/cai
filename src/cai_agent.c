@@ -1,3 +1,4 @@
+#include "cai_decimal.h"
 #include "cai_internal.h"
 #include <cai/tools/todo.h>
 

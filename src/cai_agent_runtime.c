@@ -6,6 +6,7 @@
 #include <cai/tools/read.h>
 #include <cai/tools/view_image.h>
 
+#include "cai_decimal.h"
 #include "cai_internal.h"
 #include "cai_terminal_text.h"
 
@@ -4721,44 +4722,13 @@ cai_runtime_remove_replayed_input(cai_runtime_input_node **head,
   return 0;
 }
 
-/* Keep journal parsing within the project's C89 baseline.  strtoull() and
- * strtoll() are C99 additions which are not declared by every supported SDK
- * when compiling in strict C89 mode. */
-static int cai_runtime_parse_unsigned_decimal(const char *value,
-                                              const char **end_out,
-                                              unsigned long long *result_out) {
-  const unsigned char *cursor;
-  unsigned long long result;
-  unsigned long long digit;
-
-  if (value == NULL || end_out == NULL || result_out == NULL) {
-    return -1;
-  }
-  cursor = (const unsigned char *)value;
-  if (*cursor < (unsigned char)'0' || *cursor > (unsigned char)'9') {
-    return -1;
-  }
-  result = 0U;
-  do {
-    digit = (unsigned long long)(*cursor - (unsigned char)'0');
-    if (result > (ULLONG_MAX - digit) / 10U) {
-      return -1;
-    }
-    result = result * 10U + digit;
-    cursor++;
-  } while (*cursor >= (unsigned char)'0' && *cursor <= (unsigned char)'9');
-  *end_out = (const char *)cursor;
-  *result_out = result;
-  return 0;
-}
-
 static int cai_runtime_parse_positive_decimal(const char *value,
                                               const char **end_out,
                                               long long *result_out) {
   unsigned long long result;
 
   if (result_out == NULL ||
-      cai_runtime_parse_unsigned_decimal(value, end_out, &result) != 0 ||
+      cai_parse_unsigned_decimal(value, end_out, &result) != 0 ||
       result > (unsigned long long)LLONG_MAX) {
     return -1;
   }
@@ -4779,8 +4749,7 @@ cai_runtime_replay_consumed_input(cai_agent_runtime *runtime,
                          "input-consumed journal event has no input sequence");
   }
   end = NULL;
-  if (cai_runtime_parse_unsigned_decimal(event->data, &end, &input_sequence) !=
-          0 ||
+  if (cai_parse_unsigned_decimal(event->data, &end, &input_sequence) != 0 ||
       end == event->data || *end != '\0' || input_sequence == 0U) {
     return cai_set_error(
         error, CAI_ERR_INVALID,
@@ -4932,7 +4901,7 @@ static int cai_runtime_replay_journal_event(
   if (strcmp(event->type, "user_shell_context_consumed") == 0) {
     const char *end;
     unsigned long long sequence;
-    if (cai_runtime_parse_unsigned_decimal(event->data, &end, &sequence) != 0 ||
+    if (cai_parse_unsigned_decimal(event->data, &end, &sequence) != 0 ||
         *end != '\0' || sequence == 0U || sequence >= event->sequence)
       return cai_set_error(error, CAI_ERR_INVALID,
                            "invalid shell context acknowledgement");

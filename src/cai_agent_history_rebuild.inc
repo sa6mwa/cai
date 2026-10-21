@@ -74,6 +74,7 @@ int cai_history_rebuild_feed(cai_history_rebuild *r,
   size_t i;
   int kind, rc;
   void *grown;
+  const char *end;
   const char *type = event->type;
   if (r == NULL || event->sequence > watermark)
     return CAI_OK;
@@ -151,7 +152,11 @@ int cai_history_rebuild_feed(cai_history_rebuild *r,
   if ((strcmp(type, "input_consumed") == 0 ||
        strcmp(type, "user_shell_context_consumed") == 0) &&
       event->data != NULL) {
-    target = strtoull(event->data, NULL, 10);
+    if (cai_parse_unsigned_decimal(event->data, &end, &target) != 0 ||
+        *end != '\0' || target == 0U)
+      return cai_set_error(
+          error, CAI_ERR_INVALID,
+          "history acknowledgement has an invalid input sequence");
     for (i = r->count; i != 0U; i--)
       if (r->inputs[i - 1U].sequence == target ||
           r->inputs[i - 1U].completion == target) {
