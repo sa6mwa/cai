@@ -19,7 +19,7 @@ query-index warning was reported, but its causal relationship remains unproven.
   with debug information and an unstripped symbol table.
 - Executable SHA-256:
   `456809159bdc061853da6543c65099541ffb7f840f48d8c586daa6915746aa8f`.
-- The core records `/home/mike/.local/bin/cai` as the original executable path.
+- The core records the user's `~/.local/bin/cai` as the original executable path.
   Its ELF entry point and load-segment addresses/sizes match `~/cai`.
 - At initial diagnosis CAI linked the packaged liblockdc 0.19.0 static archive.
   The same failing function and stack allocation were present in that build.
