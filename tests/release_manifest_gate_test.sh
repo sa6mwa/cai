@@ -64,6 +64,7 @@ dist="$tmpdir/stale/dist"
 mkdir -p "$dist"
 write_manifest "$dist" cai-1.2.3.tar.gz
 : >"$dist/cai-cli-9.9.9-x86_64-linux-musl.tar.gz"
+printf '%064d  %s\n' 0 cai-cli-9.9.9-x86_64-linux-musl.tar.gz >"$dist/cai-9.9.9-CHECKSUMS"
 run_gate "
   source '$repo_root/scripts/verify_release_artifacts.sh' --self-test
   dist_dir='$dist'
@@ -72,6 +73,36 @@ run_gate "
   verify_manifest_artifacts \"\${artifacts[@]}\"
   verify_dist_manifest_closure \"\${artifacts[@]}\"
 "
+
+# A neighboring prerelease is retained only when its own inventory identifies it.
+for suffix in '.tar.gz' '-x86_64-linux-gnu.tar.gz' '-1.src.rock' '-1.rockspec'; do
+  name="cai-1.2.3-flow.1$suffix"
+  : >"$dist/$name"
+  printf '%064d  %s\n' 0 "$name" >>"$dist/cai-1.2.3-flow.1-CHECKSUMS"
+done
+run_gate "
+  source '$repo_root/scripts/verify_release_artifacts.sh' --self-test
+  dist_dir='$dist'
+  checksums=\"\$dist_dir/cai-1.2.3-CHECKSUMS\"
+  verify_dist_manifest_closure cai-1.2.3.tar.gz
+"
+rm "$dist/cai-1.2.3-flow.1-CHECKSUMS"
+if run_gate "
+  source '$repo_root/scripts/verify_release_artifacts.sh' --self-test
+  dist_dir='$dist'
+  checksums=\"\$dist_dir/cai-1.2.3-CHECKSUMS\"
+  verify_dist_manifest_closure cai-1.2.3.tar.gz
+" >"$tmpdir/out" 2>"$tmpdir/err"; then exit 1; fi
+grep -q 'release artifact is not listed' "$tmpdir/err"
+# A different release may not claim an orphan from this release.
+printf '%064d  %s\n' 0 cai-1.2.3-unlisted.tar.gz >"$dist/cai-9.9.9-CHECKSUMS"
+if run_gate "
+  source '$repo_root/scripts/verify_release_artifacts.sh' --self-test
+  dist_dir='$dist'
+  checksums=\"\$dist_dir/cai-1.2.3-CHECKSUMS\"
+  verify_dist_manifest_closure cai-1.2.3.tar.gz
+" >"$tmpdir/out" 2>"$tmpdir/err"; then exit 1; fi
+grep -q 'outside its release' "$tmpdir/err"
 
 dist="$tmpdir/path/dist"
 mkdir -p "$dist"

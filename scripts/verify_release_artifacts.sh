@@ -367,6 +367,39 @@ verify_single_root() {
   fi
 }
 
+# Other release inventories identify artifacts retained by warm preparation.
+# An unlisted file has no owner; a shared version prefix does not establish one.
+verify_dist_manifest_closure() (
+  local manifest other_version entries artifact path name
+  local retained=()
+  shopt -s nullglob
+  for manifest in "$dist_dir"/cai-*-CHECKSUMS; do
+    [[ "$manifest" != "$checksums" ]] || continue
+    other_version=${manifest##*/cai-}
+    other_version=${other_version%-CHECKSUMS}
+    entries=$(checksums="$manifest" read_checksum_artifacts) || return 1
+    while IFS= read -r artifact; do
+      [[ -n "$artifact" ]] || continue
+      case "$artifact" in
+        cai-"$other_version".tar.gz | cai-"$other_version"-*.tar.gz | \
+        cai-lua-"$other_version".tar.gz | cai-cli-"$other_version"-x86_64-linux-musl.tar.gz | \
+        cai-"$other_version"-*.rockspec | cai-"$other_version"-*.src.rock)
+          retained+=("$artifact") ;;
+        *) fail "unrelated manifest lists an artifact outside its release: $manifest: $artifact" ;;
+      esac
+    done <<<"$entries"
+  done
+  for path in "$dist_dir"/cai-*.tar.gz "$dist_dir"/cai-*.rockspec \
+      "$dist_dir"/cai-*.src.rock "$dist_dir"/cai-*-SHA256SUMS; do
+    name=${path##*/}
+    [[ "$name" != *-SHA256SUMS ]] || fail "deprecated checksum manifest remains in dist: $name"
+    if ! artifact_list_contains "$name" "$@" &&
+       ! artifact_list_contains "$name" "${retained[@]}"; then
+      fail "release artifact is not listed in checksum manifest: $name"
+    fi
+  done
+)
+
 verify_no_host_paths() {
   local root_dir=$1
   local matches
@@ -1288,6 +1321,7 @@ if [[ ${#artifacts[@]} -eq 0 ]]; then
 fi
 verify_manifest_artifacts "${artifacts[@]}"
 require_complete_manifest "${artifacts[@]}"
+verify_dist_manifest_closure "${artifacts[@]}"
 
 archive_count=0
 for artifact in "${artifacts[@]}"; do
