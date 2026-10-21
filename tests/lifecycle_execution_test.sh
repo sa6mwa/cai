@@ -216,10 +216,23 @@ for failed in identity targets; do
   [[ "$failed" != identity || ! -s "$CAI_LIFECYCLE_TARGET_LOG" ]]
 done
 : >"$CAI_LIFECYCLE_LOG"
+# Missing preparation stops before any archive/checksum command is launched.
+mv "$scratch/build/x86_64-linux-gnu-release/CMakeCache.txt" "$scratch/prepared-cache"
+if bash "$scratch/scripts/package.sh" >"$scratch/out" 2>"$scratch/err"; then exit 1; else [[ $? == 2 ]]; fi
+grep -q 'run make build-release first' "$scratch/err"
+[[ $(wc -l <"$CAI_LIFECYCLE_LOG") == 1 ]]
+mv "$scratch/prepared-cache" "$scratch/build/x86_64-linux-gnu-release/CMakeCache.txt"
+: >"$CAI_LIFECYCLE_LOG"
 bash "$scratch/scripts/package.sh"
 [[ $(head -1 "$CAI_LIFECYCLE_LOG") == identity$'\t'* ]]
 grep -q -- '-DCAI_VERSION=1.2.3' "$CAI_LIFECYCLE_LOG"
 [[ $(wc -l <"$CAI_LIFECYCLE_LOG") == 3 ]]
+: >"$CAI_LIFECYCLE_LOG"
+run_make package
+# The public target reaches only warm package leaves, without matrix preparation.
+[[ $(wc -l <"$CAI_LIFECYCLE_LOG") == 3 ]]
+! grep -q $'^make\t' "$CAI_LIFECYCLE_LOG"
+! grep -q -- $'--preset\tx86_64-linux-gnu-release\t$' "$CAI_LIFECYCLE_LOG"
 : >"$CAI_LIFECYCLE_LOG"
 if bash "$scratch/scripts/package.sh" release-matrix unexpected >"$scratch/out" 2>"$scratch/err"; then exit 1; else [[ $? == 2 ]]; fi
 [[ ! -s "$CAI_LIFECYCLE_LOG" ]]

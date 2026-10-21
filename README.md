@@ -1066,10 +1066,14 @@ fail with an explicit preparation command. Prepare fuzz tooling with
   Linux markerless-workspace tests use `bwrap` to hide the surrounding Git
   repository while keeping their scratch files under the owned build directory.
   Native Darwin uses `sandbox-exec` to deny inspection of the host Git marker.
-- `make package` is warm SDK packaging; its binary-only manifest is under `build/`.
+- `make package` uses prepared target build trees and their package dependency
+  graphs, without an unconditional matrix build. Run `make build-release` first
+  when preparation is missing. Its binary-only manifest is under `build/`.
   `make package-verify` verifies an existing complete final artifact set without
   rebuilding producers. The final CHECKSUMS file explicitly selects all shipped
   SDKs, source, CLI and Lua artifacts; a missing member cannot silently shrink it.
+  Unlisted release artifacts are rejected. Warm preparation can retain another
+  release's files when that release's own CHECKSUMS inventory identifies them.
 - `CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-live` selects live-provider
   coverage explicitly. It creates no reusable credentialed success receipt.
   `CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-hardening` runs preparation

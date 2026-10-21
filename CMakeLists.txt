@@ -1304,6 +1304,11 @@ if(CAI_INSTALL)
   if(TARGET cai_shared)
     list(APPEND _cai_package_deps cai_shared)
   endif()
+  foreach(_cai_app_target IN ITEMS cai_app_static cai_app_shared)
+    if(TARGET ${_cai_app_target})
+      list(APPEND _cai_package_deps ${_cai_app_target})
+    endif()
+  endforeach()
   add_custom_target(cai_package_archive
     COMMAND "${CMAKE_COMMAND}"
       "-DCAI_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"

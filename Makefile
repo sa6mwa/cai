@@ -144,7 +144,7 @@ release:
 	@test '$(origin RELEASE_VERSION)' = file || { printf 'Final release forbids RELEASE_VERSION overrides; use the exact signed, tagged commit.\n' >&2; exit 2; }
 	bash scripts/release.sh final
 release-matrix: release
-package: build-release
+package:
 	bash scripts/package.sh release-matrix
 package-source:
 	$(CMAKE) -DCAI_ROOT="$(ROOT)" -DCAI_DIST_DIR="$(ROOT)/dist" -DCAI_VERSION="$(RELEASE_VERSION)" -P cmake/package_source.cmake
