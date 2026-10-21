@@ -105,6 +105,10 @@ endif()
 if(installed_shared_library)
   file(STRINGS "${installed_shared_library}" installed_shared_strings
        REGEX "/home/|/Users/|/opt/|/tmp/|fsanitize|__asan|__ubsan|__tsan|__msan|libasan|libubsan|libtsan|libmsan")
+  # This exact public Chrome manifest location is a runtime lookup constant,
+  # not a build-host /opt prefix. Keep all other path checks unchanged.
+  list(FILTER installed_shared_strings EXCLUDE REGEX
+    "^/etc/opt/chrome/native-messaging-hosts/com[.]openai[.]codexextension[.]json$")
   string(TOLOWER "${CAI_BUILD_TYPE}" cai_build_type_lower)
   if(cai_build_type_lower STREQUAL "release")
     if(installed_shared_strings MATCHES "/home/|/Users/|/opt/|/tmp/")
