@@ -46,7 +46,6 @@ if(CAI_BUILD_TESTS)
   endif()
   cai_configure_cli_target(cai_app_test)
   target_include_directories(cai_app_test PRIVATE "${CAI_PSLOG_INCLUDE_DIR}")
-  target_link_libraries(cai_app_test PRIVATE ${CAI_PSLOG_LINK})
   target_compile_options(cai_app_test PRIVATE -UNDEBUG)
   add_test(NAME cai_app COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_test.sh"
     "$<TARGET_FILE:cai_app_test>" "${CMAKE_CURRENT_BINARY_DIR}")
