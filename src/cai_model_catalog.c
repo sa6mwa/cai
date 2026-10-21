@@ -1,3 +1,4 @@
+#include "cai_decimal.h"
 #include "cai_internal.h"
 #include "cai_model_contexts.h"
 
@@ -1100,8 +1101,8 @@ cai_codex_catalog_value_end(void *context, const lonejson_value_path *path,
   cai_codex_catalog_reader *reader = (cai_codex_catalog_reader *)context;
   cai_model_catalog_entry *entry;
   char **destination;
-  char *end;
-  long long value;
+  const char *end;
+  unsigned long long value;
   int field = reader->field;
   (void)path;
   (void)error;
@@ -1171,15 +1172,14 @@ cai_codex_catalog_value_end(void *context, const lonejson_value_path *path,
       return LONEJSON_STATUS_ALLOCATION_FAILED;
     }
   } else {
-    errno = 0;
-    value = strtoll(reader->text.data, &end, 10);
-    if (errno != 0 || *end != '\0' || value < 0LL)
+    if (cai_parse_unsigned_decimal(reader->text.data, &end, &value) != 0 ||
+        *end != '\0' || value > (unsigned long long)LLONG_MAX)
       return cai_codex_catalog_invalid(
           reader, "Codex context limits must be nonnegative integers");
     if (field == 5)
-      entry->context_window_tokens = value;
+      entry->context_window_tokens = (long long)value;
     else
-      entry->auto_compact_token_limit = value;
+      entry->auto_compact_token_limit = (long long)value;
   }
   return LONEJSON_STATUS_OK;
 allocation_failed:

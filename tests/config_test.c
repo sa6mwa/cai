@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <cai/config.h>
+#include <limits.h>
 #include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -473,6 +474,23 @@ int main(int argc, char **argv) {
   assert(cai_config_open_schema(&field, 1U, &again, &error) == CAI_OK);
   assert(again->set(again, "host", "signed_value", "-10", &error) == CAI_OK);
   assert(again->get_integer(again, "host", "signed_value", 0LL) == -10LL);
+  assert(again->set(again, "host", "signed_value", "-9223372036854775808",
+                    &error) == CAI_OK);
+  assert(again->get_integer(again, "host", "signed_value", 0LL) == LLONG_MIN);
+  assert(again->set(again, "host", "signed_value", "+9223372036854775807",
+                    &error) == CAI_OK);
+  assert(again->get_integer(again, "host", "signed_value", 0LL) == LLONG_MAX);
+  assert(again->set(again, "host", "signed_value", "-0", &error) == CAI_OK);
+  assert(again->get_integer(again, "host", "signed_value", 1LL) == 0LL);
+  assert(again->set(again, "host", "signed_value", "-9223372036854775809",
+                    &error) == CAI_ERR_INVALID);
+  reset(&error);
+  assert(again->set(again, "host", "signed_value", "+9223372036854775808",
+                    &error) == CAI_ERR_INVALID);
+  reset(&error);
+  assert(again->set(again, "host", "signed_value", "+", &error) ==
+         CAI_ERR_INVALID);
+  reset(&error);
   again->close(again);
   field.flags = 8U;
   field.default_value = NULL;

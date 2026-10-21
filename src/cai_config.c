@@ -1,6 +1,7 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#include "cai_decimal.h"
 #include "cai_internal.h"
 #include <cai/config.h>
 #include <cai/smith.h>
@@ -244,9 +245,29 @@ static int choices_subset(const char *native, const char *choices) {
   }
   return *choices != '\0' && choices[strlen(choices) - 1U] != '|';
 }
+static int parse_integer(const char *value, const char **end, long long *out) {
+  unsigned long long magnitude, limit;
+  int negative = *value == '-';
+  if (*value == '-' || *value == '+')
+    value++;
+  limit = (unsigned long long)LLONG_MAX + (negative ? 1U : 0U);
+  if (cai_parse_unsigned_decimal(value, end, &magnitude) != 0 ||
+      magnitude > limit)
+    return -1;
+  *out = negative && magnitude != 0U ? -(long long)(magnitude - 1U) - 1LL
+                                     : (long long)magnitude;
+  return 0;
+}
+static long long integer_value(const char *value) {
+  const char *end;
+  long long result = 0LL;
+  (void)parse_integer(value, &end, &result);
+  return result;
+}
 static int validate_value(const config_impl *impl,
                           const cai_config_field *field, const char *value) {
   char *end;
+  const char *integer_end;
   long long integer;
   double real;
   if (field->section != NULL && value[0] == '\0' &&
@@ -263,9 +284,8 @@ static int validate_value(const config_impl *impl,
   if (field->type == CAI_CONFIG_INTEGER) {
     if (*value == '\0' || isspace((unsigned char)*value))
       return 0;
-    errno = 0;
-    integer = strtoll(value, &end, 10);
-    return errno == 0 && *end == '\0' &&
+    return parse_integer(value, &integer_end, &integer) == 0 &&
+           *integer_end == '\0' &&
            ((field->flags & CAI_CONFIG_SIGNED) != 0U || integer >= 0LL);
   }
   if (field->type == CAI_CONFIG_REAL) {
@@ -292,7 +312,7 @@ static int binding_value_valid(const char *section, const char *key,
       continue;
     if (!choice_valid(b->choices, value))
       return 0;
-    n = strtoll(value, NULL, 10);
+    n = integer_value(value);
     if ((b->storage == S_INT || b->storage == S_LONG || b->storage == S_UINT ||
          b->storage == S_SIZE || b->storage == S_I64) &&
         n < 0LL && (b->flags & CAI_CONFIG_SIGNED) == 0U)
@@ -459,7 +479,7 @@ int cai_config_get_bool(const cai_config *self, const char *section,
 long long cai_config_get_integer(const cai_config *self, const char *section,
                                  const char *key, long long fallback) {
   const char *value = cai_config_get(self, section, key);
-  return value != NULL ? strtoll(value, NULL, 10) : fallback;
+  return value != NULL ? integer_value(value) : fallback;
 }
 double cai_config_get_real(const cai_config *self, const char *section,
                            const char *key, double fallback) {
@@ -1209,19 +1229,19 @@ static int apply_record(const cai_config *self, config_target target, void *out,
       *(int *)ptr = strcmp(value, "true") != 0;
       break;
     case S_INT:
-      *(int *)ptr = (int)strtoll(value, NULL, 10);
+      *(int *)ptr = (int)integer_value(value);
       break;
     case S_LONG:
-      *(long *)ptr = (long)strtoll(value, NULL, 10);
+      *(long *)ptr = (long)integer_value(value);
       break;
     case S_UINT:
-      *(unsigned int *)ptr = (unsigned int)strtoll(value, NULL, 10);
+      *(unsigned int *)ptr = (unsigned int)integer_value(value);
       break;
     case S_SIZE:
-      *(size_t *)ptr = (size_t)strtoll(value, NULL, 10);
+      *(size_t *)ptr = (size_t)integer_value(value);
       break;
     case S_I64:
-      *(long long *)ptr = strtoll(value, NULL, 10);
+      *(long long *)ptr = integer_value(value);
       break;
     case S_REAL:
       *(double *)ptr = strtod_l(value, NULL, IMPL(self)->numeric_locale);
