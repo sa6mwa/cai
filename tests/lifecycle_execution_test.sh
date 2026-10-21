@@ -7,7 +7,7 @@ scratch=$(mktemp -d "${TMPDIR:-$repo/build}/lifecycle-test.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
 trap 'printf "lifecycle regression failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2; cat "$scratch/events" "$scratch/err" >&2 2>/dev/null || true' ERR
 mkdir -p "$scratch/scripts" "$scratch/bin"
-cp "$repo/scripts/"{build,test,release,package}.sh "$scratch/scripts/"
+cp "$repo/scripts/"{build,test,release,package,lua_dependencies}.sh "$scratch/scripts/"
 cp "$repo/Makefile" "$scratch/"
 cat >"$scratch/bin/record" <<'SH'
 #!/usr/bin/env bash
@@ -236,3 +236,26 @@ run_make package
 : >"$CAI_LIFECYCLE_LOG"
 if bash "$scratch/scripts/package.sh" release-matrix unexpected >"$scratch/out" 2>"$scratch/err"; then exit 1; else [[ $? == 2 ]]; fi
 [[ ! -s "$CAI_LIFECYCLE_LOG" ]]
+# Target SDK paths belong in compiler/linker inputs, never the host LuaRocks
+# loader environment. Fixture archive paths stand in for acquisition results.
+mkdir -p "$scratch/build/debug" "$scratch/host-runtime"
+printf '%s\n' "$scratch/bin/record" "$scratch/lua-sdk" "$scratch/lonejson-sdk" \
+  "$scratch/pslog-sdk" "$scratch/global" >"$scratch/build/debug/lua-dependency-paths.txt"
+cat >"$scratch/bin/luarocks" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${LD_LIBRARY_PATH:-}" >"$CAI_LIFECYCLE_LUA_LOADER_LOG"
+exec "$(dirname "$0")/record" luarocks "$@"
+SH
+chmod +x "$scratch/bin/luarocks"
+export CAI_LIFECYCLE_LUA_LOADER_LOG="$scratch/lua-loader-path"
+for dependency in lonejson pslog; do
+  printf '%s\n' "$scratch/$dependency.src.rock" >"$scratch/build/debug/lua-$dependency-archive.txt"
+  : >"$CAI_LIFECYCLE_LOG"
+  LD_LIBRARY_PATH="$scratch/host-runtime" bash "$scratch/scripts/lua_dependencies.sh" "$dependency" https://fixture.invalid/source
+  [[ $(cat "$CAI_LIFECYCLE_LUA_LOADER_LOG") == "$scratch/host-runtime" ]]
+  [[ $(wc -l <"$CAI_LIFECYCLE_LOG") == 2 ]]
+  grep -q $'^luarocks\tinstall\t' "$CAI_LIFECYCLE_LOG"
+  : >"$CAI_LIFECYCLE_LOG"
+  if CAI_LIFECYCLE_FAIL=cmake bash "$scratch/scripts/lua_dependencies.sh" "$dependency" https://fixture.invalid/source >"$scratch/out" 2>"$scratch/err"; then exit 1; else [[ $? == 7 ]]; fi
+  [[ $(wc -l <"$CAI_LIFECYCLE_LOG") == 1 ]]
+done

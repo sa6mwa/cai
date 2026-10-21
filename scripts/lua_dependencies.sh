@@ -12,7 +12,6 @@ export PKG_CONFIG_PATH="${PKG_CONFIG_PATH:-}"
 for path in "${paths[@]:1:3}"; do if [[ -n "$path" ]]; then PKG_CONFIG_PATH="$path/lib/pkgconfig:$PKG_CONFIG_PATH"; fi; done
 if [[ -n "$prefix" ]]; then
   export CFLAGS="${CFLAGS:-} -fPIC -I$prefix/include" LDFLAGS="${LDFLAGS:-} -L$prefix/lib"
-  export LD_LIBRARY_PATH="$prefix/lib:${LD_LIBRARY_PATH:-}"
 fi
 cmake "-DNAME=$name" "-DURL=$url" "-DCPKT_DEPENDENCY_CACHE=${paths[4]}" "-DOUTPUT=$root/build/debug/lua-$name-archive.txt" -P "$root/cmake/acquire_lua_rock.cmake"
 read -r archive <"$root/build/debug/lua-$name-archive.txt"
