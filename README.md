@@ -1049,6 +1049,8 @@ fail with an explicit preparation command. Prepare fuzz tooling with
   checkout-local `build/`, `dist/`, and `.cache/`, including hidden entries and
   local tools. Only global verified caches and installed prerequisites survive.
   Other checkouts' generated state cannot be borrowed to bypass cleanup.
+  Archive-cache overrides may use this checkout's `build/` or `.cache/`; those
+  local caches are disposable. The default global cpkt cache survives cleanup.
 - The shipped source archive is reconstructed into the native Release lane and
   runs its complete non-live CTest inventory. That exact output supplies the GNU
   SDK package; the main checkout does not build or test a second equivalent lane.

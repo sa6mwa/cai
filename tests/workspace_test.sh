@@ -7,8 +7,8 @@ trap 'printf "workspace fixture failed at line %s: %s\n" "$LINENO" "$BASH_COMMAN
 mkdir -p "$scratch/owner/build" "$scratch/owner/.cache/deps" "$scratch/borrowed/.cache/deps" "$scratch/bin" "$scratch/global"
 cat >"$scratch/bin/git" <<'SH'
 #!/usr/bin/env bash
-# Fixture metadata: only the borrowed archive directory belongs to Git.
-[[ "$2" == *borrowed* ]]
+# Fixture metadata: both the owner and borrowed checkout belong to Git.
+[[ "$2" == *borrowed* || "$2" == *owner* ]]
 SH
 chmod +x "$scratch/bin/git"
 export PATH="$scratch/bin:$PATH"
@@ -20,7 +20,11 @@ include("${POLICY}")
 CMAKE
 run() { cmake "-DPOLICY=$repo/cmake/CaiWorkspace.cmake" "-DSOURCE=$scratch/owner" "-DBINARY=$scratch/owner/build" "-DCPKT_DEPENDENCY_CACHE=$scratch/global" "$@" -P "$scratch/check.cmake" >"$scratch/out" 2>"$scratch/err"; }
 run
-for args in "-DCAI_DEPS_DIR=$scratch/borrowed/.cache/deps" "-DBINARY=$scratch/borrowed/build" "-DCAI_DEPS_DIR=$scratch/owner/retained" "-DCPKT_DEPENDENCY_CACHE=$scratch/borrowed/.cache/deps"; do
+run "-DCPKT_DEPENDENCY_CACHE=$scratch/owner/build/archives"
+run "-DCPKT_DEPENDENCY_CACHE=$scratch/owner/.cache/archives"
+run -DCPKT_DEPENDENCY_CACHE=build/relative-archives
+ln -s "$scratch/borrowed/.cache" "$scratch/owner/build/borrowed-cache"
+for args in "-DCAI_DEPS_DIR=$scratch/borrowed/.cache/deps" "-DBINARY=$scratch/borrowed/build" "-DCAI_DEPS_DIR=$scratch/owner/retained" "-DCPKT_DEPENDENCY_CACHE=$scratch/borrowed/.cache/deps" "-DCPKT_DEPENDENCY_CACHE=$scratch/owner/retained" "-DCPKT_DEPENDENCY_CACHE=$scratch/owner/build/borrowed-cache/archives" "-DCAI_DEPS_DIR=$scratch/owner/build/borrowed-cache/not-created" "-DBINARY=$scratch/owner/build/borrowed-cache/not-created"; do
   if run "$args"; then exit 1; fi
   grep -Eq 'borrowed|global archive cache' "$scratch/err"
 done
