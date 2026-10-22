@@ -26,10 +26,11 @@ newer preset-only feature.
 | `make test-all` | Native core once, CLI, memory, fuzz, Lua, offline and local e2e | Incremental; no cross matrix |
 | `make format`, `make format-check` | Source formatting | No configure/build |
 | `make prerelease` | Native checks, selected matrix, artifacts and consumers | Incremental; candidate override allowed |
+| `make release-matrix` | Target builds, native Release/CLI checks, complete artifacts and consumers | Incremental; no cleaning or signed/tagged identity requirement |
 | `make package` | SDK staging and binary-scope checksum inventory | Warm; preserves other identified artifacts |
 | `make package-verify` | Existing complete shipped bytes and extracted consumers | Does not rebuild product producers |
 | `make package-source-smoke` | Explicit clean source reconstruction | Owns only source-smoke scratch |
-| `make release`, `make release-matrix` | One final local artifact set | Clean committed checkout, verified final commit signature and exact lightweight tag required first |
+| `make release` | One final local artifact set | Clean committed checkout, verified final commit signature and exact lightweight tag required first |
 
 Final release cleans local generated state once. Its source reconstruction is
 the native Release producer and full non-live test lane. Its GNU SDK is packaged
@@ -41,6 +42,11 @@ share only global verified archives and prepared toolchains. Reconstruction owns
 and CLI presets share `build/debug` and retain the same library configuration.
 Distinct instrumentation remains separate. Host-only fixtures are labeled `host` and are
 not repeated under hardening or Lua selections.
+
+The standalone matrix runs host fixtures in its native Release lane. Preparation
+runs them in Debug instead and adds the distinct memory, fuzz, Lua, offline and
+local service scopes. Neither command reconstructs the source archive or requires
+release identity; only the final release owns those gates.
 
 The final explicit checksum inventory requires every selected SDK plus source,
 CLI and Lua delivery. Binary-only rehearsals have their own manifest under

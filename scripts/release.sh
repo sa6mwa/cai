@@ -16,8 +16,8 @@ case "$action" in
     [[ -z ${RELEASE_VERSION:-} ]] || { printf 'Final release forbids RELEASE_VERSION overrides\n' >&2; exit 2; }
     version=$("$root/scripts/release_version.sh" "$root" --require-release)
     ;;
-  prepare|build-matrix|configure-matrix) ;;
-  *) printf 'usage: %s {identity|configure-matrix|build-matrix|prepare|final}\n' "$0" >&2; exit 2 ;;
+  prepare|matrix|build-matrix|configure-matrix) ;;
+  *) printf 'usage: %s {identity|configure-matrix|build-matrix|matrix|prepare|final}\n' "$0" >&2; exit 2 ;;
 esac
 target_text=$("$root/scripts/release_targets.sh")
 mapfile -t targets <<<"$target_text"
@@ -36,13 +36,20 @@ build_matrix() {
 case "$action" in
   build-matrix) build_matrix; exit ;;
   configure-matrix) build_matrix; exit ;;
-  prepare)
+  prepare|matrix)
     version=$("$root/scripts/release_version.sh" "$root")
-    phase=native
-    make test-all
+    if [[ "$action" == prepare ]]; then
+      phase=native
+      make test-all
+    fi
     build_matrix
     native="$root/build/x86_64-linux-gnu-release"
-    ctest --test-dir "$native" --no-tests=error --output-on-failure --stop-on-failure --parallel 1 -LE 'live|host'
+    # Preparation already ran host fixtures in Debug. The standalone matrix
+    # owns that coverage in its native Release lane instead.
+    excluded=live
+    [[ "$action" != prepare ]] || excluded='live|host'
+    phase=native-release-tests
+    ctest --test-dir "$native" --no-tests=error --output-on-failure --stop-on-failure --parallel 1 -LE "$excluded"
     ;;
   final)
     # This read-only gate MUST precede clean, tool provisioning and producers.
@@ -78,7 +85,7 @@ for target in "${targets[@]}"; do
 done
 cmake --build --preset cai --target cai_package_cli
 make release-lua-artifacts
-if [[ "$action" == prepare ]]; then
+if [[ "$action" != final ]]; then
   cmake "-DCAI_ROOT=$root" "-DCAI_DIST_DIR=$root/dist" "-DCAI_VERSION=$version" -P cmake/package_source.cmake
 fi
 phase=checksums

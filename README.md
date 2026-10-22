@@ -1035,10 +1035,17 @@ fail with an explicit preparation command. Prepare fuzz tooling with
   Fuzz builds only its harnesses; Valgrind builds only its checked executable.
   `CTEST_FILTER='-LE live'` also selects all deterministic tests directly
   with `make test-debug`.
-- `make prerelease` is incremental preparation: native feedback, selected target
-  build/link coverage and binary package verification. It accepts an explicit
-  `CAI_VERSION_OVERRIDE` candidate and never cleans or changes release refs.
-- `make release` and `make release-matrix` are the same final local delivery gate.
+- `make prerelease` is incremental preparation: `test-all` development and
+  hardening checks followed by the target and artifact coverage below. Host-only
+  fixtures already passed in Debug are omitted from its Release selection.
+- `make release-matrix` builds the selected SDK targets, runs native Release
+  tests (including host fixtures) and the musl CLI tests, packages SDK, CLI,
+  source and Lua artifacts, and verifies the complete checksum inventory and
+  extracted consumers. It does not run the additional Debug, memory, fuzz, Lua
+  runtime or service scopes owned by `prerelease`, or reconstruct the source
+  archive. Both preparation commands accept an explicit `CAI_VERSION_OVERRIDE`
+  candidate and never clean or change release refs.
+- `make release` is the final local delivery gate.
   Squash the verified development branch onto the local default branch before
   requesting amendment and signing. Keep remote refs unchanged. Signing, tagging
   and the final gate use that default-branch commit, without an intermediate

@@ -34,7 +34,7 @@ printf '#!/bin/sh\nexit 1\n' >"$scratch/scripts/osxcross_available.sh"
 cat >"$scratch/scripts/release_targets.sh" <<'SH'
 #!/usr/bin/env bash
 printf targets >>"$CAI_LIFECYCLE_TARGET_LOG"
-printf 'x86_64-linux-gnu\n'
+printf '%s\n' "${CAI_LIFECYCLE_TARGETS:-x86_64-linux-gnu}"
 [[ ${CAI_LIFECYCLE_FAIL:-} != targets ]] || exit 7
 SH
 printf '#!/bin/sh\nprintf "http://127.0.0.1:3001/mcp\\n"\n' >"$scratch/scripts/devenv.sh"
@@ -132,6 +132,56 @@ done
 run_make() {
   "$native_make" --no-print-directory -C "$scratch" RELEASE_VERSION=1.2.3 MAKE="$scratch/bin/make" "$@" >"$scratch/out" 2>"$scratch/err"
 }
+# The matrix is an incremental target/artifact gate, independent of both
+# development preparation and signed final release. Exercise the public target.
+mkdir -p "$scratch/build/aarch64-linux-musl-release"
+printf 'CMAKE_STRIP:FILEPATH=/target/strip\n' >"$scratch/build/aarch64-linux-musl-release/CMakeCache.txt"
+for enabled in 0 1; do
+  : >"$CAI_LIFECYCLE_LOG"
+  CAI_ENABLE_INTEGRATION_TESTS="$enabled" CAI_LIFECYCLE_TARGETS=$'x86_64-linux-gnu\naarch64-linux-musl' run_make release-matrix
+  [[ $(grep -c '^identity' "$CAI_LIFECYCLE_LOG") == 1 ]]
+  ! grep -q -- '--require-release' "$CAI_LIFECYCLE_LOG"
+  ! grep -qE '^clean.sh|^test_release_from_source.sh|^make\s+(test-all|valgrind|fuzz-smoke|lua-test|lua-app-test|test-offline|test-e2e)' "$CAI_LIFECYCLE_LOG"
+  for target in x86_64-linux-gnu aarch64-linux-musl; do
+    [[ $(grep -c -- $'^cmake\t--preset\t'"$target-release"$'\t$' "$CAI_LIFECYCLE_LOG") == 1 ]]
+    [[ $(grep -c -- $'^cmake\t--build\t--preset\t'"$target-release"$'\t$' "$CAI_LIFECYCLE_LOG") == 1 ]]
+    [[ $(grep -c -- "-DCAI_TARGET_ID=$target" "$CAI_LIFECYCLE_LOG") == 1 ]]
+  done
+  [[ $(grep -c $'^ctest\t' "$CAI_LIFECYCLE_LOG") == 2 ]]
+  grep -q -- $'--test-dir\t'"$scratch/build/x86_64-linux-gnu-release"$'\t.*-LE\tlive\t$' "$CAI_LIFECYCLE_LOG"
+  grep -q -- $'^ctest\t--preset\tcai\t' "$CAI_LIFECYCLE_LOG"
+  [[ $(grep -c $'^make\ttest-integration\t' "$CAI_LIFECYCLE_LOG" || true) == "$enabled" ]]
+  [[ $(grep -c $'^make\trelease-lua-artifacts\t' "$CAI_LIFECYCLE_LOG") == 1 ]]
+  [[ $(grep -c -- $'cmake/package_source.cmake\t$' "$CAI_LIFECYCLE_LOG") == 1 ]]
+  grep -q -- '-DCAI_TARGETS=x86_64-linux-gnu;aarch64-linux-musl' "$CAI_LIFECYCLE_LOG"
+  [[ $(tail -1 "$CAI_LIFECYCLE_LOG" | cut -f1) == package-verify.sh ]]
+  grep -q 'Verified local artifact inventory' "$scratch/out"
+done
+# Fail at discovery, each producer/test phase and final verification. Preserve
+# the first failure without cleaning, retries or a success claim.
+for failed in identity targets cmake ctest make package-verify.sh; do
+  arguments=('')
+  case "$failed" in
+    cmake) arguments=(--preset --build "-DCAI_ROOT=$scratch") ;;
+    make) arguments=(release-lua-artifacts) ;;
+  esac
+  for argument in "${arguments[@]}"; do
+    : >"$CAI_LIFECYCLE_LOG"
+    if CAI_LIFECYCLE_FAIL="$failed" CAI_LIFECYCLE_FAIL_ARG="$argument" run_make release-matrix; then exit 1; fi
+    if [[ "$failed" == targets ]]; then
+      [[ $(wc -l <"$CAI_LIFECYCLE_LOG") == 0 ]]
+    else
+      [[ $(tail -1 "$CAI_LIFECYCLE_LOG" | cut -f1) == "$failed" ]]
+    fi
+    ! grep -q '^clean.sh' "$CAI_LIFECYCLE_LOG"
+    ! grep -q 'Verified local artifact inventory' "$scratch/out"
+  done
+done
+# The actual final release still rejects candidate overrides before any work.
+: >"$CAI_LIFECYCLE_LOG"
+if run_make release; then exit 1; fi
+[[ ! -s "$CAI_LIFECYCLE_LOG" ]]
+grep -q 'Final release forbids RELEASE_VERSION overrides' "$scratch/err"
 for target in test-lua-smith-e2e mcp-inspector-e2e prerelease-hardening; do
   : >"$CAI_LIFECYCLE_LOG"
   if run_make "$target"; then exit 1; fi
