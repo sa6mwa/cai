@@ -2011,6 +2011,7 @@ static int cli_host_process(cli_state *state, cai_error *error) {
           rc = CAI_OK;
         }
       }
+      cai_cli_messages_cancel_send(state->messages);
       if (state->sl != NULL)
         (void)sl_cancel(state->sl);
     } else if (state->runtime == NULL) {
@@ -2035,6 +2036,7 @@ static int cli_host_process(cli_state *state, cai_error *error) {
                                              &applied);
     } else if (command->type == CAI_APP_CANCEL_TURN) {
       rc = cai_agent_runtime_cancel_turn(state->runtime, &applied);
+      cai_cli_messages_cancel_send(state->messages);
     } else {
       char *goal_command = NULL;
       const char *action = command->type == CAI_APP_PAUSE_GOAL    ? "pause"

@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <cai/app.h>
+#include <lc/lc.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +15,10 @@ typedef struct host {
   const char *mode;
   int ready, sent, finished;
   int events, replay, starts, text, acks, rejected, goal_changes;
+  int deliveries;
 } host;
+
+static host *delivery_host;
 
 static void send_control(host *h, cai_app_control_type type, const char *text) {
   cai_error error;
@@ -23,6 +27,29 @@ static void send_control(host *h, cai_app_control_type type, const char *text) {
   assert(h->app->control(h->app, type, text, &id, &error) == CAI_OK);
   assert(id > 0U);
   cai_error_cleanup(&error);
+}
+int __real_lc_enqueue(lc_client *, const lc_enqueue_req *, lc_source *,
+                      lc_enqueue_res *, lc_error *);
+int __wrap_lc_enqueue(lc_client *, const lc_enqueue_req *, lc_source *,
+                      lc_enqueue_res *, lc_error *);
+int __wrap_lc_enqueue(lc_client *client, const lc_enqueue_req *request,
+                      lc_source *source, lc_enqueue_res *result,
+                      lc_error *error) {
+  int rc = __real_lc_enqueue(client, request, source, result, error);
+  if (rc == LC_OK && delivery_host != NULL &&
+      strcmp(request->queue, "cai.cancel-target") == 0) {
+    /* The real sender has armed its receipt wait before enqueuing. Control
+     * submission here races neither tool startup nor a guessed sleep. No
+     * consumer acknowledges this queue; the default deadline is five minutes.
+     */
+    delivery_host->deliveries++;
+    send_control(delivery_host,
+                 strcmp(delivery_host->mode, "message_cancel") == 0
+                     ? CAI_APP_CANCEL_TURN
+                     : CAI_APP_STOP,
+                 NULL);
+  }
+  return rc;
 }
 static int startup_stop(void *context, cai_agent *agent, cai_error *error) {
   host *h = context;
@@ -126,6 +153,8 @@ static int event(void *context, const cai_agent_runtime_event *e,
       send_control(h, CAI_APP_STOP, NULL);
   }
   if (strcmp(h->mode, "replay") != 0 &&
+      strcmp(h->mode, "message_cancel") != 0 &&
+      strcmp(h->mode, "message_stop") != 0 &&
       strcmp(h->mode, "observer_error") != 0 &&
       strcmp(h->mode, "observer_interactive") != 0 &&
       strcmp(h->mode, "close_ack") != 0 &&
@@ -225,8 +254,12 @@ int main(int argc, char **argv) {
          CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   assert(pthread_create(&thread, NULL, worker, &h) == 0);
+  if (strcmp(h.mode, "message_cancel") == 0 ||
+      strcmp(h.mode, "message_stop") == 0)
+    delivery_host = &h;
   rc = h.app->run(h.app, argc - 1, (const char *const *)(argv + 1), &code,
                   &error);
+  delivery_host = NULL;
   pthread_mutex_lock(&h.lock);
   h.finished = 1;
   pthread_cond_broadcast(&h.condition);
@@ -249,9 +282,16 @@ int main(int argc, char **argv) {
              strcmp(h.mode, "interactive_stop") == 0) {
     assert(snapshot.outcome == CAI_APP_STOPPED && h.acks == 3 &&
            h.rejected == 1 && h.starts == 1);
-  } else if (strcmp(h.mode, "cancel") == 0) {
+  } else if (strcmp(h.mode, "message_stop") == 0) {
+    assert(code == 0 && snapshot.outcome == CAI_APP_STOPPED &&
+           h.deliveries == 1 && h.starts == 1 && h.acks == 1 &&
+           h.rejected == 0);
+  } else if (strcmp(h.mode, "cancel") == 0 ||
+             strcmp(h.mode, "message_cancel") == 0) {
     assert(snapshot.outcome == CAI_APP_CANCELLED && h.acks == 1 &&
            h.rejected == 0);
+    if (strcmp(h.mode, "message_cancel") == 0)
+      assert(code == 1 && h.deliveries == 1 && h.starts == 1);
   } else if (strcmp(h.mode, "startup_stop") == 0) {
     assert(code == 0 && snapshot.outcome == CAI_APP_STOPPED && h.acks == 1 &&
            h.starts == 0);

@@ -46,10 +46,13 @@ for mode in "${modes[@]}"; do
     plan '{"plan":["Initial reply","__complete_goal__","Host goal done","__complete_goal__","Host goal done","__complete_goal__","Host goal done"]}'
   elif [[ "$mode" == close_ack ]]; then
     plan '{"plan":["Close acknowledgement probe"]}'
+  elif [[ "$mode" == message_cancel || "$mode" == message_stop ]]; then
+    plan '{"plan":[{"tool":"agent_message","arguments":{"operation":"send","recipient":"cai.cancel-target","text":"Cancel this pending delivery"}}]}'
+    flags+=(--messaging)
   fi
   count=$(requests)
   run "${flags[@]}"
-  if [[ "$mode" == cancel || "$mode" == close_ack ]]; then bad; else ok; fi
+  if [[ "$mode" == cancel || "$mode" == message_cancel || "$mode" == close_ack ]]; then bad; else ok; fi
   if [[ "$mode" == stopqueued ]]; then [[ $(requests) == "$((count+1))" ]]; fi
   if [[ "$mode" == startup_stop ]]; then [[ $(requests) == "$count" ]]; fi
   if [[ "$mode" == cancelqueued ]]; then contains "$root/stdout" 'After control'; fi
