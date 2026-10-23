@@ -180,11 +180,45 @@ static void ascii(cai_terminal_text *t, unsigned char ch) {
   }
 }
 
+static unsigned long utf8_scalar(const cai_terminal_text *t) {
+  unsigned long scalar;
+  size_t i;
+  scalar = t->utf8[0] & ((1U << (7U - t->utf8_need)) - 1U);
+  for (i = 1U; i < t->utf8_need; i++)
+    scalar = (scalar << 6) | (t->utf8[i] & 63U);
+  if ((t->utf8_need == 2U && scalar < 128UL) ||
+      (t->utf8_need == 3U && scalar < 2048UL) ||
+      (t->utf8_need == 4U && scalar < 65536UL) || scalar > 1114111UL ||
+      (scalar >= 55296UL && scalar <= 57343UL))
+    return ~0UL;
+  return scalar;
+}
+
 static void byte(cai_terminal_text *t, unsigned char ch) {
   static const char replacement[] = "\xef\xbf\xbd";
   unsigned long scalar;
-  size_t i;
   if (t->state == STRING || t->state == STRING_ESCAPE) {
+    /* A continuation byte is payload, not a standalone C1 terminator. */
+    if (t->utf8_length != 0U) {
+      if ((ch & 192U) == 128U) {
+        t->utf8[t->utf8_length++] = ch;
+        if (t->utf8_length == t->utf8_need) {
+          scalar = utf8_scalar(t);
+          t->utf8_length = 0U;
+          if (scalar == 156UL)
+            t->state = TEXT;
+        }
+        return;
+      }
+      t->utf8_length = 0U;
+    }
+    if (ch >= 194U && ch <= 244U) {
+      t->utf8[0] = ch;
+      t->utf8_length = 1U;
+      t->utf8_need = ch < 224U ? 2U : ch < 240U ? 3U : 4U;
+      t->state = STRING;
+      return;
+    }
     if (ch == 156U || (t->string_kind && ch == 7U) ||
         (t->state == STRING_ESCAPE && ch == '\\'))
       t->state = TEXT;
@@ -244,13 +278,8 @@ static void byte(cai_terminal_text *t, unsigned char ch) {
     t->utf8[t->utf8_length++] = ch;
     if (t->utf8_length != t->utf8_need)
       return;
-    scalar = t->utf8[0] & ((1U << (7U - t->utf8_need)) - 1U);
-    for (i = 1U; i < t->utf8_need; i++)
-      scalar = (scalar << 6) | (t->utf8[i] & 63U);
-    if ((t->utf8_need == 2U && scalar < 128UL) ||
-        (t->utf8_need == 3U && scalar < 2048UL) ||
-        (t->utf8_need == 4U && scalar < 65536UL) || scalar > 1114111UL ||
-        (scalar >= 55296UL && scalar <= 57343UL))
+    scalar = utf8_scalar(t);
+    if (scalar == ~0UL)
       put_scalar(t, replacement, 3U);
     else if (scalar >= 128UL && scalar <= 159UL)
       ascii(t, (unsigned char)scalar);
@@ -282,7 +311,8 @@ int cai_terminal_text_finish(cai_terminal_text *t, char **out,
   size_t i;
   char *copy;
   if (t->utf8_length != 0U) {
-    put_scalar(t, "\xef\xbf\xbd", 3U);
+    if (t->state != STRING && t->state != STRING_ESCAPE)
+      put_scalar(t, "\xef\xbf\xbd", 3U);
     t->utf8_length = 0U;
   }
   copy = cai_alloc(NULL, t->length + t->line_length + 1U);

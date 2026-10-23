@@ -50,6 +50,25 @@ int main(void) {
   CHECK("\xe2X\xe0\x80\x80\xed\xa0\x80", "�X��");
   CHECK("keep\033[31", "keep");
   CHECK("keep\033]unfinished", "keep");
+  CHECK("\033]0;\xc3\x9c"
+        "hidden title\007visible",
+        "visible");
+  CHECK("\033P\xe2\x9c\x93"
+        "hidden DCS\033\\visible",
+        "visible");
+  CHECK("\033_\xf0\x9f\x9c\x80"
+        "hidden APC\033\\visible",
+        "visible");
+  CHECK("\x9d\xc3\x9c"
+        "hidden\x9cvisible",
+        "visible");
+  CHECK("\033]hidden\xc2\x9cvisible", "visible");
+  CHECK("\033]hidden\033\xc3\x9c\\still hidden\007visible", "visible");
+  CHECK("\033]hidden\xe0\x80\x9c"
+        "still hidden\007visible",
+        "visible");
+  CHECK("\033]hidden\xe2\007visible", "visible");
+  CHECK("visible\033]hidden\xe2\x9c", "visible");
   CHECK("a\033[999999999999999999999D"
         "b",
         "b");
