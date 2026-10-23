@@ -7,7 +7,7 @@ scratch=$(mktemp -d "${TMPDIR:-$repo/build}/lifecycle-test.XXXXXX")
 trap 'rm -rf "$scratch"' EXIT
 trap 'printf "lifecycle regression failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2; cat "$scratch/events" "$scratch/err" >&2 2>/dev/null || true' ERR
 mkdir -p "$scratch/scripts" "$scratch/bin"
-cp "$repo/scripts/"{build,test,release,package,lua_dependencies}.sh "$scratch/scripts/"
+cp "$repo/scripts/"{build,test,release,package,lua_dependencies,cross_test}.sh "$scratch/scripts/"
 cp "$repo/Makefile" "$scratch/"
 cat >"$scratch/bin/record" <<'SH'
 #!/usr/bin/env bash
@@ -134,17 +134,17 @@ run_make() {
 }
 # The matrix is an incremental target/artifact gate, independent of both
 # development preparation and signed final release. Exercise the public target.
-for target in x86_64-linux-musl aarch64-linux-musl armhf-linux-musl; do
+for target in x86_64-linux-musl aarch64-linux-gnu aarch64-linux-musl armhf-linux-gnu armhf-linux-musl; do
   mkdir -p "$scratch/build/$target-release"
   printf 'CMAKE_STRIP:FILEPATH=/target/strip\n' >"$scratch/build/$target-release/CMakeCache.txt"
 done
 for enabled in 0 1; do
   : >"$CAI_LIFECYCLE_LOG"
-  CAI_ENABLE_INTEGRATION_TESTS="$enabled" CAI_LIFECYCLE_TARGETS=$'x86_64-linux-gnu\nx86_64-linux-musl\naarch64-linux-musl\narmhf-linux-musl' run_make release-matrix
+  CAI_ENABLE_INTEGRATION_TESTS="$enabled" CAI_LIFECYCLE_TARGETS=$'x86_64-linux-gnu\nx86_64-linux-musl\naarch64-linux-gnu\naarch64-linux-musl\narmhf-linux-gnu\narmhf-linux-musl' run_make release-matrix
   [[ $(grep -c '^identity' "$CAI_LIFECYCLE_LOG") == 1 ]]
   ! grep -q -- '--require-release' "$CAI_LIFECYCLE_LOG"
   ! grep -qE '^clean.sh|^test_release_from_source.sh|^make\s+(test-all|valgrind|fuzz-smoke|lua-test|lua-app-test|test-offline|test-e2e)' "$CAI_LIFECYCLE_LOG"
-  for target in x86_64-linux-gnu x86_64-linux-musl aarch64-linux-musl armhf-linux-musl; do
+  for target in x86_64-linux-gnu x86_64-linux-musl aarch64-linux-gnu aarch64-linux-musl armhf-linux-gnu armhf-linux-musl; do
     [[ $(grep -c -- $'^cmake\t--preset\t'"$target-release"$'\t$' "$CAI_LIFECYCLE_LOG") == 1 ]]
     [[ $(grep -c -- $'^cmake\t--build\t--preset\t'"$target-release"$'\t$' "$CAI_LIFECYCLE_LOG") == 1 ]]
     [[ $(grep -c -- "-DCAI_TARGET_ID=$target" "$CAI_LIFECYCLE_LOG") == 1 ]]
@@ -154,16 +154,30 @@ for enabled in 0 1; do
     grep -q -- $'^cmake\t--build\t--preset\t'"$target-release"$'\t--target\tcai_package_cli\t$' "$CAI_LIFECYCLE_LOG"
   done
   ! grep -q -- $'^cmake\t.*--preset\tcai\t' "$CAI_LIFECYCLE_LOG"
-  [[ $(grep -c $'^ctest\t' "$CAI_LIFECYCLE_LOG") == 2 ]]
+  [[ $(grep -c $'^ctest\t' "$CAI_LIFECYCLE_LOG") == 6 ]]
+  for target in aarch64-linux-gnu aarch64-linux-musl armhf-linux-gnu armhf-linux-musl; do
+    [[ $(grep -c -- $'^ctest\t--test-dir\t'"$scratch/build/$target-release"$'\t.*-L\tcross\t$' "$CAI_LIFECYCLE_LOG") == 1 ]]
+  done
   grep -q -- $'--test-dir\t'"$scratch/build/x86_64-linux-gnu-release"$'\t.*-LE\tlive\t$' "$CAI_LIFECYCLE_LOG"
   grep -q -- $'^ctest\t--preset\tcai\t' "$CAI_LIFECYCLE_LOG"
   [[ $(grep -c $'^make\ttest-integration\t' "$CAI_LIFECYCLE_LOG" || true) == "$enabled" ]]
   [[ $(grep -c $'^make\trelease-lua-artifacts\t' "$CAI_LIFECYCLE_LOG") == 1 ]]
   [[ $(grep -c -- $'cmake/package_source.cmake\t$' "$CAI_LIFECYCLE_LOG") == 1 ]]
-  grep -q -- '-DCAI_TARGETS=x86_64-linux-gnu;x86_64-linux-musl;aarch64-linux-musl;armhf-linux-musl' "$CAI_LIFECYCLE_LOG"
+  grep -q -- '-DCAI_TARGETS=x86_64-linux-gnu;x86_64-linux-musl;aarch64-linux-gnu;aarch64-linux-musl;armhf-linux-gnu;armhf-linux-musl' "$CAI_LIFECYCLE_LOG"
   [[ $(tail -1 "$CAI_LIFECYCLE_LOG" | cut -f1) == package-verify.sh ]]
   grep -q 'Verified local artifact inventory' "$scratch/out"
 done
+# The cross-only public command builds once and runs target CTest selections,
+# without native suites, package producers or an implicit clean.
+: >"$CAI_LIFECYCLE_LOG"
+CAI_LIFECYCLE_TARGETS=$'aarch64-linux-gnu\naarch64-linux-musl\narmhf-linux-gnu\narmhf-linux-musl' run_make cross-test
+[[ $(grep -c $'^ctest\t' "$CAI_LIFECYCLE_LOG") == 4 ]]
+[[ $(grep -c -- $'--build\t--preset\t' "$CAI_LIFECYCLE_LOG") == 4 ]]
+! grep -qE '^clean.sh|^make\s|package|--preset\tcai' "$CAI_LIFECYCLE_LOG"
+: >"$CAI_LIFECYCLE_LOG"
+if CAI_LIFECYCLE_TARGETS=aarch64-linux-musl CAI_LIFECYCLE_FAIL=ctest run_make cross-test; then exit 1; fi
+[[ $(grep -c $'^ctest\t' "$CAI_LIFECYCLE_LOG") == 1 ]]
+[[ $(tail -1 "$CAI_LIFECYCLE_LOG" | cut -f1) == ctest ]]
 # Fail at discovery, each producer/test phase and final verification. Preserve
 # the first failure without cleaning, retries or a success claim.
 for failed in identity targets cmake ctest make package-verify.sh; do

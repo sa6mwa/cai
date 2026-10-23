@@ -1,6 +1,11 @@
 if(CAI_BUILD_TESTS)
   find_program(CAI_TEST_PYTHON python3 REQUIRED)
   find_program(CAI_TEST_JQ jq REQUIRED)
+  add_test(NAME cai_cross_smoke_contract_test COMMAND bash
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/cross_smoke_contract_test.sh"
+    "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
+  set_tests_properties(cai_cross_smoke_contract_test PROPERTIES
+    LABELS "host;local;lifecycle" TIMEOUT 10)
   add_test(NAME cai_acquisition_test COMMAND bash
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/acquisition_test.sh"
     "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")

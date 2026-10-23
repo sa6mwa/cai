@@ -27,6 +27,7 @@ newer preset-only feature.
 | `make format`, `make format-check` | Source formatting | No configure/build |
 | `make prerelease` | Native checks, selected matrix, artifacts and consumers | Incremental; candidate override allowed |
 | `make release-matrix` | Target builds, native Release/CLI checks, complete artifacts and consumers | Incremental; no cleaning or signed/tagged identity requirement |
+| `make cross-test` | Matrix builds and basic ARM GNU/musl QEMU checks | Incremental; no native suites or packaging |
 | `make package` | SDK staging and binary-scope checksum inventory | Warm; preserves other identified artifacts |
 | `make package-verify` | Existing complete shipped bytes and extracted consumers | Does not rebuild product producers |
 | `make package-source-smoke` | Explicit clean source reconstruction | Owns only source-smoke scratch |
@@ -35,11 +36,15 @@ newer preset-only feature.
 Final release cleans local generated state once. Its source reconstruction is
 the native Release producer and full non-live test lane. Its GNU SDK is packaged
 from that output. Selected cross SDKs retain their target scope and the shipped
-x86_64 musl CLI retains actual runtime proof. No other cross runtime runner is claimed.
+x86_64 musl CLI retains its native runtime suite. Linux ARM GNU/musl builds
+register basic static/shared library and application checks under CTest's `cross`
+label, using the required QEMU executable and pinned sysroot. Both preparation
+and final release execute each selected ARM inventory once, after matrix builds.
 The three Linux musl SDK presets also produce the static `cai` executable in
 their target build directory. The `cai` convenience preset shares the x86_64
-musl SDK configuration and directory; it is not another producer. ARM CLI
-archives receive architecture, static-link and package proof without execution.
+musl SDK configuration and directory; it is not another producer. ARM musl CLI
+builds add a bounded help/version/invalid-option QEMU smoke, without inference
+or the full native CLI suite. Native feedback never triggers cross builds.
 Equivalent prerequisites within one checkout share `.cache/deps`; checkouts
 share only global verified archives and prepared toolchains. Reconstruction owns
 `build/source-smoke/src/build` and its own `.cache/deps`. Native Debug library

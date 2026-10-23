@@ -1117,6 +1117,7 @@ if(CAI_BUILD_LUA)
 endif()
 
 include(CaiTests)
+include(CaiCrossTests)
 
 if(CAI_BUILD_TESTS)
   get_property(_cai_registered_tests DIRECTORY PROPERTY TESTS)

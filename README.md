@@ -1047,7 +1047,7 @@ fail with an explicit preparation command. Prepare fuzz tooling with
   hardening checks followed by the target and artifact coverage below. Host-only
   fixtures already passed in Debug are omitted from its Release selection.
 - `make release-matrix` builds the selected SDK targets, runs native Release
-  tests (including host fixtures) and the musl CLI tests, packages SDK, CLI,
+  tests (including host fixtures), ARM QEMU smoke checks and the musl CLI tests, packages SDK, CLI,
   source and Lua artifacts, and verifies the complete checksum inventory and
   extracted consumers. It does not run the additional Debug, memory, fuzz, Lua
   runtime or service scopes owned by `prerelease`, or reconstruct the source
@@ -1072,8 +1072,21 @@ fail with an explicit preparation command. Prepare fuzz tooling with
   Reconstruction uses its own extracted helpers, build directory and dependency
   roots. Only checksum-verified global archives and toolchains are shared.
   Other target SDKs receive build/link and extracted-package proof. The shipped
-  x86_64 musl CLI receives its actual runtime checks. Cross execution is otherwise
-  deferred because no runner is configured.
+  x86_64 musl CLI receives its actual runtime checks. The aarch64 and armhf
+  GNU/musl presets also register a small `cross` CTest inventory: static/shared
+  libcai and libcai_app initialization, local session state round trips, and
+  musl CLI help/version/invalid-option checks. These run through `qemu-aarch64`
+  or `qemu-arm` using the pinned target sysroot. Required runners and sysroots
+  must exist; missing prerequisites or failed checks stop the matrix.
+  This small inventory is registered even with `CAI_BUILD_TESTS=OFF`; the full
+  regression suites remain native.
+- `make cross-test` builds the selected matrix incrementally and runs those
+  four ARM CTest selections, without native regression suites or packaging.
+  For already built output, use `ctest --test-dir build/<target>-release
+  --no-tests=error --output-on-failure -L cross`. Cross library checks have
+  ten-second timeouts; the combined CLI smoke has a five-second timeout and
+  performs no inference. Native `make test`, `test-cli` and `test-all` never
+  initiate cross builds or QEMU execution. Darwin execution remains deferred.
 - Native Valgrind, AFL++ corpus smoke, Lua, offline integration and local Podman
   e2e retain their distinct scopes. Source-only host fixtures run once; hardening
   and facade selections do not replay them. Every required selection rejects an

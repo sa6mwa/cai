@@ -16,8 +16,8 @@ case "$action" in
     [[ -z ${RELEASE_VERSION:-} ]] || { printf 'Final release forbids RELEASE_VERSION overrides\n' >&2; exit 2; }
     version=$("$root/scripts/release_version.sh" "$root" --require-release)
     ;;
-  prepare|matrix|build-matrix|configure-matrix) ;;
-  *) printf 'usage: %s {identity|configure-matrix|build-matrix|matrix|prepare|final}\n' "$0" >&2; exit 2 ;;
+  prepare|matrix|test-matrix|build-matrix|configure-matrix) ;;
+  *) printf 'usage: %s {identity|configure-matrix|build-matrix|test-matrix|matrix|prepare|final}\n' "$0" >&2; exit 2 ;;
 esac
 target_text=$("$root/scripts/release_targets.sh")
 mapfile -t targets <<<"$target_text"
@@ -33,9 +33,22 @@ build_matrix() {
     fi
   done
 }
+test_matrix() {
+  local target
+  for target in "${targets[@]}"; do
+    case "$target" in
+      aarch64-linux-*|armhf-linux-*)
+        phase="runtime $target"
+        ctest --test-dir "$root/build/$target-release" --no-tests=error \
+          --output-on-failure --stop-on-failure --parallel 1 -L cross
+        ;;
+    esac
+  done
+}
 case "$action" in
   build-matrix) build_matrix; exit ;;
   configure-matrix) build_matrix; exit ;;
+  test-matrix) build_matrix; test_matrix; exit ;;
   prepare|matrix)
     version=$("$root/scripts/release_version.sh" "$root")
     if [[ "$action" == prepare ]]; then
@@ -69,6 +82,7 @@ case "$action" in
     build_matrix
     ;;
 esac
+test_matrix
 if [[ ${CAI_ENABLE_INTEGRATION_TESTS:-0} == 1 ]]; then
   phase=live
   make test-integration
