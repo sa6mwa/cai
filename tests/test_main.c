@@ -40990,13 +40990,15 @@ static int test_chat_counting_echo(void *context, const char *arguments,
 static void test_chat_parallel_tool_roundtrip(test_state *state) {
   static const char calls_body[] =
       "data: "
-      "{\"id\":\"parallel\",\"choices\":[{\"index\":0,\"delta\":{\"tool_"
+      "{\"id\":\"parallel\",\"choices\":[{\"index\":0,\"delta\":{\"content\":"
+      "\"Checking. \",\"tool_"
       "calls\":["
       "{\"index\":0,\"id\":\"call_0\",\"function\":{\"name\":\"echo\","
       "\"arguments\":\"{\\\"n\\\":\"}},"
       "{\"index\":1,\"id\":\"call_1\",\"function\":{\"name\":\"apply_patch\","
       "\"arguments\":\"{\\\"input\\\":\\\"pa\"}}]}}]}\n\n"
-      "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":["
+      "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Ready. "
+      "\",\"tool_calls\":["
       "{\"index\":1,\"function\":{\"arguments\":\"tch\\\"}\"}},"
       "{\"index\":0,\"function\":{\"arguments\":\"0}\"}}]},\"finish_reason\":"
       "\"tool_calls\"}]}\n\n"
@@ -41012,7 +41014,7 @@ static void test_chat_parallel_tool_roundtrip(test_state *state) {
       "\"tool_calls\":[{\"id\":\"call_0\",\"type\":\"function\",\"function\":{"
       "\"name\":\"echo\",\"arguments\":\"{\\\"n\\\":0}\"}},{\"id\":\"call_1\","
       "\"type\":\"function\",\"function\":{\"name\":\"apply_patch\","
-      "\"arguments\":\"{\\\"input\\\":\\\"patch\\\"}\"}}]",
+      "\"arguments\":\"{\\\"input\\\":\\\"patch\\\"}\"}}]},{\"role\":\"tool\"",
       "\"tool_call_id\":\"call_0\",\"content\":\"{\\\"n\\\":0}\"",
       "\"tool_call_id\":\"call_1\",\"content\":\"patch\""};
   static const mock_http_expectation script[] = {
@@ -41090,7 +41092,8 @@ static void test_chat_parallel_tool_roundtrip(test_state *state) {
     test_fail(state, "chat_parallel_detail",
               error.detail != NULL ? error.detail : error.message);
   expect_int(state, "chat_parallel_executions", calls.calls, 2L);
-  expect_str(state, "chat_parallel_answer", output.buffer, "done");
+  expect_str(state, "chat_parallel_answer", output.buffer,
+             "Checking. Ready. done");
   if (rc == CAI_OK)
     rc = cai_session_export_state_source(session, &source, &error);
   if (rc == CAI_OK)
@@ -43978,6 +43981,111 @@ static void test_agent_runtime_patch_events(test_state *state) {
   }
 }
 
+static void test_chat_message_items(test_state *state) {
+  static const char text_body[] =
+      "data: "
+      "{\"id\":\"text\",\"choices\":[{\"index\":0,\"delta\":{\"content\":"
+      "\"he\"}}]}\n\n"
+      "data: "
+      "{\"choices\":[{\"index\":0,\"delta\":{\"content\":\"llo\"},\"finish_"
+      "reason\":\"stop\"}]}\n\n"
+      "data: [DONE]\n\n";
+  static const char partial_body[] =
+      "data: "
+      "{\"id\":\"partial\",\"choices\":[{\"index\":0,\"delta\":{\"content\":"
+      "\"partial\"}}]}\n\n";
+  static const char empty_body[] = "data: "
+                                   "{\"choices\":[{\"index\":0,\"delta\":{},"
+                                   "\"finish_reason\":\"stop\"}]}\n\n"
+                                   "data: [DONE]\n\n";
+  static const char reasoning_body[] =
+      "data: "
+      "{\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"private\"}"
+      ",\"finish_reason\":\"stop\"}]}\n\n"
+      "data: [DONE]\n\n";
+  static const mock_http_expectation script[] = {
+      {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, text_body},
+      {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, text_body},
+      {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, partial_body},
+      {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, empty_body},
+      {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, reasoning_body}};
+  http_mock_server server;
+  cai_client_config config;
+  cai_client *client = NULL;
+  cai_response_create_params *params = NULL;
+  cai_stream_sinks sinks;
+  stream_output_item_state item;
+  failing_callback_state rejected;
+  cai_error error;
+  size_t step;
+  int rc;
+  if (http_mock_server_open_script(state, "chat_message_items", script, 5U,
+                                   &server) != 0)
+    return;
+  cai_error_init(&error);
+  cai_client_config_init(&config);
+  config.api_key = "fixture";
+  config.base_url = server.base_url;
+  config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
+  config.chat_max_attempts = 1U;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 1000L;
+  rc = cai_client_open(&config, &client, &error);
+  if (rc == CAI_OK)
+    rc = cai_response_create_params_new(&params, &error);
+  if (rc == CAI_OK)
+    rc = params->set_model(params, "fixture", &error);
+  if (rc == CAI_OK)
+    rc = params->add_text(params, "user", "hello", &error);
+  expect_int(state, "chat_message_setup", rc, CAI_OK);
+  for (step = 0U; rc == CAI_OK && step < 5U; step++) {
+    memset(&item, 0, sizeof(item));
+    memset(&rejected, 0, sizeof(rejected));
+    cai_stream_sinks_init(&sinks);
+    sinks.output_item_done = step == 1U ? test_failing_stream_output_item_done
+                                        : test_stream_output_item_done;
+    sinks.output_item_context = step == 1U ? (void *)&rejected : (void *)&item;
+    rc = cai_client_stream_response_with_id(client, params, &sinks, NULL, NULL,
+                                            &error);
+    expect_int(state, "chat_message_result", rc,
+               step == 1U   ? CAI_ERR_INVALID
+               : step == 2U ? CAI_ERR_PROTOCOL
+                            : CAI_OK);
+    if (step == 0U) {
+      expect_int(state, "chat_message_count", item.done_count, 1L);
+      expect_int(state, "chat_message_index", item.output_index, 0L);
+      expect_str(state, "chat_message_id", item.item_id, "chat_text");
+      expect_str(state, "chat_message_type", item.type, "message");
+      expect_substr(state, "chat_message_text", item.json,
+                    "\"text\":\"hello\"");
+      expect_substr(state, "chat_message_role", item.json,
+                    "\"role\":\"assistant\"");
+      expect_substr(state, "chat_message_status", item.json,
+                    "\"status\":\"completed\"");
+    } else if (step == 1U) {
+      expect_int(state, "chat_message_rejected_count", rejected.calls, 1L);
+      expect_substr(state, "chat_message_rejected_detail", error.message,
+                    "output item done callback failed");
+    } else {
+      expect_int(state, "chat_message_no_incomplete_or_empty_item",
+                 item.done_count, 0L);
+    }
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    rc = CAI_OK;
+  }
+  cai_response_create_params_destroy(params);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "chat_message_items", server.pid,
+                    &server.child_status);
+}
+
 static void test_chat_completions_adapter(test_state *state) {
   static const char *first_required[] = {"Authorization: Bearer mock-key",
                                          "\"model\":\"test-model\"",
@@ -44253,6 +44361,8 @@ static void test_chat_completions_adapter(test_state *state) {
     if (step == 0U) {
       expect_int(state, "chat_text_stream", rc, CAI_OK);
       expect_str(state, "chat_text_value", text.buffer, "<hello>");
+      expect_substr(state, "chat_text_completed_item", item.json,
+                    "\"text\":\"hello\"");
       expect_str(state, "chat_reasoning_value", reasoning.buffer,
                  "[Considered.]");
       expect_str(state, "chat_id", id, "chat_one");
@@ -44281,6 +44391,8 @@ static void test_chat_completions_adapter(test_state *state) {
       expect_int(state, "chat_nonstream", rc, CAI_OK);
       if (response != NULL) {
         if (step == 4U) {
+          expect_int(state, "chat_nonstream_one_message",
+                     (long)cai_response_output_item_count(response), 1L);
           expect_str(state, "chat_nonstream_text",
                      cai_response_output_text(response), "hello");
         } else {
@@ -44297,6 +44409,8 @@ static void test_chat_completions_adapter(test_state *state) {
     } else if (step == 8U) {
       expect_int(state, "chat_glm_stream", rc, CAI_OK);
       expect_str(state, "chat_glm_final_only", text.buffer, "<OK>");
+      expect_substr(state, "chat_glm_item_final_only", item.json,
+                    "\"text\":\"OK\"");
     } else if (step == 9U) {
       expect_int(state, "chat_glm_json_stream", rc, CAI_OK);
       expect_str(state, "chat_glm_json_final", text.buffer,
@@ -52477,6 +52591,7 @@ static const test_entry test_entries[] = {
     {"chat_failed_tool_stream_preserves_session",
      test_chat_failed_tool_stream_preserves_session},
     {"chat_completions_adapter", test_chat_completions_adapter},
+    {"chat_message_items", test_chat_message_items},
     {"chat_request_settings", test_chat_request_settings},
     {"chat_buffered_response", test_chat_buffered_response},
     {"stream_response_text", test_stream_response_text},

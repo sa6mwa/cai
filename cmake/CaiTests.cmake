@@ -567,6 +567,7 @@ if(CAI_BUILD_TESTS)
     chat_transport_failure_modes
     chat_failed_tool_stream_preserves_session
     chat_completions_adapter
+    chat_message_items
     chat_request_settings
     chat_buffered_response
     stream_compaction_progress_callback
@@ -1146,6 +1147,11 @@ if(CAI_BUILD_TESTS)
       ENVIRONMENT "${CAI_LUA_TEST_ENV}"
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
       TIMEOUT 3)
+    add_test(NAME cai_lua_chat_message_items COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_chat_message_items_test.sh"
+      "${CAI_LUA_EXECUTABLE}")
+    set_tests_properties(cai_lua_chat_message_items PROPERTIES
+      LABELS "unit;local;offline" ENVIRONMENT "${CAI_LUA_TEST_ENV}" TIMEOUT 10)
     foreach(_cai_lua_context_protocol responses chat_completions)
       add_test(NAME cai_lua_context_instructions_${_cai_lua_context_protocol}
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_context_instructions_test.sh"

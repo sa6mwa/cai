@@ -1985,9 +1985,6 @@ static int cai_session_after_stream_tool_calls(
       has_call_items = 1;
     }
   }
-  if (rc == CAI_OK && call_items_len > 0U) {
-    rc = cai_history_append_array_record_spooled(session, &call_items, error);
-  }
   if (rc == CAI_OK && stream_output_items_count > 0U &&
       stream_output_items != NULL) {
     rc = cai_history_append_array_record_spooled(session, stream_output_items,
@@ -2003,6 +2000,11 @@ static int cai_session_after_stream_tool_calls(
   }
   if (rc == CAI_OK && output_items_len > 0U) {
     rc = cai_history_append_array_record_spooled(session, &output_items, error);
+  }
+  /* Keep commentary before calls so their results follow the calling message
+   * immediately when client history is serialized as Chat Completions. */
+  if (rc == CAI_OK && call_items_len > 0U) {
+    rc = cai_history_append_array_record_spooled(session, &call_items, error);
   }
   if (has_call_items) {
     call_items.cleanup(&call_items);

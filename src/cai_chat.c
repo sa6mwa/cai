@@ -1091,6 +1091,7 @@ typedef struct cai_chat_stream_state {
   long http_status;
   lonejson_sse *sse;
   lonejson_spooled event;
+  lonejson_spooled text;
   cai_chat_tool_state *tools;
   size_t tool_count;
   char *body;
@@ -1287,6 +1288,9 @@ static int cai_chat_capture_reserve(cai_chat_stream_state *state,
   return CAI_OK;
 }
 
+static lonejson_status cai_chat_spool_append(void *user, const void *data,
+                                             size_t len, lonejson_error *error);
+
 static int cai_chat_emit_text(cai_chat_stream_state *state,
                               const lonejson_spooled *text, int reasoning) {
   cai_sink *sink;
@@ -1301,6 +1305,15 @@ static int cai_chat_emit_text(cai_chat_stream_state *state,
     rc = cai_chat_capture_reserve(state, text->size_fn(text));
     if (rc != CAI_OK)
       return rc;
+    if (state->sinks->output_item_done != NULL) {
+      lonejson_error json_error;
+      lonejson_error_init(&json_error);
+      if (text->write_to_sink(text, cai_chat_spool_append, &state->text,
+                              &json_error) != LONEJSON_STATUS_OK)
+        return cai_set_error_detail(state->error, CAI_ERR_TRANSPORT,
+                                    "failed to retain Chat message text",
+                                    json_error.message);
+    }
   }
   sink =
       reasoning ? state->sinks->reasoning_summary : state->sinks->output_text;
@@ -1554,6 +1567,63 @@ static lonejson_status cai_chat_spool_append(void *user, const void *data,
 
   spool = (lonejson_spooled *)user;
   return spool->append(spool, data, len, error);
+}
+
+static int cai_chat_emit_message_done(cai_chat_stream_state *state) {
+  lonejson_spooled item;
+  lonejson_writer writer;
+  lonejson_error json_error;
+  lonejson_status status;
+  int rc;
+
+  if (!state->text_started || state->sinks->output_item_done == NULL)
+    return CAI_OK;
+  CAI_LJ->spooled_init(CAI_LJ, &item);
+  memset(&writer, 0, sizeof(writer));
+  lonejson_error_init(&json_error);
+  status = CAI_LJ->writer_init_sink(CAI_LJ, &writer, cai_chat_spool_append,
+                                    &item, &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = writer.begin_object(&writer, &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = cai_chat_member(&writer, "id", "chat_text", &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = cai_chat_member(&writer, "type", "message", &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = cai_chat_member(&writer, "role", "assistant", &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = cai_chat_member(&writer, "status", "completed", &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = cai_chat_key(&writer, "content", &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = writer.begin_array(&writer, &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = writer.begin_object(&writer, &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = cai_chat_member(&writer, "type", "output_text", &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = cai_chat_key(&writer, "text", &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = writer.string_spooled(&writer, &state->text, &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = writer.end_object(&writer, &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = writer.end_array(&writer, &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = writer.end_object(&writer, &json_error);
+  if (status == LONEJSON_STATUS_OK)
+    status = writer.finish(&writer, &json_error);
+  if (writer.cleanup != NULL)
+    writer.cleanup(&writer);
+  rc = status == LONEJSON_STATUS_OK
+           ? state->sinks->output_item_done(state->sinks->output_item_context,
+                                            "chat_text", 0, "message", &item,
+                                            state->error)
+           : cai_set_error_detail(state->error, CAI_ERR_PROTOCOL,
+                                  "failed to serialize Chat message",
+                                  json_error.message);
+  item.cleanup(&item);
+  return rc;
 }
 
 static int cai_chat_emit_tool_done(cai_chat_stream_state *state, size_t index) {
@@ -1989,6 +2059,8 @@ static void cai_chat_stream_cleanup(cai_chat_stream_state *state) {
   if (state->event.cleanup != NULL) {
     state->event.cleanup(&state->event);
   }
+  if (state->text.cleanup != NULL)
+    state->text.cleanup(&state->text);
   if (state->sse != NULL) {
     lonejson_sse_close(state->sse);
   }
@@ -2071,6 +2143,8 @@ static int cai_chat_stream_attempt(
                          "failed to open Chat Completions SSE parser");
   }
   CAI_LJ->spooled_init(CAI_LJ, &state.event);
+  if (sinks->output_item_done != NULL)
+    CAI_LJ->spooled_init(CAI_LJ, &state.text);
   upload = NULL;
   headers = NULL;
   url = NULL;
@@ -2224,6 +2298,8 @@ static int cai_chat_stream_attempt(
                  : "finish_reason=length; continuation is required",
         pressure ? "context_length_exceeded" : "output_length", request_id);
   }
+  if (rc == CAI_OK)
+    rc = cai_chat_emit_message_done(&state);
   for (i = 0U; rc == CAI_OK && i < state.tool_count; i++) {
     rc = cai_chat_emit_tool_done(&state, i);
   }
@@ -2340,45 +2416,9 @@ int cai_chat_stream_response(cai_client *client,
 }
 
 typedef struct cai_chat_response_capture {
-  lonejson_spooled text;
   lonejson_spooled items;
   lonejson_writer items_writer;
 } cai_chat_response_capture;
-
-static int cai_chat_capture_text(void *user, const char *item_id,
-                                 int output_index,
-                                 const lonejson_spooled *delta,
-                                 cai_error *error) {
-  cai_chat_response_capture *capture;
-  lonejson_spooled cursor;
-  lonejson_read_result result;
-  lonejson_error json_error;
-  unsigned char buffer[8192];
-
-  (void)item_id;
-  (void)output_index;
-  capture = (cai_chat_response_capture *)user;
-  cursor = *delta;
-  lonejson_error_init(&json_error);
-  if (cursor.rewind(&cursor, &json_error) != LONEJSON_STATUS_OK) {
-    return cai_set_error(error, CAI_ERR_PROTOCOL,
-                         "failed to read Chat Completions text delta");
-  }
-  do {
-    result = cursor.read(&cursor, buffer, sizeof(buffer));
-    if (result.error_code != 0) {
-      return cai_set_error(error, CAI_ERR_PROTOCOL,
-                           "failed to read Chat Completions text delta");
-    }
-    if (result.bytes_read > 0U &&
-        capture->text.append(&capture->text, buffer, result.bytes_read,
-                             &json_error) != LONEJSON_STATUS_OK) {
-      return cai_set_error(error, CAI_ERR_TRANSPORT,
-                           "failed to retain Chat Completions output text");
-    }
-  } while (!result.eof);
-  return CAI_OK;
-}
 
 static int cai_chat_capture_item(void *user, const char *item_id,
                                  int output_index, const char *type,
@@ -2395,7 +2435,7 @@ static int cai_chat_capture_item(void *user, const char *item_id,
   if (capture->items_writer.json_value_spooled(
           &capture->items_writer, item, &json_error) != LONEJSON_STATUS_OK) {
     return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
-                                "failed to retain Chat Completions tool item",
+                                "failed to retain Chat Completions output item",
                                 json_error.message);
   }
   return CAI_OK;
@@ -2468,43 +2508,6 @@ cai_chat_capture_build_response(cai_client *client,
   }
   if (status == LONEJSON_STATUS_OK) {
     status = writer.begin_array(&writer, &json_error);
-  }
-  if (status == LONEJSON_STATUS_OK &&
-      capture->text.size_fn(&capture->text) > 0U) {
-    status = writer.begin_object(&writer, &json_error);
-    if (status == LONEJSON_STATUS_OK) {
-      status = cai_chat_member(&writer, "type", "message", &json_error);
-    }
-    if (status == LONEJSON_STATUS_OK) {
-      status = cai_chat_member(&writer, "role", "assistant", &json_error);
-    }
-    if (status == LONEJSON_STATUS_OK) {
-      status = cai_chat_key(&writer, "content", &json_error);
-    }
-    if (status == LONEJSON_STATUS_OK) {
-      status = writer.begin_array(&writer, &json_error);
-    }
-    if (status == LONEJSON_STATUS_OK) {
-      status = writer.begin_object(&writer, &json_error);
-    }
-    if (status == LONEJSON_STATUS_OK) {
-      status = cai_chat_member(&writer, "type", "output_text", &json_error);
-    }
-    if (status == LONEJSON_STATUS_OK) {
-      status = cai_chat_key(&writer, "text", &json_error);
-    }
-    if (status == LONEJSON_STATUS_OK) {
-      status = writer.string_spooled(&writer, &capture->text, &json_error);
-    }
-    if (status == LONEJSON_STATUS_OK) {
-      status = writer.end_object(&writer, &json_error);
-    }
-    if (status == LONEJSON_STATUS_OK) {
-      status = writer.end_array(&writer, &json_error);
-    }
-    if (status == LONEJSON_STATUS_OK) {
-      status = writer.end_object(&writer, &json_error);
-    }
   }
   if (status == LONEJSON_STATUS_OK) {
     status =
@@ -2615,7 +2618,6 @@ int cai_chat_create_response(cai_client *client,
   if (error == NULL)
     error = &local_error;
   memset(&capture, 0, sizeof(capture));
-  CAI_LJ->spooled_init(CAI_LJ, &capture.text);
   CAI_LJ->spooled_init(CAI_LJ, &capture.items);
   lonejson_error_init(&json_error);
   status = CAI_LJ->writer_init_sink(CAI_LJ, &capture.items_writer,
@@ -2634,8 +2636,6 @@ int cai_chat_create_response(cai_client *client,
   memset(&usage, 0, sizeof(usage));
   if (rc == CAI_OK) {
     cai_stream_sinks_init(&sinks);
-    sinks.output_text_delta = cai_chat_capture_text;
-    sinks.output_text_context = &capture;
     sinks.output_item_done = cai_chat_capture_item;
     sinks.output_item_context = &capture;
     rc = cai_chat_stream_retries(
@@ -2661,7 +2661,6 @@ int cai_chat_create_response(cai_client *client,
                                          out, error);
   }
   cai_free_mem(NULL, id);
-  capture.text.cleanup(&capture.text);
   capture.items.cleanup(&capture.items);
   if (rc == CAI_ERR_LIMIT)
     cai_log_http_response_limit(
