@@ -96,6 +96,10 @@
     add_test(NAME cai_cli_skills
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_skills_test.sh" "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_skills PROPERTIES TIMEOUT 45)
+    add_test(NAME cai_cli_review_defaults COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_review_defaults_test.sh"
+      "$<TARGET_FILE:cai_cli_mock_fixture>")
+    set_tests_properties(cai_cli_review_defaults PROPERTIES TIMEOUT 15)
     add_test(NAME cai_cli_chrome
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/chrome_test.sh"
         cli "$<TARGET_FILE:cai_cli_mock_fixture>" "${CMAKE_CURRENT_BINARY_DIR}"

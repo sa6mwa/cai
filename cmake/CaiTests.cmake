@@ -1128,6 +1128,13 @@ if(CAI_BUILD_TESTS)
   endif()
 
   if(CAI_BUILD_LUA)
+    if(TARGET cai_cli_mock_fixture)
+      add_test(NAME cai_lua_review_defaults COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/review_defaults_test.sh"
+        "$<TARGET_FILE:cai_cli_mock_fixture>" "${CAI_LUA_EXECUTABLE}")
+      set_tests_properties(cai_lua_review_defaults PROPERTIES
+        LABELS "unit;local;offline" TIMEOUT 5 ENVIRONMENT "${CAI_LUA_TEST_ENV}")
+    endif()
     string(TOLOWER "${CMAKE_SYSTEM_NAME}" _cai_lua_export_policy_platform)
     add_test(NAME cai_lua_export_policy_test
       COMMAND "${CMAKE_CURRENT_SOURCE_DIR}/tests/shared_export_policy_test.sh"

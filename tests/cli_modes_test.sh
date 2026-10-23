@@ -2,7 +2,7 @@
 source "$(dirname "$0")/cli_test_common.sh"
 peer_start
 # Git is a review input here, not a synthetic release-ref controller.
-git -C "$work" init -q
+git -C "$work" init -q -b trunk
 git -C "$work" config core.hooksPath /dev/null
 printf before >"$work/tracked.txt"; git -C "$work" add tracked.txt
 git -C "$work" -c user.name=Fixture -c user.email=fixture@example.test -c commit.gpgSign=false commit -qm 'test(cli): seed review input'

@@ -74,6 +74,7 @@ typedef struct cai_cli_options {
   int non_interactive;
   int review;
   int review_and_fix;
+  int review_uncommitted;
   int image_generation;
   int terminal;
   int shell_context;

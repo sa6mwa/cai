@@ -101,7 +101,8 @@ local render = smith_renderer.new(cai, {
 
 local function review_request(command)
   local argument = command:sub(8):match("^%s*(.-)%s*$")
-  if argument == "" or argument == "uncommitted" then
+  if argument == "" then return {} end
+  if argument == "uncommitted" then
     return { target = "uncommitted" }
   end
   local base = argument:match("^base%s+(.+)$")

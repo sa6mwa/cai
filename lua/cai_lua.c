@@ -5028,6 +5028,20 @@ static int cai_lua_agent_runtime_cancel_turn(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_review_default_base(lua_State *L) {
+  char base[512];
+  cai_error error;
+  int rc;
+  const char *workspace = luaL_optstring(L, 1, ".");
+  cai_error_init(&error);
+  rc = cai_agent_review_default_base(workspace, base, sizeof(base), &error);
+  if (rc != CAI_OK)
+    return cai_lua_bool_result(L, rc, &error);
+  lua_pushstring(L, base);
+  cai_error_cleanup(&error);
+  return 1;
+}
+
 static int cai_lua_agent_runtime_submit_review(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_agent_review_request request;
@@ -5037,11 +5051,21 @@ static int cai_lua_agent_runtime_submit_review(lua_State *L) {
   int rc;
 
   self = cai_lua_check_agent_runtime(L, 1);
+  if (lua_isnoneornil(L, 2)) {
+    lua_settop(L, 1);
+    lua_newtable(L);
+  }
   luaL_checktype(L, 2, LUA_TTABLE);
   cai_agent_review_request_init(&request);
   request_value_count = 0;
   target = cai_lua_opt_string_field(L, 2, "target", NULL);
-  if (target == NULL || strcmp(target, "uncommitted") == 0) {
+  if (target == NULL) {
+    request.target = CAI_AGENT_REVIEW_DEFAULT;
+    request.base_branch = cai_lua_opt_string_field(L, 2, "base_branch", NULL);
+    request.commit = cai_lua_opt_string_field(L, 2, "commit", NULL);
+    request.commit_title = cai_lua_opt_string_field(L, 2, "commit_title", NULL);
+    request.instructions = cai_lua_opt_string_field(L, 2, "instructions", NULL);
+  } else if (strcmp(target, "uncommitted") == 0) {
     request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
   } else if (strcmp(target, "base") == 0) {
     request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
@@ -5084,11 +5108,21 @@ static int cai_lua_agent_runtime_start_review(lua_State *L) {
   int rc;
 
   parent = cai_lua_check_agent_runtime(L, 1);
+  if (lua_isnoneornil(L, 2)) {
+    lua_settop(L, 1);
+    lua_newtable(L);
+  }
   luaL_checktype(L, 2, LUA_TTABLE);
   cai_agent_review_request_init(&request);
   request_value_count = 0;
   target = cai_lua_opt_string_field(L, 2, "target", NULL);
-  if (target == NULL || strcmp(target, "uncommitted") == 0) {
+  if (target == NULL) {
+    request.target = CAI_AGENT_REVIEW_DEFAULT;
+    request.base_branch = cai_lua_opt_string_field(L, 2, "base_branch", NULL);
+    request.commit = cai_lua_opt_string_field(L, 2, "commit", NULL);
+    request.commit_title = cai_lua_opt_string_field(L, 2, "commit_title", NULL);
+    request.instructions = cai_lua_opt_string_field(L, 2, "instructions", NULL);
+  } else if (strcmp(target, "uncommitted") == 0) {
     request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
   } else if (strcmp(target, "base") == 0) {
     request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
@@ -12309,6 +12343,8 @@ int luaopen_cai(lua_State *L) {
   lua_setfield(L, -2, "todo");
   lua_pushcfunction(L, cai_lua_skill_metadata_new);
   lua_setfield(L, -2, "skill_metadata");
+  lua_pushcfunction(L, cai_lua_review_default_base);
+  lua_setfield(L, -2, "review_default_base");
   lua_pushcfunction(L, cai_lua_patch_render);
   lua_setfield(L, -2, "patch_render");
   lua_pushcfunction(L, cai_lua_display_new);

@@ -8886,15 +8886,10 @@ static int cai_runtime_git_environment(char ***out, cai_error *error) {
   return CAI_OK;
 }
 
-static int cai_runtime_git_merge_base(const char *workspace, const char *base,
-                                      char output[CAI_RUNTIME_GIT_CAPTURE_MAX],
-                                      cai_error *error) {
+static int cai_runtime_git_capture(const char *workspace, char *const argv[],
+                                   char output[CAI_RUNTIME_GIT_CAPTURE_MAX],
+                                   int *exit_code, cai_error *error) {
   char executable[PATH_MAX];
-  char program[] = "git";
-  char merge_base[] = "merge-base";
-  char head[] = "HEAD";
-  char base_copy[257];
-  char *argv[5];
   char **environment;
   char buffer[128];
   size_t length;
@@ -8902,20 +8897,10 @@ static int cai_runtime_git_merge_base(const char *workspace, const char *base,
   int pipe_fds[2];
   int status;
   pid_t pid;
-  int rc;
+  int rc, truncated = 0;
 
   output[0] = '\0';
   environment = NULL;
-  if (!cai_runtime_review_ref_valid(base)) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "review base_branch must be a safe git ref");
-  }
-  memcpy(base_copy, base, strlen(base) + 1U);
-  argv[0] = program;
-  argv[1] = merge_base;
-  argv[2] = head;
-  argv[3] = base_copy;
-  argv[4] = NULL;
   rc = cai_runtime_git_executable(executable, error);
   if (rc != CAI_OK) {
     return rc;
@@ -8959,6 +8944,7 @@ static int cai_runtime_git_merge_base(const char *workspace, const char *base,
 
       if (copied >
           sizeof(output[0]) * CAI_RUNTIME_GIT_CAPTURE_MAX - 1U - length) {
+        truncated = 1;
         copied = sizeof(output[0]) * CAI_RUNTIME_GIT_CAPTURE_MAX - 1U - length;
       }
       if (copied > 0U) {
@@ -8990,8 +8976,123 @@ static int cai_runtime_git_merge_base(const char *workspace, const char *base,
   while (length > 0U && isspace((unsigned char)output[length - 1U])) {
     output[--length] = '\0';
   }
-  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0 ||
-      !cai_runtime_review_commit_valid(output)) {
+  *exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+  if (truncated)
+    return cai_set_error(
+        error, CAI_ERR_LIMIT,
+        "review Git output exceeds capture limit; select an explicit base");
+  return CAI_OK;
+}
+
+int cai_agent_review_default_base(const char *workspace, char *base,
+                                  size_t capacity, cai_error *error) {
+  char program[] = "git", symbolic[] = "symbolic-ref", quiet[] = "--quiet";
+  char origin[] = "refs/remotes/origin/HEAD", verify[] = "--verify";
+  char rev_parse[] = "rev-parse", each[] = "for-each-ref";
+  char format[] = "--format=%(refname)", main_ref[] = "refs/heads/main";
+  char master_ref[] = "refs/heads/master", trunk_ref[] = "refs/heads/trunk";
+  char output[CAI_RUNTIME_GIT_CAPTURE_MAX],
+      selected[CAI_RUNTIME_GIT_CAPTURE_MAX];
+  char revision[CAI_RUNTIME_GIT_CAPTURE_MAX],
+      commit[CAI_RUNTIME_GIT_CAPTURE_MAX];
+  char *symbolic_args[5], *verify_args[6], *local_args[7];
+  char *line, *next;
+  int rc, status, count = 0;
+  symbolic_args[0] = program;
+  symbolic_args[1] = symbolic;
+  symbolic_args[2] = quiet;
+  symbolic_args[3] = origin;
+  symbolic_args[4] = NULL;
+  verify_args[0] = program;
+  verify_args[1] = rev_parse;
+  verify_args[2] = verify;
+  verify_args[3] = quiet;
+  verify_args[4] = revision;
+  verify_args[5] = NULL;
+  local_args[0] = program;
+  local_args[1] = each;
+  local_args[2] = format;
+  local_args[3] = main_ref;
+  local_args[4] = master_ref;
+  local_args[5] = trunk_ref;
+  local_args[6] = NULL;
+  if (base != NULL && capacity > 0U)
+    base[0] = '\0';
+  if (workspace == NULL || workspace[0] == '\0' || base == NULL ||
+      capacity == 0U)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "review workspace and base buffer are required");
+  rc =
+      cai_runtime_git_capture(workspace, symbolic_args, output, &status, error);
+  if (rc != CAI_OK)
+    return rc;
+  selected[0] = '\0';
+  if (status == 0 && strncmp(output, "refs/remotes/origin/", 20U) == 0 &&
+      cai_runtime_review_ref_valid(output)) {
+    strcpy(selected, output);
+    if (snprintf(revision, sizeof(revision), "%s^{commit}", selected) >=
+        (int)sizeof(revision))
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "review default ref is too long");
+    rc =
+        cai_runtime_git_capture(workspace, verify_args, commit, &status, error);
+    if (rc != CAI_OK)
+      return rc;
+    if (status != 0 || !cai_runtime_review_commit_valid(commit))
+      selected[0] = '\0';
+  }
+  if (selected[0] == '\0') {
+    rc = cai_runtime_git_capture(workspace, local_args, output, &status, error);
+    if (rc != CAI_OK)
+      return rc;
+    if (status != 0)
+      return cai_set_error(
+          error, CAI_ERR_INVALID,
+          "default-branch review requires a Git repository; select custom "
+          "instructions or uncommitted explicitly");
+    for (line = output; line != NULL && line[0] != '\0'; line = next) {
+      next = strchr(line, '\n');
+      if (next != NULL)
+        *next++ = '\0';
+      if (strcmp(line, main_ref) == 0 || strcmp(line, master_ref) == 0 ||
+          strcmp(line, trunk_ref) == 0) {
+        strcpy(selected, line);
+        count++;
+      }
+    }
+    if (count != 1)
+      return cai_set_error(
+          error, CAI_ERR_INVALID,
+          "cannot resolve an unambiguous Git default branch; set origin/HEAD "
+          "or select an explicit base or uncommitted review");
+  }
+  if (strlen(selected) >= capacity)
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "review base buffer is too small");
+  strcpy(base, selected);
+  return CAI_OK;
+}
+
+static int cai_runtime_git_merge_base(const char *workspace, const char *base,
+                                      char output[CAI_RUNTIME_GIT_CAPTURE_MAX],
+                                      cai_error *error) {
+  char program[] = "git", merge_base[] = "merge-base", head[] = "HEAD";
+  char base_copy[257];
+  char *argv[5];
+  int rc, status;
+  argv[0] = program;
+  argv[1] = merge_base;
+  argv[2] = head;
+  argv[3] = base_copy;
+  argv[4] = NULL;
+  if (!cai_runtime_review_ref_valid(base))
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "review base_branch must be a safe git ref");
+  strcpy(base_copy, base);
+  rc = cai_runtime_git_capture(workspace, argv, output, &status, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (status != 0 || !cai_runtime_review_commit_valid(output)) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "failed to resolve the review merge base");
   }
@@ -9095,6 +9196,8 @@ cai_runtime_prepare_review_request(const cai_agent_runtime *runtime,
       "commit for this comparison is %s. Run `git diff %s` to inspect the "
       "changes relative to %s. Provide prioritized, actionable findings.";
   char merge_base[CAI_RUNTIME_GIT_CAPTURE_MAX];
+  char base[CAI_RUNTIME_GIT_CAPTURE_MAX];
+  cai_agent_review_request resolved;
   int length;
 
   if (runtime == NULL || request == NULL || out == NULL) {
@@ -9102,6 +9205,30 @@ cai_runtime_prepare_review_request(const cai_agent_runtime *runtime,
                          "review preparation requires a runtime and request");
   }
   *out = NULL;
+  if (request->target == CAI_AGENT_REVIEW_DEFAULT) {
+    int supplied = (request->base_branch != NULL) + (request->commit != NULL) +
+                   (request->instructions != NULL);
+    if (supplied > 1)
+      return cai_set_error(
+          error, CAI_ERR_INVALID,
+          "review accepts only one base, commit, or custom instruction");
+    resolved = *request;
+    if (request->instructions != NULL)
+      resolved.target = CAI_AGENT_REVIEW_CUSTOM;
+    else if (request->commit != NULL)
+      resolved.target = CAI_AGENT_REVIEW_COMMIT;
+    else {
+      resolved.target = CAI_AGENT_REVIEW_BASE_BRANCH;
+      if (request->base_branch == NULL) {
+        int rc = cai_agent_review_default_base(runtime->workspace_directory,
+                                               base, sizeof(base), error);
+        if (rc != CAI_OK)
+          return rc;
+        resolved.base_branch = base;
+      }
+    }
+    request = &resolved;
+  }
   if (request->target != CAI_AGENT_REVIEW_BASE_BRANCH) {
     return cai_runtime_render_review_request(request, out, error);
   }
@@ -10381,6 +10508,7 @@ static int cai_runtime_run_review_subagent(void *context, const void *params,
   char *instructions;
   char display_summary[CAI_RUNTIME_SUBAGENT_SUMMARY_MAX + 1U];
   char *metadata_json;
+  char default_base[CAI_RUNTIME_GIT_CAPTURE_MAX];
   const char *summary;
   int rc;
 
@@ -10393,8 +10521,24 @@ static int cai_runtime_run_review_subagent(void *context, const void *params,
   cai_agent_review_request_init(&request);
   instructions = NULL;
   metadata_json = NULL;
-  if (args->target == NULL || args->target[0] == '\0' ||
-      strcmp(args->target, target_uncommitted) == 0) {
+  if (args->target == NULL || args->target[0] == '\0') {
+    int supplied = (args->base != NULL) + (args->commit != NULL) +
+                   (args->instructions != NULL);
+    if (supplied > 1)
+      return cai_set_error(
+          error, CAI_ERR_INVALID,
+          "review accepts only one base, commit, or custom instruction");
+    if (args->base != NULL) {
+      request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
+      request.base_branch = args->base;
+    } else if (args->commit != NULL) {
+      request.target = CAI_AGENT_REVIEW_COMMIT;
+      request.commit = args->commit;
+    } else if (args->instructions != NULL) {
+      request.target = CAI_AGENT_REVIEW_CUSTOM;
+      request.instructions = args->instructions;
+    }
+  } else if (strcmp(args->target, target_uncommitted) == 0) {
     if (args->base != NULL || args->commit != NULL ||
         args->instructions != NULL) {
       return cai_set_error(error, CAI_ERR_INVALID,
@@ -10430,6 +10574,15 @@ static int cai_runtime_run_review_subagent(void *context, const void *params,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "review target must be uncommitted, base, commit, or "
                          "custom");
+  }
+  if (request.target == CAI_AGENT_REVIEW_DEFAULT) {
+    rc = cai_agent_review_default_base(runtime->workspace_directory,
+                                       default_base, sizeof(default_base),
+                                       error);
+    if (rc != CAI_OK)
+      return rc;
+    request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
+    request.base_branch = default_base;
   }
   rc = cai_runtime_prepare_review_request(runtime, &request, &instructions,
                                           error);
@@ -10491,7 +10644,9 @@ static int cai_runtime_register_review_subagent_tool(cai_agent_runtime *runtime,
   if (rc == CAI_OK)
     rc = cai_tool_schema_add_string_enum(
         schema, "target",
-        "Review scope. Omit for uncommitted changes; base requires base, "
+        "Review scope. Omit for the Git default branch, or infer from an "
+        "explicit base, commit, or instructions. uncommitted is "
+        "explicit. base requires base, "
         "commit requires commit, and custom requires instructions.",
         targets, sizeof(targets) / sizeof(targets[0]), 0, error);
   if (rc == CAI_OK)
@@ -10503,9 +10658,10 @@ static int cai_runtime_register_review_subagent_tool(cai_agent_runtime *runtime,
     rc = cai_tool_schema_add_string(
         schema, "commit", "Hexadecimal commit id for target commit.", 0, error);
   if (rc == CAI_OK)
-    rc = cai_tool_schema_add_string(
-        schema, "instructions",
-        "Exact custom review request for target custom only.", 0, error);
+    rc = cai_tool_schema_add_string(schema, "instructions",
+                                    "Exact custom review request; target "
+                                    "custom, or infer when target is omitted.",
+                                    0, error);
   if (rc == CAI_OK && runtime->review_allowed_model_count > 0U)
     rc = cai_tool_schema_add_string_enum(
         schema, "model", "Host-approved reviewer model override.",
@@ -10530,7 +10686,8 @@ static int cai_runtime_register_review_subagent_tool(cai_agent_runtime *runtime,
         "instructions, Git state, and the selected diff itself. Call it "
         "directly for a user-requested repository review; do not inspect the "
         "workspace first. Its validated Markdown handover becomes parent "
-        "context.",
+        "context. With no scope, compare against the repository's Git default "
+        "branch; use target=uncommitted only when requested.",
         cai_tool_schema_json(schema), cai_tool_schema_strict(schema),
         &cai_runtime_review_subagent_args_map, &cai_runtime_subagent_result_map,
         cai_runtime_run_review_subagent, runtime, error);

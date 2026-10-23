@@ -150,7 +150,8 @@ Both Smith examples use CAI's ChatGPT subscription auth by default and select
 Ctrl-D or `/exit`. Set `CAI_SMITH_ARGS=-v` for debug lifecycle logging or
 `CAI_SMITH_ARGS=-vv` for trace logging; the variable passes supported CLI
 options to both Smith runners. Both examples intercept `/review`
-themselves: `/review` (or `/review uncommitted`) reviews workspace changes,
+themselves: `/review` compares against the Git default branch,
+`/review uncommitted` reviews workspace changes,
 `/review base <revision>` compares against a branch, tag, commit, or revision
 such as `HEAD~2`, `/review commit <sha>` reviews one hexadecimal commit, and
 `/review <message>` forwards the message verbatim as the reviewer’s custom

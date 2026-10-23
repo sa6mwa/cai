@@ -934,7 +934,11 @@ Native pslog environment settings apply, including `LOG_MODE`, `LOG_LEVEL`,
 `default+PATH` adds a second file while retaining the default sink and its UI
 warning notices. `LOG_LEVEL=warn` filters out ordinary conversation records.
 
-`cai --review` runs one isolated review of uncommitted changes and exits.
+`cai --review` runs one isolated review against the Git default branch and exits.
+`cai --review uncommitted` explicitly reviews staged, unstaged, and untracked
+changes. Resolution uses local `origin/HEAD`, then requires exactly one local
+`main`, `master`, or `trunk`; it never fetches. A missing or ambiguous default
+requires `--base REF` or another explicit scope.
 `--base REF` selects a base reference, or one `-i TEXT` supplies custom review
 instructions. Activity, assistant output, and reasoning are pslog records on stderr;
 the validated Markdown findings report appears on stdout. `-o FILE` writes
@@ -944,7 +948,16 @@ exit status. `cai --review-and-fix` starts a new non-interactive Smith goal
 that invokes the built-in review subagent, fixes actionable issues, verifies,
 and repeats until a clean review; stopped or failed goals return nonzero.
 It has no default iteration limit. Review model and reasoning flags apply to
-review subagents in both workflows.
+review subagents in both workflows. Review-and-fix uses the same default base;
+`cai --review-and-fix uncommitted` selects uncommitted changes instead.
+In the TUI, `/review` starts an isolated reviewer between turns and preserves
+the current conversation. `/review uncommitted`, `/review base REF`,
+`/review commit SHA`, and `/review TEXT` select an explicit scope. Findings are
+rendered as Markdown and become context for subsequent prompts. Escape/Ctrl-C
+cancels the review; prompts sent while it runs queue for the parent conversation.
+The C API's zero-initialized review request and Lua's `submit_review()` or
+`start_review()` use the same default. `cai_agent_review_default_base` and Lua
+`cai.review_default_base(workspace)` expose local base discovery to hosts.
 
 Smith loads cai's global `AGENTS.md` from
 `${XDG_CONFIG_HOME:-$HOME/.config}/cai/AGENTS.md` when it exists;

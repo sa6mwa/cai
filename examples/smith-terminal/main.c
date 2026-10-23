@@ -222,7 +222,9 @@ static int start_review(cai_agent_runtime *parent, const char *command,
   *out_review = NULL;
   argument = skip_space(command + 7U);
   cai_agent_review_request_init(&request);
-  if (*argument == '\0' || strcmp(argument, "uncommitted") == 0) {
+  if (*argument == '\0') {
+    request.target = CAI_AGENT_REVIEW_DEFAULT;
+  } else if (strcmp(argument, "uncommitted") == 0) {
     request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
   } else if (strncmp(argument, "base ", 5U) == 0) {
     request.target = CAI_AGENT_REVIEW_BASE_BRANCH;

@@ -173,7 +173,12 @@ The agent continues until the goal finishes or stops. In interactive mode,
 the prompt then remains available; in non-interactive mode cai exits.
 .TP
 .B \-\-review
-Run one isolated review and exit. The default target is uncommitted changes.
+Run one isolated review against the Git default branch and exit. Pass the
+argument
+.B uncommitted
+to select staged, unstaged, and untracked changes instead. The default is
+resolved locally from origin/HEAD, or a single unambiguous main, master, or
+trunk branch. Missing or ambiguous defaults require an explicit scope.
 With
 .BR \-\-base ,
 review changes against a reference; with one
@@ -188,6 +193,9 @@ Start a new, non-interactive Smith session with a durable goal to invoke the
 built-in review subagent, fix actionable findings, verify, and repeat until
 the review is clean. There is no default iteration limit. Requires the review
 subagent. Errors and stopped goals return a nonzero status.
+The default scope is the Git default branch; pass
+.B uncommitted
+to review and fix only uncommitted changes.
 .TP
 .BI \-\-base " REF"
 Review against
@@ -424,6 +432,13 @@ Show command-line help.
 .B \-\-version
 Show the version.
 .SH PROMPT COMMANDS
+.TP
+.BR "/review" " [uncommitted|base REF|commit SHA|TEXT]"
+Run an isolated reviewer between turns and render Markdown findings. With no
+argument, compare against the Git default branch. Explicit uncommitted, base,
+commit, or custom text selects that scope. Findings become context in the
+current conversation. Escape or Ctrl-C cancels; normal prompts entered during
+the review queue for the parent conversation.
 .TP
 .BR "/todo" " [list|use NAME|new NAME|help]"
 Show the selected kanban board, list shared boards, select an existing board,

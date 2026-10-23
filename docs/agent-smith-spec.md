@@ -668,13 +668,18 @@ request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
 cai_agent_runtime_submit_review(runtime, &request, &error);
 ```
 
-The target is one of `UNCOMMITTED` (staged, unstaged, and untracked changes),
+The zero/default target reviews against the Git default branch, resolved from
+local `origin/HEAD` or one unambiguous local `main`, `master`, or `trunk` branch.
+Discovery never fetches and errors on a missing or ambiguous default.
+`cai_agent_review_default_base` exposes this resolution to hosts; Lua exposes
+`cai.review_default_base(workspace)`. Other targets are `UNCOMMITTED`
+(staged, unstaged, and untracked changes),
 `BASE_BRANCH` (the merge diff against a validated base revision such as
 `trunk`, `HEAD~2`, or a safe branch-qualified ref), `COMMIT` (a validated
-hexadecimal commit ID), or `CUSTOM` (host-owned review instructions). CAI does
-not parse `/review`; a TUI/GUI maps its command grammar to this API. The Smith
-terminal examples demonstrate that host-only mapping: `/review` and `/review
-uncommitted` select uncommitted work, `/review base <revision>` selects the
+hexadecimal commit ID), or `CUSTOM` (host-owned review instructions). libcai's
+runtime does not parse slash commands; a TUI/GUI maps its grammar to this API. CAI and the Smith
+terminal examples map `/review` to the default branch and `/review uncommitted`
+to uncommitted work. `/review base <revision>` selects the
 structured base target, `/review commit <sha>` selects the commit target, and
 any other `/review <message>` becomes the reviewer’s exact custom instruction.
 A review runtime accepts exactly one `submit_review` request; generic, queued, and

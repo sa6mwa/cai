@@ -289,6 +289,8 @@ typedef int (*cai_agent_runtime_event_fn)(void *context,
 
 /** Explicit target for an isolated preset review run. */
 typedef enum cai_agent_review_target {
+  /** Review against the repository's locally discoverable default branch. */
+  CAI_AGENT_REVIEW_DEFAULT = 0,
   /** Review staged, unstaged, and untracked workspace changes. */
   CAI_AGENT_REVIEW_UNCOMMITTED = 1,
   /** Review the merge diff against base_branch. */
@@ -301,7 +303,9 @@ typedef enum cai_agent_review_target {
 
 /**
  * Request for cai_agent_runtime_submit_review. Strings are borrowed for the
- * call only. base_branch is required for CAI_AGENT_REVIEW_BASE_BRANCH;
+ * call only. A zero target infers an explicit base, commit, or instructions;
+ * with none supplied, it selects the Git default branch. base_branch is
+ * required for CAI_AGENT_REVIEW_BASE_BRANCH;
  * commit is required for CAI_AGENT_REVIEW_COMMIT; instructions is required
  * for CAI_AGENT_REVIEW_CUSTOM. commit_title is optional metadata.
  */
@@ -315,6 +319,14 @@ typedef struct cai_agent_review_request {
 
 /** Initialize a zero-defaultable review request. */
 void cai_agent_review_request_init(cai_agent_review_request *request);
+
+/** Resolve a review base without network access. Prefer origin/HEAD, otherwise
+ * require exactly one local main/master/trunk branch. Writes a NUL-terminated
+ * ref to base (including its terminator within capacity); errors leave it
+ * empty. Git repository-selection environment overrides are ignored. Missing or
+ * ambiguous defaults require an explicit base or uncommitted review. */
+int cai_agent_review_default_base(const char *workspace, char *base,
+                                  size_t capacity, cai_error *error);
 
 /** Supported model-facing parameter kinds for a subagent profile tool. */
 typedef enum cai_agent_subagent_parameter_type {

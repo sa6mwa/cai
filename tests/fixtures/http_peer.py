@@ -121,8 +121,9 @@ class Peer(http.server.BaseHTTPRequestHandler):
                            summary_index=index, delta=summary)
             self.event('response.reasoning_summary_part.done', summary_index=index)
         if item.get('pause'):
-            if chat: delta({'role': 'assistant', 'content': 'STREAM in flight\n\n'})
-            else: self.event('response.output_text.delta', delta='STREAM in flight\n\n')
+            marker = item.get('pause_text', 'STREAM in flight\n\n')
+            if chat: delta({'role': 'assistant', 'content': marker})
+            else: self.event('response.output_text.delta', delta=marker)
             deadline = time.monotonic() + 15
             while not (root / 'release').exists() and time.monotonic() < deadline:
                 time.sleep(.01)

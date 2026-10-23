@@ -87,6 +87,11 @@ typedef struct cli_state {
   pslog_logger *model_log;
   cai_client *quota_client;
   cai_agent_runtime *runtime;
+  cai_agent_runtime *review_runtime;
+  sl_watch_id_t review_watch_id;
+  int has_review_watch;
+  cai_agent_runtime_metrics last_review_metrics;
+  int has_review_metrics;
   cai_cli_mcp mcp;
   int mcp_initialized;
   cai_cli_messages *messages;
@@ -159,6 +164,8 @@ static int cli_submit_automation(cli_state *state, const char *instruction,
                                  cai_error *error);
 static int cli_host_process(cli_state *state, cai_error *error);
 static int cli_pump(cli_state *state, long timeout, cai_error *error);
+static int cli_review_event(void *context, const cai_agent_runtime_event *event,
+                            cai_error *error);
 
 static int cli_load_model_metadata(const cai_cli_options *options, char **out,
                                    cai_error *error) {
@@ -773,9 +780,9 @@ static int cli_terminal_shell_ready(cli_state *state, cai_error *error) {
     rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
   if (rc != CAI_OK)
     return rc;
-  if (state->shell.pid > 0 || metrics.turn_active || state->awaiting_turn ||
-      !state->automation_done || sl_prompt_queue_count(state->sl) > 0 ||
-      run_state == CAI_AGENT_SAMPLING ||
+  if (state->review_runtime != NULL || state->shell.pid > 0 ||
+      metrics.turn_active || state->awaiting_turn || !state->automation_done ||
+      sl_prompt_queue_count(state->sl) > 0 || run_state == CAI_AGENT_SAMPLING ||
       run_state == CAI_AGENT_DISPATCHING_TOOL)
     return cai_cli_error(error, CAI_ERR_INVALID,
                          "Shell is available only between turns.");
@@ -1065,6 +1072,26 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     }
   }
   cli_log_event(state, event);
+  if (event->parent_tool_call_id != NULL &&
+      strcmp(event->parent_tool_call_id, "/review") == 0) {
+    if (event->type == CAI_AGENT_EVENT_TEXT_DELTA)
+      return CAI_OK; /* Render the validated findings rather than JSON deltas.
+                      */
+    if (event->type == CAI_AGENT_EVENT_REVIEW_REPORT) {
+      char *formatted = NULL;
+      int rc = cai_cli_review_format(event->data, event->data_length,
+                                     "markdown", &formatted) == 0
+                   ? CAI_OK
+                   : CAI_ERR_PROTOCOL;
+      if (rc == CAI_OK && (cli_finish_response(state) != 0 ||
+                           cli_finish_reasoning(state) != 0 ||
+                           cli_text(state, formatted, strlen(formatted)) != 0 ||
+                           cli_finish_response(state) != 0))
+        rc = CAI_ERR_TRANSPORT;
+      free(formatted);
+      return rc;
+    }
+  }
   if (event->type == CAI_AGENT_EVENT_POLICY_DIAGNOSTIC_STARTED) {
     if (!state->batch &&
         (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0))
@@ -1127,6 +1154,7 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
       }
     }
     if (event->type == CAI_AGENT_EVENT_RUN_STARTED) {
+      state->has_review_metrics = 0;
       cai_app_bridge_outcome(state->bridge, CAI_APP_RUNNING);
       if (state->batch && state->batch_pending_turns > 0U) {
         state->awaiting_turn = 1;
@@ -1194,6 +1222,14 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
   return CAI_OK;
 }
 
+static int cli_review_event(void *context, const cai_agent_runtime_event *event,
+                            cai_error *error) {
+  cai_agent_runtime_event forwarded = *event;
+  forwarded.parent_tool_call_id = "/review";
+  forwarded.subagent_name = "review";
+  return cli_event(context, &forwarded, error);
+}
+
 static int cli_notice(void *context, const char *text) {
   cli_state *state = (cli_state *)context;
   int rc;
@@ -1238,10 +1274,13 @@ static int cli_log_wakeup(sl_t *sl, const sl_watch_event_t *event,
 }
 
 static int cli_sync_status(cli_state *state, cai_error *error) {
+  cai_agent_runtime *display_runtime =
+      state->review_runtime != NULL ? state->review_runtime : state->runtime;
   cai_agent_run_state run_state;
   cai_agent_runtime_settings settings;
   cai_agent_goal_snapshot goal;
   cai_agent_runtime_metrics metrics;
+  const cai_agent_runtime_metrics *turn_metrics;
   cai_error optional_error;
   struct itimerspec timer_spec;
   char turn_message[640];
@@ -1259,7 +1298,7 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
   if (!state->interactive) {
     return CAI_OK;
   }
-  rc = cai_agent_runtime_state(state->runtime, &run_state, error);
+  rc = cai_agent_runtime_state(display_runtime, &run_state, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -1268,7 +1307,7 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
   tier = state->options.service_tier;
   memset(&settings, 0, sizeof(settings));
   cai_error_init(&optional_error);
-  if (cai_agent_runtime_get_settings(state->runtime, &settings, NULL,
+  if (cai_agent_runtime_get_settings(display_runtime, &settings, NULL,
                                      &optional_error) == CAI_OK) {
     if (settings.model != NULL) {
       model = settings.model;
@@ -1279,12 +1318,12 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
     tier = settings.service_tier;
   }
   cai_error_cleanup(&optional_error);
-  rc = cai_agent_runtime_context_percent(state->runtime, &context_percent,
+  rc = cai_agent_runtime_context_percent(display_runtime, &context_percent,
                                          &has_context, error);
   if (rc != CAI_OK) {
     return rc;
   }
-  rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
+  rc = cai_agent_runtime_get_metrics(display_runtime, &metrics, error);
   if (rc != CAI_OK)
     return rc;
   busy = metrics.turn_active || run_state == CAI_AGENT_SAMPLING ||
@@ -1311,9 +1350,13 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
       return CAI_ERR_TRANSPORT;
     state->timer_armed = metrics.turn_active;
   }
+  turn_metrics = state->review_runtime == NULL && state->has_review_metrics &&
+                         !metrics.turn_active
+                     ? &state->last_review_metrics
+                     : &metrics;
   if (cai_cli_reasoning_title(&state->reasoning, &reasoning_title) != 0 ||
       cai_cli_turn_status_message(turn_message, sizeof(turn_message),
-                                  reasoning_title, &metrics) != 0)
+                                  reasoning_title, turn_metrics) != 0)
     return CAI_ERR_TRANSPORT;
   if (state->show_welcome && !metrics.turn_active)
     strcpy(turn_message, cli_welcome);
@@ -1372,8 +1415,9 @@ static int cli_messages_process(cli_state *state, cai_error *error) {
   rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
   if (rc == CAI_OK)
     rc = cai_agent_runtime_state(state->runtime, &run_state, error);
-  if (rc != CAI_OK || metrics.turn_active || state->awaiting_turn ||
-      state->shell.pid > 0 || run_state == CAI_AGENT_SAMPLING ||
+  if (rc != CAI_OK || state->review_runtime != NULL || metrics.turn_active ||
+      state->awaiting_turn || state->shell.pid > 0 ||
+      run_state == CAI_AGENT_SAMPLING ||
       run_state == CAI_AGENT_DISPATCHING_TOOL)
     return rc;
   for (index = 0U; index < sl_prompt_queue_count(state->sl); index++) {
@@ -1607,6 +1651,7 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   int rc;
 
   state->show_welcome = 1;
+  state->has_review_metrics = 0;
   cai_agent_runtime_config_init(&config);
   if (state->configuration != NULL &&
       state->configuration->apply_runtime(state->configuration, &config,
@@ -1646,6 +1691,8 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   config.resume_session_id = state->options.review ? NULL : resume_id;
   config.record_transcript = 1;
   config.event_callback = cli_event;
+  config.review_event_callback = cli_review_event;
+  config.review_event_context = state;
   config.event_context = state;
   if (!state->options.review) {
     state->pouch.replay_begin = cli_replay_begin;
@@ -1769,6 +1816,18 @@ static int cli_prepare_clipboard(cli_state *state, cai_error *error) {
 }
 
 static void cli_close_runtime(cli_state *state) {
+  if (state->has_review_watch) {
+    (void)sl_watch_remove(state->sl, state->review_watch_id);
+    state->has_review_watch = 0;
+  }
+  if (state->review_runtime != NULL) {
+    /* Abandoning the UI preserves the parent's durable review-pending marker
+     * for recovery, just as an interrupted reviewer does. Close the owned
+     * child before its parent; never start queued work during shutdown. */
+    (void)cai_agent_runtime_cancel_turn(state->review_runtime, NULL);
+    cai_agent_runtime_close(state->review_runtime);
+    state->review_runtime = NULL;
+  }
   (void)cai_app_bridge_publish(state->bridge, NULL, NULL);
   if (state->has_message_watch) {
     (void)sl_watch_remove(state->sl, state->message_watch_id);
@@ -2012,6 +2071,8 @@ static int cli_host_process(cli_state *state, cai_error *error) {
         }
       }
       cai_cli_messages_cancel_send(state->messages);
+      if (state->review_runtime != NULL)
+        (void)cai_agent_runtime_cancel_turn(state->review_runtime, NULL);
       if (state->sl != NULL)
         (void)sl_cancel(state->sl);
     } else if (state->runtime == NULL) {
@@ -2035,7 +2096,10 @@ static int cli_host_process(cli_state *state, cai_error *error) {
       rc = cai_agent_runtime_submit_steering(state->runtime, command->text,
                                              &applied);
     } else if (command->type == CAI_APP_CANCEL_TURN) {
-      rc = cai_agent_runtime_cancel_turn(state->runtime, &applied);
+      rc = cai_agent_runtime_cancel_turn(state->review_runtime != NULL
+                                             ? state->review_runtime
+                                             : state->runtime,
+                                         &applied);
       cai_cli_messages_cancel_send(state->messages);
     } else {
       char *goal_command = NULL;
@@ -2570,6 +2634,91 @@ static int cli_trim_command(cli_state *state, const char *arg,
   return rc;
 }
 
+static int cli_review_wakeup(sl_t *sl, const sl_watch_event_t *event,
+                             void *context) {
+  cli_state *state = context;
+  cai_agent_runtime_metrics metrics;
+  cai_agent_run_state run_state;
+  cai_error error;
+  int rc;
+  (void)sl;
+  (void)event;
+  cai_error_init(&error);
+  rc = cai_agent_runtime_pump(state->review_runtime, 0L, &error);
+  if (rc == CAI_OK)
+    rc = cai_agent_runtime_state(state->review_runtime, &run_state, &error);
+  if (rc == CAI_OK)
+    rc = cai_agent_runtime_get_metrics(state->review_runtime, &metrics, &error);
+  if (rc == CAI_OK && !metrics.turn_active &&
+      (run_state == CAI_AGENT_COMPLETED || run_state == CAI_AGENT_FAILED ||
+       run_state == CAI_AGENT_CANCELLED)) {
+    rc = cai_agent_runtime_finish_review(state->runtime, state->review_runtime,
+                                         &error);
+    if (rc == CAI_OK) {
+      state->last_review_metrics = metrics;
+      state->has_review_metrics = 1;
+      (void)sl_watch_remove(state->sl, state->review_watch_id);
+      state->has_review_watch = 0;
+      cai_agent_runtime_close(state->review_runtime);
+      state->review_runtime = NULL;
+    }
+  }
+  if (rc == CAI_OK)
+    rc = cli_sync_status(state, &error);
+  if (rc != CAI_OK)
+    cli_print_error(state, "review", &error);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
+}
+
+static int cli_review_command(cli_state *state, const char *arguments,
+                              cai_error *error) {
+  cai_agent_review_request request;
+  int rc, fd, started;
+  while (*arguments == ' ' || *arguments == '\t')
+    arguments++;
+  cai_agent_review_request_init(&request);
+  if (strcmp(arguments, "uncommitted") == 0)
+    request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+  else if (strncmp(arguments, "base ", 5U) == 0) {
+    request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
+    request.base_branch = arguments + 5;
+  } else if (strncmp(arguments, "custom ", 7U) == 0) {
+    request.target = CAI_AGENT_REVIEW_CUSTOM;
+    request.instructions = arguments + 7;
+  } else if (strncmp(arguments, "commit ", 7U) == 0) {
+    request.target = CAI_AGENT_REVIEW_COMMIT;
+    request.commit = arguments + 7;
+  } else if (*arguments != '\0') {
+    request.target = CAI_AGENT_REVIEW_CUSTOM;
+    request.instructions = arguments;
+  }
+  if (!state->options.review_subagent)
+    return cai_cli_error(error, CAI_ERR_INVALID, "review subagent is disabled");
+  if (state->review_runtime != NULL || state->shell.pid > 0)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "finish the active review or shell before reviewing");
+  rc = cai_agent_runtime_start_review(state->runtime, &request,
+                                      &state->review_runtime, error);
+  started = rc;
+  if (state->review_runtime == NULL)
+    return rc;
+  rc = cai_agent_runtime_wakeup_fd(state->review_runtime, &fd, error);
+  if (rc == CAI_OK &&
+      sl_watch_add(state->sl, fd,
+                   SL_WATCH_READ | SL_WATCH_HANGUP | SL_WATCH_ERROR,
+                   cli_review_wakeup, state, &state->review_watch_id) != SL_OK)
+    rc = cai_cli_error(error, CAI_ERR_TRANSPORT, "watch isolated reviewer");
+  if (rc == CAI_OK) {
+    state->has_review_watch = 1;
+    state->show_welcome = 0;
+    cai_cli_reasoning_reset(&state->reasoning);
+  } else {
+    state->exit_requested = 1;
+  }
+  return rc != CAI_OK ? rc : started;
+}
+
 static int cli_handle_command(cli_state *state, const char *line,
                               cai_error *error, int *handled) {
   const char *arg;
@@ -2577,6 +2726,9 @@ static int cli_handle_command(cli_state *state, const char *line,
   unsigned long number;
   int rc;
   *handled = 1;
+  if (strcmp(line, "/review") == 0 || strncmp(line, "/review ", 8U) == 0 ||
+      strncmp(line, "/review\t", 8U) == 0)
+    return cli_review_command(state, line + 7U, error);
   if (strcmp(line, "/todo") == 0 || strncmp(line, "/todo ", 6U) == 0 ||
       strncmp(line, "/todo\t", 6U) == 0) {
     rc = cai_cli_todo_command(state->runtime, line + 5U, cli_tools_write, state,
@@ -2751,6 +2903,8 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| Command | Action |\n"
         "| --- | --- |\n"
         "| `/help` | Show this help. |\n",
+        "| `/review [uncommitted\\|base REF\\|custom TEXT]` | Run an isolated "
+        "reviewer; no argument compares against the Git default branch. |\n",
         "| `/todo [COMMAND]` | Show the selected board; list, use NAME, "
         "new NAME, or help. Requires --todo. |\n",
         "| `/queue [NAME]` | Show or replace the full mailbox name between "
@@ -2816,7 +2970,7 @@ static int cli_handle_command(cli_state *state, const char *line,
         "cai -N -C ./project                  # new conversation\n"
         "cai -i 'Explain this project'        # send a prompt at startup\n"
         "cai -Nni 'Fix the failing tests'     # run non-interactively\n"
-        "cai --review                         # review current changes\n"
+        "cai --review                         # review against default branch\n"
         "```\n\n"
         "Run `cai --help` for all startup options or `man cai` for the "
         "manual.\n"};
@@ -2987,17 +3141,27 @@ static int cli_start_automation(cli_state *state, cai_error *error) {
   const char *instruction;
   int length;
   int rc;
+  char review_base[512];
 
   objective = state->options.goal;
   if (state->options.review_and_fix) {
     const char *format =
-        "Review the current changes with the built-in run_review subagent. "
+        "Review staged, unstaged, and untracked changes with the built-in "
+        "run_review subagent using target=uncommitted. "
         "Fix every actionable finding while preserving project invariants. "
         "After each fix, run relevant verification, then repeat the review "
         "until it reports no actionable findings. Explain why any reported "
         "finding is irrelevant. Mark this goal complete only after a clean "
         "review and passing verification.";
-    if (state->options.base != NULL) {
+    if (!state->options.review_uncommitted) {
+      const char *base = state->options.base;
+      if (base == NULL) {
+        rc = cai_agent_review_default_base(state->workspace, review_base,
+                                           sizeof(review_base), error);
+        if (rc != CAI_OK)
+          return rc;
+        base = review_base;
+      }
       length = snprintf(state->generated_goal, sizeof(state->generated_goal),
                         "Review changes against base %s with the built-in "
                         "run_review subagent. Fix every actionable finding "
@@ -3007,7 +3171,7 @@ static int cli_start_automation(cli_state *state, cai_error *error) {
                         "remain. Explain why any finding is irrelevant. "
                         "Mark this goal complete only after a clean review "
                         "and passing verification.",
-                        state->options.base);
+                        base);
     } else {
       length = snprintf(state->generated_goal, sizeof(state->generated_goal),
                         "%s", format);
@@ -3148,7 +3312,7 @@ static int cli_run_review(cli_state *state, cai_error *error) {
   } else if (state->options.base != NULL) {
     request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
     request.base_branch = state->options.base;
-  } else {
+  } else if (state->options.review_uncommitted) {
     request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
   }
   rc = cai_agent_runtime_submit_review(state->runtime, &request, error);
@@ -3692,7 +3856,9 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
           continue;
         }
         cai_cli_messages_cancel_send(state.messages);
-        rc = cai_agent_runtime_cancel_turn(state.runtime, &error);
+        rc = cai_agent_runtime_cancel_turn(
+            state.review_runtime != NULL ? state.review_runtime : state.runtime,
+            &error);
         if (rc != CAI_OK) {
           cai_error_cleanup(&error);
           cai_error_init(&error);
@@ -3721,7 +3887,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
         if (cli_prompt(&state, line) != 0) {
           rc = CAI_ERR_TRANSPORT;
         } else {
-          if (state.shell.pid > 0 ||
+          if (state.review_runtime != NULL || state.shell.pid > 0 ||
               cai_cli_messages_is_message(state.messages,
                                           sl_last_prompt_id(state.sl)))
             rc = cai_agent_runtime_submit_queued(state.runtime, line, &error);

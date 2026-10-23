@@ -76,6 +76,12 @@ int cai_cli_read_options(int argc, char *const *argv,
     char short_flag[3];
 
     flag = argv[i];
+    if (strcmp(flag, "uncommitted") == 0 &&
+        (options->review || options->review_and_fix) &&
+        !options->review_uncommitted) {
+      options->review_uncommitted = 1;
+      continue;
+    }
     if (strcmp(flag, "--no-config") == 0) {
       options->no_config = 1;
       continue;
@@ -481,6 +487,13 @@ int cai_cli_validate_options(cai_cli_options *options) {
     cai_cli_option_error(
         options, "%s",
         "cai: --review and --review-and-fix cannot be combined\n");
+    return -1;
+  }
+  if (options->review_uncommitted &&
+      (options->base != NULL || options->instruction_count != 0U)) {
+    cai_cli_option_error(
+        options, "%s",
+        "cai: uncommitted cannot be combined with --base or -i\n");
     return -1;
   }
   if (options->review &&
