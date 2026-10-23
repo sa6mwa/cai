@@ -46,8 +46,8 @@ points for existing event loops, HTTP servers, loggers, and dependency stacks.
 - Hardening gates for local unit tests, live integration tests, Lua tests,
   deterministic examples, AFL++ fuzzing, ASan/UBSan and Valgrind memory
   checks, and release artifact validation.
-- A static Linux x86_64 `cai` terminal agent package with a `cai(1)` manual,
-  README, and LICENSE in the SDK's relocatable install layout.
+- Static musl Linux x86_64, aarch64 and armhf `cai` terminal agent packages
+  with a `cai(1)` manual, README, and LICENSE in the SDK's relocatable install layout.
 
 ## Agent Runtimes and Smith
 
@@ -104,8 +104,9 @@ runtime, review, storage, and presentation contracts.
 
 ## Cai terminal agent
 
-The `cai` preset builds the terminal coding agent as a statically linked
-Linux x86_64 musl executable. It adds pinned softline 0.12.0 for the prompt and
+The musl SDK presets build the terminal coding agent as a statically linked
+Linux x86_64, aarch64 or armhf executable. The `cai` convenience preset selects
+the same x86_64 musl producer. It adds pinned softline 0.12.0 for the prompt and
 libmdf 0.15.0 for streamed Markdown rendering, and liblockdc 0.21.0 with
 liblql 0.3.0 for durable storage. It uses libpslog 0.12.0 for logging.
 The native dependency SDK is cpkt 0.5.0 from
@@ -313,12 +314,16 @@ cmake --build --preset libcai
 cmake --preset cai
 cmake --build --preset cai
 cmake --build --preset cai --target cai_package_cli
-build/cai/cai --help
-build/cai/cai -N -C /path/to/project
+build/x86_64-linux-musl-release/cai --help
+build/x86_64-linux-musl-release/cai -N -C /path/to/project
 ```
 
 For native development, use `make build-cli` and `make test-cli` (the
-`debug-cai` preset); the musl `cai` preset is for release artifacts.
+`debug-cai` preset). The `cai` convenience preset uses the exact configuration
+and build directory of `x86_64-linux-musl-release`, retaining both static/shared
+SDK libraries. For ARM, use `scripts/build.sh aarch64-linux-musl-release` or
+`scripts/build.sh armhf-linux-musl-release`; each writes `cai` beside its SDK
+libraries in `build/<target>-release/`. No separate `build/cai/` producer is used.
 `ctest --preset cai` checks terminal feeds without cursor replies, failed-output
 propagation, recovery after provider errors, truncated and malformed streams,
 Ctrl-C/Escape cancellation, and clipboard failures. Cancellation keeps the
@@ -510,7 +515,10 @@ charge. The
 context percentage is unknown until response usage is available.
 Provider model discovery runs on the agent worker when a turn needs it;
 Berget startup does not wait for its models endpoint.
-The package target writes `dist/cai-cli-<version>-x86_64-linux-musl.tar.gz`.
+Each musl preset's `cai_package_cli` target writes
+`dist/cai-cli-<version>-<arch>-linux-musl.tar.gz`, where `<arch>` is `x86_64`,
+`aarch64` or `armhf`. The SDK archive retains its library payload; the executable
+and its documentation are staged separately through the `cai-cli` install component.
 Its relocatable layout includes `bin/cai`, `share/man/man1/cai.1`, and
 `share/doc/libcai/{README.md,LICENSE}` plus the SDK's model metadata guide.
 Install under `/usr` to place the man page at `/usr/share/man/man1/cai.1`.

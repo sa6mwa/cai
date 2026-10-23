@@ -82,13 +82,7 @@
     {
       "name": "cai",
       "inherits": "x86_64-linux-musl-release",
-      "cacheVariables": {
-        "CAI_BUILD_CLI": "ON",
-        "CAI_BUILD_SHARED": "OFF",
-        "CAI_BUILD_EXAMPLES": "OFF",
-        "CAI_BUILD_LUA": "OFF",
-        "CAI_BUILD_TESTS": "ON"
-      }
+      "binaryDir": "${sourceDir}/build/x86_64-linux-musl-release"
     },
     {
       "name": "debug-host-deps",
@@ -130,7 +124,8 @@
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
         "CPKT_TARGET_ID": "x86_64-linux-musl",
         "CAI_TARGET_ID": "x86_64-linux-musl",
-        "CAI_BUILD_TESTS": "OFF",
+        "CAI_BUILD_TESTS": "ON",
+        "CAI_BUILD_CLI": "ON",
         "CAI_BUILD_APP": "ON"
       }
     },
@@ -152,6 +147,7 @@
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
         "CPKT_TARGET_ID": "aarch64-linux-musl",
         "CAI_TARGET_ID": "aarch64-linux-musl",
+        "CAI_BUILD_CLI": "ON",
         "CAI_BUILD_APP": "ON",
         "CAI_BUILD_TESTS": "OFF"
       }
@@ -174,6 +170,7 @@
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/linux-bootlin.cmake",
         "CPKT_TARGET_ID": "armhf-linux-musl",
         "CAI_TARGET_ID": "armhf-linux-musl",
+        "CAI_BUILD_CLI": "ON",
         "CAI_BUILD_APP": "ON",
         "CAI_BUILD_TESTS": "OFF"
       }
@@ -246,8 +243,8 @@
     },
     {
       "name": "cai",
-      "configurePreset": "cai",
-      "jobs": 4
+      "inherits": "x86_64-linux-musl-release",
+      "configurePreset": "cai"
     },
     {
       "name": "debug-host-deps",
@@ -272,6 +269,7 @@
     {
       "name": "x86_64-linux-musl-release",
       "configurePreset": "x86_64-linux-musl-release",
+      "targets": ["cai_cli_tests", "cai_shared", "cai_app_shared"],
       "jobs": 4
     },
     {

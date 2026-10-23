@@ -307,7 +307,6 @@ read_checksum_artifacts() {
 require_complete_manifest() {
   local target_text target artifact
   local expected=("cai-$version.tar.gz" "cai-lua-$version.tar.gz"
-    "cai-cli-$version-x86_64-linux-musl.tar.gz"
     "cai-$version-1.rockspec" "cai-$version-1.src.rock")
   target_text=${CAI_RELEASE_TARGETS:-}
   if [[ -z "$target_text" ]]; then
@@ -315,6 +314,7 @@ require_complete_manifest() {
   fi
   while read -r target; do
     [[ -z "$target" ]] || expected+=("cai-$version-$target.tar.gz")
+    [[ "$target" != *-linux-musl ]] || expected+=("cai-cli-$version-$target.tar.gz")
   done <<<"${target_text//;/$'\n'}"
   # No partial release can become successful by omitting missing payloads.
   [[ $# == ${#expected[@]} ]] || fail 'incomplete or duplicate release manifest inventory'
@@ -344,7 +344,7 @@ verify_manifest_artifacts() {
     artifact_path="$dist_dir/$artifact"
     require_file "$artifact_path"
     case "$artifact" in
-      cai-"$version".tar.gz | cai-"$version"-*.tar.gz | cai-lua-"$version".tar.gz | cai-cli-"$version"-x86_64-linux-musl.tar.gz | cai-"$version"-*.rockspec | cai-"$version"-*.src.rock)
+      cai-"$version".tar.gz | cai-"$version"-*.tar.gz | cai-lua-"$version".tar.gz | cai-cli-"$version"-*-linux-musl.tar.gz | cai-"$version"-*.rockspec | cai-"$version"-*.src.rock)
         ;;
       *)
         fail "checksum manifest lists unexpected release artifact: $artifact"
@@ -382,7 +382,7 @@ verify_dist_manifest_closure() (
       [[ -n "$artifact" ]] || continue
       case "$artifact" in
         cai-"$other_version".tar.gz | cai-"$other_version"-*.tar.gz | \
-        cai-lua-"$other_version".tar.gz | cai-cli-"$other_version"-x86_64-linux-musl.tar.gz | \
+        cai-lua-"$other_version".tar.gz | cai-cli-"$other_version"-*-linux-musl.tar.gz | \
         cai-"$other_version"-*.rockspec | cai-"$other_version"-*.src.rock)
           retained+=("$artifact") ;;
         *) fail "unrelated manifest lists an artifact outside its release: $manifest: $artifact" ;;
@@ -1235,12 +1235,35 @@ verify_src_rock() {
   rm -rf "$rock_workspace"
 }
 
-verify_cli_archive() {
-  local root_dir=$1
-  local binary="$root_dir/bin/cai"
-  local readelf header segments
+verify_cli_binary() {
+  local binary=$1 target=$2
+  local readelf header segments elf_class machine
+  case "$target" in
+    x86_64-linux-musl) elf_class=ELF64; machine=X86-64 ;;
+    aarch64-linux-musl) elf_class=ELF64; machine=AArch64 ;;
+    armhf-linux-musl) elf_class=ELF32; machine=ARM ;;
+    *) fail "unsupported static cai CLI target: $target" ;;
+  esac
   require_file "$binary"
   [[ -x "$binary" && ! -L "$binary" ]] || fail "CLI must be an executable regular file: $binary"
+  readelf=$(find_target_readelf "$target") || fail "readelf required to verify static cai CLI: $target"
+  header=$("$readelf" -h "$binary") || fail "failed to read cai CLI ELF header: $binary"
+  if ! grep -E "Class:[[:space:]]+$elf_class" <<<"$header" >/dev/null ||
+     ! grep -E "Machine:[[:space:]]+.*$machine" <<<"$header" >/dev/null; then
+    fail "CLI must be a $target $elf_class binary: $binary"
+  fi
+  if [[ "$target" == armhf-linux-musl ]] && ! grep -E 'Flags:.*hard-float ABI' <<<"$header" >/dev/null; then
+    fail "CLI must use the ARM hard-float ABI: $binary"
+  fi
+  segments=$("$readelf" -l "$binary") || fail "failed to read cai CLI program headers: $binary"
+  if grep -E '^[[:space:]]*(INTERP|DYNAMIC)[[:space:]]' <<<"$segments" >/dev/null; then
+    fail "CLI must be statically linked without a loader or dynamic segment: $binary"
+  fi
+}
+
+verify_cli_archive() {
+  local root_dir=$1 target=$2
+  require_file "$root_dir/bin/cai"
   local doc
   for doc in share/man/man1/cai.1 share/doc/libcai/README.md \
       share/doc/libcai/LICENSE share/doc/libcai/docs/model-metadata.md \
@@ -1253,16 +1276,7 @@ verify_cli_archive() {
     require_file "$root_dir/share/doc/libcai/third_party/$dependency/LICENSE"
   done
   require_file "$root_dir/share/doc/libcai/third_party/libyaml/License"
-  readelf=$(find_target_readelf x86_64-linux-musl) || fail "readelf required to verify static cai CLI"
-  header=$("$readelf" -h "$binary") || fail "failed to read cai CLI ELF header: $binary"
-  if ! grep -E 'Class:[[:space:]]+ELF64' <<<"$header" >/dev/null ||
-     ! grep -E 'Machine:.*X86-64' <<<"$header" >/dev/null; then
-    fail "CLI must be a Linux x86_64 ELF64 binary: $binary"
-  fi
-  segments=$("$readelf" -l "$binary") || fail "failed to read cai CLI program headers: $binary"
-  if grep -E '^[[:space:]]*(INTERP|DYNAMIC)[[:space:]]' <<<"$segments" >/dev/null; then
-    fail "CLI must be statically linked without a loader or dynamic segment: $binary"
-  fi
+  verify_cli_binary "$root_dir/bin/cai" "$target"
   verify_no_host_paths "$root_dir"
   verify_no_sanitizer_artifacts "$root_dir"
 }
@@ -1293,8 +1307,8 @@ verify_archive() {
   verify_single_root "$archive" "$expected_root" "$listing"
   tar -xzf "$archive" -C "$extract_root"
 
-  if [[ "$root" == "cai-cli-$version-x86_64-linux-musl" ]]; then
-    verify_cli_archive "$extract_root/$root"
+  if [[ "$root" == "cai-cli-$version-"* ]]; then
+    verify_cli_archive "$extract_root/$root" "${root#cai-cli-$version-}"
   elif [[ "$root" == "cai-$version" ]]; then
     verify_source_archive "$root" "$listing"
   elif [[ "$root" == "cai-lua-$version" ]]; then

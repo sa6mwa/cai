@@ -134,26 +134,33 @@ run_make() {
 }
 # The matrix is an incremental target/artifact gate, independent of both
 # development preparation and signed final release. Exercise the public target.
-mkdir -p "$scratch/build/aarch64-linux-musl-release"
-printf 'CMAKE_STRIP:FILEPATH=/target/strip\n' >"$scratch/build/aarch64-linux-musl-release/CMakeCache.txt"
+for target in x86_64-linux-musl aarch64-linux-musl armhf-linux-musl; do
+  mkdir -p "$scratch/build/$target-release"
+  printf 'CMAKE_STRIP:FILEPATH=/target/strip\n' >"$scratch/build/$target-release/CMakeCache.txt"
+done
 for enabled in 0 1; do
   : >"$CAI_LIFECYCLE_LOG"
-  CAI_ENABLE_INTEGRATION_TESTS="$enabled" CAI_LIFECYCLE_TARGETS=$'x86_64-linux-gnu\naarch64-linux-musl' run_make release-matrix
+  CAI_ENABLE_INTEGRATION_TESTS="$enabled" CAI_LIFECYCLE_TARGETS=$'x86_64-linux-gnu\nx86_64-linux-musl\naarch64-linux-musl\narmhf-linux-musl' run_make release-matrix
   [[ $(grep -c '^identity' "$CAI_LIFECYCLE_LOG") == 1 ]]
   ! grep -q -- '--require-release' "$CAI_LIFECYCLE_LOG"
   ! grep -qE '^clean.sh|^test_release_from_source.sh|^make\s+(test-all|valgrind|fuzz-smoke|lua-test|lua-app-test|test-offline|test-e2e)' "$CAI_LIFECYCLE_LOG"
-  for target in x86_64-linux-gnu aarch64-linux-musl; do
+  for target in x86_64-linux-gnu x86_64-linux-musl aarch64-linux-musl armhf-linux-musl; do
     [[ $(grep -c -- $'^cmake\t--preset\t'"$target-release"$'\t$' "$CAI_LIFECYCLE_LOG") == 1 ]]
     [[ $(grep -c -- $'^cmake\t--build\t--preset\t'"$target-release"$'\t$' "$CAI_LIFECYCLE_LOG") == 1 ]]
     [[ $(grep -c -- "-DCAI_TARGET_ID=$target" "$CAI_LIFECYCLE_LOG") == 1 ]]
   done
+  [[ $(grep -c -- $'--target\tcai_package_cli\t$' "$CAI_LIFECYCLE_LOG") == 3 ]]
+  for target in x86_64-linux-musl aarch64-linux-musl armhf-linux-musl; do
+    grep -q -- $'^cmake\t--build\t--preset\t'"$target-release"$'\t--target\tcai_package_cli\t$' "$CAI_LIFECYCLE_LOG"
+  done
+  ! grep -q -- $'^cmake\t.*--preset\tcai\t' "$CAI_LIFECYCLE_LOG"
   [[ $(grep -c $'^ctest\t' "$CAI_LIFECYCLE_LOG") == 2 ]]
   grep -q -- $'--test-dir\t'"$scratch/build/x86_64-linux-gnu-release"$'\t.*-LE\tlive\t$' "$CAI_LIFECYCLE_LOG"
   grep -q -- $'^ctest\t--preset\tcai\t' "$CAI_LIFECYCLE_LOG"
   [[ $(grep -c $'^make\ttest-integration\t' "$CAI_LIFECYCLE_LOG" || true) == "$enabled" ]]
   [[ $(grep -c $'^make\trelease-lua-artifacts\t' "$CAI_LIFECYCLE_LOG") == 1 ]]
   [[ $(grep -c -- $'cmake/package_source.cmake\t$' "$CAI_LIFECYCLE_LOG") == 1 ]]
-  grep -q -- '-DCAI_TARGETS=x86_64-linux-gnu;aarch64-linux-musl' "$CAI_LIFECYCLE_LOG"
+  grep -q -- '-DCAI_TARGETS=x86_64-linux-gnu;x86_64-linux-musl;aarch64-linux-musl;armhf-linux-musl' "$CAI_LIFECYCLE_LOG"
   [[ $(tail -1 "$CAI_LIFECYCLE_LOG" | cut -f1) == package-verify.sh ]]
   grep -q 'Verified local artifact inventory' "$scratch/out"
 done

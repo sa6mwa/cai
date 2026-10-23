@@ -74,7 +74,7 @@ if [[ ${CAI_ENABLE_INTEGRATION_TESTS:-0} == 1 ]]; then
   make test-integration
 fi
 phase=cli
-"$root/scripts/build.sh" cai
+# The matrix already produced the CLI and its native fixtures in the SDK tree.
 "$root/scripts/test.sh" cai
 phase=packages
 for target in "${targets[@]}"; do
@@ -82,8 +82,10 @@ for target in "${targets[@]}"; do
   [[ "$target" != x86_64-linux-gnu ]] || directory="$native"
   cmake "-DCAI_ROOT=$root" "-DCAI_BINARY_DIR=$directory" "-DCAI_DIST_DIR=$root/dist" "-DCAI_VERSION=$version" "-DCAI_TARGET_ID=$target" \
     "-DCAI_STRIP_BIN=$(sed -n 's/^CMAKE_STRIP:[^=]*=//p' "$directory/CMakeCache.txt")" -P cmake/package_archive.cmake
+  if [[ "$target" == *-linux-musl ]]; then
+    cmake --build --preset "$target-release" --target cai_package_cli
+  fi
 done
-cmake --build --preset cai --target cai_package_cli
 make release-lua-artifacts
 if [[ "$action" != final ]]; then
   cmake "-DCAI_ROOT=$root" "-DCAI_DIST_DIR=$root/dist" "-DCAI_VERSION=$version" -P cmake/package_source.cmake

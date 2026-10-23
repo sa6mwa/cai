@@ -35,7 +35,11 @@ newer preset-only feature.
 Final release cleans local generated state once. Its source reconstruction is
 the native Release producer and full non-live test lane. Its GNU SDK is packaged
 from that output. Selected cross SDKs retain their target scope and the shipped
-musl CLI retains actual runtime proof. No other cross runtime runner is claimed.
+x86_64 musl CLI retains actual runtime proof. No other cross runtime runner is claimed.
+The three Linux musl SDK presets also produce the static `cai` executable in
+their target build directory. The `cai` convenience preset shares the x86_64
+musl SDK configuration and directory; it is not another producer. ARM CLI
+archives receive architecture, static-link and package proof without execution.
 Equivalent prerequisites within one checkout share `.cache/deps`; checkouts
 share only global verified archives and prepared toolchains. Reconstruction owns
 `build/source-smoke/src/build` and its own `.cache/deps`. Native Debug library

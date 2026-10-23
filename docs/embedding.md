@@ -4,7 +4,8 @@
 configuration, encrypted sessions/auth, tools, MCP, slash commands, review and
 non-interactive work. Core `libcai` remains independently usable without the
 application dependencies. The application supports Linux x86_64, aarch64 and armhf,
-with both glibc and musl. The standalone `cai` binary remains Linux x86_64 musl.
+with both glibc and musl. The standalone `cai` binary ships for all three Linux
+architectures as a static musl executable, built alongside its matching SDK.
 
 Build with `CAI_BUILD_APP=ON`; `CAI_BUILD_CLI=ON` also selects it. The `cai`
 executable is the small C embedding example in `cli/main.c`. Install the

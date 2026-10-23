@@ -23,10 +23,12 @@ foreach(target IN LISTS CAI_TARGETS)
     message(FATAL_ERROR "Unsupported artifact target: ${target}")
   endif()
   list(APPEND artifacts "cai-${CAI_VERSION}-${target}.tar.gz")
+  if(NOT CAI_PACKAGE_SCOPE STREQUAL "binary" AND target MATCHES "-linux-musl$")
+    list(APPEND artifacts "cai-cli-${CAI_VERSION}-${target}.tar.gz")
+  endif()
 endforeach()
 if(NOT CAI_PACKAGE_SCOPE STREQUAL "binary")
   list(APPEND artifacts "cai-${CAI_VERSION}.tar.gz" "cai-lua-${CAI_VERSION}.tar.gz"
-    "cai-cli-${CAI_VERSION}-x86_64-linux-musl.tar.gz"
     "cai-${CAI_VERSION}-1.rockspec" "cai-${CAI_VERSION}-1.src.rock")
 endif()
 if(NOT artifacts)

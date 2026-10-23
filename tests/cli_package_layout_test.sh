@@ -25,7 +25,7 @@ curl_license="$stage/share/doc/libcai/third_party/curl/LICENSE"
 mv "$curl_license" "$curl_license.saved"
 if (
   CAI_REPO_ROOT="$source_root" source "$source_root/scripts/verify_release_artifacts.sh" --self-test
-  verify_cli_archive "$stage"
+  verify_cli_archive "$stage" x86_64-linux-musl
 ) >"$stage/verify.stdout" 2>"$stage/verify.stderr"; then
   printf 'CLI artifact verification accepted a missing curl license\n' >&2
   exit 1

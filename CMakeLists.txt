@@ -138,8 +138,8 @@ if(CAI_BUILD_APP AND (NOT CAI_TARGET_ID MATCHES "^(x86_64|aarch64|armhf)-linux-(
   message(FATAL_ERROR
     "The CAI application requires Linux x86_64, aarch64 or armhf, glibc or musl, and cpkt dependencies")
 endif()
-if(CAI_BUILD_CLI AND NOT CAI_TARGET_ID MATCHES "^x86_64-linux-(gnu|musl)$")
-  message(FATAL_ERROR "The standalone cai CLI requires x86_64 Linux")
+if(CAI_BUILD_CLI AND NOT CAI_TARGET_ID MATCHES "^(x86_64|aarch64|armhf)-linux-(gnu|musl)$")
+  message(FATAL_ERROR "The standalone cai CLI requires Linux x86_64, aarch64 or armhf")
 endif()
 
 function(cai_cpkt_sha256 target_id out_var)
@@ -870,7 +870,7 @@ if(CAI_BUILD_EXAMPLES)
 endif()
 
 function(cai_configure_cli_target target)
-  if(CAI_TARGET_ID STREQUAL "x86_64-linux-musl")
+  if(CAI_TARGET_ID MATCHES "-linux-musl$")
     target_link_options(${target} PRIVATE -static)
   endif()
   cai_configure_c_target(${target})
@@ -892,35 +892,35 @@ endif()
 if(CAI_BUILD_CLI)
   add_executable(cai_cli cli/main.c)
   set_target_properties(cai_cli PROPERTIES OUTPUT_NAME cai)
-  if(CAI_TARGET_ID STREQUAL "x86_64-linux-musl")
+  if(CAI_TARGET_ID MATCHES "-linux-musl$")
     set_target_properties(cai_cli PROPERTIES SKIP_BUILD_RPATH ON)
   endif()
   target_link_libraries(cai_cli PRIVATE cai_app_static)
   cai_configure_cli_target(cai_cli)
   if(CAI_INSTALL)
     install(TARGETS cai_cli RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-      COMPONENT cai-cli)
+      COMPONENT cai-cli EXCLUDE_FROM_ALL)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
       "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
       DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai"
-      COMPONENT cai-cli)
+      COMPONENT cai-cli EXCLUDE_FROM_ALL)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/man/cai.1"
       DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
-      COMPONENT cai-cli)
+      COMPONENT cai-cli EXCLUDE_FROM_ALL)
     install(FILES "${CAI_LIBYAML_SOURCE}/License"
       DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/third_party/libyaml"
-      COMPONENT cai-cli)
+      COMPONENT cai-cli EXCLUDE_FROM_ALL)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/model-metadata.md"
       "${CMAKE_CURRENT_SOURCE_DIR}/docs/chrome.md"
       "${CMAKE_CURRENT_SOURCE_DIR}/docs/embedding.md"
       "${CMAKE_CURRENT_SOURCE_DIR}/docs/agent-messaging.md"
       "${CMAKE_CURRENT_SOURCE_DIR}/docs/kanban.md"
       DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/docs"
-      COMPONENT cai-cli)
+      COMPONENT cai-cli EXCLUDE_FROM_ALL)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cli/main.c"
       "${CMAKE_CURRENT_SOURCE_DIR}/examples/app.lua"
       DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/examples"
-      COMPONENT cai-cli)
+      COMPONENT cai-cli EXCLUDE_FROM_ALL)
     foreach(_cai_cli_dep_doc
         "${CAI_DEPS_DIR}/libpslog-${CAI_PSLOG_VERSION}-${CAI_TARGET_ID}/share/doc/libpslog"
         "${CAI_LONEJSON_PREFIX}/share/doc/liblonejson"
@@ -931,24 +931,25 @@ if(CAI_BUILD_CLI)
       get_filename_component(_cai_cli_dep_name "${_cai_cli_dep_doc}" NAME)
       install(FILES "${_cai_cli_dep_doc}/LICENSE"
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/third_party/${_cai_cli_dep_name}"
-        COMPONENT cai-cli)
+        COMPONENT cai-cli EXCLUDE_FROM_ALL)
     endforeach()
     foreach(_cai_cli_core_dep curl openssl zlib nghttp2 libssh2)
       install(FILES
         "${CAI_CPKT_PREFIX}/share/doc/cpkt/core/third_party/${_cai_cli_core_dep}/LICENSE"
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/third_party/${_cai_cli_core_dep}"
-        COMPONENT cai-cli)
+        COMPONENT cai-cli EXCLUDE_FROM_ALL)
     endforeach()
     install(DIRECTORY
       "${CAI_DEPS_DIR}/softline-${CAI_SOFTLINE_VERSION}-${CAI_TARGET_ID}/share/softline/licenses/"
       DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/third_party/softline/licenses"
-      COMPONENT cai-cli)
-    if(CAI_TARGET_ID STREQUAL "x86_64-linux-musl")
+      COMPONENT cai-cli EXCLUDE_FROM_ALL)
+    if(CAI_TARGET_ID MATCHES "-linux-musl$")
       add_custom_target(cai_package_cli
         COMMAND "${CMAKE_COMMAND}"
           "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
           "-DCAI_DIST_DIR=${CAI_DIST_DIR}"
           "-DCAI_VERSION=${CAI_PACKAGE_VERSION}"
+          "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
           "-DCAI_STRIP_BIN=${CMAKE_STRIP}"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/package_cli.cmake"
         DEPENDS cai_cli
