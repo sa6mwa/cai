@@ -233,6 +233,9 @@ int cai_app_open(const cai_app_config *config, cai_app **out,
                                        : NULL;
   app->config.no_config = config->no_config;
   app->config.logger = config->logger;
+  app->config.register_agent_tools = config->register_agent_tools;
+  app->config.register_agent_tools_context =
+      config->register_agent_tools_context;
   app->config.setting_count = config->setting_count;
   if (app->config.program_name == NULL ||
       (config->banner != NULL && app->config.banner == NULL) ||

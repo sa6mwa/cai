@@ -1023,7 +1023,7 @@ if(CAI_BUILD_LUA)
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/lua/5.5/cai" COMPONENT cai-app-lua)
     endif()
     if(TARGET cai_cli_tests)
-      add_dependencies(cai_cli_tests cai_app_lua cai_lua_runner)
+      add_dependencies(cai_cli_tests cai_app_lua cai_lua cai_lua_runner)
     endif()
     if(CAI_BUILD_TESTS)
       add_test(NAME cai_app_lua_kanban COMMAND bash

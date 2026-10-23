@@ -55,6 +55,18 @@ typedef struct cai_app_config {
    * CAI neither closes nor reconfigures it and creates no default log files.
    * Its output must be compatible with terminal ownership during a run. */
   struct pslog_logger *logger;
+  /** Optional native tool registration hook, using the same contract as
+   * cai_agent_runtime_config.register_agent_tools. Called on the run thread
+   * whenever an agent runtime opens, after built-in tools (including messaging)
+   * are registered and before workers start. Use cai_agent_register_* here.
+   * The agent is borrowed only for this call; context and registered handler
+   * contexts remain host-owned and must outlive each run. Handlers execute on
+   * worker threads and must not call an owning-thread-only scripting VM.
+   * Errors abort runtime startup. Not inherited by subagents and rejected by
+   * isolated review. Help and utility invocations do not call this hook. */
+  int (*register_agent_tools)(void *context, cai_agent *agent,
+                              cai_error *error);
+  void *register_agent_tools_context;
 } cai_app_config;
 
 typedef struct cai_app cai_app;

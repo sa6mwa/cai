@@ -56,6 +56,43 @@ ChatGPT/provider/model defaults. `config_file`, `config_directory`, `no_config`
 select startup configuration. The `settings` array accepts the full INI schema,
 including `[mcp.NAME]` and `[env]`, without duplicating its validation rules.
 Values use INI's parsed value form: e.g. `true`, without surrounding quotes.
+
+### Native custom tools
+
+Set `cai_app_config.register_agent_tools` to register host tools through the same
+`cai_agent_register_*` APIs used by the core runtime:
+
+```c
+static int host_fact(void *context, const char *arguments, cai_sink *output,
+                     cai_error *error) {
+  static const char result[] = "{\"host_fact\":\"ready\"}";
+  (void)context;
+  (void)arguments;
+  return cai_sink_write(output, result, sizeof(result) - 1U, error);
+}
+
+static int register_host_tools(void *context, cai_agent *agent,
+                               cai_error *error) {
+  return cai_agent_register_raw_tool(agent, "host_fact", "Read a host fact",
+                                     "{\"type\":\"object\"}", 0,
+                                     host_fact, context, error);
+}
+
+/* Before cai_app_open: */
+config.register_agent_tools = register_host_tools;
+config.register_agent_tools_context = host_context;
+```
+
+Typed, spooled and custom/freeform tools can be registered in the same hook.
+Registration runs on the thread calling `app->run`, after built-in and messaging
+tools are installed and before workers start. It runs again whenever a new
+runtime opens, including session switches. The agent is borrowed for the call.
+Host contexts remain borrowed and must outlive each run; tool handlers execute
+on worker threads and must be thread-safe. Lua and other VM callbacks require
+their own owner-thread dispatch rather than calling the VM from a tool worker.
+Registration errors abort startup. Help and utility commands do not call the
+hook. It is not inherited by child agents and is rejected in isolated review,
+matching the core runtime's extension policy.
 Precedence is defaults, file/environment, explicit settings, then arguments.
 Environment entries retain the normal `config_env_has_precedence` policy.
 `[paths]`, `[storage]`, and `[env]` XDG variables provide host path overrides.

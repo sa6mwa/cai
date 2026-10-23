@@ -68,6 +68,7 @@ static int cli_cancel_editor(sl_t *sl, sl_key_t key, void *context,
 }
 
 typedef struct cli_state {
+  const cai_app_config *application;
   cai_cli_options options;
   cai_config *configuration;
   cai_agent_session_store store;
@@ -1524,6 +1525,19 @@ static int cli_quota_wakeup(sl_t *sl, const sl_watch_event_t *event,
   return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
 }
 
+static int cli_register_agent_tools(void *context, cai_agent *agent,
+                                    cai_error *error) {
+  cli_state *state = context;
+  int rc = CAI_OK;
+  if (state->messages != NULL)
+    rc = cai_cli_messages_register(state->messages, agent, error);
+  if (rc == CAI_OK && state->application != NULL &&
+      state->application->register_agent_tools != NULL)
+    rc = state->application->register_agent_tools(
+        state->application->register_agent_tools_context, agent, error);
+  return rc;
+}
+
 static int cli_open_runtime(cli_state *state, const char *resume_id,
                             int new_session, cai_error *error) {
   cai_agent_runtime_config config;
@@ -1552,8 +1566,12 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
                               &state->messages, error);
     if (rc != CAI_OK)
       return rc;
-    config.register_agent_tools = cai_cli_messages_register;
-    config.register_agent_tools_context = state->messages;
+  }
+  if (state->messages != NULL ||
+      (state->application != NULL &&
+       state->application->register_agent_tools != NULL)) {
+    config.register_agent_tools = cli_register_agent_tools;
+    config.register_agent_tools_context = state;
   }
   if (config.enable_todo) {
     config.todo.store = cai_cli_pouch_todo_callbacks();
@@ -2999,6 +3017,7 @@ int cai_cli_app_main(int argc, char **argv, const cai_app_config *application) {
   int result;
 
   memset(&state, 0, sizeof(state));
+  state.application = application;
   state.timer_fd = -1;
   cai_cli_shell_init(&state.shell);
   state.log.fd = -1;

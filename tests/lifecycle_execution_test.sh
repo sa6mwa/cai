@@ -242,6 +242,14 @@ for target in test-lua-smith-e2e prerelease-hardening; do
   if CAI_ENABLE_INTEGRATION_TESTS=1 CAI_LIFECYCLE_FAIL=make run_make "$target"; then exit 1; fi
   [[ $(wc -l <"$CAI_LIFECYCLE_LOG") == 1 ]]
 done
+# App Lua checks need both modules; prerequisite acquisition is outside this
+# command-routing fixture and is covered separately below.
+: >"$scratch/pslog-ready"
+: >"$scratch/lonejson-ready"
+: >"$CAI_LIFECYCLE_LOG"
+run_make lua-app-test "LUA_PSLOG_ROCK_STAMP=$scratch/pslog-ready" "LUA_LONEJSON_ROCK_STAMP=$scratch/lonejson-ready"
+grep -q -- $'--target\tcai_app_lua\tcai_lua\tcai_lua_runner\tcai_app_host\tcai_terminal_peer\t' "$CAI_LIFECYCLE_LOG"
+grep -q -- $'^ctest\t--preset\tdebug-cai\t' "$CAI_LIFECYCLE_LOG"
 # Discovery errors cannot become an empty/partial checksum inventory.
 : >"$CAI_LIFECYCLE_LOG"
 if CAI_LIFECYCLE_FAIL=targets run_make package-checksums; then exit 1; fi

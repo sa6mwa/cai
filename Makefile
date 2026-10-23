@@ -195,7 +195,7 @@ lua-test: lua-runner
 .PHONY: lua-app-test
 lua-app-test: $(LUA_PSLOG_ROCK_STAMP) $(LUA_LONEJSON_ROCK_STAMP)
 	$(CMAKE) --preset debug-cai -DCAI_BUILD_LUA=ON
-	$(CMAKE) --build --preset debug-cai --target cai_app_lua cai_lua_runner cai_app_host cai_terminal_peer
+	$(CMAKE) --build --preset debug-cai --target cai_app_lua cai_lua cai_lua_runner cai_app_host cai_terminal_peer
 	bash scripts/test.sh debug-cai -R '^cai_app_lua' -LE live
 
 release-lua-artifacts:

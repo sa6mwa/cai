@@ -55,6 +55,9 @@ if(CAI_BUILD_TESTS)
   cai_configure_cli_target(cai_app_host)
   target_compile_options(cai_app_host PRIVATE -UNDEBUG)
   if(CAI_BUILD_CLI)
+    add_test(NAME cai_app_custom_tools COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_custom_tools_test.sh" "$<TARGET_FILE:cai_app_host>")
+    set_tests_properties(cai_app_custom_tools PROPERTIES LABELS "cli;local;offline" TIMEOUT 10)
     add_test(NAME cai_app_embedding COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_embedding_test.sh" "$<TARGET_FILE:cai_app_host>")
     set_tests_properties(cai_app_embedding PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
