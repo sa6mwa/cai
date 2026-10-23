@@ -1,5 +1,4 @@
 @PACKAGE_INIT@
-set(_cai_yaml_archive "${PACKAGE_PREFIX_DIR}/@CMAKE_INSTALL_LIBDIR@/cai/@CMAKE_STATIC_LIBRARY_PREFIX@yaml@CMAKE_STATIC_LIBRARY_SUFFIX@")
 
 include(CMakeFindDependencyMacro)
 include("${CMAKE_CURRENT_LIST_DIR}/CaiLonejsonAbi.cmake")
@@ -16,9 +15,21 @@ set(cai_CPKT_URL
     "https://github.com/c89systems/cpkt/releases/download/v@CAI_CPKT_VERSION@/cpkt-@CAI_CPKT_VERSION@-@CAI_TARGET_ID@.tar.gz")
 set(cai_CPKT_SHA256 "@CAI_CPKT_SHA256_FOR_PACKAGE@")
 set(cai_CPKT_PACKAGE_ID "@CAI_CPKT_PACKAGE_ID_FOR_PACKAGE@")
+set(cai_CPKTMISC_VERSION "@CAI_CPKTMISC_VERSION@")
+set(cai_CPKTMISC_URL "@CAI_CPKTMISC_URL_FOR_PACKAGE@")
+set(cai_CPKTMISC_SHA256 "@CAI_CPKTMISC_SHA256_FOR_PACKAGE@")
+set(cai_CPKTMISC_PACKAGE_ID "@CAI_CPKTMISC_PACKAGE_ID_FOR_PACKAGE@")
 
+# CpktYaml discovers and validates its core prerequisite. Reuse that result
+# rather than validating the same SDK again through a second dependency path.
+find_dependency(CpktYaml @CAI_LIBYAML_VERSION@ EXACT CONFIG)
 if(cai_DEPENDENCY_MODE STREQUAL "cpkt")
-  find_dependency(CpktCore @CAI_MINIMUM_CPKT_VERSION@ CONFIG)
+  if(CpktCore_VERSION VERSION_LESS @CAI_MINIMUM_CPKT_VERSION@)
+    set(cai_FOUND FALSE)
+    set(cai_NOT_FOUND_MESSAGE
+        "cai requires cpkt >= @CAI_MINIMUM_CPKT_VERSION@, found ${CpktCore_VERSION}")
+    return()
+  endif()
   if(NOT CpktCore_TARGET_ID STREQUAL cai_CPKT_TARGET)
     set(cai_FOUND FALSE)
     set(cai_NOT_FOUND_MESSAGE
@@ -32,13 +43,6 @@ find_dependency(OpenSSL COMPONENTS Crypto)
 find_dependency(Threads)
 find_package(lonejson CONFIG QUIET COMPONENTS curl oidc openssl)
 find_package(pslog CONFIG QUIET)
-
-if(NOT TARGET cai::yaml_static)
-  add_library(cai::yaml_static STATIC IMPORTED)
-  set_target_properties(cai::yaml_static PROPERTIES
-    IMPORTED_LOCATION "${_cai_yaml_archive}")
-endif()
-unset(_cai_yaml_archive)
 
 include("${CMAKE_CURRENT_LIST_DIR}/cai-targets.cmake")
 

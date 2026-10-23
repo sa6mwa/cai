@@ -9,13 +9,24 @@
       "name": "libyaml",
       "version": "@CAI_LIBYAML_VERSION@",
       "targetId": "@CAI_TARGET_ID@",
-      "sourceSystem": "github-source",
-      "sourceUrl": "@CAI_LIBYAML_URL@",
-      "sha256": "@CAI_LIBYAML_SHA256@",
-      "archiveName": "libyaml-0.2.5.tar.gz",
+      "sourceSystem": "cpktmisc-component",
+      "providedBy": "cpktmisc",
       "licenseIdentifier": "MIT",
       "bundled": true,
-      "installRole": "private-static-parser"
+      "installRole": "embedded-static-parser"
+    },
+    {
+      "name": "cpktmisc",
+      "packageId": "@CAI_CPKTMISC_PACKAGE_ID_FOR_PACKAGE@",
+      "version": "@CAI_CPKTMISC_VERSION@",
+      "targetId": "@CAI_TARGET_ID@",
+      "sourceSystem": "github-release",
+      "sourceUrl": "@CAI_CPKTMISC_URL_FOR_PACKAGE@",
+      "sha256": "@CAI_CPKTMISC_SHA256_FOR_PACKAGE@",
+      "archiveName": "@CAI_CPKTMISC_ARCHIVE_NAME_FOR_PACKAGE@",
+      "licenseIdentifier": "NOASSERTION",
+      "bundled": false,
+      "installRole": "external-static-consumer-sdk"
     },
     {
       "name": "cpkt",

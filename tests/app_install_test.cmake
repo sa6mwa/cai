@@ -37,12 +37,17 @@ file(WRITE "${root}/source/main.c" [=[
 #include "example.c"
 #undef main
 #include <assert.h>
+#include <cai/skills.h>
 int main(int argc, char **argv) {
   cai_app *app = NULL;
   cai_app_status status;
   cai_error error;
+  cai_skill_metadata *metadata = NULL;
   unsigned long long id;
   cai_error_init(&error);
+  assert(cai_skill_metadata_open(NULL, NULL, &metadata, &error) == CAI_ERR_INVALID);
+  assert(metadata == NULL);
+  cai_error_cleanup(&error);
   cai_app_status_init(&status);
   assert(cai_app_open(NULL, &app, &error) == CAI_OK);
   assert(cai_app_get_status(app, &status, &error) == CAI_OK);
@@ -75,6 +80,14 @@ execute_process(COMMAND "${CMAKE_COMMAND}" -S "${root}/source" -B "${root}/consu
   RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors)
 if(NOT result EQUAL 0)
   message(FATAL_ERROR "configure public installed application consumer:\n${output}\n${errors}")
+endif()
+execute_process(COMMAND "${CMAKE_COMMAND}" -S "${root}/source" -B "${root}/missing-yaml"
+  -G Ninja "-DCMAKE_C_COMPILER=${CAI_C_COMPILER}"
+  "-DCMAKE_PREFIX_PATH=${prefixes}" -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=ON
+  -DCMAKE_DISABLE_FIND_PACKAGE_CpktYaml=TRUE
+  RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors)
+if(result EQUAL 0 OR NOT errors MATCHES "CpktYaml")
+  message(FATAL_ERROR "installed application must reject unavailable CpktYaml: ${output}\n${errors}")
 endif()
 execute_process(COMMAND "${CMAKE_COMMAND}" --build "${root}/consumer" --parallel 4
   RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors)

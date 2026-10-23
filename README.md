@@ -111,9 +111,9 @@ libmdf 0.15.0 for streamed Markdown rendering, and liblockdc 0.21.0 with
 liblql 0.3.0 for durable storage. It uses libpslog 0.12.0 for logging.
 The native dependency SDK is cpkt 0.5.0 from
 [c89systems/cpkt](https://github.com/c89systems/cpkt). CAI consumes liblockdc's
-core archive; its separate PostgreSQL provider is excluded. Neither cpktdb nor
-cpktmisc is required. Dependency prefixes remain separate, and imported CMake
-targets supply the complete static link dependencies.
+core archive; its separate PostgreSQL provider is excluded. cpktmisc 0.2.0
+supplies libyaml; cpktdb is not required. Dependency prefixes remain separate,
+and imported CMake targets supply the complete static link dependencies.
 `libcai` itself has no dependency on the CLI prompt, rendering, or storage libraries.
 Softline and libmdf run on the UI thread. The runtime
 worker executes model requests and tools, then wakes the UI thread to render
@@ -710,18 +710,18 @@ loaded during catalog discovery. `read_skill` limits each text resource to 1 MiB
 Lua uses `cai.skill_metadata(text_or_chunk_reader, fallback_name)` and
 `metadata:name()`, `metadata:description()`, `metadata:close()`.
 
-Libyaml 0.2.5 is temporarily built from checksum-pinned source into reusable
-static/shared outputs per target in the repo-local dependency cache, with archives retained in
-the shared dependency cache (`CPKT_DEPENDENCY_CACHE`, or
-`${XDG_CACHE_HOME:-$HOME/.cache}/cpkt/deps`). Configure only prepares its native
-build graph; normal builds invoke the shared incremental producer. ASan,
-coverage and fuzz use separate outputs with the selected instrumentation.
-Nonstandard compiler/flag configurations should use their own `CAI_DEPS_DIR`
-under this checkout's `build/` or `.cache/`;
-one operation owns each producer root and inputs stay stable during checks.
-It stays below the C89 public API. SDK packages
-include its private static link dependency and license; the CAI binary links
-it statically. Moving this source producer into cpkt core is deferred.
+Libyaml 0.2.5 comes from the checksum-pinned cpktmisc 0.2.0 SDK through
+`CpktYaml::Yaml`. Only its YAML component is linked, statically; cpktdb is not
+required. The public API remains C89. SDKs and static CAI binaries include the
+libyaml license. Static SDK consumers need the separate cpktmisc and compatible
+cpkt core prefixes: CMake resolves `CpktYaml`, and pkg-config resolves `yaml-0.1`.
+Host dependency mode requires these packages to be discoverable as well.
+Core and misc SDKs must remain in separate prefixes; their package metadata
+validates core compatibility and target identity. Archives use the shared
+dependency cache (`CPKT_DEPENDENCY_CACHE`, or
+`${XDG_CACHE_HOME:-$HOME/.cache}/cpkt/deps`), with extracted SDKs under the
+checkout's `CAI_DEPS_DIR`. CAI no longer builds a private YAML producer;
+hardening instruments CAI's parser integration, not the prebuilt dependency.
 
 Smith enables hosted `web_search` on Responses providers and the ChatGPT Chrome
 extension tool by default. Browser discovery is lazy: ordinary turns work
@@ -1150,13 +1150,14 @@ fail with an explicit preparation command. Prepare fuzz tooling with
   dependency inputs.
 - `CAI_DEPENDENCY_MODE=host` uses already-installed host dependencies instead:
   libcurl 7.86.0 or newer, OpenSSL crypto, `lonejson.h` plus `liblonejson`,
-  and `pslog.h`. The libcurl minimum is required for Responses WebSocket
+  `pslog.h`, and cpktmisc's `CpktYaml` package with a compatible cpkt core SDK.
+  The libcurl minimum is required for Responses WebSocket
   support. The discovered `liblonejson` must match cai's required ABI
   generation (`liblonejson.so.26` on Linux, `liblonejson.26.dylib` on Darwin).
   `auto` chooses host only when all required host pieces are discoverable and
   the lonejson ABI matches, otherwise it falls back to `cpkt`.
 - Installed CMake and pkg-config metadata preserve that dependency mode.
-  `cpkt` mode records the official `cpkt` dependency URL and checksum;
+  `cpkt` mode records the official `cpkt` and `cpktmisc` dependency URLs and checksums;
   `host` mode records the resolved host include/library paths. `cai` archives
   do not vendor dependency headers.
 

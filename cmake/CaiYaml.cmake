@@ -1,75 +1,66 @@
-# Temporary private source producer until libyaml joins cpkt core.
+# Consume only the YAML component from the separately installed cpktmisc SDK.
+set(CAI_CPKTMISC_VERSION "0.2.0")
 set(CAI_LIBYAML_VERSION "0.2.5")
-set(CAI_LIBYAML_URL "https://github.com/yaml/libyaml/archive/refs/tags/0.2.5.tar.gz")
-set(CAI_LIBYAML_SHA256 "fa240dbf262be053f3898006d502d514936c818e422afdcf33921c63bed9bf2e")
-cai_dependency_archive_path("libyaml-0.2.5.tar.gz" "${CAI_LIBYAML_SHA256}" yaml_archive)
-set(CAI_LIBYAML_SOURCE "${CAI_DEPS_DIR}/libyaml-0.2.5")
-cai_download_tarball("libyaml ${CAI_LIBYAML_VERSION} source" "${CAI_LIBYAML_URL}"
-  "${yaml_archive}" "${CAI_LIBYAML_SOURCE}" "${CAI_LIBYAML_SHA256}"
-  "${CAI_LIBYAML_SOURCE}/src/parser.c")
-set(yaml_profile normal)
-string(TOUPPER "${CMAKE_BUILD_TYPE}" yaml_configuration)
-set(yaml_configuration_flags "${CMAKE_C_FLAGS_${yaml_configuration}}")
-set(yaml_flags "${CMAKE_C_FLAGS}")
-set(yaml_release_flags "${CMAKE_C_FLAGS_RELEASE}")
-if(CAI_ENABLE_COVERAGE)
-  set(yaml_profile coverage)
-  string(APPEND yaml_flags " ${yaml_configuration_flags} --coverage")
-  set(yaml_release_flags "")
-elseif(CAI_BUILD_FUZZERS)
-  set(yaml_profile fuzz)
-  string(APPEND yaml_flags " ${yaml_configuration_flags}")
-  set(yaml_release_flags "")
-elseif("${CMAKE_C_FLAGS} ${yaml_configuration_flags}" MATCHES "fsanitize")
-  set(yaml_profile sanitizer)
-  string(APPEND yaml_flags " ${yaml_configuration_flags}")
-  set(yaml_release_flags "")
-endif()
-set(CAI_LIBYAML_PREFIX "${CAI_DEPS_DIR}/libyaml-${CAI_LIBYAML_VERSION}-${CAI_TARGET_ID}-${yaml_profile}")
-set(CAI_LIBYAML_BUILD_DIR "${CAI_LIBYAML_PREFIX}/build")
-set(CAI_LIBYAML_ENTRYPOINT "${CAI_LIBYAML_PREFIX}/source")
-file(MAKE_DIRECTORY "${CAI_LIBYAML_ENTRYPOINT}")
-# Matching consumers may live in the checkout or the extracted source lane.
-# Keep CMake's owning source directory stable while tracking the actual wrapper.
-file(CONFIGURE OUTPUT "${CAI_LIBYAML_ENTRYPOINT}/CMakeLists.txt"
-  CONTENT "cmake_minimum_required(VERSION 3.21)\nproject(cai_private_yaml VERSION ${CAI_LIBYAML_VERSION} LANGUAGES C)\ninclude(\"\${CAI_YAML_WRAPPER}\")\n" @ONLY)
-function(cai_configure_yaml)
-  file(MAKE_DIRECTORY "${CAI_LIBYAML_PREFIX}")
-  file(LOCK "${CAI_LIBYAML_PREFIX}/build.lock" GUARD FUNCTION TIMEOUT 600)
-  set(arguments -G Ninja "-DCAI_YAML_SOURCE=${CAI_LIBYAML_SOURCE}"
-    "-DCAI_YAML_WRAPPER=${CMAKE_CURRENT_FUNCTION_LIST_DIR}/libyaml/CMakeLists.txt"
-    -DCMAKE_BUILD_TYPE=Release
-    "-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}" "-DCMAKE_C_FLAGS=${yaml_flags}"
-    "-DCMAKE_C_FLAGS_RELEASE=${yaml_release_flags}"
-    "-DCMAKE_SHARED_LINKER_FLAGS=${CMAKE_SHARED_LINKER_FLAGS}"
-    "-DCMAKE_AR=${CMAKE_AR}" "-DCMAKE_RANLIB=${CMAKE_RANLIB}")
-  if(CMAKE_TOOLCHAIN_FILE)
-    list(APPEND arguments "-DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}"
-      "-DCPKT_TARGET_ID=${CPKT_TARGET_ID}")
+function(cai_cpktmisc_sha256 target output)
+  if(target STREQUAL "x86_64-linux-gnu")
+    set(sha "abac4dff1f51d98c8403f078279a0fc290b1c1e37539c879e3365b9500786d50")
+  elseif(target STREQUAL "x86_64-linux-musl")
+    set(sha "89f4d9e309f34a6cd903dedecfa57c94a1f5619d7765603ff08d7826879c580e")
+  elseif(target STREQUAL "aarch64-linux-gnu")
+    set(sha "179fcde812eedfb566797a09edadda9bf32e99f618aa2b97f3cfaf75fe065733")
+  elseif(target STREQUAL "aarch64-linux-musl")
+    set(sha "3e031026e1913fd0ec8c544445fbb6c4c9e71270750dd6e10d6bff0afb8be2cb")
+  elseif(target STREQUAL "armhf-linux-gnu")
+    set(sha "7efa0e4ec6b51edbf7dc36f0f7ab3de3dae846c1ce1faee1b844da393bea3693")
+  elseif(target STREQUAL "armhf-linux-musl")
+    set(sha "d4921e6bf8b605b87b976470db84370820bc431245335d3fd9268f3ad7abe54b")
+  elseif(target STREQUAL "arm64-apple-darwin")
+    set(sha "f4c4790a63af3cfb0315bb7c453ab6bb2b3841bbdc98b9db3a5900c6cd20bd19")
+  else()
+    message(FATAL_ERROR "No cpktmisc ${CAI_CPKTMISC_VERSION} SDK pin for ${target}")
   endif()
-  if(CMAKE_SYSROOT)
-    list(APPEND arguments "-DCMAKE_SYSROOT=${CMAKE_SYSROOT}")
-  endif()
-  execute_process(COMMAND "${CMAKE_COMMAND}"
-    -S "${CAI_LIBYAML_ENTRYPOINT}"
-    -B "${CAI_LIBYAML_BUILD_DIR}" ${arguments} RESULT_VARIABLE result)
-  if(NOT result EQUAL 0)
-    message(FATAL_ERROR "Cannot configure private libyaml producer")
-  endif()
+  set(${output} "${sha}" PARENT_SCOPE)
 endfunction()
-cai_configure_yaml()
-# The parent owns the producer dependency; the child Ninja graph owns source,
-# header and wrapper invalidation. One nested job stays within the parent limit.
-# No compilation/installation occurs during configure.
-add_custom_target(cai_yaml_build
-  COMMAND "${CMAKE_COMMAND}" --build "${CAI_LIBYAML_BUILD_DIR}" --parallel 1
-  BYPRODUCTS
-    "${CAI_LIBYAML_BUILD_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}yaml${CMAKE_STATIC_LIBRARY_SUFFIX}"
-    "${CAI_LIBYAML_BUILD_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}yaml${CMAKE_SHARED_LIBRARY_SUFFIX}"
-  COMMENT "Build reusable private libyaml producer"
-  VERBATIM)
-add_library(cai_yaml_static STATIC IMPORTED GLOBAL)
-set_target_properties(cai_yaml_static PROPERTIES
-  IMPORTED_LOCATION "${CAI_LIBYAML_BUILD_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}yaml${CMAKE_STATIC_LIBRARY_SUFFIX}"
-  INTERFACE_INCLUDE_DIRECTORIES "${CAI_LIBYAML_SOURCE}/include")
-add_dependencies(cai_yaml_static cai_yaml_build)
+
+set(CAI_CPKTMISC_URL_FOR_PACKAGE "host")
+set(CAI_CPKTMISC_SHA256_FOR_PACKAGE "host")
+set(CAI_CPKTMISC_ARCHIVE_NAME_FOR_PACKAGE "host")
+if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
+  cai_cpktmisc_sha256("${CAI_TARGET_ID}" CAI_CPKTMISC_SHA256_FOR_PACKAGE)
+  set(CAI_CPKTMISC_ARCHIVE_NAME_FOR_PACKAGE
+    "cpktmisc-${CAI_CPKTMISC_VERSION}-${CAI_TARGET_ID}.tar.gz")
+  set(CAI_CPKTMISC_URL_FOR_PACKAGE
+    "https://github.com/c89systems/cpktmisc/releases/download/v${CAI_CPKTMISC_VERSION}/${CAI_CPKTMISC_ARCHIVE_NAME_FOR_PACKAGE}")
+  set(CAI_CPKTMISC_PREFIX "${CAI_DEPS_DIR}/cpktmisc-${CAI_CPKTMISC_VERSION}-${CAI_TARGET_ID}")
+  cai_dependency_archive_path("${CAI_CPKTMISC_ARCHIVE_NAME_FOR_PACKAGE}"
+    "${CAI_CPKTMISC_SHA256_FOR_PACKAGE}" misc_archive)
+  cai_download_tarball("cpktmisc ${CAI_CPKTMISC_VERSION} ${CAI_TARGET_ID}"
+    "${CAI_CPKTMISC_URL_FOR_PACKAGE}" "${misc_archive}" "${CAI_CPKTMISC_PREFIX}"
+    "${CAI_CPKTMISC_SHA256_FOR_PACKAGE}"
+    "${CAI_CPKTMISC_PREFIX}/lib/cmake/CpktYaml/CpktYamlConfig.cmake")
+  list(PREPEND CMAKE_PREFIX_PATH "${CAI_CPKTMISC_PREFIX}")
+  if(CMAKE_CROSSCOMPILING)
+    list(APPEND CMAKE_FIND_ROOT_PATH "${CAI_CPKTMISC_PREFIX}")
+  endif()
+  set(CpktMisc_DIR "${CAI_CPKTMISC_PREFIX}/lib/cmake/CpktMisc"
+    CACHE PATH "cpktmisc package directory" FORCE)
+  set(CpktYaml_DIR "${CAI_CPKTMISC_PREFIX}/lib/cmake/CpktYaml"
+    CACHE PATH "YAML package directory" FORCE)
+endif()
+
+# CpktYaml validates cpktmisc's manifest and its compatible, separate core SDK.
+find_package(CpktYaml ${CAI_LIBYAML_VERSION} EXACT CONFIG REQUIRED)
+if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt" AND
+    NOT CpktMisc_VERSION VERSION_EQUAL CAI_CPKTMISC_VERSION)
+  message(FATAL_ERROR "Expected cpktmisc ${CAI_CPKTMISC_VERSION}, found ${CpktMisc_VERSION}")
+endif()
+get_target_property(_cai_yaml_archive CpktYaml::Yaml IMPORTED_LOCATION)
+get_filename_component(_cai_yaml_libdir "${_cai_yaml_archive}" DIRECTORY)
+get_filename_component(CAI_CPKTMISC_PREFIX "${_cai_yaml_libdir}" DIRECTORY)
+file(READ "${CAI_CPKTMISC_PREFIX}/share/cpkt/packages/misc.json" _cai_misc_manifest)
+string(JSON CAI_CPKTMISC_PACKAGE_ID_FOR_PACKAGE GET "${_cai_misc_manifest}" package_id)
+set(CAI_CPKTMISC_VERSION "${CpktMisc_VERSION}")
+set(CAI_LIBYAML_LICENSE "${CAI_CPKTMISC_PREFIX}/share/doc/cpkt/misc/third_party/libyaml/LICENSE")
+if(NOT EXISTS "${CAI_LIBYAML_LICENSE}")
+  message(FATAL_ERROR "Selected cpktmisc SDK is missing the libyaml license: ${CAI_LIBYAML_LICENSE}")
+endif()

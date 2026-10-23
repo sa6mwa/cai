@@ -26,22 +26,11 @@ if(CAI_BUILD_TESTS)
   add_test(NAME cai_skill_metadata_test COMMAND cai_skill_metadata_test)
   set_tests_properties(cai_skill_metadata_test PROPERTIES LABELS "unit;local" TIMEOUT 20)
   add_executable(cai_yaml_c89_test tests/yaml_c89_test.c)
-  target_link_libraries(cai_yaml_c89_test PRIVATE cai_yaml_static)
+  target_link_libraries(cai_yaml_c89_test PRIVATE CpktYaml::Yaml)
   cai_configure_c_target(cai_yaml_c89_test)
   target_compile_options(cai_yaml_c89_test PRIVATE -UNDEBUG)
   add_test(NAME cai_yaml_c89_test COMMAND cai_yaml_c89_test)
   set_tests_properties(cai_yaml_c89_test PROPERTIES LABELS "unit;local" TIMEOUT 5)
-  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux"
-      AND CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR
-      AND CAI_TARGET_ID MATCHES "-linux-gnu$")
-    add_test(NAME cai_yaml_producer_test COMMAND "${CMAKE_COMMAND}"
-      "-DCAI_ROOT=${CMAKE_CURRENT_SOURCE_DIR}" "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
-      "-DCAI_YAML_SOURCE=${CAI_LIBYAML_SOURCE}" "-DCAI_YAML_ARCHIVE=${yaml_archive}"
-      "-DCAI_C_COMPILER=${CMAKE_C_COMPILER}" "-DCAI_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}"
-      "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
-      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/yaml_producer_test.cmake")
-    set_tests_properties(cai_yaml_producer_test PROPERTIES LABELS "unit;local;lifecycle" TIMEOUT 60)
-  endif()
   add_executable(cai_config_test tests/config_test.c)
   cai_link_internal_consumer(cai_config_test)
   cai_configure_c_target(cai_config_test)
@@ -891,6 +880,7 @@ if(CAI_BUILD_TESTS)
         "-DCAI_BUILD_SHARED=${CAI_BUILD_SHARED}"
         "-DCAI_BUILD_STATIC=${CAI_BUILD_STATIC}"
         "-DCAI_CPKT_PREFIX=${CAI_CPKT_PREFIX}"
+        "-DCAI_CPKTMISC_PREFIX=${CAI_CPKTMISC_PREFIX}"
         "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
         "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
         "-DCAI_RESOLVED_DEPENDENCY_MODE=${CAI_RESOLVED_DEPENDENCY_MODE}"
@@ -921,6 +911,7 @@ if(CAI_BUILD_TESTS)
       "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
       "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
       "-DCAI_CPKT_PREFIX=${CAI_CPKT_PREFIX}"
+      "-DCAI_CPKTMISC_PREFIX=${CAI_CPKTMISC_PREFIX}"
       "-DCAI_CPKT_VERSION=${CAI_CPKT_VERSION}"
       "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
       "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
@@ -975,7 +966,7 @@ if(CAI_BUILD_TESTS)
           COMMAND "${CMAKE_COMMAND}"
             "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
             "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
-            "-DCAI_PREFIXES=${CAI_CPKT_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}"
+            "-DCAI_PREFIXES=${CAI_CPKT_PREFIX};${CAI_CPKTMISC_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_dependency_runtime_test.cmake")
         set_tests_properties(cai_host_dependency_runtime_test PROPERTIES
           LABELS "packaging;local;host" TIMEOUT 120)
@@ -1036,6 +1027,7 @@ if(CAI_BUILD_TESTS)
         COMMAND "${CMAKE_COMMAND}"
           "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
           "-DCAI_CPKT_PREFIX=${CAI_CPKT_PREFIX}"
+          "-DCAI_CPKTMISC_PREFIX=${CAI_CPKTMISC_PREFIX}"
           "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
           "-DCAI_BUILD_SHARED=${CAI_BUILD_SHARED}"
           "-DCAI_BUILD_STATIC=${CAI_BUILD_STATIC}"
@@ -1051,6 +1043,7 @@ if(CAI_BUILD_TESTS)
           "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
           "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
           "-DCAI_CPKT_PREFIX=${CAI_CPKT_PREFIX}"
+          "-DCAI_CPKTMISC_PREFIX=${CAI_CPKTMISC_PREFIX}"
           "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
           "-DCAI_C_COMPILER=${CMAKE_C_COMPILER}"
           "-DCAI_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}"
@@ -1087,6 +1080,7 @@ if(CAI_BUILD_TESTS)
         "-DCAI_DEPENDENCY_MODE=${CAI_RESOLVED_DEPENDENCY_MODE}"
         "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
         "-DCAI_CPKT_PREFIX=${CAI_CPKT_PREFIX}"
+        "-DCAI_CPKTMISC_PREFIX=${CAI_CPKTMISC_PREFIX}"
         "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
         "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
         "-DCAI_LONEJSON_INCLUDE_DIR=${CAI_LONEJSON_INCLUDE_DIR}"
@@ -1108,6 +1102,7 @@ if(CAI_BUILD_TESTS)
         "-DCAI_DEPENDENCY_MODE=${CAI_RESOLVED_DEPENDENCY_MODE}"
         "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
         "-DCAI_CPKT_PREFIX=${CAI_CPKT_PREFIX}"
+        "-DCAI_CPKTMISC_PREFIX=${CAI_CPKTMISC_PREFIX}"
         "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
         "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
         "-DCAI_LONEJSON_INCLUDE_DIR=${CAI_LONEJSON_INCLUDE_DIR}"

@@ -219,6 +219,10 @@ if(CAI_DEPENDENCY_MODE STREQUAL "auto")
   find_path(_cai_auto_pslog_include pslog.h)
   find_library(_cai_auto_lonejson_library NAMES lonejson)
   find_library(_cai_auto_pslog_library NAMES pslog)
+  foreach(component IN ITEMS Yaml Misc Core)
+    find_file(_cai_auto_${component}_config NAMES Cpkt${component}Config.cmake
+      PATH_SUFFIXES lib/cmake/Cpkt${component})
+  endforeach()
   set(_cai_auto_curl_ok FALSE)
   set(_cai_auto_curl_version_header
       "${_cai_auto_curl_include}/curl/curlver.h")
@@ -244,7 +248,8 @@ if(CAI_DEPENDENCY_MODE STREQUAL "auto")
   if(_cai_auto_curl_ok AND _cai_auto_lonejson_include AND
      _cai_auto_pslog_include AND _cai_auto_lonejson_library AND
      _cai_auto_pslog_library AND
-     _cai_auto_lonejson_abi_ok)
+     _cai_auto_lonejson_abi_ok AND _cai_auto_Yaml_config AND
+     _cai_auto_Misc_config AND _cai_auto_Core_config)
     set(CAI_RESOLVED_DEPENDENCY_MODE "host")
   else()
     set(CAI_RESOLVED_DEPENDENCY_MODE "cpkt")
@@ -261,6 +266,9 @@ if(CAI_DEPENDENCY_MODE STREQUAL "auto")
   unset(_cai_auto_pslog_library CACHE)
   unset(_cai_auto_lonejson_abi_ok)
   unset(_cai_auto_lonejson_abi_reason)
+  foreach(component IN ITEMS Yaml Misc Core)
+    unset(_cai_auto_${component}_config CACHE)
+  endforeach()
 endif()
 if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt" AND
    CAI_TARGET_ID STREQUAL "x86_64-apple-darwin")
@@ -292,8 +300,6 @@ function(cai_set_lonejson_from_target)
     endif()
   endif()
 endfunction()
-
-include(CaiYaml)
 
 function(cai_set_pslog_from_target)
   if(TARGET pslog::pslog_shared)
@@ -504,6 +510,8 @@ if(CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt")
   list(APPEND CMAKE_BUILD_RPATH
        "${CAI_CPKT_PREFIX}/lib" "${_cai_lonejson_library_dir}")
 endif()
+
+include(CaiYaml)
 
 set(CAI_CPKT_SHA256_FOR_PACKAGE "")
 set(CAI_PSLOG_PKG_SHA256_FOR_PACKAGE "")
@@ -777,19 +785,17 @@ foreach(_cai_target IN ITEMS cai_static cai_shared)
     target_compile_definitions(${_cai_target} PRIVATE
       LONEJSON_WITH_CURL LONEJSON_WITH_JWT LONEJSON_WITH_OIDC
       LONEJSON_WITH_OPENSSL)
-    add_dependencies(${_cai_target} cai_smith_prompt_asset cai_yaml_build)
+    add_dependencies(${_cai_target} cai_smith_prompt_asset)
     cai_configure_c_target(${_cai_target})
   endif()
 endforeach()
 if(TARGET cai_shared)
   target_link_libraries(cai_shared PRIVATE ${CAI_CURL_SHARED_LINK}
-    Threads::Threads ${CAI_OPENSSL_CRYPTO_SHARED_LINK} ${CAI_LONEJSON_LINK} cai_yaml_static)
+    Threads::Threads ${CAI_OPENSSL_CRYPTO_SHARED_LINK} ${CAI_LONEJSON_LINK} CpktYaml::Yaml)
 endif()
 if(TARGET cai_static)
-  target_include_directories(cai_static PRIVATE "${CAI_LIBYAML_SOURCE}/include")
+  target_link_libraries(cai_static PRIVATE CpktYaml::Yaml)
   target_link_libraries(cai_static INTERFACE
-    $<BUILD_INTERFACE:cai_yaml_static>
-    $<INSTALL_INTERFACE:cai::yaml_static>
     $<BUILD_INTERFACE:${CAI_CURL_STATIC_LINK}>
     $<BUILD_INTERFACE:Threads::Threads>
     $<BUILD_INTERFACE:${CAI_OPENSSL_CRYPTO_STATIC_LINK}>
@@ -907,7 +913,7 @@ if(CAI_BUILD_CLI)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/man/cai.1"
       DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
       COMPONENT cai-cli EXCLUDE_FROM_ALL)
-    install(FILES "${CAI_LIBYAML_SOURCE}/License"
+    install(FILES "${CAI_LIBYAML_LICENSE}"
       DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/third_party/libyaml"
       COMPONENT cai-cli EXCLUDE_FROM_ALL)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/docs/model-metadata.md"
@@ -1130,7 +1136,7 @@ include(CaiCrossTests)
 if(CAI_BUILD_TESTS)
   get_property(_cai_registered_tests DIRECTORY PROPERTY TESTS)
   foreach(_test IN LISTS _cai_registered_tests)
-    if(_test MATCHES "^cai_(yaml_producer|receiver_usage|build_toolchain_change|lifecycle_execution|makefile_targets|devenv|release_live_gate|mcp_client_source_contract|smith_prompt_asset|byte_asset_generator|export_policy_incremental|target_tool_discovery|darwin_linker_route|release_artifacts_darwin_metadata|release_export_policy|release_manifest_gate|release_toolchain_cache_guard|release_staging_safety|cmake_presets|release_lua_version)_test$" OR _test STREQUAL "cai_tests.registration_script")
+    if(_test MATCHES "^cai_(receiver_usage|build_toolchain_change|lifecycle_execution|makefile_targets|devenv|release_live_gate|mcp_client_source_contract|smith_prompt_asset|byte_asset_generator|export_policy_incremental|target_tool_discovery|darwin_linker_route|release_artifacts_darwin_metadata|release_export_policy|release_manifest_gate|release_toolchain_cache_guard|release_staging_safety|cmake_presets|release_lua_version)_test$" OR _test STREQUAL "cai_tests.registration_script")
       set_property(TEST ${_test} APPEND PROPERTY LABELS host)
     endif()
   endforeach()
@@ -1230,7 +1236,7 @@ if(CAI_INSTALL)
     set(CAI_CONFIG_LONEJSON_INCLUDE_HINT "${CAI_LONEJSON_INCLUDE_DIR}")
     set(CAI_CONFIG_PSLOG_INCLUDE_HINT "${CAI_PSLOG_INCLUDE_DIR}")
   endif()
-  set(CAI_PC_DEPENDENCY_LIBS_PRIVATE "-L\${libdir}/cai -lyaml")
+  string(APPEND CAI_PACKAGE_REQUIRES_PRIVATE ", yaml-0.1 >= ${CAI_LIBYAML_VERSION}")
   set(CAI_LONEJSON_PKG_SHA256_FOR_PACKAGE "${CAI_LONEJSON_PKG_SHA256}")
   if(NOT DEFINED CAI_LONEJSON_PKG_SHA256_FOR_PACKAGE OR
      CAI_LONEJSON_PKG_SHA256_FOR_PACKAGE STREQUAL "")
@@ -1267,8 +1273,7 @@ if(CAI_INSTALL)
   install(DIRECTORY "${CAI_PUBLIC_INCLUDE_DIR}/" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
     PATTERN "app.h" EXCLUDE)
   install(DIRECTORY "${CAI_GENERATED_INCLUDE_DIR}/" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
-  install(FILES "$<TARGET_FILE:cai_yaml_static>" DESTINATION "${CMAKE_INSTALL_LIBDIR}/cai")
-  install(FILES "${CAI_LIBYAML_SOURCE}/License"
+  install(FILES "${CAI_LIBYAML_LICENSE}"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/third_party/libyaml")
   if(TARGET cai_static)
     install(TARGETS cai_static EXPORT caiTargets

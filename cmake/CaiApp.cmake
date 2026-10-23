@@ -89,7 +89,7 @@ if(CAI_BUILD_TESTS)
     if(CAI_BUILD_LUA)
       set(_app_lua_runner "$<TARGET_FILE:cai_lua_runner>")
     endif()
-    set(_app_prefixes "${CAI_CPKT_PREFIX};${CAI_LONEJSON_PREFIX};${_cai_softline_prefix};${_cai_libmdf_prefix};${_cai_lockdc_prefix};${_cai_liblql_prefix};${CAI_DEPS_DIR}/libpslog-${CAI_PSLOG_VERSION}-${CAI_TARGET_ID}")
+    set(_app_prefixes "${CAI_CPKT_PREFIX};${CAI_CPKTMISC_PREFIX};${CAI_LONEJSON_PREFIX};${_cai_softline_prefix};${_cai_libmdf_prefix};${_cai_lockdc_prefix};${_cai_liblql_prefix};${CAI_DEPS_DIR}/libpslog-${CAI_PSLOG_VERSION}-${CAI_TARGET_ID}")
     add_test(NAME cai_app_install COMMAND "${CMAKE_COMMAND}"
       "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}" "-DCAI_C_COMPILER=${CMAKE_C_COMPILER}"
       "-DCAI_DEPENDENCY_PREFIXES=${_app_prefixes}"

@@ -17,6 +17,7 @@ file(REMOVE_RECURSE "${host_dir}")
 set(prefix_paths "")
 foreach(path IN ITEMS
     "${CAI_CPKT_PREFIX}"
+    "${CAI_CPKTMISC_PREFIX}"
     "${CAI_LONEJSON_PREFIX}"
     "${CAI_PSLOG_PREFIX}")
   if(NOT path STREQUAL "" AND EXISTS "${path}")
@@ -83,6 +84,16 @@ if(pc_text MATCHES "cpkt_sha256=[^\n]+")
     "host dependency mode should not emit a bundled cpkt checksum")
 endif()
 
+# Auto must recognize a complete host installation, including the new YAML
+# package. Reconfigure the same effective host inputs; no producer rebuild.
+execute_process(COMMAND ${configure_command} -DCAI_DEPENDENCY_MODE=auto
+  RESULT_VARIABLE auto_host_result OUTPUT_VARIABLE auto_host_output
+  ERROR_VARIABLE auto_host_error)
+file(READ "${host_dir}/cai.pc" auto_host_pc)
+if(NOT auto_host_result EQUAL 0 OR NOT auto_host_pc MATCHES "dependency_mode=host")
+  message(FATAL_ERROR "auto must select a complete host SDK:\n${auto_host_output}\n${auto_host_error}")
+endif()
+
 set(auto_dir "${CAI_BINARY_DIR}/auto-dependency-mode-partial-pslog")
 set(fake_prefix "${auto_dir}/fake-host")
 file(REMOVE_RECURSE "${auto_dir}")
@@ -115,8 +126,8 @@ if(DEFINED CAI_GENERATOR AND NOT CAI_GENERATOR STREQUAL "")
 endif()
 
 # Model cached transitive package locations left behind by an SDK upgrade.
-# Falling back to the pinned SDK must replace all three stale locations.
-foreach(package IN ITEMS ZLIB nghttp2 Libssh2)
+# Falling back to the pinned SDK must replace stale core and misc locations.
+foreach(package IN ITEMS ZLIB nghttp2 Libssh2 CpktMisc CpktYaml)
   set(stale_dir "${auto_dir}/stale-sdk/${package}")
   file(MAKE_DIRECTORY "${stale_dir}")
   file(WRITE "${stale_dir}/${package}Config.cmake"
@@ -139,6 +150,7 @@ execute_process(
   COMMAND "${CMAKE_COMMAND}"
           "-DCAI_BINARY_DIR=${auto_dir}"
           "-DCAI_CPKT_PREFIX=${CAI_DEPS_DIR}/cpkt-${CAI_CPKT_VERSION}-x86_64-linux-gnu"
+          "-DCAI_CPKTMISC_PREFIX=${CAI_CPKTMISC_PREFIX}"
           "-DCAI_TARGET_ID=x86_64-linux-gnu"
           -DCAI_BUILD_SHARED=ON
           -DCAI_BUILD_STATIC=OFF

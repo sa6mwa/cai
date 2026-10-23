@@ -438,6 +438,8 @@ verify_dependency_manifest() {
   pc_lonejson_version=$(sed -n 's/^lonejson_version=//p' "$pc")
   pc_lonejson_sha256=$(sed -n 's/^lonejson_sha256=//p' "$pc")
   if ! grep -F '"name": "cpkt"' <<<"$manifest_text" >/dev/null ||
+     ! grep -F '"name": "cpktmisc"' <<<"$manifest_text" >/dev/null ||
+     ! grep -F '"providedBy": "cpktmisc"' <<<"$manifest_text" >/dev/null ||
      ! grep -F '"name": "lonejson"' <<<"$manifest_text" >/dev/null ||
      ! grep -F '"name": "libpslog"' <<<"$manifest_text" >/dev/null ||
      ! grep -F "\"targetId\": \"$target_id\"" <<<"$manifest_text" >/dev/null ||
@@ -914,9 +916,11 @@ verify_extracted_sdk_smoke() {
   local target_id=$2
   local pc="$root_dir/lib/pkgconfig/cai.pc"
   local cpkt_version
+  local cpktmisc_version
   local lonejson_version
   local pslog_version
   local cpkt_prefix
+  local cpktmisc_prefix
   local lonejson_prefix
   local pslog_prefix
   local cmake_prefixes=()
@@ -934,11 +938,14 @@ verify_extracted_sdk_smoke() {
   local dependency_names dependency_prefix dependency
 
   cpkt_version=$(pc_value "$pc" cpkt_version)
+  cpktmisc_version=$(pc_value "$pc" cpktmisc_version)
   lonejson_version=$(pc_value "$pc" lonejson_version)
   [[ -n "$cpkt_version" ]] || fail "cai.pc is missing cpkt version"
+  [[ -n "$cpktmisc_version" ]] || fail "cai.pc is missing cpktmisc version"
   [[ -n "$lonejson_version" ]] || fail "cai.pc is missing lonejson version"
 
   cpkt_prefix="$repo_root/.cache/deps/cpkt-$cpkt_version-$target_id"
+  cpktmisc_prefix="$repo_root/.cache/deps/cpktmisc-$cpktmisc_version-$target_id"
   lonejson_prefix="$repo_root/.cache/deps/liblonejson-$lonejson_version-$target_id"
   pslog_version=$(sed -n \
     's/^CAI_PSLOG_VERSION[[:space:]]*[?:]*=[[:space:]]*//p' \
@@ -946,12 +953,14 @@ verify_extracted_sdk_smoke() {
   pslog_prefix="$repo_root/.cache/deps/libpslog-$pslog_version-$target_id"
 
   require_dependency_prefix "$cpkt_prefix" "cpkt" "$root_dir"
+  require_dependency_prefix "$cpktmisc_prefix" "cpktmisc" "$root_dir"
   require_dependency_prefix "$lonejson_prefix" "liblonejson" "$root_dir"
 
-  cmake_prefixes=("$root_dir" "$cpkt_prefix" "$lonejson_prefix")
+  cmake_prefixes=("$root_dir" "$cpkt_prefix" "$cpktmisc_prefix" "$lonejson_prefix")
   pkg_config_dirs=(
     "$root_dir/lib/pkgconfig"
     "$cpkt_prefix/lib/pkgconfig"
+    "$cpktmisc_prefix/lib/pkgconfig"
     "$lonejson_prefix/lib/pkgconfig"
   )
   include_dirs=("-I$root_dir/include" "-I$lonejson_prefix/include")
@@ -1275,7 +1284,7 @@ verify_cli_archive() {
   for dependency in liblockdc liblql softline libmdf libpslog liblonejson curl openssl zlib nghttp2 libssh2; do
     require_file "$root_dir/share/doc/libcai/third_party/$dependency/LICENSE"
   done
-  require_file "$root_dir/share/doc/libcai/third_party/libyaml/License"
+  require_file "$root_dir/share/doc/libcai/third_party/libyaml/LICENSE"
   verify_cli_binary "$root_dir/bin/cai" "$target"
   verify_no_host_paths "$root_dir"
   verify_no_sanitizer_artifacts "$root_dir"

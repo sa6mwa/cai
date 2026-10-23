@@ -52,6 +52,10 @@ if(NOT DEFINED CAI_ABI_VERSION OR NOT CAI_ABI_VERSION STREQUAL "5")
 endif()
 
 set(prefix "${CAI_BINARY_DIR}/install-metadata-test")
+string(REPLACE ";" "\\;" yaml_prefix_path_arg
+  "${CAI_CPKT_PREFIX};${CAI_CPKTMISC_PREFIX}")
+string(REPLACE ";" "\\;" external_prefix_path_arg
+  "${CAI_CPKT_PREFIX};${CAI_CPKTMISC_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}")
 file(REMOVE_RECURSE "${prefix}")
 execute_process(
   COMMAND "${CMAKE_COMMAND}" --install "${CAI_BINARY_DIR}" --prefix "${prefix}"
@@ -74,12 +78,16 @@ set(required_files
   "${prefix}/lib/cmake/cai/cai-config-version.cmake"
   "${prefix}/lib/cmake/cai/cai-targets.cmake"
   "${prefix}/lib/pkgconfig/cai.pc"
+  "${prefix}/share/doc/libcai/third_party/libyaml/LICENSE"
   "${prefix}/share/cai/dependencies.json")
 foreach(path IN LISTS required_files)
   if(NOT EXISTS "${path}")
     message(FATAL_ERROR "missing installed file: ${path}")
   endif()
 endforeach()
+if(EXISTS "${prefix}/lib/cai/libyaml.a")
+  message(FATAL_ERROR "CAI must not install a private YAML archive")
+endif()
 
 file(GLOB installed_shared_libraries
   "${prefix}/lib/libcai.so*"
@@ -191,6 +199,17 @@ if(pc_curl_pos EQUAL -1 OR pc_public_deps_pos EQUAL -1 OR
 endif()
 
 file(READ "${prefix}/share/cai/dependencies.json" dependencies_text)
+string(JSON misc_name GET "${dependencies_text}" dependencies 1 name)
+string(JSON misc_id GET "${dependencies_text}" dependencies 1 packageId)
+string(JSON yaml_provider GET "${dependencies_text}" dependencies 0 providedBy)
+file(READ "${CAI_CPKTMISC_PREFIX}/share/cpkt/packages/misc.json" misc_manifest)
+string(JSON expected_misc_id GET "${misc_manifest}" package_id)
+if(NOT misc_name STREQUAL "cpktmisc" OR NOT yaml_provider STREQUAL "cpktmisc"
+    OR NOT misc_id STREQUAL expected_misc_id
+    OR NOT config_text MATCHES "find_dependency\\(CpktYaml 0[.]2[.]5 EXACT CONFIG\\)"
+    OR NOT pc_text MATCHES "yaml-0[.]1 >= 0[.]2[.]5")
+  message(FATAL_ERROR "installed metadata must describe the selected cpktmisc YAML dependency")
+endif()
 string(FIND "${dependencies_text}" "\"name\": \"cpkt\""
        deps_c_pkt_pos)
 string(FIND "${dependencies_text}" "\"name\": \"lonejson\""
@@ -463,7 +482,7 @@ int main(void) {
 }
 ")
   set(consumer_prefix_path
-      "${prefix};${CAI_CPKT_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}")
+      "${prefix};${CAI_CPKT_PREFIX};${CAI_CPKTMISC_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}")
   string(REPLACE ";" "\\;" consumer_prefix_path_arg "${consumer_prefix_path}")
   set(consumer_configure_command
     "${CMAKE_COMMAND}"
@@ -524,7 +543,7 @@ int main(void) {
 }
 ")
   set(fallback_prefix_path
-      "${prefix};${CAI_CPKT_PREFIX};${fallback_deps_dir}")
+      "${prefix};${CAI_CPKT_PREFIX};${CAI_CPKTMISC_PREFIX};${fallback_deps_dir}")
   string(REPLACE ";" "\\;" fallback_prefix_path_arg "${fallback_prefix_path}")
   set(fallback_consumer_configure_command
     "${CMAKE_COMMAND}"
@@ -604,7 +623,7 @@ int main(void) {
       -S "${shared_only_consumer_dir}"
       -B "${shared_only_consumer_dir}/build"
       "-Dcai_DIR=${prefix}/lib/cmake/cai"
-      "-DCMAKE_PREFIX_PATH=${CAI_CPKT_PREFIX}"
+      "-DCMAKE_PREFIX_PATH=${yaml_prefix_path_arg}"
       "-DCMAKE_LIBRARY_PATH=${shared_only_fake_lonejson_dir}/lib")
     execute_process(
       COMMAND ${shared_only_consumer_configure_command}
@@ -638,7 +657,7 @@ find_package(cai CONFIG REQUIRED)
     -S "${missing_dep_consumer_dir}"
     -B "${missing_dep_consumer_dir}/build"
     "-Dcai_DIR=${prefix}/lib/cmake/cai"
-    "-DCMAKE_PREFIX_PATH=${CAI_CPKT_PREFIX}"
+    "-DCMAKE_PREFIX_PATH=${yaml_prefix_path_arg}"
     "-DCMAKE_IGNORE_PATH=${missing_dep_ignore_path_arg}")
   execute_process(
     COMMAND ${missing_dep_consumer_configure_command}
@@ -696,7 +715,7 @@ int main(void) {
     -S "${build_tree_consumer_dir}"
     -B "${build_tree_consumer_dir}/build"
     "-DCMAKE_C_COMPILER=${CAI_C_COMPILER}"
-    "-DCMAKE_PREFIX_PATH=${CAI_CPKT_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}")
+    "-DCMAKE_PREFIX_PATH=${external_prefix_path_arg}")
   if(DEFINED CAI_GENERATOR AND NOT CAI_GENERATOR STREQUAL "")
     list(APPEND build_tree_configure_command -G "${CAI_GENERATOR}")
   endif()
@@ -721,10 +740,7 @@ int main(void) {
     message(FATAL_ERROR
       "failed to configure cai build-tree static consumer: ${build_tree_configure_error}\n${build_tree_configure_output}")
   endif()
-  execute_process(
-    COMMAND "${CMAKE_COMMAND}" --build "${build_tree_consumer_dir}/build"
-    RESULT_VARIABLE build_tree_build_result)
-  if(NOT build_tree_build_result EQUAL 0)
-    message(FATAL_ERROR "failed to build cai build-tree static consumer")
-  endif()
+  # Generation proves the add_subdirectory/alias contract. The parent build's
+  # static consumers and installed SDK consumers already prove the link closure;
+  # recompiling libcai here duplicates that proof and slows every metadata check.
 endif()

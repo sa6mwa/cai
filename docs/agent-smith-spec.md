@@ -642,7 +642,8 @@ and is bounded to 1 MiB per resource.
 Malformed, inaccessible, duplicate, or excessively large packages are skipped
 without preventing agent startup. If configured, `warning_callback` receives a
 non-fatal diagnostic; otherwise Smith routes it through the client's logger.
-Quoted, folded/literal and aliased scalar metadata is parsed by private libyaml;
+Quoted, folded/literal and aliased scalar metadata is parsed by libyaml from
+cpktmisc's `CpktYaml` package;
 catalog descriptions are normalized to one line. Discovery stops at a package
 boundary so nested artifact examples do not add skills to developer instructions.
 The CAI `--install-skill DIR` utility copies a validated package without executing
