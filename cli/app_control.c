@@ -123,6 +123,7 @@ void cai_app_bridge_begin(cai_app_bridge *b) {
   b->status.running = 1;
   b->status.outcome = CAI_APP_RUNNING;
   b->accepting = 1;
+  b->failed = 0;
   b->next_id = 0U;
   pthread_mutex_unlock(&b->lock);
 }
@@ -264,15 +265,28 @@ void cai_app_bridge_error(cai_app_bridge *b, const cai_error *error) {
   if (b == NULL || error == NULL || error->code == CAI_OK)
     return;
   pthread_mutex_lock(&b->lock);
-  if (error_copy(&b->status.error, error) != CAI_OK)
+  if (!b->failed && error_copy(&b->status.error, error) != CAI_OK)
     b->status.error.code = CAI_ERR_NOMEM;
+  pthread_mutex_unlock(&b->lock);
+}
+void cai_app_bridge_fail(cai_app_bridge *b, const cai_error *error) {
+  if (b == NULL)
+    return;
+  pthread_mutex_lock(&b->lock);
+  if (!b->failed) {
+    if (error_copy(&b->status.error, error) != CAI_OK)
+      b->status.error.code = CAI_ERR_NOMEM;
+    b->failed = 1;
+    b->status.outcome = CAI_APP_FAILED;
+  }
   pthread_mutex_unlock(&b->lock);
 }
 void cai_app_bridge_outcome(cai_app_bridge *b, cai_app_outcome outcome) {
   if (b != NULL) {
     pthread_mutex_lock(&b->lock);
-    b->status.outcome = outcome;
-    if (outcome == CAI_APP_RUNNING)
+    if (!b->failed)
+      b->status.outcome = outcome;
+    if (outcome == CAI_APP_RUNNING && !b->failed)
       cai_error_cleanup(&b->status.error);
     pthread_mutex_unlock(&b->lock);
   }
@@ -285,7 +299,7 @@ void cai_app_bridge_end(cai_app_bridge *b, int code, const cai_error *error) {
   b->accepting = 0;
   b->status.running = b->status.runtime_ready = 0;
   b->status.exit_code = code;
-  if (error != NULL && error->code != CAI_OK)
+  if (b->failed || (error != NULL && error->code != CAI_OK))
     b->status.outcome = CAI_APP_FAILED;
   else if (code != 0 && b->status.outcome != CAI_APP_CANCELLED &&
            b->status.outcome != CAI_APP_STOPPED)

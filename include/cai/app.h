@@ -130,7 +130,9 @@ typedef struct cai_app_config {
   /** Owner-thread acknowledgement for every accepted command, including those
    * rejected or abandoned during shutdown. error is borrowed for the call;
    * acceptance is distinct from successful application. May call get_status
-   * or queue another control. NULL is valid; status retains the last result. */
+   * or queue another control. Do not reenter run or close the app here, even
+   * when the final status is no longer running. NULL is valid; status retains
+   * the last result. */
   void (*control_callback)(void *context, unsigned long long id, int status,
                            const cai_error *error);
   void *control_context;
@@ -189,7 +191,8 @@ int cai_app_control(cai_app *self, cai_app_control_type type, const char *text,
                     unsigned long long *id, cai_error *error);
 int cai_app_get_status(const cai_app *self, cai_app_status *out,
                        cai_error *error);
-/** Close an idle application and copied settings. NULL is accepted. */
+/** Close after run has returned, outside its callbacks. Calls made during run
+ * are ignored. NULL is accepted. Must not race other receiver calls. */
 void cai_app_close(cai_app *self);
 
 /** Independent shared kanban access for HTTP hosts and other embedders.

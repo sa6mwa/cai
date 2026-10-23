@@ -65,6 +65,10 @@ if(CAI_BUILD_TESTS)
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_controls_test.sh" "$<TARGET_FILE:cai_app_controls_host>")
     set_tests_properties(cai_app_controls PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
       ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
+    add_test(NAME cai_app_control_edges COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_controls_test.sh" "$<TARGET_FILE:cai_app_controls_host>" edges)
+    set_tests_properties(cai_app_control_edges PROPERTIES LABELS "cli;local;offline" TIMEOUT 10
+      ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
     add_test(NAME cai_app_custom_tools COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_custom_tools_test.sh" "$<TARGET_FILE:cai_app_host>")
     set_tests_properties(cai_app_custom_tools PROPERTIES LABELS "cli;local;offline" TIMEOUT 10)

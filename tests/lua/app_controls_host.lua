@@ -40,6 +40,15 @@ local function run(...)
   for _, value in ipairs {...} do args[#args + 1] = value end
   return assert(app:run(args))
 end
+if os.getenv("CAI_TEST_APP_LUA_INTERACTIVE_ERROR") then
+  mode = "interactive_error"
+  local code = assert(app:run(arg))
+  local failed = assert(app:get_status())
+  assert(code == 1 and failed.outcome == "failed")
+  assert(failed.error.message:find("LUA OBSERVER FAILED", 1, true))
+  app:close()
+  os.exit(code)
+end
 assert(run("-Nni", "initial") == 0)
 local retained = assert(app:get_status())
 assert(starts == 2 and retained.outcome == "completed" and not retained.running)

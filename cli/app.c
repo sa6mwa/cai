@@ -131,6 +131,7 @@ int cai_app_run(cai_app *self, int argc, const char *const *argv,
   if (pthread_mutex_trylock(&application_lock) != 0)
     return cai_cli_error(error, CAI_ERR_INVALID,
                          "a CAI application is already running");
+  app->running = 1;
   cai_app_bridge_begin(app->bridge);
   arguments = calloc((size_t)argc + 2U, sizeof(*arguments));
   rc = arguments != NULL ? CAI_OK : CAI_ERR_NOMEM;
@@ -146,10 +147,8 @@ int cai_app_run(cai_app *self, int argc, const char *const *argv,
   } else {
     rc = process_save(&saved, error);
     if (rc == CAI_OK) {
-      app->running = 1;
       *exit_code =
           cai_cli_app_run(argc + 1, arguments, &app->config, app->bridge);
-      app->running = 0;
       rc = process_restore(&saved, error);
     }
     process_free(&saved);
@@ -161,6 +160,7 @@ int cai_app_run(cai_app *self, int argc, const char *const *argv,
   }
   cai_app_bridge_end(app->bridge, rc == CAI_OK ? *exit_code : 1,
                      rc != CAI_OK ? error : NULL);
+  app->running = 0;
   pthread_mutex_unlock(&application_lock);
   return rc;
 }

@@ -12,6 +12,7 @@ typedef struct cai_app_bridge {
   pthread_mutex_t lock;
   int fd;
   int accepting;
+  int failed;
   size_t count;
   unsigned long long next_id;
   cai_app_command *head, *tail;
@@ -32,6 +33,7 @@ int cai_app_bridge_status(cai_app_bridge *bridge, cai_app_status *out,
 int cai_app_bridge_publish(cai_app_bridge *bridge, cai_agent_runtime *runtime,
                            cai_error *error);
 void cai_app_bridge_error(cai_app_bridge *bridge, const cai_error *error);
+void cai_app_bridge_fail(cai_app_bridge *bridge, const cai_error *error);
 cai_app_command *cai_app_bridge_take(cai_app_bridge *bridge);
 void cai_app_bridge_ack(cai_app_bridge *bridge, cai_app_command *command,
                         int status, const cai_error *error);

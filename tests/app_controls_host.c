@@ -58,6 +58,9 @@ static void *worker(void *context) {
       send_control(h, CAI_APP_PAUSE_GOAL, NULL);
     } else if (strcmp(h->mode, "goals") == 0) {
       send_control(h, CAI_APP_REPLACE_GOAL, "HOST GOAL");
+    } else if (strcmp(h->mode, "queue_goal") == 0) {
+      send_control(h, CAI_APP_QUEUE_PROMPT, "HOST NEXT PROMPT");
+      send_control(h, CAI_APP_REPLACE_GOAL, "HOST GOAL");
     } else if (strcmp(h->mode, "cancel") == 0 ||
                strcmp(h->mode, "cancelqueued") == 0) {
       if (strcmp(h->mode, "cancelqueued") == 0)
@@ -72,7 +75,8 @@ static void *worker(void *context) {
              CAI_ERR_INVALID);
       assert(id == 0U);
     } else {
-      if (strcmp(h->mode, "stopqueued") == 0)
+      if (strcmp(h->mode, "stopqueued") == 0 ||
+          strcmp(h->mode, "interactive_stop") == 0)
         send_control(h, CAI_APP_QUEUE_PROMPT, "DISCARD QUEUED PROMPT");
       send_control(h, CAI_APP_STOP, NULL);
       /* Accepted commands behind STOP must receive a negative ack. */
@@ -96,7 +100,9 @@ static int event(void *context, const cai_agent_runtime_event *e,
     h->starts++;
   if (e->type == CAI_AGENT_EVENT_TEXT_DELTA)
     h->text++;
-  if (strcmp(h->mode, "observer_error") == 0 &&
+  if ((strcmp(h->mode, "observer_error") == 0 ||
+       strcmp(h->mode, "observer_interactive") == 0 ||
+       strcmp(h->mode, "close_ack") == 0) &&
       e->type == CAI_AGENT_EVENT_TEXT_DELTA) {
     send_control(h, CAI_APP_QUEUE_PROMPT, "ABANDON THIS PROMPT");
     error->code = CAI_ERR_PROTOCOL;
@@ -121,14 +127,19 @@ static int event(void *context, const cai_agent_runtime_event *e,
   }
   if (strcmp(h->mode, "replay") != 0 &&
       strcmp(h->mode, "observer_error") != 0 &&
+      strcmp(h->mode, "observer_interactive") != 0 &&
+      strcmp(h->mode, "close_ack") != 0 &&
       strcmp(h->mode, "replay_error") != 0 && strcmp(h->mode, "failure") != 0 &&
       ((strcmp(h->mode, "queue") == 0 &&
         e->type == CAI_AGENT_EVENT_RUN_STARTED) ||
        ((strcmp(h->mode, "interactive") == 0 ||
+         strcmp(h->mode, "interactive_stop") == 0 ||
+         strcmp(h->mode, "queue_goal") == 0 ||
          strcmp(h->mode, "reject") == 0) &&
         e->type == CAI_AGENT_EVENT_RUN_COMPLETED) ||
        (strcmp(h->mode, "queue") != 0 && strcmp(h->mode, "interactive") != 0 &&
-        strcmp(h->mode, "reject") != 0 &&
+        strcmp(h->mode, "interactive_stop") != 0 &&
+        strcmp(h->mode, "queue_goal") != 0 && strcmp(h->mode, "reject") != 0 &&
         e->type == CAI_AGENT_EVENT_TEXT_DELTA))) {
     pthread_mutex_lock(&h->lock);
     if (!h->sent) {
@@ -168,6 +179,8 @@ static void ack(void *context, unsigned long long id, int status,
   }
   cai_error_init(&local);
   cai_app_status_init(&snapshot);
+  if (strcmp(h->mode, "close_ack") == 0)
+    h->app->close(h->app);
   assert(h->app->get_status(h->app, &snapshot, &local) == CAI_OK);
   assert(snapshot.control_id == id && snapshot.control_status == status);
   cai_app_status_cleanup(&snapshot);
@@ -232,7 +245,8 @@ int main(int argc, char **argv) {
   } else if (strcmp(h.mode, "stop") == 0) {
     assert(snapshot.outcome == CAI_APP_STOPPED && h.acks == 2 &&
            h.rejected == 1);
-  } else if (strcmp(h.mode, "stopqueued") == 0) {
+  } else if (strcmp(h.mode, "stopqueued") == 0 ||
+             strcmp(h.mode, "interactive_stop") == 0) {
     assert(snapshot.outcome == CAI_APP_STOPPED && h.acks == 3 &&
            h.rejected == 1 && h.starts == 1);
   } else if (strcmp(h.mode, "cancel") == 0) {
@@ -244,13 +258,23 @@ int main(int argc, char **argv) {
   } else if (strcmp(h.mode, "cancelqueued") == 0) {
     assert(code == 0 && snapshot.outcome == CAI_APP_COMPLETED &&
            h.starts == 2 && h.acks == 2 && h.rejected == 0);
-  } else if (strcmp(h.mode, "observer_error") == 0) {
+  } else if (strcmp(h.mode, "observer_error") == 0 ||
+             strcmp(h.mode, "observer_interactive") == 0 ||
+             strcmp(h.mode, "close_ack") == 0) {
     assert(code == 1 && snapshot.outcome == CAI_APP_FAILED);
     assert(snapshot.error.http_status == 418);
     assert(strcmp(snapshot.error.detail, "observer detail") == 0);
     assert(strcmp(snapshot.error.server_code, "host_observer") == 0);
     assert(strcmp(snapshot.error.request_id, "host_request") == 0);
     assert(h.acks == 1 && h.rejected == 1);
+  } else if (strcmp(h.mode, "review_stop") == 0) {
+    assert(code == 0 && snapshot.outcome == CAI_APP_STOPPED && h.starts == 1 &&
+           h.acks == 2 && h.rejected == 1);
+  } else if (strcmp(h.mode, "queue_goal") == 0) {
+    assert(code == 0 && snapshot.outcome == CAI_APP_COMPLETED &&
+           h.starts >= 2 && h.acks == 2 && h.rejected == 0);
+    assert(snapshot.goal.has_goal &&
+           strcmp(snapshot.goal.status, "complete") == 0);
   } else if (strcmp(h.mode, "goals") == 0) {
     assert(h.goal_changes == 4 && h.acks == 5 && h.rejected == 0);
     assert(!snapshot.goal.has_goal && snapshot.outcome == CAI_APP_STOPPED);

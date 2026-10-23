@@ -8,3 +8,12 @@ contains "$root/peer/requests.jsonl" 'LUA NEXT PROMPT'
 contains "$root/stderr" 'LUA OBSERVER FAILED'
 contains "$root/stderr" 'LUA REPLAY FAILED'
 absent "$root/peer/requests.jsonl" 'ABANDON LUA PROMPT'
+export CAI_TEST_APP_LUA_INTERACTIVE_ERROR=1
+plan '{"plan":["Observer failure"]}'
+terminal_start -N
+send 'initial\r'
+wait_for test -s "$term/status"
+wait "$terminal_pid" || :
+terminal_pid=
+[[ $(cat "$term/status") == 1 ]]
+absent "$term/text" 'prompt input failed'

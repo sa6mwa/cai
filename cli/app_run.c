@@ -73,7 +73,7 @@ typedef struct cli_state {
   sl_watch_id_t host_watch;
   int has_host_watch;
   int host_stopped;
-  size_t host_pending_turns;
+  size_t batch_pending_turns;
   cai_cli_options options;
   cai_config *configuration;
   cai_agent_session_store store;
@@ -1060,7 +1060,7 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     if (observed != CAI_OK) {
       if (error->code == CAI_OK)
         cai_cli_error(error, observed, "application event observer failed");
-      cai_app_bridge_error(state->bridge, error);
+      cai_app_bridge_fail(state->bridge, error);
       return observed;
     }
   }
@@ -1090,6 +1090,11 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     state->review_report_length = event->data_length;
   }
   if (event->parent_tool_call_id == NULL) {
+    if (state->batch && state->batch_pending_turns > 0U &&
+        (event->type == CAI_AGENT_EVENT_RUN_COMPLETED ||
+         event->type == CAI_AGENT_EVENT_RUN_FAILED ||
+         event->type == CAI_AGENT_EVENT_RUN_CANCELLED))
+      state->batch_pending_turns--;
     if (event->type == CAI_AGENT_EVENT_GOAL_CHANGED &&
         state->goal_starts_pending > 0U && event->data != NULL &&
         ((event->data_length == 8U &&
@@ -1123,8 +1128,7 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     }
     if (event->type == CAI_AGENT_EVENT_RUN_STARTED) {
       cai_app_bridge_outcome(state->bridge, CAI_APP_RUNNING);
-      if (!state->awaiting_turn && state->host_pending_turns > 0U) {
-        state->host_pending_turns--;
+      if (state->batch && state->batch_pending_turns > 0U) {
         state->awaiting_turn = 1;
         state->automation_failed = 0;
       }
@@ -1360,7 +1364,7 @@ static int cli_messages_process(cli_state *state, cai_error *error) {
   size_t index;
   char *text;
   int rc;
-  if (state->batch || state->runtime == NULL)
+  if (state->exit_requested || state->batch || state->runtime == NULL)
     return CAI_OK;
   rc = cai_cli_messages_sync(state->messages, state->sl, error);
   if (rc != CAI_OK)
@@ -1452,6 +1456,7 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
     if (observed != CAI_OK) {
       if (error->code == CAI_OK)
         cai_cli_error(error, observed, "application replay observer failed");
+      cai_app_bridge_fail(state->bridge, error);
       return observed;
     }
   }
@@ -1995,8 +2000,17 @@ static int cli_host_process(cli_state *state, cai_error *error) {
     } else if (command->type == CAI_APP_STOP) {
       state->host_stopped = state->exit_requested = 1;
       state->automation_done = 1;
-      /* Runtime close cancels and joins all workers. Do not drain here: doing
-       * so could start an already queued next turn before shutdown. */
+      /* Signal active work before acknowledging STOP. An already idle turn
+       * needs no cancellation. Close joins workers without draining events,
+       * which could otherwise start an already queued next turn. */
+      if (state->runtime != NULL) {
+        rc = cai_agent_runtime_cancel_turn(state->runtime, &applied);
+        if (rc == CAI_ERR_INVALID) {
+          cai_error_cleanup(&applied);
+          cai_error_init(&applied);
+          rc = CAI_OK;
+        }
+      }
       if (state->sl != NULL)
         (void)sl_cancel(state->sl);
     } else if (state->runtime == NULL) {
@@ -2007,7 +2021,7 @@ static int cli_host_process(cli_state *state, cai_error *error) {
         rc = cai_agent_runtime_submit_queued(state->runtime, command->text,
                                              &applied);
         if (rc == CAI_OK) {
-          state->host_pending_turns++;
+          state->batch_pending_turns++;
           state->automation_done = 0;
         }
       } else {
@@ -2928,7 +2942,15 @@ static int cli_submit_automation(cli_state *state, const char *instruction,
   if (instruction == NULL || cli_prompt(state, instruction) != 0)
     return CAI_ERR_TRANSPORT;
   state->awaiting_turn = 1;
-  rc = cai_agent_runtime_submit_interactive(state->runtime, instruction, error);
+  /* Preserve ordinary prompt journal entries. If another batch turn is
+   * pending, this instruction must remain a new turn rather than steering it.
+   */
+  rc = state->batch && state->batch_pending_turns > 0U
+           ? cai_agent_runtime_submit_queued(state->runtime, instruction, error)
+           : cai_agent_runtime_submit_interactive(state->runtime, instruction,
+                                                  error);
+  if (rc == CAI_OK && state->batch)
+    state->batch_pending_turns++;
   if (rc != CAI_OK)
     state->awaiting_turn = 0;
   return rc;
@@ -3019,7 +3041,7 @@ static int cli_advance_automation(cli_state *state, cai_error *error) {
   int rc;
 
   if (state->automation_done || state->awaiting_turn ||
-      state->host_pending_turns > 0U || state->exit_requested)
+      state->batch_pending_turns > 0U || state->exit_requested)
     return CAI_OK;
   if (state->automation_failed) {
     state->automation_done = 1;
@@ -3081,7 +3103,8 @@ static int cli_run_noninteractive(cli_state *state, cai_error *error) {
     if (rc != CAI_OK)
       return rc;
     if (state->automation_done && !state->awaiting_turn &&
-        !metrics.turn_active && run_state != CAI_AGENT_SAMPLING &&
+        state->batch_pending_turns == 0U && !metrics.turn_active &&
+        run_state != CAI_AGENT_SAMPLING &&
         run_state != CAI_AGENT_DISPATCHING_TOOL)
       break;
   }
@@ -3095,6 +3118,8 @@ static int cli_drain(cli_state *state, cai_error *error) {
     rc = cli_pump(state, 100L, error);
     if (rc != CAI_OK)
       return rc;
+    if (state->host_stopped)
+      return CAI_OK;
     rc = cai_agent_runtime_state(state->runtime, &run_state, error);
     if (rc != CAI_OK)
       return rc;
@@ -3130,6 +3155,8 @@ static int cli_run_review(cli_state *state, cai_error *error) {
   rc = cli_drain(state, error);
   if (rc != CAI_OK)
     return rc;
+  if (state->host_stopped)
+    return CAI_OK;
   rc = cai_agent_runtime_state(state->runtime, &run_state, error);
   if (rc != CAI_OK)
     return rc;
@@ -3671,8 +3698,13 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
         continue;
       }
       if (prompt_status == SL_READLINE_ERROR) {
-        cai_cli_error(&error, CAI_ERR_TRANSPORT, sl_last_error(state.sl));
-        cli_print_error(&state, "prompt input failed", &error);
+        /* A failed observer has already reported its detailed error through
+         * the watched callback. Softline's generic I/O wrapper adds no cause.
+         */
+        if (bridge == NULL || !bridge->failed) {
+          cai_cli_error(&error, CAI_ERR_TRANSPORT, sl_last_error(state.sl));
+          cli_print_error(&state, "prompt input failed", &error);
+        }
         goto cleanup;
       }
       break;
