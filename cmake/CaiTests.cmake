@@ -54,12 +54,23 @@ if(CAI_BUILD_TESTS)
       AND CAI_TARGET_ID MATCHES "-linux-gnu$"
       AND CAI_LOCALEDEF AND EXISTS "/usr/share/i18n/locales/sv_SE"
       AND EXISTS "/usr/share/i18n/charmaps/UTF-8.gz")
-    add_test(NAME cai_config_numeric_locale
-      COMMAND "${CMAKE_COMMAND}" "-DCAI_CONFIG_TEST=$<TARGET_FILE:cai_config_test>"
+    add_test(NAME cai_numeric_locale_fixture
+      COMMAND "${CMAKE_COMMAND}"
         "-DCAI_TEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         "-DCAI_LOCALEDEF=${CAI_LOCALEDEF}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/config_locale_test.cmake")
+    set_tests_properties(cai_numeric_locale_fixture PROPERTIES
+      LABELS "host;local" FIXTURES_SETUP cai_numeric_locale TIMEOUT 20)
+    add_test(NAME cai_config_numeric_locale COMMAND "${CMAKE_COMMAND}" -E env
+      "LOCPATH=${CMAKE_CURRENT_BINARY_DIR}/config-locales" "CAI_TEST_CONFIG_LOCALE=sv_SE.UTF-8"
+      "$<TARGET_FILE:cai_config_test>" "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(cai_config_numeric_locale PROPERTIES LABELS "unit;local" TIMEOUT 20)
+    add_test(NAME cai_quota_numeric_locale COMMAND "${CMAKE_COMMAND}" -E env
+      "LOCPATH=${CMAKE_CURRENT_BINARY_DIR}/config-locales" "CAI_TEST_CONFIG_LOCALE=sv_SE.UTF-8"
+      "$<TARGET_FILE:cai_tests>" --only chatgpt_quota_parse)
+    set_tests_properties(cai_quota_numeric_locale PROPERTIES LABELS "unit;local" TIMEOUT 3)
+    set_tests_properties(cai_config_numeric_locale cai_quota_numeric_locale PROPERTIES
+      FIXTURES_REQUIRED cai_numeric_locale)
   endif()
   add_executable(cai_tests tests/test_main.c)
     target_include_directories(cai_tests PRIVATE

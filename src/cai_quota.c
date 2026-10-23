@@ -1,11 +1,18 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "cai_internal.h"
 
 #include <cai/quota.h>
 
 #include <errno.h>
+#include <locale.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__APPLE__) || defined(__FreeBSD__)
+#include <xlocale.h>
+#endif
 
 typedef struct cai_quota_window_doc {
   double used_percent;
@@ -88,11 +95,14 @@ int cai_chatgpt_quota_parse_json(const char *json, cai_chatgpt_quota *out,
   char *end_balance;
   double balance;
   size_t balance_length;
+  locale_t numeric_locale;
+  int conversion_errno;
   if (json == NULL || out == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "quota JSON and output are required");
   }
   memset(out, 0, sizeof(*out));
+  lonejson_error_init(&json_error);
   memset(&doc, 0, sizeof(doc));
   CAI_LJ->init(CAI_LJ, &cai_quota_map, &doc);
   status = lonejson_json_value_enable_parse_capture(&doc.credits.balance,
@@ -122,9 +132,17 @@ int cai_chatgpt_quota_parse_json(const char *json, cai_chatgpt_quota *out,
       balance_length -= 2U;
     }
     if (balance_length > 0U) {
+      numeric_locale = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
+      if (numeric_locale == (locale_t)0) {
+        CAI_LJ->cleanup(CAI_LJ, &cai_quota_map, &doc);
+        return cai_set_error(error, CAI_ERR_NOMEM,
+                             "failed to create credit balance numeric locale");
+      }
       errno = 0;
-      balance = strtod(raw_balance, &end_balance);
-      if (errno == 0 && isfinite(balance) && balance >= 0.0 &&
+      balance = strtod_l(raw_balance, &end_balance, numeric_locale);
+      conversion_errno = errno;
+      freelocale(numeric_locale);
+      if (conversion_errno == 0 && isfinite(balance) && balance >= 0.0 &&
           end_balance == raw_balance + balance_length) {
         out->has_credit_balance = 1;
         out->credit_balance = balance;

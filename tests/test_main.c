@@ -50192,6 +50192,18 @@ static void test_stream_openrouter_metadata_events(test_state *state) {
 static void test_chatgpt_quota_parse(test_state *state) {
   cai_chatgpt_quota quota;
   cai_error error;
+  const char *numeric_locale = getenv("CAI_TEST_CONFIG_LOCALE");
+  char saved_locale[128];
+  snprintf(saved_locale, sizeof(saved_locale), "%s",
+           setlocale(LC_NUMERIC, NULL));
+  if (numeric_locale != NULL) {
+    if (setlocale(LC_NUMERIC, numeric_locale) == NULL) {
+      test_fail(state, "quota_numeric_locale",
+                "required locale is unavailable");
+      return;
+    }
+    expect_str(state, "quota_decimal_comma", localeconv()->decimal_point, ",");
+  }
   cai_error_init(&error);
   expect_int(state, "quota_parse_windows",
              cai_chatgpt_quota_parse_json(
@@ -50250,6 +50262,31 @@ static void test_chatgpt_quota_parse(test_state *state) {
   expect_int(state, "quota_string_balance_present", quota.has_credit_balance,
              1L);
   expect_int(state, "quota_string_balance", (long)quota.credit_balance, 17L);
+  expect_int(state, "quota_string_fraction",
+             (long)(quota.credit_balance * 100.0), 1775L);
+  expect_int(state, "quota_string_exact_parse",
+             cai_chatgpt_quota_parse_json(
+                 "{\"credits\":{\"balance\":\"42.75\"}}", &quota, &error),
+             CAI_OK);
+  expect_int(state, "quota_string_exact_present", quota.has_credit_balance, 1L);
+  expect_int(state, "quota_string_exact_fraction",
+             (long)(quota.credit_balance * 100.0), 4275L);
+  {
+    static const char *invalid[] = {"{\"credits\":{\"balance\":-1}}",
+                                    "{\"credits\":{\"balance\":\"NaN\"}}",
+                                    "{\"credits\":{\"balance\":\"Infinity\"}}",
+                                    "{\"credits\":{\"balance\":\"42,75\"}}",
+                                    "{\"credits\":{\"balance\":\"42.75 USD\"}}",
+                                    "{\"credits\":{\"balance\":\"1e9999\"}}"};
+    size_t i;
+    for (i = 0U; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+      expect_int(state, "quota_invalid_balance_parse",
+                 cai_chatgpt_quota_parse_json(invalid[i], &quota, &error),
+                 CAI_OK);
+      expect_int(state, "quota_invalid_balance_hidden",
+                 quota.has_credit_balance, 0L);
+    }
+  }
   expect_int(state, "quota_reversed_parse",
              cai_chatgpt_quota_parse_json(
                  "{\"rate_limit\":{\"primary_window\":{"
@@ -50267,6 +50304,13 @@ static void test_chatgpt_quota_parse(test_state *state) {
              cai_chatgpt_quota_parse_json("{", &quota, &error),
              CAI_ERR_PROTOCOL);
   cai_error_cleanup(&error);
+  if (numeric_locale != NULL) {
+    expect_str(state, "quota_preserves_locale", setlocale(LC_NUMERIC, NULL),
+               numeric_locale);
+    expect_str(state, "quota_preserves_decimal_comma",
+               localeconv()->decimal_point, ",");
+    setlocale(LC_NUMERIC, saved_locale);
+  }
 }
 
 static void test_chatgpt_quota_http(test_state *state) {
