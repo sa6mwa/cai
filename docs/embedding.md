@@ -115,6 +115,83 @@ runtime failures. No concurrent or recursive application runs are permitted.
 The receiver may run again after returning. Close it only while idle. Worker
 threads finish before return; they never call the Lua facade.
 
+### Observing and controlling a run
+
+`event_callback` and `replay_callback` in `cai_app_config` observe the same
+runtime and journal events as the application, alongside its normal rendering
+and logging. They run on the thread calling `run`. Events and their pointers
+are borrowed for the callback only; copy anything retained. Replay does not run
+tools or submit prompts. Return `CAI_OK`, or a CAI error with `cai_error` detail
+to stop the run. Observers may use the receiver's `control` and `get_status`
+methods, but must not reenter `run`, close the app, or operate on its runtime.
+
+`app->control(app, type, text, &id, &error)` is safe from other host threads
+while the app remains alive. It copies input into a FIFO of at most 64 waiting
+commands and wakes the app loop. Calls with no ready runtime, invalid arguments,
+or a full queue fail immediately, with `id` set to zero. STOP is also accepted
+during startup and is handled when the app reaches its control boundary.
+
+| Type | Text | Behavior |
+| --- | --- | --- |
+| `CAI_APP_QUEUE_PROMPT` | Required | Interactive: inject into softline's editable approval queue, using the existing autoqueue setting. Batch: enqueue the next turn. |
+| `CAI_APP_STEER` | Required | Submit steering to the active turn at the next runtime safe boundary. Reject if no turn can accept it. |
+| `CAI_APP_CANCEL_TURN` | None | Cooperatively cancel the current turn. This leaves an interactive app open. |
+| `CAI_APP_STOP` | None | Stop the application, discard unstarted work, and wait for worker shutdown before returning. The host process stays alive. |
+| `CAI_APP_REPLACE_GOAL` | Required | Replace the goal with an unbudgeted objective and pursue it, as `/goal new TEXT` does. |
+| `CAI_APP_PAUSE_GOAL` | None | Pause an active goal at a safe boundary. |
+| `CAI_APP_RESUME_GOAL` | None | Resume a resumable goal and pursue it. |
+| `CAI_APP_CLEAR_GOAL` | None | Clear goal tracking without undoing completed work. |
+
+Acceptance into the app FIFO is distinct from acceptance by the runtime or
+softline. `control_callback(context, id, status, error)` acknowledges each
+accepted command on the run thread, outside the queue lock. This includes
+commands rejected during application or abandoned at shutdown. Successful
+prompt injection acknowledges queue insertion, not human approval or completion;
+successful goal/steering controls acknowledge the runtime's safe-boundary request,
+not its eventual effect. IDs increase within each run and restart at one on the
+next run. A callback may enqueue another command. Further commands behind STOP
+are rejected. A stopped run need not deliver events still pending at shutdown.
+
+```c
+cai_app_status status;
+unsigned long long id;
+cai_app_status_init(&status);
+/* From a host thread while the run has a ready runtime: */
+rc = app->control(app, CAI_APP_QUEUE_PROMPT, "Check the result", &id, &error);
+rc = app->get_status(app, &status, &error);
+/* status.session_id, status.effective, status.pending, status.goal,
+ * status.metrics, status.control_id/control_error, status.outcome/error */
+cai_app_status_cleanup(&status);
+```
+
+Status getters copy an owned snapshot under a mutex; they never call into the
+runtime from a host thread. Initialize the output before first use. A successful
+query replaces it; a failed query leaves it unchanged. All its strings and error
+fields survive later queries, runs and application close, until snapshot cleanup.
+Do not shallow-copy a snapshot or modify its owned pointers.
+
+Snapshots describe the most recent owner-thread safe boundary; an observer may
+see the previous boundary while its event is being processed. `running` and
+`runtime_ready` distinguish startup/utilities, an open runtime, and a finished
+invocation. The final snapshot retains the session ID, effective/pending model,
+reasoning and tier settings, goal projection, cumulative token/cost accounting,
+context usage, turn timing, outcome and CLI exit status. Paused, blocked and
+other goal outcomes are in `goal.status`. Failures retain `cai_error` fields
+where available; runtime failure events provide their diagnostic text. The last
+control's status/error is separate from run failure. Assistant output stays
+incremental through the event observer rather than being accumulated in status.
+`error` can also retain a recovered interactive diagnostic; use outcome and exit
+status to decide whether the invocation failed.
+After STOP or an observer error, runtime fields retain the last available
+boundary before shutdown; `outcome` and `running` describe the completed app
+invocation even if that interrupted runtime snapshot still shows an active turn.
+
+A later accepted run resets status and command IDs; an invocation rejected
+before acquiring application ownership leaves the previous result intact.
+Keep the receiver alive until host threads have stopped using controls/status;
+`close` itself is idle-only and must not race other receiver calls. The new
+application surface remains ABI 0: it has no preceding released app ABI.
+
 ## Lua 5.5
 
 With the application and Lua surfaces selected, `require("cai.app")` exposes
@@ -139,6 +216,22 @@ Only loggers advertising pslog's native-sink capability are accepted, because
 the application and its dependencies log from native worker threads. Lua
 function sinks are rejected before starting work.
 The complete executable example is `examples/app.lua`.
+
+Set `on_event = function(event) ... end` and `on_replay = function(event) ... end`
+in the open configuration to observe runtime and saved journal events. Lua
+receives copied tables on its owning run thread. Callback errors stop that run
+and appear in `app:get_status().error`, after process state is restored.
+Callbacks remain collectable even when they capture the application itself.
+
+`app:control(name, text)` returns a command ID or `nil, error`. Names are
+`queue_prompt`, `steer`, `cancel_turn`, `stop`, `replace_goal`, `pause_goal`,
+`resume_goal`, and `clear_goal`; text requirements match the C table above.
+`app:get_status()` returns a copied table with the C snapshot's fields. Outcome
+strings are `not_run`, `running`, `completed`, `stopped`, `cancelled`, and
+`failed`. The last command acknowledgement is in `control_id`, `control_status`
+and `control_error`. Lua callbacks may queue controls or query status; they
+cannot close or recursively run the active application. Native custom-tool
+functions remain a C-only hook because their handlers execute on workers.
 
 The optional native module installs with component `cai-app-lua` under
 `lib/lua/5.5/cai/app.so`. Add that prefix's `lib/lua/5.5/?.so` to `LUA_CPATH`,

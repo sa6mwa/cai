@@ -1,5 +1,7 @@
 local application = require("cai.app")
 assert(not application.open(false))
+assert(not application.open {on_event = true})
+assert(not application.open {on_replay = "not a callback"})
 assert(not application.open {unknown = true})
 assert(not application.open {program_name = "bad\0name"})
 assert(not application.open {settings = {agent = {model = "bad\0model"}}})

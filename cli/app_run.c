@@ -69,6 +69,11 @@ static int cli_cancel_editor(sl_t *sl, sl_key_t key, void *context,
 
 typedef struct cli_state {
   const cai_app_config *application;
+  cai_app_bridge *bridge;
+  sl_watch_id_t host_watch;
+  int has_host_watch;
+  int host_stopped;
+  size_t host_pending_turns;
   cai_cli_options options;
   cai_config *configuration;
   cai_agent_session_store store;
@@ -152,6 +157,8 @@ static int cli_messages_process(cli_state *state, cai_error *error);
 static int cli_flush_command(cli_state *state, int ok);
 static int cli_submit_automation(cli_state *state, const char *instruction,
                                  cai_error *error);
+static int cli_host_process(cli_state *state, cai_error *error);
+static int cli_pump(cli_state *state, long timeout, cai_error *error);
 
 static int cli_load_model_metadata(const cai_cli_options *options, char **out,
                                    cai_error *error) {
@@ -224,6 +231,7 @@ static int cli_load_model_metadata(const cai_cli_options *options, char **out,
 
 static void cli_print_error(cli_state *state, const char *operation,
                             const cai_error *error) {
+  cai_app_bridge_error(state->bridge, error);
   cai_cli_log_error(state->log.logger, operation, error);
 }
 
@@ -1045,6 +1053,17 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
                      cai_error *error) {
   cli_state *state;
   state = (cli_state *)context;
+  if (state->application != NULL &&
+      state->application->event_callback != NULL) {
+    int observed = state->application->event_callback(
+        state->application->event_context, event, error);
+    if (observed != CAI_OK) {
+      if (error->code == CAI_OK)
+        cai_cli_error(error, observed, "application event observer failed");
+      cai_app_bridge_error(state->bridge, error);
+      return observed;
+    }
+  }
   cli_log_event(state, event);
   if (event->type == CAI_AGENT_EVENT_POLICY_DIAGNOSTIC_STARTED) {
     if (!state->batch &&
@@ -1084,8 +1103,31 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
       state->awaiting_turn = 0;
       state->automation_failed = 1;
       state->goal_starts_pending = 0U;
+      cai_app_bridge_outcome(state->bridge,
+                             event->type == CAI_AGENT_EVENT_RUN_CANCELLED
+                                 ? CAI_APP_CANCELLED
+                                 : CAI_APP_FAILED);
+      if (event->type == CAI_AGENT_EVENT_RUN_FAILED && event->data != NULL) {
+        cai_error failed;
+        char *message = malloc(event->data_length + 1U);
+        cai_error_init(&failed);
+        if (message == NULL)
+          return cai_cli_error(error, CAI_ERR_NOMEM, "copy runtime failure");
+        memcpy(message, event->data, event->data_length);
+        message[event->data_length] = '\0';
+        failed.code = CAI_ERR_TRANSPORT;
+        failed.message = message;
+        cai_app_bridge_error(state->bridge, &failed);
+        cai_error_cleanup(&failed);
+      }
     }
     if (event->type == CAI_AGENT_EVENT_RUN_STARTED) {
+      cai_app_bridge_outcome(state->bridge, CAI_APP_RUNNING);
+      if (!state->awaiting_turn && state->host_pending_turns > 0U) {
+        state->host_pending_turns--;
+        state->awaiting_turn = 1;
+        state->automation_failed = 0;
+      }
       state->show_welcome = 0;
       cai_cli_reasoning_reset(&state->reasoning);
       cai_cli_response_boundary(&state->final_response);
@@ -1207,6 +1249,9 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
   const char *reasoning_title;
   int busy;
   int rc;
+  rc = cai_app_bridge_publish(state->bridge, state->runtime, error);
+  if (rc != CAI_OK)
+    return rc;
   if (!state->interactive) {
     return CAI_OK;
   }
@@ -1315,7 +1360,7 @@ static int cli_messages_process(cli_state *state, cai_error *error) {
   size_t index;
   char *text;
   int rc;
-  if (state->messages == NULL || state->batch || state->runtime == NULL)
+  if (state->batch || state->runtime == NULL)
     return CAI_OK;
   rc = cai_cli_messages_sync(state->messages, state->sl, error);
   if (rc != CAI_OK)
@@ -1379,9 +1424,8 @@ static int cli_wakeup(sl_t *sl, const sl_watch_event_t *event, void *context) {
   (void)event;
   state = (cli_state *)context;
   cai_error_init(&error);
-  rc = cli_geometry(state) == 0
-           ? cai_agent_runtime_pump(state->runtime, 0L, &error)
-           : CAI_ERR_TRANSPORT;
+  rc = cli_geometry(state) == 0 ? cli_pump(state, 0L, &error)
+                                : CAI_ERR_TRANSPORT;
   if (rc == CAI_OK)
     rc = cli_messages_process(state, &error);
   if (rc == CAI_OK)
@@ -1401,6 +1445,16 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
   cli_state *state;
   (void)error;
   state = (cli_state *)context;
+  if (state->application != NULL &&
+      state->application->replay_callback != NULL) {
+    int observed = state->application->replay_callback(
+        state->application->replay_context, event, error);
+    if (observed != CAI_OK) {
+      if (error->code == CAI_OK)
+        cai_cli_error(error, observed, "application replay observer failed");
+      return observed;
+    }
+  }
   if (event->data != NULL &&
       strcmp(event->type, "user_shell_output_tail") == 0) {
     pslog_field fields[2];
@@ -1670,6 +1724,15 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   if (rc == CAI_OK) {
     rc = cli_sync_status(state, error);
   }
+  if (rc == CAI_OK && state->interactive && state->bridge != NULL) {
+    if (sl_set_auto_approval(state->sl, state->options.enable_auto_enqueue) !=
+            SL_OK ||
+        sl_set_prompt_queue_delivery(
+            state->sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) != SL_OK ||
+        sl_set_idle_callback(state->sl, cli_message_idle, state) != SL_OK)
+      rc = cai_cli_error(error, CAI_ERR_TRANSPORT,
+                         "configure host prompt queue");
+  }
   return rc;
 }
 
@@ -1701,6 +1764,7 @@ static int cli_prepare_clipboard(cli_state *state, cai_error *error) {
 }
 
 static void cli_close_runtime(cli_state *state) {
+  (void)cai_app_bridge_publish(state->bridge, NULL, NULL);
   if (state->has_message_watch) {
     (void)sl_watch_remove(state->sl, state->message_watch_id);
     state->has_message_watch = 0;
@@ -1914,6 +1978,122 @@ static int cli_goal_command(cli_state *state, const char *arg,
       state,
       objective != NULL ? objective : "Resume pursuing the current goal.",
       error);
+}
+
+static int cli_host_process(cli_state *state, cai_error *error) {
+  cai_app_command *command;
+  size_t count;
+  int rc;
+  for (count = 0U;
+       count < 64U && (command = cai_app_bridge_take(state->bridge)) != NULL;
+       count++) {
+    cai_error applied;
+    cai_error_init(&applied);
+    rc = CAI_OK;
+    if (state->exit_requested) {
+      rc = cai_cli_error(&applied, CAI_ERR_INVALID, "application is stopping");
+    } else if (command->type == CAI_APP_STOP) {
+      state->host_stopped = state->exit_requested = 1;
+      state->automation_done = 1;
+      /* Runtime close cancels and joins all workers. Do not drain here: doing
+       * so could start an already queued next turn before shutdown. */
+      if (state->sl != NULL)
+        (void)sl_cancel(state->sl);
+    } else if (state->runtime == NULL) {
+      rc = cai_cli_error(&applied, CAI_ERR_INVALID,
+                         "agent runtime is not ready");
+    } else if (command->type == CAI_APP_QUEUE_PROMPT) {
+      if (state->batch) {
+        rc = cai_agent_runtime_submit_queued(state->runtime, command->text,
+                                             &applied);
+        if (rc == CAI_OK) {
+          state->host_pending_turns++;
+          state->automation_done = 0;
+        }
+      } else {
+        sl_prompt_id_t id;
+        if (sl_inject_queued_prompt(state->sl, command->text, &id) != SL_OK)
+          rc = cai_cli_error(&applied, CAI_ERR_TRANSPORT,
+                             "inject host prompt into approval queue");
+      }
+    } else if (command->type == CAI_APP_STEER) {
+      rc = cai_agent_runtime_submit_steering(state->runtime, command->text,
+                                             &applied);
+    } else if (command->type == CAI_APP_CANCEL_TURN) {
+      rc = cai_agent_runtime_cancel_turn(state->runtime, &applied);
+    } else {
+      char *goal_command = NULL;
+      const char *action = command->type == CAI_APP_PAUSE_GOAL    ? "pause"
+                           : command->type == CAI_APP_RESUME_GOAL ? "resume"
+                           : command->type == CAI_APP_CLEAR_GOAL  ? "clear"
+                                                                  : NULL;
+      if (action == NULL) {
+        size_t length = strlen(command->text);
+        goal_command = malloc(length + 5U);
+        if (goal_command == NULL)
+          rc = cai_cli_error(&applied, CAI_ERR_NOMEM, "copy goal control");
+        else {
+          memcpy(goal_command, "new ", 4U);
+          memcpy(goal_command + 4U, command->text, length + 1U);
+          action = goal_command;
+        }
+      }
+      if (rc == CAI_OK)
+        rc = cli_goal_command(state, action, &applied);
+      free(goal_command);
+    }
+    {
+      pslog_field fields[3];
+      int published =
+          cai_app_bridge_publish(state->bridge, state->runtime, error);
+      const char *message = rc == CAI_OK              ? "Host control accepted"
+                            : applied.message != NULL ? applied.message
+                                                      : cai_status_string(rc);
+      fields[0] = pslog_u64("control_id", (pslog_uint64)command->id);
+      fields[1] = pslog_i64("control", command->type);
+      fields[2] = pslog_i64("code", rc);
+      cai_cli_log_message(
+          state->log.logger, rc == CAI_OK ? PSLOG_LEVEL_INFO : PSLOG_LEVEL_WARN,
+          "host_control", "user", message, strlen(message), fields, 3U);
+      cai_app_bridge_ack(state->bridge, command, rc, &applied);
+      if (published != CAI_OK) {
+        cai_error_cleanup(&applied);
+        return published;
+      }
+    }
+    cai_error_cleanup(&applied);
+  }
+  return cai_app_bridge_publish(state->bridge, state->runtime, error);
+}
+
+/* Both descriptors are level-triggered. Batch runs wake immediately for host
+ * commands instead of waiting for the runtime's timed condition variable. */
+static int cli_pump(cli_state *state, long timeout, cai_error *error) {
+  struct pollfd descriptors[2];
+  int fd, rc;
+  if (state->bridge != NULL && timeout > 0L) {
+    rc = cai_agent_runtime_wakeup_fd(state->runtime, &fd, error);
+    if (rc != CAI_OK)
+      return rc;
+    memset(descriptors, 0, sizeof(descriptors));
+    descriptors[0].fd = fd;
+    descriptors[1].fd = state->bridge->fd;
+    descriptors[0].events = descriptors[1].events = POLLIN;
+    do {
+      rc = poll(descriptors, 2U, (int)timeout);
+    } while (rc < 0 && errno == EINTR);
+    if (rc < 0)
+      return cai_cli_error(error, CAI_ERR_TRANSPORT, "wait for app events");
+    timeout = 0L;
+  }
+  rc = cai_agent_runtime_pump(state->runtime, timeout, error);
+  if (rc == CAI_OK)
+    rc = cli_host_process(state, error);
+  return rc;
+}
+static int cli_host_wakeup(sl_t *sl, const sl_watch_event_t *event,
+                           void *context) {
+  return cli_wakeup(sl, event, context);
 }
 
 static const char *const cli_reasoning_efforts[] = {
@@ -2763,9 +2943,11 @@ static int cli_start_goal(cli_state *state, const char *objective,
   if (rc != CAI_OK)
     return rc;
   do {
-    rc = cai_agent_runtime_pump(state->runtime, 100L, error);
+    rc = cli_pump(state, 100L, error);
     if (rc != CAI_OK)
       return rc;
+    if (state->host_stopped)
+      return CAI_OK;
     if (state->automation_failed)
       return cai_cli_error(
           error, CAI_ERR_TRANSPORT,
@@ -2815,6 +2997,8 @@ static int cli_start_automation(cli_state *state, cai_error *error) {
     rc = cli_start_goal(state, objective, error);
     if (rc != CAI_OK)
       return rc;
+    if (state->exit_requested)
+      return CAI_OK;
   }
   if (state->options.instruction_count > 0U) {
     instruction = cai_cli_instruction_at(&state->options, 0U);
@@ -2834,7 +3018,8 @@ static int cli_advance_automation(cli_state *state, cai_error *error) {
   const char *next;
   int rc;
 
-  if (state->automation_done || state->awaiting_turn)
+  if (state->automation_done || state->awaiting_turn ||
+      state->host_pending_turns > 0U || state->exit_requested)
     return CAI_OK;
   if (state->automation_failed) {
     state->automation_done = 1;
@@ -2878,14 +3063,27 @@ static int cli_advance_automation(cli_state *state, cai_error *error) {
 }
 
 static int cli_run_noninteractive(cli_state *state, cai_error *error) {
+  cai_agent_runtime_metrics metrics;
+  cai_agent_run_state run_state;
   int rc;
-  while (!state->automation_done) {
-    rc = cai_agent_runtime_pump(state->runtime, 100L, error);
+  for (;;) {
+    rc = cli_pump(state, 100L, error);
     if (rc != CAI_OK)
       return rc;
     rc = cli_advance_automation(state, error);
     if (rc != CAI_OK)
       return rc;
+    if (state->host_stopped)
+      break;
+    rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
+    if (rc == CAI_OK)
+      rc = cai_agent_runtime_state(state->runtime, &run_state, error);
+    if (rc != CAI_OK)
+      return rc;
+    if (state->automation_done && !state->awaiting_turn &&
+        !metrics.turn_active && run_state != CAI_AGENT_SAMPLING &&
+        run_state != CAI_AGENT_DISPATCHING_TOOL)
+      break;
   }
   return state->automation_failed ? CAI_ERR_TRANSPORT : CAI_OK;
 }
@@ -2894,7 +3092,7 @@ static int cli_drain(cli_state *state, cai_error *error) {
   cai_agent_run_state run_state;
   int rc;
   for (;;) {
-    rc = cai_agent_runtime_pump(state->runtime, 100L, error);
+    rc = cli_pump(state, 100L, error);
     if (rc != CAI_OK)
       return rc;
     rc = cai_agent_runtime_state(state->runtime, &run_state, error);
@@ -2902,7 +3100,7 @@ static int cli_drain(cli_state *state, cai_error *error) {
       return rc;
     if (run_state != CAI_AGENT_SAMPLING &&
         run_state != CAI_AGENT_DISPATCHING_TOOL) {
-      return cai_agent_runtime_pump(state->runtime, 0L, error);
+      return cli_pump(state, 0L, error);
     }
   }
 }
@@ -2996,7 +3194,8 @@ static int cli_output_final(cli_state *state, cai_error *error) {
   return rc;
 }
 
-int cai_cli_app_main(int argc, char **argv, const cai_app_config *application) {
+int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
+                    cai_app_bridge *bridge) {
   cli_state state;
   cai_client_config client_config;
   cai_chatgpt_auth_config auth_config;
@@ -3018,6 +3217,7 @@ int cai_cli_app_main(int argc, char **argv, const cai_app_config *application) {
 
   memset(&state, 0, sizeof(state));
   state.application = application;
+  state.bridge = bridge;
   state.timer_fd = -1;
   cai_cli_shell_init(&state.shell);
   state.log.fd = -1;
@@ -3057,6 +3257,8 @@ int cai_cli_app_main(int argc, char **argv, const cai_app_config *application) {
                      error.message != NULL ? error.message
                                            : state.options.diagnostic);
     result = parsed == 0 ? 0 : 2;
+    if (parsed < 0 && error.code == CAI_OK)
+      cai_cli_error(&error, CAI_ERR_INVALID, state.options.diagnostic);
     goto cleanup;
   }
   state.batch = state.options.review || state.options.non_interactive;
@@ -3395,6 +3597,29 @@ int cai_cli_app_main(int argc, char **argv, const cai_app_config *application) {
     cli_print_error(&state, "open agent session", &error);
     goto cleanup;
   }
+  rc = cai_app_bridge_publish(bridge, state.runtime, &error);
+  if (rc != CAI_OK)
+    goto cleanup;
+  rc = cli_host_process(&state, &error);
+  if (rc != CAI_OK)
+    goto cleanup;
+  if (state.exit_requested) {
+    result = 0;
+    goto cleanup;
+  }
+  if (state.interactive && bridge != NULL) {
+    if (sl_set_auto_approval(state.sl, state.options.enable_auto_enqueue) !=
+            SL_OK ||
+        sl_set_prompt_queue_delivery(
+            state.sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) != SL_OK ||
+        sl_set_idle_callback(state.sl, cli_message_idle, &state) != SL_OK ||
+        sl_watch_add(state.sl, bridge->fd, SL_WATCH_READ | SL_WATCH_ERROR,
+                     cli_host_wakeup, &state, &state.host_watch) != SL_OK) {
+      cai_cli_error(&error, CAI_ERR_TRANSPORT, "watch host controls");
+      goto cleanup;
+    }
+    state.has_host_watch = 1;
+  }
   if (state.options.review) {
     rc = cli_run_review(&state, &error);
     if (rc != CAI_OK)
@@ -3424,6 +3649,11 @@ int cai_cli_app_main(int argc, char **argv, const cai_app_config *application) {
     if (cai_cli_log_notices(&state.log, cli_notice, &state) != 0)
       goto cleanup;
     line = sl_next_prompt(state.sl, "> ", NULL);
+    if (state.exit_requested) {
+      if (line != NULL)
+        sl_free_string(state.sl, line);
+      break;
+    }
     if (line == NULL) {
       prompt_status = sl_last_readline_status(state.sl);
       if (prompt_status == SL_READLINE_CANCELLED ||
@@ -3498,6 +3728,19 @@ int cai_cli_app_main(int argc, char **argv, const cai_app_config *application) {
   }
   result = 0;
 cleanup:
+  if (state.host_stopped && state.runtime != NULL) {
+    cai_app_bridge_outcome(bridge, CAI_APP_STOPPED);
+  }
+  if (bridge != NULL) {
+    cai_error snapshot;
+    cai_error_init(&snapshot);
+    if (cai_app_bridge_publish(bridge, state.runtime, &snapshot) != CAI_OK) {
+      cai_app_bridge_error(bridge, &snapshot);
+      result = 1;
+    }
+    cai_error_cleanup(&snapshot);
+    cai_app_bridge_error(bridge, &error);
+  }
   cli_shell_unwatch(&state);
   cai_cli_shell_close(&state.shell);
   if (state.batch && !state.options.review && state.renderer != NULL) {
@@ -3517,6 +3760,8 @@ cleanup:
     state.messages = NULL;
   }
   cai_cli_mcp_close(&state.mcp);
+  if (state.has_host_watch)
+    (void)sl_watch_remove(state.sl, state.host_watch);
   if (state.has_log_watch)
     (void)sl_watch_remove(state.sl, state.log_watch_id);
   if (state.has_timer_watch)
@@ -3564,4 +3809,8 @@ cleanup:
   if (cai_cli_log_close(&state.log) != 0)
     result = 1;
   return result;
+}
+
+int cai_cli_app_main(int argc, char **argv, const cai_app_config *application) {
+  return cai_cli_app_run(argc, argv, application, NULL);
 }

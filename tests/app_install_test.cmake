@@ -31,6 +31,30 @@ foreach(index RANGE 0 3)
   endif()
 endforeach()
 file(COPY "${prefix}/share/doc/libcai_app/examples/main.c" DESTINATION "${root}/source")
+file(RENAME "${root}/source/main.c" "${root}/source/example.c")
+file(WRITE "${root}/source/main.c" [=[
+#define main cai_example_main
+#include "example.c"
+#undef main
+#include <assert.h>
+int main(int argc, char **argv) {
+  cai_app *app = NULL;
+  cai_app_status status;
+  cai_error error;
+  unsigned long long id;
+  cai_error_init(&error);
+  cai_app_status_init(&status);
+  assert(cai_app_open(NULL, &app, &error) == CAI_OK);
+  assert(cai_app_get_status(app, &status, &error) == CAI_OK);
+  assert(status.outcome == CAI_APP_NOT_RUN && app->get_status != NULL);
+  assert(cai_app_control(app, CAI_APP_STOP, NULL, &id, &error) == CAI_ERR_INVALID);
+  assert(id == 0U && app->control != NULL);
+  cai_app_status_cleanup(&status);
+  cai_error_cleanup(&error);
+  app->close(app);
+  return cai_example_main(argc, argv);
+}
+]=])
 file(WRITE "${root}/source/CMakeLists.txt" [=[
 cmake_minimum_required(VERSION 3.21)
 project(app_consumer C)
@@ -99,6 +123,8 @@ if(NOT CAI_LUA_RUNNER STREQUAL "")
 local app = assert(require("cai.app").open {program_name = "installed host", no_config = true})
 assert(app:help():find("Usage: installed host [options]", 1, true))
 assert(app:run {"--help"} == 0)
+assert(app:get_status().outcome == "completed")
+assert(not app:control("stop"))
 app:close()
 ]=])
   execute_process(COMMAND "${CMAKE_COMMAND}" -E env "LD_LIBRARY_PATH=${loader}"

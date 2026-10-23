@@ -114,6 +114,26 @@ int main(int argc, char **argv) {
   config.logger = logger;
   cai_error_init(&error);
   assert(cai_app_open(&config, &app, &error) == CAI_OK);
+  {
+    cai_app_status status;
+    unsigned long long id = 123U;
+    cai_app_status_init(&status);
+    assert(app->get_status(app, &status, &error) == CAI_OK);
+    assert(status.outcome == CAI_APP_NOT_RUN && !status.running);
+    assert(app->control(app, CAI_APP_QUEUE_PROMPT, NULL, &id, &error) ==
+           CAI_ERR_INVALID);
+    assert(id == 0U);
+    cai_error_cleanup(&error);
+    assert(app->control(app, CAI_APP_STOP, "extra", &id, &error) ==
+           CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    assert(app->control(app, (cai_app_control_type)999, NULL, &id, &error) ==
+           CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    assert(app->get_status(app, NULL, &error) == CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_app_status_cleanup(&status);
+  }
   logs.app = app;
   program[0] = 'X';
   assert(app->option_count(app) > 50U);
@@ -141,6 +161,18 @@ int main(int argc, char **argv) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
   assert(app->run(app, 1, bad, &code, &error) == CAI_OK && code == 2);
+  {
+    cai_app_status status;
+    cai_app_status_init(&status);
+    assert(app->get_status(app, &status, &error) == CAI_OK);
+    assert(status.outcome == CAI_APP_FAILED && status.exit_code == 2 &&
+           !status.running);
+    assert(app->run(app, 1, help_args, &code, &error) == CAI_OK && code == 0);
+    assert(app->get_status(app, &status, &error) == CAI_OK);
+    assert(status.outcome == CAI_APP_COMPLETED && status.error.code == CAI_OK);
+    assert(status.session_id == NULL && status.control_id == 0U);
+    cai_app_status_cleanup(&status);
+  }
   assert(logs.records > 0 && logs.recursion && logs.closed == 0);
   assert(app->run(app, 3, bad_dir, &code, &error) == CAI_OK && code == 2);
   list[2] = work;

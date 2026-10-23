@@ -22,6 +22,7 @@ typedef struct app_impl {
   cai_app_setting *settings;
   char **strings;
   int running;
+  cai_app_bridge *bridge;
 } app_impl;
 typedef struct process_state {
   char **environment;
@@ -130,6 +131,7 @@ int cai_app_run(cai_app *self, int argc, const char *const *argv,
   if (pthread_mutex_trylock(&application_lock) != 0)
     return cai_cli_error(error, CAI_ERR_INVALID,
                          "a CAI application is already running");
+  cai_app_bridge_begin(app->bridge);
   arguments = calloc((size_t)argc + 2U, sizeof(*arguments));
   rc = arguments != NULL ? CAI_OK : CAI_ERR_NOMEM;
   for (i = 0; rc == CAI_OK && i <= argc; i++) {
@@ -145,7 +147,8 @@ int cai_app_run(cai_app *self, int argc, const char *const *argv,
     rc = process_save(&saved, error);
     if (rc == CAI_OK) {
       app->running = 1;
-      *exit_code = cai_cli_app_main(argc + 1, arguments, &app->config);
+      *exit_code =
+          cai_cli_app_run(argc + 1, arguments, &app->config, app->bridge);
       app->running = 0;
       rc = process_restore(&saved, error);
     }
@@ -156,8 +159,28 @@ int cai_app_run(cai_app *self, int argc, const char *const *argv,
       free(arguments[i]);
     free(arguments);
   }
+  cai_app_bridge_end(app->bridge, rc == CAI_OK ? *exit_code : 1,
+                     rc != CAI_OK ? error : NULL);
   pthread_mutex_unlock(&application_lock);
   return rc;
+}
+int cai_app_control(cai_app *self, cai_app_control_type type, const char *text,
+                    unsigned long long *id, cai_error *error) {
+  app_impl *app;
+  if (id != NULL)
+    *id = 0U;
+  if (self == NULL)
+    return cai_cli_error(error, CAI_ERR_INVALID, "application is required");
+  app = self->impl;
+  return cai_app_bridge_control(app->bridge, type, text, id, error);
+}
+int cai_app_get_status(const cai_app *self, cai_app_status *out,
+                       cai_error *error) {
+  const app_impl *app;
+  if (self == NULL)
+    return cai_cli_error(error, CAI_ERR_INVALID, "application is required");
+  app = self->impl;
+  return cai_app_bridge_status(app->bridge, out, error);
 }
 size_t cai_app_option_count(const cai_app *self) {
   return self != NULL ? cai_cli_help_count() : 0U;
@@ -186,6 +209,7 @@ void cai_app_close(cai_app *self) {
     free(app->strings[i]);
   free(app->strings);
   free(app->settings);
+  cai_app_bridge_close(app->bridge);
   free(app);
 }
 int cai_app_open(const cai_app_config *config, cai_app **out,
@@ -214,6 +238,8 @@ int cai_app_open(const cai_app_config *config, cai_app **out,
   app->shell.option_count = cai_app_option_count;
   app->shell.option_at = cai_app_option_at;
   app->shell.write_help = cai_app_write_help;
+  app->shell.control = cai_app_control;
+  app->shell.get_status = cai_app_get_status;
   app->shell.close = cai_app_close;
   app->config.setting_count = config->setting_count;
   app->strings = calloc(4U + 3U * config->setting_count, sizeof(char *));
@@ -236,6 +262,12 @@ int cai_app_open(const cai_app_config *config, cai_app **out,
   app->config.register_agent_tools = config->register_agent_tools;
   app->config.register_agent_tools_context =
       config->register_agent_tools_context;
+  app->config.event_callback = config->event_callback;
+  app->config.event_context = config->event_context;
+  app->config.replay_callback = config->replay_callback;
+  app->config.replay_context = config->replay_context;
+  app->config.control_callback = config->control_callback;
+  app->config.control_context = config->control_context;
   app->config.setting_count = config->setting_count;
   if (app->config.program_name == NULL ||
       (config->banner != NULL && app->config.banner == NULL) ||
@@ -273,6 +305,11 @@ int cai_app_open(const cai_app_config *config, cai_app **out,
   }
   cai_config_close(schema);
   app->config.settings = app->settings;
+  if (rc != CAI_OK) {
+    cai_app_close(&app->shell);
+    return rc;
+  }
+  rc = cai_app_bridge_open(&app->bridge, &app->config, error);
   if (rc != CAI_OK) {
     cai_app_close(&app->shell);
     return rc;

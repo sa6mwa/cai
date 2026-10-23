@@ -27,6 +27,8 @@ typedef struct app_lua {
   char *buffer;
   size_t used, capacity;
   cai_sink *sink;
+  lua_State *state;
+  int self_ref;
 } app_lua;
 
 int luaopen_cai_app(lua_State *L);
@@ -196,6 +198,102 @@ static int read_settings(lua_State *L, app_lua *ud, int table) {
   }
   return rc;
 }
+static void text_field(lua_State *L, const char *key, const char *value) {
+  if (value != NULL) {
+    lua_pushstring(L, value);
+    lua_setfield(L, -2, key);
+  }
+}
+static void integer_field(lua_State *L, const char *key, lua_Integer value) {
+  lua_pushinteger(L, value);
+  lua_setfield(L, -2, key);
+}
+typedef struct observation {
+  app_lua *app;
+  const cai_agent_runtime_event *event;
+  const cai_agent_session_event *replay;
+} observation;
+/* Table construction is inside pcall too: Lua allocation errors must not
+ * unwind through the runtime or bypass application process restoration. */
+static int observe_call(lua_State *L) {
+  observation *call = lua_touserdata(L, 1);
+  lua_rawgeti(L, LUA_REGISTRYINDEX, call->app->self_ref);
+  lua_getiuservalue(L, -1, 1);
+  lua_getfield(L, -1, call->event != NULL ? "on_event" : "on_replay");
+  lua_newtable(L);
+  if (call->event != NULL) {
+    const cai_agent_runtime_event *e = call->event;
+    integer_field(L, "type", e->type);
+    integer_field(L, "state", e->state);
+    integer_field(L, "sequence", (lua_Integer)e->sequence);
+    if (e->data != NULL) {
+      lua_pushlstring(L, e->data, e->data_length);
+      lua_setfield(L, -2, "data");
+    }
+#define EVENT_TEXT(field) text_field(L, #field, e->field)
+    EVENT_TEXT(tool_name);
+    EVENT_TEXT(tool_path);
+    EVENT_TEXT(tool_call_id);
+    EVENT_TEXT(runtime_session_id);
+    EVENT_TEXT(parent_tool_call_id);
+    EVENT_TEXT(subagent_name);
+    EVENT_TEXT(subagent_metadata_json);
+    EVENT_TEXT(subagent_instruction);
+    EVENT_TEXT(terminal_id);
+#undef EVENT_TEXT
+#define EVENT_INT(field) integer_field(L, #field, (lua_Integer)e->field)
+    EVENT_INT(tool_action);
+    EVENT_INT(tool_path_count);
+    EVENT_INT(terminal_command_id);
+    EVENT_INT(terminal_has_exit_code);
+    EVENT_INT(terminal_exit_code);
+    EVENT_INT(terminal_has_signal);
+    EVENT_INT(terminal_signal);
+    EVENT_INT(terminal_duration_ms);
+    EVENT_INT(terminal_total_output_bytes);
+    EVENT_INT(terminal_output_truncated);
+    EVENT_INT(terminal_detached_processes_possible);
+#undef EVENT_INT
+  } else {
+    const cai_agent_session_event *e = call->replay;
+    text_field(L, "type", e->type);
+    text_field(L, "data", e->data);
+    integer_field(L, "sequence", (lua_Integer)e->sequence);
+  }
+  lua_call(L, 1, 0);
+  return 0;
+}
+static int observe(observation *call, cai_error *error) {
+  lua_State *L = call->app->state;
+  int top = lua_gettop(L);
+  int rc = CAI_OK;
+  lua_pushcfunction(L, observe_call);
+  lua_pushlightuserdata(L, call);
+  if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+    const char *message = lua_tostring(L, -1);
+    cai_error_cleanup(error);
+    error->message = strdup(message != NULL ? message : "Lua observer failed");
+    rc = error->code = error->message != NULL ? CAI_ERR_INVALID : CAI_ERR_NOMEM;
+  }
+  lua_settop(L, top);
+  return rc;
+}
+static int observe_event(void *context, const cai_agent_runtime_event *event,
+                         cai_error *error) {
+  observation call;
+  call.app = context;
+  call.event = event;
+  call.replay = NULL;
+  return observe(&call, error);
+}
+static int observe_replay(void *context, const cai_agent_session_event *event,
+                          cai_error *error) {
+  observation call;
+  call.app = context;
+  call.event = NULL;
+  call.replay = event;
+  return observe(&call, error);
+}
 static int open_app(lua_State *L) {
   static const char *const names[] = {"program_name", "banner", "config_file",
                                       "config_directory"};
@@ -208,8 +306,10 @@ static int open_app(lua_State *L) {
   if (!lua_isnoneornil(L, 1) && !lua_istable(L, 1))
     return failure(L, "application configuration must be a table");
   cai_app_config_init(&config);
-  ud = lua_newuserdatauv(L, sizeof(*ud), 0);
+  ud = lua_newuserdatauv(L, sizeof(*ud), 1);
   memset(ud, 0, sizeof(*ud));
+  ud->state = L;
+  ud->self_ref = LUA_NOREF;
   luaL_setmetatable(L, APP_MT);
   strings[0] = &config.program_name;
   strings[1] = &config.banner;
@@ -226,7 +326,8 @@ static int open_app(lua_State *L) {
           known = 1;
       if (key != NULL &&
           (strcmp(key, "settings") == 0 || strcmp(key, "no_config") == 0 ||
-           strcmp(key, "logger") == 0))
+           strcmp(key, "logger") == 0 || strcmp(key, "on_event") == 0 ||
+           strcmp(key, "on_replay") == 0))
         known = 1;
       if (!known)
         return failure(L, "unknown application configuration field");
@@ -264,6 +365,30 @@ static int open_app(lua_State *L) {
       config.logger = ud->logger.borrowed;
     }
     lua_pop(L, 1);
+    lua_getfield(L, 1, "on_event");
+    if (!lua_isnil(L, -1) && !lua_isfunction(L, -1))
+      return failure(L, "on_event must be a function");
+    if (lua_isfunction(L, -1)) {
+      config.event_callback = observe_event;
+      config.event_context = ud;
+    }
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "on_replay");
+    if (!lua_isnil(L, -1) && !lua_isfunction(L, -1))
+      return failure(L, "on_replay must be a function");
+    if (lua_isfunction(L, -1)) {
+      config.replay_callback = observe_replay;
+      config.replay_context = ud;
+    }
+    lua_pop(L, 1);
+    /* Keep functions on the userdata, not rooted in the registry: a callback
+     * may capture its app without creating an uncollectable registry cycle. */
+    lua_newtable(L);
+    lua_getfield(L, 1, "on_event");
+    lua_setfield(L, -2, "on_event");
+    lua_getfield(L, 1, "on_replay");
+    lua_setfield(L, -2, "on_replay");
+    lua_setiuservalue(L, 2, 1);
   }
   cai_error_init(&error);
   rc = cai_app_open(&config, &ud->app, &error);
@@ -284,6 +409,8 @@ static int run_app(lua_State *L) {
   int rc, code = 1;
   if (ud == NULL || ud->app == NULL)
     return failure(L, "application is closed");
+  if (ud->running)
+    return failure(L, "application is already running");
   if (!lua_isnoneornil(L, 2) && !lua_istable(L, 2))
     return failure(L, "arguments must be an array without a program name");
   count = lua_istable(L, 2) ? lua_rawlen(L, 2) : 0U;
@@ -300,9 +427,14 @@ static int run_app(lua_State *L) {
     lua_pop(L, 1);
   }
   cai_error_init(&error);
+  ud->state = L;
+  lua_pushvalue(L, 1);
+  ud->self_ref = luaL_ref(L, LUA_REGISTRYINDEX);
   ud->running = 1;
   rc = ud->app->run(ud->app, (int)count, argv, &code, &error);
   ud->running = 0;
+  luaL_unref(L, LUA_REGISTRYINDEX, ud->self_ref);
+  ud->self_ref = LUA_NOREF;
   if (rc == CAI_OK)
     lua_pushinteger(L, code);
   else
@@ -340,6 +472,147 @@ static int options(lua_State *L) {
     lua_rawseti(L, -2, (lua_Integer)i + 1);
   }
   return 1;
+}
+static void push_error(lua_State *L, const cai_error *error) {
+  lua_newtable(L);
+  integer_field(L, "code", error->code);
+  integer_field(L, "http_status", (lua_Integer)error->http_status);
+  text_field(L, "message", error->message);
+  text_field(L, "detail", error->detail);
+  text_field(L, "server_code", error->server_code);
+  text_field(L, "request_id", error->request_id);
+}
+static void push_settings(lua_State *L, const cai_agent_runtime_settings *s) {
+  lua_newtable(L);
+  integer_field(L, "present", s->present);
+  text_field(L, "model", s->model);
+  text_field(L, "reasoning_effort", s->reasoning_effort);
+  text_field(L, "reasoning_summary", s->reasoning_summary);
+  text_field(L, "service_tier", s->service_tier);
+}
+static void boolean_field(lua_State *L, const char *key, int value) {
+  lua_pushboolean(L, value);
+  lua_setfield(L, -2, key);
+}
+static int push_status(lua_State *L) {
+  static const char *const outcomes[] = {"not_run", "running",   "completed",
+                                         "stopped", "cancelled", "failed"};
+  const cai_app_status *s = lua_touserdata(L, 1);
+  const cai_agent_runtime_metrics *m = &s->metrics;
+  const cai_token_usage *usage = &m->session_usage.usage;
+  lua_newtable(L);
+  boolean_field(L, "running", s->running);
+  boolean_field(L, "runtime_ready", s->runtime_ready);
+  text_field(L, "outcome", outcomes[s->outcome]);
+  integer_field(L, "state", s->state);
+  integer_field(L, "exit_code", s->exit_code);
+  text_field(L, "session_id", s->session_id);
+  push_settings(L, &s->effective);
+  lua_setfield(L, -2, "effective");
+  push_settings(L, &s->pending);
+  lua_setfield(L, -2, "pending");
+  lua_newtable(L);
+  boolean_field(L, "has_goal", s->goal.has_goal);
+  text_field(L, "objective", s->goal.objective);
+  text_field(L, "status", s->goal.status);
+  boolean_field(L, "has_token_budget", s->goal.has_token_budget);
+#define GOAL_INT(field) integer_field(L, #field, (lua_Integer)s->goal.field)
+  GOAL_INT(token_budget);
+  GOAL_INT(tokens_used);
+  GOAL_INT(remaining_tokens);
+  GOAL_INT(elapsed_seconds);
+  GOAL_INT(created_at);
+  GOAL_INT(updated_at);
+#undef GOAL_INT
+  lua_setfield(L, -2, "goal");
+  lua_newtable(L);
+#define METRIC_INT(field) integer_field(L, #field, (lua_Integer)m->field)
+  METRIC_INT(context_window_tokens);
+  METRIC_INT(context_used_tokens);
+  METRIC_INT(turn_elapsed_ms);
+  METRIC_INT(last_turn_duration_ms);
+  METRIC_INT(last_turn_finished_unix_seconds);
+#undef METRIC_INT
+  boolean_field(L, "has_context_usage", m->has_context_usage);
+  boolean_field(L, "turn_active", m->turn_active);
+  boolean_field(L, "has_last_turn", m->has_last_turn);
+  lua_newtable(L);
+#define USAGE_INT(field) integer_field(L, #field, (lua_Integer)usage->field)
+  USAGE_INT(input_tokens);
+  USAGE_INT(input_cached_tokens);
+  USAGE_INT(output_tokens);
+  USAGE_INT(output_reasoning_tokens);
+  USAGE_INT(total_tokens);
+#undef USAGE_INT
+  lua_pushnumber(L, m->session_usage.estimated_spend_usd);
+  lua_setfield(L, -2, "estimated_spend_usd");
+  lua_pushnumber(L, m->session_usage.estimated_spend_eur);
+  lua_setfield(L, -2, "estimated_spend_eur");
+  boolean_field(L, "limit_exceeded", m->session_usage.limit_exceeded);
+  lua_setfield(L, -2, "session_usage");
+  lua_setfield(L, -2, "metrics");
+  push_error(L, &s->error);
+  lua_setfield(L, -2, "error");
+  integer_field(L, "control_id", (lua_Integer)s->control_id);
+  integer_field(L, "control_status", s->control_status);
+  push_error(L, &s->control_error);
+  lua_setfield(L, -2, "control_error");
+  return 1;
+}
+static int status(lua_State *L) {
+  app_lua *ud = luaL_testudata(L, 1, APP_MT);
+  cai_app_status snapshot;
+  cai_error error;
+  int rc;
+  if (ud == NULL || ud->app == NULL)
+    return failure(L, "application is closed");
+  cai_app_status_init(&snapshot);
+  cai_error_init(&error);
+  rc = ud->app->get_status(ud->app, &snapshot, &error);
+  if (rc != CAI_OK) {
+    failure(L, error.message);
+    cai_error_cleanup(&error);
+    return 2;
+  }
+  lua_pushcfunction(L, push_status);
+  lua_pushlightuserdata(L, &snapshot);
+  rc = lua_pcall(L, 1, 1, 0);
+  cai_app_status_cleanup(&snapshot);
+  cai_error_cleanup(&error);
+  return rc == LUA_OK ? 1 : lua_error(L);
+}
+static int control(lua_State *L) {
+  static const char *const names[] = {
+      "queue_prompt", "steer",      "cancel_turn", "stop",
+      "replace_goal", "pause_goal", "resume_goal", "clear_goal"};
+  app_lua *ud = luaL_testudata(L, 1, APP_MT);
+  const char *name = lua_type(L, 2) == LUA_TSTRING ? plain_string(L, 2) : NULL;
+  const char *text = NULL;
+  unsigned long long id;
+  cai_error error;
+  size_t i;
+  int rc;
+  if (ud == NULL || ud->app == NULL)
+    return failure(L, "application is closed");
+  for (i = 0U; name != NULL && i < sizeof(names) / sizeof(names[0]); i++)
+    if (strcmp(name, names[i]) == 0)
+      break;
+  if (name == NULL || i == sizeof(names) / sizeof(names[0]))
+    return failure(L, "unknown host control");
+  if (!lua_isnoneornil(L, 3)) {
+    text = lua_type(L, 3) == LUA_TSTRING ? plain_string(L, 3) : NULL;
+    if (text == NULL)
+      return failure(L, "control text must be a string without NUL bytes");
+  }
+  cai_error_init(&error);
+  rc = ud->app->control(ud->app, (cai_app_control_type)(i + 1U), text, &id,
+                        &error);
+  if (rc == CAI_OK)
+    lua_pushinteger(L, (lua_Integer)id);
+  else
+    failure(L, error.message);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? 1 : 2;
 }
 static int help_write(void *context, const void *bytes, size_t count,
                       cai_error *error) {
@@ -458,9 +731,9 @@ static int open_kanban(lua_State *L) {
 
 int luaopen_cai_app(lua_State *L) {
   static const luaL_Reg methods[] = {
-      {"run", run_app},     {"options", options}, {"help", help},
-      {"close", close_app}, {"__gc", close_app},  {"__close", close_app},
-      {NULL, NULL}};
+      {"run", run_app},     {"options", options},   {"help", help},
+      {"control", control}, {"get_status", status}, {"close", close_app},
+      {"__gc", close_app},  {"__close", close_app}, {NULL, NULL}};
   luaL_newmetatable(L, APP_MT);
   luaL_setfuncs(L, methods, 0);
   lua_pushvalue(L, -1);

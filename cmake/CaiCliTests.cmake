@@ -299,7 +299,7 @@
     get_property(_cai_cli_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
     list(FILTER _cai_cli_targets INCLUDE REGEX "^cai_cli($|_)|^cai_terminal_peer$")
     add_custom_target(cai_cli_tests DEPENDS ${_cai_cli_targets})
-    add_dependencies(cai_cli_tests cai_app_test cai_app_host cai_kanban_test)
+    add_dependencies(cai_cli_tests cai_app_test cai_app_host cai_app_controls_host cai_kanban_test)
     add_test(NAME cai_cli_kanban COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_kanban_test.sh"
       "$<TARGET_FILE:cai_cli_mock_fixture>")

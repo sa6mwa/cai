@@ -16,6 +16,57 @@ typedef struct cai_app_setting {
   const char *value;
 } cai_app_setting;
 
+/** Host commands are copied into a bounded FIFO and applied on the run thread.
+ * Queueing a prompt starts a new turn; steering targets the active turn.
+ * Goal replacement starts pursuit with no token budget. */
+typedef enum cai_app_control_type {
+  CAI_APP_QUEUE_PROMPT = 1,
+  CAI_APP_STEER,
+  CAI_APP_CANCEL_TURN,
+  CAI_APP_STOP,
+  CAI_APP_REPLACE_GOAL,
+  CAI_APP_PAUSE_GOAL,
+  CAI_APP_RESUME_GOAL,
+  CAI_APP_CLEAR_GOAL
+} cai_app_control_type;
+
+typedef enum cai_app_outcome {
+  CAI_APP_NOT_RUN = 0,
+  CAI_APP_RUNNING,
+  CAI_APP_COMPLETED,
+  CAI_APP_STOPPED,
+  CAI_APP_CANCELLED,
+  CAI_APP_FAILED
+} cai_app_outcome;
+
+/** Owned snapshot. Initialize before first use; cleanup after the last use.
+ * Getters replace an initialized snapshot atomically on success. Strings and
+ * errors remain valid independently of the app, later queries and later runs.
+ * Values reflect the most recent owner-thread safe boundary, not live workers.
+ * runtime_ready distinguishes startup/utilities from an open agent runtime. */
+typedef struct cai_app_status {
+  int running;
+  int runtime_ready;
+  cai_app_outcome outcome;
+  int exit_code;
+  cai_agent_run_state state;
+  const char *session_id;
+  cai_agent_runtime_settings effective;
+  cai_agent_runtime_settings pending;
+  cai_agent_goal_snapshot goal;
+  cai_agent_runtime_metrics metrics;
+  /** Most recent run error, including provider detail when supplied. May
+   * describe a recovered interactive diagnostic; check outcome/exit_code. */
+  cai_error error;
+  /** Most recently processed host command; IDs restart at one each run. */
+  unsigned long long control_id;
+  int control_status;
+  cai_error control_error;
+} cai_app_status;
+
+void cai_app_status_init(cai_app_status *status);
+void cai_app_status_cleanup(cai_app_status *status);
+
 /** Argument shape accepted by the shared CAI command-line parser. */
 typedef enum cai_app_option_type {
   CAI_APP_FLAG = 0,
@@ -67,6 +118,22 @@ typedef struct cai_app_config {
   int (*register_agent_tools)(void *context, cai_agent *agent,
                               cai_error *error);
   void *register_agent_tools_context;
+  /** Optional owner-thread observers, alongside normal rendering and logging.
+   * Events are borrowed only for the call. Return CAI_OK, or an error to abort
+   * the run. Observers may call control/get_status, but must not reenter run,
+   * close the app, or access the runtime. Contexts outlive each run. Replay
+   * observations never execute tools or trigger inference. */
+  cai_agent_runtime_event_fn event_callback;
+  void *event_context;
+  cai_agent_session_event_fn replay_callback;
+  void *replay_context;
+  /** Owner-thread acknowledgement for every accepted command, including those
+   * rejected or abandoned during shutdown. error is borrowed for the call;
+   * acceptance is distinct from successful application. May call get_status
+   * or queue another control. NULL is valid; status retains the last result. */
+  void (*control_callback)(void *context, unsigned long long id, int status,
+                           const cai_error *error);
+  void *control_context;
 } cai_app_config;
 
 typedef struct cai_app cai_app;
@@ -90,6 +157,20 @@ struct cai_app {
    * No configuration files, logger, banner, auth or terminal are initialized.
    */
   int (*write_help)(const cai_app *self, cai_sink *sink, cai_error *error);
+  /** Thread-safe while self remains alive. Requires a ready runtime (STOP is
+   * also accepted during startup). text is required only for prompt, steering
+   * and goal replacement, and is copied before return. Interactive prompts
+   * enter softline's approval/edit queue; batch prompts enter the runtime FIFO.
+   * CAI_OK means accepted, with a nonzero id; inspect the acknowledgement for
+   * application errors. Queue capacity is 64; a full queue rejects explicitly.
+   * STOP requests orderly shutdown, cancelling active work and waiting for
+   * workers; it does not terminate the host process. */
+  int (*control)(cai_app *self, cai_app_control_type type, const char *text,
+                 unsigned long long *id, cai_error *error);
+  /** Thread-safe copied status and final run result; no file/log parsing.
+   * After run returns, running is false and outcome/exit_code/error describe
+   * that invocation. A later run resets the result. */
+  int (*get_status)(const cai_app *self, cai_app_status *out, cai_error *error);
   void (*close)(cai_app *self);
   void *impl;
 };
@@ -104,6 +185,10 @@ int cai_app_run(cai_app *self, int argc, const char *const *argv,
 size_t cai_app_option_count(const cai_app *self);
 const cai_app_option *cai_app_option_at(const cai_app *self, size_t index);
 int cai_app_write_help(const cai_app *self, cai_sink *sink, cai_error *error);
+int cai_app_control(cai_app *self, cai_app_control_type type, const char *text,
+                    unsigned long long *id, cai_error *error);
+int cai_app_get_status(const cai_app *self, cai_app_status *out,
+                       cai_error *error);
 /** Close an idle application and copied settings. NULL is accepted. */
 void cai_app_close(cai_app *self);
 

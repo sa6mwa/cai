@@ -880,7 +880,7 @@ if(CAI_BUILD_APP)
   find_package(lockdc CONFIG REQUIRED COMPONENTS static)
   # The product and fixture entrypoints share these exact sources/options.
   # Compile them once per configuration; keep fixture substitutions in main.
-  add_library(cai_cli_support OBJECT cli/options.c cli/help.c cli/config.c cli/runtime_options.c cli/mcp.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
+  add_library(cai_cli_support OBJECT cli/app_control.c cli/options.c cli/help.c cli/config.c cli/runtime_options.c cli/mcp.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
     cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c
     cli/log.c cli/response.c cli/messages.c cli/todo.c)
   target_link_libraries(cai_cli_support PUBLIC cai_static
@@ -1043,6 +1043,14 @@ if(CAI_BUILD_LUA)
         "${CMAKE_CURRENT_SOURCE_DIR}/lua/cai_app.exports" linux)
       set_tests_properties(cai_app_lua_exports PROPERTIES LABELS "cli;local;offline" TIMEOUT 5)
       if(CAI_BUILD_CLI)
+        file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/app-lua-controls"
+          CONTENT "#!/usr/bin/env bash\nexec \"${CAI_LUA_EXECUTABLE}\" \"${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/app_controls_host.lua\" \"\$@\"\n"
+          FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+        add_test(NAME cai_app_lua_controls COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/app_controls_test.sh"
+          "${CMAKE_CURRENT_BINARY_DIR}/app-lua-controls")
+        set_tests_properties(cai_app_lua_controls PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
+          ENVIRONMENT "${CAI_LUA_TEST_ENV}")
         file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host"
           CONTENT "#!/usr/bin/env bash\nexec \"${CAI_LUA_EXECUTABLE}\" \"${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/app_host.lua\" \"\$@\"\n"
           FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
