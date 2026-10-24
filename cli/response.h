@@ -14,6 +14,7 @@ typedef struct cai_cli_response {
 
 int cai_cli_response_append(cai_cli_response *response, const char *directory,
                             const char *bytes, size_t count, cai_error *error);
+/* Complete one model response, including empty and reasoning-only responses. */
 void cai_cli_response_boundary(cai_cli_response *response);
 int cai_cli_response_source(cai_cli_response *response, cai_source **out,
                             cai_error *error);

@@ -17,3 +17,13 @@ plan "{\"chat\":$chat,\"plan\":[\"STALE FIRST REPLY\",{\"text\":\"Current partia
 run -Nni first -i second; bad
 [[ $(stdout_text) == 'Current partial reply' ]]
 absent "$root/stdout" 'STALE FIRST REPLY'
+
+# A tool continuation is a new response within the same turn, even when it
+# emits no assistant text. Its preamble must remain in logs, not stdout.
+printf 'fixture contents\n' >"$work/input.txt"
+for final in '""' '{"reasoning":["Reasoning-only tool continuation"]}'; do
+  plan "{\"chat\":$chat,\"plan\":[{\"tool\":\"read_file\",\"arguments\":{\"path\":\"input.txt\"},\"text\":\"STALE TOOL PREAMBLE\"},$final]}"
+  run -Nni 'read input.txt'; ok
+  [[ ! -s "$root/stdout" ]]
+  contains "$root/stderr" 'STALE TOOL PREAMBLE'
+done

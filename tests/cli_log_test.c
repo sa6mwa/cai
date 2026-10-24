@@ -344,6 +344,12 @@ int main(int argc, char **argv) {
   }
   CHECK(offset == sizeof(input) - 1U && error.code == CAI_OK);
   cai_source_close(source);
+  cai_cli_response_boundary(&response);
+  CHECK(cai_cli_response_source(&response, &source, &error) == CAI_OK &&
+        source == NULL);
+  cai_cli_response_boundary(&response);
+  CHECK(cai_cli_response_source(&response, &source, &error) == CAI_OK &&
+        source == NULL);
   CHECK(cai_cli_response_append(&response, root, "latest ", 7U, &error) ==
         CAI_OK);
   CHECK(cai_cli_response_append(&response, root, "response", 8U, &error) ==
@@ -352,6 +358,12 @@ int main(int argc, char **argv) {
   CHECK(cai_source_read(source, output, sizeof(output), &error) == 15U &&
         memcmp(output, "latest response", 15U) == 0);
   CHECK(cai_source_read(source, output, sizeof(output), &error) == 0U);
+  cai_source_close(source);
+  cai_cli_response_boundary(&response);
+  CHECK(cai_cli_response_source(&response, &source, &error) == CAI_OK &&
+        source != NULL);
+  CHECK(cai_source_read(source, output, sizeof(output), &error) == 15U &&
+        memcmp(output, "latest response", 15U) == 0);
   cai_source_close(source);
   CHECK(fstat(fileno(response.file), &status) == 0 && status.st_nlink == 0 &&
         (status.st_mode & 0777U) == 0600U);

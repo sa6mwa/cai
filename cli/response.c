@@ -50,6 +50,10 @@ int cai_cli_response_append(cai_cli_response *response, const char *directory,
 }
 
 void cai_cli_response_boundary(cai_cli_response *response) {
+  /* A completion with no intervening text replaces the previous response
+   * with an empty one. Do not wait for an append that may never arrive. */
+  if (response->next_response)
+    cai_cli_response_close(response);
   response->next_response = 1;
 }
 
