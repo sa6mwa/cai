@@ -627,8 +627,10 @@ The endpoint is required for enabled servers. `api_key_env` is optional; when
 set, its environment variable supplies a Bearer token. `[env]` can supply that
 variable under the normal configuration precedence rules. Server names accept
 ASCII letters, digits, underscores and hyphens. Tools are exposed as
-`mcp_example_TOOL`; the complete name must fit 64 bytes and use the same
-characters. The existing raw-input bridge honors server metadata for Responses
+`mcp_7_example_TOOL`: the number is the server name's byte length, making the
+server/tool boundary unambiguous even with underscores in either name. The
+complete alias must fit 64 bytes and use the same characters. The existing
+raw-input bridge honors server metadata for Responses
 and supplies ordinary JSON function arguments for Chat Completions.
 
 Discovery runs once when the first runtime opens. Each server's default

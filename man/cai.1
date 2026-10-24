@@ -838,7 +838,9 @@ to 3000 for the complete initialization and paginated tools refresh;
 timeout_ms defaults to 30000 for normal calls. Discovery failures warn and
 leave other tools usable. Catalogs are cached until restart. Server names use
 ASCII letters, digits, underscores and hyphens. Exposed tool names are
-mcp_NAME_TOOL (at most 64 bytes).
+mcp_LENGTH_NAME_TOOL, where LENGTH is the byte length of NAME. This keeps
+server and tool names distinct even when either contains underscores. The
+complete alias must fit 64 bytes, including the prefix.
 .PP
 --no-mcp, CAI_MCP=false or [agent] mcp=false disables configured servers;
 --mcp enables them. Utility commands and isolated --review skip MCP discovery.

@@ -200,6 +200,8 @@ class Peer(http.server.BaseHTTPRequestHandler):
                 result['nextCursor'] = 'second-page'
             if spec.get('empty'):
                 result['tools'] = []
+            if 'tools' in spec:
+                result = dict(tools=spec['tools'])
         elif method == 'tools/call':
             time.sleep(spec.get('call_delay_ms', 0) / 1000)
             result = dict(content=[{'type': 'text', 'text': 'MCP TOOL RESULT ' + json.dumps(request['params'])}])

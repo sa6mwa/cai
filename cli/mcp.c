@@ -253,7 +253,7 @@ int cai_cli_mcp_open(cai_cli_mcp *mcp, const cai_config *config, int enabled,
     cai_mcp_streamable_http_client_config client_config;
     cai_cli_mcp_server *server;
     size_t length;
-    int rc;
+    int rc, prefix_length;
     if (strncmp(section, "mcp.", 4U) != 0)
       continue;
     server = &mcp->servers[mcp->count++];
@@ -277,13 +277,22 @@ int cai_cli_mcp_open(cai_cli_mcp *mcp, const cai_config *config, int enabled,
       cai_cli_mcp_close(mcp);
       return cai_cli_error(error, CAI_ERR_INVALID, message);
     }
-    length = strlen(server->name) + 6U;
+    /* Both names permit underscores. Include the server-name length so that
+     * a_b/c and a/b_c cannot produce the same model-facing alias. */
+    prefix_length = snprintf(NULL, 0, "mcp_%lu_%s_",
+                             (unsigned long)strlen(server->name), server->name);
+    if (prefix_length < 0) {
+      cai_cli_mcp_close(mcp);
+      return cai_cli_error(error, CAI_ERR_INVALID, "format MCP tool prefix");
+    }
+    length = (size_t)prefix_length + 1U;
     server->prefix = malloc(length);
     if (server->prefix == NULL) {
       cai_cli_mcp_close(mcp);
       return cai_cli_error(error, CAI_ERR_NOMEM, "allocate MCP tool prefix");
     }
-    snprintf(server->prefix, length, "mcp_%s_", server->name);
+    snprintf(server->prefix, length, "mcp_%lu_%s_",
+             (unsigned long)strlen(server->name), server->name);
     cai_mcp_streamable_http_client_config_init(&client_config);
     client_config.url = endpoint;
     client_config.timeout_ms = (long)timeout;
