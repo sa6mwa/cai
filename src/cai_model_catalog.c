@@ -135,8 +135,10 @@ typedef struct cai_provider_model_doc {
   char *lifecycle_status;
   char *comp_hash;
   lonejson_string_array reasoning_efforts;
+  int has_reasoning_efforts;
   char *default_reasoning_effort;
   lonejson_string_array service_tiers;
+  int has_service_tiers;
   char *default_service_tier;
   long long context_window_tokens;
   int has_context_window_tokens;
@@ -488,6 +490,43 @@ static unsigned int cai_provider_capability_known(
   return flags;
 }
 
+static int cai_catalog_segment(const lonejson_value_path *path, size_t index,
+                               const char *name);
+
+typedef struct cai_provider_presence_reader {
+  cai_provider_model_doc *models;
+  size_t count;
+  size_t next;
+  const char *root;
+} cai_provider_presence_reader;
+
+static lonejson_status
+cai_provider_presence_object(void *context, const lonejson_value_path *path,
+                             lonejson_error *error) {
+  cai_provider_presence_reader *reader = context;
+  (void)error;
+  if (path->segment_count == 2U && cai_catalog_segment(path, 0U, reader->root))
+    reader->next++;
+  return LONEJSON_STATUS_OK;
+}
+
+static lonejson_status
+cai_provider_presence_array(void *context, const lonejson_value_path *path,
+                            lonejson_error *error) {
+  cai_provider_presence_reader *reader = context;
+  (void)error;
+  if (path->segment_count == 3U && reader->next > 0U &&
+      reader->next <= reader->count &&
+      cai_catalog_segment(path, 0U, reader->root)) {
+    cai_provider_model_doc *model = &reader->models[reader->next - 1U];
+    if (cai_catalog_segment(path, 2U, "reasoning_efforts"))
+      model->has_reasoning_efforts = 1;
+    if (cai_catalog_segment(path, 2U, "service_tiers"))
+      model->has_service_tiers = 1;
+  }
+  return LONEJSON_STATUS_OK;
+}
+
 static int cai_model_catalog_parse_provider(cai_client *client,
                                             const char *json, int fallback,
                                             cai_model_catalog **out,
@@ -499,6 +538,8 @@ static int cai_model_catalog_parse_provider(cai_client *client,
   cai_model_catalog_impl *catalog_impl;
   lonejson_error json_error;
   lonejson_status status;
+  lonejson_path_value_visitor presence_visitor;
+  cai_provider_presence_reader presence;
   size_t model_count;
   size_t selected_count;
   size_t i;
@@ -520,6 +561,24 @@ static int cai_model_catalog_parse_provider(cai_client *client,
   models =
       (cai_provider_model_doc *)(fallback ? doc.models.items : doc.data.items);
   model_count = fallback ? doc.models.count : doc.data.count;
+  /* lonejson's mapped presence flags support primitives, not arrays. Visit
+   * the validated document to distinguish an explicit [] from an absent key
+   * without relying on allocation details of an empty dynamic array. */
+  presence_visitor = lonejson_default_path_value_visitor();
+  presence_visitor.object_begin = cai_provider_presence_object;
+  presence_visitor.array_begin = cai_provider_presence_array;
+  presence.models = models;
+  presence.count = model_count;
+  presence.next = 0U;
+  presence.root = fallback ? "models" : "data";
+  status = CAI_LJ->visit_path_value_cstr(CAI_LJ, json, &presence_visitor,
+                                         &presence, &json_error);
+  if (status != LONEJSON_STATUS_OK) {
+    CAI_LJ->cleanup(CAI_LJ, &cai_provider_catalog_map, &doc);
+    return cai_set_error_detail(error, CAI_ERR_PROTOCOL,
+                                "invalid model catalog choices",
+                                json_error.message);
+  }
   selected_count = 0U;
   for (i = 0U; i < model_count; i++) {
     size_t n, k;
@@ -582,11 +641,11 @@ static int cai_model_catalog_parse_provider(cai_client *client,
     source.slug = models[i].id;
     source.reasoning_efforts = models[i].reasoning_efforts.items;
     source.reasoning_effort_count = models[i].reasoning_efforts.count;
-    source.reasoning_efforts_known = source.reasoning_effort_count != 0U;
+    source.reasoning_efforts_known = models[i].has_reasoning_efforts;
     source.default_reasoning_effort = models[i].default_reasoning_effort;
     source.service_tiers = models[i].service_tiers.items;
     source.service_tier_count = models[i].service_tiers.count;
-    source.service_tiers_known = source.service_tier_count != 0U;
+    source.service_tiers_known = models[i].has_service_tiers;
     source.default_service_tier = models[i].default_service_tier;
     source.display_name = models[i].name;
     source.description = models[i].description;

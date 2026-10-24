@@ -40194,6 +40194,81 @@ static void test_agent_auto_compaction(test_state *state) {
   }
 }
 
+static void test_provider_catalog_empty_choices(test_state *state) {
+  static const char fallback[] =
+      "{\"models\":[{\"provider\":\"custom\",\"id\":\"empty\","
+      "\"service_tiers\":[],\"reasoning_efforts\":[]},"
+      "{\"provider\":\"custom\",\"id\":\"missing\"},"
+      "{\"provider\":\"custom\",\"id\":\"seeded\","
+      "\"service_tiers\":[\"priority\"],\"reasoning_efforts\":[\"high\"]},"
+      "{\"provider\":\"custom\",\"id\":\"inherit\","
+      "\"service_tiers\":[\"flex\"],\"reasoning_efforts\":[\"low\"]}]}";
+  static const char live[] =
+      "{\"data\":[{\"id\":\"seeded\",\"service_tiers\":[],"
+      "\"reasoning_efforts\":[],\"ignored\":{\"reasoning_efforts\":[\"high\"]}}"
+      ","
+      "{\"id\":\"inherit\"},{\"id\":\"missing\",\"ignored\":{"
+      "\"service_tiers\":[],\"reasoning_efforts\":[]}},"
+      "{\"id\":\"escaped\",\"service_\\u0074iers\":[],"
+      "\"reasoning_\\u0065fforts\":[]}]}";
+  cai_client_config config;
+  cai_client *client = NULL;
+  cai_model_catalog *catalog = NULL;
+  const cai_model_catalog_entry *entry;
+  cai_error error;
+  int phase, rc;
+  size_t i;
+  cai_error_init(&error);
+  cai_client_config_init(&config);
+  config.api_key = "fixture-key";
+  config.base_url = "https://example.test/v1";
+  config.metadata_provider = "custom";
+  config.model_metadata_json = fallback;
+  rc = cai_client_open(&config, &client, &error);
+  expect_int(state, "catalog_empty_open", rc, CAI_OK);
+  for (phase = 0; rc == CAI_OK && phase < 2; phase++) {
+    if (phase != 0) {
+      rc = cai_model_catalog_import_provider_response(client, live, &error);
+      expect_int(state, "catalog_empty_import", rc, CAI_OK);
+    }
+    if (rc == CAI_OK)
+      rc = cai_client_list_models(client, CAI_MODEL_CATALOG_REFRESH_OFFLINE,
+                                  &catalog, &error);
+    expect_int(state, "catalog_empty_list", rc, CAI_OK);
+    if (rc == CAI_OK) {
+      for (i = 0U; i < catalog->count; i++) {
+        entry = &catalog->entries[i];
+        expect_int(state, "catalog_empty_efforts_known",
+                   entry->reasoning_efforts_known,
+                   strcmp(entry->slug, "missing") != 0);
+        expect_int(state, "catalog_empty_tiers_known",
+                   entry->service_tiers_known,
+                   strcmp(entry->slug, "missing") != 0);
+        expect_int(state, "catalog_empty_effort_count",
+                   entry->reasoning_effort_count,
+                   strcmp(entry->slug, "inherit") == 0 ||
+                       (phase == 0 && strcmp(entry->slug, "seeded") == 0));
+        expect_int(state, "catalog_empty_tier_count", entry->service_tier_count,
+                   entry->reasoning_effort_count);
+      }
+      entry = cai_model_catalog_find(catalog, phase ? "seeded" : "empty");
+      expect_int(state, "catalog_empty_entry", entry != NULL, 1L);
+      entry = cai_model_catalog_find(catalog, "inherit");
+      if (entry != NULL && entry->service_tier_count == 1U &&
+          entry->reasoning_effort_count == 1U) {
+        expect_str(state, "catalog_empty_inherit_tier", entry->service_tiers[0],
+                   "flex");
+        expect_str(state, "catalog_empty_inherit_effort",
+                   entry->reasoning_efforts[0], "low");
+      }
+    }
+    cai_model_catalog_close(catalog);
+    catalog = NULL;
+  }
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+}
+
 static void test_provider_model_metadata(test_state *state) {
   static const struct {
     const char *id;
@@ -52742,6 +52817,7 @@ static const test_entry test_entries[] = {
     {"agent_tool_output_max_bytes", test_agent_tool_output_max_bytes},
     {"conversations", test_conversations},
     {"provider_model_metadata", test_provider_model_metadata},
+    {"provider_catalog_empty_choices", test_provider_catalog_empty_choices},
     {"chat_client_compaction", test_chat_client_compaction},
     {"chat_compaction_failure_preserves_history",
      test_chat_compaction_failure_preserves_history},

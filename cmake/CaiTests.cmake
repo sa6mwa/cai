@@ -548,6 +548,7 @@ if(CAI_BUILD_TESTS)
     conversations
     stream_response_text
     provider_model_metadata
+    provider_catalog_empty_choices
     chat_client_compaction
     chat_compaction_failure_preserves_history
     chat_compaction_tiny_context
