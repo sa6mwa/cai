@@ -1,11 +1,14 @@
 #define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <cai/app.h>
+#include <fcntl.h>
 #include <lc/lc.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <termios.h>
+#include <unistd.h>
 
 typedef struct host {
   cai_app *app;
@@ -64,6 +67,23 @@ static void *worker(void *context) {
   cai_error error;
   cai_app_status_init(&status);
   cai_error_init(&error);
+  if (strcmp(h->mode, "shell_stop") == 0) {
+    char signal;
+    FILE *queued;
+    int fd = open(getenv("CAI_TEST_APP_SHELL_SIGNAL"), O_RDONLY);
+    assert(fd >= 0 && read(fd, &signal, 1U) == 1);
+    assert(h->app->get_status(h->app, &status, &error) == CAI_OK);
+    assert(status.running && status.runtime_ready);
+    send_control(h, CAI_APP_QUEUE_PROMPT, "DEFER UNTIL SHELL EXITS");
+    queued = fopen(getenv("CAI_TEST_APP_SHELL_QUEUED"), "w");
+    assert(queued != NULL && fclose(queued) == 0);
+    assert(read(fd, &signal, 1U) == 1);
+    close(fd);
+    send_control(h, CAI_APP_STOP, NULL);
+    cai_app_status_cleanup(&status);
+    cai_error_cleanup(&error);
+    return NULL;
+  }
   pthread_mutex_lock(&h->lock);
   while (!h->ready && !h->finished)
     pthread_cond_wait(&h->condition, &h->lock);
@@ -201,6 +221,11 @@ static void ack(void *context, unsigned long long id, int status,
   cai_error local;
   const char *release = getenv("CAI_TEST_APP_RELEASE");
   assert(pthread_equal(h->owner, pthread_self()) && id > 0U);
+  if (strcmp(h->mode, "shell_stop") == 0) {
+    /* Acknowledgements must follow PTY teardown and editor restoration. */
+    assert(tcgetpgrp(STDIN_FILENO) == getpgrp());
+    assert(release != NULL);
+  }
   h->acks++;
   if (status != CAI_OK) {
     assert(error != NULL && error->message != NULL);
@@ -227,10 +252,18 @@ int main(int argc, char **argv) {
   pthread_t thread;
   unsigned long long id;
   int code, rc;
+  char original_tty[256];
+  struct termios original_attributes, restored_attributes;
   memset(&h, 0, sizeof(h));
   h.owner = pthread_self();
   h.mode = getenv("CAI_TEST_APP_CONTROL");
   assert(h.mode != NULL);
+  if (strcmp(h.mode, "shell_stop") == 0) {
+    assert(ttyname(STDIN_FILENO) != NULL);
+    assert(strlen(ttyname(STDIN_FILENO)) < sizeof(original_tty));
+    strcpy(original_tty, ttyname(STDIN_FILENO));
+    assert(tcgetattr(STDIN_FILENO, &original_attributes) == 0);
+  }
   assert(pthread_mutex_init(&h.lock, NULL) == 0);
   assert(pthread_cond_init(&h.condition, NULL) == 0);
   cai_app_config_init(&config);
@@ -286,6 +319,23 @@ int main(int argc, char **argv) {
     assert(code == 0 && snapshot.outcome == CAI_APP_STOPPED &&
            h.deliveries == 1 && h.starts == 1 && h.acks == 1 &&
            h.rejected == 0);
+  } else if (strcmp(h.mode, "shell_stop") == 0) {
+    char shell_tty[256];
+    FILE *file = fopen(getenv("CAI_TEST_APP_SHELL_TTY"), "r");
+    assert(code == 0 && snapshot.outcome == CAI_APP_STOPPED && h.starts == 0 &&
+           h.acks == 2 && h.rejected == 0);
+    assert(file != NULL && fgets(shell_tty, sizeof(shell_tty), file) != NULL);
+    assert(fclose(file) == 0);
+    shell_tty[strcspn(shell_tty, "\r\n")] = '\0';
+    assert((strcmp(shell_tty, original_tty) == 0) ==
+           (strcmp(getenv("CAI_TEST_APP_SHELL_SHARED"), "0") == 0));
+    assert(tcgetattr(STDIN_FILENO, &restored_attributes) == 0);
+    assert(original_attributes.c_iflag == restored_attributes.c_iflag &&
+           original_attributes.c_oflag == restored_attributes.c_oflag &&
+           original_attributes.c_lflag == restored_attributes.c_lflag &&
+           original_attributes.c_cflag == restored_attributes.c_cflag);
+    assert(memcmp(original_attributes.c_cc, restored_attributes.c_cc,
+                  sizeof(original_attributes.c_cc)) == 0);
   } else if (strcmp(h.mode, "cancel") == 0 ||
              strcmp(h.mode, "message_cancel") == 0) {
     assert(snapshot.outcome == CAI_APP_CANCELLED && h.acks == 1 &&

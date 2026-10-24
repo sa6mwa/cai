@@ -15,7 +15,7 @@ SH
 chmod 700 "$SHELL"
 canonical() { [[ -s "$term/tty" && $(cut -d' ' -f1 "$term/tty") == "$1" ]]; }
 terminal_start -N
-send '/shell\r'; expect SHELL_HANDOFF_READY; canonical 0
+send '/shell\r'; expect SHELL_HANDOFF_READY; canonical 1
 resize 48
 send 'stty size; touch ../normal-permissions; printf SHARED_TERMINAL_OUTPUT; exit\r'
 expect 'Shell exited 0.'; canonical 0
@@ -25,7 +25,7 @@ plan '{"plan":["POST HANDOFF ANSWER\n\nword word word word word word word word w
 send 'continue after the handoff\r'; expect 'POST HANDOFF ANSWER'; expect 'Worked for'
 absent "$root/peer/requests.jsonl" SHARED_TERMINAL_OUTPUT
 absent "$root/peer/requests.jsonl" '<user_shell_command>'
-# Ctrl-C reaches the foreground job on the inner PTY and leaves its shell
+# Ctrl-C reaches the foreground job on the terminal and leaves its shell
 # usable; it does not cancel CAI or leak a sleeping command.
 send '!sh\r'; expect SHELL_HANDOFF_READY
 send 'printf INTERRUPT_READY; sleep 60\r'; expect INTERRUPT_READY
@@ -33,9 +33,9 @@ send '\003'; expect '$'
 send 'printf AFTER_INTERRUPT; exit\r'; expect 'Shell exited 0.'
 send '\022/shell\r'; expect '/shell'; canonical 0
 [[ $(wc -c <"$root/launches") == 2 ]]
-send '\r'; expect SHELL_HANDOFF_READY; canonical 0
+send '\r'; expect SHELL_HANDOFF_READY; canonical 1
 send 'exit 7\r'; expect 'interactive shell exited 7'; wait_for canonical 0
-send '\025!sh\r'; expect SHELL_HANDOFF_READY; canonical 0
+send '\025!sh\r'; expect SHELL_HANDOFF_READY; canonical 1
 send 'kill -KILL $$\r'; expect 'interactive shell terminated by signal 9'; wait_for canonical 0
 send '!sh\r'; expect SHELL_HANDOFF_READY
 send 'exit 137\r'; expect 'interactive shell exited 137'
@@ -61,7 +61,7 @@ terminal_close
 for fallback in unset empty; do
   if [[ "$fallback" == unset ]]; then unset SHELL; else export SHELL=; fi
   terminal_start -N
-  send '!sh\r'; expect '$'; canonical 0
+  send '!sh\r'; expect '$'; canonical 1
   send 'touch fallback-shell; exit\r'; expect 'Shell exited 0.'; canonical 0; [[ -f "$work/fallback-shell" ]]
   rm "$work/fallback-shell"; terminal_close
 done

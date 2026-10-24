@@ -155,15 +155,16 @@ Exact `!sh` and `/shell` commands hand the real terminal to `$SHELL -i`
 and output, cannot be queued or steered, and leave the draft editable if the
 agent is busy. The shell runs with normal user permissions in the workspace.
 On exit, CAI restores terminal ownership, prompt settings and current geometry,
-including after a screen clear or resize. CAI relays a real PTY, including
-window changes and foreground-job control. Terminal output stays local: it is
-neither journaled, logged nor sent to the model, including with
+including after a screen clear or resize. The shell uses the terminal directly,
+with native window changes and foreground-job control. Terminal output stays
+local: it is neither journaled, logged nor sent to the model, including with
 `--shell-context` enabled. Logs retain only shell start/exit metadata.
 A failed launch or nonzero shell exit reports details and returns to CAI.
 
 `/shellshare` and `!sh+` explicitly share the shell's newest sanitized output
-when it exits. This applies to that invocation even if ordinary bang-command
-sharing is disabled. The same rolling-tail storage described below applies;
+when it exits. These shared variants use a PTY relay for capture. This applies
+to that invocation even if ordinary bang-command sharing is disabled.
+The same rolling-tail storage described below applies;
 older output is discarded as new text arrives. A shell that has not finished
 does not save its captured output.
 

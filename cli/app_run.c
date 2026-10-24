@@ -811,31 +811,6 @@ static int cli_shell_editor_key(sl_t *sl, sl_key_t key, void *context,
   return rc;
 }
 
-static int cli_shell_restore_foreground(pid_t foreground, cai_error *error) {
-  struct sigaction ignore, previous;
-  int rc, saved_errno;
-  char message[256];
-  if (foreground < 0)
-    return CAI_OK;
-  memset(&ignore, 0, sizeof(ignore));
-  ignore.sa_handler = SIG_IGN;
-  sigemptyset(&ignore.sa_mask);
-  if (sigaction(SIGTTOU, &ignore, &previous) != 0)
-    return cai_cli_error(error, CAI_ERR_TRANSPORT,
-                         "protect terminal foreground restoration");
-  rc = tcsetpgrp(STDIN_FILENO, foreground);
-  saved_errno = errno;
-  if (sigaction(SIGTTOU, &previous, NULL) != 0 && rc == 0) {
-    rc = -1;
-    saved_errno = errno;
-  }
-  if (rc == 0)
-    return CAI_OK;
-  snprintf(message, sizeof(message), "restore terminal foreground: %s",
-           strerror(saved_errno));
-  return cai_cli_error(error, CAI_ERR_TRANSPORT, message);
-}
-
 static int cli_terminal_shell_output(void *context, const char *bytes,
                                      size_t length, cai_error *error) {
   cli_state *state = context;
@@ -843,11 +818,15 @@ static int cli_terminal_shell_output(void *context, const char *bytes,
                                             error);
 }
 
+static int cli_terminal_shell_stop(void *context) {
+  cli_state *state = context;
+  return cai_app_bridge_shell_stop(state->bridge);
+}
+
 static int cli_terminal_shell(cli_state *state, int share, cai_error *error) {
   pslog_field fields[3];
   char message[256];
   const char *shell = getenv("SHELL");
-  pid_t foreground;
   int rc, status, shell_rc;
   cai_error shell_error;
   rc = cli_terminal_shell_ready(state, error);
@@ -861,7 +840,6 @@ static int cli_terminal_shell(cli_state *state, int share, cai_error *error) {
       return rc;
   }
   (void)clock_gettime(CLOCK_MONOTONIC, &state->shell.started);
-  foreground = tcgetpgrp(STDIN_FILENO);
   if (cli_flush_command(state, 1) != 0 || cli_finish_response(state) != 0 ||
       cli_finish_reasoning(state) != 0 ||
       sl_output_stream_end(state->sl) != SL_OK) {
@@ -874,17 +852,10 @@ static int cli_terminal_shell(cli_state *state, int share, cai_error *error) {
                       "terminal_shell_started", "user", "Interactive shell",
                       strlen("Interactive shell"), fields, 1U);
   cai_error_init(&shell_error);
-  shell_rc = cai_cli_shell_handoff(shell, state->workspace,
-                                   share ? cli_terminal_shell_output : NULL,
-                                   state, &status, &shell_error);
-  /* Recover ownership before any logger or renderer can write to the TTY.
-   * A killed shell cannot restore its previous foreground process group. */
-  rc = cli_shell_restore_foreground(foreground, error);
-  if (rc != CAI_OK) {
-    cai_error_cleanup(&shell_error);
-    state->exit_requested = 1;
-    return rc;
-  }
+  shell_rc = cai_cli_shell_handoff(
+      shell, state->workspace, share ? cli_terminal_shell_output : NULL, state,
+      state->bridge != NULL ? state->bridge->fd : -1, cli_terminal_shell_stop,
+      &status, &shell_error);
   state->feed_breaks = 0;
   state->feed_ansi = 0;
   fields[1] =
@@ -903,7 +874,7 @@ static int cli_terminal_shell(cli_state *state, int share, cai_error *error) {
   if (share) {
     rc = cai_agent_runtime_user_shell_finish(
         state->runtime,
-        shell_rc != CAI_OK  ? 127
+        shell_rc != CAI_OK && shell_rc != CAI_ERR_CANCELLED ? 127
         : WIFEXITED(status) ? WEXITSTATUS(status)
                             : 128 + WTERMSIG(status),
         cai_cli_shell_elapsed(&state->shell), error);
@@ -912,6 +883,13 @@ static int cli_terminal_shell(cli_state *state, int share, cai_error *error) {
       state->exit_requested = 1;
       return rc;
     }
+  }
+  /* Deferred controls may touch softline or render output. Apply them only
+   * after handoff has restored ownership and completed shared history. */
+  rc = cli_host_process(state, error);
+  if (rc != CAI_OK || state->host_stopped) {
+    cai_error_cleanup(&shell_error);
+    return rc;
   }
   if (shell_rc != CAI_OK) {
     rc = cai_cli_error(error, shell_rc, shell_error.message);

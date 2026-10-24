@@ -154,6 +154,10 @@ are rejected. A stopped run need not deliver events still pending at shutdown.
 STOP also ends isolated review without emitting unfinished findings. It does
 not deliver approved prompts after shutdown has been requested. An observer's
 failure detail is retained even if the terminal loop reports a later I/O error.
+During `/shell` or `!sh`, the child uses the terminal directly. Only the shared
+variants (`/shellshare`, `!sh+`) use a PTY relay to capture output. STOP interrupts
+either handoff, terminates the shell and restores the terminal before command
+acknowledgement. Other host controls remain queued until handoff ends.
 Acknowledgement callbacks must not close or recursively run the app, including
 final callbacks delivered after process restoration. Close after `run` returns.
 

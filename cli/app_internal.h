@@ -35,6 +35,10 @@ int cai_app_bridge_publish(cai_app_bridge *bridge, cai_agent_runtime *runtime,
 void cai_app_bridge_error(cai_app_bridge *bridge, const cai_error *error);
 void cai_app_bridge_fail(cai_app_bridge *bridge, const cai_error *error);
 cai_app_command *cai_app_bridge_take(cai_app_bridge *bridge);
+/* Handoff owns wakeups temporarily. Leave commands queued for normal dispatch
+ * after terminal restoration; drain notifications to avoid spinning while
+ * non-STOP commands are deferred. A later submission signals again. */
+int cai_app_bridge_shell_stop(cai_app_bridge *bridge);
 void cai_app_bridge_ack(cai_app_bridge *bridge, cai_app_command *command,
                         int status, const cai_error *error);
 void cai_app_bridge_outcome(cai_app_bridge *bridge, cai_app_outcome outcome);

@@ -24,6 +24,7 @@ typedef struct cai_cli_shell {
 } cai_cli_shell;
 typedef int (*cai_cli_shell_output_fn)(void *, const char *, size_t,
                                        cai_error *);
+typedef int (*cai_cli_shell_stop_fn)(void *);
 
 void cai_cli_shell_init(cai_cli_shell *shell);
 int cai_cli_shell_start(cai_cli_shell *shell, const char *command,
@@ -39,13 +40,16 @@ void cai_cli_shell_close(cai_cli_shell *shell);
 int cai_cli_shell_plain(cai_cli_shell *shell, const char *bytes, size_t length,
                         int final, cai_cli_shell_output_fn output,
                         void *context, cai_error *error);
-/* Called with the editor released. Relay a real PTY in the foreground;
- * Optional output observes raw chunks before they reach the TTY. NULL relays
- * directly without recording terminal output.
+/* Called with the editor released. NULL output gives the child the real
+ * terminal directly; a capture callback selects a PTY relay and observes raw
+ * chunks before they reach the TTY. stop_fd/stop optionally interrupt either
+ * mode with CAI_ERR_CANCELLED. The callback must not render or acknowledge
+ * controls until the handoff returns and terminal ownership is restored.
  * Restores termios, signal dispositions and window handling on every exit.
  * status is the waitpid status (distinguishes exit 137 from SIGKILL). */
 int cai_cli_shell_handoff(const char *path, const char *directory,
                           cai_cli_shell_output_fn output, void *context,
-                          int *status, cai_error *error);
+                          int stop_fd, cai_cli_shell_stop_fn stop, int *status,
+                          cai_error *error);
 
 #endif

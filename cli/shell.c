@@ -92,13 +92,30 @@ void cai_cli_shell_init(cai_cli_shell *shell) {
   shell->output_fd = shell->exit_fd = shell->timer_fd = -1;
 }
 
+static int shell_foreground(pid_t foreground) {
+  struct sigaction ignore, previous;
+  int rc, saved_errno;
+  memset(&ignore, 0, sizeof(ignore));
+  ignore.sa_handler = SIG_IGN;
+  sigemptyset(&ignore.sa_mask);
+  if (sigaction(SIGTTOU, &ignore, &previous) != 0)
+    return -1;
+  rc = tcsetpgrp(STDIN_FILENO, foreground);
+  saved_errno = errno;
+  if (sigaction(SIGTTOU, &previous, NULL) != 0 && rc == 0)
+    return -1;
+  errno = saved_errno;
+  return rc;
+}
+
 int cai_cli_shell_handoff(const char *path, const char *directory,
                           cai_cli_shell_output_fn output, void *context,
-                          int *status, cai_error *error) {
+                          int stop_fd, cai_cli_shell_stop_fn stop, int *status,
+                          cai_error *error) {
   struct termios saved, raw;
   struct winsize geometry;
   struct sigaction action, previous;
-  struct pollfd fds[3];
+  struct pollfd fds[4];
   shell_waiter *waiter = NULL;
   pthread_t thread;
   char name[256], buffer[4096], input[4096];
@@ -106,24 +123,33 @@ int cai_cli_shell_handoff(const char *path, const char *directory,
   int master = -1, slave = -1, pipefd[2] = {-1, -1};
   int rc = CAI_OK, failure = 0, raw_set = 0, signal_set = 0;
   int launched = 0, exited = 0, eof = 0, input_open = 1, wait_status, ready;
-  pid_t child = -1;
+  pid_t child = -1, foreground, active;
   ssize_t n;
   *status = 127 << 8;
   if (tcgetattr(STDIN_FILENO, &saved) != 0 ||
-      ioctl(STDIN_FILENO, TIOCGWINSZ, &geometry) != 0)
+      ioctl(STDIN_FILENO, TIOCGWINSZ, &geometry) != 0 ||
+      (foreground = tcgetpgrp(STDIN_FILENO)) < 0)
     return shell_error(error, "cannot read terminal attributes", errno);
-  master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
-  if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0) {
-    failure = errno;
-    goto done;
+  if (output != NULL) {
+    master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
+    if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0) {
+      failure = errno;
+      goto done;
+    }
+    failure = ptsname_r(master, name, sizeof(name));
+    if (failure != 0)
+      goto done;
+    slave = open(name, O_RDWR | O_NOCTTY | O_CLOEXEC);
+    if (slave < 0 || tcsetattr(slave, TCSANOW, &saved) != 0 ||
+        ioctl(slave, TIOCSWINSZ, &geometry) != 0) {
+      failure = errno;
+      goto done;
+    }
+  } else {
+    eof = 1;
+    input_open = 0;
   }
-  failure = ptsname_r(master, name, sizeof(name));
-  if (failure != 0)
-    goto done;
-  slave = open(name, O_RDWR | O_NOCTTY | O_CLOEXEC);
-  if (slave < 0 || tcsetattr(slave, TCSANOW, &saved) != 0 ||
-      ioctl(slave, TIOCSWINSZ, &geometry) != 0 ||
-      pipe2(pipefd, O_CLOEXEC) != 0) {
+  if (pipe2(pipefd, O_CLOEXEC) != 0) {
     failure = errno;
     goto done;
   }
@@ -138,17 +164,32 @@ int cai_cli_shell_handoff(const char *path, const char *directory,
   child = fork();
   if (child == 0) {
     sigset_t mask;
-    close(master);
+    if (master >= 0)
+      close(master);
     close(pipefd[0]);
     close(pipefd[1]);
-    if (setsid() < 0 || ioctl(slave, TIOCSCTTY, 0) < 0 ||
-        dup2(slave, STDIN_FILENO) < 0 || dup2(slave, STDOUT_FILENO) < 0 ||
-        dup2(slave, STDERR_FILENO) < 0) {
-      shell_child_error(slave, "Cannot initialize shell terminal", "", errno);
-      _exit(126);
+    if (output != NULL) {
+      if (setsid() < 0 || ioctl(slave, TIOCSCTTY, 0) < 0 ||
+          dup2(slave, STDIN_FILENO) < 0 || dup2(slave, STDOUT_FILENO) < 0 ||
+          dup2(slave, STDERR_FILENO) < 0) {
+        shell_child_error(slave, "Cannot initialize shell terminal", "", errno);
+        _exit(126);
+      }
+      if (slave > STDERR_FILENO)
+        close(slave);
+    } else {
+      /* Do not allocate or relay another PTY when no capture is requested.
+       * Job control, resize and input belong directly to the child shell. */
+      action.sa_handler = SIG_IGN;
+      (void)sigaction(SIGTTOU, &action, NULL);
+      if (setpgid(0, 0) != 0 || tcsetpgrp(STDIN_FILENO, getpid()) != 0) {
+        shell_child_error(STDERR_FILENO, "Cannot claim shell terminal", "",
+                          errno);
+        _exit(126);
+      }
+      action.sa_handler = SIG_DFL;
+      (void)sigaction(SIGTTOU, &action, NULL);
     }
-    if (slave > STDERR_FILENO)
-      close(slave);
     (void)sigaction(SIGINT, &action, NULL);
     (void)sigaction(SIGQUIT, &action, NULL);
     (void)sigaction(SIGTERM, &action, NULL);
@@ -170,7 +211,8 @@ int cai_cli_shell_handoff(const char *path, const char *directory,
     failure = errno;
     goto done;
   }
-  close(slave);
+  if (slave >= 0)
+    close(slave);
   slave = -1;
   waiter->pid = child;
   waiter->fd = pipefd[1];
@@ -181,25 +223,27 @@ int cai_cli_shell_handoff(const char *path, const char *directory,
   launched = 1;
   waiter = NULL;
   pipefd[1] = -1;
-  action.sa_handler = handoff_winch;
-  handoff_resize = 0;
-  if (sigaction(SIGWINCH, &action, &previous) != 0) {
-    failure = errno;
-    goto done;
+  if (output != NULL) {
+    action.sa_handler = handoff_winch;
+    handoff_resize = 0;
+    if (sigaction(SIGWINCH, &action, &previous) != 0) {
+      failure = errno;
+      goto done;
+    }
+    signal_set = 1;
+    raw = saved;
+    cfmakeraw(&raw);
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0) {
+      failure = errno;
+      goto done;
+    }
+    raw_set = 1;
+    if (fcntl(master, F_SETFL, O_NONBLOCK) < 0) {
+      failure = errno;
+      goto done;
+    }
   }
-  signal_set = 1;
-  raw = saved;
-  cfmakeraw(&raw);
-  if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0) {
-    failure = errno;
-    goto done;
-  }
-  raw_set = 1;
-  if (fcntl(master, F_SETFL, O_NONBLOCK) < 0) {
-    failure = errno;
-    goto done;
-  }
-  handoff_resize = 1;
+  handoff_resize = output != NULL;
   while (!eof || !exited) {
     if (handoff_resize) {
       handoff_resize = 0;
@@ -214,16 +258,23 @@ int cai_cli_shell_handoff(const char *path, const char *directory,
     fds[1].events = POLLIN;
     fds[2].fd = exited ? -1 : pipefd[0];
     fds[2].events = POLLIN;
+    fds[3].fd = stop != NULL ? stop_fd : -1;
+    fds[3].events = POLLIN;
     /* A detached background job may retain the slave after its shell exits.
      * Drain queued bytes, then release the handoff instead of waiting for it.
      */
-    ready = poll(fds, 3U, exited ? 0 : -1);
+    ready = poll(fds, 4U, exited ? 0 : -1);
     if (ready == 0)
       break;
     if (ready < 0) {
       if (errno == EINTR)
         continue;
       failure = errno;
+      break;
+    }
+    if (fds[3].revents != 0 && stop(context)) {
+      rc = cai_cli_error(error, CAI_ERR_CANCELLED,
+                         "interactive shell interrupted by host STOP");
       break;
     }
     if ((fds[0].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
@@ -282,14 +333,28 @@ int cai_cli_shell_handoff(const char *path, const char *directory,
     }
   }
 done:
-  if (child > 0 && !exited)
-    (void)kill(-child, SIGKILL);
+  if (child > 0 && !exited) {
+    /* A direct shell may have handed the TTY to a foreground job in another
+     * process group. Stop that job as well before reclaiming the terminal. */
+    if (output == NULL && (active = tcgetpgrp(STDIN_FILENO)) > 0 &&
+        active != foreground && active != getpgrp())
+      (void)kill(-active, SIGKILL);
+    if (kill(-child, SIGKILL) != 0)
+      (void)kill(child, SIGKILL); /* Child may not have set its group yet. */
+  }
   if (launched)
     pthread_join(thread, NULL);
   else if (child > 0) {
     (void)kill(child, SIGKILL);
     while (waitpid(child, &wait_status, 0) < 0 && errno == EINTR) {
     }
+  }
+  if (launched && !exited) {
+    do {
+      n = read(pipefd[0], status, sizeof(*status));
+    } while (n < 0 && errno == EINTR);
+    if (n != (ssize_t)sizeof(*status) || *status < 0)
+      failure = n == (ssize_t)sizeof(*status) ? -*status : EIO;
   }
   free(waiter);
   if (master >= 0)
@@ -300,13 +365,16 @@ done:
     close(pipefd[0]);
   if (pipefd[1] >= 0)
     close(pipefd[1]);
-  if (raw_set && tcsetattr(STDIN_FILENO, TCSANOW, &saved) != 0 && failure == 0)
+  if (output == NULL && child > 0 && shell_foreground(foreground) != 0 &&
+      failure == 0)
+    failure = errno;
+  if ((raw_set || (output == NULL && child > 0)) &&
+      tcsetattr(STDIN_FILENO, TCSANOW, &saved) != 0 && failure == 0)
     failure = errno;
   if (signal_set && sigaction(SIGWINCH, &previous, NULL) != 0 && failure == 0)
     failure = errno;
-  return rc != CAI_OK   ? rc
-         : failure != 0 ? shell_error(error, "interactive PTY handoff", failure)
-                        : CAI_OK;
+  return failure != 0 ? shell_error(error, "interactive shell handoff", failure)
+                      : rc;
 }
 
 void cai_cli_shell_cancel(cai_cli_shell *shell) {

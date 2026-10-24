@@ -177,6 +177,22 @@ int cai_app_bridge_control(cai_app_bridge *b, cai_app_control_type type,
   pthread_mutex_unlock(&b->lock);
   return CAI_OK;
 }
+int cai_app_bridge_shell_stop(cai_app_bridge *b) {
+  cai_app_command *c;
+  uint64_t value;
+  int stop = 0;
+  if (b == NULL)
+    return 0;
+  pthread_mutex_lock(&b->lock);
+  for (c = b->head; c != NULL; c = c->next)
+    if (c->type == CAI_APP_STOP)
+      stop = 1;
+  while (read(b->fd, &value, sizeof(value)) > 0 || errno == EINTR) {
+  }
+  pthread_mutex_unlock(&b->lock);
+  return stop;
+}
+
 cai_app_command *cai_app_bridge_take(cai_app_bridge *b) {
   cai_app_command *c;
   uint64_t value;
