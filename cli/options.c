@@ -347,6 +347,10 @@ int cai_cli_read_options(int argc, char *const *argv,
       field = &options->service_tier;
     else if (strcmp(flag, "--message-queue") == 0)
       field = &options->message_queue;
+    else if (strcmp(flag, "--queue") == 0 || strcmp(flag, "-q") == 0)
+      field = &options->send_queue;
+    else if (strcmp(flag, "--message") == 0 || strcmp(flag, "-M") == 0)
+      field = &options->message;
     else if (strcmp(flag, "--board") == 0) {
       field = &options->board;
       options->board_explicit = 1;
@@ -422,6 +426,13 @@ int cai_cli_validate_options(cai_cli_options *options) {
     return -1;
   }
 
+  if ((options->send_queue != NULL) != (options->message != NULL) ||
+      (options->message != NULL &&
+       (options->message[0] == '\0' || options->send_queue[0] == '\0'))) {
+    cai_cli_option_error(
+        options, "cai: --queue NAME and --message TEXT are required together");
+    return -1;
+  }
   if (options->config_file != NULL && options->no_config) {
     cai_cli_option_error(options,
                          "--config and --no-config are mutually exclusive");
@@ -452,15 +463,16 @@ int cai_cli_validate_options(cai_cli_options *options) {
   if ((options->list + options->resume_list + options->login +
        options->chrome_setup + options->chrome_remove +
        (options->export_id != NULL) + (options->import_file != NULL) +
-       (options->install_skill != NULL)) > 1) {
+       (options->install_skill != NULL) + (options->message != NULL)) > 1) {
     cai_cli_option_error(
         options, "%s",
         "cai: select only one of --list, --resume without ID, --login, "
-        "--export, --import, or --install-skill\n");
+        "--export, --import, --install-skill, or --message\n");
     return -1;
   }
   if ((options->list || options->resume_list || options->export_id != NULL ||
-       options->import_file != NULL || options->install_skill != NULL) &&
+       options->import_file != NULL || options->install_skill != NULL ||
+       options->message != NULL) &&
       (options->new_session || options->resume_id != NULL || options->review ||
        options->review_and_fix || options->goal != NULL ||
        options->instruction_count != 0U || options->non_interactive)) {
@@ -574,7 +586,8 @@ int cai_cli_validate_options(cai_cli_options *options) {
     return -1;
   }
   if (options->list || options->resume_list || options->export_id != NULL ||
-      options->import_file != NULL || options->install_skill != NULL)
+      options->import_file != NULL || options->install_skill != NULL ||
+      options->message != NULL)
     return 1;
   if (strcmp(options->provider, "custom") == 0) {
     if (options->endpoint == NULL ||

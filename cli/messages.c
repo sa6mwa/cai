@@ -67,7 +67,7 @@ struct cai_cli_messages {
   lc_consumer_service *service, *receipts_service;
   pthread_mutex_t lock;
   pthread_cond_t condition;
-  int fd, stopping, dirty, receipt, claimed, lost;
+  int fd, stopping, dirty, receipt, claimed, lost, standalone;
   unsigned long long cancel_sequence;
   long timeout_ms;
   char session[129], queue[129], instance[LC_XID_STRING_SIZE], receipts[160],
@@ -1022,8 +1022,10 @@ int cai_cli_messages_sync(cai_cli_messages *m, sl_t *sl, cai_error *error) {
         break;
       }
       snprintf(text, capacity,
-               "[Agent message %s from %s (conversation %s)]\n\n%s", doc.id,
-               doc.sender, doc.sender_session,
+               strcmp(doc.sender_session, "cli") == 0
+                   ? "[CLI message %s from %s (%s)]\n\n%s"
+                   : "[Agent message %s from %s (conversation %s)]\n\n%s",
+               doc.id, doc.sender, doc.sender_session,
                doc.text != NULL ? doc.text : "");
       if (sl_inject_queued_prompt(sl, text, &link->prompt_id) != SL_OK) {
         free(text);
@@ -1099,7 +1101,7 @@ static int send_tool(void *context, const char *arguments, cai_sink *output,
                        "agent message delivery cancelled");
     goto done;
   }
-  rc = mailbox_guard(m, &binding, &local);
+  rc = m->standalone ? LC_OK : mailbox_guard(m, &binding, &local);
   if (send_cancelled(m, sequence)) {
     rc = cai_cli_error(error, CAI_ERR_CANCELLED,
                        "agent message delivery cancelled");
@@ -1137,7 +1139,7 @@ static int send_tool(void *context, const char *arguments, cai_sink *output,
   m->receipt = 0;
   pthread_mutex_unlock(&m->lock);
   rc = enqueue(m, &doc, error);
-  {
+  if (binding != NULL) {
     int released = lease_finish(binding, LC_OK, &local);
     binding = NULL;
     if (released != LC_OK && rc == CAI_OK)
@@ -1173,6 +1175,60 @@ done:
   lonejson_free(json);
   return rc;
 }
+int cai_cli_messages_send_once(cai_cli_pouch *pouch, const char *recipient,
+                               const char *text, long timeout_ms,
+                               cai_sink *result, cai_error *error) {
+  cai_cli_messages *m = NULL;
+  send_args args;
+  lc_error local;
+  lonejson_error json_error;
+  lonejson *json = NULL;
+  char *arguments = NULL;
+  int rc;
+  memset(&args, 0, sizeof(args));
+  if (recipient == NULL || text == NULL ||
+      !queue_name(recipient, args.recipient) || !valid_text(text))
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "--message requires a valid queue name and 1..65536 "
+                         "text bytes (no terminal controls)");
+  rc = cai_cli_messages_new(pouch, timeout_ms, &m, error);
+  if (rc != CAI_OK)
+    return rc;
+  lc_error_init(&local);
+  m->standalone = 1;
+  strcpy(m->session, "cli");
+  rc = lc_xid_new(m->instance, &local);
+  if (rc == LC_OK) {
+    snprintf(m->queue, sizeof(m->queue), "cai.cli.%s", m->instance);
+    snprintf(m->receipts, sizeof(m->receipts), "cai.receipts.%s", m->instance);
+    rc = new_consumer(m, m->receipts, &m->receipts_service, &local);
+  }
+  if (rc == LC_OK)
+    rc = lc_consumer_service_start(m->receipts_service, &local);
+  if (rc != LC_OK)
+    rc = fail_lc(error, &local);
+  if (rc == CAI_OK) {
+    json = lonejson_new(NULL, &json_error);
+    strcpy(args.operation, "send");
+    args.text = strdup(text);
+    if (args.text == NULL)
+      rc = cai_cli_error(error, CAI_ERR_NOMEM, "copy standalone message");
+    if (json != NULL && rc == CAI_OK)
+      arguments = lonejson_serialize_alloc(json, &arguments_map, &args, NULL,
+                                           &json_error);
+    if (rc == CAI_OK && arguments == NULL)
+      rc = cai_cli_lj_error(error, &json_error);
+    else if (rc == CAI_OK)
+      rc = send_tool(m, arguments, result, error);
+  }
+  free(arguments);
+  free(args.text);
+  lonejson_free(json);
+  lc_error_cleanup(&local);
+  cai_cli_messages_close(m);
+  return rc;
+}
+
 int cai_cli_messages_register(void *context, cai_agent *agent,
                               cai_error *error) {
   return cai_agent_register_raw_tool(

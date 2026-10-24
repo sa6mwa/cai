@@ -3441,11 +3441,11 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     goto cleanup;
   }
   state.batch = state.options.review || state.options.non_interactive;
-  utility_mode = state.options.chrome_setup || state.options.chrome_remove ||
-                 state.options.login || state.options.list ||
-                 state.options.resume_list || state.options.export_id != NULL ||
-                 state.options.import_file != NULL ||
-                 state.options.install_skill != NULL;
+  utility_mode =
+      state.options.chrome_setup || state.options.chrome_remove ||
+      state.options.login || state.options.list || state.options.resume_list ||
+      state.options.export_id != NULL || state.options.import_file != NULL ||
+      state.options.install_skill != NULL || state.options.message != NULL;
   default_log_level = utility_mode ? PSLOG_LEVEL_WARN : PSLOG_LEVEL_TRACE;
   if (cai_cli_log_open_with_logger(
           &state.log, default_log_level, !state.batch && !utility_mode,
@@ -3486,6 +3486,21 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     goto cleanup;
   }
   state.store = state.pouch.store;
+  if (state.options.message != NULL) {
+    cai_sink *destination = NULL;
+    rc = cai_sink_stdout(&destination, &error);
+    if (rc == CAI_OK)
+      rc = cai_cli_messages_send_once(
+          &state.pouch, state.options.send_queue, state.options.message,
+          state.options.message_ack_timeout_ms, destination, &error);
+    if (rc == CAI_OK)
+      rc = cai_sink_write(destination, "\n", 1U, &error);
+    cai_sink_close(destination);
+    if (rc != CAI_OK)
+      cli_print_error(&state, "send message", &error);
+    result = rc == CAI_OK ? 0 : 1;
+    goto cleanup;
+  }
   if (state.options.login) {
     result = cai_cli_login(&state.pouch.credentials, state.log.logger);
     goto cleanup;

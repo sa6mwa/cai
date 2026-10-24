@@ -283,6 +283,10 @@
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_goal_disabled_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_goal_disabled PROPERTIES TIMEOUT 10)
+    add_test(NAME cai_cli_send_message COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_send_message_test.sh"
+      "$<TARGET_FILE:cai_cli_mock_fixture>")
+    set_tests_properties(cai_cli_send_message PROPERTIES TIMEOUT 10)
     add_test(NAME cai_cli_catalog_empty_choices
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_catalog_empty_choices_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>")

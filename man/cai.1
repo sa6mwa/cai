@@ -77,6 +77,16 @@ Default-name hash collisions with another canonical directory fail and ask
 for an explicit override. Destination discovery includes offline mailboxes;
 only delivery ACK confirms acceptance.
 .TP
+.BR \-q , " " \-\-queue " " NAME
+Destination mailbox for a standalone CLI message. Requires --message.
+.TP
+.BR \-M , " " \-\-message " " TEXT
+Send text to --queue and exit. No provider credentials, model request,
+conversation creation or workspace mailbox takeover occurs. Uses the session
+storage endpoint and a private return queue. Writes a JSON delivery receipt to
+stdout; errors use pslog on stderr and return nonzero. Delivery does not mean
+human approval or execution. The existing --message-ack-timeout-ms applies.
+.TP
 .BR \-\-autoqueue " / " \-\-no-autoqueue
 Automatically approve incoming TUI messages (default off). Alt-A focuses
 approval, Alt-Y approves, Alt-N rejects and Alt-E edits/requeues. Approved

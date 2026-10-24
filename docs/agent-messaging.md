@@ -9,6 +9,18 @@ dependency.
 
 ## Sending and delivery
 
+For a standalone send, use `cai --queue NAME --message TEXT` or
+`cai -q NAME -M TEXT`. (`-m` continues to select a model.) This utility uses
+the configured `--lockd` endpoint and `--message-ack-timeout-ms`, without
+provider authentication or inference. It creates no conversation and never
+claims the workspace mailbox. A private receipt listener identifies the sender
+as `cai.cli.<unique-id>`; incoming text is labelled as a CLI message.
+Success writes a JSON delivery receipt to stdout and exits zero. Invalid input,
+storage errors and delivery timeouts use pslog on stderr and return nonzero.
+The five-minute default deadline is independent of human approval. Explicit
+sending works even when the agent messaging tool is disabled. The same flags
+work through the C or Lua `libcai_app` receiver's `run` method.
+
 Use `agent_message` with `{"operation":"list"}` to list named workspace
 mailboxes: queue name, canonical directory and last-bound conversation ID.
 Send with `{"operation":"send","recipient":"QUEUE_NAME","text":"..."}`.
