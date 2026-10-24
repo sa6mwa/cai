@@ -246,9 +246,18 @@ int cai_app_bridge_publish(cai_app_bridge *b, cai_agent_runtime *runtime,
   if (runtime != NULL) {
     view.session_id = cai_agent_runtime_session_id(runtime);
     rc = cai_agent_runtime_state(runtime, &view.state, error);
-    if (rc == CAI_OK)
+    if (rc == CAI_OK) {
       rc = cai_agent_runtime_get_settings(runtime, &view.effective,
                                           &view.pending, error);
+      if (rc == CAI_ERR_INVALID) {
+        /* state() already validated the runtime and owner thread; with valid
+         * outputs, get_settings() returns INVALID only while a settings/model
+         * change commits. Keep the complete last snapshot and refresh at the
+         * next normal publication, without failing or spinning here. */
+        cai_error_cleanup(error);
+        return CAI_OK;
+      }
+    }
     if (rc == CAI_OK)
       rc = cai_agent_runtime_get_goal(runtime, &view.goal, error);
     if (rc == CAI_OK)
