@@ -556,6 +556,7 @@ if(CAI_BUILD_TESTS)
     berget_live_vision
     berget_live_canaries
     chat_length_continuation
+    chat_tool_length_continuation
     chat_length_unfinished_tool
     chat_runtime_overflow_recovery
     chat_runtime_recovery_failure_modes

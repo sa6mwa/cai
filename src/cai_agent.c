@@ -6260,6 +6260,43 @@ int cai_session_run_auto_output(cai_session *session,
   return rc;
 }
 
+/* Preserve a cutoff answer before its caller asks for continuation. Completed
+ * calls/items are handled by the success path; incomplete calls are never
+ * committed or executed here. Keep the original provider limit diagnostic. */
+static int cai_session_retain_partial_stream(
+    cai_session *session, const cai_stream_tool_capture *capture,
+    const lonejson_spooled *pending_items, int has_pending_items,
+    const char *response_id, const cai_token_usage *usage, int *recorded,
+    cai_error *error) {
+  cai_error record_error;
+  int rc;
+
+  if (error == NULL || error->server_code == NULL ||
+      (strcmp(error->server_code, "output_length") != 0 &&
+       strcmp(error->server_code, "context_length_exceeded") != 0) ||
+      CAI_SESSION_AGENT_IMPL(session)->session_continuity !=
+          CAI_SESSION_CONTINUITY_CLIENT_HISTORY ||
+      capture->output_items_count != 0U || capture->output_text == NULL ||
+      capture->output_text->size_fn(capture->output_text) == 0U)
+    return CAI_ERR_LIMIT;
+  cai_error_init(&record_error);
+  rc = cai_session_after_stream_tool_calls(
+      session, pending_items, has_pending_items, response_id, usage, NULL,
+      capture->output_text, NULL, 0U, &record_error);
+  if (rc == CAI_OK) {
+    if (recorded != NULL)
+      *recorded = 1;
+    cai_session_clear_inputs(session);
+    rc = CAI_ERR_LIMIT;
+  } else {
+    rc = cai_set_error_detail(error, rc,
+                              "failed to retain partial assistant response",
+                              record_error.message);
+  }
+  cai_error_cleanup(&record_error);
+  return rc;
+}
+
 static int cai_session_stream_once(cai_session *session,
                                    const cai_stream_sinks *sinks,
                                    cai_stream_tool_call_list *tool_calls,
@@ -6371,29 +6408,10 @@ static int cai_session_stream_once(cai_session *session,
       output_text.size_fn(&output_text) == 0U)
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "policy diagnostic returned no explanation");
-  if (rc == CAI_ERR_LIMIT && error != NULL && error->server_code != NULL &&
-      (strcmp(error->server_code, "output_length") == 0 ||
-       strcmp(error->server_code, "context_length_exceeded") == 0) &&
-      CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
-          CAI_SESSION_CONTINUITY_CLIENT_HISTORY &&
-      capture.output_items_count == 0U &&
-      output_text.size_fn(&output_text) > 0U) {
-    cai_error record_error;
-    int record_rc;
-    cai_error_init(&record_error);
-    record_rc = cai_session_after_stream_tool_calls(
-        session, &pending_items, has_pending_items, response_id, &usage, NULL,
-        &output_text, NULL, 0U, &record_error);
-    if (record_rc == CAI_OK) {
-      partial_recorded = 1;
-      cai_session_clear_inputs(session);
-    } else {
-      rc = cai_set_error_detail(error, record_rc,
-                                "failed to retain partial assistant response",
-                                record_error.message);
-    }
-    cai_error_cleanup(&record_error);
-  }
+  if (rc == CAI_ERR_LIMIT && capture_stream)
+    rc = cai_session_retain_partial_stream(session, &capture, &pending_items,
+                                           has_pending_items, response_id,
+                                           &usage, &partial_recorded, error);
   if (rc == CAI_OK && sinks->response_completed != NULL) {
     rc = sinks->response_completed(sinks->response_completed_context, error);
   }
@@ -6774,6 +6792,10 @@ static int cai_session_stream_tool_round(
       output_calls->count == 0U && output_text.size_fn(&output_text) == 0U)
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "policy diagnostic returned no explanation");
+  if (rc == CAI_ERR_LIMIT)
+    rc = cai_session_retain_partial_stream(session, &capture, &pending_items,
+                                           has_pending_items, response_id,
+                                           &usage, NULL, error);
   if (rc == CAI_OK && sinks->response_completed != NULL) {
     rc = sinks->response_completed(sinks->response_completed_context, error);
   }

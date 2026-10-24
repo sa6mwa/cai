@@ -41528,6 +41528,140 @@ static void test_chat_length_continuation(test_state *state) {
                     &server.child_status);
 }
 
+static void test_chat_tool_length_continuation(test_state *state) {
+  static const char call_body[] =
+      "data: {\"id\":\"call\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"tool_calls\":[{\"index\":0,\"id\":\"call_echo\",\"type\":\"function\","
+      "\"function\":{\"name\":\"raw_echo\",\"arguments\":\"{\\\"x\\\":1}\"}}]},"
+      "\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":6,"
+      "\"completion_tokens\":4,\"total_tokens\":10}}\n\ndata: [DONE]\n\n";
+  static const char length_body[] =
+      "data: {\"id\":\"short\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"content\":\"first half\"},\"finish_reason\":\"length\"}]}\n\n"
+      "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":20,"
+      "\"completion_tokens\":8,\"total_tokens\":28}}\n\ndata: [DONE]\n\n";
+  static const char finish_body[] =
+      "data: {\"id\":\"final\",\"choices\":[{\"index\":0,\"delta\":{"
+      "\"content\":\"second half\"},\"finish_reason\":\"stop\"}],\"usage\":{"
+      "\"prompt_tokens\":6,\"completion_tokens\":4,\"total_tokens\":10}}\n\n"
+      "data: [DONE]\n\n";
+  static const char *result_required[] = {"\"role\":\"tool\"", "call_echo"};
+  static const char *continue_required[] = {"first half", "Continue",
+                                            "call_echo"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, call_body},
+      {"POST /v1/chat/completions HTTP/", result_required, 2U, NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, length_body},
+      {"POST /v1/chat/completions HTTP/", continue_required, 3U, NULL, 0U, 200,
+       "OK", "text/event-stream", NULL, finish_body}};
+  http_mock_server server;
+  cai_client_config config;
+  cai_agent_config agent_config;
+  cai_client *client = NULL;
+  cai_agent *agent = NULL;
+  cai_session *session = NULL;
+  cai_source *history = NULL;
+  cai_sink *sink = NULL;
+  cai_sink_callbacks callbacks;
+  cai_stream_sinks sinks;
+  cai_usage_accounting usage;
+  cai_usage_limits limits;
+  raw_tool_state tool;
+  write_state output;
+  char history_json[4096];
+  cai_error error;
+  int rc;
+
+  if (http_mock_server_open_script(state, "chat_tool_length", script, 3U,
+                                   &server) != 0)
+    return;
+  cai_error_init(&error);
+  cai_client_config_init(&config);
+  config.api_key = "mock-key";
+  config.base_url = server.base_url;
+  config.api_protocol = CAI_API_PROTOCOL_CHAT_COMPLETIONS;
+  config.chat_max_attempts = 1U;
+  config.http_2_disabled = 1;
+  config.timeout_ms = 1000L;
+  cai_agent_config_init(&agent_config);
+  agent_config.model = "test-model";
+  agent_config.disable_auto_compaction = 1;
+  memset(&output, 0, sizeof(output));
+  memset(&tool, 0, sizeof(tool));
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = test_write;
+  callbacks.context = &output;
+  cai_stream_sinks_init(&sinks);
+  rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+  sinks.output_text = sink;
+  if (rc == CAI_OK)
+    rc = cai_client_open(&config, &client, &error);
+  if (rc == CAI_OK)
+    rc = cai_client_new_agent(client, &agent_config, &agent, &error);
+  if (rc == CAI_OK)
+    rc = cai_agent_register_raw_tool(agent, "raw_echo", "Echo",
+                                     "{\"type\":\"object\"}", 0, test_raw_tool,
+                                     &tool, &error);
+  if (rc == CAI_OK)
+    rc = cai_agent_new_session(agent, &session, &error);
+  if (rc == CAI_OK)
+    rc = cai_session_add_user_text(session, "finish using the tool", &error);
+  expect_int(state, "chat_tool_length_setup", rc, CAI_OK);
+  if (rc == CAI_OK) {
+    expect_int(state, "chat_tool_length_limit",
+               cai_session_stream_auto(session, NULL, &sinks, &error),
+               CAI_ERR_LIMIT);
+    expect_str(state, "chat_tool_length_code", error.server_code,
+               "output_length");
+    expect_str(state, "chat_tool_length_called", tool.seen, "{\"x\":1}");
+    expect_str(state, "chat_tool_length_visible", output.buffer, "first half");
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "chat_tool_length_usage",
+               cai_session_usage(session, &usage, &error), CAI_OK);
+    expect_int(state, "chat_tool_length_usage_total", usage.usage.total_tokens,
+               38L);
+    rc = cai_session_export_history_source(session, &history, &error);
+    expect_int(state, "chat_tool_length_export", rc, CAI_OK);
+    if (rc == CAI_OK &&
+        read_source_text(state, "chat_tool_length_read", history, history_json,
+                         sizeof(history_json), &error))
+      expect_substr(state, "chat_tool_length_retained", history_json,
+                    "first half");
+    tool.seen[0] = '\0';
+    rc = cai_session_add_user_text(session, "Continue", &error);
+    if (rc == CAI_OK)
+      rc = cai_session_stream_auto(session, NULL, &sinks, &error);
+    expect_int(state, "chat_tool_length_continue", rc, CAI_OK);
+    expect_str(state, "chat_tool_length_joined", output.buffer,
+               "first halfsecond half");
+    expect_str(state, "chat_tool_length_not_reexecuted", tool.seen, "");
+    expect_int(state, "chat_tool_length_final_usage",
+               cai_session_usage(session, &usage, &error), CAI_OK);
+    expect_int(state, "chat_tool_length_final_total", usage.usage.total_tokens,
+               48L);
+    cai_usage_limits_init(&limits);
+    limits.max_total_tokens = 47LL;
+    expect_int(state, "chat_tool_length_set_limit",
+               cai_session_set_usage_limits(session, &limits, &error), CAI_OK);
+    expect_int(state, "chat_tool_length_bounded_prompt",
+               cai_session_add_user_text(session, "One more request", &error),
+               CAI_OK);
+    expect_int(state, "chat_tool_length_usage_enforced",
+               cai_session_stream_auto(session, NULL, &sinks, &error),
+               CAI_ERR_LIMIT);
+  }
+  cai_source_close(history);
+  cai_sink_close(sink);
+  cai_session_destroy(session);
+  cai_agent_destroy(agent);
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+  expect_child_exit(state, "chat_tool_length", server.pid,
+                    &server.child_status);
+}
+
 static void test_chat_length_unfinished_tool(test_state *state) {
   static const char body[] =
       "data: {\"id\":\"partial_tool\",\"choices\":[{\"index\":0,"
@@ -52617,6 +52751,7 @@ static const test_entry test_entries[] = {
     {"berget_live_vision", test_berget_live_vision},
     {"berget_live_canaries", test_berget_live_canaries},
     {"chat_length_continuation", test_chat_length_continuation},
+    {"chat_tool_length_continuation", test_chat_tool_length_continuation},
     {"chat_length_unfinished_tool", test_chat_length_unfinished_tool},
     {"chat_runtime_overflow_recovery", test_chat_runtime_overflow_recovery},
     {"chat_runtime_recovery_failure_modes",
