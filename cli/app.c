@@ -204,7 +204,7 @@ void cai_app_close(cai_app *self) {
   app = self->impl;
   if (app->running)
     return;
-  for (i = 0U; app->strings != NULL && i < 4U + 3U * app->config.setting_count;
+  for (i = 0U; app->strings != NULL && i < 5U + 3U * app->config.setting_count;
        i++)
     free(app->strings[i]);
   free(app->strings);
@@ -227,7 +227,7 @@ int cai_app_open(const cai_app_config *config, cai_app **out,
   if (config == NULL)
     config = &defaults;
   if ((config->setting_count != 0U && config->settings == NULL) ||
-      config->setting_count > ((size_t)-1 / sizeof(cai_app_setting) - 4U) / 3U)
+      config->setting_count > ((size_t)-1 / sizeof(cai_app_setting) - 5U) / 3U)
     return cai_cli_error(error, CAI_ERR_INVALID,
                          "invalid application settings");
   app = calloc(1U, sizeof(*app));
@@ -242,7 +242,7 @@ int cai_app_open(const cai_app_config *config, cai_app **out,
   app->shell.get_status = cai_app_get_status;
   app->shell.close = cai_app_close;
   app->config.setting_count = config->setting_count;
-  app->strings = calloc(4U + 3U * config->setting_count, sizeof(char *));
+  app->strings = calloc(5U + 3U * config->setting_count, sizeof(char *));
   if (app->strings == NULL) {
     cai_app_close(&app->shell);
     return cai_cli_error(error, CAI_ERR_NOMEM,
@@ -252,6 +252,10 @@ int cai_app_open(const cai_app_config *config, cai_app **out,
       strdup(config->program_name != NULL ? config->program_name : "cai");
   app->config.banner = app->strings[1] =
       config->banner != NULL ? strdup(config->banner) : NULL;
+  app->config.introduction_markdown = app->strings[4] =
+      config->introduction_markdown != NULL
+          ? strdup(config->introduction_markdown)
+          : NULL;
   app->config.config_file = app->strings[2] =
       config->config_file != NULL ? strdup(config->config_file) : NULL;
   app->config.config_directory = app->strings[3] =
@@ -271,6 +275,8 @@ int cai_app_open(const cai_app_config *config, cai_app **out,
   app->config.setting_count = config->setting_count;
   if (app->config.program_name == NULL ||
       (config->banner != NULL && app->config.banner == NULL) ||
+      (config->introduction_markdown != NULL &&
+       app->config.introduction_markdown == NULL) ||
       (config->config_file != NULL && app->config.config_file == NULL) ||
       (config->config_directory != NULL &&
        app->config.config_directory == NULL)) {
@@ -295,9 +301,9 @@ int cai_app_open(const cai_app_config *config, cai_app **out,
     const cai_app_setting *s = &config->settings[i];
     rc = cai_config_set(schema, s->section, s->key, s->value, error);
     if (rc == CAI_OK) {
-      app->settings[i].section = app->strings[4U + i * 3U] = strdup(s->section);
-      app->settings[i].key = app->strings[5U + i * 3U] = strdup(s->key);
-      app->settings[i].value = app->strings[6U + i * 3U] = strdup(s->value);
+      app->settings[i].section = app->strings[5U + i * 3U] = strdup(s->section);
+      app->settings[i].key = app->strings[6U + i * 3U] = strdup(s->key);
+      app->settings[i].value = app->strings[7U + i * 3U] = strdup(s->value);
       if (app->settings[i].section == NULL || app->settings[i].key == NULL ||
           app->settings[i].value == NULL)
         rc = cai_cli_error(error, CAI_ERR_NOMEM, "copy application setting");

@@ -296,11 +296,12 @@ static int observe_replay(void *context, const cai_agent_session_event *event,
 }
 static int open_app(lua_State *L) {
   static const char *const names[] = {"program_name", "banner", "config_file",
-                                      "config_directory"};
+                                      "config_directory",
+                                      "introduction_markdown"};
   cai_app_config config;
   cai_error error;
   app_lua *ud;
-  const char **strings[4];
+  const char **strings[5];
   size_t i;
   int rc;
   if (!lua_isnoneornil(L, 1) && !lua_istable(L, 1))
@@ -315,13 +316,14 @@ static int open_app(lua_State *L) {
   strings[1] = &config.banner;
   strings[2] = &config.config_file;
   strings[3] = &config.config_directory;
+  strings[4] = &config.introduction_markdown;
   if (lua_istable(L, 1)) {
     lua_pushnil(L);
     while (lua_next(L, 1)) {
       const char *key =
           lua_type(L, -2) == LUA_TSTRING ? plain_string(L, -2) : NULL;
       int known = 0;
-      for (i = 0U; key != NULL && i < 4U; i++)
+      for (i = 0U; key != NULL && i < sizeof(names) / sizeof(names[0]); i++)
         if (strcmp(key, names[i]) == 0)
           known = 1;
       if (key != NULL &&
@@ -333,7 +335,7 @@ static int open_app(lua_State *L) {
         return failure(L, "unknown application configuration field");
       lua_pop(L, 1);
     }
-    for (i = 0U; i < 4U; i++) {
+    for (i = 0U; i < sizeof(names) / sizeof(names[0]); i++) {
       lua_getfield(L, 1, names[i]);
       if (!lua_isnil(L, -1)) {
         if (lua_type(L, -1) != LUA_TSTRING)

@@ -30,6 +30,7 @@ int run_smith(int count, const char *const *arguments) {
   cai_app_config_init(&config);
   config.program_name = "vectis -a smith --";
   config.banner = "Vectis Agent Smith";
+  config.introduction_markdown = "**Enter** sends a task; `/help` lists commands.\n";
   config.settings = settings;
   config.setting_count = sizeof(settings) / sizeof(settings[0]);
   /* config.logger = host_logger; -- optional borrowed pslog logger */
@@ -101,8 +102,15 @@ the host until close; CAI neither closes nor reconfigures a supplied logger.
 With a supplied logger CAI does not create its default log files or intercept
 that logger's records for interactive notices. Use a terminal-compatible sink.
 
-An interactive banner is printed once before softline starts. Help, version,
-utilities, native messaging, reviews and non-interactive runs do not print it.
+`banner` and `introduction_markdown` default to NULL in C and are unset by
+default in Lua. The host supplies both; CAI's own name, attribution and usage
+text are configured only by `cli/main.c`. The optional raw banner is printed
+once before softline/libmdf starts. The optional Markdown introduction goes
+through libmdf's output feed before the first session opens or replays; it is
+not added to model context or session history. Help, version, utilities, native
+messaging, reviews and non-interactive runs print neither. The CAI scaffold
+colors C/I bright white and A bright blue on a terminal, resets before Smith
+and the attribution, and honors NO_COLOR and TERM=dumb for its banner.
 `-h` uses the configured program name. `app->option_count/option_at` expose an
 immutable array of long flags, short flags, argument types, descriptions,
 repeatability and negative aliases. `app->write_help` writes CAI's formatter to
@@ -248,6 +256,7 @@ the same receiver and ownership boundary:
 local app = assert(require("cai.app").open {
   program_name = "vectis -a smith --",
   banner = "Vectis Agent Smith",
+  introduction_markdown = "**Enter** sends a task; `/help` lists commands.\n",
   settings = {agent = {identity = "Vectis Agent Smith"}},
   -- logger = initialized_pslog_logger,
 })

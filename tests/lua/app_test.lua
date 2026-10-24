@@ -2,6 +2,7 @@ local application = require("cai.app")
 assert(not application.open(false))
 assert(not application.open {on_event = true})
 assert(not application.open {on_replay = "not a callback"})
+assert(not application.open {introduction_markdown = true})
 assert(not application.open {unknown = true})
 assert(not application.open {program_name = "bad\0name"})
 assert(not application.open {settings = {agent = {model = "bad\0model"}}})
@@ -15,6 +16,7 @@ assert(not application.open {settings = {messaging = {enable_auto_enqueue = "not
 local app = assert(application.open {
   program_name = "vectis -a smith --",
   banner = "HIDDEN_BANNER",
+  introduction_markdown = "HIDDEN_INTRODUCTION",
   no_config = true,
 })
 local options, model, resume = app:options()
@@ -29,6 +31,7 @@ assert(resume.type == "optional_string")
 local text = assert(app:help())
 assert(text:find("Usage: vectis -a smith -- [options]", 1, true))
 assert(not text:find("HIDDEN_BANNER", 1, true))
+assert(not text:find("HIDDEN_INTRODUCTION", 1, true))
 assert(app:run {"--help"} == 0)
 assert(app:run {"--version"} == 0)
 assert(app:run {"--unknown"} == 2)

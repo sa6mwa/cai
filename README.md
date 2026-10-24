@@ -591,8 +591,10 @@ Existing cai JSONL files are not automatically migrated.
 
 `libcai_app` provides the complete CAI application as a synchronous C receiver
 and optional `cai.app` Lua 5.5 module. The `cai` executable is a thin C embedding
-example. Hosts can supply settings, forwarded arguments, a startup banner,
-custom help naming and an initialized pslog logger. See
+example. Hosts can supply settings, forwarded arguments, a raw startup banner,
+a Markdown introduction, custom help naming and an initialized pslog logger.
+Both startup strings default to empty in the library; CAI's scaffold supplies
+its own interactive attribution and usage text before replay. See
 [Embedding CAI](docs/embedding.md) for ownership, process-state restoration,
 installation and C/Lua examples. Core libcai remains independent of the
 application's softline, libmdf and liblockdc dependencies.

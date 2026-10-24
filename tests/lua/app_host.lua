@@ -6,6 +6,7 @@ end
 local app = assert(require("cai.app").open {
   program_name = "vectis -a smith --",
   banner = os.getenv("CAI_TEST_APP_BANNER"),
+  introduction_markdown = os.getenv("CAI_TEST_APP_INTRODUCTION"),
   logger = logger,
   settings = {agent = {model = os.getenv("CAI_TEST_APP_MODEL")}},
 })

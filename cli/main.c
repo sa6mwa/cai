@@ -2,6 +2,9 @@
 #include <cai/app.h>
 #include <pslog.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 int main(int argc, char **argv) {
   cai_app_config config;
@@ -10,6 +13,14 @@ int main(int argc, char **argv) {
   int code = 1;
   int rc;
   cai_app_config_init(&config);
+  config.banner =
+      isatty(STDOUT_FILENO) && getenv("NO_COLOR") == NULL &&
+              (getenv("TERM") == NULL || strcmp(getenv("TERM"), "dumb") != 0)
+          ? "\n\033[97mC\033[94mA\033[97mI\033[0m Smith (C) 2026 C89 Systems "
+            "AB https://c89.systems"
+          : "\nCAI Smith (C) 2026 C89 Systems AB https://c89.systems";
+  config.introduction_markdown = "**Enter** sends your task. `/help` for "
+                                 "commands; `cai -h` for options.\n";
   cai_error_init(&error);
   rc = cai_app_open(&config, &app, &error);
   if (rc == CAI_OK)

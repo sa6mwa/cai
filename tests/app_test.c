@@ -104,10 +104,12 @@ int main(int argc, char **argv) {
   settings[2].value = work;
   cai_app_config_init(&config);
   assert(strcmp(config.program_name, "cai") == 0 && config.logger == NULL);
+  assert(config.banner == NULL && config.introduction_markdown == NULL);
   assert(config.register_agent_tools == NULL &&
          config.register_agent_tools_context == NULL);
   config.program_name = program;
   config.banner = "BANNER_MUST_NOT_APPEAR_IN_HELP";
+  config.introduction_markdown = "INTRODUCTION_MUST_NOT_APPEAR_IN_HELP";
   config.no_config = 1;
   config.settings = settings;
   config.setting_count = 3U;

@@ -93,10 +93,16 @@ typedef struct cai_app_option {
  * including providers, models, instructions, tools, MCP and storage. Order:
  * CAI defaults < INI/environment < settings < forwarded arguments.
  * [env] retains its normal config_env_has_precedence policy.
- * The initialized record selects the same defaults as the cai executable. */
+ * Runtime defaults match cai; startup text is empty unless the host sets it. */
 typedef struct cai_app_config {
   const char *program_name;
+  /** Optional raw interactive banner, printed before terminal renderers start.
+   * Defaults to NULL; the host controls its text and any ANSI escapes. */
   const char *banner;
+  /** Optional interactive introduction rendered through libmdf before session
+   * replay. Defaults to NULL. Neither startup text is shown by help, utilities,
+   * reviews or non-interactive runs. Both strings are copied by open. */
+  const char *introduction_markdown;
   const char *config_file;
   const char *config_directory;
   int no_config;

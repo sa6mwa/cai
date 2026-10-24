@@ -8,3 +8,4 @@ trap 'rm -rf "$root"' EXIT
 }
 grep -Fq 'Usage: vectis -a smith -- [options]' "$root/stdout"
 ! grep -Fq BANNER_MUST_NOT_APPEAR_IN_HELP "$root/stdout"
+! grep -Fq INTRODUCTION_MUST_NOT_APPEAR_IN_HELP "$root/stdout"

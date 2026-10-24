@@ -72,6 +72,15 @@
       "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_messages_integration PROPERTIES TIMEOUT 45)
     add_test(NAME cai_cli_help COMMAND cai_cli --help)
+    add_test(NAME cai_cli_startup_text COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_startup_text_test.sh"
+      "$<TARGET_FILE:cai_cli>" cai)
+    set_tests_properties(cai_cli_startup_text PROPERTIES TIMEOUT 15)
+    add_test(NAME cai_app_startup_text COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_startup_text_test.sh"
+      "$<TARGET_FILE:cai_app_host>" host)
+    set_tests_properties(cai_app_startup_text PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
+      ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
     add_test(NAME cai_cli_startup_spacing COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_startup_spacing_test.sh"
       "$<TARGET_FILE:cai_cli_mock_fixture>" "$<TARGET_FILE:cai_app_host>")

@@ -3718,6 +3718,16 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
                    "cai: failed to connect Markdown renderer\n");
     goto cleanup;
   }
+  if (state.interactive && application != NULL &&
+      application->introduction_markdown != NULL &&
+      application->introduction_markdown[0] != '\0' &&
+      (cli_text(&state, application->introduction_markdown,
+                strlen(application->introduction_markdown)) != 0 ||
+       cli_finish_response(&state) != 0)) {
+    cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
+                   "cannot render startup introduction");
+    goto cleanup;
+  }
   if (!state.batch && cli_tool_display_init(&state, &error) != CAI_OK) {
     cli_print_error(&state, "initialize tool renderer", &error);
     goto cleanup;
