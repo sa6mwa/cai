@@ -4,6 +4,10 @@
 
 #include <cai/cai.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct cai_chatgpt_quota {
   int has_short_window;
   long long short_window_seconds;
@@ -21,5 +25,9 @@ typedef struct cai_chatgpt_quota {
  * This provider-owned endpoint may be unavailable for some accounts. */
 int cai_client_chatgpt_quota(cai_client *client, cai_chatgpt_quota *out,
                              cai_error *error);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

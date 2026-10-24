@@ -785,6 +785,19 @@ if(CAI_BUILD_TESTS)
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
      CMAKE_SYSTEM_NAME STREQUAL CMAKE_HOST_SYSTEM_NAME AND
      CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_HOST_SYSTEM_PROCESSOR)
+    if(CAI_BUILD_SHARED AND CAI_TARGET_ID MATCHES "-linux-gnu$")
+      # A native consumer probe, without enabling C++ for the C89 library build.
+      find_program(CAI_TEST_CXX_COMPILER NAMES c++ g++ clang++)
+      if(CAI_TEST_CXX_COMPILER)
+        add_test(NAME cai_quota_cpp_linkage
+          COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/quota_linkage_test.sh"
+            "${CAI_TEST_CXX_COMPILER}" "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_BINARY_DIR}" "${CAI_LONEJSON_INCLUDE_DIR}"
+            "$<TARGET_FILE:cai_shared>")
+        set_tests_properties(cai_quota_cpp_linkage PROPERTIES
+          LABELS "unit;local;host" TIMEOUT 5)
+      endif()
+    endif()
     add_test(NAME cai_export_policy_incremental_test
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/export_policy_incremental_test.sh"
         "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}"
