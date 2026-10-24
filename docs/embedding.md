@@ -158,6 +158,11 @@ During `/shell` or `!sh`, the child uses the terminal directly. Only the shared
 variants (`/shellshare`, `!sh+`) use a PTY relay to capture output. STOP interrupts
 either handoff, terminates the shell and restores the terminal before command
 acknowledgement. Other host controls remain queued until handoff ends.
+STOP also interrupts login's callback accept and partial-request waits. Login
+and standalone sends acknowledge STOP without opening an agent runtime. Standalone
+`--queue NAME --message TEXT` returns after liblockdc accepts the enqueue; a
+STOP arriving during that operation is acknowledged afterward and does not
+recall the committed message.
 Acknowledgement callbacks must not close or recursively run the app, including
 final callbacks delivered after process restoration. Close after `run` returns.
 

@@ -7,6 +7,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +21,7 @@ static int listen_localhost(int requested_port, int *out_port) {
   int fd;
   int one;
 
-  fd = socket(AF_INET, SOCK_STREAM, 0);
+  fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
   if (fd < 0) {
     return -1;
   }
@@ -47,12 +48,52 @@ static int listen_localhost(int requested_port, int *out_port) {
   return fd;
 }
 
-static int read_http_request(int fd, char *buffer, size_t capacity) {
+/* 0: readable, 1: host STOP, -1: socket/poll failure. No periodic polling. */
+static int wait_readable(int fd, int stop_fd, cai_cli_login_stop_fn stop,
+                         void *context) {
+  struct pollfd fds[2];
+  int rc;
+  for (;;) {
+    if (stop != NULL && stop(context))
+      return 1;
+    memset(fds, 0, sizeof(fds));
+    fds[0].fd = fd;
+    fds[1].fd = stop_fd;
+    fds[0].events = fds[1].events = POLLIN;
+    rc = poll(fds, 2U, -1);
+    if (rc < 0) {
+      if (errno == EINTR)
+        continue;
+      return -1;
+    }
+    if (fds[1].revents != 0) {
+      if (stop != NULL && stop(context))
+        return 1;
+      if (fds[1].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+        errno = EIO;
+        return -1;
+      }
+    }
+    if (fds[0].revents & (POLLIN | POLLHUP))
+      return 0;
+    if (fds[0].revents & (POLLERR | POLLNVAL)) {
+      errno = EIO;
+      return -1;
+    }
+  }
+}
+
+static int read_http_request(int fd, char *buffer, size_t capacity, int stop_fd,
+                             cai_cli_login_stop_fn stop, void *context) {
   size_t length;
   ssize_t nread;
+  int rc;
 
   length = 0U;
   while (length + 1U < capacity) {
+    rc = wait_readable(fd, stop_fd, stop, context);
+    if (rc != 0)
+      return rc;
     nread = read(fd, buffer + length, capacity - length - 1U);
     if (nread < 0) {
       if (errno == EINTR) {
@@ -144,7 +185,8 @@ static void write_http_response(int fd,
   write_all_ignore_errors(fd, body, strlen(body));
 }
 
-int cai_cli_login(const cai_blob_store *storage, pslog_logger *logger) {
+int cai_cli_login(const cai_blob_store *storage, pslog_logger *logger,
+                  int stop_fd, cai_cli_login_stop_fn stop, void *context) {
   char redirect_uri[256];
   int port = 0;
   int server_fd;
@@ -188,6 +230,10 @@ int cai_cli_login(const cai_blob_store *storage, pslog_logger *logger) {
     cai_cli_log_error(logger, "start ChatGPT login", &error);
     goto done;
   }
+  if (stop != NULL && stop(context)) {
+    exit_code = 0;
+    goto done;
+  }
   /* Login instructions are utility output, independent of the log threshold. */
   if (printf("Open this URL to authenticate:\n%s\n\n", authorize_url) < 0 ||
       fflush(stdout) != 0) {
@@ -210,9 +256,19 @@ int cai_cli_login(const cai_blob_store *storage, pslog_logger *logger) {
   field = pslog_str("redirect_uri", redirect_uri);
   logger->info(logger, "Waiting for OAuth callback", &field, 1U);
   for (;;) {
+    rc = wait_readable(server_fd, stop_fd, stop, context);
+    if (rc == 1) {
+      exit_code = 0;
+      break;
+    }
+    if (rc < 0) {
+      field = pslog_str("detail", strerror(errno));
+      logger->error(logger, "wait for login callback", &field, 1U);
+      break;
+    }
     client_fd = accept(server_fd, NULL, NULL);
     if (client_fd < 0) {
-      if (errno == EINTR)
+      if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
         continue;
       field = pslog_str("detail", strerror(errno));
       logger->error(logger, "login callback", &field, 1U);
@@ -221,9 +277,14 @@ int cai_cli_login(const cai_blob_store *storage, pslog_logger *logger) {
     memset(request_buffer, 0, sizeof(request_buffer));
     memset(&login_response, 0, sizeof(login_response));
     response_owned = 0;
-    if (read_http_request(client_fd, request_buffer, sizeof(request_buffer)) !=
-            0 ||
-        !parse_request_line(request_buffer, &method, &target)) {
+    rc = read_http_request(client_fd, request_buffer, sizeof(request_buffer),
+                           stop_fd, stop, context);
+    if (rc == 1) {
+      close(client_fd);
+      exit_code = 0;
+      break;
+    }
+    if (rc != 0 || !parse_request_line(request_buffer, &method, &target)) {
       login_response.status = 400;
       login_response.content_type = "text/plain; charset=utf-8";
       login_response.body = bad_request_body;

@@ -3564,6 +3564,11 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     goto cleanup;
   }
   state.store = state.pouch.store;
+  rc = cli_host_process(&state, &error);
+  if (rc != CAI_OK || state.host_stopped) {
+    result = rc == CAI_OK ? 0 : 1;
+    goto cleanup;
+  }
   if (state.options.message != NULL) {
     cai_sink *destination = NULL;
     rc = cai_sink_stdout(&destination, &error);
@@ -3577,10 +3582,16 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     if (rc != CAI_OK)
       cli_print_error(&state, "send message", &error);
     result = rc == CAI_OK ? 0 : 1;
+    if (cli_host_process(&state, &error) != CAI_OK)
+      result = 1;
     goto cleanup;
   }
   if (state.options.login) {
-    result = cai_cli_login(&state.pouch.credentials, state.log.logger);
+    result = cai_cli_login(&state.pouch.credentials, state.log.logger,
+                           bridge != NULL ? bridge->fd : -1,
+                           cli_terminal_shell_stop, &state);
+    if (cli_host_process(&state, &error) != CAI_OK)
+      result = 1;
     goto cleanup;
   }
   if (state.options.list || state.options.resume_list) {
@@ -4007,7 +4018,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   }
   result = 0;
 cleanup:
-  if (state.host_stopped && state.runtime != NULL) {
+  if (state.host_stopped) {
     cai_app_bridge_outcome(bridge, CAI_APP_STOPPED);
   }
   if (bridge != NULL) {

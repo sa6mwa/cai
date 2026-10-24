@@ -67,6 +67,17 @@ if(CAI_BUILD_TESTS)
   target_link_libraries(cai_app_controls_host PRIVATE cai_app_static)
   cai_configure_cli_target(cai_app_controls_host)
   target_compile_options(cai_app_controls_host PRIVATE -UNDEBUG)
+  add_executable(cai_app_utility_stop_test tests/app_utility_stop_test.c tests/cli_storage_fixture.c)
+  target_link_libraries(cai_app_utility_stop_test PRIVATE cai_app_static)
+  cai_configure_cli_target(cai_app_utility_stop_test)
+  target_compile_options(cai_app_utility_stop_test PRIVATE -UNDEBUG)
+  target_link_options(cai_app_utility_stop_test PRIVATE "-Wl,--wrap=poll"
+    "-Wl,--wrap=lc_enqueue" "-Wl,--wrap=lc_client_open"
+    "-Wl,--wrap=cai_cli_pouch_open")
+  add_test(NAME cai_app_utility_stop COMMAND bash
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_utility_stop_test.sh"
+    "$<TARGET_FILE:cai_app_utility_stop_test>")
+  set_tests_properties(cai_app_utility_stop PROPERTIES LABELS "cli;local;offline" TIMEOUT 5)
   if(CAI_BUILD_CLI)
     add_test(NAME cai_app_controls COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_controls_test.sh" "$<TARGET_FILE:cai_app_controls_host>")
