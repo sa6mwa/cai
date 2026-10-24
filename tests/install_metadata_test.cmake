@@ -258,6 +258,7 @@ if((NOT DEFINED CAI_RESOLVED_DEPENDENCY_MODE OR
   file(WRITE "${consumer_dir}/CMakeLists.txt"
 "cmake_minimum_required(VERSION 3.21)
 project(cai_consumer_smoke LANGUAGES C)
+set(CMAKE_PREFIX_PATH \"${prefix};${CAI_CPKT_PREFIX};${CAI_CPKTMISC_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}\")
 find_package(cai CONFIG REQUIRED)
 add_executable(cai_consumer_smoke main.c)
 if(TARGET cai::cai_shared)
@@ -423,30 +424,6 @@ int main(void) {
   return 0;
 }
 ")
-  set(consumer_prefix_path
-      "${prefix};${CAI_CPKT_PREFIX};${CAI_CPKTMISC_PREFIX};${CAI_LONEJSON_PREFIX};${CAI_PSLOG_PREFIX}")
-  string(REPLACE ";" "\\;" consumer_prefix_path_arg "${consumer_prefix_path}")
-  set(consumer_configure_command
-    "${CMAKE_COMMAND}"
-    -S "${consumer_dir}"
-    -B "${consumer_dir}/build"
-    "-DCMAKE_PREFIX_PATH=${consumer_prefix_path_arg}")
-  if(DEFINED CAI_GENERATOR AND NOT CAI_GENERATOR STREQUAL "")
-    list(APPEND consumer_configure_command -G "${CAI_GENERATOR}")
-  endif()
-  execute_process(
-    COMMAND ${consumer_configure_command}
-    RESULT_VARIABLE consumer_configure_result)
-  if(NOT consumer_configure_result EQUAL 0)
-    message(FATAL_ERROR "failed to configure cai installed-package consumer")
-  endif()
-  execute_process(
-    COMMAND "${CMAKE_COMMAND}" --build "${consumer_dir}/build"
-    RESULT_VARIABLE consumer_build_result)
-  if(NOT consumer_build_result EQUAL 0)
-    message(FATAL_ERROR "failed to build cai installed-package consumer")
-  endif()
-
   set(fallback_deps_dir "${CAI_BINARY_DIR}/install-metadata-fallback-deps")
   file(REMOVE_RECURSE "${fallback_deps_dir}")
   file(MAKE_DIRECTORY "${fallback_deps_dir}/include" "${fallback_deps_dir}/lib")
@@ -467,7 +444,19 @@ int main(void) {
   file(WRITE "${fallback_consumer_dir}/CMakeLists.txt"
 "cmake_minimum_required(VERSION 3.21)
 project(cai_consumer_fallback_smoke LANGUAGES C)
+if(TARGET lonejson::lonejson OR TARGET cai::cai_shared OR TARGET cai::cai_static)
+  message(FATAL_ERROR \"installed consumer imports leaked between directory scopes\")
+endif()
+set(cai_DIR \"${prefix}/lib/cmake/cai\")
+set(CMAKE_PREFIX_PATH \"${CAI_CPKT_PREFIX};${CAI_CPKTMISC_PREFIX};${fallback_deps_dir}\")
+set(CMAKE_DISABLE_FIND_PACKAGE_lonejson TRUE)
+unset(cai_LONEJSON_LIBRARY CACHE)
+unset(cai_LONEJSON_INCLUDE_DIR CACHE)
 find_package(cai CONFIG REQUIRED)
+if(NOT cai_LONEJSON_LIBRARY MATCHES \"^${fallback_deps_dir}/lib/\" OR
+   NOT cai_LONEJSON_INCLUDE_DIR STREQUAL \"${fallback_deps_dir}/include\")
+  message(FATAL_ERROR \"fallback consumer did not resolve its isolated dependency\")
+endif()
 add_executable(cai_consumer_fallback_smoke main.c)
 if(TARGET cai::cai_shared)
   target_link_libraries(cai_consumer_fallback_smoke PRIVATE cai::cai_shared)
@@ -484,32 +473,6 @@ int main(void) {
   return sizeof(config) == 0 ? 1 : 0;
 }
 ")
-  set(fallback_prefix_path
-      "${prefix};${CAI_CPKT_PREFIX};${CAI_CPKTMISC_PREFIX};${fallback_deps_dir}")
-  string(REPLACE ";" "\\;" fallback_prefix_path_arg "${fallback_prefix_path}")
-  set(fallback_consumer_configure_command
-    "${CMAKE_COMMAND}"
-    -S "${fallback_consumer_dir}"
-    -B "${fallback_consumer_dir}/build"
-    "-DCMAKE_PREFIX_PATH=${fallback_prefix_path_arg}")
-  if(DEFINED CAI_GENERATOR AND NOT CAI_GENERATOR STREQUAL "")
-    list(APPEND fallback_consumer_configure_command -G "${CAI_GENERATOR}")
-  endif()
-  execute_process(
-    COMMAND ${fallback_consumer_configure_command}
-    RESULT_VARIABLE fallback_consumer_configure_result)
-  if(NOT fallback_consumer_configure_result EQUAL 0)
-    message(FATAL_ERROR
-      "failed to configure cai installed-package fallback consumer")
-  endif()
-  execute_process(
-    COMMAND "${CMAKE_COMMAND}" --build "${fallback_consumer_dir}/build"
-    RESULT_VARIABLE fallback_consumer_build_result)
-  if(NOT fallback_consumer_build_result EQUAL 0)
-    message(FATAL_ERROR
-      "failed to build cai installed-package fallback consumer")
-  endif()
-
   if(CAI_BUILD_SHARED)
     set(shared_only_consumer_dir
         "${CAI_BINARY_DIR}/install-metadata-shared-only-consumer")
@@ -547,7 +510,21 @@ int main(void) {
     file(WRITE "${shared_only_consumer_dir}/CMakeLists.txt"
 "cmake_minimum_required(VERSION 3.21)
 project(cai_shared_only_consumer LANGUAGES C)
+if(TARGET lonejson::lonejson OR TARGET cai::cai_shared OR TARGET cai::cai_static)
+  message(FATAL_ERROR \"installed consumer imports leaked between directory scopes\")
+endif()
+set(cai_DIR \"${prefix}/lib/cmake/cai\")
+set(CMAKE_PREFIX_PATH \"${CAI_CPKT_PREFIX};${CAI_CPKTMISC_PREFIX}\")
+set(CMAKE_DISABLE_FIND_PACKAGE_lonejson TRUE)
+set(CMAKE_LIBRARY_PATH \"${shared_only_fake_lonejson_dir}/lib\")
+set(CMAKE_IGNORE_PATH \"${CAI_LONEJSON_PREFIX}/include;${CAI_LONEJSON_PREFIX}/lib;${fallback_deps_dir}/include;${fallback_deps_dir}/lib\")
+unset(cai_LONEJSON_LIBRARY CACHE)
+unset(cai_LONEJSON_INCLUDE_DIR CACHE)
 find_package(cai CONFIG REQUIRED)
+if(cai_LONEJSON_INCLUDE_DIR OR
+   NOT cai_LONEJSON_LIBRARY STREQUAL \"${shared_only_fake_lonejson_library}\")
+  message(FATAL_ERROR \"shared-only consumer did not resolve its headerless dependency\")
+endif()
 add_executable(cai_shared_only_consumer main.c)
 target_link_libraries(cai_shared_only_consumer PRIVATE cai::cai_shared)
 ")
@@ -560,25 +537,39 @@ int main(void) {
   return 0;
 }
 ")
-    set(shared_only_consumer_configure_command
-      "${CMAKE_COMMAND}"
-      -S "${shared_only_consumer_dir}"
-      -B "${shared_only_consumer_dir}/build"
-      "-Dcai_DIR=${prefix}/lib/cmake/cai"
-      "-DCMAKE_PREFIX_PATH=${yaml_prefix_path_arg}"
-      "-DCMAKE_LIBRARY_PATH=${shared_only_fake_lonejson_dir}/lib")
-    execute_process(
-      COMMAND ${shared_only_consumer_configure_command}
-      RESULT_VARIABLE shared_only_consumer_configure_result
-      OUTPUT_VARIABLE shared_only_consumer_configure_output
-      ERROR_VARIABLE shared_only_consumer_configure_error)
-    if(NOT shared_only_consumer_configure_result EQUAL 0)
-      message(FATAL_ERROR
-        "shared-only installed-package consumer should configure with "
-        "liblonejson but without lonejson headers:\n"
-        "${shared_only_consumer_configure_error}\n"
-        "${shared_only_consumer_configure_output}")
-    endif()
+  endif()
+
+  # Imported targets are directory-scoped; SDK payload validation is a global
+  # property within one configure. Share only that unchanged prerequisite while
+  # exercising normal, fallback and headerless discovery in sibling scopes.
+  set(consumers_dir "${CAI_BINARY_DIR}/install-metadata-consumers")
+  file(REMOVE_RECURSE "${consumers_dir}")
+  file(MAKE_DIRECTORY "${consumers_dir}")
+  file(WRITE "${consumers_dir}/CMakeLists.txt"
+"cmake_minimum_required(VERSION 3.21)
+project(cai_installed_consumers LANGUAGES C)
+add_subdirectory(\"${consumer_dir}\" normal)
+add_subdirectory(\"${fallback_consumer_dir}\" fallback)
+")
+  if(CAI_BUILD_SHARED)
+    file(APPEND "${consumers_dir}/CMakeLists.txt"
+      "add_subdirectory(\"${shared_only_consumer_dir}\" shared-only)\n")
+  endif()
+  set(consumers_configure_command "${CMAKE_COMMAND}"
+    -S "${consumers_dir}" -B "${consumers_dir}/build")
+  if(DEFINED CAI_GENERATOR AND NOT CAI_GENERATOR STREQUAL "")
+    list(APPEND consumers_configure_command -G "${CAI_GENERATOR}")
+  endif()
+  execute_process(COMMAND ${consumers_configure_command}
+    RESULT_VARIABLE consumers_configure_result)
+  if(NOT consumers_configure_result EQUAL 0)
+    message(FATAL_ERROR "failed to configure installed SDK consumers")
+  endif()
+  execute_process(COMMAND "${CMAKE_COMMAND}" --build "${consumers_dir}/build"
+    --target cai_consumer_smoke cai_consumer_fallback_smoke
+    RESULT_VARIABLE consumers_build_result)
+  if(NOT consumers_build_result EQUAL 0)
+    message(FATAL_ERROR "failed to build installed SDK consumers")
   endif()
 
   set(missing_dep_consumer_dir
