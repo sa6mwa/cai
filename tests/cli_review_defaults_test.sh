@@ -102,6 +102,7 @@ plan "$(jq -n --arg report "$report" '{plan:[{pause:true,pause_text:"",reasoning
 before=$(requests)
 send '/review\r'; expect 'REVIEW QUEUE BARRIER'
 send '/review uncommitted\r'; expect 'finish the active review'
+send '/review-and-fix\r'; expect 'finish the active review'
 send '/shell\r'; expect 'Shell is available only between turns.'
 send '\025'
 send '/status\r'; expect 'Metric'

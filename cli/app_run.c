@@ -2760,6 +2760,89 @@ static int cli_review_wakeup(sl_t *sl, const sl_watch_event_t *event,
   return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
 }
 
+static int cli_review_fix_goal(cli_state *state, int uncommitted,
+                               const char *base, char *out, size_t capacity,
+                               cai_error *error) {
+  char default_base[512];
+  int length, rc;
+  if (uncommitted) {
+    length = snprintf(
+        out, capacity,
+        "Review staged, unstaged, and untracked changes with the built-in "
+        "run_review subagent using target=uncommitted. "
+        "Fix every actionable finding while preserving project invariants. "
+        "After each fix, run relevant verification, then repeat the review "
+        "until it reports no actionable findings. Explain why any reported "
+        "finding is irrelevant. Mark this goal complete only after a clean "
+        "review and passing verification.");
+  } else {
+    if (base == NULL) {
+      rc = cai_agent_review_default_base(state->workspace, default_base,
+                                         sizeof(default_base), error);
+      if (rc != CAI_OK)
+        return rc;
+      base = default_base;
+    }
+    length = snprintf(out, capacity,
+                      "Review changes against base %s with the built-in "
+                      "run_review subagent. Fix every actionable finding "
+                      "while preserving project invariants. After each "
+                      "fix, run relevant verification, then repeat review "
+                      "against the same base until no actionable findings "
+                      "remain. Explain why any finding is irrelevant. "
+                      "Mark this goal complete only after a clean review "
+                      "and passing verification.",
+                      base);
+  }
+  return length >= 0 && (size_t)length < capacity
+             ? CAI_OK
+             : cai_cli_error(error, CAI_ERR_INVALID,
+                             "review-and-fix objective is too long");
+}
+
+static int cli_review_fix_command(cli_state *state, const char *arguments,
+                                  cai_error *error) {
+  char command[sizeof(state->generated_goal) + 4U], base[512];
+  const char *revision = NULL;
+  size_t length;
+  int uncommitted = 0, rc;
+  arguments += strspn(arguments, " \t\r\n");
+  if (*arguments != '\0') {
+    length = strcspn(arguments, " \t\r\n");
+    if (length == 11U && memcmp(arguments, "uncommitted", 11U) == 0 &&
+        arguments[length + strspn(arguments + length, " \t\r\n")] == '\0')
+      uncommitted = 1;
+    else if (length == 4U && memcmp(arguments, "base", 4U) == 0) {
+      arguments += length;
+      arguments += strspn(arguments, " \t\r\n");
+      length = strcspn(arguments, " \t\r\n");
+      if (length == 0U || length >= sizeof(base) ||
+          arguments[length + strspn(arguments + length, " \t\r\n")] != '\0')
+        goto usage;
+      memcpy(base, arguments, length);
+      base[length] = '\0';
+      revision = base;
+    } else
+      goto usage;
+  }
+  if (!state->options.review_subagent)
+    return cai_cli_error(error, CAI_ERR_INVALID, "review subagent is disabled");
+  if (!state->options.goals)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "Goal pursuit requires goal tools; enable --goals "
+                         "or [agent] goals=true and restart.");
+  if (state->review_runtime != NULL || state->shell.pid > 0)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "finish the active review or shell before reviewing");
+  memcpy(command, "new ", 4U);
+  rc = cli_review_fix_goal(state, uncommitted, revision, command + 4U,
+                           sizeof(command) - 4U, error);
+  return rc == CAI_OK ? cli_goal_command(state, command, error) : rc;
+usage:
+  return cai_cli_error(error, CAI_ERR_INVALID,
+                       "Use /review-and-fix [uncommitted|base REF].");
+}
+
 static int cli_review_command(cli_state *state, const char *arguments,
                               cai_error *error) {
   cai_agent_review_request request;
@@ -2815,6 +2898,10 @@ static int cli_handle_command(cli_state *state, const char *line,
   unsigned long number;
   int rc;
   *handled = 1;
+  if (strcmp(line, "/review-and-fix") == 0 ||
+      strncmp(line, "/review-and-fix ", 16U) == 0 ||
+      strncmp(line, "/review-and-fix\t", 16U) == 0)
+    return cli_review_fix_command(state, line + 15U, error);
   if (strcmp(line, "/review") == 0 || strncmp(line, "/review ", 8U) == 0 ||
       strncmp(line, "/review\t", 8U) == 0)
     return cli_review_command(state, line + 7U, error);
@@ -2998,6 +3085,9 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| `/help` | Show this help. |\n",
         "| `/review [uncommitted\\|base REF\\|custom TEXT]` | Run an isolated "
         "reviewer; no argument compares against the Git default branch. |\n",
+        "| `/review-and-fix [uncommitted\\|base REF]` | Replace the current "
+        "goal with review, fix, and verification until clean; stay in this "
+        "conversation. No argument uses the Git default branch. |\n",
         "| `/todo [COMMAND]` | Show the selected board; list, use NAME, "
         "new NAME, or help. Requires --todo. |\n",
         "| `/queue [NAME]` | Show or replace the full mailbox name between "
@@ -3235,45 +3325,15 @@ static int cli_start_goal(cli_state *state, const char *objective,
 static int cli_start_automation(cli_state *state, cai_error *error) {
   const char *objective;
   const char *instruction;
-  int length;
   int rc;
-  char review_base[512];
 
   objective = state->options.goal;
   if (state->options.review_and_fix) {
-    const char *format =
-        "Review staged, unstaged, and untracked changes with the built-in "
-        "run_review subagent using target=uncommitted. "
-        "Fix every actionable finding while preserving project invariants. "
-        "After each fix, run relevant verification, then repeat the review "
-        "until it reports no actionable findings. Explain why any reported "
-        "finding is irrelevant. Mark this goal complete only after a clean "
-        "review and passing verification.";
-    if (!state->options.review_uncommitted) {
-      const char *base = state->options.base;
-      if (base == NULL) {
-        rc = cai_agent_review_default_base(state->workspace, review_base,
-                                           sizeof(review_base), error);
-        if (rc != CAI_OK)
-          return rc;
-        base = review_base;
-      }
-      length = snprintf(state->generated_goal, sizeof(state->generated_goal),
-                        "Review changes against base %s with the built-in "
-                        "run_review subagent. Fix every actionable finding "
-                        "while preserving project invariants. After each "
-                        "fix, run relevant verification, then repeat review "
-                        "against the same base until no actionable findings "
-                        "remain. Explain why any finding is irrelevant. "
-                        "Mark this goal complete only after a clean review "
-                        "and passing verification.",
-                        base);
-    } else {
-      length = snprintf(state->generated_goal, sizeof(state->generated_goal),
-                        "%s", format);
-    }
-    if (length < 0 || (size_t)length >= sizeof(state->generated_goal))
-      return CAI_ERR_INVALID;
+    rc = cli_review_fix_goal(state, state->options.review_uncommitted,
+                             state->options.base, state->generated_goal,
+                             sizeof(state->generated_goal), error);
+    if (rc != CAI_OK)
+      return rc;
     objective = state->generated_goal;
   }
   state->auto_goal = objective != NULL;

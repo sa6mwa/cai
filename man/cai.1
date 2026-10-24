@@ -472,6 +472,15 @@ commit, or custom text selects that scope. Findings become context in the
 current conversation. Escape or Ctrl-C cancels; normal prompts entered during
 the review queue for the parent conversation.
 .TP
+.BR "/review-and-fix" " [uncommitted|base REF]"
+Replace the current goal with the review, fix, and verification loop in this
+conversation. With no argument, compare against the Git default branch.
+There is no default iteration limit. Requires goal tools and the review subagent;
+finish any isolated review or shell first. The TUI stays open when pursuit
+completes or stops. Use /goal pause or /goal clear to control pursuit.
+Unlike the startup flag, this command does not create a new session or select
+non-interactive mode.
+.TP
 .BR "/todo" " [list|use NAME|new NAME|help]"
 Show the selected kanban board, list shared boards, select an existing board,
 or create/select a board. Changes require a stable boundary between turns.

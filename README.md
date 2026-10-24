@@ -962,6 +962,12 @@ the current conversation. `/review uncommitted`, `/review base REF`,
 `/review commit SHA`, and `/review TEXT` select an explicit scope. Findings are
 rendered as Markdown and become context for subsequent prompts. Escape/Ctrl-C
 cancels the review; prompts sent while it runs queue for the parent conversation.
+`/review-and-fix` starts the same review/fix/verify goal in the active
+conversation, replacing its current goal without opening a new session. It
+compares against the Git default branch; `/review-and-fix uncommitted` or
+`/review-and-fix base REF` selects another scope. It has no default iteration
+limit and leaves the TUI open when pursuit completes or stops. Goal and review
+tools must be enabled; `/goal pause` and `/goal clear` control pursuit.
 The C API's zero-initialized review request and Lua's `submit_review()` or
 `start_review()` use the same default. `cai_agent_review_default_base` and Lua
 `cai.review_default_base(workspace)` expose local base discovery to hosts.
