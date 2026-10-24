@@ -59,9 +59,15 @@ It does not enable the optional todo tool. Each conversation saves its selection
 .TP
 .BR \-\-messaging " / " \-\-no-messaging
 Enable/disable shared-Pouch conversation messaging (default off). Each active
-workspace listens on cai.<basename>.<six-hex-path-hash> in namespace cai.messages
-using managed consumer services. The hash uses the canonical full path; it is
-stable across new conversations and distinguishes identical basenames.
+workspace listens on an allocated name in namespace cai.messages using managed
+consumer services. Names start with cai.<basename>; collisions add the fewest
+distinguishing real ancestor components, skipping shared directories. The actual
+hostname is a leading component for distinguishing hosts. Character length is
+not an optimization objective. Registered names stay stable across restarts and
+new conversations. Automatic naming uses the host machine-id and canonical path
+as workspace identity; duplicate hostnames with identical paths on distinct
+hosts require an explicit name. Names that cannot fit the backend's lowercase
+ASCII alphabet and 128-byte limit unchanged also require an explicit name.
 The agent_message tool lists named mailboxes or sends text by recipient queue
 name. Delivery ACK means durable acceptance, not user
 approval or model completion. Isolated review does not enable messaging.

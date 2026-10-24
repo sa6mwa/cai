@@ -46,12 +46,12 @@ select_app() {
 # Discovery lists both conversations, independently of their directories.
 select_app 0
 send '/status\r'; expect 'Message queue'
-wait_for grep -qE 'cai\.work\.[0-9a-f]{6}' "$term/feed"
-c_queue=$(grep -oE 'cai\.work\.[0-9a-f]{6}' "$term/feed" | head -1)
+wait_for grep -qE '│[[:space:]]+cai\.work[[:space:]]+│' "$term/feed"
+c_queue=cai.work
 select_app 1
 send '/status\r'; expect 'Message queue'
-wait_for grep -qE 'cai\.lua-work\.[0-9a-f]{6}' "$term/feed"
-lua_queue=$(grep -oE 'cai\.lua-work\.[0-9a-f]{6}' "$term/feed" | head -1)
+wait_for grep -qE '│[[:space:]]+cai\.lua-work[[:space:]]+│' "$term/feed"
+lua_queue=cai.lua-work
 [[ -n "$c_queue" && -n "$lua_queue" && "$c_queue" != "$lua_queue" ]]
 plan '{"plan":[{"tool":"agent_message","arguments":{"operation":"list"}},"DESTINATIONS LISTED"]}'
 select_app 0

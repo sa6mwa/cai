@@ -30,13 +30,33 @@ Conversation IDs are internal history/ownership metadata, not destinations.
 Discovery lists known mailboxes, including offline ones; delivery ACK confirms
 acceptance. An idle application listens too.
 
-The default queue is `cai.<basename>.<six-hex-path-hash>`, for example
-`cai.project.a1b2c3`. The suffix is the first six hexadecimal characters of the
-canonical full path's SHA-256. Symlink aliases resolve to the same queue;
-different paths with the same basename normally have different suffixes.
-The basename is lowercased, sanitized and shortened to fit lockd's 128-character
-name limit. A detected short-hash collision with another canonical directory
-fails explicitly and asks for `--message-queue NAME`.
+The first workspace with a given basename normally receives `cai.<basename>`.
+When that name is occupied, CAI selects the fewest real ancestor components
+needed to distinguish the workspace from registered workspaces with that
+basename. Components remain in path order but need not be adjacent. Equally
+small choices prefer ancestors nearest the basename; character length has no
+weight. No hashes, invented qualifiers, abbreviations or shortened names are
+generated.
+
+For example, if `/lab` already owns `cai.lab`, `/home/mike/g/lab` receives
+`cai.g.lab`. If `/home/alice/g/lab` owns `cai.lab`, `/home/mike/g/lab` receives
+`cai.mike.lab`: the shared `g` provides no distinction. Existing names stay
+unchanged, so allocation depends on registration order.
+
+The actual hostname is one leading component before the canonical directory
+path. It is normally shared and omitted; identical paths on different hosts
+can be distinguished by the hostname. Workspace identity uses the Linux
+machine-id together with the canonical path. New allocations for identical
+hostname/path pairs on distinct hosts require `--message-queue NAME`; established
+assignments remain usable. A missing
+machine-id also requires an explicit name. Symlink aliases resolve to the same
+workspace. Assigned names persist as mailbox state; allocation and claims are
+serialized by a shared naming lease, including concurrent application starts.
+
+Every automatic name preserves the selected components exactly. The backend
+only accepts lowercase ASCII letters, digits, `.`, `_` and `-`, with at most
+128 bytes per queue name. Unsupported basenames, names that cannot fit unchanged,
+or paths with no distinguishing component selection require an explicit override.
 
 `/status` shows the active queue name and whether incoming prompts require
 manual approval or are automatically approved. `/new` includes the active queue

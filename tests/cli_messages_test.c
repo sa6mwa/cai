@@ -7,7 +7,7 @@
 #include <sys/stat.h>
 
 typedef struct capture {
-  char text[4096];
+  char text[32768];
   size_t used;
 } capture;
 static int capture_write(void *context, const void *bytes, size_t count,
@@ -322,6 +322,102 @@ static void cancel_startup(cai_cli_pouch *pouch, const char *workspace) {
   startup_client = NULL;
   cai_error_cleanup(&error);
 }
+static void naming_rules(void) {
+  cai_cli_message_name self = {"node-a", "machine-a", "/home/mike/g/lab", "",
+                               1};
+  cai_cli_message_name known[3] = {
+      {"node-a", "machine-a", "/home/alice/g/lab", "cai.lab", 1},
+      {"node-a", "machine-a", "/x/common/lab", "cai.x.lab", 1},
+      {"node-a", "machine-a", "/y/d/b/lab", "cai.y.lab", 1}};
+  cai_error error;
+  char name[129], deep[4096], deeper[4096], large[160];
+  size_t i;
+  cai_error_init(&error);
+  assert(cai_cli_message_name_select(&self, NULL, 0U, name, &error) == CAI_OK);
+  assert(strcmp(name, "cai.lab") == 0);
+  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) == CAI_OK);
+  assert(strcmp(name, "cai.mike.lab") == 0);
+  self.workspace = "/home/alice/g/lab";
+  known[0].workspace = "/home/mike/g/lab";
+  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) == CAI_OK);
+  assert(strcmp(name, "cai.alice.lab") == 0);
+  self.workspace = "/home/mike/g/lab";
+  known[0].workspace = "/lab";
+  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) == CAI_OK);
+  assert(strcmp(name, "cai.g.lab") == 0);
+  self.workspace = "/a/b/lab";
+  known[0].workspace = "/b/a/lab";
+  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) == CAI_OK);
+  assert(strcmp(name, "cai.a.b.lab") == 0);
+  /* Component count wins even when a two-component choice is shorter text. */
+  self.workspace = "/long-descriptive-real-directory/a/b/lab";
+  known[0].workspace = "/x/a/c/lab";
+  assert(cai_cli_message_name_select(&self, known, 3U, name, &error) == CAI_OK);
+  assert(strcmp(name, "cai.long-descriptive-real-directory.lab") == 0);
+  self.workspace = "/home/mike/g/lab";
+  self.hostname = "node-b";
+  self.host_id = "machine-b";
+  known[0].workspace = self.workspace;
+  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) == CAI_OK);
+  assert(strcmp(name, "cai.node-b.lab") == 0);
+  known[0].hostname = "node-b";
+  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) ==
+         CAI_ERR_INVALID);
+  assert(strstr(error.message, "same hostname") != NULL);
+  known[0].host_id = "machine-b";
+  known[0].name = "cai.saved.lab";
+  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) == CAI_OK);
+  assert(strcmp(name, "cai.saved.lab") == 0);
+  known[1] = known[0];
+  known[1].host_id = "duplicate-hostname-machine";
+  known[1].name = "explicit-other-host";
+  known[1].automatic = 0;
+  assert(cai_cli_message_name_select(&self, known, 2U, name, &error) == CAI_OK);
+  assert(strcmp(name, "cai.saved.lab") == 0);
+  known[0].name = "Invalid saved name";
+  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) ==
+         CAI_ERR_PROTOCOL);
+  known[0].name = "cai.lab";
+  known[0].workspace = "/g/lab";
+  self.workspace = "/lab";
+  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) ==
+         CAI_ERR_INVALID);
+  assert(strstr(error.message, "--message-queue NAME") != NULL);
+  self.workspace = "/Uppercase";
+  assert(cai_cli_message_name_select(&self, NULL, 0U, name, &error) ==
+         CAI_ERR_INVALID);
+  self.workspace = "/space name";
+  assert(cai_cli_message_name_select(&self, NULL, 0U, name, &error) ==
+         CAI_ERR_INVALID);
+  self.workspace = "/";
+  assert(cai_cli_message_name_select(&self, NULL, 0U, name, &error) ==
+         CAI_ERR_INVALID);
+  memset(large, 'a', sizeof(large));
+  large[0] = '/';
+  large[sizeof(large) - 1U] = '\0';
+  self.workspace = large;
+  assert(cai_cli_message_name_select(&self, NULL, 0U, name, &error) ==
+         CAI_ERR_INVALID);
+  /* Identical common ancestors must not cause an exponential search. */
+  for (i = 0U; i < 1000U; i++) {
+    deep[i * 2U] = '/';
+    deep[i * 2U + 1U] = 'g';
+  }
+  strcpy(deep + 2000U, "/lab");
+  strcpy(deeper, "/extra");
+  strcat(deeper, deep);
+  self.workspace = deep;
+  known[0].workspace = deeper;
+  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) ==
+         CAI_ERR_INVALID);
+  /* Repeated components also stay cheap when the full paths do differ,
+   * but the distinguishing repetition cannot fit the queue-name limit. */
+  known[0].workspace = deep + 2U;
+  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) ==
+         CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+}
+
 static void workspace_mailboxes(cai_cli_pouch *pouch, const char *root) {
   cai_cli_messages *sender = NULL, *old = NULL, *new_owner = NULL,
                    *other = NULL, *collision = NULL;
@@ -344,16 +440,9 @@ static void workspace_mailboxes(cai_cli_pouch *pouch, const char *root) {
   assert(mkdir(parent, 0700) == 0);
   snprintf(two, sizeof(two), "%s/two/project", root);
   assert(mkdir(two, 0700) == 0);
-  assert(workspace_queue(one, name, &error) == CAI_OK);
-  assert(workspace_queue(two, alias, &error) == CAI_OK);
-  assert(strncmp(name, "cai.project.", 12U) == 0 && strlen(name) == 18U);
-  assert(strcmp(name, alias) != 0);
+  strcpy(name, "cai.project");
   snprintf(link, sizeof(link), "%s/project-link", root);
   assert(symlink(one, link) == 0);
-  assert(workspace_queue(link, alias, &error) == CAI_OK);
-  assert(strcmp(name, alias) == 0);
-  assert(workspace_queue("/", alias, &error) == CAI_OK);
-  assert(strncmp(alias, "cai.root.", 9U) == 0);
   assert(queue_name("Friendly-Name", alias) &&
          strcmp(alias, "friendly-name") == 0);
   assert(!queue_name("../bad", alias) && !queue_name("", alias));
@@ -361,7 +450,7 @@ static void workspace_mailboxes(cai_cli_pouch *pouch, const char *root) {
   assert(cai_cli_messages_start(sender, "naming-sender", root, "test-sender",
                                 &error) == CAI_OK);
   assert(cai_cli_messages_new(pouch, 2000L, &old, &error) == CAI_OK);
-  assert(cai_cli_messages_start(old, "old-conversation", one, NULL, &error) ==
+  assert(cai_cli_messages_start(old, "old-conversation", link, NULL, &error) ==
          CAI_OK);
   assert(strcmp(cai_cli_messages_name(old), name) == 0);
   old_sl = message_editor();
@@ -410,7 +499,12 @@ static void workspace_mailboxes(cai_cli_pouch *pouch, const char *root) {
   assert(cai_cli_messages_new(pouch, 2000L, &other, &error) == CAI_OK);
   assert(cai_cli_messages_start(other, "other-project", two, NULL, &error) ==
          CAI_OK);
-  assert(strcmp(other->queue, name) != 0);
+  assert(strcmp(other->queue, "cai.two.project") == 0);
+  assert(cai_cli_messages_set_queue(other, "cai.two.project", &error) ==
+         CAI_OK);
+  assert(load_doc(sender, "mailbox.cai.two.project", &doc, &error) == CAI_OK);
+  assert(doc.automatic);
+  lonejson_cleanup(&message_map, &doc);
   assert(run_send(sender, "{\"operation\":\"list\"}", &output, &error) ==
          CAI_OK);
   assert(strstr(output.text, "This application's mailbox: test-sender") !=
@@ -432,15 +526,15 @@ static void workspace_mailboxes(cai_cli_pouch *pouch, const char *root) {
   sl_destroy(old_sl);
   cai_cli_messages_close(other);
   other = NULL;
-  /* Simulate a short-hash collision: an existing binding belongs to another
-   * canonical path. Default registration must refuse to silently take it. */
+  /* An explicit takeover reserves the former automatic name. Reallocation
+   * must use real distinguishing components, without taking it back. */
   assert(cai_cli_messages_new(pouch, 2000L, &other, &error) == CAI_OK);
   assert(cai_cli_messages_start(other, "explicit-owner", two, name, &error) ==
          CAI_OK);
   assert(cai_cli_messages_new(pouch, 2000L, &collision, &error) == CAI_OK);
-  assert(cai_cli_messages_start(collision, "collision", one, NULL, &error) !=
+  assert(cai_cli_messages_start(collision, "collision", one, NULL, &error) ==
          CAI_OK);
-  assert(error.message != NULL && strstr(error.message, "collides") != NULL);
+  assert(strcmp(collision->queue, "cai.one.project") == 0);
   cai_cli_messages_close(collision);
   assert(mailbox_guard(other, &guard, &local) == LC_OK);
   assert(lease_finish(guard, LC_OK, &local) == LC_OK);
@@ -451,6 +545,121 @@ static void workspace_mailboxes(cai_cli_pouch *pouch, const char *root) {
   cai_cli_messages_close(other);
   cai_cli_messages_close(sender);
   lc_error_cleanup(&local);
+  cai_error_cleanup(&error);
+}
+
+static cai_cli_messages *name_claimant(cai_cli_pouch *pouch,
+                                       const char *workspace,
+                                       const char *hostname, const char *id) {
+  cai_cli_messages *m = NULL;
+  cai_error error;
+  lc_error local;
+  cai_error_init(&error);
+  lc_error_init(&local);
+  assert(cai_cli_messages_new(pouch, 2000L, &m, &error) == CAI_OK);
+  strcpy(m->workspace, workspace);
+  strcpy(m->hostname, hostname);
+  strcpy(m->host_id, id);
+  strcpy(m->session, "naming-fixture");
+  assert(lc_xid_new(m->instance, &local) == LC_OK);
+  lc_error_cleanup(&local);
+  cai_error_cleanup(&error);
+  return m;
+}
+
+typedef struct name_race {
+  cai_cli_messages *messages;
+  pthread_barrier_t *barrier;
+  int result;
+} name_race;
+
+static void *claim_concurrently(void *context) {
+  name_race *race = context;
+  cai_error error;
+  int rc;
+  cai_error_init(&error);
+  rc = pthread_barrier_wait(race->barrier);
+  assert(rc == 0 || rc == PTHREAD_BARRIER_SERIAL_THREAD);
+  race->result = mailbox_claim(race->messages, NULL, 1, &error);
+  cai_error_cleanup(&error);
+  return NULL;
+}
+
+static void shared_naming(cai_cli_pouch *pouch, const char *root) {
+  const char *id_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const char *id_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const char *id_c = "cccccccccccccccccccccccccccccccc";
+  cai_cli_messages *a, *b, *m;
+  cai_error error;
+  char workspace[PATH_MAX], name[129], left[PATH_MAX], right[PATH_MAX];
+  pthread_barrier_t barrier;
+  pthread_t threads[2];
+  name_race race[2];
+  size_t i;
+  cai_error_init(&error);
+  /* More than one catalog page; offline bindings must still reserve names. */
+  for (i = 0U; i < PAGE_KEYS + 3U; i++) {
+    m = name_claimant(pouch, root, "node-a", id_a);
+    snprintf(name, sizeof(name), "offline-%lu", (unsigned long)i);
+    assert(mailbox_claim(m, name, 0, &error) == CAI_OK);
+    strcpy(m->queue, name);
+    cai_cli_messages_close(m);
+  }
+  snprintf(workspace, sizeof(workspace), "%s/shared-lab", root);
+  assert(mkdir(workspace, 0700) == 0);
+  a = name_claimant(pouch, workspace, "node-a", id_a);
+  b = name_claimant(pouch, workspace, "node-b", id_b);
+  assert(mailbox_claim(a, NULL, 1, &error) == CAI_OK);
+  assert(strcmp(a->queue, "cai.shared-lab") == 0);
+  assert(mailbox_claim(b, NULL, 1, &error) == CAI_OK);
+  assert(strcmp(b->queue, "cai.node-b.shared-lab") == 0);
+  cai_cli_messages_close(a);
+  a = name_claimant(pouch, workspace, "node-a", id_a);
+  assert(mailbox_claim(a, NULL, 1, &error) == CAI_OK);
+  assert(strcmp(a->queue, "cai.shared-lab") == 0);
+  m = name_claimant(pouch, workspace, "node-a", id_b);
+  assert(mailbox_claim(m, NULL, 1, &error) == CAI_OK);
+  assert(strcmp(m->queue, "cai.node-b.shared-lab") == 0);
+  cai_cli_messages_close(m);
+  m = name_claimant(pouch, workspace, "node-a", id_c);
+  assert(mailbox_claim(m, NULL, 1, &error) == CAI_ERR_INVALID);
+  assert(strstr(error.message, "same hostname") != NULL);
+  assert(mailbox_claim(m, "explicit-other-host", 0, &error) == CAI_OK);
+  strcpy(m->queue, "explicit-other-host");
+  assert(mailbox_claim(a, NULL, 1, &error) == CAI_OK);
+  assert(strcmp(a->queue, "cai.shared-lab") == 0);
+  cai_cli_messages_close(m);
+  cai_cli_messages_close(b);
+  cai_cli_messages_close(a);
+  snprintf(left, sizeof(left), "%s/left", root);
+  snprintf(right, sizeof(right), "%s/right", root);
+  assert(mkdir(left, 0700) == 0 && mkdir(right, 0700) == 0);
+  strcat(left, "/concurrent");
+  strcat(right, "/concurrent");
+  assert(mkdir(left, 0700) == 0 && mkdir(right, 0700) == 0);
+  race[0].messages = name_claimant(pouch, left, "node-a", id_a);
+  race[1].messages = name_claimant(pouch, right, "node-a", id_a);
+  assert(pthread_barrier_init(&barrier, NULL, 2U) == 0);
+  for (i = 0U; i < 2U; i++) {
+    race[i].barrier = &barrier;
+    race[i].result = CAI_ERR_INVALID;
+    assert(pthread_create(&threads[i], NULL, claim_concurrently, &race[i]) ==
+           0);
+  }
+  for (i = 0U; i < 2U; i++) {
+    assert(pthread_join(threads[i], NULL) == 0);
+    assert(race[i].result == CAI_OK);
+  }
+  assert(strcmp(race[0].messages->queue, race[1].messages->queue) != 0);
+  assert(strcmp(race[0].messages->queue, "cai.concurrent") == 0 ||
+         strcmp(race[1].messages->queue, "cai.concurrent") == 0);
+  assert(strcmp(race[0].messages->queue, "cai.concurrent") == 0 ||
+         strcmp(race[0].messages->queue, "cai.left.concurrent") == 0);
+  assert(strcmp(race[1].messages->queue, "cai.concurrent") == 0 ||
+         strcmp(race[1].messages->queue, "cai.right.concurrent") == 0);
+  for (i = 0U; i < 2U; i++)
+    cai_cli_messages_close(race[i].messages);
+  assert(pthread_barrier_destroy(&barrier) == 0);
   cai_error_cleanup(&error);
 }
 static int fail_consumer(lc_client *client,
@@ -558,6 +767,7 @@ int main(int argc, char **argv) {
   char expired_text[] = "expired";
   char controls[] = "illegal\033[31m terminal control";
   assert(argc == 2 || (argc == 3 && strcmp(argv[2], "startup") == 0));
+  naming_rules();
   cai_error_init(&error);
   lc_error_init(&local);
   assert(cai_cli_pouch_open(&a, NULL, NULL, NULL, &error) == CAI_OK);
@@ -718,6 +928,7 @@ int main(int argc, char **argv) {
   cai_cli_messages_close(receiver);
   cai_cli_messages_close(sender);
   workspace_mailboxes(&a, argv[1]);
+  shared_naming(&a, argv[1]);
   queue_overrides(&a, argv[1]);
   cai_cli_pouch_close(&b);
   cai_cli_pouch_close(&a);

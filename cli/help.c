@@ -63,7 +63,7 @@ static const cai_app_option options[] = {
     {"--message", 'M', CAI_APP_STRING, "TEXT",
      "Send standalone message and exit", 0, 0},
     {"--message-queue", '\0', CAI_APP_STRING, "NAME",
-     "Full mailbox name (default basename + short path hash)", 0, 0},
+     "Full mailbox name (default allocated from workspace components)", 0, 0},
     {"--autoqueue", '\0', CAI_APP_FLAG, NULL,
      "TUI auto-approval of incoming prompts (default off)", 0, 1},
     {"--message-ack-timeout-ms", '\0', CAI_APP_INTEGER, "MS",

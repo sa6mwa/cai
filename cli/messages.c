@@ -2,9 +2,9 @@
 #define _XOPEN_SOURCE 700
 #include "messages.h"
 #include "log.h"
+#include "message_names.h"
 #include "session_commands.h"
 #include <errno.h>
-#include <openssl/evp.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +22,8 @@ typedef struct message_doc {
   char pending_for[129];
   char sender_session[129], instance[LC_XID_STRING_SIZE];
   char recipient_instance[LC_XID_STRING_SIZE], workspace[PATH_MAX];
+  char hostname[256], host_id[33];
+  int automatic;
   char *text;
   lonejson_int64 deadline_ms;
 } message_doc;
@@ -43,6 +45,11 @@ static const lonejson_field message_fields[] = {
                                 "recipient_instance", LONEJSON_OVERFLOW_FAIL),
     LONEJSON_FIELD_STRING_FIXED(message_doc, workspace, "workspace",
                                 LONEJSON_OVERFLOW_FAIL),
+    LONEJSON_FIELD_STRING_FIXED(message_doc, hostname, "hostname",
+                                LONEJSON_OVERFLOW_FAIL),
+    LONEJSON_FIELD_STRING_FIXED(message_doc, host_id, "host_id",
+                                LONEJSON_OVERFLOW_FAIL),
+    LONEJSON_FIELD_BOOL(message_doc, automatic, "automatic"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(message_doc, text, "text"),
     LONEJSON_FIELD_I64(message_doc, deadline_ms, "deadline_ms")};
 LONEJSON_MAP_DEFINE(message_map, message_doc, message_fields);
@@ -72,6 +79,7 @@ struct cai_cli_messages {
   long timeout_ms;
   char session[129], queue[129], instance[LC_XID_STRING_SIZE], receipts[160],
       workspace[PATH_MAX], waiting[LC_XID_STRING_SIZE], waiting_recipient[129];
+  char hostname[256], host_id[33];
   message_link *links;
 };
 static lonejson_int64 realtime_ms(void) {
@@ -106,41 +114,40 @@ static int queue_name(const char *input, char out[129]) {
   out[length] = '\0';
   return 1;
 }
-static int workspace_queue(const char *workspace, char out[129],
-                           cai_error *error) {
-  unsigned char digest[EVP_MAX_MD_SIZE];
-  unsigned int count = 0U;
-  char canonical[PATH_MAX], slug[118];
-  const char *base;
-  size_t used = 0U;
-  if (realpath(workspace, canonical) == NULL)
-    return cai_cli_error(error, CAI_ERR_INVALID,
-                         "messaging workspace must be an existing directory");
-  if (EVP_Digest(canonical, strlen(canonical), digest, &count, EVP_sha256(),
-                 NULL) != 1 ||
-      count < 3U)
-    return cai_cli_error(error, CAI_ERR_PROTOCOL,
-                         "hash messaging workspace path");
-  base = strrchr(canonical, '/');
-  base = base != NULL ? base + 1 : canonical;
-  while (*base != '\0' && used < sizeof(slug) - 1U) {
-    unsigned char c = (unsigned char)*base++;
-    if (c >= 'A' && c <= 'Z')
-      c = (unsigned char)(c - 'A' + 'a');
-    if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' ||
-        c == '_')
-      slug[used++] = (char)c;
-    else if (used > 0U && slug[used - 1U] != '-')
-      slug[used++] = '-';
+static int mailbox_claim(cai_cli_messages *m, const char *name, int automatic,
+                         cai_error *error);
+
+static int host_identity(cai_cli_messages *m, int required, cai_error *error) {
+  static const char *const files[] = {"/etc/machine-id",
+                                      "/var/lib/dbus/machine-id"};
+  size_t i, j;
+  FILE *file;
+  char id[35];
+  if (gethostname(m->hostname, sizeof(m->hostname)) != 0 ||
+      memchr(m->hostname, '\0', sizeof(m->hostname)) == NULL ||
+      m->hostname[0] == '\0')
+    return cai_cli_error(error, CAI_ERR_TRANSPORT, "read messaging hostname");
+  for (i = 0U; i < sizeof(files) / sizeof(files[0]); i++) {
+    file = fopen(files[i], "r");
+    if (file == NULL)
+      continue;
+    memset(id, 0, sizeof(id));
+    if (fgets(id, sizeof(id), file) == NULL)
+      id[0] = '\0';
+    fclose(file);
+    id[strcspn(id, "\r\n")] = '\0';
+    if (strlen(id) != 32U || strspn(id, "0123456789abcdefABCDEF") != 32U ||
+        strspn(id, "0") == 32U)
+      continue;
+    for (j = 0U; j <= 32U; j++)
+      m->host_id[j] =
+          id[j] >= 'A' && id[j] <= 'F' ? (char)(id[j] - 'A' + 'a') : id[j];
+    return CAI_OK;
   }
-  while (used > 0U && slug[used - 1U] == '-')
-    used--;
-  slug[used] = '\0';
-  if (used == 0U)
-    strcpy(slug, "root");
-  snprintf(out, 129U, "cai.%s.%02x%02x%02x", slug, (unsigned int)digest[0],
-           (unsigned int)digest[1], (unsigned int)digest[2]);
-  return CAI_OK;
+  return required ? cai_cli_error(error, CAI_ERR_INVALID,
+                                  "Automatic queue naming requires a stable "
+                                  "host machine-id; use --message-queue NAME.")
+                  : CAI_OK;
 }
 static int valid_text(const char *text) {
   const unsigned char *p = (const unsigned char *)text;
@@ -206,8 +213,8 @@ static int mailbox_load(lc_lease *lease, message_doc *doc, lc_error *error) {
   lc_get_res_cleanup(&result);
   return rc;
 }
-static int mailbox_claim(cai_cli_messages *m, const char *name, int automatic,
-                         cai_error *error) {
+static int mailbox_claim_selected(cai_cli_messages *m, const char *name,
+                                  int automatic, cai_error *error) {
   lc_lease *lease = NULL;
   lc_error local;
   message_doc *doc;
@@ -222,7 +229,8 @@ static int mailbox_claim(cai_cli_messages *m, const char *name, int automatic,
   if (rc == LC_OK) {
     rc = mailbox_load(lease, doc, &local);
     if (rc == LC_OK && automatic && doc->workspace[0] != '\0' &&
-        strcmp(doc->workspace, m->workspace) != 0)
+        (strcmp(doc->workspace, m->workspace) != 0 ||
+         strcmp(doc->host_id, m->host_id) != 0))
       rc = lc_error_set(&local, LC_ERR_INVALID, 0,
                         "Generated mailbox name collides with another "
                         "directory; use --message-queue NAME",
@@ -232,7 +240,13 @@ static int mailbox_claim(cai_cli_messages *m, const char *name, int automatic,
       strcpy(doc->recipient, name);
       strcpy(doc->sender_session, m->session);
       strcpy(doc->instance, m->instance);
+      doc->automatic =
+          automatic ||
+          (doc->automatic && strcmp(doc->workspace, m->workspace) == 0 &&
+           strcmp(doc->host_id, m->host_id) == 0);
       strcpy(doc->workspace, m->workspace);
+      strcpy(doc->hostname, m->hostname);
+      strcpy(doc->host_id, m->host_id);
       rc = lc_lease_save(lease, &message_map, doc, &local);
     }
     rc = lease_finish(lease, rc, &local);
@@ -642,8 +656,10 @@ int cai_cli_messages_start(cai_cli_messages *m, const char *id,
       return cai_cli_error(error, CAI_ERR_INVALID,
                            "message queue name must be 1..128 ASCII letters, "
                            "digits, '.', '_' or '-'");
-  } else if (workspace_queue(m->workspace, m->queue, error) != CAI_OK)
-    return error->code;
+  }
+  rc = host_identity(m, name == NULL || name[0] == '\0', error);
+  if (rc != CAI_OK)
+    return rc;
   lc_error_init(&local);
   rc = lc_xid_new(m->instance, &local);
   if (rc != LC_OK)
@@ -794,6 +810,165 @@ static int load_doc(cai_cli_messages *m, const char *key, message_doc *doc,
   lc_error_cleanup(&local);
   return rc;
 }
+
+typedef struct name_catalog {
+  cai_cli_message_name *items;
+  char **storage;
+  size_t count, capacity;
+} name_catalog;
+
+static void name_catalog_free(name_catalog *catalog) {
+  size_t i;
+  for (i = 0U; i < catalog->count; i++)
+    free(catalog->storage[i]);
+  free(catalog->storage);
+  free(catalog->items);
+}
+
+static int name_catalog_append(name_catalog *catalog, const message_doc *doc,
+                               cai_error *error) {
+  cai_cli_message_name *entry, *grown;
+  char **storage, *cursor;
+  size_t capacity, length;
+  if (catalog->count == catalog->capacity) {
+    capacity = catalog->capacity == 0U ? 16U : catalog->capacity * 2U;
+    if (capacity < catalog->capacity || capacity > (size_t)-1 / sizeof(*grown))
+      return cai_cli_error(error, CAI_ERR_NOMEM,
+                           "mailbox catalog is too large");
+    grown = realloc(catalog->items, capacity * sizeof(*grown));
+    if (grown == NULL)
+      return cai_cli_error(error, CAI_ERR_NOMEM, "allocate mailbox catalog");
+    catalog->items = grown;
+    storage = realloc(catalog->storage, capacity * sizeof(*storage));
+    if (storage == NULL)
+      return cai_cli_error(error, CAI_ERR_NOMEM, "allocate mailbox identities");
+    catalog->storage = storage;
+    catalog->capacity = capacity;
+  }
+  length = strlen(doc->hostname) + strlen(doc->host_id) +
+           strlen(doc->workspace) + strlen(doc->recipient) + 4U;
+  cursor = malloc(length);
+  if (cursor == NULL)
+    return cai_cli_error(error, CAI_ERR_NOMEM, "copy mailbox identity");
+  catalog->storage[catalog->count] = cursor;
+  entry = &catalog->items[catalog->count++];
+  entry->hostname = cursor;
+  strcpy(cursor, doc->hostname);
+  cursor += strlen(cursor) + 1U;
+  entry->host_id = cursor;
+  strcpy(cursor, doc->host_id);
+  cursor += strlen(cursor) + 1U;
+  entry->workspace = cursor;
+  strcpy(cursor, doc->workspace);
+  cursor += strlen(cursor) + 1U;
+  entry->name = cursor;
+  strcpy(cursor, doc->recipient);
+  entry->automatic = doc->automatic;
+  return CAI_OK;
+}
+
+static int name_catalog_read(cai_cli_messages *m, lc_lease *guard,
+                             name_catalog *catalog, cai_error *error) {
+  lc_query_req query;
+  lc_query_res result;
+  lc_query_key_handler handler;
+  lc_keepalive_req keepalive;
+  lc_error local;
+  message_page page;
+  message_doc *doc;
+  char *cursor = NULL;
+  size_t i;
+  int rc = CAI_OK;
+  doc = calloc(1U, sizeof(*doc));
+  if (doc == NULL)
+    return cai_cli_error(error, CAI_ERR_NOMEM, "allocate mailbox record");
+  lc_query_req_init(&query);
+  lc_keepalive_req_init(&keepalive);
+  keepalive.ttl_seconds = 30;
+  lc_error_init(&local);
+  memset(&handler, 0, sizeof(handler));
+  handler.begin = key_begin;
+  handler.chunk = key_chunk;
+  handler.end = key_end;
+  query.ns = MESSAGE_NS;
+  query.engine = "index";
+  query.refresh = "wait_for";
+  query.selector_lql = "eq{field=/kind,value=\"mailbox\"}";
+  query.limit = PAGE_KEYS;
+  do {
+    memset(&page, 0, sizeof(page));
+    memset(&result, 0, sizeof(result));
+    query.cursor = cursor;
+    if (lc_lease_keepalive(guard, &keepalive, &local) != LC_OK ||
+        lc_query_keys(m->pouch->sessions, &query, &handler, &page, &result,
+                      &local) != LC_OK) {
+      rc = fail_lc(error, &local);
+      lc_query_res_cleanup(&result);
+      break;
+    }
+    free(cursor);
+    cursor = result.cursor != NULL ? strdup(result.cursor) : NULL;
+    if (result.cursor != NULL && cursor == NULL)
+      rc = cai_cli_error(error, CAI_ERR_NOMEM, "copy mailbox catalog cursor");
+    lc_query_res_cleanup(&result);
+    for (i = 0U; rc == CAI_OK && i < page.count; i++) {
+      rc = load_doc(m, page.keys[i], doc, error);
+      if (rc == CAI_OK && strcmp(doc->kind, "mailbox") == 0)
+        rc = name_catalog_append(catalog, doc, error);
+      lonejson_cleanup(&message_map, doc);
+    }
+  } while (rc == CAI_OK && cursor != NULL);
+  free(cursor);
+  free(doc);
+  lc_error_cleanup(&local);
+  return rc;
+}
+
+static int mailbox_claim(cai_cli_messages *m, const char *name, int automatic,
+                         cai_error *error) {
+  name_catalog catalog;
+  cai_cli_message_name self;
+  lc_lease *guard = NULL;
+  lc_keepalive_req keepalive;
+  lc_error local;
+  char selected[129];
+  int rc, released;
+  memset(&catalog, 0, sizeof(catalog));
+  lc_error_init(&local);
+  rc = lease_open(m, "mailbox-names", &guard, &local);
+  if (rc != LC_OK) {
+    rc = fail_lc(error, &local);
+    goto done;
+  }
+  if (automatic) {
+    rc = name_catalog_read(m, guard, &catalog, error);
+    self.hostname = m->hostname;
+    self.host_id = m->host_id;
+    self.workspace = m->workspace;
+    self.name = "";
+    self.automatic = 1;
+    if (rc == CAI_OK)
+      rc = cai_cli_message_name_select(&self, catalog.items, catalog.count,
+                                       selected, error);
+  } else
+    strcpy(selected, name);
+  lc_keepalive_req_init(&keepalive);
+  keepalive.ttl_seconds = 30;
+  if (rc == CAI_OK && lc_lease_keepalive(guard, &keepalive, &local) != LC_OK)
+    rc = fail_lc(error, &local);
+  if (rc == CAI_OK)
+    rc = mailbox_claim_selected(m, selected, automatic, error);
+  if (rc == CAI_OK && automatic)
+    strcpy(m->queue, selected);
+  released = lease_finish(guard, rc == CAI_OK ? LC_OK : LC_ERR_INVALID, &local);
+  if (rc == CAI_OK && released != LC_OK)
+    rc = fail_lc(error, &local);
+done:
+  name_catalog_free(&catalog);
+  lc_error_cleanup(&local);
+  return rc;
+}
+
 static int list_mailboxes(cai_cli_messages *m, cai_sink *output,
                           cai_error *error) {
   lc_query_req query;

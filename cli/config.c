@@ -33,8 +33,9 @@ static const cli_field fields[] = {
     B("messaging", "enabled", messaging,
       "Listen for and send conversation messages on the shared Pouch backend."),
     S("messaging", "queue_name", message_queue, 0U,
-      "Empty derives cai.<directory-basename>.<six-hex-path-hash> from the "
-      "canonical workspace. "
+      "Empty allocates cai.<directory-basename>, adding the fewest real "
+      "ancestor components needed to distinguish registered workspaces. "
+      "The actual hostname is a leading component. Assigned names persist. "
       "An explicit name overrides it. Newest app startup takes ownership of "
       "new deliveries; "
       "already delivered messages stay in their original conversation."),

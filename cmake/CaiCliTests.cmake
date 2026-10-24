@@ -53,7 +53,7 @@
     cai_configure_cli_target(cai_cli_geometry_test)
     add_test(NAME cai_cli_geometry COMMAND cai_cli_geometry_test)
     add_executable(cai_cli_messages_test tests/cli_messages_test.c
-      cli/pouch.c cli/pouch_stream.c cli/session_commands.c cli/log.c)
+      cli/pouch.c cli/pouch_stream.c cli/session_commands.c cli/log.c cli/message_names.c)
     target_link_libraries(cai_cli_messages_test PRIVATE cai_static
       softline::softline_static lockdc::static)
     cai_configure_cli_target(cai_cli_messages_test)

@@ -891,7 +891,7 @@ if(CAI_BUILD_APP)
   # Compile them once per configuration; keep fixture substitutions in main.
   add_library(cai_cli_support OBJECT cli/app_control.c cli/options.c cli/help.c cli/config.c cli/runtime_options.c cli/mcp.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
     cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c
-    cli/log.c cli/response.c cli/messages.c cli/todo.c)
+    cli/log.c cli/response.c cli/messages.c cli/message_names.c cli/todo.c)
   target_link_libraries(cai_cli_support PUBLIC cai_static
     softline::softline_static libmdf::mdf_static lockdc::static)
   cai_configure_c_target(cai_cli_support)

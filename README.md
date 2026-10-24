@@ -997,8 +997,11 @@ contents and loading order are preserved on resume and model changes.
 Enable messaging with `--messaging` or `/queue on` in the TUI (default off).
 `/queue off` disables it between turns. CAI apps on a shared Pouch
 backend can then use `agent_message` to discover named
-workspace mailboxes and send by queue name. The default is
-`cai.<basename>.<six-hex-path-hash>`; override it with `--message-queue NAME`,
+workspace mailboxes and send by queue name. The default starts with
+`cai.<basename>`; collisions add the fewest distinguishing real ancestor
+components, skipping shared directories. The actual hostname is a leading
+component for distinguishing hosts. Names persist in the shared backend and
+stay stable across restarts. Override the full name with `--message-queue NAME`,
 `CAI_MESSAGE_QUEUE`, or `[messaging] queue_name`. `/status` and `/queue` show
 the name; `/status` also shows the incoming-message approval mode.
 `/queue NAME` replaces the full name between turns for this app,

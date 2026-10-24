@@ -337,7 +337,9 @@ The application includes optional shared-Pouch messaging (default off) with user
 softline's normal prompt hook. Configure it through C app settings or Lua
 `settings = {messaging = {enabled = true, enable_auto_enqueue = false,
 ack_timeout_ms = 300000, queue_name = "smith"}}`. Omit `queue_name` to derive
-a stable basename plus canonical-path hash. The newest app start owns the
+a stable name allocated from the basename and the fewest distinguishing
+ancestor components, with the actual hostname as a leading component.
+The newest app start owns the
 named mailbox; old delivered messages stay in their original conversation.
 `/queue on` and `/queue off` enable or disable messaging between turns in the
 same conversation. `/queue NAME` overrides the full name; `/queue` shows it.
