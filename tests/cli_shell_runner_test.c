@@ -8,6 +8,24 @@
 #include <sys/timerfd.h>
 #include <time.h>
 
+static int budget_fd = -1;
+static size_t unread_bytes, read_number;
+ssize_t __real_read(int fd, void *bytes, size_t count);
+ssize_t __wrap_read(int fd, void *bytes, size_t count);
+ssize_t __wrap_read(int fd, void *bytes, size_t count) {
+  size_t chunk;
+  if (fd != budget_fd || budget_fd < 0)
+    return __real_read(fd, bytes, count);
+  chunk = read_number++ == 0U ? 1U : 4096U;
+  if (chunk > count)
+    chunk = count;
+  if (chunk > unread_bytes)
+    chunk = unread_bytes;
+  memset(bytes, 'X', chunk);
+  unread_bytes -= chunk;
+  return (ssize_t)chunk;
+}
+
 typedef struct capture {
   cai_cli_shell *shell;
   char data[131072];
@@ -52,6 +70,21 @@ int main(int argc, char **argv) {
   size_t split, i;
   assert(argc == 2);
   cai_error_init(&error);
+  cai_cli_shell_init(&shell);
+  /* Uneven, continuously readable chunks must yield after 64 KiB. The next
+   * dispatch must receive all remaining bytes, without dropping new output. */
+  memset(&c, 0, sizeof(c));
+  c.shell = &shell;
+  shell.pid = 1; /* Synthetic descriptors only; no child exists in this case. */
+  shell.exited = 1;
+  shell.output_fd = budget_fd = 100000;
+  unread_bytes = 100000U;
+  read_number = 0U;
+  assert(cai_cli_shell_pump(&shell, output, &c, &error) == CAI_OK);
+  assert(c.length == 65536U && unread_bytes == 34464U && !shell.eof);
+  assert(cai_cli_shell_pump(&shell, output, &c, &error) == CAI_OK);
+  assert(c.length == 100000U && unread_bytes == 0U && shell.eof);
+  budget_fd = -1;
   cai_cli_shell_init(&shell);
   setenv("SHELL", "/bin/sh", 1);
   memset(&c, 0, sizeof(c));

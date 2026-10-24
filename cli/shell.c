@@ -542,7 +542,8 @@ int cai_cli_shell_pump(cai_cli_shell *shell, cai_cli_shell_output_fn output,
     }
   }
   while (!shell->eof && budget != 0U) {
-    count = read(shell->output_fd, bytes, sizeof(bytes));
+    count = read(shell->output_fd, bytes,
+                 budget < sizeof(bytes) ? budget : sizeof(bytes));
     if (count == 0) {
       shell->eof = 1;
       break;

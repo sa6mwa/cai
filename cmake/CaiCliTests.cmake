@@ -155,6 +155,7 @@
     target_link_libraries(cai_cli_shell_runner_test PRIVATE cai_static lockdc::static)
     cai_configure_cli_target(cai_cli_shell_runner_test)
     target_compile_options(cai_cli_shell_runner_test PRIVATE -UNDEBUG)
+    target_link_options(cai_cli_shell_runner_test PRIVATE "-Wl,--wrap=read")
     add_test(NAME cai_cli_shell_runner COMMAND cai_cli_shell_runner_test "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(cai_cli_shell_runner PROPERTIES TIMEOUT 15)
     add_executable(cai_cli_options_test tests/cli_options_test.c cli/options.c cli/help.c)
