@@ -67,7 +67,8 @@ struct cai_cli_messages {
   lc_consumer_service *service, *receipts_service;
   pthread_mutex_t lock;
   pthread_cond_t condition;
-  int fd, stopping, dirty, receipt, cancelled, claimed, lost;
+  int fd, stopping, dirty, receipt, claimed, lost;
+  unsigned long long cancel_sequence;
   long timeout_ms;
   char session[129], queue[129], instance[LC_XID_STRING_SIZE], receipts[160],
       workspace[PATH_MAX], waiting[LC_XID_STRING_SIZE], waiting_recipient[129];
@@ -1042,6 +1043,13 @@ int cai_cli_messages_sync(cai_cli_messages *m, sl_t *sl, cai_error *error) {
   lc_error_cleanup(&local);
   return rc;
 }
+static int send_cancelled(cai_cli_messages *m, unsigned long long sequence) {
+  int cancelled;
+  pthread_mutex_lock(&m->lock);
+  cancelled = m->stopping || m->cancel_sequence != sequence;
+  pthread_mutex_unlock(&m->lock);
+  return cancelled;
+}
 static int send_tool(void *context, const char *arguments, cai_sink *output,
                      cai_error *error) {
   cai_cli_messages *m = context;
@@ -1053,7 +1061,13 @@ static int send_tool(void *context, const char *arguments, cai_sink *output,
   lc_lease *binding = NULL;
   struct timespec deadline;
   char response[256];
+  unsigned long long sequence;
   int rc, wait_result = 0;
+  /* Snapshot before parsing or acquiring leases. Cancellation advances this
+   * sequence even during startup; later sends take their own fresh snapshot. */
+  pthread_mutex_lock(&m->lock);
+  sequence = m->cancel_sequence;
+  pthread_mutex_unlock(&m->lock);
   memset(&args, 0, sizeof(args));
   memset(&doc, 0, sizeof(doc));
   lc_error_init(&local);
@@ -1080,7 +1094,17 @@ static int send_tool(void *context, const char *arguments, cai_sink *output,
         "queue name, and 1..65536 text bytes (no terminal controls)");
     goto done;
   }
+  if (send_cancelled(m, sequence)) {
+    rc = cai_cli_error(error, CAI_ERR_CANCELLED,
+                       "agent message delivery cancelled");
+    goto done;
+  }
   rc = mailbox_guard(m, &binding, &local);
+  if (send_cancelled(m, sequence)) {
+    rc = cai_cli_error(error, CAI_ERR_CANCELLED,
+                       "agent message delivery cancelled");
+    goto done;
+  }
   if (rc == LC_OK)
     rc = lc_xid_new(doc.id, &local);
   if (rc != LC_OK) {
@@ -1096,17 +1120,21 @@ static int send_tool(void *context, const char *arguments, cai_sink *output,
   deadline.tv_sec = (time_t)(doc.deadline_ms / 1000);
   deadline.tv_nsec = (long)(doc.deadline_ms % 1000) * 1000000L;
   pthread_mutex_lock(&m->lock);
-  if (m->stopping || m->waiting[0] != '\0') {
+  if (m->stopping || m->cancel_sequence != sequence) {
     pthread_mutex_unlock(&m->lock);
-    rc = cai_cli_error(
-        error, CAI_ERR_INVALID,
-        "message sender is stopping or already waiting for a delivery");
+    rc = cai_cli_error(error, CAI_ERR_CANCELLED,
+                       "agent message delivery cancelled");
+    goto done;
+  }
+  if (m->waiting[0] != '\0') {
+    pthread_mutex_unlock(&m->lock);
+    rc = cai_cli_error(error, CAI_ERR_INVALID,
+                       "message sender is already waiting for a delivery");
     goto done;
   }
   strcpy(m->waiting, doc.id);
   strcpy(m->waiting_recipient, doc.recipient);
   m->receipt = 0;
-  m->cancelled = 0;
   pthread_mutex_unlock(&m->lock);
   rc = enqueue(m, &doc, error);
   {
@@ -1116,16 +1144,18 @@ static int send_tool(void *context, const char *arguments, cai_sink *output,
       rc = fail_lc(error, &local);
   }
   pthread_mutex_lock(&m->lock);
-  while (rc == CAI_OK && !m->receipt && !m->stopping && !m->cancelled &&
-         wait_result == 0)
+  while (rc == CAI_OK && !m->receipt && !m->stopping &&
+         m->cancel_sequence == sequence && wait_result == 0)
     wait_result = pthread_cond_timedwait(&m->condition, &m->lock, &deadline);
   if (rc == CAI_OK && !m->receipt)
-    rc = cai_cli_error(
-        error,
-        m->cancelled || m->stopping ? CAI_ERR_CANCELLED : CAI_ERR_TRANSPORT,
-        m->stopping || m->cancelled ? "agent message delivery cancelled"
-                                    : "agent message was not acknowledged "
-                                      "before the delivery deadline");
+    rc = cai_cli_error(error,
+                       m->cancel_sequence != sequence || m->stopping
+                           ? CAI_ERR_CANCELLED
+                           : CAI_ERR_TRANSPORT,
+                       m->stopping || m->cancel_sequence != sequence
+                           ? "agent message delivery cancelled"
+                           : "agent message was not acknowledged "
+                             "before the delivery deadline");
   m->waiting[0] = '\0';
   pthread_mutex_unlock(&m->lock);
   if (rc == CAI_OK) {
@@ -1189,10 +1219,8 @@ void cai_cli_messages_cancel_send(cai_cli_messages *m) {
   if (m == NULL)
     return;
   pthread_mutex_lock(&m->lock);
-  if (m->waiting[0] != '\0') {
-    m->cancelled = 1;
-    pthread_cond_broadcast(&m->condition);
-  }
+  m->cancel_sequence++;
+  pthread_cond_broadcast(&m->condition);
   pthread_mutex_unlock(&m->lock);
 }
 void cai_cli_messages_close(cai_cli_messages *m) {

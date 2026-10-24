@@ -29,6 +29,8 @@ void cai_cli_messages_rebind(cai_cli_messages *messages, sl_prompt_id_t old_id,
                              sl_prompt_id_t new_id);
 void cai_cli_messages_detach(cai_cli_messages *messages, sl_t *sl);
 void cai_cli_messages_stop(cai_cli_messages *messages);
+/* Cancel sends already in progress, including lease acquisition and enqueue.
+ * A later send starts with a fresh cancellation sequence. Thread-safe. */
 void cai_cli_messages_cancel_send(cai_cli_messages *messages);
 void cai_cli_messages_close(cai_cli_messages *messages);
 #endif

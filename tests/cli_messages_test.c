@@ -222,6 +222,79 @@ static void send_named(cai_cli_messages *sender, const char *queue,
   assert(strstr(output.text, "\"delivered\"") != NULL);
   cai_error_cleanup(&error);
 }
+
+static cai_cli_messages *startup_sender;
+static lc_client *startup_client;
+static int startup_phase, startup_enqueues;
+static int cancel_startup_acquire(lc_client *self, const lc_acquire_req *req,
+                                  lc_lease **out, lc_error *error) {
+  int phase = startup_phase, rc;
+  (void)self;
+  if (phase != 0 && strcmp(req->key, "mailbox.startup-sender") == 0) {
+    startup_phase = 0;
+    if (phase == 1)
+      cai_cli_messages_cancel_send(startup_sender);
+  } else
+    phase = 0;
+  rc = startup_client->acquire(startup_client, req, out, error);
+  if (phase == 2)
+    cai_cli_messages_cancel_send(startup_sender);
+  return rc;
+}
+static int count_startup_enqueue(lc_client *self, const lc_enqueue_req *req,
+                                 lc_source *source, lc_enqueue_res *out,
+                                 lc_error *error) {
+  (void)self;
+  startup_enqueues++;
+  return startup_client->enqueue(startup_client, req, source, out, error);
+}
+static int startup_consumer(lc_client *self,
+                            const lc_consumer_service_config *config,
+                            lc_consumer_service **out, lc_error *error) {
+  (void)self;
+  return startup_client->new_consumer_service(startup_client, config, out,
+                                              error);
+}
+static void cancel_startup(cai_cli_pouch *pouch, const char *workspace) {
+  cai_cli_pouch selected = *pouch;
+  lc_client proxy;
+  cai_error error;
+  capture output;
+  int phase;
+  startup_client = pouch->sessions;
+  memset(&proxy, 0, sizeof(proxy));
+  proxy.acquire = cancel_startup_acquire;
+  proxy.enqueue = count_startup_enqueue;
+  proxy.new_consumer_service = startup_consumer;
+  selected.sessions = &proxy;
+  cai_error_init(&error);
+  assert(cai_cli_messages_new(&selected, 5L, &startup_sender, &error) ==
+         CAI_OK);
+  assert(cai_cli_messages_start(startup_sender, "startup-sender", workspace,
+                                "startup-sender", &error) == CAI_OK);
+  for (phase = 1; phase <= 2; phase++) {
+    /* Synchronous acquisition callbacks are deterministic barriers. Cancel
+     * before/after the real lease acquisition; no sleeps or timeout waits. */
+    startup_enqueues = 0;
+    startup_phase = phase;
+    assert(run_send(startup_sender,
+                    "{\"operation\":\"send\",\"recipient\":\"absent-startup-"
+                    "recipient\",\"text\":\"Do not enqueue this\"}",
+                    &output, &error) == CAI_ERR_CANCELLED);
+    assert(startup_phase == 0 && startup_enqueues == 0 && output.used == 0U);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+  }
+  /* Cancellation of an idle sender must not poison a later successful send. */
+  cai_cli_messages_cancel_send(startup_sender);
+  startup_sender->timeout_ms = 2000L;
+  send_named(startup_sender, "receiver", "A fresh send after cancellation");
+  assert(startup_enqueues == 1);
+  cai_cli_messages_close(startup_sender);
+  startup_sender = NULL;
+  startup_client = NULL;
+  cai_error_cleanup(&error);
+}
 static void workspace_mailboxes(cai_cli_pouch *pouch, const char *root) {
   cai_cli_messages *sender = NULL, *old = NULL, *new_owner = NULL,
                    *other = NULL, *collision = NULL;
@@ -457,7 +530,7 @@ int main(int argc, char **argv) {
   char key[300];
   char expired_text[] = "expired";
   char controls[] = "illegal\033[31m terminal control";
-  assert(argc == 2);
+  assert(argc == 2 || (argc == 3 && strcmp(argv[2], "startup") == 0));
   cai_error_init(&error);
   lc_error_init(&local);
   assert(cai_cli_pouch_open(&a, NULL, NULL, NULL, &error) == CAI_OK);
@@ -468,6 +541,16 @@ int main(int argc, char **argv) {
          CAI_OK);
   assert(cai_cli_messages_start(receiver, "receiver", argv[1], "receiver",
                                 &error) == CAI_OK);
+  if (argc == 3) {
+    cancel_startup(&a, argv[1]);
+    cai_cli_messages_close(receiver);
+    cai_cli_messages_close(sender);
+    cai_cli_pouch_close(&b);
+    cai_cli_pouch_close(&a);
+    lc_error_cleanup(&local);
+    cai_error_cleanup(&error);
+    return 0;
+  }
   host_hook(sender, argv[1]);
   /* No UI approval or model turn is required for durable delivery ACK. */
   assert(run_send(sender,
