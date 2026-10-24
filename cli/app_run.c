@@ -1075,7 +1075,7 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     if (!state->batch &&
         (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0))
       return CAI_ERR_TRANSPORT;
-    cai_cli_response_boundary(&state->final_response);
+    cai_cli_response_close(&state->final_response);
     cai_cli_reasoning_reset(&state->reasoning);
     if (!state->batch && cli_prompt(state, event->data) != 0)
       return CAI_ERR_TRANSPORT;
@@ -1141,7 +1141,7 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
       }
       state->show_welcome = 0;
       cai_cli_reasoning_reset(&state->reasoning);
-      cai_cli_response_boundary(&state->final_response);
+      cai_cli_response_close(&state->final_response);
     }
   }
   if (state->batch) {

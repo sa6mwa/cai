@@ -67,4 +67,5 @@ void cai_cli_response_close(cai_cli_response *response) {
   if (response->file != NULL)
     fclose(response->file);
   response->file = NULL;
+  response->next_response = 0;
 }

@@ -77,7 +77,7 @@ run -Nni 'summarize fixture'; ok; [[ $(stdout_text) == 'summary reply' ]]
 contains "$root/stderr" 'Short provider summary'
 plan '{"plan":["previous completed answer","__api_error__"]}'
 run -Nni 'first succeeds' -i 'second fails'; bad
-[[ $(stdout_text) == 'previous completed answer' ]]
+[[ ! -s "$root/stdout" ]]
 plan '{"plan":["__partial_failure__"]}'
 run -Nni partial; bad; contains "$root/stdout" 'partial answer'
 jq -se 'any(.[]; .event == "run_failed" and .lvl == "error")' "$root/stderr" >/dev/null
