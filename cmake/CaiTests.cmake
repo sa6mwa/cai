@@ -1090,50 +1090,9 @@ if(CAI_BUILD_TESTS)
       set_tests_properties(cai_cpkt_target_mismatch_test PROPERTIES
         LABELS "packaging;local" TIMEOUT 15)
     endif()
-    set(CAI_NESTED_CONFIGURE_TOOLCHAIN_ARGS "")
-    if(DEFINED CMAKE_TOOLCHAIN_FILE AND NOT CMAKE_TOOLCHAIN_FILE STREQUAL "")
-      list(APPEND CAI_NESTED_CONFIGURE_TOOLCHAIN_ARGS
-        "-DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}")
-    endif()
-    if(DEFINED CPKT_TARGET_ID AND NOT CPKT_TARGET_ID STREQUAL "")
-      list(APPEND CAI_NESTED_CONFIGURE_TOOLCHAIN_ARGS
-        "-DCPKT_TARGET_ID=${CPKT_TARGET_ID}")
-    endif()
-    if(DEFINED CAI_TARGET_ID AND NOT CAI_TARGET_ID STREQUAL "")
-      list(APPEND CAI_NESTED_CONFIGURE_TOOLCHAIN_ARGS
-        "-DCAI_TARGET_ID=${CAI_TARGET_ID}")
-    endif()
-
-    add_test(NAME cai_c_integration_config_without_lua
-      COMMAND "${CMAKE_COMMAND}"
-        -S "${CMAKE_CURRENT_SOURCE_DIR}"
-        -B "${CMAKE_CURRENT_BINARY_DIR}/c-integration-without-lua"
-        "-G${CMAKE_GENERATOR}"
-        ${CAI_NESTED_CONFIGURE_TOOLCHAIN_ARGS}
-        "-DCAI_BUILD_INTEGRATION_TESTS=ON"
-        "-DCAI_BUILD_LUA=OFF"
-        "-DCAI_BUILD_EXAMPLES=OFF"
-        "-DCAI_BUILD_FUZZERS=OFF"
-        "-DCAI_BUILD_TESTS=ON"
-        "-DCAI_INSTALL=OFF"
-        "-DCAI_DEPENDENCY_MODE=${CAI_RESOLVED_DEPENDENCY_MODE}"
-        "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
-        "-DCAI_CPKT_PREFIX=${CAI_CPKT_PREFIX}"
-        "-DCAI_CPKTMISC_PREFIX=${CAI_CPKTMISC_PREFIX}"
-        "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
-        "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
-        "-DCAI_LONEJSON_INCLUDE_DIR=${CAI_LONEJSON_INCLUDE_DIR}"
-        "-DCAI_LONEJSON_LIBRARY=${CAI_LONEJSON_LIBRARY}"
-        "-DCAI_PSLOG_INCLUDE_DIR=${CAI_PSLOG_INCLUDE_DIR}"
-        "-DCAI_PSLOG_LIBRARY=${CAI_PSLOG_LIBRARY}"
-        "-DCAI_LUA_EXECUTABLE=CAI_LUA_EXECUTABLE-NOTFOUND"
-        "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}"
-        "-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}"
-        "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}")
-    set_tests_properties(cai_c_integration_config_without_lua PROPERTIES
-      LABELS "packaging;local"
-      TIMEOUT 10)
-    add_test(NAME cai_api_key_example_smoke_without_lua_config
+    # One configure proves both C integration and the API-key example runner
+    # work without the Lua binding; do not revalidate the same SDK twice.
+    add_test(NAME cai_integration_without_lua_config
       COMMAND "${CMAKE_COMMAND}"
         "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
         "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/api-key-example-smoke-without-lua"
@@ -1155,7 +1114,7 @@ if(CAI_BUILD_TESTS)
         "-DCPKT_TARGET_ID=${CPKT_TARGET_ID}"
         "-DCAI_TARGET_ID=${CAI_TARGET_ID}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/api_key_example_smoke_registration_test.cmake")
-    set_tests_properties(cai_api_key_example_smoke_without_lua_config PROPERTIES
+    set_tests_properties(cai_integration_without_lua_config PROPERTIES
       LABELS "packaging;local"
       TIMEOUT 60)
     add_test(NAME cai_release_lua_version_test

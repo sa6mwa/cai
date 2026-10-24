@@ -18,6 +18,7 @@ set(configure_command
   "-DCAI_BUILD_INTEGRATION_TESTS=ON"
   "-DCAI_REGISTER_API_KEY_EXAMPLE_SMOKE=ON"
   "-DCAI_BUILD_LUA=OFF"
+  "-DCAI_LUA_EXECUTABLE=CAI_LUA_EXECUTABLE-NOTFOUND"
   "-DCAI_BUILD_EXAMPLES=ON"
   "-DCAI_BUILD_FUZZERS=OFF"
   "-DCAI_BUILD_TESTS=ON"
@@ -25,6 +26,7 @@ set(configure_command
   "-DCAI_DEPENDENCY_MODE=${CAI_DEPENDENCY_MODE}"
   "-DCAI_DEPS_DIR=${CAI_DEPS_DIR}"
   "-DCAI_CPKT_PREFIX=${CAI_CPKT_PREFIX}"
+  "-DCAI_CPKTMISC_PREFIX=${CAI_CPKTMISC_PREFIX}"
   "-DCAI_LONEJSON_PREFIX=${CAI_LONEJSON_PREFIX}"
   "-DCAI_PSLOG_PREFIX=${CAI_PSLOG_PREFIX}"
   "-DCAI_LONEJSON_INCLUDE_DIR=${CAI_LONEJSON_INCLUDE_DIR}"
@@ -67,13 +69,14 @@ endif()
 
 execute_process(
   COMMAND "${CMAKE_CTEST_COMMAND}" --test-dir "${CAI_BINARY_DIR}" -N
-    -R "^cai_examples_live_smoke$"
+    -R "^(cai_examples_live_smoke|cai_integration_tests)$"
   RESULT_VARIABLE ctest_result
   OUTPUT_VARIABLE ctest_output
   ERROR_VARIABLE ctest_error)
 if(NOT ctest_result EQUAL 0 OR
-   NOT ctest_output MATCHES "cai_examples_live_smoke")
+   NOT ctest_output MATCHES "cai_examples_live_smoke" OR
+   NOT ctest_output MATCHES "cai_integration_tests")
   message(FATAL_ERROR
-    "API-key example smoke was not registered without the Lua binding:\n"
+    "C integration/API-key example smoke was not registered without the Lua binding:\n"
     "${ctest_output}\n${ctest_error}")
 endif()
