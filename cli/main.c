@@ -21,8 +21,11 @@ int main(int argc, char **argv) {
           : "CAI Smith (C) 2026 C89 Systems AB https://c89.systems\n\n";
   config.introduction_margin_left = 0;
   config.introduction_margin_right = 0;
-  config.introduction_markdown = "**Enter** sends your task. `/help` for "
-                                 "commands; `cai -h` for options.\n";
+  config.introduction_markdown =
+      "`cai` is an example of embedding `libcai_app`: "
+      "<https://github.com/sa6mwa/libcai/>.  \n"
+      "**Enter** sends your task. `/help` for commands; `cai -h` for "
+      "options.\n";
   cai_error_init(&error);
   rc = cai_app_open(&config, &app, &error);
   if (rc == CAI_OK)
