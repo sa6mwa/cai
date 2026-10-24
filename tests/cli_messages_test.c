@@ -40,6 +40,33 @@ static int run_send(cai_cli_messages *m, const char *args, capture *out,
   cai_sink_close(sink);
   return rc;
 }
+static int reject_enqueue(lc_client *client, const lc_enqueue_req *request,
+                          lc_source *source, lc_enqueue_res *result,
+                          lc_error *error) {
+  (void)client;
+  (void)source;
+  (void)result;
+  assert(strcmp(request->ns, MESSAGE_NS) == 0);
+  assert(request->ttl_seconds == 0);
+  return lc_error_set(error, LC_ERR_TRANSPORT, 0,
+                      "injected standalone enqueue failure", NULL, NULL, NULL);
+}
+static void standalone_failure(cai_cli_pouch *pouch) {
+  cai_cli_pouch selected = *pouch;
+  lc_client client = *pouch->sessions;
+  capture output;
+  cai_sink *sink = new_capture(&output);
+  cai_error error;
+  cai_error_init(&error);
+  client.enqueue = reject_enqueue;
+  selected.sessions = &client;
+  assert(cai_cli_messages_send_once(&selected, "offline", "hello", sink,
+                                    &error) == CAI_ERR_TRANSPORT);
+  assert(strstr(error.message, "injected standalone enqueue failure") != NULL);
+  assert(output.used == 0U);
+  cai_sink_close(sink);
+  cai_error_cleanup(&error);
+}
 static lc_source *test_payload;
 static int deferred_count;
 static int defer_test_message(lc_message *message, const lc_nack_req *req,
@@ -552,6 +579,7 @@ int main(int argc, char **argv) {
     return 0;
   }
   host_hook(sender, argv[1]);
+  standalone_failure(&a);
   /* No UI approval or model turn is required for durable delivery ACK. */
   assert(run_send(sender,
                   "{\"operation\":\"send\",\"recipient\":\"receiver\",\"text\":"

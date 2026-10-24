@@ -3568,9 +3568,9 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     cai_sink *destination = NULL;
     rc = cai_sink_stdout(&destination, &error);
     if (rc == CAI_OK)
-      rc = cai_cli_messages_send_once(
-          &state.pouch, state.options.send_queue, state.options.message,
-          state.options.message_ack_timeout_ms, destination, &error);
+      rc = cai_cli_messages_send_once(&state.pouch, state.options.send_queue,
+                                      state.options.message, destination,
+                                      &error);
     if (rc == CAI_OK)
       rc = cai_sink_write(destination, "\n", 1U, &error);
     cai_sink_close(destination);

@@ -8,7 +8,7 @@ text=$'Standalone "quoted" \\ text\nand Unicode 雪'
 # No provider flags or credentials: this is a storage utility, not inference.
 "$cli" -C "$work" --queue standalone-recipient --message "$text" \
   --message-ack-timeout-ms 2000 >"$root/sent" 2>"$root/send-log"
-jq -e '.status == "delivered" and .recipient == "standalone-recipient" and (.message_id|length > 0)' "$root/sent" >/dev/null
+jq -e '.status == "queued" and .recipient == "standalone-recipient" and (.message_id|length > 0)' "$root/sent" >/dev/null
 [[ ! -s "$root/send-log" && $(requests) == 0 ]]
 expect 'approval'
 send '\033a'; expect 'Alt-Y approve'; contains "$term/text" 'cai.cli.'
@@ -27,7 +27,13 @@ for args in missing-text missing-queue mixed empty; do
   bad; [[ ! -s "$root/stdout" ]]
 done
 run -q invalid/name -M text; bad; contains "$root/stderr" 'valid queue name'
-run -q missing-recipient -M text --message-ack-timeout-ms 5; bad
-[[ ! -s "$root/stdout" ]]; contains "$root/stderr" 'delivery deadline'
+terminal_close
+# Enqueue succeeds without a consumer, ignores the agent's ACK deadline, and
+# remains available when a receiver subsequently starts.
+run -q offline-recipient -M 'Queued while offline' --message-ack-timeout-ms 1; ok
+jq -e '.status == "queued" and .recipient == "offline-recipient"' "$root/stdout" >/dev/null
+terminal_start -N --messaging --message-queue offline-recipient
+expect 'approval'
+send '\033a'; expect 'Alt-Y approve'; contains "$term/text" 'Queued while offline'
 [[ $(requests) == 0 ]]
 terminal_close

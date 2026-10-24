@@ -67,7 +67,7 @@ struct cai_cli_messages {
   lc_consumer_service *service, *receipts_service;
   pthread_mutex_t lock;
   pthread_cond_t condition;
-  int fd, stopping, dirty, receipt, claimed, lost, standalone;
+  int fd, stopping, dirty, receipt, claimed, lost;
   unsigned long long cancel_sequence;
   long timeout_ms;
   char session[129], queue[129], instance[LC_XID_STRING_SIZE], receipts[160],
@@ -355,7 +355,7 @@ static int save_doc(cai_cli_messages *m, message_doc *doc, cai_error *error) {
   lc_error_cleanup(&local);
   return rc;
 }
-static int enqueue(cai_cli_messages *m, const message_doc *doc,
+static int enqueue(cai_cli_pouch *pouch, const message_doc *doc,
                    cai_error *error) {
   cai_source *source = NULL;
   lc_source *wire = NULL;
@@ -376,17 +376,18 @@ static int enqueue(cai_cli_messages *m, const message_doc *doc,
   req.content_type = "application/json";
   req.visibility_timeout_seconds = 30;
   req.max_attempts = 3;
-  req.ttl_seconds =
-      strcmp(doc->kind, "message") == 0
-          ? (long)((doc->deadline_ms - realtime_ms() + 999) / 1000)
-          : 300;
-  if (req.ttl_seconds <= 0)
-    req.ttl_seconds = 1;
+  if (strcmp(doc->kind, "message") != 0)
+    req.ttl_seconds = 300;
+  else if (doc->deadline_ms > 0) {
+    req.ttl_seconds = (long)((doc->deadline_ms - realtime_ms() + 999) / 1000);
+    if (req.ttl_seconds <= 0)
+      req.ttl_seconds = 1;
+  }
   rc = cai_cli_mapped_source(&message_map, doc, &source, error);
   if (rc == CAI_OK)
     rc = cai_cli_lc_source(source, &wire, error);
   if (rc == CAI_OK &&
-      lc_enqueue(m->pouch->sessions, &req, wire, &res, &local) != LC_OK)
+      lc_enqueue(pouch->sessions, &req, wire, &res, &local) != LC_OK)
     rc = fail_lc(error, &local);
   lc_source_close(wire);
   cai_source_close(source);
@@ -463,8 +464,9 @@ static int consume(void *context, lc_consumer_message *delivery,
   }
   if (strcmp(doc.recipient, m->queue) != 0 ||
       strcmp(doc.kind, "message") != 0 || !valid_text(doc.text) ||
-      !safe_id(doc.sender_session) || !lc_xid_is_valid(doc.instance) ||
-      doc.deadline_ms <= 0) {
+      !safe_id(doc.sender_session) || doc.deadline_ms < 0 ||
+      (doc.instance[0] != '\0' &&
+       (!lc_xid_is_valid(doc.instance) || doc.deadline_ms == 0))) {
     rc = lc_error_set(error, LC_ERR_PROTOCOL, 0,
                       "Invalid agent message content", NULL, NULL, NULL);
     goto done;
@@ -498,7 +500,7 @@ static int consume(void *context, lc_consumer_message *delivery,
   rc = lease_open(m, key, &lease, error);
   if (rc == LC_OK) {
     fresh = lease->state_etag == NULL || lease->state_etag[0] == '\0';
-    if (fresh && doc.deadline_ms > realtime_ms()) {
+    if (fresh && (doc.deadline_ms == 0 || doc.deadline_ms > realtime_ms())) {
       strcpy(doc.kind, "pending");
       strcpy(doc.pending_for, m->session);
       rc = lc_lease_save(lease, &message_map, &doc, error);
@@ -525,7 +527,8 @@ static int consume(void *context, lc_consumer_message *delivery,
   strcpy(receipt.recipient_instance, doc.instance);
   /* Durable inbox acceptance is delivery. Approval and execution are separate.
    */
-  rc = enqueue(m, &receipt, &local);
+  /* An absent return address means enqueue-only delivery, with no receipt. */
+  rc = doc.instance[0] != '\0' ? enqueue(m->pouch, &receipt, &local) : CAI_OK;
   if (rc != CAI_OK) {
     rc = lc_error_set(error, LC_ERR_TRANSPORT, 0,
                       "Cannot acknowledge agent delivery", local.message, NULL,
@@ -1101,7 +1104,7 @@ static int send_tool(void *context, const char *arguments, cai_sink *output,
                        "agent message delivery cancelled");
     goto done;
   }
-  rc = m->standalone ? LC_OK : mailbox_guard(m, &binding, &local);
+  rc = mailbox_guard(m, &binding, &local);
   if (send_cancelled(m, sequence)) {
     rc = cai_cli_error(error, CAI_ERR_CANCELLED,
                        "agent message delivery cancelled");
@@ -1138,7 +1141,7 @@ static int send_tool(void *context, const char *arguments, cai_sink *output,
   strcpy(m->waiting_recipient, doc.recipient);
   m->receipt = 0;
   pthread_mutex_unlock(&m->lock);
-  rc = enqueue(m, &doc, error);
+  rc = enqueue(m->pouch, &doc, error);
   if (binding != NULL) {
     int released = lease_finish(binding, LC_OK, &local);
     binding = NULL;
@@ -1176,56 +1179,41 @@ done:
   return rc;
 }
 int cai_cli_messages_send_once(cai_cli_pouch *pouch, const char *recipient,
-                               const char *text, long timeout_ms,
-                               cai_sink *result, cai_error *error) {
-  cai_cli_messages *m = NULL;
-  send_args args;
+                               const char *text, cai_sink *result,
+                               cai_error *error) {
+  message_doc doc;
   lc_error local;
-  lonejson_error json_error;
-  lonejson *json = NULL;
-  char *arguments = NULL;
+  char response[256];
   int rc;
-  memset(&args, 0, sizeof(args));
+  memset(&doc, 0, sizeof(doc));
   if (recipient == NULL || text == NULL ||
-      !queue_name(recipient, args.recipient) || !valid_text(text))
+      !queue_name(recipient, doc.recipient) || !valid_text(text))
     return cai_cli_error(error, CAI_ERR_INVALID,
                          "--message requires a valid queue name and 1..65536 "
                          "text bytes (no terminal controls)");
-  rc = cai_cli_messages_new(pouch, timeout_ms, &m, error);
-  if (rc != CAI_OK)
-    return rc;
   lc_error_init(&local);
-  m->standalone = 1;
-  strcpy(m->session, "cli");
-  rc = lc_xid_new(m->instance, &local);
+  rc = lc_xid_new(doc.id, &local);
   if (rc == LC_OK) {
-    snprintf(m->queue, sizeof(m->queue), "cai.cli.%s", m->instance);
-    snprintf(m->receipts, sizeof(m->receipts), "cai.receipts.%s", m->instance);
-    rc = new_consumer(m, m->receipts, &m->receipts_service, &local);
-  }
-  if (rc == LC_OK)
-    rc = lc_consumer_service_start(m->receipts_service, &local);
-  if (rc != LC_OK)
+    strcpy(doc.kind, "message");
+    strcpy(doc.sender_session, "cli");
+    snprintf(doc.sender, sizeof(doc.sender), "cai.cli.%s", doc.id);
+    /* No return address or delivery deadline: the receiver may be offline. */
+    doc.text = strdup(text);
+    rc = doc.text != NULL
+             ? enqueue(pouch, &doc, error)
+             : cai_cli_error(error, CAI_ERR_NOMEM, "copy standalone message");
+  } else {
     rc = fail_lc(error, &local);
-  if (rc == CAI_OK) {
-    json = lonejson_new(NULL, &json_error);
-    strcpy(args.operation, "send");
-    args.text = strdup(text);
-    if (args.text == NULL)
-      rc = cai_cli_error(error, CAI_ERR_NOMEM, "copy standalone message");
-    if (json != NULL && rc == CAI_OK)
-      arguments = lonejson_serialize_alloc(json, &arguments_map, &args, NULL,
-                                           &json_error);
-    if (rc == CAI_OK && arguments == NULL)
-      rc = cai_cli_lj_error(error, &json_error);
-    else if (rc == CAI_OK)
-      rc = send_tool(m, arguments, result, error);
   }
-  free(arguments);
-  free(args.text);
-  lonejson_free(json);
+  if (rc == CAI_OK) {
+    snprintf(
+        response, sizeof(response),
+        "{\"message_id\":\"%s\",\"status\":\"queued\",\"recipient\":\"%s\"}",
+        doc.id, doc.recipient);
+    rc = cai_sink_write(result, response, strlen(response), error);
+  }
+  free(doc.text);
   lc_error_cleanup(&local);
-  cai_cli_messages_close(m);
   return rc;
 }
 

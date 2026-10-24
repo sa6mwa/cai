@@ -83,9 +83,12 @@ Destination mailbox for a standalone CLI message. Requires --message.
 .BR \-M , " " \-\-message " " TEXT
 Send text to --queue and exit. No provider credentials, model request,
 conversation creation or workspace mailbox takeover occurs. Uses the session
-storage endpoint and a private return queue. Writes a JSON delivery receipt to
-stdout; errors use pslog on stderr and return nonzero. Delivery does not mean
-human approval or execution. The existing --message-ack-timeout-ms applies.
+storage endpoint without a receipt listener. Writes JSON with status queued,
+message_id and recipient to stdout after liblockdc accepts the enqueue.
+Errors use pslog on stderr and return nonzero. Does not wait for delivery,
+approval or execution; offline recipients are supported. These messages have
+no delivery deadline or queue expiry. --message-ack-timeout-ms applies only
+to the agent messaging tool.
 .TP
 .BR \-\-autoqueue " / " \-\-no-autoqueue
 Automatically approve incoming TUI messages (default off). Alt-A focuses

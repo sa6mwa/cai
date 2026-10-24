@@ -4,10 +4,10 @@
 #include <softline/softline.h>
 
 typedef struct cai_cli_messages cai_cli_messages;
-/* One-shot sender: private ACK listener, no session or workspace mailbox. */
+/* Enqueue once without a delivery deadline, receipt listener or session. */
 int cai_cli_messages_send_once(cai_cli_pouch *pouch, const char *recipient,
-                               const char *text, long timeout_ms,
-                               cai_sink *result, cai_error *error);
+                               const char *text, cai_sink *result,
+                               cai_error *error);
 /* All UI methods are owner-thread-only. Service callbacks never touch softline.
  * The pouch/client/logger are borrowed until close, after the runtime closes.
  */

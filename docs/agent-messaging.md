@@ -11,15 +11,17 @@ dependency.
 
 For a standalone send, use `cai --queue NAME --message TEXT` or
 `cai -q NAME -M TEXT`. (`-m` continues to select a model.) This utility uses
-the configured `--lockd` endpoint and `--message-ack-timeout-ms`, without
-provider authentication or inference. It creates no conversation and never
-claims the workspace mailbox. A private receipt listener identifies the sender
-as `cai.cli.<unique-id>`; incoming text is labelled as a CLI message.
-Success writes a JSON delivery receipt to stdout and exits zero. Invalid input,
-storage errors and delivery timeouts use pslog on stderr and return nonzero.
-The five-minute default deadline is independent of human approval. Explicit
-sending works even when the agent messaging tool is disabled. The same flags
-work through the C or Lua `libcai_app` receiver's `run` method.
+the configured `--lockd` endpoint, without provider authentication or inference.
+It creates no conversation, mailbox claim or receipt listener. The sender is
+`cai.cli.<unique-id>`; incoming text is labelled as a CLI message.
+Success means liblockdc accepted the enqueue: stdout contains JSON with
+`status: "queued"`, the message ID and recipient, and the command exits zero.
+It does not wait for delivery, approval or execution. Offline recipients are
+supported; these messages have no delivery deadline or queue expiry.
+Invalid input or storage errors use pslog on stderr and return nonzero.
+`--message-ack-timeout-ms` applies to the agent tool, not standalone sends.
+Explicit sending works even when the agent messaging tool is disabled. The same
+flags work through the C or Lua `libcai_app` receiver's `run` method.
 
 Use `agent_message` with `{"operation":"list"}` to list named workspace
 mailboxes: queue name, canonical directory and last-bound conversation ID.
@@ -73,14 +75,15 @@ exiting the new owner does not automatically reactivate an older app.
 Each listener uses liblockdc's managed consumer services. Filesystem queue
 notifications wake that service; the application does not periodically query
 the queue. The service saves an incoming message to a durable encrypted inbox
-before sending a delivery receipt. An event descriptor then wakes the UI owner.
+before sending a delivery receipt when the sender requested one. An event
+descriptor then wakes the UI owner.
 Recovery queries use an indexed `pending_for` field scoped to the conversation
 that accepted the message. Bindings and pending records live in `cai.messages`.
 Private `cai.receipts.<instance-id>` channels deliver ACKs to the exact sending
 app instance, independently of mailbox takeover. They are internal return
 channels and are excluded from destination discovery.
 
-`send` waits for that receipt, with a five-minute deadline measured from sending.
+The agent tool's `send` waits for that receipt, with a five-minute deadline measured from sending.
 An offline recipient or absent receipt returns a tool error. Expired messages
 that have not been accepted cannot later start turns. Approval and model
 execution are independent of ACK: a held or subsequently rejected message is
