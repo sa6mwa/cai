@@ -180,6 +180,11 @@ int cai_cli_shell_handoff(const char *path, const char *directory,
     } else {
       /* Do not allocate or relay another PTY when no capture is requested.
        * Job control, resize and input belong directly to the child shell. */
+      if (dup2(STDIN_FILENO, STDERR_FILENO) < 0) {
+        shell_child_error(STDOUT_FILENO, "Cannot attach shell stderr", "",
+                          errno);
+        _exit(126);
+      }
       action.sa_handler = SIG_IGN;
       (void)sigaction(SIGTTOU, &action, NULL);
       if (setpgid(0, 0) != 0 || tcsetpgrp(STDIN_FILENO, getpid()) != 0) {
