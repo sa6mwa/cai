@@ -44480,6 +44480,7 @@ static void test_chat_completions_adapter(test_state *state) {
   sinks.custom_tool_call_input_done = test_stream_tool_done;
   sinks.function_call_context = &tool;
   sinks.custom_tool_call_context = &tool;
+  sinks.custom_tool_call_input_delta = test_stream_tool_delta;
   sinks.output_item_done = test_stream_output_item_done;
   sinks.output_item_context = &item;
 
@@ -44511,6 +44512,7 @@ static void test_chat_completions_adapter(test_state *state) {
           "\"name\":\"echo\",\"arguments\":\"{\\\"x\\\":1}\"},{"
           "\"type\":\"function_call_output\",\"call_id\":\"call_one\","
           "\"output\":\"tool done\"}]";
+      memset(&tool, 0, sizeof(tool));
       cai_response_create_params_set_raw_input_json(params, history, &error);
       params->add_text(params, "user", "continue", &error);
       format.type = "grammar";
@@ -44586,6 +44588,8 @@ static void test_chat_completions_adapter(test_state *state) {
       expect_int(state, "chat_custom_stream", rc, CAI_OK);
       expect_str(state, "chat_custom_name", tool.name, "apply_patch");
       expect_str(state, "chat_custom_input", tool.arguments, "patch");
+      expect_int(state, "chat_custom_delta_count", tool.delta_count > 0, 1);
+      expect_str(state, "chat_custom_delta", tool.delta, "patch");
       expect_str(state, "chat_custom_item_type", item.type, "custom_tool_call");
     } else if (step == 3U) {
       expect_int(state, "chat_http_error", rc, CAI_ERR_SERVER);
@@ -52110,9 +52114,12 @@ static void test_mcp_raw_input_transport_failures(test_state *state) {
   }
 }
 
+#include "chat_stream_callbacks_test.inc"
 #include "reasoning_pending_test.inc"
 
 static const test_entry test_entries[] = {
+    {"chat_custom_deltas", test_chat_custom_deltas},
+    {"chat_reasoning_transitions", test_chat_reasoning_transitions},
     {"reasoning_model_boundary", test_reasoning_model_boundary},
     {"mcp_raw_input_cancellation", test_mcp_raw_input_cancellation},
     {"mcp_raw_input_registration_ownership",

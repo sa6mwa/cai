@@ -1071,12 +1071,15 @@ typedef struct cai_chat_chunk_doc {
   cai_chat_error_doc error;
 } cai_chat_chunk_doc;
 
+typedef struct cai_chat_custom_stream cai_chat_custom_stream;
 typedef struct cai_chat_tool_state {
   char *id;
   char *name;
   lonejson_spooled arguments;
   int has_arguments;
   int is_custom;
+  int delta_started;
+  cai_chat_custom_stream *custom;
 } cai_chat_tool_state;
 
 typedef struct cai_chat_stream_state {
@@ -1291,6 +1294,18 @@ static int cai_chat_capture_reserve(cai_chat_stream_state *state,
 static lonejson_status cai_chat_spool_append(void *user, const void *data,
                                              size_t len, lonejson_error *error);
 
+static int cai_chat_finish_reasoning(cai_chat_stream_state *state) {
+  int rc = CAI_OK;
+  if (state->reasoning_started) {
+    rc = cai_chat_emit_affix(state->sinks->reasoning_summary,
+                             &state->sinks->reasoning_summary_suffix,
+                             state->error);
+    if (rc == CAI_OK)
+      state->reasoning_started = 0;
+  }
+  return rc;
+}
+
 static int cai_chat_emit_text(cai_chat_stream_state *state,
                               const lonejson_spooled *text, int reasoning) {
   cai_sink *sink;
@@ -1302,6 +1317,9 @@ static int cai_chat_emit_text(cai_chat_stream_state *state,
     return CAI_OK;
   }
   if (!reasoning) {
+    rc = cai_chat_finish_reasoning(state);
+    if (rc != CAI_OK)
+      return rc;
     rc = cai_chat_capture_reserve(state, text->size_fn(text));
     if (rc != CAI_OK)
       return rc;
@@ -1470,6 +1488,8 @@ static int cai_chat_tool_append(cai_chat_tool_state *tool,
   return CAI_OK;
 }
 
+#include "cai_chat_custom.inc"
+
 static int cai_chat_emit_tool_delta(cai_chat_stream_state *state,
                                     const cai_chat_chunk_tool_doc *delta) {
   cai_chat_tool_state *tool;
@@ -1546,16 +1566,21 @@ static int cai_chat_emit_tool_delta(cai_chat_stream_state *state,
     if (rc != CAI_OK) {
       return rc;
     }
-    if (!tool->is_custom &&
-        state->sinks->function_call_arguments_delta != NULL) {
-      rc = state->sinks->function_call_arguments_delta(
-          state->sinks->function_call_context,
-          tool->id != NULL ? tool->id : "chat_tool", (int)index + 1,
-          &delta->function.arguments, state->error);
-      if (rc != CAI_OK) {
-        return rc;
-      }
-    }
+  }
+  /* Metadata may arrive after arguments. Retain that prefix until its tool
+   * kind and real ID are known, then feed it once; later fragments flow live.
+   */
+  if (tool->id != NULL && tool->name != NULL && tool->has_arguments) {
+    const lonejson_spooled *fragment =
+        tool->delta_started ? &delta->function.arguments : &tool->arguments;
+    tool->delta_started = 1;
+    if (tool->is_custom && state->sinks->custom_tool_call_input_delta != NULL)
+      return cai_chat_custom_delta(state, tool, (int)index + 1, fragment);
+    if (!tool->is_custom && fragment->size_fn(fragment) > 0U &&
+        state->sinks->function_call_arguments_delta != NULL)
+      return state->sinks->function_call_arguments_delta(
+          state->sinks->function_call_context, tool->id, (int)index + 1,
+          fragment, state->error);
   }
   return CAI_OK;
 }
@@ -1653,6 +1678,11 @@ static int cai_chat_emit_tool_done(cai_chat_stream_state *state, size_t index) {
   }
   memset(&custom, 0, sizeof(custom));
   if (tool->is_custom) {
+    if (tool->custom != NULL) {
+      rc = cai_chat_custom_finish(tool->custom);
+      if (rc != CAI_OK)
+        return rc;
+    }
     memset(&reader, 0, sizeof(reader));
     reader.use_spool = 1;
     reader.spool = tool->arguments;
@@ -2049,6 +2079,7 @@ static void cai_chat_stream_cleanup(cai_chat_stream_state *state) {
   size_t i;
 
   for (i = 0U; i < state->tool_count; i++) {
+    cai_chat_custom_close(state->tools[i].custom);
     cai_free_mem(NULL, state->tools[i].id);
     cai_free_mem(NULL, state->tools[i].name);
     if (state->tools[i].has_arguments) {
@@ -2282,10 +2313,8 @@ static int cai_chat_stream_attempt(
     rc = cai_chat_emit_affix(sinks->output_text, &sinks->output_text_suffix,
                              error);
   }
-  if (rc == CAI_OK && state.reasoning_started) {
-    rc = cai_chat_emit_affix(sinks->reasoning_summary,
-                             &sinks->reasoning_summary_suffix, error);
-  }
+  if (rc == CAI_OK)
+    rc = cai_chat_finish_reasoning(&state);
   if (rc == CAI_OK && state.length_finish) {
     long long window = cai_client_model_context_window(client, params->model);
     int pressure = window > 0LL && state.saw_usage &&

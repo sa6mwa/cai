@@ -581,6 +581,8 @@ if(CAI_BUILD_TESTS)
     chat_transport_failure_modes
     chat_failed_tool_stream_preserves_session
     chat_completions_adapter
+    chat_custom_deltas
+    chat_reasoning_transitions
     chat_message_items
     chat_request_settings
     chat_buffered_response
