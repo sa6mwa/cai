@@ -46,9 +46,11 @@ select_app() {
 # Discovery lists both conversations, independently of their directories.
 select_app 0
 send '/status\r'; expect 'Message queue'
+wait_for grep -qE 'cai\.work\.[0-9a-f]{6}' "$term/feed"
 c_queue=$(grep -oE 'cai\.work\.[0-9a-f]{6}' "$term/feed" | head -1)
 select_app 1
 send '/status\r'; expect 'Message queue'
+wait_for grep -qE 'cai\.lua-work\.[0-9a-f]{6}' "$term/feed"
 lua_queue=$(grep -oE 'cai\.lua-work\.[0-9a-f]{6}' "$term/feed" | head -1)
 [[ -n "$c_queue" && -n "$lua_queue" && "$c_queue" != "$lua_queue" ]]
 plan '{"plan":[{"tool":"agent_message","arguments":{"operation":"list"}},"DESTINATIONS LISTED"]}'
@@ -101,8 +103,7 @@ expect 'HELD BEFORE TAKEOVER'
 base=("$lua_host" "${common[@]}" -C "$work")
 terminal_start -N
 app_pids+=("$terminal_pid") app_terms+=("$term") app_events+=("$terminal_event_fd")
-send '/status\r'; expect 'Message queue'
-contains "$term/feed" "$c_queue"
+send '/status\r'; expect "$c_queue"
 absent "$term/text" 'HELD BEFORE TAKEOVER'
 select_app 1
 plan "$(jq -n --arg queue "$c_queue" '{plan:[{tool:"agent_message",arguments:{operation:"send",recipient:$queue,text:"AFTER TAKEOVER"}},"AFTER TAKEOVER DELIVERED"]}')"

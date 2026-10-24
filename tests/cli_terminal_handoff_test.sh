@@ -14,11 +14,17 @@ exec /bin/sh -i
 SH
 chmod 700 "$SHELL"
 canonical() { [[ -s "$term/tty" && $(cut -d' ' -f1 "$term/tty") == "$1" ]]; }
+shell_ready() {
+  local flags foreground application
+  [[ -s "$term/tty" ]] || return 1
+  read -r flags foreground application <"$term/tty"
+  [[ "$flags" == 1 && "$foreground" -gt 0 && "$foreground" != "$application" ]]
+}
 terminal_start -N
-send '/shell\r'; expect SHELL_HANDOFF_READY; canonical 1
+send '/shell\r'; expect SHELL_HANDOFF_READY; wait_for shell_ready
 resize 48
 send 'stty size; touch ../normal-permissions; printf SHARED_TERMINAL_OUTPUT; exit\r'
-expect 'Shell exited 0.'; canonical 0
+expect 'Shell exited 0.'; wait_for canonical 0
 expect '30 48'
 [[ -f "$root/normal-permissions" && $(requests) == 0 ]]
 plan '{"plan":["POST HANDOFF ANSWER\n\nword word word word word word word word word word word word word word word word word word word word\n\n"]}'
@@ -31,11 +37,11 @@ send '!sh\r'; expect SHELL_HANDOFF_READY
 send 'printf INTERRUPT_READY; sleep 60\r'; expect INTERRUPT_READY
 send '\003'; expect '$'
 send 'printf AFTER_INTERRUPT; exit\r'; expect 'Shell exited 0.'
-send '\022/shell\r'; expect '/shell'; canonical 0
+send '\022/shell\r'; expect '/shell'; wait_for canonical 0
 [[ $(wc -c <"$root/launches") == 2 ]]
-send '\r'; expect SHELL_HANDOFF_READY; canonical 1
+send '\r'; expect SHELL_HANDOFF_READY; wait_for shell_ready
 send 'exit 7\r'; expect 'interactive shell exited 7'; wait_for canonical 0
-send '\025!sh\r'; expect SHELL_HANDOFF_READY; canonical 1
+send '\025!sh\r'; expect SHELL_HANDOFF_READY; wait_for shell_ready
 send 'kill -KILL $$\r'; expect 'interactive shell terminated by signal 9'; wait_for canonical 0
 send '!sh\r'; expect SHELL_HANDOFF_READY
 send 'exit 137\r'; expect 'interactive shell exited 137'
@@ -61,8 +67,8 @@ terminal_close
 for fallback in unset empty; do
   if [[ "$fallback" == unset ]]; then unset SHELL; else export SHELL=; fi
   terminal_start -N
-  send '!sh\r'; expect '$'; canonical 1
-  send 'touch fallback-shell; exit\r'; expect 'Shell exited 0.'; canonical 0; [[ -f "$work/fallback-shell" ]]
+  send '!sh\r'; wait_for shell_ready
+  send 'touch fallback-shell; exit\r'; expect 'Shell exited 0.'; wait_for canonical 0; [[ -f "$work/fallback-shell" ]]
   rm "$work/fallback-shell"; terminal_close
 done
 for command in /shell '!sh' /shellshare '!sh+'; do
