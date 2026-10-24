@@ -30,6 +30,9 @@ project(cai VERSION ${CAI_CMAKE_PROJECT_VERSION} LANGUAGES C)
 include(CMakePackageConfigHelpers)
 include(CTest)
 include(GNUInstallDirs)
+include(cai-pkgconfig)
+cai_pkgconfig_prefix_from_libdir("${CMAKE_INSTALL_LIBDIR}"
+  CAI_PC_PREFIX_FROM_PKGCONFIG)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -1254,13 +1257,6 @@ if(CAI_INSTALL)
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cai-config-version.cmake.in"
     "${CMAKE_CURRENT_BINARY_DIR}/cai-config-version.cmake"
     @ONLY)
-  set(CAI_PC_PREFIX_FROM_PKGCONFIG "..")
-  string(REPLACE "/" ";" _cai_pc_libdir_parts "${CMAKE_INSTALL_LIBDIR}")
-  foreach(_cai_pc_libdir_part IN LISTS _cai_pc_libdir_parts)
-    if(NOT _cai_pc_libdir_part STREQUAL "")
-      string(APPEND CAI_PC_PREFIX_FROM_PKGCONFIG "/..")
-    endif()
-  endforeach()
   configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/cai.pc.in"
     "${CMAKE_CURRENT_BINARY_DIR}/cai.pc"

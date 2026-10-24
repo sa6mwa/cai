@@ -1,6 +1,11 @@
 
 if(CAI_BUILD_TESTS)
   enable_testing()
+  add_test(NAME cai_pkgconfig_prefix_test COMMAND "${CMAKE_COMMAND}"
+    "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+    "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/pkgconfig_prefix_test.cmake")
+  set_tests_properties(cai_pkgconfig_prefix_test PROPERTIES LABELS "packaging;local;host" TIMEOUT 3)
   add_executable(cai_history_test tests/history_test.c)
   cai_link_internal_consumer(cai_history_test)
   cai_configure_c_target(cai_history_test)

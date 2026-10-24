@@ -1,0 +1,11 @@
+# pkg-config metadata is installed beneath <libdir>/pkgconfig.
+function(cai_pkgconfig_prefix_from_libdir libdir output)
+  set(relative "..")
+  string(REPLACE "/" ";" parts "${libdir}")
+  foreach(part IN LISTS parts)
+    if(NOT part STREQUAL "")
+      string(APPEND relative "/..")
+    endif()
+  endforeach()
+  set(${output} "${relative}" PARENT_SCOPE)
+endfunction()
