@@ -52,7 +52,9 @@ selection() {
   settings_plan '["RESUMED settings response"]'
   offset=$(wc -c <"$term/text"); send 'after resume\r'; expect_turn "$offset" 'RESUMED settings response'; selection gpt-6.1-sol ultra
   contains "$root/request" 'original settings conversation'
-  send '/new\r'; expect '--- session ---'; send '/model\r'; expect 'Reasoning effort: medium'
+  send '/new\r'; expect 'New session:'; expect 'Workspace:'; expect '$ /new'
+  absent "$term/feed" '--- session ---'
+  send '/model\r'; expect 'Reasoning effort: medium'
   terminal_close
   terminal_start -N -m gpt-6-luna -r low
   send '/model no-reasoning\r'; expect 'Model changed to no-reasoning'

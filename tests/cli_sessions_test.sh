@@ -47,3 +47,15 @@ if printf '/quit\n' | "$cli" -p openai --resume "$first_id" -C "$fixture/work-b"
   exit 1
 fi
 grep -q 'another directory' "$fixture/out"
+
+mkdir "$fixture/work-metadata"
+created=$(printf '/new\n/resume\n/quit\n' | "$cli" -p openai -C "$fixture/work-metadata")
+created_id=$(printf '%s\n' "$created" | sed -n 's/^1  \([^ ]*\).*/\1/p')
+[[ -n "$created_id" ]]
+if [[ "$created" != *"New session: $created_id"* ]]; then
+  printf 'Missing confirmation for new session %s\n' "$created_id" >&2
+  exit 1
+fi
+[[ "$created" == *"Workspace:"* && "$created" == *"work-metadata"* ]]
+[[ "$created" == *'$ /new'* && "$created" != *'--- session ---'* ]]
+[[ "$selected" != *'--- session ---'* ]]

@@ -63,7 +63,8 @@ printf '%s\n' '{"image_type":"image/png"}' >"$root/clipboard/config.json"
 count=$(requests)
 terminal_start
 expect 'FINAL paragraph.'; [[ $(requests) == "$count" ]]
-send '/new\r'; expect '--- session ---'
+send '/new\r'; expect 'New session:'; expect 'Workspace:'; expect '$ /new'
+absent "$term/feed" '--- session ---'
 plan '{"plan":["__transport_failure__"]}'
 send 'trigger a transport failure\r'; expect 'HTTP transport failed'
 expect 'method: POST'; expect 'path: responses'

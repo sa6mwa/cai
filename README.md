@@ -572,7 +572,8 @@ mTLS using a combined client certificate, private key, and CA PEM bundle.
 No local Pouch key is created for a remote endpoint.
 
 Starting `cai` resumes the newest session for the canonical current directory.
-`-N`/`--new` starts fresh; `/new` does the same inside the prompt.
+`-N`/`--new` starts fresh; `/new` does the same inside the prompt and confirms
+the new session ID and workspace after opening it successfully.
 `-l`/`--list` shows all conversations across directories. `--resume` without
 an ID and `/resume` show a numbered list for the current directory only;
 `/resume <number>` loads an entry. Rows show ID, directory, and a first-prompt

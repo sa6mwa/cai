@@ -1905,7 +1905,9 @@ static int cli_list_sessions(cli_state *state, cai_error *error) {
 static int cli_switch_session(cli_state *state, const char *id, int new_session,
                               cai_error *error) {
   cai_agent_run_state run_state;
-  int rc;
+  const char *created_id;
+  char *message;
+  int rc, length;
   rc = cai_agent_runtime_state(state->runtime, &run_state, error);
   if (rc != CAI_OK)
     return rc;
@@ -1917,10 +1919,24 @@ static int cli_switch_session(cli_state *state, const char *id, int new_session,
   if (cli_finish_response(state) != 0)
     return CAI_ERR_TRANSPORT;
   cli_close_runtime(state);
-  if (cli_write(state, "\n--- session ---\n") != 0) {
-    return CAI_ERR_TRANSPORT;
-  }
-  return cli_open_runtime(state, id, new_session, error);
+  rc = cli_open_runtime(state, id, new_session, error);
+  if (rc != CAI_OK || !new_session)
+    return rc;
+  created_id = cai_agent_runtime_session_id(state->runtime);
+  if (created_id == NULL)
+    return cai_cli_error(error, CAI_ERR_PROTOCOL, "new session ID unavailable");
+  length = snprintf(NULL, 0, "New session: %s\nWorkspace: %s", created_id,
+                    state->workspace);
+  if (length < 0)
+    return cai_cli_error(error, CAI_ERR_INVALID, "format new session details");
+  message = malloc((size_t)length + 1U);
+  if (message == NULL)
+    return cai_cli_error(error, CAI_ERR_NOMEM, "allocate new session details");
+  snprintf(message, (size_t)length + 1U, "New session: %s\nWorkspace: %s",
+           created_id, state->workspace);
+  rc = cli_write(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+  free(message);
+  return rc;
 }
 
 static int cli_reasoning_tool_command(cli_state *state, const char *arg,
