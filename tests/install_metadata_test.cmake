@@ -241,67 +241,9 @@ if(dependencies_text MATCHES "/home/|/Users/|/opt/|\\.cache/deps|file://|\\.\\./
     "dependencies.json contains local or non-relocatable paths")
 endif()
 
-if(DEFINED CAI_SOURCE_DIR AND NOT CAI_SOURCE_DIR STREQUAL "")
-  set(multiarch_dir "${CAI_BINARY_DIR}/pkgconfig-multiarch-test")
-  file(REMOVE_RECURSE "${multiarch_dir}")
-  set(configure_command
-    "${CMAKE_COMMAND}"
-    -S "${CAI_SOURCE_DIR}"
-    -B "${multiarch_dir}"
-    -DCAI_BUILD_STATIC=OFF
-    -DCAI_BUILD_SHARED=ON
-    -DCAI_BUILD_TESTS=OFF
-    -DCAI_BUILD_INTEGRATION_TESTS=OFF
-    -DCAI_BUILD_EXAMPLES=OFF
-    -DCAI_BUILD_LUA=OFF
-    -DCAI_BUILD_FUZZERS=OFF
-    -DCAI_INSTALL=ON
-    -DCAI_DEPENDENCY_MODE=${CAI_RESOLVED_DEPENDENCY_MODE}
-    -DCAI_DEPS_DIR=${CAI_DEPS_DIR}
-    -DCMAKE_INSTALL_LIBDIR=lib/x86_64-linux-gnu)
-  if(DEFINED CAI_GENERATOR AND NOT CAI_GENERATOR STREQUAL "")
-    list(APPEND configure_command -G "${CAI_GENERATOR}")
-  endif()
-  if(DEFINED CAI_LONEJSON_INCLUDE_DIR AND
-     NOT CAI_LONEJSON_INCLUDE_DIR STREQUAL "")
-    list(APPEND configure_command
-         -DCAI_LONEJSON_INCLUDE_DIR=${CAI_LONEJSON_INCLUDE_DIR})
-  endif()
-  if(DEFINED CAI_LONEJSON_LIBRARY AND NOT CAI_LONEJSON_LIBRARY STREQUAL "")
-    list(APPEND configure_command
-         -DCAI_LONEJSON_LIBRARY=${CAI_LONEJSON_LIBRARY})
-  endif()
-  if(DEFINED CAI_PSLOG_INCLUDE_DIR AND NOT CAI_PSLOG_INCLUDE_DIR STREQUAL "")
-    list(APPEND configure_command -DCAI_PSLOG_INCLUDE_DIR=${CAI_PSLOG_INCLUDE_DIR})
-  endif()
-  if(DEFINED CAI_PARENT_CMAKE_PREFIX_PATH AND
-     NOT CAI_PARENT_CMAKE_PREFIX_PATH STREQUAL "")
-    list(APPEND configure_command
-         -DCMAKE_PREFIX_PATH=${CAI_PARENT_CMAKE_PREFIX_PATH})
-  endif()
-  execute_process(
-    COMMAND ${configure_command}
-    RESULT_VARIABLE multiarch_configure_result
-    OUTPUT_VARIABLE multiarch_configure_output
-    ERROR_VARIABLE multiarch_configure_error)
-  if(NOT multiarch_configure_result EQUAL 0)
-    message(FATAL_ERROR
-      "multiarch pkg-config configure failed: ${multiarch_configure_error}\n${multiarch_configure_output}")
-  endif()
-  file(READ "${multiarch_dir}/cai.pc" multiarch_pc_text)
-  string(FIND "${multiarch_pc_text}"
-              "prefix=\${pcfiledir}/../../.." multiarch_prefix_pos)
-  string(FIND "${multiarch_pc_text}"
-              "libdir=\${exec_prefix}/lib/x86_64-linux-gnu"
-              multiarch_libdir_pos)
-  string(FIND "${multiarch_pc_text}" "includedir=\${prefix}/include"
-              multiarch_includedir_pos)
-  if(multiarch_prefix_pos EQUAL -1 OR multiarch_libdir_pos EQUAL -1 OR
-     multiarch_includedir_pos EQUAL -1)
-    message(FATAL_ERROR
-      "cai.pc does not derive prefix correctly for multiarch libdirs")
-  endif()
-endif()
+# cai_pkgconfig_prefix_test exercises both installed templates through the real
+# pkg-config resolver for lib, lib64 and nested/multiarch libdirs. Do not repeat
+# a complete repository/dependency configure merely to inspect prefix strings.
 
 if((NOT DEFINED CAI_RESOLVED_DEPENDENCY_MODE OR
     CAI_RESOLVED_DEPENDENCY_MODE STREQUAL "cpkt") AND

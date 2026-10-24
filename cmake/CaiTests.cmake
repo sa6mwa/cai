@@ -910,8 +910,8 @@ if(CAI_BUILD_TESTS)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_metadata_test.cmake")
     set_tests_properties(cai_install_metadata_test PROPERTIES
       LABELS "packaging;local"
-      # Six fresh consumers validate cpkt's complete SDK payload. Measured native
-      # completion is 40 seconds; retain a bounded gate for this package proof.
+      # Five isolated consumers validate the SDK payload. Prefix-depth coverage
+      # belongs to cai_pkgconfig_prefix_test and needs no dependency configure.
       TIMEOUT 60)
     set(CAI_HOST_DEPENDENCY_MODE_TEST_ARGS
       "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
