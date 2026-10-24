@@ -60,6 +60,7 @@ typedef struct cai_chat_writer_context {
   size_t length;
   int fd;
   int count_only;
+  int pipe_closed;
 } cai_chat_writer_context;
 
 struct cai_chat_upload {
@@ -70,6 +71,7 @@ struct cai_chat_upload {
   size_t size;
   cai_error error;
   int result;
+  int pipe_closed;
 };
 
 static lonejson_status cai_chat_spool_append(void *user, const void *data,
@@ -158,6 +160,8 @@ static lonejson_status cai_chat_write_sink(void *user, const void *data,
       continue;
     }
     if (written <= 0) {
+      if (written < 0 && (errno == EPIPE || errno == ECONNRESET))
+        context->pipe_closed = 1;
       return LONEJSON_STATUS_IO_ERROR;
     }
     offset += (size_t)written;
@@ -1041,6 +1045,7 @@ static void *cai_chat_upload_worker(void *arg) {
   cai_error_init(&upload->error);
   upload->result =
       cai_chat_request_write(upload->params, &context, &upload->error);
+  upload->pipe_closed = context.pipe_closed;
   shutdown(upload->fd[1], SHUT_WR);
   return NULL;
 }
@@ -1109,9 +1114,12 @@ curl_off_t cai_chat_upload_size(const cai_chat_upload *upload) {
   return upload != NULL ? (curl_off_t)upload->size : (curl_off_t)-1;
 }
 
-int cai_chat_upload_close(cai_chat_upload *upload, cai_error *error) {
+int cai_chat_upload_close(cai_chat_upload *upload, int *out_pipe_closed,
+                          cai_error *error) {
   int rc;
 
+  if (out_pipe_closed != NULL)
+    *out_pipe_closed = 0;
   if (upload == NULL) {
     return CAI_OK;
   }
@@ -1120,6 +1128,8 @@ int cai_chat_upload_close(cai_chat_upload *upload, cai_error *error) {
   if (upload->thread_started) {
     pthread_join(upload->thread, NULL);
   }
+  if (out_pipe_closed != NULL)
+    *out_pipe_closed = upload->pipe_closed;
   close(upload->fd[1]);
   rc = upload->result;
   if (rc != CAI_OK && error != NULL && error->code == CAI_OK) {
@@ -2273,6 +2283,7 @@ static int cai_chat_stream_attempt(
   size_t i;
   int rc;
   int upload_rc;
+  int upload_pipe_closed;
   cai_error upload_error;
 
   if (client == NULL || params == NULL || sinks == NULL) {
@@ -2371,6 +2382,7 @@ static int cai_chat_stream_attempt(
   curl_rc = CURLE_OK;
   http_status = 0L;
   upload_rc = CAI_OK;
+  upload_pipe_closed = 0;
   cai_error_init(&upload_error);
   if (rc == CAI_OK) {
     curl_easy_setopt(curl, CURLOPT_URL, url);
@@ -2409,7 +2421,8 @@ static int cai_chat_stream_attempt(
     curl_easy_cleanup(curl);
   }
   if (upload != NULL) {
-    upload_rc = cai_chat_upload_close(upload, &upload_error);
+    upload_rc =
+        cai_chat_upload_close(upload, &upload_pipe_closed, &upload_error);
   }
   if (rc == CAI_OK && curl_rc == CURLE_OK && http_status >= 200L &&
       http_status < 300L && state.failure_code == CAI_OK) {
@@ -2490,7 +2503,10 @@ static int cai_chat_stream_attempt(
   result->retry_after_ms = state.retry_after_ms;
   result->retryable =
       !state.model_activity && !state.saw_usage &&
-      !cai_stream_thread_cancel_requested() && upload_rc == CAI_OK &&
+      !cai_stream_thread_cancel_requested() &&
+      /* Cleanup shuts the pipe while its producer may still be writing.
+       * That is a consequence of the transport failure, not bad input. */
+      (upload_rc == CAI_OK || upload_pipe_closed) &&
       state.failure_code == CAI_OK &&
       ((rc == CAI_ERR_SERVER &&
         (http_status == 429L || http_status == 502L || http_status == 503L)) ||

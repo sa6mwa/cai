@@ -449,6 +449,9 @@ explicitly enabled.
 
 Chat Completions requests retry transient HTTP 429, 502, and 503 failures and
 connection failures before response headers, with at most three attempts.
+This includes failures while a large request is still uploading; stopping its
+producer does not suppress a transport retry. Input serialization failures
+remain errors and are not retried.
 Retries stop once model activity or usage is received. Authentication, invalid
 requests, permanent quota errors, malformed streams, callback failures, and
 partial responses are not retried. A retry after a completed tool round resends

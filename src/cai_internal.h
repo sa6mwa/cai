@@ -408,7 +408,9 @@ int cai_chat_upload_open(const cai_response_create_params *params,
 size_t cai_chat_upload_read(char *ptr, size_t size, size_t nmemb,
                             void *userdata);
 curl_off_t cai_chat_upload_size(const cai_chat_upload *upload);
-int cai_chat_upload_close(cai_chat_upload *upload, cai_error *error);
+/* Join the producer and distinguish a closed consumer pipe from bad input. */
+int cai_chat_upload_close(cai_chat_upload *upload, int *out_pipe_closed,
+                          cai_error *error);
 int cai_chat_stream_response(cai_client *client,
                              const cai_response_create_params *params,
                              const cai_stream_sinks *sinks,

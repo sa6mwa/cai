@@ -43838,7 +43838,89 @@ static void test_chat_request_metrics(test_state *state) {
   }
 }
 
+static lonejson_status (*test_chat_upload_rewind_original)(lonejson_spooled *,
+                                                           lonejson_error *);
+static lonejson_read_result (*test_chat_upload_read_original)(
+    lonejson_spooled *, unsigned char *, size_t);
+static int test_chat_upload_pass, test_chat_upload_fail_pass;
+
+static lonejson_status test_chat_upload_rewind(lonejson_spooled *value,
+                                               lonejson_error *error) {
+  test_chat_upload_pass++;
+  return test_chat_upload_rewind_original(value, error);
+}
+static lonejson_read_result
+test_chat_upload_read_failure(lonejson_spooled *value, unsigned char *buffer,
+                              size_t capacity) {
+  lonejson_read_result result;
+  if (test_chat_upload_pass == test_chat_upload_fail_pass) {
+    result = lonejson_default_read_result();
+    result.error_code = EIO;
+    return result;
+  }
+  return test_chat_upload_read_original(value, buffer, capacity);
+}
+
+static void test_chat_upload_source_failure(test_state *state) {
+  int pass;
+  for (pass = 1; pass <= 2; pass++) {
+    cai_response_create_params *params = NULL;
+    cai_chat_upload *upload = NULL;
+    lonejson_spooled text;
+    cai_error error;
+    unsigned char buffer[256];
+    size_t count = 0U;
+    int rc, pipe_closed = -1;
+
+    cai_error_init(&error);
+    test_init_spooled_text(state, "chat_upload_source", &text, "source text");
+    rc = cai_response_create_params_new(&params, &error);
+    if (rc == CAI_OK)
+      rc = params->set_model(params, "fixture", &error);
+    if (rc == CAI_OK)
+      rc = params->add_text_spooled(params, "user", &text, &error);
+    expect_int(state, "chat_upload_source_setup", rc, CAI_OK);
+    if (rc == CAI_OK) {
+      struct cai_input_message *message = params->input.items;
+      struct cai_content_part *part = message->content.items;
+      test_chat_upload_rewind_original = part->text_spooled.rewind;
+      test_chat_upload_read_original = part->text_spooled.read;
+      part->text_spooled.rewind = test_chat_upload_rewind;
+      part->text_spooled.read = test_chat_upload_read_failure;
+      test_chat_upload_pass = 0;
+      test_chat_upload_fail_pass = pass;
+      rc = cai_chat_upload_open(params, &upload, &error);
+      expect_int(state, "chat_upload_source_open", rc,
+                 pass == 1 ? CAI_ERR_PROTOCOL : CAI_OK);
+      if (upload != NULL) {
+        /* Drain to producer EOF before closing: the source, rather than a
+         * closed consumer pipe, must be the failing component. */
+        do {
+          count =
+              cai_chat_upload_read((char *)buffer, 1U, sizeof(buffer), upload);
+        } while (count != 0U && count != CURL_READFUNC_ABORT);
+        expect_int(state, "chat_upload_source_eof", count == 0U, 1);
+        rc = cai_chat_upload_close(upload, &pipe_closed, &error);
+        expect_int(state, "chat_upload_source_result", rc, CAI_ERR_PROTOCOL);
+        expect_int(state, "chat_upload_source_not_pipe_close", pipe_closed, 0);
+      }
+      part->text_spooled.rewind = test_chat_upload_rewind_original;
+      part->text_spooled.read = test_chat_upload_read_original;
+      expect_int(state, "chat_upload_source_failure_pass",
+                 test_chat_upload_pass, pass);
+    }
+    if (text.cleanup != NULL)
+      text.cleanup(&text);
+    cai_response_create_params_destroy(params);
+    cai_error_cleanup(&error);
+  }
+}
+
 static void test_chat_connection_failure(test_state *state) {
+  static const struct {
+    int large, buffered;
+    unsigned int attempts;
+  } cases[] = {{0, 0, 3U}, {1, 0, 3U}, {1, 1, 3U}, {1, 0, 1U}};
   struct sockaddr_in addr;
   socklen_t addr_len = sizeof(addr);
   int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -43847,6 +43929,14 @@ static void test_chat_connection_failure(test_state *state) {
   cai_client *client = NULL;
   cai_response_create_params *params = NULL;
   cai_response *response = NULL;
+  cai_stream_sinks sinks;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink = NULL;
+  write_state output;
+  test_log_capture logs;
+  pslog_logger *logger;
+  char *large;
+  size_t i;
   cai_error error;
   int rc;
 
@@ -43864,34 +43954,79 @@ static void test_chat_connection_failure(test_state *state) {
     return;
   }
   snprintf(url, sizeof(url), "http://127.0.0.1:%d/v1", ntohs(addr.sin_port));
-  cai_error_init(&error);
-  cai_client_config_init(&config);
-  config.chat_max_attempts = 1U;
-  cai_client_config_use_berget(&config);
-  config.api_key = "fixture-key";
-  config.base_url = url;
-  config.http_2_disabled = 1;
-  config.timeout_ms = 500L;
-  rc = cai_client_open(&config, &client, &error);
-  if (rc == CAI_OK)
-    rc = cai_response_create_params_new(&params, &error);
-  if (rc == CAI_OK)
-    rc = params->set_model(params, "zai-org/GLM-5.3-Flash", &error);
-  if (rc == CAI_OK)
-    rc = params->add_text(params, "user", "test", &error);
-  expect_int(state, "chat_connection_setup", rc, CAI_OK);
-  if (rc == CAI_OK) {
-    rc = cai_client_create_response(client, params, &response, &error);
+  large = malloc(2U * 1024U * 1024U + 1U);
+  if (large == NULL) {
+    test_fail(state, "chat_connection_input", "allocate large prompt");
+    close(fd);
+    return;
+  }
+  memset(large, 'x', 2U * 1024U * 1024U);
+  large[2U * 1024U * 1024U] = '\0';
+  for (i = 0U; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    cai_error_init(&error);
+    logger = test_log_open(&logs);
+    cai_client_config_init(&config);
+    cai_client_config_use_berget(&config);
+    config.chat_max_attempts = cases[i].attempts;
+    config.chat_retry_initial_delay_ms = 10L;
+    config.logger = logger;
+    config.api_key = "fixture-key";
+    config.base_url = url;
+    config.http_2_disabled = 1;
+    config.timeout_ms = 500L;
+    memset(&output, 0, sizeof(output));
+    memset(&callbacks, 0, sizeof(callbacks));
+    callbacks.write = test_write;
+    callbacks.context = &output;
+    cai_stream_sinks_init(&sinks);
+    rc = cai_sink_from_callbacks(&callbacks, &sink, &error);
+    sinks.output_text = sink;
+    if (rc == CAI_OK)
+      rc = cai_client_open(&config, &client, &error);
+    if (rc == CAI_OK)
+      rc = cai_response_create_params_new(&params, &error);
+    if (rc == CAI_OK)
+      rc = params->set_model(params, "zai-org/GLM-5.3-Flash", &error);
+    if (rc == CAI_OK)
+      rc = params->add_text(params, "user", cases[i].large ? large : "test",
+                            &error);
+    expect_int(state, "chat_connection_setup", rc, CAI_OK);
+    test_chat_retry_elapsed_ms = 0L;
+    cai_chat_test_set_retry_sleep_fn(test_chat_retry_sleep);
+    if (rc == CAI_OK)
+      rc = cases[i].buffered
+               ? cai_client_create_response(client, params, &response, &error)
+               : cai_client_stream_response_with_id(client, params, &sinks,
+                                                    NULL, NULL, &error);
+    cai_chat_test_set_retry_sleep_fn(NULL);
     expect_int(state, "chat_connection_failure", rc, CAI_ERR_TRANSPORT);
     expect_substr(state, "chat_connection_detail", error.detail, "connect");
     expect_int(state, "chat_connection_no_http_status", error.http_status, 0L);
     expect_int(state, "chat_connection_no_response", response == NULL, 1L);
+    expect_int(state, "chat_connection_attempts",
+               (long)test_count_substrings(
+                   logs.buffer, "\"msg\":\"cai.http.request.start\""),
+               (long)cases[i].attempts);
+    expect_int(
+        state, "chat_connection_retries",
+        (long)test_count_substrings(logs.buffer, "\"msg\":\"cai.chat.retry\""),
+        (long)cases[i].attempts - 1L);
+    expect_str(state, "chat_connection_no_output", output.buffer, "");
+    cai_response_destroy(response);
+    cai_response_create_params_destroy(params);
+    cai_client_close(client);
+    cai_sink_close(sink);
+    if (logger != NULL)
+      logger->destroy(logger);
+    response = NULL;
+    params = NULL;
+    client = NULL;
+    sink = NULL;
+    cai_error_cleanup(&error);
   }
-  cai_response_destroy(response);
-  cai_response_create_params_destroy(params);
-  cai_client_close(client);
-  cai_error_cleanup(&error);
+  free(large);
   close(fd);
+  test_chat_upload_source_failure(state);
 }
 
 typedef struct runtime_patch_capture {

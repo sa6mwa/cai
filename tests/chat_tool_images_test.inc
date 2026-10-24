@@ -200,7 +200,7 @@ static void test_chat_image_tool_roundtrip(test_state *state) {
     expect_int(state, "chat_image_reject_unsupported_file",
                cai_chat_upload_open(params, &upload, &error), CAI_ERR_INVALID);
   expect_int(state, "chat_image_no_unsupported_upload", upload == NULL, 1);
-  cai_chat_upload_close(upload, NULL);
+  cai_chat_upload_close(upload, NULL, NULL);
   cai_response_create_params_destroy(params);
   cai_error_cleanup(&error);
   if (mkdtemp(workspace) == NULL) {
