@@ -322,7 +322,7 @@ static void replay_limits(cai_cli_pouch *pouch, cai_error *error) {
          CAI_OK);
   {
     lc_lease *lease = NULL;
-    assert(acquire(pouch->sessions, "oversized", &lease, error) == CAI_OK);
+    assert(acquire(pouch, "oversized", &lease, error) == CAI_OK);
     rc = attach(lease, "event-00000000000001000004", source, error);
     assert(release(lease, rc, error) == CAI_OK);
   }
@@ -422,7 +422,7 @@ int main(int argc, char **argv) {
 
   assert(release(lease, CAI_OK, &error) == CAI_OK);
   lease = NULL;
-  assert(acquire(pouch.sessions, "first", &lease, &error) == CAI_OK);
+  assert(acquire(&pouch, "first", &lease, &error) == CAI_OK);
   assert(get_session(lease, "/work/a", "first", &session, &error) == CAI_OK);
   session.checkpoint_ns = index.latest.checkpoint_ns + 1U;
   assert(update_session(lease, &session, &error) == CAI_OK);
@@ -434,7 +434,7 @@ int main(int argc, char **argv) {
   newest(&pouch, "/work/a", "first", &error);
   assert(query_calls == 0);
   /* Tie-breaking matches the explicit session listing. */
-  assert(acquire(pouch.sessions, "second", &lease, &error) == CAI_OK);
+  assert(acquire(&pouch, "second", &lease, &error) == CAI_OK);
   assert(get_session(lease, "/work/a", "second", &session, &error) == CAI_OK);
   session.checkpoint_ns = index.latest.checkpoint_ns + 1U;
   assert(update_session(lease, &session, &error) == CAI_OK);
@@ -448,7 +448,7 @@ int main(int argc, char **argv) {
   index.latest.checkpoint_ns += 1000000000000ULL;
   {
     lc_lease *session_lease = NULL;
-    assert(acquire(pouch.sessions, "second", &session_lease, &error) == CAI_OK);
+    assert(acquire(&pouch, "second", &session_lease, &error) == CAI_OK);
     assert(get_session(session_lease, "/work/a", "second", &session, &error) ==
            CAI_OK);
     session.checkpoint_ns = index.latest.checkpoint_ns;
@@ -456,7 +456,7 @@ int main(int argc, char **argv) {
     assert(update_session(session_lease, &session, &error) == CAI_OK);
     assert(release(session_lease, CAI_OK, &error) == CAI_OK);
     session_lease = NULL;
-    assert(acquire(pouch.sessions, "first", &session_lease, &error) == CAI_OK);
+    assert(acquire(&pouch, "first", &session_lease, &error) == CAI_OK);
     assert(get_session(session_lease, "/work/a", "first", &session, &error) ==
            CAI_OK);
     session.checkpoint_ns = index.latest.checkpoint_ns - 1U;
@@ -478,16 +478,14 @@ int main(int argc, char **argv) {
     /* A failed import leaves no public body; its indexed workspace key must
      * not poison listing or directory-index repair. */
     lease = NULL;
-    assert(acquire(pouch.sessions, "unfinished-import", &lease, &error) ==
-           CAI_OK);
+    assert(acquire(&pouch, "unfinished-import", &lease, &error) == CAI_OK);
     assert(get_session(lease, "/work/a", "unfinished-import", &session,
                        &error) == CAI_OK);
     session.published = 0;
     assert(update_session(lease, &session, &error) == CAI_OK);
     assert(release(lease, CAI_OK, &error) == CAI_OK);
     lease = NULL;
-    assert(acquire(pouch.sessions, "unfinished-import", &lease, &error) ==
-           CAI_OK);
+    assert(acquire(&pouch, "unfinished-import", &lease, &error) == CAI_OK);
     {
       lc_error local;
       lc_error_init(&local);

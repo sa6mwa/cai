@@ -3,6 +3,7 @@
 
 #include "app_internal.h"
 #include "config.h"
+#include "identity.h"
 #include "literal.h"
 #include "log.h"
 #include "login.h"
@@ -52,8 +53,6 @@
 
 typedef cai_cli_session cli_session;
 
-static const char cli_welcome[] = "Welcome to CAI. Send /help for usage.";
-
 /* Softline restores terminal input, raises SIGINT, then returns INTERRUPTED.
  * Let the prompt loop cancel the turn and keep the interactive session open. */
 static void cli_keep_session_on_interrupt(int signo) { (void)signo; }
@@ -68,6 +67,7 @@ static int cli_cancel_editor(sl_t *sl, sl_key_t key, void *context,
 }
 
 typedef struct cli_state {
+  char welcome[128], clipboard_template[PATH_MAX + 4];
   const cai_app_config *application;
   cai_app_bridge *bridge;
   sl_watch_id_t host_watch;
@@ -187,13 +187,6 @@ static int cli_load_model_metadata(const cai_cli_options *options, char **out,
     root = options->config_dir;
     if (root != NULL) {
       written = snprintf(path, sizeof(path), "%s/models.json", root);
-    } else if (getenv("XDG_CONFIG_HOME") != NULL &&
-               getenv("XDG_CONFIG_HOME")[0] != '\0') {
-      written = snprintf(path, sizeof(path), "%s/cai/models.json",
-                         getenv("XDG_CONFIG_HOME"));
-    } else if (getenv("HOME") != NULL) {
-      written = snprintf(path, sizeof(path), "%s/.config/cai/models.json",
-                         getenv("HOME"));
     } else {
       return CAI_OK;
     }
@@ -892,8 +885,9 @@ static int cli_terminal_shell(cli_state *state, int share, cai_error *error) {
   if (sl_output_stream_begin(state->sl) != SL_OK || cli_geometry(state) != 0) {
     cai_error_cleanup(&shell_error);
     state->exit_requested = 1;
-    return cai_cli_error(error, CAI_ERR_TRANSPORT,
-                         "restore CAI terminal after interactive shell");
+    return cai_cli_error(
+        error, CAI_ERR_TRANSPORT,
+        "restore application terminal after interactive shell");
   }
   cai_cli_status_refresh_branch(&state->status, state->workspace);
   if (share) {
@@ -1362,7 +1356,7 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
                                   reasoning_title, turn_metrics) != 0)
     return CAI_ERR_TRANSPORT;
   if (state->show_welcome && !metrics.turn_active)
-    strcpy(turn_message, cli_welcome);
+    strcpy(turn_message, state->welcome);
   rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
   if (rc != CAI_OK) {
     return rc;
@@ -1715,9 +1709,9 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
     state->pouch.replay_scope = state->workspace;
   }
   if (!state->mcp_initialized) {
-    rc = cai_cli_mcp_open(&state->mcp, state->configuration,
-                          state->options.mcp && !state->options.review,
-                          state->log.logger, error);
+    rc = cai_cli_mcp_open(
+        &state->mcp, state->configuration, state->options.program_name,
+        state->options.mcp && !state->options.review, state->log.logger, error);
     if (rc != CAI_OK)
       return rc;
     state->mcp_initialized = 1;
@@ -1802,29 +1796,13 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
 }
 
 static int cli_prepare_clipboard(cli_state *state, cai_error *error) {
-  char cache[PATH_MAX];
-  char path[PATH_MAX];
-  struct stat status;
-  int length;
-  int rc;
-
-  rc = cai_cli_cache_directory(cache, sizeof(cache), error);
+  const char *path = state->options.clipboard_dir;
+  int rc = cai_cli_private_directory(path, error);
   if (rc != CAI_OK)
     return rc;
-  length = snprintf(path, sizeof(path), "%s/clipboard", cache);
-  if (length < 0 || (size_t)length >= sizeof(path))
-    return cai_cli_error(error, CAI_ERR_INVALID, "clipboard path is too long");
-  if (mkdir(path, 0700) != 0 && errno != EEXIST)
-    return cai_cli_error(error, CAI_ERR_TRANSPORT,
-                         "cannot create cai clipboard directory");
-  if (lstat(path, &status) != 0 || !S_ISDIR(status.st_mode) ||
-      status.st_uid != geteuid() || (status.st_mode & 077U) != 0U)
-    return cai_cli_error(error, CAI_ERR_INVALID,
-                         "cai clipboard directory must be owned by you with "
-                         "mode 0700 and must not be a symlink");
   if (realpath(path, state->clipboard_directory) == NULL)
     return cai_cli_error(error, CAI_ERR_INVALID,
-                         "cannot resolve cai clipboard directory");
+                         "cannot resolve application clipboard directory");
   return CAI_OK;
 }
 
@@ -2700,7 +2678,8 @@ static int cli_settings_command(cli_state *state, const char *arguments,
               : cli_reasoning_efforts;
     const char *note =
         known ? "Provider-advertised choices:\n\n"
-              : "Model-specific reasoning choices are unavailable. CAI accepts "
+              : "Model-specific reasoning choices are unavailable. The "
+                "application accepts "
                 "the "
                 "following values; support depends on the provider/model.\n\n";
     snprintf(message, sizeof(message), "Choices for `%s`:\n\n", target_model);
@@ -3254,7 +3233,7 @@ static int cli_handle_command(cli_state *state, const char *line,
   }
   if (strcmp(line, "/help") == 0) {
     static const char *const help[] = {
-        "# CAI help\n\n"
+        "# Help\n\n"
         "Your coding agent for the current directory. Enter a prompt to "
         "start a turn; send another while it works to steer the agent.\n\n"
         "## Slash commands\n\n"
@@ -3282,7 +3261,7 @@ static int cli_handle_command(cli_state *state, const char *line,
         "control pursuit, clear removes it, help explains commands. Prefer "
         "asking the agent to manage goals. |\n",
         "| `/shell`, `!sh` | Open your interactive shell between turns; return "
-        "to CAI when it exits. Terminal output stays local. |\n",
+        "to the agent when it exits. Terminal output stays local. |\n",
         "| `/shellshare`, `!sh+` | Open a shell and share sanitized output "
         "when it exits. A ring buffer retains only the newest text that fits "
         "the configured line, byte and replay limits; older text falls out. "
@@ -3312,7 +3291,7 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| `/new` | Start a fresh conversation in this directory. |\n"
         "| `/export [ID]` | Export the current or selected conversation as "
         "Markdown and resumable JSONL. |\n"
-        "| `/quit`, `/exit` | Exit CAI. |\n\n",
+        "| `/quit`, `/exit` | Exit the application. |\n\n",
         "## Prompt keys\n\n"
         "| Key | Action |\n"
         "| --- | --- |\n"
@@ -3329,21 +3308,30 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| Ctrl-V | Paste a PNG or JPEG image from the X11 clipboard. |\n"
         "| Escape / Ctrl-C | Cancel the active turn. |\n"
         "| Ctrl-D (empty prompt) | Exit. |\n\n",
-        "## Starting CAI\n\n"
-        "```sh\n"
-        "cai -N -C ./project                  # new conversation\n"
-        "cai -i 'Explain this project'        # send a prompt at startup\n"
-        "cai -Nni 'Fix the failing tests'     # run non-interactively\n"
-        "cai --review                         # review against default branch\n"
-        "```\n\n"
-        "Run `cai --help` for all startup options or `man cai` for the "
-        "manual.\n"};
+        "## Startup options\n\n"};
+    char example[4096];
+    const char *invocation = state->options.invocation_name != NULL
+                                 ? state->options.invocation_name
+                                 : CAI_APP_DEFAULT_PROGRAM_NAME;
     size_t i;
     if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
       return CAI_ERR_TRANSPORT;
     for (i = 0U; i < sizeof(help) / sizeof(help[0]); i++)
       if (cli_text(state, help[i], strlen(help[i])) != 0)
         return CAI_ERR_TRANSPORT;
+    snprintf(example, sizeof(example),
+             "```sh\n%s %-31s # new conversation\n%s %-31s # send a prompt at "
+             "startup\n"
+             "%s %-31s # run non-interactively\n%s %-31s # review against "
+             "default branch\n```\n\n"
+             "Run `%s --help` for all startup options; see the application's "
+             "manual.\n",
+             invocation, "-N -C ./project", invocation,
+             "-i 'Explain this project'", invocation,
+             "-Nni 'Fix the failing tests'", invocation, "--review",
+             invocation);
+    if (cli_text(state, example, strlen(example)) != 0)
+      return CAI_ERR_TRANSPORT;
     return cli_finish_response(state) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
   }
   if (strcmp(line, "/quit") == 0 || strcmp(line, "/exit") == 0) {
@@ -3395,10 +3383,10 @@ static int cli_handle_command(cli_state *state, const char *line,
              state->messages == NULL              ? "disabled"
              : state->options.enable_auto_enqueue ? "on (automatic approval)"
                                                   : "off (manual approval)");
-    if (cai_cli_status_markdown(markdown, sizeof(markdown), model, effort,
-                                state->options.provider, &metrics,
-                                state->auth != NULL ? &state->quota : NULL,
-                                &instructions) != 0 ||
+    if (cai_cli_status_markdown(
+            markdown, sizeof(markdown), state->options.program_name, model,
+            effort, state->options.provider, &metrics,
+            state->auth != NULL ? &state->quota : NULL, &instructions) != 0 ||
         cli_text(state, markdown, strlen(markdown)) != 0 ||
         cli_text(state, mailbox_row, strlen(mailbox_row)) != 0 ||
         cai_cli_todo_status(state->runtime, cli_tools_write, state, error) !=
@@ -3774,9 +3762,21 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     if (argc != (explicit_mode ? 3 : 2))
       rc = cai_cli_error(&error, CAI_ERR_INVALID,
                          "Invalid Chrome native host arguments");
-    else
-      rc = cai_chrome_native_host_run(argv[explicit_mode ? 2 : 1],
-                                      state.log.logger, &error);
+    else {
+      /* Chrome only supplies its origin. Resolve the host's own identity and
+       * startup config without treating the origin as an agent argument. */
+      rc = cai_cli_configure(1, argv, &state.options, &state.configuration,
+                             application, &error);
+      if (rc == 1) {
+        const char *directory = state.configuration->get(
+            state.configuration, "chrome", "socket_directory");
+        rc = cai_cli_private_directory(directory, &error);
+        if (rc == CAI_OK)
+          rc = cai_chrome_native_host_run_at(
+              argv[explicit_mode ? 2 : 1], directory, state.log.logger, &error);
+      } else
+        rc = CAI_ERR_INVALID;
+    }
     if (rc != CAI_OK)
       cai_cli_log_error(state.log.logger, "Chrome native host", &error);
     result = rc == CAI_OK ? 0 : 1;
@@ -3797,6 +3797,8 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
       cai_cli_error(&error, CAI_ERR_INVALID, state.options.diagnostic);
     goto cleanup;
   }
+  snprintf(state.welcome, sizeof(state.welcome),
+           "Welcome to %s. Send /help for usage.", state.options.program_name);
   state.batch = state.options.review || state.options.non_interactive;
   utility_mode =
       state.options.chrome_setup || state.options.chrome_remove ||
@@ -3820,24 +3822,23 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     goto cleanup;
   }
   if (!state.batch && !utility_mode) {
-    rc = cai_cli_log_interactive(&state.log, &error);
+    rc = cai_cli_log_interactive_at(&state.log, state.options.log_dir, &error);
     if (rc != CAI_OK) {
       cli_print_error(&state, "open interactive log", &error);
       goto cleanup;
     }
   }
   if (state.options.chrome_setup || state.options.chrome_remove) {
-    rc = cai_chrome_native_host_setup(state.options.chrome_manifest,
-                                      state.options.chrome_remove,
-                                      state.log.logger, &error);
+    rc = cai_chrome_native_host_setup_named(
+        state.options.program_name, state.options.chrome_manifest,
+        state.options.chrome_remove, state.log.logger, &error);
     if (rc != CAI_OK)
       cli_print_error(&state, "Chrome registration", &error);
     result = rc == CAI_OK ? 0 : 1;
     goto cleanup;
   }
-  rc = cai_cli_pouch_open(&state.pouch, state.options.lockd,
-                          state.options.lockd_client_pem, state.log.logger,
-                          &error);
+  rc = cai_cli_pouch_open_options(&state.pouch, &state.options,
+                                  state.log.logger, &error);
   if (rc != CAI_OK) {
     cli_print_error(&state, "open lockd store", &error);
     goto cleanup;
@@ -3939,7 +3940,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   if (state.interactive &&
       signal(SIGINT, cli_keep_session_on_interrupt) == SIG_ERR) {
     cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
-                   "cai: failed to install interactive interrupt handler\n");
+                   "failed to install interactive interrupt handler\n");
     goto cleanup;
   }
 
@@ -3961,12 +3962,13 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     prompt_config.prompt_queue = 1;
     prompt_config.line_max_len = 65536U + 512U;
     prompt_config.history_max_len = 1000;
-    prompt_config.image_paste_path_template =
-        "{{XDG_CACHE_HOME}}/cai/clipboard/*";
+    snprintf(state.clipboard_template, sizeof(state.clipboard_template), "%s/*",
+             state.clipboard_directory);
+    prompt_config.image_paste_path_template = state.clipboard_template;
     state.sl = sl_create_with_config(&prompt_config);
     if (state.sl == NULL) {
       cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
-                     "cai: failed to create softline prompt\n");
+                     "failed to create softline prompt\n");
       goto cleanup;
     }
   }
@@ -3982,18 +3984,18 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
        (sl_bind_key(state.sl, SL_KEY_ESCAPE, cli_cancel_editor, NULL) !=
             SL_OK ||
         sl_set_statusline(state.sl, 1, 0) != SL_OK ||
-        sl_set_status_message(state.sl, cli_welcome) != SL_OK)) ||
+        sl_set_status_message(state.sl, state.welcome) != SL_OK)) ||
       (!state.batch && sl_output_stream_begin(state.sl) != SL_OK) ||
       mdf_create(MDF_FORMAT_ANSI, &mdf_config, &state.renderer) != MDF_OK) {
     cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
-                   "cai: failed to initialize terminal renderers\n");
+                   "failed to initialize terminal renderers\n");
     goto cleanup;
   }
   sink.userdata = &state;
   sink.write = cli_renderer_sink;
   if (state.renderer->set_sink(state.renderer, &sink) != MDF_OK) {
     cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
-                   "cai: failed to connect Markdown renderer\n");
+                   "failed to connect Markdown renderer\n");
     goto cleanup;
   }
   if (cli_introduction(&state, application) != 0) {
@@ -4006,15 +4008,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     goto cleanup;
   }
   if (state.interactive) {
-    char history_directory[PATH_MAX];
-    rc = snprintf(history_directory, sizeof(history_directory), "%s/history",
-                  state.pouch.state_directory);
-    if (rc < 0 || (size_t)rc >= sizeof(history_directory)) {
-      cai_cli_error(&error, CAI_ERR_INVALID, "prompt history path is too long");
-      cli_print_error(&state, "initialize prompt history", &error);
-      goto cleanup;
-    }
-    if (sl_history_open(state.sl, state.workspace, history_directory) !=
+    if (sl_history_open(state.sl, state.workspace, state.options.history_dir) !=
             SL_OK ||
         sl_history_set_auto_add(state.sl, 1) != SL_OK) {
       cai_cli_error(&error, CAI_ERR_TRANSPORT, sl_last_error(state.sl));
@@ -4041,7 +4035,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
                      cli_timer_wakeup, &state,
                      &state.timer_watch_id) != SL_OK) {
       cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
-                     "cai: failed to start turn status timer\n");
+                     "failed to start turn status timer\n");
       goto cleanup;
     }
     state.has_timer_watch = 1;
@@ -4069,9 +4063,11 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     auth_config.storage = &state.pouch.credentials;
     rc = cai_chatgpt_auth_open(&auth_config, &state.auth, &error);
     if (rc != CAI_OK) {
+      char hint[640];
       cli_print_error(&state, "open ChatGPT auth", &error);
-      cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
-                     "cai: run cai --login to authenticate\n");
+      snprintf(hint, sizeof(hint), "run %s --login to authenticate",
+               state.options.invocation_name);
+      cli_diagnostic(&state, PSLOG_LEVEL_ERROR, hint);
       goto cleanup;
     }
     if (pthread_mutex_init(&state.auth_lock, NULL) != 0) {

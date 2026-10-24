@@ -77,7 +77,7 @@ terminal_launch() {
   export CAI_TEST_TERMINAL_EVENT_FD=$terminal_event_fd
   "$CAI_TERMINAL_PEER" "$term" "${width:-120}" "${base[@]}" "$@" <"$term/input" & terminal_pid=$!
 }
-terminal_start() { terminal_launch "$@"; wait_for has "$term/text" 'Welcome to CAI'; }
+terminal_start() { terminal_launch "$@"; wait_for has "$term/text" 'Send /help for usage.'; }
 send() { send_offset=$(wc -c <"$term/text"); send_feed_offset=$(wc -c <"$term/feed"); printf '%b' "$1" >&7; }
 has_since() {
   tail -c +$(($1+1)) "$term/text" | tr '\n\r\t' '   ' |

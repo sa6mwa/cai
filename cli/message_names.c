@@ -14,6 +14,7 @@ typedef struct name_search {
   size_t count;
   name_path own, *others;
   size_t other_count, *eligible, eligible_count, *chosen;
+  const char *prefix;
   char *out;
 } name_search;
 
@@ -26,6 +27,10 @@ static int same_workspace(const cai_cli_message_name *a,
                           const cai_cli_message_name *b) {
   return a->host_id[0] != '\0' && strcmp(a->host_id, b->host_id) == 0 &&
          strcmp(a->workspace, b->workspace) == 0;
+}
+static int same_prefix(const char *name, const char *prefix) {
+  size_t n = strlen(prefix);
+  return strncmp(name, prefix, n) == 0 && name[n] == '.';
 }
 
 static int component_valid(const char *p) {
@@ -96,11 +101,12 @@ static int selection_present(const name_search *s, const name_path *other,
 
 static int candidate(name_search *s, size_t chosen) {
   char name[129];
-  size_t i, used = 4U, n;
+  size_t i, used = strlen(s->prefix) + 1U, n;
   for (i = 0U; i < s->other_count; i++)
     if (selection_present(s, &s->others[i], chosen))
       return 0;
-  memcpy(name, "cai.", 4U);
+  memcpy(name, s->prefix, used - 1U);
+  name[used - 1U] = '.';
   while (chosen > 0U) {
     const char *part = s->own.parts[s->chosen[--chosen]];
     n = strlen(part);
@@ -139,14 +145,16 @@ static int choose(name_search *s, size_t next, size_t selected, size_t left,
   return 0;
 }
 
-int cai_cli_message_name_select(const cai_cli_message_name *self,
+int cai_cli_message_name_select(const char *prefix,
+                                const cai_cli_message_name *self,
                                 const cai_cli_message_name *known, size_t count,
                                 char out[129], cai_error *error) {
   name_search s;
   const char *base = basename_of(self->workspace);
-  size_t i, want, bytes = 4U + strlen(base);
+  size_t i, want, bytes = strlen(prefix) + 1U + strlen(base);
   int rc = CAI_ERR_INVALID;
   memset(&s, 0, sizeof(s));
+  s.prefix = prefix;
   s.self = self;
   s.known = known;
   s.count = count;
@@ -156,6 +164,8 @@ int cai_cli_message_name_select(const cai_cli_message_name *self,
       if (!component_valid(known[i].name) || strlen(known[i].name) > 128U)
         return cai_cli_error(error, CAI_ERR_PROTOCOL,
                              "stored automatic mailbox name is invalid");
+      if (!same_prefix(known[i].name, prefix))
+        continue;
       strcpy(out, known[i].name);
       return CAI_OK;
     }
@@ -173,7 +183,8 @@ int cai_cli_message_name_select(const cai_cli_message_name *self,
         error, CAI_ERR_INVALID,
         "The workspace basename cannot be represented "
         "unchanged as a queue name; use --message-queue NAME.");
-  strcpy(out, "cai.");
+  strcpy(out, prefix);
+  strcat(out, ".");
   strcat(out, base);
   if (!name_occupied(&s, out))
     return CAI_OK;
@@ -185,7 +196,8 @@ int cai_cli_message_name_select(const cai_cli_message_name *self,
   if (s.others == NULL || s.eligible == NULL || s.chosen == NULL)
     goto nomem;
   for (i = 0U; i < count; i++) {
-    if (same_workspace(self, &known[i]) || known[i].hostname[0] == '\0' ||
+    if (!same_prefix(known[i].name, prefix) ||
+        same_workspace(self, &known[i]) || known[i].hostname[0] == '\0' ||
         strcmp(base, basename_of(known[i].workspace)) != 0)
       continue;
     if (path_split(known[i].hostname, known[i].workspace,

@@ -321,8 +321,8 @@ static int test_output_failure(int operation) {
              ? CAI_ERR_TRANSPORT
              : CAI_OK;
   } else if (operation == 7) {
-    rc = cli_write(&state, "Output unavailable") != 0 ? CAI_ERR_TRANSPORT
-                                                      : CAI_OK;
+    rc = cli_markdown(&state, "Output unavailable") != 0 ? CAI_ERR_TRANSPORT
+                                                         : CAI_OK;
   } else {
     replay.type = "assistant_text_delta";
     replay.data = event.data;
@@ -609,7 +609,7 @@ int main(void) {
                  "word01 word02 word03 word04 word05 word06 word07 "
                  "word08 word09 word10 word11 word12 word13 word14 "
                  "word15 word16 word17 word18 word19 word20 END") != 0 ||
-      cli_write(&state, "Local **literal** _file_ `tick` [name](url)\n") != 0)
+      cli_markdown(&state, "**Local** informational Markdown\n") != 0)
     return 1;
   strcpy(state.reasoning.header, "Previous turn");
   state.reasoning.header_length = strlen(state.reasoning.header);
@@ -725,9 +725,7 @@ int main(void) {
       strstr(output, "Thinking...") != NULL ||
       strstr(output, "* WARN: **literal** _file_ `tick` [name](url)") == NULL ||
       strstr(output, "\n  word") == NULL ||
-      strstr(output,
-             "Local **literal** _file_ `tick` [name](url)\n\n? First body") ==
-          NULL) {
+      strstr(output, "Local informational Markdown\n? First body") == NULL) {
     fprintf(stderr, "reasoning header/body routing failed: %s\n", output);
     return 1;
   }

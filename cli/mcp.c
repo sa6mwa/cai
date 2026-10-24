@@ -234,7 +234,8 @@ void cai_cli_mcp_close(cai_cli_mcp *mcp) {
   free(mcp->clients);
   memset(mcp, 0, sizeof(*mcp));
 }
-int cai_cli_mcp_open(cai_cli_mcp *mcp, const cai_config *config, int enabled,
+int cai_cli_mcp_open(cai_cli_mcp *mcp, const cai_config *config,
+                     const char *program_name, int enabled,
                      pslog_logger *logger, cai_error *error) {
   size_t i, count = cai_config_section_count(config);
   memset(mcp, 0, sizeof(*mcp));
@@ -295,6 +296,10 @@ int cai_cli_mcp_open(cai_cli_mcp *mcp, const cai_config *config, int enabled,
              (unsigned long)strlen(server->name), server->name);
     cai_mcp_streamable_http_client_config_init(&client_config);
     client_config.url = endpoint;
+    client_config.client_name = cai_config_get(config, section, "client_name");
+    if (client_config.client_name == NULL ||
+        client_config.client_name[0] == '\0')
+      client_config.client_name = program_name;
     client_config.timeout_ms = (long)timeout;
     client_config.discovery_timeout_ms = (long)discovery;
     client_config.logger = logger;

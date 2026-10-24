@@ -27,6 +27,15 @@ if(CAI_BUILD_SHARED)
   cai_configure_c_target(cai_app_shared)
 endif()
 if(CAI_BUILD_TESTS)
+  add_executable(cai_app_identity_test tests/app_identity_test.c)
+  target_sources(cai_app_identity_test PRIVATE tests/cli_storage_fixture.c)
+  target_link_options(cai_app_identity_test PRIVATE "-Wl,--wrap=lc_client_open")
+  target_link_libraries(cai_app_identity_test PRIVATE cai_cli_support cai_app_static)
+  cai_configure_cli_target(cai_app_identity_test)
+  target_compile_options(cai_app_identity_test PRIVATE -UNDEBUG)
+  add_test(NAME cai_app_identity COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_identity_test.sh"
+    "$<TARGET_FILE:cai_app_identity_test>" "${CMAKE_CURRENT_BINARY_DIR}")
+  set_tests_properties(cai_app_identity PROPERTIES LABELS "cli;local;offline" TIMEOUT 10)
   add_executable(cai_kanban_test tests/kanban_test.c)
   target_sources(cai_kanban_test PRIVATE tests/cli_storage_fixture.c)
   target_link_options(cai_kanban_test PRIVATE "-Wl,--wrap=lc_client_open")
@@ -73,12 +82,16 @@ if(CAI_BUILD_TESTS)
   target_compile_options(cai_app_utility_stop_test PRIVATE -UNDEBUG)
   target_link_options(cai_app_utility_stop_test PRIVATE "-Wl,--wrap=poll"
     "-Wl,--wrap=lc_enqueue" "-Wl,--wrap=lc_client_open"
-    "-Wl,--wrap=cai_cli_pouch_open")
+    "-Wl,--wrap=cai_cli_pouch_open_options")
   add_test(NAME cai_app_utility_stop COMMAND bash
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_utility_stop_test.sh"
     "$<TARGET_FILE:cai_app_utility_stop_test>")
   set_tests_properties(cai_app_utility_stop PROPERTIES LABELS "cli;local;offline" TIMEOUT 5)
   if(CAI_BUILD_CLI)
+    add_test(NAME cai_app_identity_cli COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_identity_cli_test.sh" "$<TARGET_FILE:cai_app_host>")
+    set_tests_properties(cai_app_identity_cli PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
+      ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
     add_test(NAME cai_app_controls COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_controls_test.sh" "$<TARGET_FILE:cai_app_controls_host>")
     set_tests_properties(cai_app_controls PROPERTIES LABELS "cli;local;offline" TIMEOUT 15

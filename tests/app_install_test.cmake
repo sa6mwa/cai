@@ -133,7 +133,7 @@ if(NOT CAI_LUA_RUNNER STREQUAL "")
     message(FATAL_ERROR "application Lua module was not installed")
   endif()
   file(WRITE "${root}/lua-consumer.lua" [=[
-local app = assert(require("cai.app").open {program_name = "installed host", no_config = true})
+local app = assert(require("cai.app").open {program_name = "installed-host", invocation_name = "installed host", no_config = true})
 assert(app:help():find("Usage: installed host [options]", 1, true))
 assert(app:run {"--help"} == 0)
 assert(app:get_status().outcome == "completed")

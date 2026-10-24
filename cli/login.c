@@ -314,11 +314,9 @@ int cai_cli_login(const cai_blob_store *storage, pslog_logger *logger,
     if (response_owned)
       cai_chatgpt_login_response_cleanup(&login_response);
     if (login->completed(login)) {
-      logger->info(logger,
-                   "ChatGPT auth saved to cai.auth in the selected lockd store",
+      logger->info(logger, "ChatGPT auth saved to the selected encrypted store",
                    NULL, 0U);
-      if (puts("ChatGPT auth saved to cai.auth in the selected lockd store") ==
-              EOF ||
+      if (puts("ChatGPT auth saved to the selected encrypted store") == EOF ||
           fflush(stdout) != 0) {
         logger->error(logger, "write login result", NULL, 0U);
         break;

@@ -1,5 +1,18 @@
 #include "cai_internal.h"
 #include <cai/chrome.h>
+int cai_chrome_native_host_setup_named(const char *program_name,
+                                       const char *manifest, int remove,
+                                       struct pslog_logger *logger,
+                                       cai_error *error) {
+  (void)program_name;
+  return cai_chrome_native_host_setup(manifest, remove, logger, error);
+}
+int cai_chrome_native_host_run_at(const char *origin, const char *directory,
+                                  struct pslog_logger *logger,
+                                  cai_error *error) {
+  (void)directory;
+  return cai_chrome_native_host_run(origin, logger, error);
+}
 int cai_chrome_native_host_run(const char *origin, struct pslog_logger *logger,
                                cai_error *error) {
   (void)origin;

@@ -261,10 +261,10 @@ int cai_chrome_open(const cai_chrome_config *config, cai_chrome **out,
   } else {
     if (config->socket_directory != NULL &&
         access(config->socket_directory, F_OK) != 0 && errno == ENOENT)
-      return cai_set_error(
-          error, CAI_ERR_TRANSPORT,
-          "No CAI Chrome host is connected. Run cai --chrome-setup, then open "
-          "the ChatGPT extension in Chrome.");
+      return cai_set_error(error, CAI_ERR_TRANSPORT,
+                           "No Chrome host is connected. Run this "
+                           "application's --chrome-setup, then open "
+                           "the ChatGPT extension in Chrome.");
     rc = cai_chrome_private_directory(config->socket_directory, error);
     if (rc != CAI_OK)
       return rc;
@@ -298,7 +298,8 @@ int cai_chrome_open(const cai_chrome_config *config, cai_chrome **out,
       return cai_set_error(
           error, CAI_ERR_INVALID,
           candidates == 0U
-              ? "No cai Chrome host is connected. Run cai --chrome-setup, then "
+              ? "No Chrome host is connected. Run this application's "
+                "--chrome-setup, then "
                 "open the ChatGPT extension in Chrome."
               : "Multiple Chrome hosts are connected; select one with "
                 "--chrome-socket PATH");

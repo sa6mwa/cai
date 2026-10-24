@@ -99,12 +99,12 @@ terminal_start
 printf 'CODEX_INTERACTIVE_MARKER\n' >"$root/custom-codex/AGENTS.md"
 write_config false
 send '/resume\r'; expect 'resume'
-send '/resume 1\r'; expect 'session'
+send '/resume 1\r'; expect 'restore the saved model and current instructions AGENTS TURN DONE'
 prompt 'check instructions after manual resume' InteractiveAgentsDone
 tail -1 "$root/peer/requests.jsonl" >"$root/request"
 contains "$root/request" CODEX_INTERACTIVE_MARKER
 send '/status\r'; expect 'Status'
-expect 'CAI global AGENTS.md'; expect 'Codex global AGENTS.md'
+expect 'cai global AGENTS.md'; expect 'Codex global AGENTS.md'
 expect 'Repository AGENTS.md'
 has "$term/text" 'Yes' || fail 'Captured global instruction sources not reported'
 terminal_close

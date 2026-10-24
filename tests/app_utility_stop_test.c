@@ -29,14 +29,14 @@ static void ack(void *context, unsigned long long id, int status,
   assert(id > 0U && status == CAI_OK);
   acknowledgements++;
 }
-int __real_cai_cli_pouch_open(cai_cli_pouch *, const char *, const char *,
-                              pslog_logger *, cai_error *);
-int __wrap_cai_cli_pouch_open(cai_cli_pouch *, const char *, const char *,
-                              pslog_logger *, cai_error *);
-int __wrap_cai_cli_pouch_open(cai_cli_pouch *pouch, const char *endpoint,
-                              const char *pem, pslog_logger *logger,
-                              cai_error *error) {
-  int rc = __real_cai_cli_pouch_open(pouch, endpoint, pem, logger, error);
+int __real_cai_cli_pouch_open_options(cai_cli_pouch *, const cai_cli_options *,
+                                      pslog_logger *, cai_error *);
+int __wrap_cai_cli_pouch_open_options(cai_cli_pouch *, const cai_cli_options *,
+                                      pslog_logger *, cai_error *);
+int __wrap_cai_cli_pouch_open_options(cai_cli_pouch *pouch,
+                                      const cai_cli_options *options,
+                                      pslog_logger *logger, cai_error *error) {
+  int rc = __real_cai_cli_pouch_open_options(pouch, options, logger, error);
   if (rc == CAI_OK && strcmp(mode, "message_before") == 0)
     request_stop();
   return rc;

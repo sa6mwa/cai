@@ -104,7 +104,9 @@ cai_chrome_begin_turn
 cai_chrome_close
 cai_chrome_end_turn
 cai_chrome_native_host_run
+cai_chrome_native_host_run_at
 cai_chrome_native_host_setup
+cai_chrome_native_host_setup_named
 cai_chrome_open
 cai_chrome_open_lazy
 cai_chrome_request

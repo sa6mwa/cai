@@ -46,7 +46,7 @@ static int reject_enqueue(lc_client *client, const lc_enqueue_req *request,
   (void)client;
   (void)source;
   (void)result;
-  assert(strcmp(request->ns, MESSAGE_NS) == 0);
+  assert(strcmp(request->ns, "cai.messages") == 0);
   assert(request->ttl_seconds == 0);
   return lc_error_set(error, LC_ERR_TRANSPORT, 0,
                       "injected standalone enqueue failure", NULL, NULL, NULL);
@@ -217,7 +217,7 @@ static void cancel_wait(cai_cli_messages *sender) {
   sender->timeout_ms = 2000L;
   assert(pthread_create(&thread, NULL, wait_to_send, &waiting) == 0);
   lc_dequeue_req_init(&req);
-  req.ns = MESSAGE_NS;
+  req.ns = "cai.messages";
   req.queue = "cancel-target";
   req.owner = "fixture";
   req.wait_seconds = 2;
@@ -322,6 +322,27 @@ static void cancel_startup(cai_cli_pouch *pouch, const char *workspace) {
   startup_client = NULL;
   cai_error_cleanup(&error);
 }
+static void naming_prefixes(void) {
+  cai_cli_message_name self, known[2];
+  char name[129];
+  cai_error error;
+  cai_error_init(&error);
+  self.hostname = "host";
+  self.host_id = "machine";
+  self.workspace = "/home/alice/g/lab";
+  self.name = "";
+  self.automatic = 1;
+  known[0] = self;
+  known[0].workspace = "/home/bob/g/lab";
+  known[0].name = "smith.lab";
+  known[1] = self;
+  known[1].workspace = "/home/alice/g/extra/lab";
+  known[1].name = "cai.lab";
+  assert(cai_cli_message_name_select("smith", &self, known, 2U, name, &error) ==
+         CAI_OK);
+  assert(strcmp(name, "smith.alice.lab") == 0);
+  cai_error_cleanup(&error);
+}
 static void naming_rules(void) {
   cai_cli_message_name self = {"node-a", "machine-a", "/home/mike/g/lab", "",
                                1};
@@ -333,70 +354,82 @@ static void naming_rules(void) {
   char name[129], deep[4096], deeper[4096], large[160];
   size_t i;
   cai_error_init(&error);
-  assert(cai_cli_message_name_select(&self, NULL, 0U, name, &error) == CAI_OK);
+  assert(cai_cli_message_name_select("cai", &self, NULL, 0U, name, &error) ==
+         CAI_OK);
   assert(strcmp(name, "cai.lab") == 0);
-  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) == CAI_OK);
+  assert(cai_cli_message_name_select("cai", &self, known, 1U, name, &error) ==
+         CAI_OK);
   assert(strcmp(name, "cai.mike.lab") == 0);
   self.workspace = "/home/alice/g/lab";
   known[0].workspace = "/home/mike/g/lab";
-  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) == CAI_OK);
+  assert(cai_cli_message_name_select("cai", &self, known, 1U, name, &error) ==
+         CAI_OK);
   assert(strcmp(name, "cai.alice.lab") == 0);
   self.workspace = "/home/mike/g/lab";
   known[0].workspace = "/lab";
-  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) == CAI_OK);
+  assert(cai_cli_message_name_select("cai", &self, known, 1U, name, &error) ==
+         CAI_OK);
   assert(strcmp(name, "cai.g.lab") == 0);
   self.workspace = "/a/b/lab";
   known[0].workspace = "/b/a/lab";
-  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) == CAI_OK);
+  assert(cai_cli_message_name_select("cai", &self, known, 1U, name, &error) ==
+         CAI_OK);
   assert(strcmp(name, "cai.a.b.lab") == 0);
   /* Component count wins even when a two-component choice is shorter text. */
   self.workspace = "/long-descriptive-real-directory/a/b/lab";
   known[0].workspace = "/x/a/c/lab";
-  assert(cai_cli_message_name_select(&self, known, 3U, name, &error) == CAI_OK);
+  assert(cai_cli_message_name_select("cai", &self, known, 3U, name, &error) ==
+         CAI_OK);
   assert(strcmp(name, "cai.long-descriptive-real-directory.lab") == 0);
   self.workspace = "/home/mike/g/lab";
   self.hostname = "node-b";
   self.host_id = "machine-b";
   known[0].workspace = self.workspace;
-  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) == CAI_OK);
+  assert(cai_cli_message_name_select("cai", &self, known, 1U, name, &error) ==
+         CAI_OK);
   assert(strcmp(name, "cai.node-b.lab") == 0);
   known[0].hostname = "node-b";
-  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) ==
+  assert(cai_cli_message_name_select("cai", &self, known, 1U, name, &error) ==
          CAI_ERR_INVALID);
   assert(strstr(error.message, "same hostname") != NULL);
   known[0].host_id = "machine-b";
   known[0].name = "cai.saved.lab";
-  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) == CAI_OK);
+  assert(cai_cli_message_name_select("cai", &self, known, 1U, name, &error) ==
+         CAI_OK);
   assert(strcmp(name, "cai.saved.lab") == 0);
+  assert(cai_cli_message_name_select("smith", &self, known, 1U, name, &error) ==
+         CAI_OK);
+  assert(strcmp(name, "smith.lab") == 0);
   known[1] = known[0];
   known[1].host_id = "duplicate-hostname-machine";
   known[1].name = "explicit-other-host";
   known[1].automatic = 0;
-  assert(cai_cli_message_name_select(&self, known, 2U, name, &error) == CAI_OK);
+  assert(cai_cli_message_name_select("cai", &self, known, 2U, name, &error) ==
+         CAI_OK);
   assert(strcmp(name, "cai.saved.lab") == 0);
   known[0].name = "Invalid saved name";
-  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) ==
+  assert(cai_cli_message_name_select("cai", &self, known, 1U, name, &error) ==
          CAI_ERR_PROTOCOL);
   known[0].name = "cai.lab";
   known[0].workspace = "/g/lab";
   self.workspace = "/lab";
-  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) ==
+  assert(cai_cli_message_name_select("cai", &self, known, 1U, name, &error) ==
          CAI_ERR_INVALID);
   assert(strstr(error.message, "--message-queue NAME") != NULL);
   self.workspace = "/Uppercase";
-  assert(cai_cli_message_name_select(&self, NULL, 0U, name, &error) ==
+  assert(cai_cli_message_name_select("cai", &self, NULL, 0U, name, &error) ==
          CAI_ERR_INVALID);
   self.workspace = "/space name";
-  assert(cai_cli_message_name_select(&self, NULL, 0U, name, &error) ==
+  assert(cai_cli_message_name_select("cai", &self, NULL, 0U, name, &error) ==
          CAI_ERR_INVALID);
   self.workspace = "/";
-  assert(cai_cli_message_name_select(&self, NULL, 0U, name, &error) ==
+  assert(cai_cli_message_name_select("cai", &self, NULL, 0U, name, &error) ==
          CAI_ERR_INVALID);
   memset(large, 'a', sizeof(large));
   large[0] = '/';
   large[sizeof(large) - 1U] = '\0';
   self.workspace = large;
-  assert(cai_cli_message_name_select(&self, NULL, 0U, name, &error) ==
+  assert(cai_cli_message_name_select("cai", &self, NULL, 0U, name, &error) ==
          CAI_ERR_INVALID);
   /* Identical common ancestors must not cause an exponential search. */
   for (i = 0U; i < 1000U; i++) {
@@ -408,12 +441,12 @@ static void naming_rules(void) {
   strcat(deeper, deep);
   self.workspace = deep;
   known[0].workspace = deeper;
-  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) ==
+  assert(cai_cli_message_name_select("cai", &self, known, 1U, name, &error) ==
          CAI_ERR_INVALID);
   /* Repeated components also stay cheap when the full paths do differ,
    * but the distinguishing repetition cannot fit the queue-name limit. */
   known[0].workspace = deep + 2U;
-  assert(cai_cli_message_name_select(&self, known, 1U, name, &error) ==
+  assert(cai_cli_message_name_select("cai", &self, known, 1U, name, &error) ==
          CAI_ERR_INVALID);
   cai_error_cleanup(&error);
 }
@@ -473,6 +506,7 @@ static void workspace_mailboxes(cai_cli_pouch *pouch, const char *root) {
   strcpy(doc.sender, sender->queue);
   strcpy(doc.sender_session, sender->session);
   strcpy(doc.instance, sender->instance);
+  strcpy(doc.reply_queue, sender->receipts);
   strcpy(doc.recipient, name);
   doc.text = output.text;
   strcpy(output.text, "Stale consumer must defer");
@@ -713,9 +747,11 @@ static void queue_overrides(cai_cli_pouch *pouch, const char *workspace) {
   strcpy(doc.sender, "override-sender");
   strcpy(doc.recipient, "before-rename");
   strcpy(doc.recipient_instance, receiver->instance);
+  strcpy(doc.recipient, receiver->receipts);
   assert(deliver_direct(receiver, &doc) == LC_OK);
   assert(!receiver->receipt);
   strcpy(doc.recipient_instance, sender->instance);
+  strcpy(doc.recipient, sender->receipts);
   assert(deliver_direct(receiver, &doc) != LC_OK);
   assert(load_doc(sender, "mailbox.before-rename", &doc, &error) == CAI_OK);
   assert(doc.instance[0] == '\0');
@@ -767,11 +803,17 @@ int main(int argc, char **argv) {
   char expired_text[] = "expired";
   char controls[] = "illegal\033[31m terminal control";
   assert(argc == 2 || (argc == 3 && strcmp(argv[2], "startup") == 0));
-  naming_rules();
+  if (argc == 2 && strcmp(argv[1], "--names-only") == 0) {
+    naming_prefixes();
+    naming_rules();
+    return 0;
+  }
   cai_error_init(&error);
   lc_error_init(&local);
   assert(cai_cli_pouch_open(&a, NULL, NULL, NULL, &error) == CAI_OK);
   assert(cai_cli_pouch_open(&b, NULL, NULL, NULL, &error) == CAI_OK);
+  strcpy(b.program_name, "smith");
+  strcpy(b.queue_prefix, "smith");
   assert(cai_cli_messages_new(&a, 2000L, &sender, &error) == CAI_OK);
   assert(cai_cli_messages_new(&b, 2000L, &receiver, &error) == CAI_OK);
   assert(cai_cli_messages_start(sender, "sender", argv[1], "sender", &error) ==
@@ -886,6 +928,7 @@ int main(int argc, char **argv) {
   strcpy(expired.sender, "sender");
   strcpy(expired.sender_session, "sender");
   strcpy(expired.instance, sender->instance);
+  strcpy(expired.reply_queue, sender->receipts);
   strcpy(expired.recipient, "receiver");
   assert(lc_xid_new(expired.id, &local) == LC_OK);
   expired.text = expired_text;

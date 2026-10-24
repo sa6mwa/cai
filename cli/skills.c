@@ -87,13 +87,15 @@ static int root_path(const cai_cli_options *options, char *out,
   else {
     base = getenv("XDG_CONFIG_HOME");
     if (base != NULL && base[0] != '\0')
-      n = snprintf(relative, sizeof(relative), "%s/cai/skills", base);
+      n = snprintf(relative, sizeof(relative), "%s/%s/skills", base,
+                   options->program_name);
     else {
       base = getenv("HOME");
       if (base == NULL || base[0] == '\0')
         return invalid(error,
                        "set HOME or XDG_CONFIG_HOME for the skills directory");
-      n = snprintf(relative, sizeof(relative), "%s/.config/cai/skills", base);
+      n = snprintf(relative, sizeof(relative), "%s/.config/%s/skills", base,
+                   options->program_name);
     }
   }
   if (n < 0 || (size_t)n >= sizeof(relative))

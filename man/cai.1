@@ -28,6 +28,29 @@ Use
 to start a new session.
 .SH OPTIONS
 .TP
+.BR \-\-state-dir " DIR, " \-\-cache-dir " DIR, " \-\-data-dir " DIR"
+Override individual application roots. Defaults use the matching XDG home and
+the application name (cai for this binary). Environment aliases are CAI_STATE_DIR,
+CAI_CACHE_DIR and CAI_DATA_DIR; INI keys are in [paths].
+.TP
+.BR \-\-history-dir " DIR, " \-\-clipboard-dir " DIR, " \-\-log-dir " DIR"
+Override prompt history, pasted images, or interactive logs independently.
+Defaults follow state_dir/history, cache_dir/clipboard, and cache_dir respectively.
+.TP
+.BI \-\-pouch-key-file " FILE"
+Override the encryption-key filename (default state_dir/pouch.key). Sharing an
+encrypted Pouch root requires sharing the same key.
+.TP
+.BI \-\-namespace-prefix " NAME"
+Default storage namespace prefix (cai). Individual --sessions-namespace,
+--scopes-namespace, --auth-namespace, --todo-namespace and --messages-namespace
+flags override complete namespaces; matching keys are in [storage].
+.TP
+.BI \-\-queue-prefix " NAME"
+Prefix for automatic mailbox and receipt queue names (default cai). A single
+lowercase identifier, at most 32 bytes. --message-queue overrides the complete
+public mailbox name instead. Also [messaging] queue_prefix or CAI_QUEUE_PREFIX.
+.TP
 .BI \-\-config " FILE"
 Load another INI configuration file, creating a documented, commented template
 if it is missing. Defaults to $XDG_CONFIG_HOME/cai/config.ini, or
@@ -79,8 +102,8 @@ dot, underscore and hyphen, and have at most 128 characters. Empty keeps
 automatic naming. /status shows the name. The newest app start claims new
 deliveries; already delivered messages stay in their original conversation.
 Exiting an older instance cannot release a newer owner's binding.
-Default-name hash collisions with another canonical directory fail and ask
-for an explicit override. Destination discovery includes offline mailboxes;
+Unrepresentable or indistinguishable workspace names require an explicit
+override. Destination discovery includes offline mailboxes;
 only delivery ACK confirms acceptance.
 .TP
 .BR \-q , " " \-\-queue " " NAME
@@ -687,7 +710,7 @@ a turn; inspecting cached metadata does not trigger more network discovery.
 Exit the agent.
 .SH STATUS LINE
 Before the first turn, the thinking line shows
-.RB \(lq "Welcome to CAI. Send /help for usage." \(rq,
+.RB \(lq "Welcome to cai. Send /help for usage." \(rq,
 including after replaying a resumed conversation.
 The status line shows model and reasoning effort, context used as a percentage,
 the workspace, available ChatGPT subscription quota and credits or API cost estimate,

@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "app_internal.h"
+#include "identity.h"
 #include "pouch_stream.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -21,6 +22,7 @@ typedef struct app_impl {
   cai_app_config config;
   cai_app_setting *settings;
   char **strings;
+  size_t string_count;
   int running;
   cai_app_bridge *bridge;
 } app_impl;
@@ -39,7 +41,7 @@ typedef struct process_state {
 void cai_app_config_init(cai_app_config *config) {
   if (config != NULL) {
     memset(config, 0, sizeof(*config));
-    config->program_name = "cai";
+    config->program_name = CAI_APP_DEFAULT_PROGRAM_NAME;
   }
 }
 static void process_free(process_state *saved) {
@@ -130,13 +132,16 @@ int cai_app_run(cai_app *self, int argc, const char *const *argv,
   app = self->impl;
   if (pthread_mutex_trylock(&application_lock) != 0)
     return cai_cli_error(error, CAI_ERR_INVALID,
-                         "a CAI application is already running");
+                         "an application is already running");
   app->running = 1;
   cai_app_bridge_begin(app->bridge);
   arguments = calloc((size_t)argc + 2U, sizeof(*arguments));
   rc = arguments != NULL ? CAI_OK : CAI_ERR_NOMEM;
   for (i = 0; rc == CAI_OK && i <= argc; i++) {
-    const char *value = i == 0 ? app->config.program_name : argv[i - 1];
+    const char *value = i == 0 ? (app->config.invocation_name != NULL
+                                      ? app->config.invocation_name
+                                      : app->config.program_name)
+                               : argv[i - 1];
     if (value == NULL)
       rc = CAI_ERR_INVALID;
     else if ((arguments[i] = strdup(value)) == NULL)
@@ -190,11 +195,20 @@ const cai_app_option *cai_app_option_at(const cai_app *self, size_t index) {
 }
 int cai_app_write_help(const cai_app *self, cai_sink *sink, cai_error *error) {
   const app_impl *app;
+  char prefix[65];
+  int rc;
   if (self == NULL || sink == NULL)
     return cai_cli_error(error, CAI_ERR_INVALID,
                          "help requires application and sink");
   app = self->impl;
-  return cai_cli_help_write(app->config.program_name, sink, error);
+  rc = cai_cli_environment_prefix(&app->config, prefix, error);
+  if (rc != CAI_OK)
+    return rc;
+  return cai_cli_help_write(app->config.program_name,
+                            app->config.invocation_name != NULL
+                                ? app->config.invocation_name
+                                : app->config.program_name,
+                            prefix, sink, error);
 }
 void cai_app_close(cai_app *self) {
   app_impl *app;
@@ -204,8 +218,7 @@ void cai_app_close(cai_app *self) {
   app = self->impl;
   if (app->running)
     return;
-  for (i = 0U; app->strings != NULL && i < 5U + 3U * app->config.setting_count;
-       i++)
+  for (i = 0U; app->strings != NULL && i < app->string_count; i++)
     free(app->strings[i]);
   free(app->strings);
   free(app->settings);
@@ -217,6 +230,11 @@ int cai_app_open(const cai_app_config *config, cai_app **out,
   cai_app_config defaults;
   cai_config *schema = NULL;
   app_impl *app;
+#define STRING_OFFSET(n) offsetof(cai_app_config, n),
+  static const size_t offsets[] = {CAI_APP_STRINGS(STRING_OFFSET)};
+#undef STRING_OFFSET
+  char prefix[65];
+  size_t base_count = sizeof(offsets) / sizeof(offsets[0]);
   size_t i;
   int rc;
   if (out == NULL)
@@ -231,7 +249,8 @@ int cai_app_open(const cai_app_config *config, cai_app **out,
     return cai_cli_error(error, CAI_ERR_INVALID,
                          "introduction margins must be nonnegative");
   if ((config->setting_count != 0U && config->settings == NULL) ||
-      config->setting_count > ((size_t)-1 / sizeof(cai_app_setting) - 5U) / 3U)
+      config->setting_count >
+          ((size_t)-1 / sizeof(cai_app_setting) - base_count) / 3U)
     return cai_cli_error(error, CAI_ERR_INVALID,
                          "invalid application settings");
   app = calloc(1U, sizeof(*app));
@@ -246,56 +265,39 @@ int cai_app_open(const cai_app_config *config, cai_app **out,
   app->shell.get_status = cai_app_get_status;
   app->shell.close = cai_app_close;
   app->config.setting_count = config->setting_count;
-  app->strings = calloc(5U + 3U * config->setting_count, sizeof(char *));
+  app->string_count = base_count + 3U * config->setting_count;
+  app->strings = calloc(app->string_count, sizeof(char *));
   if (app->strings == NULL) {
     cai_app_close(&app->shell);
     return cai_cli_error(error, CAI_ERR_NOMEM,
                          "copy application configuration");
   }
-  app->config.program_name = app->strings[0] =
-      strdup(config->program_name != NULL ? config->program_name : "cai");
-  app->config.banner = app->strings[1] =
-      config->banner != NULL ? strdup(config->banner) : NULL;
-  app->config.introduction_markdown = app->strings[4] =
-      config->introduction_markdown != NULL
-          ? strdup(config->introduction_markdown)
-          : NULL;
-  app->config.config_file = app->strings[2] =
-      config->config_file != NULL ? strdup(config->config_file) : NULL;
-  app->config.config_directory = app->strings[3] =
-      config->config_directory != NULL ? strdup(config->config_directory)
-                                       : NULL;
-  app->config.no_config = config->no_config;
-  app->config.introduction_margin_left = config->introduction_margin_left;
-  app->config.introduction_margin_right = config->introduction_margin_right;
-  app->config.logger = config->logger;
-  app->config.register_agent_tools = config->register_agent_tools;
-  app->config.register_agent_tools_context =
-      config->register_agent_tools_context;
-  app->config.event_callback = config->event_callback;
-  app->config.event_context = config->event_context;
-  app->config.replay_callback = config->replay_callback;
-  app->config.replay_context = config->replay_context;
-  app->config.control_callback = config->control_callback;
-  app->config.control_context = config->control_context;
-  app->config.setting_count = config->setting_count;
-  if (app->config.program_name == NULL ||
-      (config->banner != NULL && app->config.banner == NULL) ||
-      (config->introduction_markdown != NULL &&
-       app->config.introduction_markdown == NULL) ||
-      (config->config_file != NULL && app->config.config_file == NULL) ||
-      (config->config_directory != NULL &&
-       app->config.config_directory == NULL)) {
-    cai_app_close(&app->shell);
-    return cai_cli_error(error, CAI_ERR_NOMEM,
-                         "copy application configuration");
+  app->config = *config;
+  rc = CAI_OK;
+  for (i = 0U; i < base_count; i++) {
+    const char *value =
+        *(const char *const *)((const char *)config + offsets[i]);
+    if (offsets[i] == offsetof(cai_app_config, program_name) && value == NULL)
+      value = CAI_APP_DEFAULT_PROGRAM_NAME;
+    app->strings[i] = value != NULL ? strdup(value) : NULL;
+    *(const char **)((char *)&app->config + offsets[i]) = app->strings[i];
+    if (value != NULL && app->strings[i] == NULL)
+      rc =
+          cai_cli_error(error, CAI_ERR_NOMEM, "copy application configuration");
   }
-  if (app->config.program_name[0] == '\0' ||
-      strlen(app->config.program_name) > 512U ||
-      strpbrk(app->config.program_name, "\r\n\t") != NULL) {
+  if (rc == CAI_OK)
+    rc = cai_cli_environment_prefix(&app->config, prefix, error);
+  if (rc == CAI_OK && app->config.invocation_name != NULL &&
+      (app->config.invocation_name[0] == '\0' ||
+       strlen(app->config.invocation_name) > 512U ||
+       strpbrk(app->config.invocation_name, "\r\n\t") != NULL))
+    rc = cai_cli_error(error, CAI_ERR_INVALID, "invalid invocation_name");
+  if (rc == CAI_OK && app->config.queue_prefix != NULL &&
+      !cai_cli_identity_valid(app->config.queue_prefix))
+    rc = cai_cli_error(error, CAI_ERR_INVALID, "invalid queue_prefix");
+  if (rc != CAI_OK) {
     cai_app_close(&app->shell);
-    return cai_cli_error(error, CAI_ERR_INVALID,
-                         "invalid application program name");
+    return rc;
   }
   rc = cai_cli_app_schema(&schema, error) < 0 ? CAI_ERR_INVALID : CAI_OK;
   if (config->setting_count != 0U) {
@@ -307,9 +309,12 @@ int cai_app_open(const cai_app_config *config, cai_app **out,
     const cai_app_setting *s = &config->settings[i];
     rc = cai_config_set(schema, s->section, s->key, s->value, error);
     if (rc == CAI_OK) {
-      app->settings[i].section = app->strings[5U + i * 3U] = strdup(s->section);
-      app->settings[i].key = app->strings[6U + i * 3U] = strdup(s->key);
-      app->settings[i].value = app->strings[7U + i * 3U] = strdup(s->value);
+      app->settings[i].section = app->strings[base_count + i * 3U] =
+          strdup(s->section);
+      app->settings[i].key = app->strings[base_count + 1U + i * 3U] =
+          strdup(s->key);
+      app->settings[i].value = app->strings[base_count + 2U + i * 3U] =
+          strdup(s->value);
       if (app->settings[i].section == NULL || app->settings[i].key == NULL ||
           app->settings[i].value == NULL)
         rc = cai_cli_error(error, CAI_ERR_NOMEM, "copy application setting");

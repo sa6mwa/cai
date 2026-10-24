@@ -53,12 +53,13 @@
     cai_configure_cli_target(cai_cli_geometry_test)
     add_test(NAME cai_cli_geometry COMMAND cai_cli_geometry_test)
     add_executable(cai_cli_messages_test tests/cli_messages_test.c
-      cli/pouch.c cli/pouch_stream.c cli/session_commands.c cli/log.c cli/message_names.c)
+      cli/identity.c cli/pouch.c cli/pouch_stream.c cli/session_commands.c cli/log.c cli/message_names.c)
     target_link_libraries(cai_cli_messages_test PRIVATE cai_static
       softline::softline_static lockdc::static)
     cai_configure_cli_target(cai_cli_messages_test)
     target_compile_options(cai_cli_messages_test PRIVATE -UNDEBUG)
     cai_cli_use_storage_fixture(cai_cli_messages_test)
+    add_test(NAME cai_cli_message_names COMMAND cai_cli_messages_test --names-only)
     add_test(NAME cai_cli_messages_native COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_messages_test.sh"
       "$<TARGET_FILE:cai_cli_messages_test>")
@@ -203,7 +204,7 @@
     cai_configure_cli_target(cai_cli_reasoning_test)
     add_test(NAME cai_cli_reasoning COMMAND cai_cli_reasoning_test)
     add_executable(cai_cli_log_test tests/cli_log_test.c
-      cli/log.c cli/response.c cli/pouch_stream.c)
+      cli/identity.c cli/log.c cli/response.c cli/pouch_stream.c)
     target_link_libraries(cai_cli_log_test PRIVATE cai_static lockdc::static)
     cai_configure_cli_target(cai_cli_log_test)
     add_test(NAME cai_cli_log COMMAND cai_cli_log_test "${CMAKE_CURRENT_BINARY_DIR}")
@@ -223,7 +224,7 @@
     add_test(NAME cai_cli_quota_refresh COMMAND cai_cli_quota_refresh_test)
     set_tests_properties(cai_cli_quota_refresh PROPERTIES TIMEOUT 30)
     add_executable(cai_cli_pouch_startup_test tests/cli_pouch_startup_test.c
-      cli/pouch_stream.c)
+      cli/identity.c cli/pouch_stream.c)
     target_link_libraries(cai_cli_pouch_startup_test PRIVATE cai_static lockdc::static)
     cai_configure_cli_target(cai_cli_pouch_startup_test)
     target_compile_options(cai_cli_pouch_startup_test PRIVATE -UNDEBUG)
@@ -236,7 +237,7 @@
         "$<TARGET_FILE:cai_cli_mock_fixture>" "$<TARGET_FILE:cai_cli_pouch_startup_test>")
     set_tests_properties(cai_cli_replay_limits PROPERTIES TIMEOUT 30)
     add_executable(cai_cli_pouch_compaction_test tests/cli_pouch_compaction_test.c
-      cli/pouch_stream.c)
+      cli/identity.c cli/pouch_stream.c)
     target_link_libraries(cai_cli_pouch_compaction_test PRIVATE cai_static lockdc::static)
     cai_configure_cli_target(cai_cli_pouch_compaction_test)
     target_compile_options(cai_cli_pouch_compaction_test PRIVATE -UNDEBUG)

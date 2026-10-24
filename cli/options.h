@@ -5,6 +5,15 @@
 #include <stdio.h>
 
 typedef struct cai_cli_options {
+  const char *program_name;
+  const char *invocation_name;
+  char environment_prefix[65];
+  char default_api_key_env[80];
+  const char *namespace_prefix, *queue_prefix;
+  const char *sessions_namespace, *auth_namespace, *scopes_namespace;
+  const char *todo_namespace, *messages_namespace;
+  const char *state_dir, *cache_dir, *data_dir, *history_dir;
+  const char *clipboard_dir, *log_dir, *pouch_key_file;
   int help, version;
   const char *provider;
   const char *config_file;

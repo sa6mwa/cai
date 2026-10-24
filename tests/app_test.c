@@ -118,7 +118,7 @@ int main(int argc, char **argv) {
   cai_error_init(&error);
   assert(config.register_agent_tools == NULL &&
          config.register_agent_tools_context == NULL);
-  config.program_name = program;
+  config.invocation_name = program;
   config.banner = "BANNER_MUST_NOT_APPEAR_IN_HELP";
   config.introduction_markdown = "INTRODUCTION_MUST_NOT_APPEAR_IN_HELP";
   config.no_config = 1;
@@ -199,7 +199,7 @@ int main(int argc, char **argv) {
   assert(strcmp(setlocale(LC_CTYPE, NULL), "C") == 0);
   logs.app = NULL;
   app->close(app);
-  config.program_name = "host";
+  config.program_name = CAI_APP_DEFAULT_PROGRAM_NAME;
   config.config_file = "/nonexistent/cai-embedding-config.ini";
   config.no_config = 0;
   assert(cai_app_open(&config, &app, &error) == CAI_OK);

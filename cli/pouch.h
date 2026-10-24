@@ -1,6 +1,7 @@
 #ifndef CAI_CLI_POUCH_H
 #define CAI_CLI_POUCH_H
 
+#include "options.h"
 #include "pouch_stream.h"
 #include <cai/agent_runtime.h>
 #include <cai/blob_store.h>
@@ -25,6 +26,9 @@ typedef struct cai_cli_session {
 
 typedef struct cai_cli_pouch {
   lc_client *sessions;
+  char program_name[33], queue_prefix[33];
+  char sessions_namespace[129], auth_namespace[129], scopes_namespace[129];
+  char todo_namespace[129], messages_namespace[129];
   cai_agent_session_store store;
   cai_blob_store credentials;
   pslog_logger *logger;
@@ -35,9 +39,13 @@ typedef struct cai_cli_pouch {
   const char *replay_scope;
   pthread_t owner_thread;
   char state_directory[PATH_MAX];
+  char config_directory[PATH_MAX];
   char key_path[PATH_MAX];
 } cai_cli_pouch;
 
+int cai_cli_pouch_open_options(cai_cli_pouch *pouch,
+                               const cai_cli_options *options,
+                               pslog_logger *logger, cai_error *error);
 int cai_cli_pouch_open(cai_cli_pouch *pouch, const char *endpoint,
                        const char *client_pem, pslog_logger *logger,
                        cai_error *error);

@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "log.h"
 #include "../src/cai_utf8.h"
+#include "identity.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -302,44 +303,9 @@ static int log_isatty(void *context) {
 
 int cai_cli_cache_directory(char *directory, size_t capacity,
                             cai_error *error) {
-  const char *base;
-  char *cursor;
-  struct stat status;
-  int n;
-  base = getenv("XDG_CACHE_HOME");
-  if (base != NULL && *base != '\0')
-    n = snprintf(directory, capacity, "%s/cai", base);
-  else {
-    base = getenv("HOME");
-    if (base == NULL || *base == '\0')
-      return cai_cli_error(error, CAI_ERR_INVALID,
-                           "set HOME or XDG_CACHE_HOME for cai cache");
-    n = snprintf(directory, capacity, "%s/.cache/cai", base);
-  }
-  if (n < 0 || (size_t)n >= capacity || directory[0] != '/')
-    return cai_cli_error(error, CAI_ERR_INVALID,
-                         "cai cache path must be absolute and fit PATH_MAX");
-  for (cursor = directory + 1;; cursor++) {
-    if (*cursor == '/' || *cursor == '\0') {
-      char saved;
-      saved = *cursor;
-      *cursor = '\0';
-      if (mkdir(directory, 0700) != 0 && errno != EEXIST) {
-        *cursor = saved;
-        return cai_cli_error(error, CAI_ERR_TRANSPORT,
-                             "create cai cache directory");
-      }
-      *cursor = saved;
-      if (saved == '\0')
-        break;
-    }
-  }
-  if (lstat(directory, &status) != 0 || !S_ISDIR(status.st_mode) ||
-      status.st_uid != geteuid() || (status.st_mode & 077U) != 0U)
-    return cai_cli_error(
-        error, CAI_ERR_INVALID,
-        "cai cache directory must be owned by you with mode 0700");
-  return CAI_OK;
+  int rc = cai_cli_xdg_path(directory, capacity, "XDG_CACHE_HOME", ".cache",
+                            CAI_APP_DEFAULT_PROGRAM_NAME, error);
+  return rc == CAI_OK ? cai_cli_private_directory(directory, error) : rc;
 }
 
 int cai_cli_log_open(cai_cli_log *log, pslog_level default_level,
@@ -381,10 +347,20 @@ int cai_cli_log_open_with_logger(cai_cli_log *log, pslog_level default_level,
 }
 
 int cai_cli_log_interactive(cai_cli_log *log, cai_error *error) {
+  return cai_cli_log_interactive_at(log, NULL, error);
+}
+int cai_cli_log_interactive_at(cai_cli_log *log, const char *directory,
+                               cai_error *error) {
   int rc;
   if (log->borrowed)
     return CAI_OK;
-  rc = cai_cli_cache_directory(log->directory, sizeof(log->directory), error);
+  if (directory != NULL) {
+    if (strlen(directory) >= sizeof(log->directory))
+      return cai_cli_error(error, CAI_ERR_INVALID, "log directory too long");
+    strcpy(log->directory, directory);
+    rc = cai_cli_private_directory(log->directory, error);
+  } else
+    rc = cai_cli_cache_directory(log->directory, sizeof(log->directory), error);
   if (rc != CAI_OK)
     return rc;
   if (snprintf(log->path, sizeof(log->path), "%s/startup-XXXXXX",

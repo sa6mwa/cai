@@ -13,13 +13,12 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MESSAGE_NS "cai.messages"
 #define MESSAGE_BYTES 65536U
 #define PAGE_KEYS 32U
 
 typedef struct message_doc {
   char kind[16], id[LC_XID_STRING_SIZE], sender[129], recipient[129];
-  char pending_for[129];
+  char pending_for[129], reply_queue[129];
   char sender_session[129], instance[LC_XID_STRING_SIZE];
   char recipient_instance[LC_XID_STRING_SIZE], workspace[PATH_MAX];
   char hostname[256], host_id[33];
@@ -28,6 +27,8 @@ typedef struct message_doc {
   lonejson_int64 deadline_ms;
 } message_doc;
 static const lonejson_field message_fields[] = {
+    LONEJSON_FIELD_STRING_FIXED(message_doc, reply_queue, "reply_queue",
+                                LONEJSON_OVERFLOW_FAIL),
     LONEJSON_FIELD_STRING_FIXED(message_doc, kind, "kind",
                                 LONEJSON_OVERFLOW_FAIL),
     LONEJSON_FIELD_STRING_FIXED(message_doc, id, "id", LONEJSON_OVERFLOW_FAIL),
@@ -169,7 +170,7 @@ static int lease_open(cai_cli_messages *m, const char *key, lc_lease **out,
                       lc_error *error) {
   lc_acquire_req req;
   lc_acquire_req_init(&req);
-  req.ns = MESSAGE_NS;
+  req.ns = m->pouch->messages_namespace;
   req.key = key;
   req.owner = m->instance;
   req.ttl_seconds = 30;
@@ -301,10 +302,10 @@ static int mailbox_guard(cai_cli_messages *m, lc_lease **out, lc_error *error) {
           fields, 2U);
     }
     notify_owner(m);
-    rc =
-        lc_error_set(error, LC_ERR_INVALID, 0,
-                     "Workspace mailbox was taken over by another CAI instance",
-                     m->queue, "mailbox_taken_over", NULL);
+    rc = lc_error_set(
+        error, LC_ERR_INVALID, 0,
+        "Workspace mailbox was taken over by another application instance",
+        m->queue, "mailbox_taken_over", NULL);
   }
   if (rc != LC_OK && *out != NULL) {
     rc = lease_finish(*out, rc, error);
@@ -378,14 +379,11 @@ static int enqueue(cai_cli_pouch *pouch, const message_doc *doc,
   lc_error local;
   char queue[160];
   int rc;
-  if (strcmp(doc->kind, "receipt") == 0)
-    snprintf(queue, sizeof(queue), "cai.receipts.%s", doc->recipient_instance);
-  else
-    snprintf(queue, sizeof(queue), "%s", doc->recipient);
+  snprintf(queue, sizeof(queue), "%s", doc->recipient);
   lc_error_init(&local);
   lc_enqueue_req_init(&req);
   memset(&res, 0, sizeof(res));
-  req.ns = MESSAGE_NS;
+  req.ns = pouch->messages_namespace;
   req.queue = queue;
   req.content_type = "application/json";
   req.visibility_timeout_seconds = 30;
@@ -480,7 +478,8 @@ static int consume(void *context, lc_consumer_message *delivery,
       strcmp(doc.kind, "message") != 0 || !valid_text(doc.text) ||
       !safe_id(doc.sender_session) || doc.deadline_ms < 0 ||
       (doc.instance[0] != '\0' &&
-       (!lc_xid_is_valid(doc.instance) || doc.deadline_ms == 0))) {
+       (!lc_xid_is_valid(doc.instance) || !safe_id(doc.reply_queue) ||
+        doc.deadline_ms == 0))) {
     rc = lc_error_set(error, LC_ERR_PROTOCOL, 0,
                       "Invalid agent message content", NULL, NULL, NULL);
     goto done;
@@ -537,7 +536,7 @@ static int consume(void *context, lc_consumer_message *delivery,
   strcpy(receipt.kind, "receipt");
   strcpy(receipt.id, doc.id);
   strcpy(receipt.sender, m->queue);
-  strcpy(receipt.recipient, doc.sender);
+  strcpy(receipt.recipient, doc.reply_queue);
   strcpy(receipt.recipient_instance, doc.instance);
   /* Durable inbox acceptance is delivery. Approval and execution are separate.
    */
@@ -627,7 +626,7 @@ static int new_consumer(cai_cli_messages *m, const char *name,
   lc_consumer_config_init(&consumer);
   lc_consumer_service_config_init(&config);
   consumer.name = name;
-  consumer.request.ns = MESSAGE_NS;
+  consumer.request.ns = m->pouch->messages_namespace;
   consumer.request.queue = name;
   consumer.request.owner = m->instance;
   consumer.request.visibility_timeout_seconds = 30;
@@ -667,7 +666,8 @@ int cai_cli_messages_start(cai_cli_messages *m, const char *id,
   lc_error_cleanup(&local);
   if (rc != LC_OK)
     return rc;
-  snprintf(m->receipts, sizeof(m->receipts), "cai.receipts.%s", m->instance);
+  snprintf(m->receipts, sizeof(m->receipts), "%s.receipts.%s",
+           m->pouch->queue_prefix, m->instance);
   rc = mailbox_claim(m, m->queue, name == NULL || name[0] == '\0', error);
   if (rc != CAI_OK)
     return rc;
@@ -890,7 +890,7 @@ static int name_catalog_read(cai_cli_messages *m, lc_lease *guard,
   handler.begin = key_begin;
   handler.chunk = key_chunk;
   handler.end = key_end;
-  query.ns = MESSAGE_NS;
+  query.ns = m->pouch->messages_namespace;
   query.engine = "index";
   query.refresh = "wait_for";
   query.selector_lql = "eq{field=/kind,value=\"mailbox\"}";
@@ -948,8 +948,9 @@ static int mailbox_claim(cai_cli_messages *m, const char *name, int automatic,
     self.name = "";
     self.automatic = 1;
     if (rc == CAI_OK)
-      rc = cai_cli_message_name_select(&self, catalog.items, catalog.count,
-                                       selected, error);
+      rc = cai_cli_message_name_select(m->pouch->queue_prefix, &self,
+                                       catalog.items, catalog.count, selected,
+                                       error);
   } else
     strcpy(selected, name);
   lc_keepalive_req_init(&keepalive);
@@ -1005,7 +1006,7 @@ static int list_mailboxes(cai_cli_messages *m, cai_sink *output,
   handler.begin = key_begin;
   handler.chunk = key_chunk;
   handler.end = key_end;
-  query.ns = MESSAGE_NS;
+  query.ns = m->pouch->messages_namespace;
   query.engine = "index";
   query.refresh = "wait_for";
   query.selector_lql = "eq{field=/kind,value=\"mailbox\"}";
@@ -1146,7 +1147,7 @@ int cai_cli_messages_sync(cai_cli_messages *m, sl_t *sl, cai_error *error) {
   handler.begin = key_begin;
   handler.chunk = key_chunk;
   handler.end = key_end;
-  query.ns = MESSAGE_NS;
+  query.ns = m->pouch->messages_namespace;
   query.engine = "index";
   query.refresh = "wait_for";
   /* Session IDs are restricted to safe_id's alphabet, not arbitrary LQL. */
@@ -1295,6 +1296,7 @@ static int send_tool(void *context, const char *arguments, cai_sink *output,
   strcpy(doc.sender, m->queue);
   strcpy(doc.sender_session, m->session);
   strcpy(doc.instance, m->instance);
+  strcpy(doc.reply_queue, m->receipts);
   doc.text = args.text;
   doc.deadline_ms = realtime_ms() + m->timeout_ms;
   deadline.tv_sec = (time_t)(doc.deadline_ms / 1000);
@@ -1371,7 +1373,8 @@ int cai_cli_messages_send_once(cai_cli_pouch *pouch, const char *recipient,
   if (rc == LC_OK) {
     strcpy(doc.kind, "message");
     strcpy(doc.sender_session, "cli");
-    snprintf(doc.sender, sizeof(doc.sender), "cai.cli.%s", doc.id);
+    snprintf(doc.sender, sizeof(doc.sender), "%s.cli.%s", pouch->program_name,
+             doc.id);
     /* No return address or delivery deadline: the receiver may be offline. */
     doc.text = strdup(text);
     rc = doc.text != NULL

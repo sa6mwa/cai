@@ -69,6 +69,9 @@ static const cai_config_field globals[] = {
      "Streamable HTTP MCP URL; required for enabled servers.", NULL, 0U},
     {"mcp.*", "api_key_env", CAI_CONFIG_STRING, "",
      "Optional environment variable containing a Bearer API key.", NULL, 0U},
+    {"mcp.*", "client_name", CAI_CONFIG_STRING, "",
+     "Optional MCP client identity; the application defaults to program_name.",
+     NULL, 0U},
     {"mcp.*", "discovery_timeout_ms", CAI_CONFIG_INTEGER, "3000",
      "Whole initialize/tools-list discovery budget per server in milliseconds.",
      NULL, 0U},
@@ -991,7 +994,7 @@ int cai_config_write_template(const cai_config *self, cai_sink *sink,
   impl = IMPL(self);
   rc = write_literal(
       sink,
-      "## CAI configuration. Uncomment a single-# assignment to set it "
+      "## Configuration. Uncomment a single-# assignment to set it "
       "explicitly.\n## "
       "Quoted values support \\n, \\r, \\t, \\\\ and \\\". Comments start with "
       "# or ; on their own line or after a quoted value.\n## Empty strings "

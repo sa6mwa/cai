@@ -88,14 +88,37 @@ typedef struct cai_app_option {
   int negatable;
 } cai_app_option;
 
-/** Initialize before use. NULL paths select CAI's standard XDG locations.
+/** Initialize before use. NULL paths derive XDG locations from program_name.
  * settings supplies explicit overrides for the complete CAI INI surface,
  * including providers, models, instructions, tools, MCP and storage. Order:
  * CAI defaults < INI/environment < settings < forwarded arguments.
  * [env] retains its normal config_env_has_precedence policy.
  * Runtime defaults match cai; startup text is empty unless the host sets it. */
+#define CAI_APP_DEFAULT_PROGRAM_NAME "cai"
 typedef struct cai_app_config {
+  /** Application identity: lowercase letter followed by lowercase letters,
+   * digits, '_' or '-', up to 32 bytes. NULL selects "cai". This seeds all
+   * application defaults; INI files and argv cannot change the identity. */
   const char *program_name;
+  /** Optional usage label, e.g. "vectis -a smith --". */
+  const char *invocation_name;
+  /** NULL derives uppercase(program_name) + '_'. Provider-standard API key
+   * variables and pslog's LOG_ remain independent. */
+  const char *environment_prefix;
+  /** NULL derives program_name. Individual namespaces may be overridden in
+   * [storage]; queue_name in [messaging] overrides the complete queue name. */
+  const char *namespace_prefix;
+  const char *queue_prefix;
+  /** Independent root/child defaults. NULL derives the XDG roots from
+   * program_name, history/key from state, and clipboard/logs from cache.
+   * Explicit INI/environment, settings and argv override these defaults. */
+  const char *state_directory;
+  const char *cache_directory;
+  const char *data_directory;
+  const char *history_directory;
+  const char *clipboard_directory;
+  const char *log_directory;
+  const char *pouch_key_file;
   /** Optional raw interactive banner, written verbatim before terminal
    * renderers start. Defaults to NULL; the host supplies all newlines and ANSI
    * escapes. */
@@ -167,8 +190,9 @@ struct cai_app {
              cai_error *error);
   size_t (*option_count)(const cai_app *self);
   const cai_app_option *(*option_at)(const cai_app *self, size_t index);
-  /** Write default help with the configured program_name to a borrowed sink.
-   * No configuration files, logger, banner, auth or terminal are initialized.
+  /** Write help with the configured identity and invocation_name to a borrowed
+   * sink. No configuration files, logger, banner, auth or terminal are
+   * initialized.
    */
   int (*write_help)(const cai_app *self, cai_sink *sink, cai_error *error);
   /** Thread-safe while self remains alive. Requires a ready runtime (STOP is
@@ -213,7 +237,11 @@ void cai_app_close(cai_app *self);
  * The logger is borrowed through the final receiver close; if absent, a logger
  * is created from LOG_ with warn as its default level. */
 typedef struct cai_app_kanban_config {
-  /** Absolute CAI state directory containing pouch.key; NULL uses XDG. */
+  const char *program_name;
+  const char *namespace_prefix;
+  const char *todo_namespace;
+  const char *pouch_key_file;
+  /** Absolute state directory containing pouch.key; NULL derives XDG/name. */
   const char *state_directory;
   /** Same lockd endpoint as sessions; NULL selects state_directory/pouch. */
   const char *lockd;

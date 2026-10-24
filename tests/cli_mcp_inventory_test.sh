@@ -45,7 +45,7 @@ release; expect 'INVENTORY TURN DONE'; expect 'Worked for'
 plan "$(jq -n --argjson chat "$([[ "$protocol" == chat_completions ]] && printf true || printf false)" '{chat:$chat,mcp:{alpha:{notify_tools_changed:true}},plan:[{tool:"mcp_5_alpha_echo",arguments:{text:"catalog invalidation"}},"NOTIFICATION TURN DONE"]}')"
 prompt 'exercise metadata invalidation' 'NOTIFICATION TURN DONE'
 send '/tools\r'; expect mcp_5_alpha_raw; expect 'Echo | user text'
-send '/new\r'; expect 'Welcome to CAI'
+send '/new\r'; expect 'Welcome to cai'
 send '/tools\r'; expect mcp_5_alpha_echo; expect mcp_5_alpha_raw
 terminal_close
 [[ $(wc -l <"$root/peer/mcp_requests.jsonl") == $((before+1)) ]]

@@ -15,7 +15,8 @@ typedef struct cai_cli_mcp {
 /* Config/logger outlive this collection, which outlives every borrowing
  * runtime. Discovery happens once on first registration, with a whole-server
  * budget. */
-int cai_cli_mcp_open(cai_cli_mcp *mcp, const cai_config *config, int enabled,
+int cai_cli_mcp_open(cai_cli_mcp *mcp, const cai_config *config,
+                     const char *program_name, int enabled,
                      pslog_logger *logger, cai_error *error);
 void cai_cli_mcp_close(cai_cli_mcp *mcp);
 typedef int (*cai_cli_tools_write)(void *, const char *, size_t);

@@ -46,7 +46,7 @@ contains "$root/request" 'PERSISTENT TASK'
 # and the model can continue. Chrome startup needs no host registration.
 plan "$(jq -n --argjson chat "$([[ $protocol == chat_completions ]] && printf true || printf false)" '{chat:$chat,plan:[{tool:"chrome",arguments:{action:"tabs"}},"BROWSER UNAVAILABLE"]}')"
 run --chrome -ni 'inspect browser'; ok
-contains "$root/stderr" 'No CAI Chrome host'
+contains "$root/stderr" 'No Chrome host'
 [[ $(stdout_text) == 'BROWSER UNAVAILABLE' ]]
 # A subsequent normal turn remains usable after the failed browser operation.
 turn

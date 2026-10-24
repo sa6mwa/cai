@@ -36,7 +36,7 @@ for mode in shell banner; do
   tmux_run respawn-pane -k -t spacing:0.0 "exec bash '$root/runner'"
   ready() {
     tmux_run capture-pane -p -t spacing:0.0 >"$root/screen"
-    grep -Fq 'Welcome to CAI' "$root/screen"
+    grep -Fq 'Welcome to cai' "$root/screen"
   }
   wait_for ready
   awk -v marker="$marker" '

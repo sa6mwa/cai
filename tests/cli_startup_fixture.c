@@ -42,21 +42,22 @@ int cai_test_list_models(cai_client *client,
   return CAI_ERR_TRANSPORT;
 }
 
-static int fixture_log_interactive(cai_cli_log *log, cai_error *error) {
-  int rc = cai_cli_log_interactive(log, error);
+static int fixture_log_interactive(cai_cli_log *log, const char *directory,
+                                   cai_error *error) {
+  int rc = cai_cli_log_interactive_at(log, directory, error);
   const char *message = getenv("CAI_TEST_NOTICE_MESSAGE");
   if (rc == CAI_OK && message != NULL)
     log->logger->warn(log->logger, message, NULL, 0U);
   return rc;
 }
 
-#define cai_cli_log_interactive fixture_log_interactive
+#define cai_cli_log_interactive_at fixture_log_interactive
 #define cai_client_list_models cai_test_list_models
 #define cai_client_chatgpt_quota blocked_quota
 #include "../cli/app_run.c"
 #undef cai_client_chatgpt_quota
 #undef cai_client_list_models
-#undef cai_cli_log_interactive
+#undef cai_cli_log_interactive_at
 
 int main(int argc, char **argv) {
   if (argc == 3 && strcmp(argv[1], "--test-chrome-system") == 0) {

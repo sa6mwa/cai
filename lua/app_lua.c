@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
+#include "../cli/identity.h"
 #include "todo_lua.h"
 #include <cai/app.h>
 #include <dlfcn.h>
@@ -295,15 +296,15 @@ static int observe_replay(void *context, const cai_agent_session_event *event,
   return observe(&call, error);
 }
 static int open_app(lua_State *L) {
-  static const char *const names[] = {"program_name", "banner", "config_file",
-                                      "config_directory",
-                                      "introduction_markdown"};
+#define STRING_NAME(n) #n,
+  static const char *const names[] = {CAI_APP_STRINGS(STRING_NAME)};
+#undef STRING_NAME
   static const char *const margins[] = {"introduction_margin_left",
                                         "introduction_margin_right"};
   cai_app_config config;
   cai_error error;
   app_lua *ud;
-  const char **strings[5];
+  const char **strings[sizeof(names) / sizeof(names[0])];
   int *margin_values[2];
   size_t i;
   int rc;
@@ -315,11 +316,13 @@ static int open_app(lua_State *L) {
   ud->state = L;
   ud->self_ref = LUA_NOREF;
   luaL_setmetatable(L, APP_MT);
-  strings[0] = &config.program_name;
-  strings[1] = &config.banner;
-  strings[2] = &config.config_file;
-  strings[3] = &config.config_directory;
-  strings[4] = &config.introduction_markdown;
+#define STRING_OFFSET(n) offsetof(cai_app_config, n),
+  {
+    static const size_t offsets[] = {CAI_APP_STRINGS(STRING_OFFSET)};
+    for (i = 0U; i < sizeof(names) / sizeof(names[0]); i++)
+      strings[i] = (const char **)((char *)&config + offsets[i]);
+  }
+#undef STRING_OFFSET
   margin_values[0] = &config.introduction_margin_left;
   margin_values[1] = &config.introduction_margin_right;
   if (lua_istable(L, 1)) {
@@ -680,10 +683,12 @@ static int help(lua_State *L) {
   return rc == CAI_OK ? 1 : 2;
 }
 static int open_kanban(lua_State *L) {
-  static const char *const names[] = {"state_directory", "lockd",
-                                      "lockd_client_pem", "default_board"};
+  static const char *const names[] = {"state_directory",  "lockd",
+                                      "lockd_client_pem", "default_board",
+                                      "program_name",     "namespace_prefix",
+                                      "todo_namespace",   "pouch_key_file"};
   cai_app_kanban_config config;
-  const char **fields[4];
+  const char **fields[sizeof(names) / sizeof(names[0])];
   cai_todo *todo = NULL;
   cai_error error;
   app_lua *owner;
@@ -700,6 +705,10 @@ static int open_kanban(lua_State *L) {
   fields[1] = &config.lockd;
   fields[2] = &config.lockd_client_pem;
   fields[3] = &config.default_board;
+  fields[4] = &config.program_name;
+  fields[5] = &config.namespace_prefix;
+  fields[6] = &config.todo_namespace;
+  fields[7] = &config.pouch_key_file;
   if (lua_istable(L, 1)) {
     lua_pushnil(L);
     while (lua_next(L, 1)) {
@@ -707,14 +716,14 @@ static int open_kanban(lua_State *L) {
           lua_type(L, -2) == LUA_TSTRING ? plain_string(L, -2) : NULL;
       int known = key != NULL && (strcmp(key, "logger") == 0 ||
                                   strcmp(key, "max_result_items") == 0);
-      for (i = 0U; key != NULL && i < 4U; i++)
+      for (i = 0U; key != NULL && i < sizeof(names) / sizeof(names[0]); i++)
         if (strcmp(key, names[i]) == 0)
           known = 1;
       if (!known)
         return failure(L, "unknown kanban configuration field");
       lua_pop(L, 1);
     }
-    for (i = 0U; i < 4U; i++) {
+    for (i = 0U; i < sizeof(names) / sizeof(names[0]); i++) {
       lua_getfield(L, 1, names[i]);
       if (!lua_isnil(L, -1)) {
         if (lua_type(L, -1) != LUA_TSTRING || plain_string(L, -1) == NULL)

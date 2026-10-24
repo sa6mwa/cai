@@ -130,6 +130,9 @@ int main(int argc, char **argv) {
   snprintf(endpoint, sizeof(endpoint), "pouch://%s/pouch", argv[1]);
   cai_app_kanban_config_init(&config);
   assert(strcmp(config.default_board, "default") == 0);
+  config.program_name = "smith";
+  config.namespace_prefix = "test";
+  config.todo_namespace = "test.smith.todo";
   config.state_directory = argv[1];
   config.lockd = endpoint;
   if (argc == 3) {

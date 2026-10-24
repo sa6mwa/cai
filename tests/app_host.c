@@ -72,7 +72,17 @@ int main(int argc, char **argv) {
     config.register_agent_tools = register_host_tools;
     config.register_agent_tools_context = &tools;
   }
-  config.program_name = "vectis -a smith --";
+  config.invocation_name = "vectis -a smith --";
+  if (getenv("CAI_TEST_APP_NAME") != NULL)
+    config.program_name = getenv("CAI_TEST_APP_NAME");
+  config.environment_prefix = getenv("CAI_TEST_APP_ENVIRONMENT_PREFIX");
+  config.namespace_prefix = getenv("CAI_TEST_APP_NAMESPACE_PREFIX");
+  config.queue_prefix = getenv("CAI_TEST_APP_QUEUE_PREFIX");
+  config.config_file = getenv("CAI_TEST_APP_CONFIG_FILE");
+  config.config_directory = getenv("CAI_TEST_APP_CONFIG_DIRECTORY");
+  config.state_directory = getenv("CAI_TEST_APP_STATE_DIRECTORY");
+  config.cache_directory = getenv("CAI_TEST_APP_CACHE_DIRECTORY");
+  config.data_directory = getenv("CAI_TEST_APP_DATA_DIRECTORY");
   config.banner = getenv("CAI_TEST_APP_BANNER");
   config.introduction_markdown = getenv("CAI_TEST_APP_INTRODUCTION");
   if (getenv("CAI_TEST_APP_INTRODUCTION_LEFT") != NULL)

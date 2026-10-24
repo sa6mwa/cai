@@ -364,6 +364,11 @@ done:
 }
 int cai_chrome_native_host_run(const char *origin, pslog_logger *logger,
                                cai_error *error) {
+  return cai_chrome_native_host_run_at(origin, NULL, logger, error);
+}
+int cai_chrome_native_host_run_at(const char *origin,
+                                  const char *selected_directory,
+                                  pslog_logger *logger, cai_error *error) {
   chrome_host h;
   char directory[4096], path[4096];
   struct sockaddr_un address;
@@ -380,7 +385,14 @@ int cai_chrome_native_host_run(const char *origin, pslog_logger *logger,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "CAI native host accepts only the official ChatGPT "
                          "Chrome extension origin");
-  rc = cai_cli_chrome_directory(directory, sizeof(directory), 1, error);
+  if (selected_directory != NULL) {
+    if (strlen(selected_directory) >= sizeof(directory))
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "Chrome socket directory is too long");
+    strcpy(directory, selected_directory);
+    rc = cai_chrome_private_directory(directory, error);
+  } else
+    rc = cai_cli_chrome_directory(directory, sizeof(directory), 1, error);
   if (rc != CAI_OK)
     return rc;
   if (snprintf(path, sizeof(path), "%s/%ld.sock", directory, (long)getpid()) >=

@@ -1,7 +1,8 @@
 local cai = require('cai')
 local application = require('cai.app')
 local root = assert(arg[1])
-local settings = {state_directory = root, lockd = 'pouch://' .. root .. '/pouch'}
+local settings = {program_name = 'smith', namespace_prefix = 'test', todo_namespace = 'test.smith.todo',
+  state_directory = root, pouch_key_file = root .. '/pouch.key', lockd = 'pouch://' .. root .. '/pouch'}
 assert(not application.kanban(false))
 assert(not application.kanban {unknown = true})
 assert(not application.kanban {default_board = 'bad\0board'})

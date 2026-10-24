@@ -3,6 +3,47 @@
 #include <string.h>
 
 static const cai_app_option options[] = {
+    {"--state-dir", '\0', CAI_APP_STRING, "VALUE",
+     "Override state-dir (otherwise derived from application defaults)", 0, 0},
+    {"--cache-dir", '\0', CAI_APP_STRING, "VALUE",
+     "Override cache-dir (otherwise derived from application defaults)", 0, 0},
+    {"--data-dir", '\0', CAI_APP_STRING, "VALUE",
+     "Override data-dir (otherwise derived from application defaults)", 0, 0},
+    {"--history-dir", '\0', CAI_APP_STRING, "VALUE",
+     "Override history-dir (otherwise derived from application defaults)", 0,
+     0},
+    {"--clipboard-dir", '\0', CAI_APP_STRING, "VALUE",
+     "Override clipboard-dir (otherwise derived from application defaults)", 0,
+     0},
+    {"--log-dir", '\0', CAI_APP_STRING, "VALUE",
+     "Override log-dir (otherwise derived from application defaults)", 0, 0},
+    {"--pouch-key-file", '\0', CAI_APP_STRING, "VALUE",
+     "Override pouch-key-file (otherwise derived from application defaults)", 0,
+     0},
+    {"--namespace-prefix", '\0', CAI_APP_STRING, "VALUE",
+     "Override namespace-prefix (otherwise derived from application defaults)",
+     0, 0},
+    {"--sessions-namespace", '\0', CAI_APP_STRING, "VALUE",
+     "Override sessions-namespace (otherwise derived from application "
+     "defaults)",
+     0, 0},
+    {"--auth-namespace", '\0', CAI_APP_STRING, "VALUE",
+     "Override auth-namespace (otherwise derived from application defaults)", 0,
+     0},
+    {"--scopes-namespace", '\0', CAI_APP_STRING, "VALUE",
+     "Override scopes-namespace (otherwise derived from application defaults)",
+     0, 0},
+    {"--todo-namespace", '\0', CAI_APP_STRING, "VALUE",
+     "Override todo-namespace (otherwise derived from application defaults)", 0,
+     0},
+    {"--messages-namespace", '\0', CAI_APP_STRING, "VALUE",
+     "Override messages-namespace (otherwise derived from application "
+     "defaults)",
+     0, 0},
+    {"--queue-prefix", '\0', CAI_APP_STRING, "VALUE",
+     "Override queue-prefix (otherwise derived from application defaults)", 0,
+     0},
+
     {"--service-tier", '\0', CAI_APP_STRING, "NAME",
      "Provider routing tier (see /tier list)", 0, 0},
     {"--new", 'N', CAI_APP_FLAG, NULL, "Start a new session", 0, 0},
@@ -17,7 +58,7 @@ static const cai_app_option options[] = {
     {"--import", '\0', CAI_APP_STRING, "FILE",
      "Import JSONL as a new session and exit", 0, 0},
     {"--export-dir", '\0', CAI_APP_STRING, "DIR",
-     "Export root (default $XDG_DATA_HOME/cai/exports)", 0, 0},
+     "Export root (default application data/exports)", 0, 0},
     {"--directory", 'C', CAI_APP_STRING, "DIR", "Change to DIR before starting",
      0, 0},
     {"--config", '\0', CAI_APP_STRING, "FILE", "Select config.ini", 0, 0},
@@ -40,11 +81,11 @@ static const cai_app_option options[] = {
      "Tool previews: compact|full (interactive default compact)", 0, 0},
     {"--auth-json", 'a', CAI_APP_STRING, "PATH",
      "ChatGPT auth file (default ~/.codex/auth.json, "
-     "then encrypted cai store)",
+     "then encrypted application store)",
      0, 0},
     {"--login", '\0', CAI_APP_FLAG, NULL, "Log in to ChatGPT and exit", 0, 0},
     {"--lockd", '\0', CAI_APP_STRING, "ENDPOINT",
-     "Storage endpoint (default state/cai/pouch)", 0, 0},
+     "Storage endpoint (default state_dir/pouch)", 0, 0},
     {"--lockd-client-pem", '\0', CAI_APP_STRING, "FILE",
      "Remote lockd mTLS PEM bundle", 0, 0},
     {"--provider", 'p', CAI_APP_STRING, "NAME",
@@ -52,7 +93,7 @@ static const cai_app_option options[] = {
     {"--endpoint", '\0', CAI_APP_STRING, "URL", "Custom provider API base URL",
      0, 0},
     {"--api-key-env", '\0', CAI_APP_STRING, "NAME",
-     "Custom API key variable (default CAI_API_KEY)", 0, 0},
+     "Custom API key variable (default application-prefix + API_KEY)", 0, 0},
     {"--chrome", '\0', CAI_APP_FLAG, NULL,
      "Chrome extension tools (default on)", 0, 1},
     {"--mcp", '\0', CAI_APP_FLAG, NULL,
@@ -94,11 +135,11 @@ static const cai_app_option options[] = {
     {"--skills", '\0', CAI_APP_FLAG, NULL,
      "Skill discovery and reading (default on)", 0, 1},
     {"--chrome-socket", '\0', CAI_APP_STRING, "PATH",
-     "Select a connected CAI Chrome host", 0, 0},
+     "Select a connected Chrome host", 0, 0},
     {"--chrome-setup", '\0', CAI_APP_FLAG, NULL,
-     "Register CAI as Chrome native host and exit", 0, 0},
+     "Register this application as Chrome native host and exit", 0, 0},
     {"--chrome-remove", '\0', CAI_APP_FLAG, NULL,
-     "Remove CAI's own registration and exit", 0, 0},
+     "Remove this application's own registration and exit", 0, 0},
     {"--chrome-manifest", '\0', CAI_APP_STRING, "FILE",
      "Alternate native-host registration path", 0, 0},
     {"--shell-context", '\0', CAI_APP_FLAG, NULL,
@@ -160,23 +201,28 @@ const cai_app_option *cai_cli_help_at(size_t index) {
 static int text(cai_sink *sink, const char *value, cai_error *error) {
   return cai_sink_write(sink, value, strlen(value), error);
 }
-int cai_cli_help_write(const char *program, cai_sink *sink, cai_error *error) {
+int cai_cli_help_write(const char *name, const char *program,
+                       const char *environment_prefix, cai_sink *sink,
+                       cai_error *error) {
   size_t i;
   int rc;
-  char flags[128], row[640];
-  rc = text(sink,
-            "cai and libcai Copyright (C) 2026 C89 Systems AB "
-            "https://c89.systems\n\nUsage: ",
-            error);
+  char flags[128], row[640], description[256];
+  rc = text(sink, name, error);
+  if (rc == CAI_OK)
+    rc = text(sink,
+              " and libcai Copyright (C) 2026 C89 Systems AB "
+              "https://c89.systems\n\nUsage: ",
+              error);
   if (rc == CAI_OK)
     rc = text(sink, program, error);
   if (rc == CAI_OK)
-    rc = text(sink,
-              " [options]\n\nStart Cai Smith in the workspace directory. The "
-              "newest session resumes\nautomatically; use --new to start a "
-              "fresh one. In the prompt, /resume\nlists sessions for this "
-              "directory and /resume N opens entry N.\n\n",
-              error);
+    rc = text(
+        sink,
+        " [options]\n\nStart the coding agent in the workspace directory. The "
+        "newest session resumes\nautomatically; use --new to start a "
+        "fresh one. In the prompt, /resume\nlists sessions for this "
+        "directory and /resume N opens entry N.\n\n",
+        error);
   for (i = 0; rc == CAI_OK && i < cai_cli_help_count(); i++) {
     const cai_app_option *o = &options[i];
     if (o->short_flag)
@@ -193,16 +239,23 @@ int cai_cli_help_write(const char *program, cai_sink *sink, cai_error *error) {
                o->type == CAI_APP_OPTIONAL_STRING ? "[" : "",
                o->argument ? o->argument : "",
                o->type == CAI_APP_OPTIONAL_STRING ? "]" : "");
-    snprintf(row, sizeof(row), "  %-36s %s\n", flags, o->description);
+    if (strcmp(o->long_flag, "--api-key-env") == 0) {
+      snprintf(description, sizeof(description),
+               "Custom API key variable (default %sAPI_KEY)",
+               environment_prefix);
+      snprintf(row, sizeof(row), "  %-36s %s\n", flags, description);
+    } else
+      snprintf(row, sizeof(row), "  %-36s %s\n", flags, o->description);
     rc = text(sink, row, error);
   }
   return rc;
 }
-int cai_cli_help_print(const char *program) {
+int cai_cli_help_print(const char *name, const char *program,
+                       const char *environment_prefix) {
   cai_sink *sink = NULL;
   int rc = cai_sink_stdout(&sink, NULL);
   if (rc == CAI_OK)
-    rc = cai_cli_help_write(program, sink, NULL);
+    rc = cai_cli_help_write(name, program, environment_prefix, sink, NULL);
   cai_sink_close(sink);
   return rc;
 }

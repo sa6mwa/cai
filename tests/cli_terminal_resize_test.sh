@@ -54,7 +54,7 @@ snapshot() {
   tmux_run capture-pane -p -S - -t cai:0.0 >"$root/transcript"
 }
 visible() { snapshot; grep -Fq -- "$1" "$root/screen"; }
-wait_for visible 'Welcome to CAI'
+wait_for visible 'Welcome to cai'
 tmux_run send-keys -t cai:0.0 'create the file' Enter
 if [[ "$mode" == producer ]]; then
   wait_for test -s "$CAI_TEST_RESIZE_READY"

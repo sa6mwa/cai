@@ -104,7 +104,7 @@ static int help_columns(void) {
   callbacks.context = stream;
   callbacks.write = help_file_write;
   if (cai_sink_from_callbacks(&callbacks, &sink, NULL) != CAI_OK ||
-      cai_cli_help_write("cai", sink, NULL) != CAI_OK)
+      cai_cli_help_write("cai", "cai", "CAI_", sink, NULL) != CAI_OK)
     failed = 1;
   cai_sink_close(sink);
   rewind(stream);

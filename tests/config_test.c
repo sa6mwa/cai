@@ -268,7 +268,7 @@ int main(int argc, char **argv) {
   fclose(file);
   assert(strstr(bytes, "secret-DO-NOT-LOG") == NULL &&
          strstr(bytes, "# config_env_has_precedence = false") != NULL);
-  assert(strncmp(bytes, "## CAI configuration.", 21U) == 0);
+  assert(strncmp(bytes, "## Configuration.", 17U) == 0);
   assert(strstr(bytes, "\n## Config [env]") != NULL);
   assert(strstr(bytes, "\n## Optional literal environment assignments;") !=
          NULL);

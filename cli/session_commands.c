@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
 #include "session_commands.h"
+#include "identity.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -235,7 +236,14 @@ static int offline_runtime(cai_cli_pouch *pouch, const char *id,
   callbacks->append_event = export_append;
   cai_agent_runtime_config_init(&config);
   config.session_store = callbacks;
-  config.session_scope = "cai-export";
+  config.session_scope = pouch->program_name;
+  if (pouch->config_directory[0] == '\0' &&
+      cai_cli_xdg_path(pouch->config_directory, sizeof(pouch->config_directory),
+                       "XDG_CONFIG_HOME", ".config", pouch->program_name,
+                       error) != CAI_OK)
+    return error != NULL ? error->code : CAI_ERR_INVALID;
+  config.agent_config_directory = pouch->config_directory;
+  config.agent_identity = pouch->program_name;
   config.workspace_directory =
       stat(metadata->workspace, &status) == 0 && S_ISDIR(status.st_mode)
           ? metadata->workspace
@@ -246,8 +254,8 @@ static int offline_runtime(cai_cli_pouch *pouch, const char *id,
   return cai_agent_runtime_open(*client, &config, runtime, error);
 }
 
-static int export_path(char *path, size_t capacity, const char *root,
-                       const char *id, cai_error *error) {
+static int export_path(const cai_cli_pouch *pouch, char *path, size_t capacity,
+                       const char *root, const char *id, cai_error *error) {
   const char *base;
   int n;
   if (root != NULL)
@@ -255,14 +263,16 @@ static int export_path(char *path, size_t capacity, const char *root,
   else {
     base = getenv("XDG_DATA_HOME");
     if (base != NULL && base[0] == '/')
-      n = snprintf(path, capacity, "%s/cai/exports/%s", base, id);
+      n = snprintf(path, capacity, "%s/%s/exports/%s", base,
+                   pouch->program_name, id);
     else {
       base = getenv("HOME");
       if (base == NULL || base[0] != '/')
         return cai_cli_error(
             error, CAI_ERR_INVALID,
             "set HOME or XDG_DATA_HOME for conversation exports");
-      n = snprintf(path, capacity, "%s/.local/share/cai/exports/%s", base, id);
+      n = snprintf(path, capacity, "%s/.local/share/%s/exports/%s", base,
+                   pouch->program_name, id);
     }
   }
   if (n < 0 || (size_t)n >= capacity)
@@ -366,7 +376,8 @@ int cai_cli_session_export(cai_cli_pouch *pouch, const char *id,
     rc = offline_runtime(pouch, id, &metadata, &storage, &callbacks, &client,
                          &runtime, error);
   if (rc == CAI_OK) {
-    rc = export_path(directory, sizeof(directory), export_root, id, error);
+    rc = export_path(pouch, directory, sizeof(directory), export_root, id,
+                     error);
     if (rc == CAI_OK)
       rc = export_directory(directory, error);
   }

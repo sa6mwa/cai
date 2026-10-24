@@ -148,16 +148,23 @@ int cai_cli_chrome_directory(char *out, size_t capacity, int create,
   if (!create) {
     struct stat st;
     if (lstat(out, &st) != 0 && errno == ENOENT)
-      return cai_set_error(
-          error, CAI_ERR_INVALID,
-          "No CAI Chrome host is connected. Run cai --chrome-setup, then open "
-          "the ChatGPT extension in Chrome.");
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "No Chrome host is connected. Run this "
+                           "application's --chrome-setup, then open "
+                           "the ChatGPT extension in Chrome.");
   }
   return cai_chrome_private_directory(out, error);
 }
 int cai_chrome_native_host_setup(const char *override, int remove,
                                  pslog_logger *logger, cai_error *error) {
+  return cai_chrome_native_host_setup_named("cai", override, remove, logger,
+                                            error);
+}
+int cai_chrome_native_host_setup_named(const char *program_name,
+                                       const char *override, int remove,
+                                       pslog_logger *logger, cai_error *error) {
   char manifest_path[4096], executable[4096], leaf[200], temporary[200];
+  char description[96];
   const char *root;
   const char *suffix;
   ssize_t n;
@@ -167,7 +174,18 @@ int cai_chrome_native_host_setup(const char *override, int remove,
   char contents[16385];
   char *json = NULL;
   lonejson_error je;
-  size_t used = 0U, length, offset;
+  size_t used = 0U, length, offset, i;
+  if (program_name == NULL || program_name[0] < 'a' || program_name[0] > 'z' ||
+      strlen(program_name) > 32U ||
+      strspn(program_name, "abcdefghijklmnopqrstuvwxyz0123456789_-") !=
+          strlen(program_name))
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "Invalid Chrome host application name");
+  snprintf(description, sizeof(description), "%s ChatGPT Chrome bridge",
+           program_name);
+  for (i = 0U; i < strlen(program_name); i++)
+    if (description[i] >= 'a' && description[i] <= 'z')
+      description[i] = (char)(description[i] - 'a' + 'A');
   memset(&existing, 0, sizeof(existing));
   memset(&wanted, 0, sizeof(wanted));
   lonejson_error_init(&je);
@@ -175,12 +193,12 @@ int cai_chrome_native_host_setup(const char *override, int remove,
   if (n < 0 || (size_t)n >= sizeof(executable) - 1U)
     return cai_set_error(
         error, CAI_ERR_TRANSPORT,
-        "Cannot resolve the cai executable for Chrome registration");
+        "Cannot resolve the application executable for Chrome registration");
   executable[n] = '\0';
   if (strstr(executable, " (deleted)") != NULL)
     return cai_set_error(
         error, CAI_ERR_INVALID,
-        "Reinstall cai before registering its deleted executable");
+        "Reinstall this application before registering its deleted executable");
   if (override != NULL) {
     if (strlen(override) >= sizeof(manifest_path))
       return cai_set_error(error, CAI_ERR_INVALID,
@@ -244,18 +262,19 @@ int cai_chrome_native_host_setup(const char *override, int remove,
         strcmp(existing.name, HOST_NAME) != 0 ||
         strcmp(existing.path, executable) != 0 ||
         strcmp(existing.type, "stdio") != 0 ||
-        strcmp(existing.description, "CAI ChatGPT Chrome bridge") != 0 ||
+        strcmp(existing.description, description) != 0 ||
         existing.allowed_origins.count != 1U ||
         existing.allowed_origins.items == NULL ||
         existing.allowed_origins.items[0] == NULL ||
         strcmp(existing.allowed_origins.items[0], EXTENSION_ORIGIN) != 0) {
       char detail[4600];
-      snprintf(detail, sizeof(detail),
-               "%s%s%s. CAI will not overwrite or remove it. Keep this "
-               "registration, or deliberately remove it before running "
-               "--chrome-setup.",
-               manifest_path, existing.path != NULL ? " points to " : "",
-               existing.path != NULL ? existing.path : "");
+      snprintf(
+          detail, sizeof(detail),
+          "%s%s%s. The application will not overwrite or remove it. Keep this "
+          "registration, or deliberately remove it before running "
+          "--chrome-setup.",
+          manifest_path, existing.path != NULL ? " points to " : "",
+          existing.path != NULL ? existing.path : "");
       rc = cai_set_error_detail(
           error, CAI_ERR_INVALID,
           "Another or unrecognized Chrome native host is registered", detail);
@@ -299,7 +318,7 @@ int cai_chrome_native_host_setup(const char *override, int remove,
                            "Cannot allocate extension origin");
     }
     wanted.name = HOST_NAME;
-    wanted.description = "CAI ChatGPT Chrome bridge";
+    wanted.description = description;
     wanted.path = executable;
     wanted.type = "stdio";
     wanted.allowed_origins.items = origins;
@@ -311,7 +330,7 @@ int cai_chrome_native_host_setup(const char *override, int remove,
     else {
       /* Publish only after a complete fsynced write, without replacing a
        * competing installer. */
-      snprintf(temporary, sizeof(temporary), ".cai-chrome-%ld.tmp",
+      snprintf(temporary, sizeof(temporary), ".%s-chrome-%ld.tmp", program_name,
                (long)getpid());
       fd = openat(parent, temporary,
                   O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
@@ -347,9 +366,9 @@ int cai_chrome_native_host_setup(const char *override, int remove,
         (void)unlinkat(parent, temporary, 0);
         if (rc == CAI_OK) {
           (void)fsync(parent);
-          printf("Installed CAI Chrome registration: %s\nOpen the ChatGPT "
-                 "extension in Chrome, then run cai --chrome.\n",
-                 manifest_path);
+          printf("Installed %s Chrome registration: %s\nOpen the ChatGPT "
+                 "extension in Chrome, then run %s --chrome.\n",
+                 program_name, manifest_path, program_name);
         }
       }
     }

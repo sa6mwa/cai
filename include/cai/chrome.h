@@ -15,6 +15,11 @@ typedef struct cai_chrome cai_chrome;
  * borrowed for this call. No browser is launched. */
 int cai_chrome_native_host_run(const char *origin, struct pslog_logger *logger,
                                cai_error *error);
+/** As native_host_run, using an explicit private socket directory instead of
+ * the core library's standard location. NULL retains standard discovery. */
+int cai_chrome_native_host_run_at(const char *origin, const char *directory,
+                                  struct pslog_logger *logger,
+                                  cai_error *error);
 /** Explicitly install/remove a user native-host manifest for the current
  * executable on Linux. NULL selects the standard CAI registration filename.
  * Conflicting registrations are rejected. The executable must dispatch native
@@ -22,6 +27,13 @@ int cai_chrome_native_host_run(const char *origin, struct pslog_logger *logger,
  * logger is borrowed for this call. Other platforms report unsupported. */
 int cai_chrome_native_host_setup(const char *manifest, int remove,
                                  struct pslog_logger *logger, cai_error *error);
+/** Install/remove a registration owned by a named embedding application.
+ * program_name is a lowercase identifier of at most 32 bytes. The extension's
+ * fixed native-host name and conflict checks remain unchanged. */
+int cai_chrome_native_host_setup_named(const char *program_name,
+                                       const char *manifest, int remove,
+                                       struct pslog_logger *logger,
+                                       cai_error *error);
 /** Local browser connection settings; no Chrome configuration is changed. */
 typedef struct cai_chrome_config {
   /** Absolute socket path; NULL discovers exactly one host in directory. */

@@ -28,7 +28,8 @@ int run_smith(int count, const char *const *arguments) {
     {"agent", "codex_agents_md", "true"}
   };
   cai_app_config_init(&config);
-  config.program_name = "vectis -a smith --";
+  config.program_name = "smith";
+  config.invocation_name = "vectis -a smith --";
   config.banner = "Vectis Agent Smith\n\n";
   config.introduction_markdown = "**Enter** sends a task; `/help` lists commands.\n";
   config.introduction_margin_left = 0;
@@ -59,6 +60,73 @@ ChatGPT/provider/model defaults. `config_file`, `config_directory`, `no_config`
 select startup configuration. The `settings` array accepts the full INI schema,
 including `[mcp.NAME]` and `[env]`, without duplicating its validation rules.
 Values use INI's parsed value form: e.g. `true`, without surrounding quotes.
+
+`program_name` is the application identity, default `"cai"`. Set it once before
+`open`; the receiver copies it. It must be a lowercase identifier, at most 32
+bytes, starting with a letter (remaining characters: letters, digits, `_`, `-`).
+Use `invocation_name` for a multiword usage label such as `vectis -a smith --`.
+With `program_name = "smith"`, automatic defaults are:
+
+| Setting | Default |
+| --- | --- |
+| Environment prefix | `SMITH_` (`-` becomes `_`) |
+| Configuration | `$XDG_CONFIG_HOME/smith/config.ini` |
+| Instructions / skills / model overrides | `config_directory/AGENTS.md`, `skills`, `models.json` |
+| State / cache / data | `$XDG_STATE_HOME/smith`, `$XDG_CACHE_HOME/smith`, `$XDG_DATA_HOME/smith` |
+| Pouch / encryption key / prompt history | `state_directory/pouch`, `pouch.key`, `history` |
+| Clipboard / interactive logs | `cache_directory/clipboard`, `cache_directory` |
+| Exports | `data_directory/exports` |
+| Chrome sockets | `cache_directory/chrome` |
+| Storage namespaces | `smith.sessions`, `smith.scopes`, `smith.auth`, `smith.todo`, `smith.messages` |
+| Automatic mailbox / receipt prefix | `smith` |
+| MCP client name / default agent identity | `smith` |
+
+Unset XDG variables use the standard HOME fallbacks. The C and Lua open configs
+both accept `environment_prefix`, `namespace_prefix`, `queue_prefix`,
+`config_file`, `config_directory`, `state_directory`, `cache_directory`,
+`data_directory`, `history_directory`, `clipboard_directory`, `log_directory`,
+and `pouch_key_file`. Roots are independent: moving the config file does not
+implicitly move instructions or state. Child defaults follow their selected
+root. For example:
+
+```c
+config.program_name = "smith";
+config.invocation_name = "vectis -a smith --";
+config.config_file = "/home/mike/.config/vectis/cai.ini";
+config.config_directory = "/home/mike/.config/vectis";
+config.cache_directory = "/home/mike/.cache/vectis/cai";
+config.state_directory = "/home/mike/.local/state/vectis/cai";
+```
+
+These fields seed defaults. Explicit INI values, environment, `settings`, and
+argv take precedence in that order. Paths are also configurable through
+`[paths]` (`config_dir`, `state_dir`, `cache_dir`, `data_dir`, `history_dir`,
+`clipboard_dir`, `log_dir`, `pouch_key_file`, and the existing individual file
+settings), and matching `--...-dir` / `--pouch-key-file` flags. Each namespace
+has its own `[storage] ..._namespace` key and matching flag, alongside
+`namespace_prefix`. `[messaging] queue_prefix` / `--queue-prefix` controls
+automatic names; `queue_name` / `--message-queue` replaces the full public name.
+`[chrome] socket_directory` and `[mcp.NAME] client_name` override those defaults.
+
+Environment keys use the selected prefix plus uppercased section and key,
+for example `SMITH_PATHS_STATE_DIR` and `SMITH_STORAGE_AUTH_NAMESPACE`.
+Convenience aliases include `SMITH_MODEL`, `SMITH_PROVIDER`,
+`SMITH_REASONING_EFFORT`, `SMITH_STATE_DIR`, `SMITH_CACHE_DIR`, `SMITH_DATA_DIR`,
+`SMITH_LOCKD`, `SMITH_NAMESPACE_PREFIX`, `SMITH_QUEUE_PREFIX`, and the existing
+tool/messaging names with the new prefix. `SMITH_CONFIG` and `SMITH_CONFIG_DIR`
+select the startup config file/root before loading INI. An explicitly supplied
+`environment_prefix`, e.g. `"VECTIS_SMITH_"`, replaces `SMITH_` entirely; there
+is no fallback to `CAI_`. Custom-provider API keys default to `SMITH_API_KEY`.
+Provider conventions (`OPENAI_API_KEY`, `BERGET_API_KEY`, `CODEX_HOME`), pslog's
+`LOG_`, extension host protocol names, and actual library/module names stay
+independent. Explicit banner and introduction strings are used verbatim.
+
+Names isolate storage even at the same endpoint. To share selected data, set
+the corresponding namespaces explicitly; encrypted shared roots also require
+the same `pouch_key_file`. The independent `cai_app_kanban_open` (Lua `application.kanban`) receiver accepts
+`program_name`, `namespace_prefix`, `todo_namespace`, and `pouch_key_file` in
+addition to its existing state/endpoint fields, so route handlers can open the
+same board as a named application.
 
 ### Native custom tools
 
@@ -264,7 +332,8 @@ the same receiver and ownership boundary:
 
 ```lua
 local app = assert(require("cai.app").open {
-  program_name = "vectis -a smith --",
+  program_name = "smith",
+  invocation_name = "vectis -a smith --",
   banner = "Vectis Agent Smith\n\n",
   introduction_markdown = "**Enter** sends a task; `/help` lists commands.\n",
   introduction_margin_left = 0,

@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "config.h"
 #include "app_internal.h"
+#include "identity.h"
 #include <cai/models.h>
 #include <cai/version.h>
 #include <errno.h>
@@ -26,6 +27,36 @@ typedef struct cli_field {
 #define B(s, k, m, d)                                                          \
   {s, k, offsetof(cai_cli_options, m), CAI_CONFIG_BOOL, 0U, NULL, d}
 static const cli_field fields[] = {
+    S("paths", "state_dir", state_dir, CAI_CONFIG_PATH,
+      "Private state root; empty derives from the application name and "
+      "XDG_STATE_HOME."),
+    S("paths", "cache_dir", cache_dir, CAI_CONFIG_PATH,
+      "Private cache root; empty derives from the application name and "
+      "XDG_CACHE_HOME."),
+    S("paths", "data_dir", data_dir, CAI_CONFIG_PATH,
+      "Data root; empty derives from the application name and XDG_DATA_HOME."),
+    S("paths", "history_dir", history_dir, CAI_CONFIG_PATH,
+      "Prompt history; empty uses state_dir/history."),
+    S("paths", "clipboard_dir", clipboard_dir, CAI_CONFIG_PATH,
+      "Pasted images; empty uses cache_dir/clipboard."),
+    S("paths", "log_dir", log_dir, CAI_CONFIG_PATH,
+      "Interactive logs; empty uses cache_dir."),
+    S("paths", "pouch_key_file", pouch_key_file, CAI_CONFIG_PATH,
+      "Encryption key; empty uses state_dir/pouch.key."),
+    S("storage", "namespace_prefix", namespace_prefix, 0U,
+      "Namespace prefix; empty uses program_name."),
+    S("storage", "sessions_namespace", sessions_namespace, 0U,
+      "Empty uses namespace_prefix.sessions."),
+    S("storage", "auth_namespace", auth_namespace, 0U,
+      "Empty uses namespace_prefix.auth."),
+    S("storage", "scopes_namespace", scopes_namespace, 0U,
+      "Empty uses namespace_prefix.scopes."),
+    S("storage", "todo_namespace", todo_namespace, 0U,
+      "Empty uses namespace_prefix.todo."),
+    S("storage", "messages_namespace", messages_namespace, 0U,
+      "Empty uses namespace_prefix.messages."),
+    S("messaging", "queue_prefix", queue_prefix, 0U,
+      "Single-component prefix for automatic queues; empty uses program_name."),
     S("agent", "service_tier", service_tier, 0U,
       "Provider service tier; empty restores saved routing. Explicit default "
       "requests normal routing; priority requests Fast. Use /tier list."),
@@ -33,7 +64,8 @@ static const cli_field fields[] = {
     B("messaging", "enabled", messaging,
       "Listen for and send conversation messages on the shared Pouch backend."),
     S("messaging", "queue_name", message_queue, 0U,
-      "Empty allocates cai.<directory-basename>, adding the fewest real "
+      "Empty allocates queue_prefix.<directory-basename>, adding the fewest "
+      "real "
       "ancestor components needed to distinguish registered workspaces. "
       "The actual hostname is a leading component. Assigned names persist. "
       "An explicit name overrides it. Newest app startup takes ownership of "
@@ -52,14 +84,14 @@ static const cli_field fields[] = {
       "Empty uses the current working directory on each invocation; explicit "
       "-C wins."),
     S("paths", "auth_json", auth_json, CAI_CONFIG_PATH,
-      "Empty checks ~/.codex/auth.json first, then encrypted cai auth. "
+      "Empty checks ~/.codex/auth.json first, then encrypted application auth. "
       "An explicit file must exist and replaces that discovery."),
     S("paths", "agents_md", agents_md, CAI_CONFIG_PATH,
       "Global AGENTS.md; empty uses config_dir/AGENTS.md, loaded if it "
       "exists."),
     S("paths", "config_dir", config_dir, CAI_CONFIG_PATH,
       "Global instructions root; empty uses "
-      "${XDG_CONFIG_HOME:-$HOME/.config}/cai. "
+      "${XDG_CONFIG_HOME:-$HOME/.config}/program_name. "
       "Path defaults shown here are resolved at generation; empty keeps "
       "automatic lookup."),
     S("paths", "skills_dir", skills_dir, CAI_CONFIG_PATH,
@@ -71,12 +103,12 @@ static const cli_field fields[] = {
       "still applies. An explicit file must exist."),
     S("paths", "export_dir", export_dir, CAI_CONFIG_PATH,
       "Export root; empty uses "
-      "${XDG_DATA_HOME:-$HOME/.local/share}/cai/exports."),
+      "${XDG_DATA_HOME:-$HOME/.local/share}/program_name/exports."),
     S("paths", "lockd_client_pem", lockd_client_pem, CAI_CONFIG_PATH,
       "Remote lockd mTLS client PEM; empty supplies no client certificate."),
     S("storage", "lockd", lockd, 0U,
       "Empty opens a pouch under "
-      "${XDG_STATE_HOME:-$HOME/.local/state}/cai/pouch; "
+      "state_dir/pouch; "
       "explicit values are lockd endpoint URLs."),
     B("ui", "shell_context", shell_context,
       "Share sanitized !COMMAND output; /shell and !sh always stay local."),
@@ -127,54 +159,202 @@ static int absolute_path(char *out, size_t size, const char *path,
              ? fail(error, path, "configuration filename too long")
              : 1;
 }
-static int template_paths(cai_config *cfg, const char *config_root,
+/* Store every derived value in the owned config: consumers never borrow a
+ * temporary path and repeated application runs have no global identity. */
+static int default_string(cai_config *cfg, const char *section, const char *key,
+                          const char *value, const char **target, int document,
                           cai_error *error) {
-  static const char *const keys[] = {"config_dir", "agents_md", "skills_dir"};
-  static const char *const suffixes[] = {"", "/AGENTS.md", "/skills"};
-  char root[PATH_MAX], path[PATH_MAX];
-  const char *base;
-  size_t i;
-  int n, rc;
-  if (config_root[0] != '\0')
-    n = snprintf(root, sizeof(root), "%s", config_root);
-  else {
-    base = getenv("XDG_CONFIG_HOME");
-    if (base != NULL && base[0] == '/')
-      n = snprintf(root, sizeof(root), "%s/cai", base);
-    else {
-      base = getenv("HOME");
-      n = base != NULL && base[0] == '/'
-              ? snprintf(root, sizeof(root), "%s/.config/cai", base)
-              : 0;
+  const char *resolved;
+  char absolute[PATH_MAX];
+  int rc;
+  if (strcmp(section, "paths") == 0) {
+    if (value == NULL || value[0] == '\0')
+      return fail(error, key, "path must not be empty");
+    if (value[0] == '~' && value[1] == '/') {
+      const char *home = getenv("HOME");
+      int n = home != NULL ? snprintf(absolute, sizeof(absolute), "%s/%s", home,
+                                      value + 2)
+                           : -1;
+      if (n < 0 || (size_t)n >= sizeof(absolute))
+        return fail(error, key, "cannot expand path");
+      value = absolute;
+    } else if (value[0] != '/') {
+      if (absolute_path(absolute, sizeof(absolute), value, error) < 0)
+        return -1;
+      value = absolute;
     }
   }
-  if (n < 0 || (size_t)n >= sizeof(root))
-    return fail(error, NULL, "default configuration path too long");
-  if (n > 0) {
-    for (i = 0U; i < sizeof(keys) / sizeof(keys[0]); i++) {
-      n = snprintf(path, sizeof(path), "%s%s", root, suffixes[i]);
-      if (n < 0 || (size_t)n >= sizeof(path))
-        return fail(error, NULL, "default configuration path too long");
-      rc = cai_config_set_default(cfg, "paths", keys[i], path, error);
+  if (document)
+    return cai_config_set_default(cfg, section, key, value, error);
+  rc = cfg->set(cfg, section, key, value, error);
+  if (rc == CAI_OK && strcmp(section, "paths") == 0)
+    rc = cfg->resolve_path(cfg, section, key, &resolved, error);
+  else
+    resolved = cfg->get(cfg, section, key);
+  if (rc == CAI_OK)
+    *target = resolved;
+  return rc;
+}
+static int application_defaults(cai_config *cfg, cai_cli_options *o,
+                                const cai_app_config *app, int document,
+                                cai_error *error) {
+  static const char *const root_keys[] = {"config_dir", "state_dir",
+                                          "cache_dir", "data_dir"};
+  static const char *const variables[] = {"XDG_CONFIG_HOME", "XDG_STATE_HOME",
+                                          "XDG_CACHE_HOME", "XDG_DATA_HOME"};
+  static const char *const fallbacks[] = {".config", ".local/state", ".cache",
+                                          ".local/share"};
+  const char **roots[4];
+  const char *host_roots[4];
+  const char **children[8];
+  const char *host_children[8];
+  const char *parents[8];
+  static const char *const keys[] = {
+      "history_dir", "clipboard_dir", "log_dir",    "pouch_key_file",
+      "export_dir",  "agents_md",     "skills_dir", "model_metadata"};
+  static const char *const suffixes[] = {
+      "/history", "/clipboard", "",        "/pouch.key",
+      "/exports", "/AGENTS.md", "/skills", "/models.json"};
+  const char **namespaces[5];
+  static const char *const ns_keys[] = {"sessions_namespace", "auth_namespace",
+                                        "scopes_namespace", "todo_namespace",
+                                        "messages_namespace"};
+  static const char *const ns_suffixes[] = {"sessions", "auth", "scopes",
+                                            "todo", "messages"};
+  char path[PATH_MAX];
+  size_t i;
+  int rc, n;
+  roots[0] = &o->config_dir;
+  roots[1] = &o->state_dir;
+  roots[2] = &o->cache_dir;
+  roots[3] = &o->data_dir;
+  host_roots[0] = app != NULL ? app->config_directory : NULL;
+  host_roots[1] = app != NULL ? app->state_directory : NULL;
+  host_roots[2] = app != NULL ? app->cache_directory : NULL;
+  host_roots[3] = app != NULL ? app->data_directory : NULL;
+  for (i = 0U; i < 4U; i++) {
+    const char *v = *roots[i] != NULL ? *roots[i] : host_roots[i];
+    if (v == NULL) {
+      rc = cai_cli_xdg_path(path, sizeof(path), variables[i], fallbacks[i],
+                            o->program_name, error);
       if (rc != CAI_OK)
+        return rc;
+      v = path;
+    }
+    rc = default_string(cfg, "paths", root_keys[i], v, roots[i], document,
+                        error);
+    if (rc != CAI_OK)
+      return rc;
+  }
+  /* For template documentation use the documented root values, not explicit
+   * assignments (set_default deliberately does not change runtime settings). */
+  if (document) {
+    for (i = 0U; i < cfg->field_count(cfg); i++) {
+      const cai_config_field *f = cfg->field_at(cfg, i);
+      size_t j;
+      for (j = 0U; j < 4U; j++)
+        if (strcmp(f->section, "paths") == 0 &&
+            strcmp(f->key, root_keys[j]) == 0)
+          *roots[j] = f->default_value;
+    }
+  }
+  children[0] = &o->history_dir;
+  children[1] = &o->clipboard_dir;
+  children[2] = &o->log_dir;
+  children[3] = &o->pouch_key_file;
+  children[4] = &o->export_dir;
+  children[5] = &o->agents_md;
+  children[6] = &o->skills_dir;
+  children[7] = &o->model_metadata;
+  host_children[0] = app != NULL ? app->history_directory : NULL;
+  host_children[1] = app != NULL ? app->clipboard_directory : NULL;
+  host_children[2] = app != NULL ? app->log_directory : NULL;
+  host_children[3] = app != NULL ? app->pouch_key_file : NULL;
+  host_children[4] = host_children[5] = host_children[6] = host_children[7] =
+      NULL;
+  parents[0] = parents[3] = o->state_dir;
+  parents[1] = parents[2] = o->cache_dir;
+  parents[4] = o->data_dir;
+  parents[5] = parents[6] = parents[7] = o->config_dir;
+  for (i = 0U; i < 8U; i++) {
+    const char *v = *children[i] != NULL ? *children[i] : host_children[i];
+    /* Optional discovery retains its "missing is okay" semantics. */
+    if (!document && i >= 5U)
+      continue;
+    if (v == NULL) {
+      n = snprintf(path, sizeof(path), "%s%s", parents[i], suffixes[i]);
+      if (n < 0 || (size_t)n >= sizeof(path))
+        return fail(error, NULL, "application path too long");
+      v = path;
+    }
+    rc = default_string(cfg, "paths", keys[i], v, children[i], document, error);
+    if (rc != CAI_OK)
+      return rc;
+  }
+  if (o->namespace_prefix == NULL)
+    o->namespace_prefix = app != NULL && app->namespace_prefix != NULL
+                              ? app->namespace_prefix
+                              : o->program_name;
+  if (o->queue_prefix == NULL)
+    o->queue_prefix = app != NULL && app->queue_prefix != NULL
+                          ? app->queue_prefix
+                          : o->program_name;
+  if (!cai_cli_identity_valid(o->queue_prefix))
+    return fail(
+        error, NULL,
+        "queue_prefix must be a single lowercase identifier (up to 32 bytes)");
+  rc = default_string(cfg, "storage", "namespace_prefix", o->namespace_prefix,
+                      &o->namespace_prefix, document, error);
+  if (rc == CAI_OK)
+    rc = default_string(cfg, "messaging", "queue_prefix", o->queue_prefix,
+                        &o->queue_prefix, document, error);
+  if (rc != CAI_OK)
+    return rc;
+  namespaces[0] = &o->sessions_namespace;
+  namespaces[1] = &o->auth_namespace;
+  namespaces[2] = &o->scopes_namespace;
+  namespaces[3] = &o->todo_namespace;
+  namespaces[4] = &o->messages_namespace;
+  for (i = 0U; i < 5U; i++) {
+    const char *v = *namespaces[i];
+    if (v == NULL) {
+      n = snprintf(path, sizeof(path), "%s.%s", o->namespace_prefix,
+                   ns_suffixes[i]);
+      if (n < 0 || (size_t)n >= sizeof(path))
+        return fail(error, NULL, "namespace too long");
+      v = path;
+    }
+    if (v[0] == '\0' || strlen(v) > 128U ||
+        strspn(v, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567"
+                  "89._-") != strlen(v))
+      return fail(error, NULL, "invalid storage namespace");
+    rc = default_string(cfg, "storage", ns_keys[i], v, namespaces[i], document,
+                        error);
+    if (rc != CAI_OK)
+      return rc;
+  }
+  if (document) {
+    rc = cai_config_set_default(cfg, "agent", "identity", o->program_name,
+                                error);
+    if (rc == CAI_OK)
+      rc = cai_config_set_default(cfg, "client", "api_key_env",
+                                  o->default_api_key_env, error);
+    if (rc != CAI_OK)
+      return rc;
+  }
+  if (!document) {
+    const char *v = cfg->get(cfg, "chrome", "socket_directory");
+    if (v == NULL || v[0] == '\0') {
+      n = snprintf(path, sizeof(path), "%s/chrome", o->cache_dir);
+      if (n < 0 || (size_t)n >= sizeof(path))
+        return fail(error, NULL, "Chrome path too long");
+      if (cfg->set(cfg, "chrome", "socket_directory", path, error) != CAI_OK)
         return -1;
     }
+    if (o->identity == NULL)
+      o->identity = o->program_name;
   }
-  base = getenv("XDG_DATA_HOME");
-  if (base != NULL && base[0] == '/')
-    n = snprintf(path, sizeof(path), "%s/cai/exports", base);
-  else {
-    base = getenv("HOME");
-    n = base != NULL && base[0] == '/'
-            ? snprintf(path, sizeof(path), "%s/.local/share/cai/exports", base)
-            : 0;
-  }
-  if (n < 0 || (size_t)n >= sizeof(path))
-    return fail(error, NULL, "default export path too long");
-  if (n > 0 &&
-      cai_config_set_default(cfg, "paths", "export_dir", path, error) != CAI_OK)
-    return -1;
-  return 1;
+  return CAI_OK;
 }
 int cai_cli_app_schema(cai_config **out, cai_error *error) {
   cai_config_field extension[sizeof(fields) / sizeof(fields[0])];
@@ -263,31 +443,47 @@ static void optional_string(const cai_config *cfg, const char *section,
 }
 /* Config [env] has already been applied. Keep the usual CLI > environment >
  * INI precedence while using the standard parser for validation and storage. */
-static int tool_environment(cai_config *cfg, cai_error *error) {
-  static const char *const env[] = {"CAI_WEB_SEARCH",
-                                    "CAI_CHROME",
-                                    "CAI_TODO",
-                                    "CAI_SEARXNG",
-                                    "CAI_REVGEO",
-                                    "CAI_TERMINAL",
-                                    "CAI_IMAGE_GENERATION",
-                                    "CAI_REVIEW_SUBAGENT",
-                                    "CAI_CODEX_AGENTS_MD",
-                                    "CAI_SEARXNG_URL",
-                                    "CAI_REVGEO_URL",
-                                    "CAI_CHROME_SOCKET",
-                                    "CAI_READ_FILE",
-                                    "CAI_LIST_FILES",
-                                    "CAI_APPLY_PATCH",
-                                    "CAI_VIEW_IMAGE",
-                                    "CAI_GOALS",
-                                    "CAI_SKILLS",
-                                    "CAI_SHELL_CONTEXT",
-                                    "CAI_SHELL_CONTEXT_MAX_LINES",
-                                    "CAI_SHELL_CONTEXT_MAX_BYTES",
-                                    "CAI_REASONING_TOOL",
-                                    "CAI_NORMAL_REASONING_EFFORT",
-                                    "CAI_HIGH_REASONING_EFFORT"};
+static const char *app_environment(const char *prefix, const char *suffix) {
+  char name[384];
+  if (snprintf(name, sizeof(name), "%s%s", prefix, suffix) >= (int)sizeof(name))
+    return NULL;
+  return getenv(name);
+}
+static int environment_error(const char *prefix, const char *suffix,
+                             cai_error *error) {
+  char name[384];
+  snprintf(name, sizeof(name), "%s%s", prefix, suffix);
+  return fail(error, name,
+              error != NULL && error->message != NULL
+                  ? error->message
+                  : "invalid environment setting");
+}
+static int tool_environment(cai_config *cfg, const char *prefix,
+                            cai_error *error) {
+  static const char *const env[] = {"WEB_SEARCH",
+                                    "CHROME",
+                                    "TODO",
+                                    "SEARXNG",
+                                    "REVGEO",
+                                    "TERMINAL",
+                                    "IMAGE_GENERATION",
+                                    "REVIEW_SUBAGENT",
+                                    "CODEX_AGENTS_MD",
+                                    "SEARXNG_URL",
+                                    "REVGEO_URL",
+                                    "CHROME_SOCKET",
+                                    "READ_FILE",
+                                    "LIST_FILES",
+                                    "APPLY_PATCH",
+                                    "VIEW_IMAGE",
+                                    "GOALS",
+                                    "SKILLS",
+                                    "SHELL_CONTEXT",
+                                    "SHELL_CONTEXT_MAX_LINES",
+                                    "SHELL_CONTEXT_MAX_BYTES",
+                                    "REASONING_TOOL",
+                                    "NORMAL_REASONING_EFFORT",
+                                    "HIGH_REASONING_EFFORT"};
   static const char *const sections[] = {
       "agent", "chrome",  "agent",   "agent",   "agent",  "agent",
       "agent", "agent",   "agent",   "searxng", "revgeo", "chrome",
@@ -318,60 +514,127 @@ static int tool_environment(cai_config *cfg, cai_error *error) {
                                      "normal_reasoning_effort",
                                      "high_reasoning_effort"};
   size_t i;
-  if (getenv("CAI_BOARD") != NULL &&
-      cai_config_set(cfg, "todo", "default_board", getenv("CAI_BOARD"),
-                     error) != CAI_OK)
-    return fail(error, "CAI_BOARD", "invalid environment setting");
-  if (getenv("CAI_MESSAGING") != NULL &&
-      cai_config_set(cfg, "messaging", "enabled", getenv("CAI_MESSAGING"),
-                     error) != CAI_OK)
-    return fail(error, "CAI_MESSAGING", "invalid environment setting");
-  if (getenv("CAI_MESSAGE_QUEUE") != NULL &&
+  {
+    static const char *const aliases[][3] = {
+        {"MODEL", "agent", "model"},
+        {"PROVIDER", "client", "provider"},
+        {"REASONING_EFFORT", "agent", "reasoning_effort"},
+        {"API_KEY_ENV", "client", "api_key_env"},
+        {"ENDPOINT", "client", "base_url"},
+        {"CONFIG_DIR", "paths", "config_dir"},
+        {"STATE_DIR", "paths", "state_dir"},
+        {"CACHE_DIR", "paths", "cache_dir"},
+        {"DATA_DIR", "paths", "data_dir"},
+        {"HISTORY_DIR", "paths", "history_dir"},
+        {"CLIPBOARD_DIR", "paths", "clipboard_dir"},
+        {"LOG_DIR", "paths", "log_dir"},
+        {"POUCH_KEY_FILE", "paths", "pouch_key_file"},
+        {"EXPORT_DIR", "paths", "export_dir"},
+        {"AGENTS_MD", "paths", "agents_md"},
+        {"SKILLS_DIR", "paths", "skills_dir"},
+        {"MODEL_METADATA", "paths", "model_metadata"},
+        {"AUTH_JSON", "paths", "auth_json"},
+        {"LOCKD", "storage", "lockd"},
+        {"NAMESPACE_PREFIX", "storage", "namespace_prefix"},
+        {"QUEUE_PREFIX", "messaging", "queue_prefix"}};
+    for (i = 0U; i < sizeof(aliases) / sizeof(aliases[0]); i++) {
+      const char *v = app_environment(prefix, aliases[i][0]);
+      if (v != NULL &&
+          cfg->set(cfg, aliases[i][1], aliases[i][2], v, error) != CAI_OK)
+        return -1;
+    }
+  }
+  for (i = 0U; i < cfg->field_count(cfg); i++) {
+    const cai_config_field *f = cfg->field_at(cfg, i);
+    char key[256];
+    size_t j;
+    const char *v;
+    if (f->section[0] == '\0' || strcmp(f->section, "env") == 0 ||
+        strchr(f->section, '*') != NULL || strchr(f->section, '.') != NULL)
+      continue;
+    if (snprintf(key, sizeof(key), "%s_%s", f->section, f->key) >=
+        (int)sizeof(key))
+      return fail(error, NULL, "environment setting name too long");
+    for (j = 0U; key[j] != '\0'; j++)
+      if (key[j] >= 'a' && key[j] <= 'z')
+        key[j] = (char)(key[j] - 'a' + 'A');
+    v = app_environment(prefix, key);
+    if (v != NULL && cfg->set(cfg, f->section, f->key, v, error) != CAI_OK)
+      return -1;
+  }
+  if (app_environment(prefix, "BOARD") != NULL &&
+      cai_config_set(cfg, "todo", "default_board",
+                     app_environment(prefix, "BOARD"), error) != CAI_OK)
+    return environment_error(prefix, "BOARD", error);
+  if (app_environment(prefix, "MESSAGING") != NULL &&
+      cai_config_set(cfg, "messaging", "enabled",
+                     app_environment(prefix, "MESSAGING"), error) != CAI_OK)
+    return environment_error(prefix, "MESSAGING", error);
+  if (app_environment(prefix, "MESSAGE_QUEUE") != NULL &&
       cai_config_set(cfg, "messaging", "queue_name",
-                     getenv("CAI_MESSAGE_QUEUE"), error) != CAI_OK)
-    return fail(error, "CAI_MESSAGE_QUEUE", "invalid environment setting");
-  if (getenv("CAI_ENABLE_AUTO_ENQUEUE") != NULL &&
+                     app_environment(prefix, "MESSAGE_QUEUE"), error) != CAI_OK)
+    return environment_error(prefix, "MESSAGE_QUEUE", error);
+  if (app_environment(prefix, "ENABLE_AUTO_ENQUEUE") != NULL &&
       cai_config_set(cfg, "messaging", "enable_auto_enqueue",
-                     getenv("CAI_ENABLE_AUTO_ENQUEUE"), error) != CAI_OK)
-    return fail(error, "CAI_ENABLE_AUTO_ENQUEUE",
-                "invalid environment setting");
-  if (getenv("CAI_MESSAGE_ACK_TIMEOUT_MS") != NULL &&
-      cai_config_set(cfg, "messaging", "ack_timeout_ms",
-                     getenv("CAI_MESSAGE_ACK_TIMEOUT_MS"), error) != CAI_OK)
-    return fail(error, "CAI_MESSAGE_ACK_TIMEOUT_MS",
-                "invalid environment setting");
-  if (getenv("CAI_MCP") != NULL &&
-      cai_config_set(cfg, "agent", "mcp", getenv("CAI_MCP"), error) != CAI_OK)
-    return fail(error, "CAI_MCP", "invalid environment setting");
-  if (getenv("CAI_SERVICE_TIER") != NULL &&
-      cai_config_set(cfg, "agent", "service_tier", getenv("CAI_SERVICE_TIER"),
+                     app_environment(prefix, "ENABLE_AUTO_ENQUEUE"),
                      error) != CAI_OK)
-    return fail(error, "CAI_SERVICE_TIER", "invalid environment setting");
+    return environment_error(prefix, "ENABLE_AUTO_ENQUEUE", error);
+  if (app_environment(prefix, "MESSAGE_ACK_TIMEOUT_MS") != NULL &&
+      cai_config_set(cfg, "messaging", "ack_timeout_ms",
+                     app_environment(prefix, "MESSAGE_ACK_TIMEOUT_MS"),
+                     error) != CAI_OK)
+    return environment_error(prefix, "MESSAGE_ACK_TIMEOUT_MS", error);
+  if (app_environment(prefix, "MCP") != NULL &&
+      cai_config_set(cfg, "agent", "mcp", app_environment(prefix, "MCP"),
+                     error) != CAI_OK)
+    return environment_error(prefix, "MCP", error);
+  if (app_environment(prefix, "SERVICE_TIER") != NULL &&
+      cai_config_set(cfg, "agent", "service_tier",
+                     app_environment(prefix, "SERVICE_TIER"), error) != CAI_OK)
+    return environment_error(prefix, "SERVICE_TIER", error);
   for (i = 0U; i < sizeof(env) / sizeof(env[0]); i++) {
-    const char *value = getenv(env[i]);
+    const char *value = app_environment(prefix, env[i]);
     if (value != NULL &&
         cai_config_set(cfg, sections[i], keys[i], value, error) != CAI_OK)
-      return fail(error, env[i], "invalid environment setting");
+      return environment_error(prefix, env[i], error);
   }
   return 1;
 }
 int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
                       cai_config **configuration,
                       const cai_app_config *application, cai_error *error) {
-  cai_cli_options early, defaults;
+  cai_cli_options early, defaults, documented;
   cai_config *cfg = NULL;
-  const char *base, *value, *resolved;
+  const char *value, *resolved;
   char selected[PATH_MAX];
   char config_root[PATH_MAX];
   size_t i;
-  int rc, n;
+  int rc, n, config_dir_flag;
   *configuration = NULL;
-  rc = cai_cli_read_options(argc, argv, NULL, &early);
+  cai_cli_options_init(&defaults);
+  defaults.program_name =
+      application != NULL && application->program_name != NULL
+          ? application->program_name
+          : CAI_APP_DEFAULT_PROGRAM_NAME;
+  defaults.invocation_name =
+      application != NULL && application->invocation_name != NULL
+          ? application->invocation_name
+          : defaults.program_name;
+  if (cai_cli_environment_prefix(application, defaults.environment_prefix,
+                                 error) != CAI_OK)
+    return -1;
+  snprintf(defaults.default_api_key_env, sizeof(defaults.default_api_key_env),
+           "%sAPI_KEY", defaults.environment_prefix);
+  defaults.config_file = app_environment(defaults.environment_prefix, "CONFIG");
+  defaults.config_dir =
+      app_environment(defaults.environment_prefix, "CONFIG_DIR");
+  rc = cai_cli_read_options(argc, argv, &defaults, &early);
+  config_dir_flag = early.config_dir != defaults.config_dir;
   if (rc <= 0) {
     *options = early;
     if (early.help)
-      return cai_cli_help_print(application != NULL ? application->program_name
-                                                    : "cai") == CAI_OK
+      return cai_cli_help_print(defaults.program_name, defaults.invocation_name,
+                                defaults.environment_prefix) == CAI_OK
                  ? 0
                  : -1;
     if (early.version)
@@ -393,6 +656,10 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
       absolute_path(config_root, sizeof(config_root), early.config_dir, error) <
           0)
     return -1;
+  if (early.config_dir == NULL &&
+      cai_cli_xdg_path(config_root, sizeof(config_root), "XDG_CONFIG_HOME",
+                       ".config", defaults.program_name, error) != CAI_OK)
+    return -1;
   rc = cai_cli_app_schema(&cfg, error);
   if (rc < 0) {
     cai_config_close(cfg);
@@ -403,27 +670,16 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
     if (early.config_file != NULL)
       rc = absolute_path(selected, sizeof(selected), early.config_file, error);
     else {
-      if (early.config_dir != NULL) {
-        n = snprintf(selected, sizeof(selected), "%s/config.ini", config_root);
-      } else {
-        base = getenv("XDG_CONFIG_HOME");
-        if (base != NULL && base[0] == '/')
-          n = snprintf(selected, sizeof(selected), "%s/cai/config.ini", base);
-        else {
-          base = getenv("HOME");
-          if (base == NULL || base[0] != '/')
-            return fail(error, NULL, "set HOME or absolute XDG_CONFIG_HOME");
-          n = snprintf(selected, sizeof(selected), "%s/.config/cai/config.ini",
-                       base);
-        }
-      }
+      n = snprintf(selected, sizeof(selected), "%s/config.ini", config_root);
       rc = n < 0 || (size_t)n >= sizeof(selected)
                ? fail(error, NULL, "configuration path too long")
                : 1;
     }
     if (rc < 0)
       return -1;
-    if (template_paths(cfg, config_root, error) < 0)
+    documented = early;
+    documented.config_dir = config_root;
+    if (application_defaults(cfg, &documented, application, 1, error) != CAI_OK)
       return -1;
     if (cfg->create_template_file(cfg, selected, error) != CAI_OK ||
         cai_config_load_file(cfg, selected, error) != CAI_OK)
@@ -438,7 +694,10 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   }
   if (cfg->apply_environment(cfg, error) != CAI_OK)
     return -1;
-  if (tool_environment(cfg, error) < 0)
+  if (tool_environment(cfg, defaults.environment_prefix, error) < 0)
+    return -1;
+  if (app_environment(defaults.environment_prefix, "CONFIG_DIR") != NULL &&
+      cfg->set(cfg, "paths", "config_dir", config_root, error) != CAI_OK)
     return -1;
   for (i = 0U; application != NULL && i < application->setting_count; i++) {
     const cai_app_setting *s = &application->settings[i];
@@ -446,7 +705,6 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
         cfg->set(cfg, s->section, s->key, s->value, error) != CAI_OK)
       return -1;
   }
-  cai_cli_options_init(&defaults);
   defaults.config_file = early.config_file;
   defaults.no_config = early.no_config;
   defaults.shell_context_max_lines = (size_t)cai_config_get_integer(
@@ -562,7 +820,8 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   rc = cai_cli_read_options(argc, argv, &defaults, options);
   if (rc <= 0)
     return rc;
-  if (config_root[0] != '\0') {
+  if (config_dir_flag ||
+      (options->config_dir == NULL && early.config_dir != NULL)) {
     if (cfg->set(cfg, "paths", "config_dir", config_root, error) != CAI_OK)
       return -1;
     options->config_dir = cfg->get(cfg, "paths", "config_dir");
@@ -571,6 +830,8 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
       chdir(options->directory) != 0)
     return fail(error, options->directory,
                 "cannot change configured workspace");
+  if (application_defaults(cfg, options, application, 0, error) != CAI_OK)
+    return -1;
   if (cai_cli_validate_options(options) < 0)
     return -1;
   return 1;

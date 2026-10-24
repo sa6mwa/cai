@@ -15,9 +15,9 @@ probes=$(grep -ao $'\033\[6n' "$term/raw" | wc -l || true)
 # acquisition. The previous fixture timed out once and disabled all probes.
 [[ "$probes" -ge 1 && "$probes" -le 2 ]]
 began=$SECONDS
-send '/help\r'; expect 'Run cai --help'
+send '/help\r'; expect 'startup options'
 [[ $((SECONDS-began)) -lt 2 ]]
-for marker in 'CAI help' 'Slash commands' 'Prompt keys' '/resume NUMBER' '/export [ID]' Ctrl-V; do contains "$term/text" "$marker"; done
+for marker in 'Help' 'Slash commands' 'Prompt keys' '/resume NUMBER' '/export [ID]' Ctrl-V; do contains "$term/text" "$marker"; done
 absent "$term/text" '| --- |'
 [[ $(requests) == 0 ]]
 send 'inspect this \026'
@@ -34,7 +34,7 @@ plan "$(jq -n --arg path "$image" '{plan:[{pause:true,reasoning:["Checking the p
 send '\r'; expect 'STREAM in flight'
 absent "$term/text" 'FINAL paragraph.'
 count=$(requests)
-send '/help\r'; expect 'Run cai --help'; [[ $(requests) == "$count" ]]
+send '/help\r'; expect 'startup options'; [[ $(requests) == "$count" ]]
 send 'preserved-draft'; resize 48; expect_prompt preserved-draft
 release; expect_assistant 'FINAL paragraph.'; expect 'Worked for'
 contains "$root/peer/requests.jsonl" 'data:image/png;base64,'

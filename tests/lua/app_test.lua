@@ -19,11 +19,23 @@ local messaging_app = assert(application.open {
 messaging_app:close()
 assert(not application.open {settings = {messaging = {enable_auto_enqueue = "not-a-bool"}}})
 local app = assert(application.open {
-  program_name = "vectis -a smith --",
+  invocation_name = "vectis -a smith --",
   banner = "HIDDEN_BANNER",
   introduction_markdown = "HIDDEN_INTRODUCTION",
   no_config = true,
 })
+local named = assert(application.open {
+  program_name = 'smith', invocation_name = 'vectis -a smith --',
+  environment_prefix = 'VECTIS_SMITH_', namespace_prefix = 'vectis.smith', queue_prefix = 'smith',
+  config_file = '/unused/config.ini', config_directory = '/unused/config',
+  state_directory = '/unused/state', cache_directory = '/unused/cache', data_directory = '/unused/data',
+  history_directory = '/unused/history', clipboard_directory = '/unused/clipboard',
+  log_directory = '/unused/log', pouch_key_file = '/unused/key',
+})
+assert(named:help():find('smith and libcai', 1, true))
+named:close()
+assert(not application.open {program_name = '../bad'})
+assert(not application.open {environment_prefix = '1BAD_'})
 local options, model, resume = app:options()
 assert(#options > 50)
 for _, option in ipairs(options) do

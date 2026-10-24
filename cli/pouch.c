@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
 #include "pouch.h"
+#include "identity.h"
 #include <cai/auth.h>
 
 #include <curl/curl.h>
@@ -260,11 +261,11 @@ static int download_source_ns(lc_client *client, const char *ns,
   return rc;
 }
 
-static int download_source(lc_client *client, const char *key,
+static int download_source(cai_cli_pouch *pouch, const char *key,
                            const char *attachment, cai_source **out,
                            cai_error *error) {
-  return download_source_ns(client, "cai.sessions", key, attachment, out,
-                            error);
+  return download_source_ns(pouch->sessions, pouch->sessions_namespace, key,
+                            attachment, out, error);
 }
 
 static int download_private(lc_lease *lease, const char *attachment,
@@ -367,7 +368,7 @@ static int session_read(cai_cli_pouch *pouch, const char *id,
   int rc;
   memset(out, 0, sizeof(*out));
   source = NULL;
-  rc = download_source(pouch->sessions, id, NULL, &source, error);
+  rc = download_source(pouch, id, NULL, &source, error);
   if (rc == CAI_OK)
     rc =
         parse_source_optional(source, &session_map, out, has_body, NULL, error);
@@ -389,7 +390,7 @@ int cai_cli_pouch_session(cai_cli_pouch *pouch, const char *id,
   return session_read(pouch, id, out, NULL, error);
 }
 
-static int acquire_wait(lc_client *client, const char *ns, const char *key,
+static int acquire_wait(cai_cli_pouch *pouch, const char *ns, const char *key,
                         long wait_seconds, lc_lease **out, cai_error *error) {
   lc_acquire_req request;
   lc_error local;
@@ -398,24 +399,24 @@ static int acquire_wait(lc_client *client, const char *ns, const char *key,
   lc_error_init(&local);
   request.ns = ns;
   request.key = key;
-  request.owner = "cai";
+  request.owner = pouch->program_name;
   request.ttl_seconds = 3600;
   request.block_seconds = wait_seconds;
-  rc = client->acquire(client, &request, out, &local);
+  rc = pouch->sessions->acquire(pouch->sessions, &request, out, &local);
   if (rc != LC_OK)
     rc = cai_cli_lc_error(error, &local);
   lc_error_cleanup(&local);
   return rc;
 }
 
-static int acquire_ns(lc_client *client, const char *ns, const char *key,
+static int acquire_ns(cai_cli_pouch *pouch, const char *ns, const char *key,
                       lc_lease **out, cai_error *error) {
-  return acquire_wait(client, ns, key, 5L, out, error);
+  return acquire_wait(pouch, ns, key, 5L, out, error);
 }
 
-static int acquire(lc_client *client, const char *key, lc_lease **out,
+static int acquire(cai_cli_pouch *pouch, const char *key, lc_lease **out,
                    cai_error *error) {
-  return acquire_ns(client, NULL, key, out, error);
+  return acquire_ns(pouch, NULL, key, out, error);
 }
 
 static int release(lc_lease *lease, int rc, cai_error *error) {
@@ -540,7 +541,7 @@ static int checkpoint(void *context, const char *scope, const char *id,
     rc = latest_write(pouch, directory, &index, error);
   }
   if (rc == CAI_OK)
-    rc = acquire(pouch->sessions, id, &lease, error);
+    rc = acquire(pouch, id, &lease, error);
   if (rc == CAI_OK)
     rc = get_session(lease, scope, id, &session, error);
   if (rc == CAI_OK && clock_gettime(CLOCK_REALTIME, &now) != 0)
@@ -591,8 +592,7 @@ static int load_id(void *context, const char *scope, const char *id,
   if (session.checkpoint_name[0] == '\0')
     return CAI_OK;
   *sequence = session.applied_sequence;
-  return download_source(pouch->sessions, id, session.checkpoint_name, out,
-                         error);
+  return download_source(pouch, id, session.checkpoint_name, out, error);
 }
 
 static int session_compare(const void *left, const void *right) {
@@ -742,8 +742,8 @@ static int latest_write(cai_cli_pouch *pouch, lc_lease *guard,
                         latest_index *index, cai_error *error) {
   lc_lease *lease = NULL;
   cai_source *source = NULL;
-  int rc =
-      acquire_ns(pouch->sessions, "cai.scopes", guard->key + 5U, &lease, error);
+  int rc = acquire_ns(pouch, pouch->scopes_namespace, guard->key + 5U, &lease,
+                      error);
   if (rc == CAI_OK)
     rc = cai_cli_mapped_source(&latest_map, index, &source, error);
   if (rc == CAI_OK)
@@ -800,11 +800,11 @@ static int latest_open_wait(cai_cli_pouch *pouch, const char *scope,
   rc = latest_key(scope, key + 5U, error);
   if (rc != CAI_OK)
     return rc;
-  rc = acquire_wait(pouch->sessions, "cai.scopes", key, wait_seconds, out,
+  rc = acquire_wait(pouch, pouch->scopes_namespace, key, wait_seconds, out,
                     error);
   if (rc != CAI_OK)
     return rc;
-  rc = acquire_ns(pouch->sessions, "cai.scopes", key + 5U, &head, error);
+  rc = acquire_ns(pouch, pouch->scopes_namespace, key + 5U, &head, error);
   if (rc != CAI_OK)
     return rc;
   lc_error_init(&local);
@@ -854,8 +854,8 @@ static int load_latest(void *context, const char *scope, char *id,
   memset(&index, 0, sizeof(index));
   rc = latest_key(scope, key, error);
   if (rc == CAI_OK)
-    rc = download_source_ns(pouch->sessions, "cai.scopes", key, NULL, &source,
-                            error);
+    rc = download_source_ns(pouch->sessions, pouch->scopes_namespace, key, NULL,
+                            &source, error);
   if (rc == CAI_OK)
     rc = parse_source_optional(source, &latest_map, &index, &has_body, NULL,
                                error);
@@ -946,7 +946,7 @@ static int append_event(void *context, const char *scope, const char *id,
   record.type = event->type;
   record.data = event->data;
   snprintf(name, sizeof(name), "event-%020llu", event->sequence);
-  rc = acquire(pouch->sessions, id, &lease, error);
+  rc = acquire(pouch, id, &lease, error);
   if (rc == CAI_OK)
     rc = get_session(lease, scope, id, &session, error);
   if (rc == CAI_OK &&
@@ -982,7 +982,7 @@ static int event_attachments(cai_cli_pouch *pouch, const char *id,
   lc_attachment_list_req_init(&request);
   lc_error_init(&local);
   memset(out, 0, sizeof(*out));
-  request.lease.ns = "cai.sessions";
+  request.lease.ns = pouch->sessions_namespace;
   request.lease.key = id;
   request.public_read = 1;
   rc = lc_list_attachments(pouch->sessions, &request, out, &local);
@@ -1004,7 +1004,7 @@ static int session_exists(cai_cli_pouch *pouch, const char *id, int *exists,
   lc_describe_req_init(&request);
   memset(&response, 0, sizeof(response));
   lc_error_init(&local);
-  request.ns = "cai.sessions";
+  request.ns = pouch->sessions_namespace;
   request.key = id;
   rc = lc_describe(pouch->sessions, &request, &response, &local);
   if (rc != LC_OK && local.http_status != 404)
@@ -1059,8 +1059,7 @@ static int load_events(void *context, const char *scope, const char *id,
     source = NULL;
     string_limit = 0;
     memset(&record, 0, sizeof(record));
-    rc = download_source(pouch->sessions, id, attachments.items[i].name,
-                         &source, error);
+    rc = download_source(pouch, id, attachments.items[i].name, &source, error);
     if (rc == CAI_OK)
       rc = parse_source_optional(source, &event_map, &record, NULL,
                                  &string_limit, error);
@@ -1118,14 +1117,14 @@ static int auth_load(void *context, const char *key, cai_source **out,
   memset(&response, 0, sizeof(response));
   lc_error_init(&local);
   request.key = key;
-  request.ns = "cai.auth";
+  request.ns = pouch->auth_namespace;
   rc = lc_describe(pouch->sessions, &request, &response, &local);
   if (rc != LC_OK && local.http_status != 404)
     rc = cai_cli_lc_error(error, &local);
   else {
     rc = response.state_etag != NULL && response.state_etag[0] != '\0'
-             ? download_source_ns(pouch->sessions, "cai.auth", key, NULL, out,
-                                  error)
+             ? download_source_ns(pouch->sessions, pouch->auth_namespace, key,
+                                  NULL, out, error)
              : CAI_OK;
   }
   lc_describe_res_cleanup(&response);
@@ -1140,7 +1139,7 @@ static int auth_replace(void *context, const char *key, cai_source *source,
   int rc;
   pouch = (cai_cli_pouch *)context;
   lease = NULL;
-  rc = acquire_ns(pouch->sessions, "cai.auth", key, &lease, error);
+  rc = acquire_ns(pouch, pouch->auth_namespace, key, &lease, error);
   if (rc == CAI_OK)
     rc = update(lease, source, error);
   return release(lease, rc, error);
@@ -1169,7 +1168,7 @@ static int todo_begin(void *context, void **out, cai_error *error) {
   if (txn == NULL)
     return cai_cli_error(error, CAI_ERR_NOMEM, "allocate kanban transaction");
   txn->pouch = context;
-  rc = acquire_ns(txn->pouch->sessions, "cai.todo", "kanban", &txn->lease,
+  rc = acquire_ns(txn->pouch, txn->pouch->todo_namespace, "kanban", &txn->lease,
                   error);
   if (rc == CAI_OK &&
       (txn->lease->state_etag == NULL || txn->lease->state_etag[0] == '\0')) {
@@ -1318,12 +1317,12 @@ static int private_directory(const char *path, cai_error *error) {
   struct stat status;
   if (mkdir(path, 0700) != 0 && errno != EEXIST)
     return cai_cli_error(error, CAI_ERR_TRANSPORT,
-                         "create cai state directory");
+                         "create application state directory");
   if (lstat(path, &status) != 0 || !S_ISDIR(status.st_mode) ||
       status.st_uid != geteuid() || (status.st_mode & 077U) != 0U)
     return cai_cli_error(
         error, CAI_ERR_INVALID,
-        "cai state directory must be owned by you with mode 0700");
+        "application state directory must be owned by you with mode 0700");
   return CAI_OK;
 }
 
@@ -1360,7 +1359,7 @@ static void prepare_session_index(cai_cli_pouch *pouch) {
   lc_index_flush_req_init(&request);
   memset(&result, 0, sizeof(result));
   lc_error_init(&local);
-  request.ns = "cai.sessions";
+  request.ns = pouch->sessions_namespace;
   request.mode = "wait";
   if (lc_flush_index(pouch->sessions, &request, &result, &local) != LC_OK &&
       pouch->logger != NULL)
@@ -1385,7 +1384,24 @@ int cai_cli_pouch_open(cai_cli_pouch *pouch, const char *selected_endpoint,
 int cai_cli_pouch_open_at(cai_cli_pouch *pouch, const char *state_directory,
                           const char *selected_endpoint, const char *client_pem,
                           pslog_logger *logger, cai_error *error) {
-  const char *base;
+  cai_cli_options options;
+  memset(&options, 0, sizeof(options));
+  options.state_dir = state_directory;
+  options.lockd = selected_endpoint;
+  options.lockd_client_pem = client_pem;
+  return cai_cli_pouch_open_options(pouch, &options, logger, error);
+}
+
+int cai_cli_pouch_open_options(cai_cli_pouch *pouch,
+                               const cai_cli_options *options,
+                               pslog_logger *logger, cai_error *error) {
+  const char *selected_endpoint = options->lockd;
+  const char *client_pem = options->lockd_client_pem;
+  const char *name = options->program_name != NULL
+                         ? options->program_name
+                         : CAI_APP_DEFAULT_PROGRAM_NAME;
+  const char *prefix =
+      options->namespace_prefix != NULL ? options->namespace_prefix : name;
   char path[PATH_MAX];
   char root[PATH_MAX];
   char init_path[PATH_MAX];
@@ -1403,21 +1419,46 @@ int cai_cli_pouch_open_at(cai_cli_pouch *pouch, const char *state_directory,
   int rc;
   memset(pouch, 0, sizeof(*pouch));
   pouch->logger = logger;
-  base = getenv("XDG_STATE_HOME");
-  if (state_directory != NULL)
-    rc = snprintf(path, sizeof(path), "%s", state_directory);
-  else if (base != NULL && base[0] != '\0')
-    rc = snprintf(path, sizeof(path), "%s/cai", base);
-  else {
-    base = getenv("HOME");
-    if (base == NULL || base[0] == '\0')
+  if (options->config_dir != NULL) {
+    if (strlen(options->config_dir) >= sizeof(pouch->config_directory))
       return cai_cli_error(error, CAI_ERR_INVALID,
-                           "set HOME or XDG_STATE_HOME");
-    rc = snprintf(path, sizeof(path), "%s/.local/state/cai", base);
+                           "configuration directory too long");
+    strcpy(pouch->config_directory, options->config_dir);
   }
-  if (rc < 0 || (size_t)rc >= sizeof(path) || path[0] != '/')
-    return cai_cli_error(error, CAI_ERR_INVALID,
-                         "cai state path must be absolute and fit PATH_MAX");
+  if (!cai_cli_identity_valid(name))
+    return cai_cli_error(error, CAI_ERR_INVALID, "invalid program_name");
+  strcpy(pouch->program_name, name);
+  name = options->queue_prefix != NULL ? options->queue_prefix : name;
+  if (!cai_cli_identity_valid(name))
+    return cai_cli_error(error, CAI_ERR_INVALID, "invalid queue_prefix");
+  strcpy(pouch->queue_prefix, name);
+#define NAMESPACE(kind)                                                        \
+  rc =                                                                         \
+      options->kind##_namespace != NULL                                        \
+          ? snprintf(pouch->kind##_namespace, sizeof(pouch->kind##_namespace), \
+                     "%s", options->kind##_namespace)                          \
+          : snprintf(pouch->kind##_namespace, sizeof(pouch->kind##_namespace), \
+                     "%s." #kind, prefix);                                     \
+  if (rc <= 0 || (size_t)rc >= sizeof(pouch->kind##_namespace) ||              \
+      strspn(pouch->kind##_namespace,                                          \
+             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKL"                          \
+             "MNOPQRSTUVWXYZ0123456789._-") != (size_t)rc)                     \
+  return cai_cli_error(error, CAI_ERR_INVALID, "invalid " #kind " namespace")
+  NAMESPACE(sessions);
+  NAMESPACE(auth);
+  NAMESPACE(scopes);
+  NAMESPACE(todo);
+  NAMESPACE(messages);
+#undef NAMESPACE
+  if (options->state_dir != NULL) {
+    rc = snprintf(path, sizeof(path), "%s", options->state_dir);
+    if (rc <= 0 || (size_t)rc >= sizeof(path) || path[0] != '/')
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "state directory must be absolute and fit PATH_MAX");
+  } else if (cai_cli_xdg_path(path, sizeof(path), "XDG_STATE_HOME",
+                              ".local/state", pouch->program_name,
+                              error) != CAI_OK)
+    return error != NULL ? error->code : CAI_ERR_INVALID;
   rc = ensure_parents(path, error);
   if (rc == CAI_OK)
     rc = private_directory(path, error);
@@ -1425,14 +1466,22 @@ int cai_cli_pouch_open_at(cai_cli_pouch *pouch, const char *state_directory,
     return rc;
   if (realpath(path, pouch->state_directory) == NULL)
     return cai_cli_error(error, CAI_ERR_TRANSPORT,
-                         "resolve cai state directory");
-  if (snprintf(pouch->key_path, sizeof(pouch->key_path), "%s/pouch.key",
-               pouch->state_directory) >= (int)sizeof(pouch->key_path) ||
-      snprintf(root, sizeof(root), "%s/pouch", pouch->state_directory) >=
+                         "resolve application state directory");
+  rc = options->pouch_key_file != NULL
+           ? snprintf(pouch->key_path, sizeof(pouch->key_path), "%s",
+                      options->pouch_key_file)
+           : snprintf(pouch->key_path, sizeof(pouch->key_path), "%s/pouch.key",
+                      pouch->state_directory);
+  if (rc <= 0 || (size_t)rc >= sizeof(pouch->key_path) ||
+      pouch->key_path[0] != '/' ||
+      ensure_parents(pouch->key_path, error) != CAI_OK)
+    return cai_cli_error(error, CAI_ERR_INVALID, "invalid pouch key path");
+  if (snprintf(root, sizeof(root), "%s/pouch", pouch->state_directory) >=
           (int)sizeof(root) ||
       snprintf(init_path, sizeof(init_path), "%s/pouch.init.lock",
                pouch->state_directory) >= (int)sizeof(init_path))
-    return cai_cli_error(error, CAI_ERR_INVALID, "cai state path too long");
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "application state path too long");
   local_pouch = selected_endpoint == NULL ||
                 strncmp(selected_endpoint, "pouch://", 8U) == 0;
   if (selected_endpoint != NULL && local_pouch) {
@@ -1491,7 +1540,7 @@ int cai_cli_pouch_open_at(cai_cli_pouch *pouch, const char *state_directory,
   endpoints[0] = endpoint;
   config.endpoints = endpoints;
   config.endpoint_count = 1U;
-  config.default_namespace = "cai.sessions";
+  config.default_namespace = pouch->sessions_namespace;
   config.pouch_settings = local_pouch ? &settings : NULL;
   config.client_bundle_path = client_pem;
   config.disable_mtls = client_pem == NULL;
@@ -1638,7 +1687,7 @@ int cai_cli_pouch_publish(cai_cli_pouch *pouch, const char *id, int published,
     rc = latest_write(pouch, directory, &index, error);
   }
   if (rc == CAI_OK)
-    rc = acquire(pouch->sessions, id, &lease, error);
+    rc = acquire(pouch, id, &lease, error);
   if (rc == CAI_OK)
     rc = get_session(lease, index.workspace, id, &session, error);
   if (rc == CAI_OK) {
@@ -1663,7 +1712,7 @@ int cai_cli_pouch_publish(cai_cli_pouch *pouch, const char *id, int published,
 
 int cai_cli_pouch_lock(cai_cli_pouch *pouch, const char *id, lc_lease **out,
                        cai_error *error) {
-  return acquire(pouch->sessions, id, out, error);
+  return acquire(pouch, id, out, error);
 }
 
 int cai_cli_pouch_unlock(lc_lease *lease, int result, cai_error *error) {
@@ -1690,8 +1739,7 @@ int cai_cli_pouch_export(cai_cli_pouch *pouch, const char *id,
     rc = cai_cli_error(error, CAI_ERR_INVALID,
                        "session has no complete checkpoint");
   if (rc == CAI_OK)
-    rc = download_source(pouch->sessions, id, session.checkpoint_name, &state,
-                         error);
+    rc = download_source(pouch, id, session.checkpoint_name, &state, error);
   if (rc == CAI_OK) {
     strcpy(record.record_type, "checkpoint");
     record.checkpoint_created_at_ns = session.checkpoint_ns;
@@ -1719,8 +1767,7 @@ int cai_cli_pouch_export(cai_cli_pouch *pouch, const char *id,
             runtime, strtoull(attachments.items[i].name + 6U, NULL, 10)))
       continue;
     source = NULL;
-    rc = download_source(pouch->sessions, id, attachments.items[i].name,
-                         &source, error);
+    rc = download_source(pouch, id, attachments.items[i].name, &source, error);
     if (rc == CAI_OK)
       rc = cai_source_copy_to_sink(source, sink, error);
     cai_source_close(source);
@@ -1848,7 +1895,7 @@ int cai_cli_pouch_import(cai_cli_pouch *pouch, const char *path,
   source = NULL;
   created = 0;
   if (rc == CAI_OK)
-    rc = acquire(pouch->sessions, id, &lease, error);
+    rc = acquire(pouch, id, &lease, error);
   if (rc == CAI_OK) {
     if ((lease->state_etag != NULL && lease->state_etag[0] != '\0'))
       rc = cai_cli_error(error, CAI_ERR_INVALID,
@@ -1871,7 +1918,7 @@ int cai_cli_pouch_import(cai_cli_pouch *pouch, const char *path,
   cai_source_close(source);
   if (rc == CAI_OK) {
     lease = NULL;
-    rc = acquire(pouch->sessions, id, &lease, error);
+    rc = acquire(pouch, id, &lease, error);
     if (rc == CAI_OK)
       rc = get_session(lease, workspace, id, &session, error);
     if (rc == CAI_OK) {
@@ -1916,7 +1963,7 @@ int cai_cli_pouch_import(cai_cli_pouch *pouch, const char *path,
     cai_error_init(&ignored);
     lc_error_init(&ignored_lc);
     lease = NULL;
-    if (acquire(pouch->sessions, id, &lease, &ignored) == CAI_OK) {
+    if (acquire(pouch, id, &lease, &ignored) == CAI_OK) {
       (void)lc_lease_delete_all_attachments(lease, &deleted, &ignored_lc);
       (void)lease->remove(lease, NULL, &ignored_lc);
       (void)release(lease, CAI_OK, &ignored);

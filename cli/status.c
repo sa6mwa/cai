@@ -306,11 +306,13 @@ static int cai_cli_table_row(char *out, size_t capacity, size_t *used,
   return 0;
 }
 
-int cai_cli_status_markdown(char *out, size_t capacity, const char *model,
+int cai_cli_status_markdown(char *out, size_t capacity,
+                            const char *program_name, const char *model,
                             const char *effort, const char *provider,
                             const cai_agent_runtime_metrics *metrics,
                             const cai_chatgpt_quota *quota,
                             const cai_agent_instruction_status *instructions) {
+  char instruction_label[96];
   char safe_model[128];
   char safe_effort[32];
   char safe_provider[32];
@@ -319,7 +321,7 @@ int cai_cli_status_markdown(char *out, size_t capacity, const char *model,
   int written;
   size_t i;
   if (out == NULL || capacity == 0U || model == NULL || effort == NULL ||
-      provider == NULL) {
+      program_name == NULL || provider == NULL) {
     return -1;
   }
   written = snprintf(out, capacity,
@@ -407,7 +409,9 @@ int cai_cli_status_markdown(char *out, size_t capacity, const char *model,
       return -1;
   }
   if (instructions != NULL) {
-    if (cai_cli_table_row(out, capacity, &used, "CAI global AGENTS.md",
+    snprintf(instruction_label, sizeof(instruction_label),
+             "%s global AGENTS.md", program_name);
+    if (cai_cli_table_row(out, capacity, &used, instruction_label,
                           instructions->global_agents_md_loaded
                               ? "Yes"
                               : "No (missing or empty)") != 0 ||

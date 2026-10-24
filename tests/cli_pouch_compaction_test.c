@@ -89,7 +89,7 @@ static void write_document(cai_cli_pouch *pouch, const char *key,
   cai_source *source;
   lc_lease *lease = NULL;
   size_t offset;
-  assert(acquire(pouch->sessions, key, &lease, error) == CAI_OK);
+  assert(acquire(pouch, key, &lease, error) == CAI_OK);
   source = document_source(&offset, error);
   assert(update(lease, source, error) == CAI_OK);
   cai_source_close(source);
@@ -158,11 +158,11 @@ int main(int argc, char **argv) {
   cai_cli_pouch_close(&pouch);
   assert(cai_cli_pouch_open(&pouch, endpoint, NULL, NULL, &error) == CAI_OK);
   source = NULL;
-  assert(download_source(pouch.sessions, "compaction-fixture", NULL, &source,
-                         &error) == CAI_OK);
+  assert(download_source(&pouch, "compaction-fixture", NULL, &source, &error) ==
+         CAI_OK);
   verify_document(source, &error);
   source = NULL;
-  assert(download_source(pouch.sessions, "large-live", NULL, &source, &error) ==
+  assert(download_source(&pouch, "large-live", NULL, &source, &error) ==
          CAI_OK);
   verify_document(source, &error);
   source = NULL;

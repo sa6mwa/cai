@@ -33,6 +33,8 @@ int cai_cli_log_open(cai_cli_log *log, pslog_level default_level,
 int cai_cli_log_open_with_logger(cai_cli_log *log, pslog_level default_level,
                                  int interactive, pslog_logger *logger,
                                  cai_error *error);
+int cai_cli_log_interactive_at(cai_cli_log *log, const char *directory,
+                               cai_error *error);
 int cai_cli_log_interactive(cai_cli_log *log, cai_error *error);
 int cai_cli_log_session(cai_cli_log *log, const char *id, cai_error *error);
 int cai_cli_log_notices(cai_cli_log *log, int (*visit)(void *, const char *),

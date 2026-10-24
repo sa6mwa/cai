@@ -9,7 +9,7 @@ run --list; ok
 [[ $(stat -c %a "$config") == 600 && $(stat -c %a "$(dirname "$config")") == 700 ]]
 contains "$config" '# model = "gpt-6-luna"'
 contains "$config" '# config_env_has_precedence = false'
-contains "$config" '## CAI configuration.'
+contains "$config" '## Configuration.'
 contains "$config" "# config_dir = \"$root/config/cai\""
 contains "$config" "# agents_md = \"$root/config/cai/AGENTS.md\""
 contains "$config" "# skills_dir = \"$root/config/cai/skills\""
@@ -21,7 +21,7 @@ contains "$config" '# enabled = false'
 contains "$config" '# enable_auto_enqueue = false'
 contains "$config" '# ack_timeout_ms = 300000'
 contains "$config" '# queue_name = ""'
-contains "$config" '## Empty checks ~/.codex/auth.json first, then encrypted cai auth.'
+contains "$config" '## Empty checks ~/.codex/auth.json first, then encrypted application auth.'
 contains "$config" '## Empty optionally loads config_dir/models.json;'
 contains "$config" '## Remote lockd mTLS client PEM; empty supplies no client certificate.'
 ! grep -E '^# [^=]*$' "$config"
