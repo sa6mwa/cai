@@ -1544,7 +1544,9 @@ struct cai_response_create_params {
   int (*add_function_call_output_text)(cai_response_create_params *params,
                                        const char *call_id, const char *text,
                                        cai_error *error);
-  /** Add image URL function-call output. */
+  /** Add image URL function-call output. Chat Completions sends a text tool
+   *  acknowledgement and attaches the image in a user message after the
+   *  complete group of tool results. */
   int (*add_function_call_output_image_url)(cai_response_create_params *params,
                                             const char *call_id,
                                             const char *url, const char *detail,
@@ -2271,7 +2273,9 @@ int cai_response_create_params_add_custom_tool_call_output(
 int cai_response_create_params_add_function_call_output_text(
     cai_response_create_params *params, const char *call_id, const char *text,
     cai_error *error);
-/** Add image URL function-call output. */
+/** Add image URL function-call output. Chat Completions sends a text tool
+ *  acknowledgement and attaches the image after the complete tool-result
+ *  group in a user message. */
 int cai_response_create_params_add_function_call_output_image_url(
     cai_response_create_params *params, const char *call_id, const char *url,
     const char *detail, cai_error *error);

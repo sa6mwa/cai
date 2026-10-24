@@ -582,18 +582,33 @@ cai_chat_write_history(lonejson_writer *writer,
 static lonejson_status
 cai_chat_write_input_parts(lonejson_writer *writer,
                            const struct cai_content_part *parts, size_t count,
-                           lonejson_error *error) {
+                           int tool_output, lonejson_error *error) {
   lonejson_status status;
   size_t i;
 
-  if (count == 0U || (count == 1U && cai_chat_is_text(parts[0].type))) {
+  if (tool_output || count == 0U ||
+      (count == 1U && cai_chat_is_text(parts[0].type))) {
     status = writer->string_begin(writer, error);
-    if (status == LONEJSON_STATUS_OK && count == 1U) {
-      if (parts[0].has_text_spooled) {
-        status = cai_chat_text_chunks(writer, &parts[0].text_spooled, error);
-      } else if (parts[0].text != NULL) {
-        status = writer->string_chunk(writer, parts[0].text,
-                                      strlen(parts[0].text), error);
+    for (i = 0U; status == LONEJSON_STATUS_OK && i < count; i++) {
+      if (i != 0U)
+        status = writer->string_chunk(writer, "\n", 1U, error);
+      if (status != LONEJSON_STATUS_OK)
+        break;
+      if (cai_chat_is_text(parts[i].type)) {
+        if (parts[i].has_text_spooled)
+          status = cai_chat_text_chunks(writer, &parts[i].text_spooled, error);
+        else if (parts[i].text != NULL)
+          status = writer->string_chunk(writer, parts[i].text,
+                                        strlen(parts[i].text), error);
+      } else if (parts[i].type != NULL &&
+                 strcmp(parts[i].type, "input_image") == 0 &&
+                 parts[i].image_url != NULL) {
+        static const char acknowledgement[] =
+            "Image returned by tool; attached in the following user message.";
+        status = writer->string_chunk(writer, acknowledgement,
+                                      sizeof(acknowledgement) - 1U, error);
+      } else {
+        return LONEJSON_STATUS_UNSUPPORTED;
       }
     }
     return status == LONEJSON_STATUS_OK ? writer->string_end(writer, error)
@@ -630,6 +645,65 @@ cai_chat_write_input_parts(lonejson_writer *writer,
                                       : status;
 }
 
+/* Tool messages only support text. Attach images after the entire tool-result
+ * group, so no user message separates a call from its pending results. */
+static lonejson_status
+cai_chat_write_tool_images(lonejson_writer *writer,
+                           const struct cai_input_message *items, size_t count,
+                           lonejson_error *error) {
+  const struct cai_content_part *parts;
+  lonejson_status status = LONEJSON_STATUS_OK;
+  size_t i, j;
+  int open = 0;
+
+  for (i = 0U; status == LONEJSON_STATUS_OK && i < count; i++) {
+    parts = (const struct cai_content_part *)items[i].content.items;
+    for (j = 0U; status == LONEJSON_STATUS_OK && j < items[i].content.count;
+         j++) {
+      if (parts[j].type == NULL || strcmp(parts[j].type, "input_image") != 0)
+        continue;
+      if (!open) {
+        status = writer->begin_object(writer, error);
+        if (status == LONEJSON_STATUS_OK)
+          status = cai_chat_member(writer, "role", "user", error);
+        if (status == LONEJSON_STATUS_OK)
+          status = cai_chat_key(writer, "content", error);
+        if (status == LONEJSON_STATUS_OK)
+          status = writer->begin_array(writer, error);
+        open = 1;
+      }
+      if (status == LONEJSON_STATUS_OK)
+        status = writer->begin_object(writer, error);
+      if (status == LONEJSON_STATUS_OK)
+        status = cai_chat_member(writer, "type", "text", error);
+      if (status == LONEJSON_STATUS_OK)
+        status = cai_chat_key(writer, "text", error);
+      if (status == LONEJSON_STATUS_OK)
+        status = writer->string_begin(writer, error);
+      if (status == LONEJSON_STATUS_OK) {
+        static const char prefix[] = "Image from tool call ";
+        status =
+            writer->string_chunk(writer, prefix, sizeof(prefix) - 1U, error);
+      }
+      if (status == LONEJSON_STATUS_OK)
+        status = writer->string_chunk(writer, items[i].call_id,
+                                      strlen(items[i].call_id), error);
+      if (status == LONEJSON_STATUS_OK)
+        status = writer->string_end(writer, error);
+      if (status == LONEJSON_STATUS_OK)
+        status = writer->end_object(writer, error);
+      if (status == LONEJSON_STATUS_OK)
+        status = cai_chat_write_image(writer, parts[j].image_url,
+                                      parts[j].detail, error);
+    }
+  }
+  if (status == LONEJSON_STATUS_OK && open)
+    status = writer->end_array(writer, error);
+  if (status == LONEJSON_STATUS_OK && open)
+    status = writer->end_object(writer, error);
+  return status;
+}
+
 static lonejson_status
 cai_chat_write_input(lonejson_writer *writer,
                      const cai_response_create_params *params,
@@ -637,7 +711,7 @@ cai_chat_write_input(lonejson_writer *writer,
   const struct cai_input_message *items;
   const struct cai_content_part *parts;
   lonejson_status status;
-  size_t i;
+  size_t i, tool_start = 0U;
 
   items = (const struct cai_input_message *)params->input.items;
   for (i = 0U; i < params->input.count; i++) {
@@ -656,7 +730,7 @@ cai_chat_write_input(lonejson_writer *writer,
       if (status == LONEJSON_STATUS_OK) {
         parts = (const struct cai_content_part *)items[i].content.items;
         status = cai_chat_write_input_parts(writer, parts,
-                                            items[i].content.count, error);
+                                            items[i].content.count, 0, error);
       }
     } else if (items[i].kind == CAI_INPUT_FUNCTION_CALL_OUTPUT ||
                items[i].kind == CAI_INPUT_CUSTOM_TOOL_CALL_OUTPUT) {
@@ -674,7 +748,7 @@ cai_chat_write_input(lonejson_writer *writer,
       if (status == LONEJSON_STATUS_OK && items[i].content.count > 0U) {
         parts = (const struct cai_content_part *)items[i].content.items;
         status = cai_chat_write_input_parts(writer, parts,
-                                            items[i].content.count, error);
+                                            items[i].content.count, 1, error);
       } else if (status == LONEJSON_STATUS_OK && items[i].has_output_spooled) {
         status = cai_chat_string_spool(writer, &items[i].output_spooled, error);
       } else if (status == LONEJSON_STATUS_OK) {
@@ -689,6 +763,15 @@ cai_chat_write_input(lonejson_writer *writer,
     }
     if (status != LONEJSON_STATUS_OK) {
       return status;
+    }
+    if (items[i].kind == CAI_INPUT_MESSAGE) {
+      tool_start = i + 1U;
+    } else if (i + 1U == params->input.count ||
+               items[i + 1U].kind == CAI_INPUT_MESSAGE) {
+      status = cai_chat_write_tool_images(writer, items + tool_start,
+                                          i + 1U - tool_start, error);
+      if (status != LONEJSON_STATUS_OK)
+        return status;
     }
   }
   return LONEJSON_STATUS_OK;

@@ -405,6 +405,9 @@ image input. Hosted image generation is disabled because Berget does not
 provide that API; file IDs and arbitrary file attachments return an explicit
 error. Berget API keys and session content are kept in the same
 locations as other `cai` providers; the key is read from `BERGET_API_KEY`.
+Chat Completions sends tool-returned images in a labelled user message after
+all tool results from the assistant reply. The tool messages carry text
+acknowledgements; image URLs and detail settings remain attached to the images.
 GLM may emit reasoning separately or inside a tagged `<think>` section; cai
 keeps tagged thinking out of the final answer and streams plain answer text.
 Berget does not provide a concise reasoning summary for that model. A live

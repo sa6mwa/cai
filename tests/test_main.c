@@ -8773,9 +8773,21 @@ typedef struct mock_http_expectation {
   const char *body;
 } mock_http_expectation;
 
+static int test_chat_image_messages_valid(const char *json);
+
 static int mock_request_matches(const char *request,
                                 const mock_http_expectation *expectation) {
   size_t i;
+  const char *body;
+
+  body = strstr(request, "\r\n\r\n");
+  if (strstr(request, "/chat/completions HTTP/") != NULL && body != NULL &&
+      strstr(body, "\"image_url\"") != NULL &&
+      !test_chat_image_messages_valid(body + 4)) {
+    fputs("mock Chat Completions rejected invalid image message roles/order\n",
+          stderr);
+    return 0;
+  }
 
   if (expectation->request_prefix != NULL &&
       strncmp(request, expectation->request_prefix,
@@ -44316,8 +44328,18 @@ static void test_chat_completions_adapter(test_state *state) {
       "\"type\":\"image_url\"", "\"url\":\"https://example.test/image.png\"",
       "\"url\":\"https://example.test/old.png\"", "\"detail\":\"high\""};
   static const char *tool_image_required[] = {
-      "\"role\":\"tool\"", "\"tool_call_id\":\"call_image\"",
-      "\"type\":\"image_url\"", "\"url\":\"data:image/png;base64,aGVsbG8=\""};
+      "\"role\":\"tool\"",
+      "\"tool_call_id\":\"call_image\"",
+      "\"tool_call_id\":\"call_text\",\"content\":\"text result\"",
+      "\"tool_call_id\":\"call_typed_text\",\"content\":\"typed text\"",
+      "\"tool_call_id\":\"call_second_image\"",
+      "\"role\":\"user\",\"content\":[",
+      "Image from tool call call_image",
+      "Image from tool call call_second_image",
+      "\"type\":\"image_url\"",
+      "\"url\":\"data:image/png;base64,aGVsbG8=\"",
+      "\"url\":\"https://example.test/second.png\",\"detail\":\"high\"",
+      "\"content\":\"continue after images\""};
   static const char *strict_schema_required[] = {
       "\"response_format\":{\"type\":\"json_schema\",\"json_schema\":{"
       "\"name\":\"answer\",\"strict\":true,\"schema\":{\"type\":\"object\""};
@@ -44545,8 +44567,27 @@ static void test_chat_completions_adapter(test_state *state) {
       params->add_image_url(params, "user", "https://example.test/image.png",
                             "high", &error);
     } else if (step == 7U) {
+      static const char image_calls[] =
+          "[{\"type\":\"function_call\",\"call_id\":\"call_image\","
+          "\"name\":\"view_image\",\"arguments\":\"{}\"},{"
+          "\"type\":\"custom_tool_call\",\"call_id\":\"call_text\","
+          "\"name\":\"echo\",\"input\":\"text\"},{"
+          "\"type\":\"function_call\",\"call_id\":\"call_typed_text\","
+          "\"name\":\"read_file\",\"arguments\":\"{}\"},{"
+          "\"type\":\"function_call\",\"call_id\":\"call_second_image\","
+          "\"name\":\"screenshot\",\"arguments\":\"{}\"}]";
+      cai_response_create_params_set_raw_input_json(params, image_calls,
+                                                    &error);
       params->add_function_call_output_image_url(
           params, "call_image", "data:image/png;base64,aGVsbG8=", NULL, &error);
+      params->add_custom_tool_call_output(params, "call_text", "text result",
+                                          &error);
+      params->add_function_call_output_text(params, "call_typed_text",
+                                            "typed text", &error);
+      params->add_function_call_output_image_url(
+          params, "call_second_image", "https://example.test/second.png",
+          "high", &error);
+      params->add_text(params, "user", "continue after images", &error);
     } else {
       params->add_text(params, "user", "Reply with exactly OK.", &error);
       if (step == 9U || step == 11U) {
@@ -52116,9 +52157,11 @@ static void test_mcp_raw_input_transport_failures(test_state *state) {
 
 #include "chat_refusal_test.inc"
 #include "chat_stream_callbacks_test.inc"
+#include "chat_tool_images_test.inc"
 #include "reasoning_pending_test.inc"
 
 static const test_entry test_entries[] = {
+    {"chat_image_tool_roundtrip", test_chat_image_tool_roundtrip},
     {"chat_custom_deltas", test_chat_custom_deltas},
     {"chat_reasoning_transitions", test_chat_reasoning_transitions},
     {"chat_refusal", test_chat_refusal},
