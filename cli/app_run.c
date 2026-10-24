@@ -1983,6 +1983,10 @@ static int cli_goal_command(cli_state *state, const char *arg,
     objective += strspn(objective, " \t\r\n");
     if (*objective == '\0')
       return cai_cli_error(error, CAI_ERR_INVALID, usage);
+    if (!state->options.goals)
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "Goal pursuit requires goal tools; enable --goals "
+                           "or [agent] goals=true and restart.");
     action = "new";
     rc = cai_agent_runtime_replace_goal(state->runtime, objective, error);
   } else if (strcmp(arg, "pause") == 0) {
@@ -1995,6 +1999,10 @@ static int cli_goal_command(cli_state *state, const char *arg,
     action = "pause";
     rc = cai_agent_runtime_pause_goal(state->runtime, error);
   } else if (strcmp(arg, "resume") == 0) {
+    if (!state->options.goals)
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "Goal pursuit requires goal tools; enable --goals "
+                           "or [agent] goals=true and restart.");
     rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
     if (rc != CAI_OK)
       return rc;

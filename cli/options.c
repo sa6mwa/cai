@@ -518,6 +518,12 @@ int cai_cli_validate_options(cai_cli_options *options) {
         options, "%s", "cai: --review-and-fix requires the review subagent\n");
     return -1;
   }
+  if (!options->goals && (options->goal != NULL || options->review_and_fix)) {
+    cai_cli_option_error(options, "%s",
+                         "cai: --goal and --review-and-fix require goal tools; "
+                         "enable --goals or [agent] goals=true\n");
+    return -1;
+  }
   if (options->base != NULL && !options->review && !options->review_and_fix) {
     cai_cli_option_error(options, "%s",
                          "cai: --base requires --review or --review-and-fix\n");
