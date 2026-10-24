@@ -71,6 +71,10 @@
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_messages_integration_test.sh"
       "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_messages_integration PROPERTIES TIMEOUT 45)
+    add_test(NAME cai_cli_messages_toggle_failure COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_messages_toggle_failure_test.sh"
+      "$<TARGET_FILE:cai_cli_mock_fixture>")
+    set_tests_properties(cai_cli_messages_toggle_failure PROPERTIES TIMEOUT 15)
     add_test(NAME cai_cli_help COMMAND cai_cli --help)
     add_test(NAME cai_cli_startup_text COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_startup_text_test.sh"

@@ -573,7 +573,8 @@ No local Pouch key is created for a remote endpoint.
 
 Starting `cai` resumes the newest session for the canonical current directory.
 `-N`/`--new` starts fresh; `/new` does the same inside the prompt and confirms
-the new session ID and workspace after opening it successfully.
+the new session ID and workspace in a Markdown summary after opening it
+successfully. When messaging is enabled, the summary includes its active queue.
 `-l`/`--list` shows all conversations across directories. `--resume` without
 an ID and `/resume` show a numbered list for the current directory only;
 `/resume <number>` loads an entry. Rows show ID, directory, and a first-prompt
@@ -993,12 +994,14 @@ contents and loading order are preserved on resume and model changes.
 
 ### Messages between conversations
 
-Enable messaging with `--messaging` (default off). CAI apps on a shared Pouch
+Enable messaging with `--messaging` or `/queue on` in the TUI (default off).
+`/queue off` disables it between turns. CAI apps on a shared Pouch
 backend can then use `agent_message` to discover named
 workspace mailboxes and send by queue name. The default is
 `cai.<basename>.<six-hex-path-hash>`; override it with `--message-queue NAME`,
 `CAI_MESSAGE_QUEUE`, or `[messaging] queue_name`. `/status` and `/queue` show
-the name. `/queue NAME` replaces the full name between turns for this app,
+the name; `/status` also shows the incoming-message approval mode.
+`/queue NAME` replaces the full name between turns for this app,
 including `/new` and `/resume`, without changing `config.ini`.
 The newest app start owns new deliveries for that name; already delivered
 messages stay in their original conversation. Incoming messages use softline's normal

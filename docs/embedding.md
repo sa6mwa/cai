@@ -339,8 +339,10 @@ softline's normal prompt hook. Configure it through C app settings or Lua
 ack_timeout_ms = 300000, queue_name = "smith"}}`. Omit `queue_name` to derive
 a stable basename plus canonical-path hash. The newest app start owns the
 named mailbox; old delivered messages stay in their original conversation.
-`/queue NAME` overrides the full name for this app between turns; `/queue`
-shows it. The override survives `/new` and `/resume`, without changing config.ini.
+`/queue on` and `/queue off` enable or disable messaging between turns in the
+same conversation. `/queue NAME` overrides the full name; `/queue` shows it.
+`/status` includes the queue and approval mode. These live settings survive
+`/new` and `/resume`, without changing config.ini.
 See [messaging](agent-messaging.md) for delivery,
 editing, ACK deadlines, and core C/Lua next-turn integration APIs.
 

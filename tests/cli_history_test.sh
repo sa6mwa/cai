@@ -13,7 +13,7 @@ cmp "$history" "$root/expected"
 send 'history-steering\r'; wait_for has "$history" history-steering
 release; expect_turn "$offset" HistorySteerDone
 [[ $(grep -c '^history-steering$' "$history") == 1 ]]
-send '/new\r'; expect 'New session:'; expect 'Workspace:'; expect '$ /new'
+send '/new\r'; expect 'New session'; expect 'ID:'; expect 'Workspace:'; expect '$ /new'
 absent "$term/feed" '--- session ---'
 count=$(requests); cp "$history" "$root/snapshot"
 send '\022history-steering\r'; expect_prompt '> history-steering'

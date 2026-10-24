@@ -38,18 +38,29 @@ The basename is lowercased, sanitized and shortened to fit lockd's 128-character
 name limit. A detected short-hash collision with another canonical directory
 fails explicitly and asks for `--message-queue NAME`.
 
-`/status` shows the queue name. Override it with `--message-queue NAME`,
+`/status` shows the active queue name and whether incoming prompts require
+manual approval or are automatically approved. `/new` includes the active queue
+in its Markdown session summary when messaging is enabled.
+Override it with `--message-queue NAME`,
 `CAI_MESSAGE_QUEUE`, or `[messaging] queue_name`. Empty keeps automatic naming.
 Overrides replace the entire name; no prefix or path hash is appended.
 Explicit names are lowercased and must contain only ASCII letters, digits,
 `.`, `_` or `-`, with at most 128 characters. Deliberately using the same
 explicit name in another directory takes over that mailbox too.
 
-In the TUI, `/queue` shows the current mailbox and `/queue NAME` replaces its
-full name between turns, applying the same takeover rules. For example,
+In the TUI, `/queue` shows the current mailbox (or how to enable it),
+`/queue on` enables messaging and its tool, and `/queue off` disables them.
+Enabling and disabling apply between turns, retaining the same conversation
+and saved model settings without replaying its text or making a model request.
+Approve or reject queued incoming prompts before disabling messaging; this
+protects any edits made in the prompt queue. Deliveries still in storage remain
+available when messaging is enabled again. `/autoqueue` remains the separate
+automatic-approval setting and is retained across these changes and `/new`.
+`/queue NAME` replaces the full name between turns, applying the same takeover
+rules. For example,
 `/queue Smith` selects `smith`. The override lasts for the running app,
-including `/new` and `/resume`; it does not rewrite `config.ini` or session
-settings. Delivered messages and their approvals remain in the conversation.
+including `/new` and `/resume`; these commands do not rewrite `config.ini` or
+session settings. Delivered messages and their approvals remain in the conversation.
 The former destination stays listed as a known mailbox but no longer has this
 app as its active listener. If starting the new listener fails, the error names
 the selected queue; retry with `/queue NAME`.

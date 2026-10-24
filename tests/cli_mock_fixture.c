@@ -3,6 +3,7 @@
  */
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
+#include "../cli/messages.h"
 #include <cai/agent_runtime.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,8 +21,24 @@ static int fixture_runtime_open(cai_client *client,
   }
   return cai_agent_runtime_open(client, &selected, out, error);
 }
+/* Fail after the services have started to exercise partial-open cleanup. */
+static int fixture_messages_start(cai_cli_messages *messages, const char *id,
+                                  const char *workspace, const char *queue,
+                                  cai_error *error) {
+  static int failed;
+  int rc = cai_cli_messages_start(messages, id, workspace, queue, error);
+  if (rc == CAI_OK && !failed &&
+      getenv("CAI_TEST_MESSAGES_START_FAILURE") != NULL) {
+    failed = 1;
+    return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                         "Injected message listener startup failure");
+  }
+  return rc;
+}
 #define cai_agent_runtime_open fixture_runtime_open
+#define cai_cli_messages_start fixture_messages_start
 #include "../cli/app_run.c"
+#undef cai_cli_messages_start
 #undef cai_agent_runtime_open
 
 int main(int argc, char **argv) { return cai_cli_app_main(argc, argv, NULL); }

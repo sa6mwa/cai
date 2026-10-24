@@ -132,6 +132,7 @@ typedef struct cli_state {
   int was_busy;
   int awaiting_turn;
   int show_welcome;
+  int suppress_replay;
   int automation_done;
   int automation_failed;
   int auto_goal;
@@ -1661,8 +1662,10 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   int wakeup_fd;
   int rc;
 
-  state->show_welcome = 1;
-  state->has_review_metrics = 0;
+  if (!state->suppress_replay) {
+    state->show_welcome = 1;
+    state->has_review_metrics = 0;
+  }
   cai_agent_runtime_config_init(&config);
   if (state->configuration != NULL &&
       state->configuration->apply_runtime(state->configuration, &config,
@@ -1675,6 +1678,14 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
     return error->code;
   config.terminal_tool_config = &terminal;
   cai_cli_apply_runtime_options(&state->options, &config, &preset, &skills);
+  if (state->suppress_replay) {
+    /* A live catalog change must restore the current checkpoint settings,
+     * rather than reapply the invocation's original explicit overrides. */
+    config.model = NULL;
+    config.reasoning_effort = NULL;
+    config.reasoning_summary = NULL;
+    config.service_tier = NULL;
+  }
   if (state->options.messaging && !state->options.review) {
     rc = cai_cli_messages_new(&state->pouch,
                               state->options.message_ack_timeout_ms,
@@ -1705,7 +1716,7 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   config.review_event_callback = cli_review_event;
   config.review_event_context = state;
   config.event_context = state;
-  if (!state->options.review) {
+  if (!state->options.review && !state->suppress_replay) {
     state->pouch.replay_begin = cli_replay_begin;
     config.replay_callback = cli_replay_event;
     config.replay_context = state;
@@ -1902,12 +1913,115 @@ static int cli_list_sessions(cli_state *state, cai_error *error) {
   return rc;
 }
 
+/* Use a code-span delimiter longer than any run in a path or queue name.
+ * Padding protects embedded backticks and leading/trailing spaces. */
+static int cli_session_field(cli_state *state, const char *label,
+                             const char *value) {
+  const char *p;
+  char *fence;
+  size_t run = 0U, longest = 0U;
+  int rc;
+  for (p = value; *p != '\0'; p++) {
+    run = *p == '`' ? run + 1U : 0U;
+    if (run > longest)
+      longest = run;
+  }
+  fence = malloc(longest + 2U);
+  if (fence == NULL)
+    return -1;
+  memset(fence, '`', longest + 1U);
+  fence[longest + 1U] = '\0';
+  rc = cli_text(state, "- **", 4U) != 0 ||
+               cli_text(state, label, strlen(label)) != 0 ||
+               cli_text(state, ":** ", 4U) != 0 ||
+               cli_text(state, fence, longest + 1U) != 0 ||
+               cli_text(state, " ", 1U) != 0 ||
+               cli_text(state, value, strlen(value)) != 0 ||
+               cli_text(state, " ", 1U) != 0 ||
+               cli_text(state, fence, longest + 1U) != 0 ||
+               cli_text(state, "\n", 1U) != 0
+           ? -1
+           : 0;
+  free(fence);
+  return rc;
+}
+
+static int cli_set_messaging(cli_state *state, int enabled, cai_error *error) {
+  cai_agent_runtime_metrics metrics;
+  cai_agent_run_state run_state;
+  sl_prompt_queue_entry_info_t info;
+  size_t i;
+  char *id;
+  int rc;
+  if (enabled == state->options.messaging)
+    return CAI_OK;
+  rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
+  if (rc == CAI_OK)
+    rc = cai_agent_runtime_state(state->runtime, &run_state, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (metrics.turn_active || state->awaiting_turn || state->shell.pid > 0 ||
+      state->review_runtime != NULL || run_state == CAI_AGENT_SAMPLING ||
+      run_state == CAI_AGENT_DISPATCHING_TOOL)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "Change messaging between turns.");
+  /* Reopening must not replace an edited, unconsumed incoming prompt with
+   * its original durable delivery. Leave approval and editing under user
+   * control before removing this runtime's messaging integration. */
+  if (!enabled && state->interactive) {
+    for (i = 0U; i < sl_prompt_queue_count(state->sl); i++) {
+      if (sl_prompt_queue_info(state->sl, i, &info) != SL_OK)
+        return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                             "inspect pending message approval");
+      if (cai_cli_messages_is_message(state->messages, info.id))
+        return cai_cli_error(error, CAI_ERR_INVALID,
+                             "Approve or reject queued incoming messages "
+                             "before disabling messaging.");
+    }
+    if (sl_prompt_queue_draft_info(state->sl, &info) != SL_OK)
+      return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                           "inspect incoming message draft");
+    if (cai_cli_messages_is_message(state->messages, info.id))
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "Finish editing and approve or reject the "
+                           "incoming message before disabling messaging.");
+  }
+  id = strdup(cai_agent_runtime_session_id(state->runtime));
+  if (id == NULL)
+    return cai_cli_error(error, CAI_ERR_NOMEM, "copy messaging session ID");
+  if (cli_finish_response(state) != 0) {
+    free(id);
+    return CAI_ERR_TRANSPORT;
+  }
+  /* Tool registration is immutable while a runtime exists. Reopen this same
+   * durable session with the updated catalog, without replaying it to the UI
+   * or host observers. No model request or new conversation is created. */
+  state->suppress_replay = 1;
+  cli_close_runtime(state);
+  state->options.messaging = enabled;
+  rc = cli_open_runtime(state, id, 0, error);
+  if (rc != CAI_OK) {
+    cai_error recovery;
+    cai_error_init(&recovery);
+    cli_close_runtime(state);
+    state->options.messaging = !enabled;
+    if (cli_open_runtime(state, id, 0, &recovery) != CAI_OK) {
+      state->exit_requested = 1;
+      cli_print_error(state, "restore conversation after messaging change",
+                      &recovery);
+    }
+    cai_error_cleanup(&recovery);
+  }
+  state->suppress_replay = 0;
+  free(id);
+  return rc;
+}
+
 static int cli_switch_session(cli_state *state, const char *id, int new_session,
                               cai_error *error) {
   cai_agent_run_state run_state;
   const char *created_id;
-  char *message;
-  int rc, length;
+  int rc;
   rc = cai_agent_runtime_state(state->runtime, &run_state, error);
   if (rc != CAI_OK)
     return rc;
@@ -1925,18 +2039,15 @@ static int cli_switch_session(cli_state *state, const char *id, int new_session,
   created_id = cai_agent_runtime_session_id(state->runtime);
   if (created_id == NULL)
     return cai_cli_error(error, CAI_ERR_PROTOCOL, "new session ID unavailable");
-  length = snprintf(NULL, 0, "New session: %s\nWorkspace: %s", created_id,
-                    state->workspace);
-  if (length < 0)
-    return cai_cli_error(error, CAI_ERR_INVALID, "format new session details");
-  message = malloc((size_t)length + 1U);
-  if (message == NULL)
-    return cai_cli_error(error, CAI_ERR_NOMEM, "allocate new session details");
-  snprintf(message, (size_t)length + 1U, "New session: %s\nWorkspace: %s",
-           created_id, state->workspace);
-  rc = cli_write(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
-  free(message);
-  return rc;
+  if (cli_text(state, "## New session\n\n", 16U) != 0 ||
+      cli_session_field(state, "ID", created_id) != 0 ||
+      cli_session_field(state, "Workspace", state->workspace) != 0 ||
+      (state->messages != NULL &&
+       cli_session_field(state, "Message queue",
+                         cai_cli_messages_name(state->messages)) != 0) ||
+      cli_finish_response(state) != 0)
+    return CAI_ERR_TRANSPORT;
+  return CAI_OK;
 }
 
 static int cli_reasoning_tool_command(cli_state *state, const char *arg,
@@ -2935,16 +3046,24 @@ static int cli_handle_command(cli_state *state, const char *line,
     cai_agent_run_state run_state;
     char name[129], message[256];
     size_t length;
-    if (state->messages == NULL)
-      return cai_cli_error(error, CAI_ERR_INVALID,
-                           "Messaging is disabled; start with --messaging "
-                           "or set [messaging] enabled = true.");
     arg = line + 6U;
     while (*arg == ' ' || *arg == '\t')
       arg++;
     length = strlen(arg);
     while (length > 0U && (arg[length - 1U] == ' ' || arg[length - 1U] == '\t'))
       length--;
+    if ((length == 2U && strncmp(arg, "on", length) == 0) ||
+        (length == 3U && strncmp(arg, "off", length) == 0)) {
+      rc = cli_set_messaging(state, length == 2U, error);
+      if (rc != CAI_OK)
+        return rc;
+      length = 0U;
+    }
+    if (state->messages == NULL)
+      return cli_write(state, "Messaging is disabled. Use /queue on to enable "
+                              "the message tool and incoming queue.") == 0
+                 ? CAI_OK
+                 : CAI_ERR_TRANSPORT;
     if (length > 0U) {
       if (length >= sizeof(name))
         return cai_cli_error(error, CAI_ERR_INVALID,
@@ -3000,6 +3119,7 @@ static int cli_handle_command(cli_state *state, const char *line,
     if (sl_set_auto_approval(state->sl, enabled) != SL_OK)
       return cai_cli_error(error, CAI_ERR_TRANSPORT,
                            "set incoming message approval");
+    state->options.enable_auto_enqueue = enabled;
     return cli_write(
                state,
                enabled
@@ -3106,9 +3226,9 @@ static int cli_handle_command(cli_state *state, const char *line,
         "conversation. No argument uses the Git default branch. |\n",
         "| `/todo [COMMAND]` | Show the selected board; list, use NAME, "
         "new NAME, or help. Requires --todo. |\n",
-        "| `/queue [NAME]` | Show or replace the full mailbox name between "
-        "turns; requires --messaging. Applies to this app, including /new "
-        "and /resume; leaves config.ini unchanged. |\n",
+        "| `/queue [on\\|off\\|NAME]` | Show the mailbox, enable/disable "
+        "messaging, or replace its full name between turns. Applies to this "
+        "app, including /new and /resume; leaves config.ini unchanged. |\n",
         "| `/autoqueue [on\\|off]` | Toggle automatic approval of incoming "
         "next-turn messages (default off). Alt-A reviews; Alt-Y approves; "
         "Alt-N rejects; Alt-E edits. |\n",
@@ -3205,7 +3325,7 @@ static int cli_handle_command(cli_state *state, const char *line,
     cai_agent_runtime_settings settings;
     cai_agent_runtime_metrics metrics;
     cai_error optional_error;
-    char markdown[2048], mailbox_row[256];
+    char markdown[2048], mailbox_row[320];
     const char *model = state->options.model;
     const char *effort = state->options.reasoning_effort;
     memset(&settings, 0, sizeof(settings));
@@ -3226,9 +3346,13 @@ static int cli_handle_command(cli_state *state, const char *line,
     if (rc != CAI_OK)
       return rc;
     cli_refresh_quota(state, 1);
-    snprintf(mailbox_row, sizeof(mailbox_row), "| Message queue | `%s` |\n",
+    snprintf(mailbox_row, sizeof(mailbox_row),
+             "| Message queue | `%s` |\n| Autoqueue | %s |\n",
              state->messages != NULL ? cai_cli_messages_name(state->messages)
-                                     : "disabled");
+                                     : "disabled",
+             state->messages == NULL              ? "disabled"
+             : state->options.enable_auto_enqueue ? "on (automatic approval)"
+                                                  : "off (manual approval)");
     if (cai_cli_status_markdown(markdown, sizeof(markdown), model, effort,
                                 state->options.provider, &metrics,
                                 state->auth != NULL ? &state->quota : NULL,

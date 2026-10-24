@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/cli_test_common.sh"
 peer_start
-base+=(--message-queue receiver-workspace)
+base+=(--message-queue receiver-workspace -r low)
 sender_pid=
 finish() {
   local status=$?
@@ -31,15 +31,33 @@ send_message() {
 }
 terminal_start --resume "$receiver"
 send '/queue\r'; expect 'Messaging is disabled'
-terminal_close
-base+=(--messaging)
-terminal_start --resume "$receiver"
+# Enabling in the running TUI must retain the session and not repeat history
+# or make an inference request. The real tool catalog changes too.
+count=$(requests)
+send '/queue on\r'; expect 'Message queue: receiver-workspace'
+send '/queue on\r'; expect 'Message queue: receiver-workspace'
+[[ $(requests) == "$count" ]]
+[[ $(grep -c 'RECEIVER READY' "$term/text") == 1 ]]
+absent "$term/feed" 'RECEIVER READY'
+send '/tools\r'; expect 'agent_message'
+send '/status\r'; expect 'receiver-workspace'; expect 'off (manual approval)'
+send '/model gpt-6-luna high\r'; expect 'reasoning effort high'
+send '/queue off\r'; expect 'Messaging is disabled'
+send '/queue off\r'; expect 'Messaging is disabled'
+send '/tools\r'; expect 'No MCP servers configured'
+tail -c +$((send_feed_offset+1)) "$term/feed" >"$root/disabled-tools"
+absent "$root/disabled-tools" agent_message
+send '/status\r'; expect 'Message queue'; expect 'disabled'
+send '/queue on\r'; expect 'Message queue: receiver-workspace'
+send '/model\r'; expect 'Current: gpt-6-luna'; expect 'Reasoning effort: high'
+[[ $(requests) == "$count" ]]
 send '/queue\r'; expect 'Message queue: receiver-workspace'
 count=$(requests)
 send_message 'External hello one'
 expect 'approval'
 # Arrival is delivered/ACKed without producing a model request.
 [[ $(requests) == "$count" ]]
+send '/queue off\r'; expect 'Approve or reject queued incoming messages'
 send '\033a'; expect 'Alt-Y approve'
 contains "$term/text" 'External hello one'
 send '\033e'; expect_prompt 'External hello one'
@@ -51,11 +69,16 @@ send '\033a\033y'; expect_turn "$offset" 'RECEIVER ONE DONE'
 tail -1 "$root/peer/requests.jsonl" >"$root/request"
 contains "$root/request" 'External hello one edited'
 contains "$root/request" '[Agent message '
+contains "$root/request" 'receiver setup'
+json "$root/request" '.model == "gpt-6-luna" and .reasoning.effort == "high" and any(.tools[]?; .name == "agent_message")'
+run --list; ok
+[[ $(awk 'NF {print $1; exit}' "$root/stdout") == "$receiver" ]]
 # An approved message waits for the current turn, then precedes automatic
 # goal continuation. It must not wait for the entire goal to finish.
 plan '{"plan":[{"pause":true,"text":"BUSY TURN DONE"}]}'
 send '/goal new coordinate with the sender\r'; expect 'STREAM in flight'
 send '/queue not-between-turns\r'; expect 'Change the message queue between turns'
+send '/queue off\r'; expect 'Change messaging between turns'
 send '/queue\r'; expect 'Message queue: receiver-workspace'
 send_message 'External hello two'
 expect 'approval'
@@ -75,6 +98,10 @@ sed -n "$((count+1))p" "$root/peer/requests.jsonl" >"$root/next-request"
 jq -e '[.input[]? | select(.role=="user") | .content[]? | .text?] | last | contains("External hello two")' "$root/next-request" >/dev/null
 # Enabling autoqueue approves waiting messages and applies to future arrivals.
 send '/autoqueue on\r'; expect 'Autoqueue on'
+send '/status\r'; expect 'on (automatic approval)'
+send '/queue off\r'; expect 'Messaging is disabled'
+send '/queue on\r'; expect 'Message queue: receiver-workspace'
+send '/status\r'; expect 'on (automatic approval)'
 plan '{"plan":["AUTOMATIC INBOUND DONE"]}'
 offset=$(wc -c <"$term/text")
 send_message 'Automatically accepted incoming prompt'
@@ -91,11 +118,13 @@ expect 'approval'
 send '\033a\033n'
 send '/status\r'; expect 'Metric'
 [[ $(requests) == "$count" ]]
-send '/new\r'
+send '/new\r'; expect 'Message queue:'; expect 'new-receiver'; expect 'ID:'
+absent "$term/feed" '**ID:**'
 send '/queue\r'; expect 'Message queue: new-receiver'
 send "/resume 1\r"
 send '/queue\r'; expect 'Message queue: new-receiver'
 terminal_close
+base+=(--messaging)
 terminal_start --resume "$receiver"
 send '/status\r'; expect 'Metric'
 [[ $(requests) == "$count" ]]

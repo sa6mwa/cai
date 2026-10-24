@@ -48,14 +48,15 @@ if printf '/quit\n' | "$cli" -p openai --resume "$first_id" -C "$fixture/work-b"
 fi
 grep -q 'another directory' "$fixture/out"
 
-mkdir "$fixture/work-metadata"
-created=$(printf '/new\n/resume\n/quit\n' | "$cli" -p openai -C "$fixture/work-metadata")
+mkdir "$fixture/work-\`metadata\`-**literal**"
+created=$(printf '/new\n/resume\n/quit\n' | "$cli" -p openai -C "$fixture/work-\`metadata\`-**literal**")
 created_id=$(printf '%s\n' "$created" | sed -n 's/^1  \([^ ]*\).*/\1/p')
 [[ -n "$created_id" ]]
-if [[ "$created" != *"New session: $created_id"* ]]; then
+if [[ "$created" != *"New session"* || "$created" != *"ID: $created_id"* ]]; then
   printf 'Missing confirmation for new session %s\n' "$created_id" >&2
   exit 1
 fi
-[[ "$created" == *"Workspace:"* && "$created" == *"work-metadata"* ]]
+[[ "$created" == *"Workspace:"* && "$created" == *'work-`metadata`-**literal**'* ]]
+[[ "$created" != *'**ID:'* && "$created" != *'Message queue:'* ]]
 [[ "$created" == *'$ /new'* && "$created" != *'--- session ---'* ]]
 [[ "$selected" != *'--- session ---'* ]]
