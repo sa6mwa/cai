@@ -146,6 +146,7 @@ typedef struct cli_state {
   cai_cli_reasoning reasoning;
   int row_line_start;
   int row_ansi;
+  int list_line_start;
   int notice_open;
   int notice_first_row;
   int command_input;
@@ -533,6 +534,8 @@ static int cli_introduction(cli_state *state, const cai_app_config *config) {
     return 0;
   mdf_options_init(&options);
   options.output_fd = STDOUT_FILENO;
+  if (getenv("NO_COLOR") != NULL)
+    options.ansi_mode = MDF_ANSI_OFF;
   options.width = cli_render_width();
   options.margin_left = config->introduction_margin_left;
   options.margin_right = config->introduction_margin_right;
@@ -555,7 +558,7 @@ static int cli_introduction(cli_state *state, const cai_app_config *config) {
 }
 
 /* Manual text tokens have their own renderer, separate from model Markdown. */
-static int cli_literal_prepare(cli_state *state, int prefixed) {
+static int cli_literal_prepare(cli_state *state) {
   mdf_options options;
   mdf_sink sink;
   if (state->notice_renderer == NULL) {
@@ -573,35 +576,23 @@ static int cli_literal_prepare(cli_state *state, int prefixed) {
       return -1;
   }
   return state->notice_renderer->set_geometry(
-             state->notice_renderer,
-             prefixed ? (state->width >= 5 ? state->width - 2 : 3)
-                      : state->width,
-             prefixed ? 0 : (state->width >= 5 ? 2 : 0), 0) == MDF_OK
+             state->notice_renderer, state->width >= 5 ? state->width - 2 : 3,
+             0, 0) == MDF_OK
              ? 0
              : -1;
 }
-static int cli_write(cli_state *state, const char *text) {
-  if (cli_flush_command(state, 1) != 0)
-    return -1;
-  if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
+static int cli_markdown(cli_state *state, const char *text) {
+  if (cli_flush_command(state, 1) != 0 || cli_finish_response(state) != 0 ||
+      cli_finish_reasoning(state) != 0)
     return -1;
   if (state->batch) {
     cli_diagnostic(state, PSLOG_LEVEL_INFO, text);
     return 0;
   }
-  if (cli_geometry(state) != 0 || cli_literal_prepare(state, 0) != 0)
-    return -1;
-  while (state->feed_breaks < 2)
-    if (cli_sink(state, "\n", 1U) != 0)
-      return -1;
-  while (*text == '\n' || *text == '\r')
-    text++;
-  if (cai_cli_literal_render(state->notice_renderer, text) != 0)
-    return -1;
-  while (state->feed_breaks < 2)
-    if (cli_sink(state, "\n", 1U) != 0)
-      return -1;
-  return 0;
+  return cli_text(state, text, strlen(text)) == 0 &&
+                 cli_finish_response(state) == 0
+             ? 0
+             : -1;
 }
 
 static int cli_prompt(cli_state *state, const char *text) {
@@ -637,7 +628,7 @@ static int cli_flush_command(cli_state *state, int ok) {
   state->pending_command = NULL;
   state->command_ok = ok;
   if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0 ||
-      cli_geometry(state) != 0 || cli_literal_prepare(state, 1) != 0)
+      cli_geometry(state) != 0 || cli_literal_prepare(state) != 0)
     return -1;
   while (state->feed_breaks < 2)
     if (cli_sink(state, "\n", 1U) != 0)
@@ -711,12 +702,12 @@ static int cli_shell_pump(cli_state *state, cai_error *error) {
           cai_cli_shell_elapsed(&state->shell), error);
     if (rc != CAI_OK)
       return rc;
-    snprintf(message, sizeof(message), "Shell command exited %d (%.3fs).",
+    snprintf(message, sizeof(message), "**Shell command exited %d** (%.3fs).",
              state->shell.exit_code,
              (double)cai_cli_shell_elapsed(&state->shell) / 1000.0);
     cli_shell_unwatch(state);
     cai_cli_shell_close(&state->shell);
-    if (cli_write(state, message) != 0)
+    if (cli_markdown(state, message) != 0)
       return cai_cli_error(error, CAI_ERR_TRANSPORT,
                            "cannot display shell completion");
   }
@@ -938,7 +929,7 @@ static int cli_terminal_shell(cli_state *state, int share, cai_error *error) {
     snprintf(message, sizeof(message), "interactive shell exited %d",
              WEXITSTATUS(status));
   else
-    return cli_write(state, "Shell exited 0.") == 0
+    return cli_markdown(state, "**Shell exited 0.**") == 0
                ? CAI_OK
                : cai_cli_error(error, CAI_ERR_TRANSPORT,
                                "cannot display shell completion");
@@ -1253,7 +1244,7 @@ static int cli_notice(void *context, const char *text) {
   while (state->feed_breaks < 2)
     if (cli_sink(state, "\n", 1U) != 0)
       return -1;
-  if (cli_literal_prepare(state, 1) != 0)
+  if (cli_literal_prepare(state) != 0)
     return -1;
   state->notice_open = 1;
   state->notice_first_row = 1;
@@ -1574,7 +1565,7 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
     int rc = cai_cli_shell_plain(&state->shell, NULL, 0U, 1, cli_shell_literal,
                                  state, error);
     return rc != CAI_OK ? rc
-           : cli_write(state, "Shell command finished.") == 0
+           : cli_markdown(state, "**Shell command finished.**") == 0
                ? CAI_OK
                : CAI_ERR_TRANSPORT;
   }
@@ -1880,10 +1871,26 @@ static void cli_close_runtime(cli_state *state) {
 
 static int cli_list_write(void *context, const void *bytes, size_t count,
                           cai_error *error) {
-  cli_state *state;
-  state = (cli_state *)context;
-  if (cli_flush_command(state, 1) != 0 || cli_sink(state, bytes, count) != 0)
-    return cai_cli_error(error, CAI_ERR_TRANSPORT, "write session rows");
+  cli_state *state = context;
+  const char *text = bytes;
+  size_t start = 0U, i;
+  /* Indented Markdown code keeps streamed rows literal even when previews or
+   * filenames contain backticks, links or Markdown fence terminators. */
+  for (i = 0U; i < count; i++) {
+    if (state->list_line_start) {
+      if (cli_text(state, "    ", 4U) != 0)
+        return cai_cli_error(error, CAI_ERR_TRANSPORT, "render command rows");
+      state->list_line_start = 0;
+    }
+    if (text[i] == '\n') {
+      if (cli_text(state, text + start, i - start + 1U) != 0)
+        return cai_cli_error(error, CAI_ERR_TRANSPORT, "render command rows");
+      start = i + 1U;
+      state->list_line_start = 1;
+    }
+  }
+  if (start < count && cli_text(state, text + start, count - start) != 0)
+    return cai_cli_error(error, CAI_ERR_TRANSPORT, "render command rows");
   return CAI_OK;
 }
 
@@ -1901,6 +1908,9 @@ static int cli_list_sessions(cli_state *state, cai_error *error) {
   int rc = cli_load_sessions(state, error);
   if (rc != CAI_OK)
     return rc;
+  state->list_line_start = 1;
+  if (cli_text(state, "## Conversations\n\n", 18U) != 0)
+    return CAI_ERR_TRANSPORT;
   memset(&callbacks, 0, sizeof(callbacks));
   callbacks.context = state;
   callbacks.write = cli_list_write;
@@ -1908,15 +1918,16 @@ static int cli_list_sessions(cli_state *state, cai_error *error) {
   rc = cai_sink_from_callbacks(&callbacks, &sink, error);
   if (rc == CAI_OK)
     rc = cai_cli_sessions_print(sink, state->sessions, state->session_count, 1,
-                                state->width, error);
+                                state->width > 2 ? state->width - 2 : 1, error);
   cai_sink_close(sink);
+  if (cli_finish_response(state) != 0 && rc == CAI_OK)
+    rc = CAI_ERR_TRANSPORT;
   return rc;
 }
 
 /* Use a code-span delimiter longer than any run in a path or queue name.
  * Padding protects embedded backticks and leading/trailing spaces. */
-static int cli_session_field(cli_state *state, const char *label,
-                             const char *value) {
+static int cli_code_span(cli_state *state, const char *value) {
   const char *p;
   char *fence;
   size_t run = 0U, longest = 0U;
@@ -1931,19 +1942,26 @@ static int cli_session_field(cli_state *state, const char *label,
     return -1;
   memset(fence, '`', longest + 1U);
   fence[longest + 1U] = '\0';
-  rc = cli_text(state, "- **", 4U) != 0 ||
-               cli_text(state, label, strlen(label)) != 0 ||
-               cli_text(state, ":** ", 4U) != 0 ||
-               cli_text(state, fence, longest + 1U) != 0 ||
+  rc = cli_text(state, fence, longest + 1U) != 0 ||
                cli_text(state, " ", 1U) != 0 ||
                cli_text(state, value, strlen(value)) != 0 ||
                cli_text(state, " ", 1U) != 0 ||
-               cli_text(state, fence, longest + 1U) != 0 ||
-               cli_text(state, "\n", 1U) != 0
+               cli_text(state, fence, longest + 1U) != 0
            ? -1
            : 0;
   free(fence);
   return rc;
+}
+
+static int cli_session_field(cli_state *state, const char *label,
+                             const char *value) {
+  return cli_text(state, "- **", 4U) != 0 ||
+                 cli_text(state, label, strlen(label)) != 0 ||
+                 cli_text(state, ":** ", 4U) != 0 ||
+                 cli_code_span(state, value) != 0 ||
+                 cli_text(state, "\n", 1U) != 0
+             ? -1
+             : 0;
 }
 
 static int cli_set_messaging(cli_state *state, int enabled, cai_error *error) {
@@ -2160,8 +2178,9 @@ static int cli_goal_command(cli_state *state, const char *arg,
     if (rc != CAI_OK)
       return rc;
     if (!goal.has_goal)
-      return cli_write(state, "No goal. Use /goal new TEXT, or ask the agent "
-                              "to create and manage one.\n") == 0
+      return cli_markdown(state,
+                          "**No goal.** Use `/goal new TEXT`, or ask the agent "
+                          "to create and manage one.\n") == 0
                  ? CAI_OK
                  : CAI_ERR_TRANSPORT;
     snprintf(metrics, sizeof(metrics), "## Goal\n\nStatus: **%s**\n\n",
@@ -2235,8 +2254,9 @@ static int cli_goal_command(cli_state *state, const char *arg,
   fields[1] = pslog_str("prompt_kind", "goal_control");
   cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, "goal_control",
                       "user", arg, strlen(arg), fields, 2U);
-  if (cli_write(state, "Goal control queued for the next safe model/tool "
-                       "boundary.\n") != 0)
+  if (cli_markdown(state,
+                   "**Goal control queued** for the next safe model/tool "
+                   "boundary.\n") != 0)
     return CAI_ERR_TRANSPORT;
   if (objective == NULL && strcmp(action, "resume") != 0) {
     state->auto_goal = 0;
@@ -2555,7 +2575,7 @@ static int cli_settings_command(cli_state *state, const char *arguments,
   pslog_field fields[3];
   char buffer[512], message[1024], target_model[257];
   char *first, *second, *extra, *save = NULL;
-  const char *model, *effort;
+  const char *model, *effort, *prefix, *suffix;
   size_t i;
   int rc, listing;
   while (*arguments == ' ' || *arguments == '\t')
@@ -2708,23 +2728,24 @@ static int cli_settings_command(cli_state *state, const char *arguments,
     }
   } else if (listing) {
     if (catalog == NULL) {
-      const char *note = "Model list unavailable. Use /model to retry, or "
-                         "/model MODEL [EFFORT] to select directly.\n";
+      const char *note = "Model list unavailable. Use `/model` to retry, or "
+                         "`/model MODEL [EFFORT]` to select directly.\n";
       rc =
           cli_text(state, note, strlen(note)) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
     } else {
       size_t limit = catalog->count;
       if (strcmp(state->options.provider, "chatgpt") != 0 && limit > 50U)
         limit = 50U;
-      rc = catalog->is_stale
-               ? (cli_text(state,
-                           "Using cached model catalog; /model retries "
-                           "discovery.\n\n",
-                           strlen("Using cached model catalog; /model retries "
-                                  "discovery.\n\n")) == 0
-                      ? CAI_OK
-                      : CAI_ERR_TRANSPORT)
-               : CAI_OK;
+      rc =
+          catalog->is_stale
+              ? (cli_text(state,
+                          "Using cached model catalog; `/model` retries "
+                          "discovery.\n\n",
+                          strlen("Using cached model catalog; `/model` retries "
+                                 "discovery.\n\n")) == 0
+                     ? CAI_OK
+                     : CAI_ERR_TRANSPORT)
+              : CAI_OK;
       for (i = 0U; rc == CAI_OK && i < limit; i++) {
         snprintf(message, sizeof(message), "- `%s`%s%s\n",
                  catalog->entries[i].slug,
@@ -2776,7 +2797,24 @@ static int cli_settings_command(cli_state *state, const char *arguments,
                       requested.model != NULL ? "model_selection"
                                               : "reasoning_selection",
                       "user", message, strlen(message), fields, 3U);
-  return cli_write(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+  if (state->batch)
+    return cli_markdown(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+  prefix = requested.model != NULL
+               ? (result.applied ? "Model changed to " : "Model ")
+               : (result.applied ? "Reasoning effort changed to "
+                                 : "Reasoning effort ");
+  suffix = result.applied ? ".\n"
+                          : " queued for the next safe model/tool boundary.\n";
+  if (cli_text(state, prefix, strlen(prefix)) != 0 ||
+      cli_code_span(state,
+                    requested.model != NULL ? requested.model : effort) != 0 ||
+      (requested.model != NULL && effort != NULL &&
+       (cli_text(state, "; reasoning effort ", 19U) != 0 ||
+        cli_code_span(state, effort) != 0)) ||
+      cli_text(state, suffix, strlen(suffix)) != 0 ||
+      cli_finish_response(state) != 0)
+    return CAI_ERR_TRANSPORT;
+  return CAI_OK;
 }
 
 static int cli_tools_write(void *context, const char *bytes, size_t count) {
@@ -2841,9 +2879,9 @@ static int cli_trim_command(cli_state *state, const char *arg,
   rc = cai_agent_runtime_trim_history(state->runtime, count, error);
   if (rc == CAI_OK) {
     snprintf(message, sizeof(message),
-             "Trimmed %lu newest history %s. External changes remain.",
+             "**Trimmed %lu newest history %s.** External changes remain.",
              (unsigned long)count, count == 1U ? "entry" : "entries");
-    if (cli_write(state, message) != 0)
+    if (cli_markdown(state, message) != 0)
       return CAI_ERR_TRANSPORT;
     rc = cli_sync_status(state, error);
   }
@@ -3062,10 +3100,7 @@ static int cli_handle_command(cli_state *state, const char *line,
     if (state->messages == NULL) {
       const char *hint = "Messaging is disabled. Use `/queue on` to enable "
                          "the message tool and incoming queue.\n";
-      return cli_text(state, hint, strlen(hint)) == 0 &&
-                     cli_finish_response(state) == 0
-                 ? CAI_OK
-                 : CAI_ERR_TRANSPORT;
+      return cli_markdown(state, hint) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
     }
     if (length > 0U) {
       if (length >= sizeof(name))
@@ -3096,9 +3131,9 @@ static int cli_handle_command(cli_state *state, const char *line,
       if (rc != CAI_OK)
         return rc;
     }
-    snprintf(message, sizeof(message), "Message queue: %s",
+    snprintf(message, sizeof(message), "**Message queue:** `%s`\n",
              cai_cli_messages_name(state->messages));
-    return cli_write(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+    return cli_markdown(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
   }
   if (strcmp(line, "/autoqueue") == 0 ||
       strncmp(line, "/autoqueue ", 11U) == 0) {
@@ -3123,13 +3158,15 @@ static int cli_handle_command(cli_state *state, const char *line,
       return cai_cli_error(error, CAI_ERR_TRANSPORT,
                            "set incoming message approval");
     state->options.enable_auto_enqueue = enabled;
-    return cli_write(
+    return cli_markdown(
                state,
                enabled
-                   ? "Autoqueue on: waiting and future incoming prompts are "
+                   ? "**Autoqueue on:** waiting and future incoming prompts "
+                     "are "
                      "automatically approved."
-                   : "Autoqueue off: new incoming prompts require approval "
-                     "(Alt-A, then Alt-Y; Alt-N rejects, Alt-E edits).") == 0
+                   : "**Autoqueue off:** new incoming prompts require approval "
+                     "(`Alt-A`, then `Alt-Y`; `Alt-N` rejects, `Alt-E` "
+                     "edits).") == 0
                ? CAI_OK
                : CAI_ERR_TRANSPORT;
   }
@@ -3158,14 +3195,15 @@ static int cli_handle_command(cli_state *state, const char *line,
     else if (strcmp(arg, "off") == 0)
       state->options.shell_context = 0;
     else if (*arg != '\0')
-      return cli_write(state, "Usage: /shell-context [on|off]") == 0
+      return cli_markdown(state, "Usage: `/shell-context [on|off]`") == 0
                  ? CAI_OK
                  : CAI_ERR_TRANSPORT;
-    return cli_write(state, state->options.shell_context
-                                ? "Shell results will be shared with the model "
-                                  "for future commands."
-                                : "Shell results will stay out of model "
-                                  "context for future commands.") == 0
+    return cli_markdown(state,
+                        state->options.shell_context
+                            ? "**Shell results will be shared with the model** "
+                              "for future commands."
+                            : "**Shell results will stay out of model "
+                              "context** for future commands.") == 0
                ? CAI_OK
                : CAI_ERR_TRANSPORT;
   }
@@ -3186,13 +3224,14 @@ static int cli_handle_command(cli_state *state, const char *line,
   if (strcmp(line, "/output") == 0 || strncmp(line, "/output ", 8U) == 0) {
     arg = strcmp(line, "/output") == 0 ? "" : line + 8;
     if (*arg == '\0')
-      return cli_write(state,
-                       state->options.tool_output != NULL &&
-                               strcmp(state->options.tool_output, "full") == 0
-                           ? "Tool output: full. Use /output compact or "
-                             "/output full.\n"
-                           : "Tool output: compact. Use /output compact or "
-                             "/output full.\n") == 0
+      return cli_markdown(
+                 state,
+                 state->options.tool_output != NULL &&
+                         strcmp(state->options.tool_output, "full") == 0
+                     ? "Tool output: **full**. Use `/output compact` or "
+                       "`/output full`.\n"
+                     : "Tool output: **compact**. Use `/output compact` or "
+                       "`/output full`.\n") == 0
                  ? CAI_OK
                  : CAI_ERR_TRANSPORT;
     if (strcmp(arg, "compact") != 0 && strcmp(arg, "full") != 0)
@@ -3207,9 +3246,9 @@ static int cli_handle_command(cli_state *state, const char *line,
       state->options.tool_output =
           strcmp(arg, "full") == 0 ? "full" : "compact";
     if (rc == CAI_OK &&
-        cli_write(state,
-                  "Tool output setting applies from the next tool call.\n") !=
-            0)
+        cli_markdown(
+            state,
+            "**Tool output setting** applies from the next tool call.\n") != 0)
       rc = CAI_ERR_TRANSPORT;
     return rc;
   }
@@ -3377,6 +3416,9 @@ static int cli_handle_command(cli_state *state, const char *line,
     const char *id;
     id = line[7] == '\0' ? cai_agent_runtime_session_id(state->runtime)
                          : line + 8U;
+    state->list_line_start = 1;
+    if (cli_text(state, "## Conversation export\n\n", 24U) != 0)
+      return CAI_ERR_TRANSPORT;
     memset(&callbacks, 0, sizeof(callbacks));
     callbacks.context = state;
     callbacks.write = cli_list_write;
@@ -3390,6 +3432,8 @@ static int cli_handle_command(cli_state *state, const char *line,
               : NULL,
           destination, error);
     cai_sink_close(destination);
+    if (cli_finish_response(state) != 0 && rc == CAI_OK)
+      rc = CAI_ERR_TRANSPORT;
     return rc;
   }
   if (strcmp(line, "/resume") == 0) {
@@ -3929,6 +3973,8 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   state.width = cli_render_width();
   mdf_options_init(&mdf_config);
   mdf_config.output_fd = STDOUT_FILENO;
+  if (getenv("NO_COLOR") != NULL)
+    mdf_config.ansi_mode = MDF_ANSI_OFF;
   mdf_config.width = state.width;
   mdf_config.margin_left = state.width >= 5 ? 2 : 0;
   mdf_config.boring = !state.interactive;

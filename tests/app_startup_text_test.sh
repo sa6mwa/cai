@@ -70,6 +70,16 @@ else
   contains "$term/text" '  STARTUP ANSWER'
   jq -Rse 'index("HOST STARTUP BANNER") < index("HOST INTRODUCTION") and index("HOST INTRODUCTION") < index("> STARTUP USER")' "$term/text" >/dev/null
   terminal_close
+  export NO_COLOR=1
+  terminal_start
+  expect 'STARTUP USER'
+  contains "$term/text" 'HOST INTRODUCTION with rendered code.'
+  absent "$term/text" '`rendered code`'
+  if grep -Eq $'\033\\[[0-9;]*[1-9][0-9;]*mrendered code\033\\[0m' "$term/raw"; then
+    fail 'NO_COLOR introduction unexpectedly has a styled code span'
+  fi
+  terminal_close
+  unset NO_COLOR
   run --help; ok
   absent "$root/stdout" 'HOST STARTUP BANNER'
   absent "$root/stdout" 'HOST INTRODUCTION'

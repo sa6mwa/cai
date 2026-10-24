@@ -10,7 +10,8 @@ export XDG_STATE_HOME="$fixture/state" XDG_CACHE_HOME="$fixture/cache" XDG_DATA_
 
 first=$(printf '/status\n/resume\n/quit\n' | "$cli" -p openai -N -C "$fixture/work-a")
 [[ "$first" == *"Status"* && "$first" == *"Model"* && "$first" == *"Reasoning effort"* ]]
-first_id=$(printf '%s\n' "$first" | sed -n 's/^1  \([^ ]*\).*/\1/p')
+[[ "$first" == *"Conversations"* ]]
+first_id=$(printf '%s\n' "$first" | sed -n 's/^[[:space:]]*1  \([^ ]*\).*/\1/p')
 [[ -n "$first_id" ]]
 [[ -f "$fixture/state/cai/pouch.key" && -d "$fixture/state/cai/pouch" ]]
 [[ ! -d "$fixture/state/cai/sessions" && ! -f "$fixture/state/cai/auth.json" ]]
@@ -27,7 +28,7 @@ resumed=$(printf '/resume\n/quit\n' | "$cli" -p openai -C "$fixture/work-a")
 [[ "$resumed" == *"1  $imported_id"* && "$resumed" == *"Saved assistant answer"* ]]
 
 second=$(printf '/resume\n/quit\n' | "$cli" -p openai --new -C "$fixture/work-a")
-second_id=$(printf '%s\n' "$second" | sed -n 's/^1  \([^ ]*\).*/\1/p')
+second_id=$(printf '%s\n' "$second" | sed -n 's/^[[:space:]]*1  \([^ ]*\).*/\1/p')
 [[ -n "$second_id" && "$second_id" != "$imported_id" ]]
 [[ "$second" == *"2  $imported_id"* ]]
 selected=$(printf '/resume 2\n/quit\n' | "$cli" -p openai -C "$fixture/work-a")
@@ -40,8 +41,10 @@ all=$("$cli" -l -C "$fixture/work-b")
 [[ "$all" == *"$first_id"* && "$all" == *"$second_id"* && "$all" == *"$imported_id"* ]]
 numbered=$("$cli" --resume -C "$fixture/work-a")
 [[ "$numbered" == *"1  $second_id"* && "$numbered" == *"2  $imported_id"* ]]
+[[ "$numbered" != *"Conversations"* ]]
 slash_export=$(printf '/export\n/quit\n' | "$cli" -p openai -C "$fixture/work-b")
 [[ "$slash_export" == *".jsonl"* && "$slash_export" == *".md"* && "$slash_export" != *"error"* ]]
+[[ "$slash_export" == *"Conversation export"* ]]
 if printf '/quit\n' | "$cli" -p openai --resume "$first_id" -C "$fixture/work-b" >"$fixture/out" 2>"$fixture/err"; then
   echo 'cross-directory resume was accepted' >&2
   exit 1
@@ -50,7 +53,7 @@ grep -q 'another directory' "$fixture/out"
 
 mkdir "$fixture/work-\`metadata\`-**literal**"
 created=$(printf '/new\n/resume\n/quit\n' | "$cli" -p openai -C "$fixture/work-\`metadata\`-**literal**")
-created_id=$(printf '%s\n' "$created" | sed -n 's/^1  \([^ ]*\).*/\1/p')
+created_id=$(printf '%s\n' "$created" | sed -n 's/^[[:space:]]*1  \([^ ]*\).*/\1/p')
 [[ -n "$created_id" ]]
 if [[ "$created" != *"New session"* || "$created" != *"ID: $created_id"* ]]; then
   printf 'Missing confirmation for new session %s\n' "$created_id" >&2

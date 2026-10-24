@@ -13,6 +13,11 @@ absent "$root/hint" '`/queue on`'
 grep -Eq $'\033\\[[0-9;]*m/queue on\033\\[0m' "$term/raw"
 send '/status\r'; expect 'Message queue'; expect 'disabled'
 send '/queue on\r'; expect 'Message queue: toggle-recovery'
+send '/queue\r'; expect 'Message queue: toggle-recovery'
+tail -c +$((send_feed_offset+1)) "$term/feed" >"$root/queue"
+absent "$root/queue" '`toggle-recovery`'
+# A code span must have a non-default style, independent of the theme color.
+grep -Eq $'\033\\[[0-9;]*[1-9][0-9;]*mtoggle-recovery\033\\[0m' "$term/raw"
 send '/tools\r'; expect 'agent_message'
 send '/queue off\r'; expect 'Messaging is disabled'
 send '/tools\r'; expect 'No MCP servers configured'
