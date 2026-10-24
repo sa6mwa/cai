@@ -3059,11 +3059,14 @@ static int cli_handle_command(cli_state *state, const char *line,
         return rc;
       length = 0U;
     }
-    if (state->messages == NULL)
-      return cli_write(state, "Messaging is disabled. Use /queue on to enable "
-                              "the message tool and incoming queue.") == 0
+    if (state->messages == NULL) {
+      const char *hint = "Messaging is disabled. Use `/queue on` to enable "
+                         "the message tool and incoming queue.\n";
+      return cli_text(state, hint, strlen(hint)) == 0 &&
+                     cli_finish_response(state) == 0
                  ? CAI_OK
                  : CAI_ERR_TRANSPORT;
+    }
     if (length > 0U) {
       if (length >= sizeof(name))
         return cai_cli_error(error, CAI_ERR_INVALID,
