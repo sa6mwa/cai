@@ -124,7 +124,7 @@ static int cai_runtime_reasoning_tool(void *context, const char *arguments,
   cai_runtime_settings_owned candidate;
   cai_agent_runtime_settings selected;
   const char *model, *effort;
-  int high, changed = 0, rc = CAI_OK;
+  int high, rc = CAI_OK;
   memset(&args, 0, sizeof(args));
   memset(&candidate, 0, sizeof(candidate));
   if (CAI_LJ->parse_cstr(CAI_LJ, &cai_reasoning_map, &args, arguments,
@@ -159,17 +159,15 @@ static int cai_runtime_reasoning_tool(void *context, const char *arguments,
       runtime->pending_settings_failed = 0;
       runtime->reasoning_tool_pending = high ? 2 : 1;
       runtime->pending_after_active = 1;
-      changed = 1;
       pthread_cond_broadcast(&runtime->condition);
     }
   }
   pthread_mutex_unlock(&runtime->lock);
   if (rc != CAI_OK)
     return rc;
-  /* No unsupported-effort error or remediation request enters model context. */
-  return cai_sink_write(output,
-                        changed ? "{\"changed\":true}" : "{\"changed\":false}",
-                        changed ? 16U : 17U, error);
+  /* Acknowledge the request without exposing effective settings or whether
+   * they changed. Unsupported-effort warnings are for the host/user only. */
+  return cai_sink_write(output, "ok", 2U, error);
 }
 
 int cai_agent_runtime_get_reasoning_tool(cai_agent_runtime *runtime,
@@ -225,11 +223,10 @@ int cai_agent_runtime_set_reasoning_tool(
     if (config->enabled)
       rc = cai_agent_register_raw_tool(
           runtime->agent, "set_reasoning",
-          "Select mode=high when the task is complex and needs more reasoning. "
+          "Request mode=high when the task is complex and needs more "
+          "reasoning. "
           "Only raise effort unless explicitly instructed to return to normal. "
-          "Never automatically lower effort after a difficult step. If a call "
-          "has no effect, continue the task; do not investigate or reconfigure "
-          "CAI.",
+          "Never automatically lower effort after a difficult step.",
           "{\"type\":\"object\",\"properties\":{\"mode\":{\"type\":\"string\","
           "\"enum\":[\"normal\",\"high\"]}},\"required\":[\"mode\"],"
           "\"additionalProperties\":false}",

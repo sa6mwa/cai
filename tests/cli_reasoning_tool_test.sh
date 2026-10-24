@@ -13,6 +13,12 @@ efforts() {
   jq -se --argjson chat "$chat" --argjson expected "$1" \
     '.[-($expected|length):] | map(if $chat then .reasoning_effort else .reasoning.effort end) == $expected' "$root/peer/requests.jsonl" >/dev/null
 }
+acknowledged() {
+  tail -1 "$root/peer/requests.jsonl" | jq -e --argjson chat "$chat" '
+    (if $chat then [.messages[]? | select(.role == "tool") | .content]
+     else [.input[]? | select(.type == "function_call_output") | .output] end)
+    | length > 0 and all(.[]; . == "ok")' >/dev/null
+}
 metadata '["low","medium","high","xhigh"]'
 plan "{\"chat\":$chat,\"plan\":[\"DEFAULT OFF\"]}"
 run -Nni first; ok
@@ -20,14 +26,17 @@ tail -1 "$root/peer/requests.jsonl" | jq -e 'all(.tools[]?; (.name // .function.
 plan "{\"chat\":$chat,\"plan\":[{\"tool\":\"set_reasoning\",\"arguments\":{\"mode\":\"high\"}},\"RAISED\"]}"
 run -Nni complex --reasoning-tool; ok
 [[ $(stdout_text) == RAISED ]]; efforts '["medium","high"]'
+acknowledged
 plan "{\"chat\":$chat,\"plan\":[\"STILL HIGH\"]}"
 run -ni continue; ok; efforts '["high"]'
 plan "{\"chat\":$chat,\"plan\":[{\"tool\":\"set_reasoning\",\"arguments\":{\"mode\":\"normal\"}},\"NORMAL\"]}"
 run -ni 'explicitly return to normal' --reasoning-tool; ok
 efforts '["high","medium"]'
+acknowledged
 plan "{\"chat\":$chat,\"plan\":[{\"tool\":\"set_reasoning\",\"arguments\":{\"mode\":\"high\"}},\"KEEP HIGHER\"]}"
 run -Nni complex -r xhigh --reasoning-tool; ok
 efforts '["xhigh","xhigh"]'
+acknowledged
 for supported in '["low"]' '[]' null; do
   if [[ "$supported" == null ]]; then
     printf '%s\n' '{"models":[{"provider":"custom","id":"gpt-5.6-luna"}]}' >"$root/models.json"
@@ -41,13 +50,15 @@ for supported in '["low"]' '[]' null; do
   jq -se '[.[] | select(.event == "cai.reasoning_tool.unavailable")] | length == 2 and all(.lvl == "warn")' "$root/stderr" >/dev/null
   tail -1 "$root/peer/requests.jsonl" >"$root/request"
   absent "$root/request" --high-reasoning-effort
-  contains "$root/request" 'changed'
+  absent "$root/request" 'has no effect'
+  acknowledged
 done
 metadata '["low","medium","high","xhigh"]'
 printf '[agent]\nreasoning_tool = true\nnormal_reasoning_effort = low\nhigh_reasoning_effort = xhigh\n' >>"$root/protocol.ini"
 export CAI_NORMAL_REASONING_EFFORT=medium CAI_HIGH_REASONING_EFFORT=high
 plan "{\"chat\":$chat,\"plan\":[{\"tool\":\"set_reasoning\",\"arguments\":{\"mode\":\"high\"}},\"MAPPED\"]}"
 run -Nni mapped --high-reasoning-effort xhigh; ok; efforts '["medium","xhigh"]'
+acknowledged
 unset CAI_NORMAL_REASONING_EFFORT CAI_HIGH_REASONING_EFFORT
 terminal_start -N --no-reasoning-tool
 send '/reasoning-tool\r'; expect 'off'
@@ -59,8 +70,10 @@ send '/reasoning-tool off\r'; expect 'Configure the reasoning tool between turns
 send '/reasoning low\r'; expect 'queued for the next safe'
 release; expect_assistant 'HOST WINS'; expect 'Worked for'
 efforts '["medium","low"]'
+acknowledged
 plan "{\"chat\":$chat,\"plan\":[{\"tool\":\"set_reasoning\",\"arguments\":{\"mode\":\"high\"}},\"TUI HIGH\"]}"
 prompt complex 'TUI HIGH'; efforts '["low","high"]'
+acknowledged
 send '/reasoning-tool off\r'; expect 'off'
 plan "{\"chat\":$chat,\"plan\":[\"TOOL OFF\"]}"
 prompt next 'TOOL OFF'

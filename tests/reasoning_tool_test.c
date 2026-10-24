@@ -13,7 +13,8 @@ static int visit(void *context, const cai_agent_tool_info *tool,
   if (strcmp(tool->name, "set_reasoning") == 0) {
     found->reasoning++;
     assert(strstr(tool->description, "explicitly instructed") != NULL);
-    assert(strstr(tool->description, "continue the task") != NULL);
+    assert(strstr(tool->description, "has no effect") == NULL);
+    assert(strstr(tool->description, "reconfigure") == NULL);
   } else
     found->other++;
   return CAI_OK;

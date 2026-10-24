@@ -40,8 +40,9 @@ static void test_reasoning_model_boundary(test_state *state) {
       "data: "
       "{\"id\":\"finished\",\"choices\":[{\"index\":0,\"delta\":{\"content\":"
       "\"finished\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
-  static const char *required[] = {
-      "\"model\":\"fixture-b\"", "\"reasoning_effort\":\"medium\"", "changed"};
+  static const char *required[] = {"\"model\":\"fixture-b\"",
+                                   "\"reasoning_effort\":\"medium\"",
+                                   "\"content\":\"ok\""};
   static const mock_http_expectation script[] = {
       {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
        "text/event-stream", NULL, body},

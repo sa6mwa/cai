@@ -196,11 +196,12 @@ normal when explicitly told. A high request never lowers a higher current
 effort. Changes take effect after the durable tool round, before another model
 request, and use the existing persisted request settings on resume.
 
-Unsupported or unavailable advertised effort lists produce a user warning and
-a successful `{"changed":false}` tool result. No recovery prompt or provider
-request is generated for an unsupported change. The tool tells the model to
-continue its task instead of diagnosing CAI. Supply metadata through the
-existing provider catalog when choices are unavailable.
+Every valid tool request returns the same `ok` acknowledgement, whether it
+changes effort or leaves settings unchanged. The tool does not expose the
+effective effort or confirm that a change took effect. Unsupported or unavailable
+advertised effort lists produce a host/user warning only; no recovery prompt or
+provider request is generated for an unsupported change. Supply metadata through
+the existing provider catalog when choices are unavailable.
 Mappings and tool enablement come from configuration, not conversation storage;
 manual `-r` and `/reasoning` remain independent of the normal mapping.
 `/reasoning-tool [on|off|normal LEVEL|high LEVEL]` configures the current app
