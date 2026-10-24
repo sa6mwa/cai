@@ -418,6 +418,10 @@ CAI_RUN_BERGET_LIVE_TEST=1 BERGET_API_KEY=... \
   ctest --test-dir build/debug -R 'cai_tests.berget_live_' --output-on-failure
 ```
 
+Chat Completions refusal deltas use the visible output sink and delta callback,
+and remain typed refusal content in completed message items and saved history.
+Buffered responses expose that text through `response->refusal(response)`.
+
 Deterministic local Chat Completions tests cover HTTP authentication, quota,
 and server failures; errors inside a successful HTTP stream; malformed and
 truncated streams; invalid completion order; callback failures; connection

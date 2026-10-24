@@ -52114,12 +52114,14 @@ static void test_mcp_raw_input_transport_failures(test_state *state) {
   }
 }
 
+#include "chat_refusal_test.inc"
 #include "chat_stream_callbacks_test.inc"
 #include "reasoning_pending_test.inc"
 
 static const test_entry test_entries[] = {
     {"chat_custom_deltas", test_chat_custom_deltas},
     {"chat_reasoning_transitions", test_chat_reasoning_transitions},
+    {"chat_refusal", test_chat_refusal},
     {"reasoning_model_boundary", test_reasoning_model_boundary},
     {"mcp_raw_input_cancellation", test_mcp_raw_input_cancellation},
     {"mcp_raw_input_registration_ownership",

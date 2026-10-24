@@ -32,6 +32,7 @@ static int cai_chat_retry_sleep(const struct timespec *delay,
 typedef struct cai_chat_content_doc {
   char *type;
   lonejson_spooled text;
+  lonejson_spooled refusal;
   char *image_url;
   char *detail;
 } cai_chat_content_doc;
@@ -77,6 +78,8 @@ static lonejson_status cai_chat_spool_append(void *user, const void *data,
 static const lonejson_field cai_chat_content_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_chat_content_doc, type, "type"),
     LONEJSON_FIELD_STRING_STREAM_CLASS(cai_chat_content_doc, text, "text",
+                                       LONEJSON_SPOOL_CLASS_LARGE_TEXT),
+    LONEJSON_FIELD_STRING_STREAM_CLASS(cai_chat_content_doc, refusal, "refusal",
                                        LONEJSON_SPOOL_CLASS_LARGE_TEXT),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_chat_content_doc, image_url,
                                           "image_url"),
@@ -270,25 +273,33 @@ static lonejson_status cai_chat_write_content(lonejson_writer *writer,
                                               size_t count,
                                               lonejson_error *error) {
   lonejson_status status;
-  size_t i;
+  size_t i, visible = 0U, first = 0U;
 
   for (i = 0U; i < count; i++) {
+    if (parts[i].type != NULL && strcmp(parts[i].type, "refusal") == 0)
+      continue;
+    if (visible++ == 0U)
+      first = i;
     if (!cai_chat_is_text(parts[i].type) &&
         strcmp(parts[i].type != NULL ? parts[i].type : "", "input_image") !=
             0) {
       return LONEJSON_STATUS_UNSUPPORTED;
     }
   }
-  if (count == 0U || (count == 1U && cai_chat_is_text(parts[0].type))) {
+  if (count != 0U && visible == 0U)
+    return writer->null_fn(writer, error);
+  if (visible == 0U || (visible == 1U && cai_chat_is_text(parts[first].type))) {
     status = writer->string_begin(writer, error);
-    if (status == LONEJSON_STATUS_OK && count == 1U) {
-      status = cai_chat_text_chunks(writer, &parts[0].text, error);
+    if (status == LONEJSON_STATUS_OK && visible == 1U) {
+      status = cai_chat_text_chunks(writer, &parts[first].text, error);
     }
     return status == LONEJSON_STATUS_OK ? writer->string_end(writer, error)
                                         : status;
   }
   status = writer->begin_array(writer, error);
   for (i = 0U; status == LONEJSON_STATUS_OK && i < count; i++) {
+    if (parts[i].type != NULL && strcmp(parts[i].type, "refusal") == 0)
+      continue;
     if (cai_chat_is_text(parts[i].type)) {
       status = writer->begin_object(writer, error);
       if (status == LONEJSON_STATUS_OK) {
@@ -402,6 +413,8 @@ cai_chat_write_history_item(lonejson_writer *writer,
                             int *tool_message_open, lonejson_error *error) {
   lonejson_status status;
   const cai_chat_content_doc *parts;
+  size_t i;
+  int has_refusal;
   int is_tool;
 
   if (item->type != NULL && strcmp(item->type, "reasoning") == 0) {
@@ -434,6 +447,22 @@ cai_chat_write_history_item(lonejson_writer *writer,
     if (status == LONEJSON_STATUS_OK) {
       status =
           cai_chat_write_content(writer, parts, item->content.count, error);
+    }
+    has_refusal = 0;
+    for (i = 0U; i < item->content.count; i++)
+      if (parts[i].type != NULL && strcmp(parts[i].type, "refusal") == 0)
+        has_refusal = 1;
+    if (status == LONEJSON_STATUS_OK && has_refusal) {
+      if (strcmp(item->role, "assistant") != 0)
+        return LONEJSON_STATUS_UNSUPPORTED;
+      status = cai_chat_key(writer, "refusal", error);
+      if (status == LONEJSON_STATUS_OK)
+        status = writer->string_begin(writer, error);
+      for (i = 0U; status == LONEJSON_STATUS_OK && i < item->content.count; i++)
+        if (parts[i].type != NULL && strcmp(parts[i].type, "refusal") == 0)
+          status = cai_chat_text_chunks(writer, &parts[i].refusal, error);
+      if (status == LONEJSON_STATUS_OK)
+        status = writer->string_end(writer, error);
     }
   } else if (is_tool) {
     if (item->call_id == NULL || item->name == NULL) {
@@ -1035,6 +1064,7 @@ typedef struct cai_chat_chunk_tool_doc {
 
 typedef struct cai_chat_chunk_delta_doc {
   lonejson_spooled content;
+  lonejson_spooled refusal;
   lonejson_spooled reasoning_content;
   lonejson_object_array tool_calls;
 } cai_chat_chunk_delta_doc;
@@ -1095,6 +1125,7 @@ typedef struct cai_chat_stream_state {
   lonejson_sse *sse;
   lonejson_spooled event;
   lonejson_spooled text;
+  lonejson_spooled refusal;
   cai_chat_tool_state *tools;
   size_t tool_count;
   char *body;
@@ -1111,6 +1142,8 @@ typedef struct cai_chat_stream_state {
   int length_finish;
   int done_seen;
   int text_started;
+  int refusal_started;
+  int visible_started;
   int reasoning_started;
   int saw_usage;
   int glm_thinking;
@@ -1158,6 +1191,9 @@ LONEJSON_MAP_DEFINE(cai_chat_chunk_tool_map, cai_chat_chunk_tool_doc,
 static const lonejson_field cai_chat_chunk_delta_fields[] = {
     LONEJSON_FIELD_STRING_STREAM_CLASS(cai_chat_chunk_delta_doc, content,
                                        "content",
+                                       LONEJSON_SPOOL_CLASS_LARGE_TEXT),
+    LONEJSON_FIELD_STRING_STREAM_CLASS(cai_chat_chunk_delta_doc, refusal,
+                                       "refusal",
                                        LONEJSON_SPOOL_CLASS_LARGE_TEXT),
     LONEJSON_FIELD_STRING_STREAM_CLASS(cai_chat_chunk_delta_doc,
                                        reasoning_content, "reasoning_content",
@@ -1306,8 +1342,14 @@ static int cai_chat_finish_reasoning(cai_chat_stream_state *state) {
   return rc;
 }
 
+typedef enum cai_chat_text_kind {
+  CAI_CHAT_TEXT,
+  CAI_CHAT_REASONING,
+  CAI_CHAT_REFUSAL
+} cai_chat_text_kind;
 static int cai_chat_emit_text(cai_chat_stream_state *state,
-                              const lonejson_spooled *text, int reasoning) {
+                              const lonejson_spooled *text,
+                              cai_chat_text_kind kind) {
   cai_sink *sink;
   const cai_stream_affix *prefix;
   int *started;
@@ -1316,7 +1358,7 @@ static int cai_chat_emit_text(cai_chat_stream_state *state,
   if (text->size_fn(text) == 0U) {
     return CAI_OK;
   }
-  if (!reasoning) {
+  if (kind != CAI_CHAT_REASONING) {
     rc = cai_chat_finish_reasoning(state);
     if (rc != CAI_OK)
       return rc;
@@ -1326,18 +1368,25 @@ static int cai_chat_emit_text(cai_chat_stream_state *state,
     if (state->sinks->output_item_done != NULL) {
       lonejson_error json_error;
       lonejson_error_init(&json_error);
-      if (text->write_to_sink(text, cai_chat_spool_append, &state->text,
+      if (text->write_to_sink(text, cai_chat_spool_append,
+                              kind == CAI_CHAT_REFUSAL ? &state->refusal
+                                                       : &state->text,
                               &json_error) != LONEJSON_STATUS_OK)
         return cai_set_error_detail(state->error, CAI_ERR_TRANSPORT,
                                     "failed to retain Chat message text",
                                     json_error.message);
     }
+    if (kind == CAI_CHAT_REFUSAL)
+      state->refusal_started = 1;
+    else
+      state->text_started = 1;
   }
-  sink =
-      reasoning ? state->sinks->reasoning_summary : state->sinks->output_text;
-  prefix = reasoning ? &state->sinks->reasoning_summary_prefix
-                     : &state->sinks->output_text_prefix;
-  started = reasoning ? &state->reasoning_started : &state->text_started;
+  sink = kind == CAI_CHAT_REASONING ? state->sinks->reasoning_summary
+                                    : state->sinks->output_text;
+  prefix = kind == CAI_CHAT_REASONING ? &state->sinks->reasoning_summary_prefix
+                                      : &state->sinks->output_text_prefix;
+  started = kind == CAI_CHAT_REASONING ? &state->reasoning_started
+                                       : &state->visible_started;
   if (!*started) {
     rc = cai_chat_emit_affix(sink, prefix, state->error);
     if (rc != CAI_OK) {
@@ -1345,7 +1394,7 @@ static int cai_chat_emit_text(cai_chat_stream_state *state,
     }
     *started = 1;
   }
-  if (!reasoning && state->sinks->output_text_delta != NULL) {
+  if (kind != CAI_CHAT_REASONING && state->sinks->output_text_delta != NULL) {
     rc = state->sinks->output_text_delta(state->sinks->output_text_context,
                                          "chat_text", 0, text, state->error);
     if (rc != CAI_OK) {
@@ -1374,7 +1423,7 @@ static int cai_chat_emit_glm_content(cai_chat_stream_state *state,
     return CAI_OK;
   }
   if (state->glm_thinking_done) {
-    return cai_chat_emit_text(state, text, 0);
+    return cai_chat_emit_text(state, text, CAI_CHAT_TEXT);
   }
   cursor = *text;
   lonejson_error_init(&json_error);
@@ -1428,7 +1477,7 @@ static int cai_chat_emit_glm_content(cai_chat_stream_state *state,
       }
     }
   } while (!read_result.eof);
-  rc = cai_chat_emit_text(state, &visible, 0);
+  rc = cai_chat_emit_text(state, &visible, CAI_CHAT_TEXT);
   visible.cleanup(&visible);
   return rc;
 }
@@ -1450,7 +1499,7 @@ static int cai_chat_flush_glm_prefix(cai_chat_stream_state *state) {
     return cai_set_error(state->error, CAI_ERR_TRANSPORT,
                          "failed to retain GLM final output");
   }
-  rc = cai_chat_emit_text(state, &visible, 0);
+  rc = cai_chat_emit_text(state, &visible, CAI_CHAT_TEXT);
   visible.cleanup(&visible);
   if (rc == CAI_OK)
     state->glm_thinking_done = 1;
@@ -1599,9 +1648,11 @@ static int cai_chat_emit_message_done(cai_chat_stream_state *state) {
   lonejson_writer writer;
   lonejson_error json_error;
   lonejson_status status;
+  int part;
   int rc;
 
-  if (!state->text_started || state->sinks->output_item_done == NULL)
+  if ((!state->text_started && !state->refusal_started) ||
+      state->sinks->output_item_done == NULL)
     return CAI_OK;
   CAI_LJ->spooled_init(CAI_LJ, &item);
   memset(&writer, 0, sizeof(writer));
@@ -1622,16 +1673,22 @@ static int cai_chat_emit_message_done(cai_chat_stream_state *state) {
     status = cai_chat_key(&writer, "content", &json_error);
   if (status == LONEJSON_STATUS_OK)
     status = writer.begin_array(&writer, &json_error);
-  if (status == LONEJSON_STATUS_OK)
+  for (part = 0; status == LONEJSON_STATUS_OK && part < 2; part++) {
+    if (!(part == 0 ? state->text_started : state->refusal_started))
+      continue;
     status = writer.begin_object(&writer, &json_error);
-  if (status == LONEJSON_STATUS_OK)
-    status = cai_chat_member(&writer, "type", "output_text", &json_error);
-  if (status == LONEJSON_STATUS_OK)
-    status = cai_chat_key(&writer, "text", &json_error);
-  if (status == LONEJSON_STATUS_OK)
-    status = writer.string_spooled(&writer, &state->text, &json_error);
-  if (status == LONEJSON_STATUS_OK)
-    status = writer.end_object(&writer, &json_error);
+    if (status == LONEJSON_STATUS_OK)
+      status = cai_chat_member(
+          &writer, "type", part == 0 ? "output_text" : "refusal", &json_error);
+    if (status == LONEJSON_STATUS_OK)
+      status =
+          cai_chat_key(&writer, part == 0 ? "text" : "refusal", &json_error);
+    if (status == LONEJSON_STATUS_OK)
+      status = writer.string_spooled(
+          &writer, part == 0 ? &state->text : &state->refusal, &json_error);
+    if (status == LONEJSON_STATUS_OK)
+      status = writer.end_object(&writer, &json_error);
+  }
   if (status == LONEJSON_STATUS_OK)
     status = writer.end_array(&writer, &json_error);
   if (status == LONEJSON_STATUS_OK)
@@ -1840,6 +1897,7 @@ static int cai_chat_parse_event(cai_chat_stream_state *state) {
         (choices[i].delta.content.size_fn(&choices[i].delta.content) > 0U ||
          choices[i].delta.reasoning_content.size_fn(
              &choices[i].delta.reasoning_content) > 0U ||
+         choices[i].delta.refusal.size_fn(&choices[i].delta.refusal) > 0U ||
          choices[i].delta.tool_calls.count > 0U))
       state->first_token_ms = (cai_chat_now() - state->started_at) * 1000.0;
     if (choices[i].index != 0LL) {
@@ -1847,7 +1905,8 @@ static int cai_chat_parse_event(cai_chat_stream_state *state) {
                          "unexpected Chat Completions choice index");
       break;
     }
-    rc = cai_chat_emit_text(state, &choices[i].delta.reasoning_content, 1);
+    rc = cai_chat_emit_text(state, &choices[i].delta.reasoning_content,
+                            CAI_CHAT_REASONING);
     if (state->glm_thinking && choices[i].delta.reasoning_content.size_fn(
                                    &choices[i].delta.reasoning_content) > 0U) {
       state->glm_thinking_done = 1;
@@ -1856,8 +1915,12 @@ static int cai_chat_parse_event(cai_chat_stream_state *state) {
       rc = state->glm_thinking && choices[i].delta.reasoning_content.size_fn(
                                       &choices[i].delta.reasoning_content) == 0U
                ? cai_chat_emit_glm_content(state, &choices[i].delta.content)
-               : cai_chat_emit_text(state, &choices[i].delta.content, 0);
+               : cai_chat_emit_text(state, &choices[i].delta.content,
+                                    CAI_CHAT_TEXT);
     }
+    if (rc == CAI_OK)
+      rc = cai_chat_emit_text(state, &choices[i].delta.refusal,
+                              CAI_CHAT_REFUSAL);
     tools = (cai_chat_chunk_tool_doc *)choices[i].delta.tool_calls.items;
     for (j = 0U; rc == CAI_OK && j < choices[i].delta.tool_calls.count; j++) {
       rc = cai_chat_emit_tool_delta(state, &tools[j]);
@@ -2092,6 +2155,8 @@ static void cai_chat_stream_cleanup(cai_chat_stream_state *state) {
   }
   if (state->text.cleanup != NULL)
     state->text.cleanup(&state->text);
+  if (state->refusal.cleanup != NULL)
+    state->refusal.cleanup(&state->refusal);
   if (state->sse != NULL) {
     lonejson_sse_close(state->sse);
   }
@@ -2174,8 +2239,10 @@ static int cai_chat_stream_attempt(
                          "failed to open Chat Completions SSE parser");
   }
   CAI_LJ->spooled_init(CAI_LJ, &state.event);
-  if (sinks->output_item_done != NULL)
+  if (sinks->output_item_done != NULL) {
     CAI_LJ->spooled_init(CAI_LJ, &state.text);
+    CAI_LJ->spooled_init(CAI_LJ, &state.refusal);
+  }
   upload = NULL;
   headers = NULL;
   url = NULL;
@@ -2309,7 +2376,7 @@ static int cai_chat_stream_attempt(
     rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                        "Chat Completions stream ended before [DONE]");
   }
-  if (rc == CAI_OK && state.text_started) {
+  if (rc == CAI_OK && state.visible_started) {
     rc = cai_chat_emit_affix(sinks->output_text, &sinks->output_text_suffix,
                              error);
   }

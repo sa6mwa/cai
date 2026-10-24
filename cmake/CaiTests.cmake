@@ -583,6 +583,7 @@ if(CAI_BUILD_TESTS)
     chat_completions_adapter
     chat_custom_deltas
     chat_reasoning_transitions
+    chat_refusal
     chat_message_items
     chat_request_settings
     chat_buffered_response
