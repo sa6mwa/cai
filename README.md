@@ -1055,6 +1055,10 @@ fail with an explicit preparation command. Prepare fuzz tooling with
   live checks. `make test-all` includes the complete native suite, including
   example and packaging checks, once. `make test-cli` checks the CLI on the
   native GNU runtime.
+- With cpkt 0.5.0 and cpktmisc 0.2.0, the two host/auto dependency-mode
+  configuration tests are temporarily disabled: repeated upstream SDK validation
+  exceeds their time budget. Either dependency upgrade restores them automatically.
+  Installed-SDK consumer, runtime, ABI and artifact checks remain enabled.
 - CLI provider checks use a loopback OpenAI Responses/Chat Completions server
   with scripted responses; they make no real inference calls. Presentation
   and wire tests use the real runtime and tools. Stateless checks omit session
