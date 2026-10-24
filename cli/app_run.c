@@ -521,6 +521,38 @@ static int cli_text(cli_state *state, const char *data, size_t length) {
                                                                         : -1;
 }
 
+static int cli_introduction(cli_state *state, const cai_app_config *config) {
+  mdf_options options;
+  mdf_sink sink;
+  mdf *renderer = NULL;
+  int rc = -1;
+  if (!state->interactive || config == NULL ||
+      config->introduction_markdown == NULL ||
+      config->introduction_markdown[0] == '\0')
+    return 0;
+  mdf_options_init(&options);
+  options.output_fd = STDOUT_FILENO;
+  options.width = cli_render_width();
+  options.margin_left = config->introduction_margin_left;
+  options.margin_right = config->introduction_margin_right;
+  if (mdf_create(MDF_FORMAT_ANSI, &options, &renderer) != MDF_OK)
+    return -1;
+  sink.userdata = state;
+  sink.write = cli_renderer_sink;
+  if (renderer->set_sink(renderer, &sink) == MDF_OK &&
+      renderer->feed(renderer, config->introduction_markdown,
+                     strlen(config->introduction_markdown)) == MDF_OK &&
+      renderer->finish_document(renderer) == MDF_OK)
+    rc = 0;
+  renderer->destroy(renderer);
+  /* Separate the completed introduction block from conversation or editor
+   * content, just as other feed blocks do. The raw banner is never changed. */
+  while (rc == 0 && state->feed_breaks < 2)
+    if (cli_sink(state, "\n", 1U) != 0)
+      rc = -1;
+  return rc;
+}
+
 /* Manual text tokens have their own renderer, separate from model Markdown. */
 static int cli_literal_prepare(cli_state *state, int prefixed) {
   mdf_options options;
@@ -3674,10 +3706,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   if (!state.batch) {
     if (state.interactive && application != NULL &&
         application->banner != NULL && application->banner[0] != '\0' &&
-        (fputs(application->banner, stdout) == EOF ||
-         (application->banner[strlen(application->banner) - 1U] != '\n' &&
-          fputc('\n', stdout) == EOF) ||
-         fflush(stdout) != 0)) {
+        (fputs(application->banner, stdout) == EOF || fflush(stdout) != 0)) {
       cli_diagnostic(&state, PSLOG_LEVEL_ERROR, "cannot write startup banner");
       goto cleanup;
     }
@@ -3718,12 +3747,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
                    "cai: failed to connect Markdown renderer\n");
     goto cleanup;
   }
-  if (state.interactive && application != NULL &&
-      application->introduction_markdown != NULL &&
-      application->introduction_markdown[0] != '\0' &&
-      (cli_text(&state, application->introduction_markdown,
-                strlen(application->introduction_markdown)) != 0 ||
-       cli_finish_response(&state) != 0)) {
+  if (cli_introduction(&state, application) != 0) {
     cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
                    "cannot render startup introduction");
     goto cleanup;

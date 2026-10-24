@@ -298,10 +298,13 @@ static int open_app(lua_State *L) {
   static const char *const names[] = {"program_name", "banner", "config_file",
                                       "config_directory",
                                       "introduction_markdown"};
+  static const char *const margins[] = {"introduction_margin_left",
+                                        "introduction_margin_right"};
   cai_app_config config;
   cai_error error;
   app_lua *ud;
   const char **strings[5];
+  int *margin_values[2];
   size_t i;
   int rc;
   if (!lua_isnoneornil(L, 1) && !lua_istable(L, 1))
@@ -317,6 +320,8 @@ static int open_app(lua_State *L) {
   strings[2] = &config.config_file;
   strings[3] = &config.config_directory;
   strings[4] = &config.introduction_markdown;
+  margin_values[0] = &config.introduction_margin_left;
+  margin_values[1] = &config.introduction_margin_right;
   if (lua_istable(L, 1)) {
     lua_pushnil(L);
     while (lua_next(L, 1)) {
@@ -325,6 +330,9 @@ static int open_app(lua_State *L) {
       int known = 0;
       for (i = 0U; key != NULL && i < sizeof(names) / sizeof(names[0]); i++)
         if (strcmp(key, names[i]) == 0)
+          known = 1;
+      for (i = 0U; key != NULL && i < sizeof(margins) / sizeof(margins[0]); i++)
+        if (strcmp(key, margins[i]) == 0)
           known = 1;
       if (key != NULL &&
           (strcmp(key, "settings") == 0 || strcmp(key, "no_config") == 0 ||
@@ -343,6 +351,17 @@ static int open_app(lua_State *L) {
         *strings[i] = plain_string(L, -1);
         if (*strings[i] == NULL)
           return failure(L, "application text cannot contain NUL bytes");
+      }
+      lua_pop(L, 1);
+    }
+    for (i = 0U; i < sizeof(margins) / sizeof(margins[0]); i++) {
+      lua_getfield(L, 1, margins[i]);
+      if (!lua_isnil(L, -1)) {
+        if (!lua_isinteger(L, -1) || lua_tointeger(L, -1) < 0 ||
+            lua_tointeger(L, -1) > INT_MAX)
+          return failure(L, "introduction margins must be nonnegative integers "
+                            "within int range");
+        *margin_values[i] = (int)lua_tointeger(L, -1);
       }
       lua_pop(L, 1);
     }

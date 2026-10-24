@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/cli_test_common.sh"
 peer_start
-export CAI_TEST_APP_BANNER=EMBEDDED_STARTUP_BANNER
+export CAI_TEST_APP_BANNER=$'EMBEDDED_STARTUP_BANNER\n'
 export CAI_TEST_APP_MODEL=host-configured-model
 base=("$cli" --no-config -p custom --endpoint "$endpoint" --no-terminal --no-image-generation -C "$work")
 run --help; ok

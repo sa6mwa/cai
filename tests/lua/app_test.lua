@@ -3,6 +3,11 @@ assert(not application.open(false))
 assert(not application.open {on_event = true})
 assert(not application.open {on_replay = "not a callback"})
 assert(not application.open {introduction_markdown = true})
+for _, margin in ipairs {"introduction_margin_left", "introduction_margin_right"} do
+  for _, invalid in ipairs {-1, 1.5, true, "2", 2147483648} do
+    assert(not application.open {[margin] = invalid})
+  end
+end
 assert(not application.open {unknown = true})
 assert(not application.open {program_name = "bad\0name"})
 assert(not application.open {settings = {agent = {model = "bad\0model"}}})

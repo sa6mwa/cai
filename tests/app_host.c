@@ -75,6 +75,12 @@ int main(int argc, char **argv) {
   config.program_name = "vectis -a smith --";
   config.banner = getenv("CAI_TEST_APP_BANNER");
   config.introduction_markdown = getenv("CAI_TEST_APP_INTRODUCTION");
+  if (getenv("CAI_TEST_APP_INTRODUCTION_LEFT") != NULL)
+    config.introduction_margin_left =
+        atoi(getenv("CAI_TEST_APP_INTRODUCTION_LEFT"));
+  if (getenv("CAI_TEST_APP_INTRODUCTION_RIGHT") != NULL)
+    config.introduction_margin_right =
+        atoi(getenv("CAI_TEST_APP_INTRODUCTION_RIGHT"));
   if (getenv("CAI_TEST_APP_LOG_PATH") != NULL) {
     log_file = fopen(getenv("CAI_TEST_APP_LOG_PATH"), "a");
     assert(log_file != NULL);

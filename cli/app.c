@@ -226,6 +226,10 @@ int cai_app_open(const cai_app_config *config, cai_app **out,
   cai_app_config_init(&defaults);
   if (config == NULL)
     config = &defaults;
+  if (config->introduction_margin_left < 0 ||
+      config->introduction_margin_right < 0)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "introduction margins must be nonnegative");
   if ((config->setting_count != 0U && config->settings == NULL) ||
       config->setting_count > ((size_t)-1 / sizeof(cai_app_setting) - 5U) / 3U)
     return cai_cli_error(error, CAI_ERR_INVALID,
@@ -262,6 +266,8 @@ int cai_app_open(const cai_app_config *config, cai_app **out,
       config->config_directory != NULL ? strdup(config->config_directory)
                                        : NULL;
   app->config.no_config = config->no_config;
+  app->config.introduction_margin_left = config->introduction_margin_left;
+  app->config.introduction_margin_right = config->introduction_margin_right;
   app->config.logger = config->logger;
   app->config.register_agent_tools = config->register_agent_tools;
   app->config.register_agent_tools_context =

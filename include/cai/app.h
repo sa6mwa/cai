@@ -96,13 +96,19 @@ typedef struct cai_app_option {
  * Runtime defaults match cai; startup text is empty unless the host sets it. */
 typedef struct cai_app_config {
   const char *program_name;
-  /** Optional raw interactive banner, printed before terminal renderers start.
-   * Defaults to NULL; the host controls its text and any ANSI escapes. */
+  /** Optional raw interactive banner, written verbatim before terminal
+   * renderers start. Defaults to NULL; the host supplies all newlines and ANSI
+   * escapes. */
   const char *banner;
   /** Optional interactive introduction rendered through libmdf before session
    * replay. Defaults to NULL. Neither startup text is shown by help, utilities,
    * reviews or non-interactive runs. Both strings are copied by open. */
   const char *introduction_markdown;
+  /** Independent libmdf introduction margins, in columns. Both default to zero
+   * and must be nonnegative, leaving at least three content columns at runtime.
+   * These do not change conversation rendering. */
+  int introduction_margin_left;
+  int introduction_margin_right;
   const char *config_file;
   const char *config_directory;
   int no_config;

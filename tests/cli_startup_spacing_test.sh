@@ -22,8 +22,8 @@ for mode in shell banner; do
   unset CAI_TEST_APP_BANNER
   if [[ "$mode" == banner ]]; then
     program="$host"
-    export CAI_TEST_APP_BANNER='HOST STARTUP BANNER'
-    marker="$CAI_TEST_APP_BANNER"
+    export CAI_TEST_APP_BANNER=$'HOST STARTUP BANNER\n'
+    marker='HOST STARTUP BANNER'
   fi
   {
     printf '#!/usr/bin/env bash\nset -euo pipefail\n'

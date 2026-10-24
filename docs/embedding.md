@@ -29,8 +29,10 @@ int run_smith(int count, const char *const *arguments) {
   };
   cai_app_config_init(&config);
   config.program_name = "vectis -a smith --";
-  config.banner = "Vectis Agent Smith";
+  config.banner = "Vectis Agent Smith\n\n";
   config.introduction_markdown = "**Enter** sends a task; `/help` lists commands.\n";
+  config.introduction_margin_left = 0;
+  config.introduction_margin_right = 0;
   config.settings = settings;
   config.setting_count = sizeof(settings) / sizeof(settings[0]);
   /* config.logger = host_logger; -- optional borrowed pslog logger */
@@ -105,8 +107,15 @@ that logger's records for interactive notices. Use a terminal-compatible sink.
 `banner` and `introduction_markdown` default to NULL in C and are unset by
 default in Lua. The host supplies both; CAI's own name, attribution and usage
 text are configured only by `cli/main.c`. The optional raw banner is printed
-once before softline/libmdf starts. The optional Markdown introduction goes
-through libmdf's output feed before the first session opens or replays; it is
+verbatim before softline/libmdf starts: all newlines belong in the host's banner
+string. CAI's scaffold begins its banner on the first output line and ends it
+with `\n\n` to separate the introduction. The optional Markdown introduction
+has independent `introduction_margin_left` and `introduction_margin_right`
+fields in both C and Lua, passed directly to its own libmdf renderer. Both
+default to zero and must be nonnegative, leaving at least three content columns
+at the current terminal width. Conversation text retains its normal margin
+and a blank line before content starts. The introduction goes through
+libmdf's output feed before the first session opens or replays; it is
 not added to model context or session history. Help, version, utilities, native
 messaging, reviews and non-interactive runs print neither. The CAI scaffold
 colors C/I bright white and A bright blue on a terminal, resets before Smith
@@ -255,8 +264,10 @@ the same receiver and ownership boundary:
 ```lua
 local app = assert(require("cai.app").open {
   program_name = "vectis -a smith --",
-  banner = "Vectis Agent Smith",
+  banner = "Vectis Agent Smith\n\n",
   introduction_markdown = "**Enter** sends a task; `/help` lists commands.\n",
+  introduction_margin_left = 0,
+  introduction_margin_right = 0,
   settings = {agent = {identity = "Vectis Agent Smith"}},
   -- logger = initialized_pslog_logger,
 })

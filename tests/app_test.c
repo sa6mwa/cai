@@ -105,6 +105,17 @@ int main(int argc, char **argv) {
   cai_app_config_init(&config);
   assert(strcmp(config.program_name, "cai") == 0 && config.logger == NULL);
   assert(config.banner == NULL && config.introduction_markdown == NULL);
+  assert(config.introduction_margin_left == 0 &&
+         config.introduction_margin_right == 0);
+  cai_error_init(&error);
+  config.introduction_margin_left = -1;
+  assert(cai_app_open(&config, &app, &error) == CAI_ERR_INVALID && app == NULL);
+  config.introduction_margin_left = 0;
+  config.introduction_margin_right = -1;
+  assert(cai_app_open(&config, &app, &error) == CAI_ERR_INVALID && app == NULL);
+  config.introduction_margin_right = 0;
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   assert(config.register_agent_tools == NULL &&
          config.register_agent_tools_context == NULL);
   config.program_name = program;
