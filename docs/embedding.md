@@ -161,6 +161,39 @@ acknowledgement. Other host controls remain queued until handoff ends.
 Acknowledgement callbacks must not close or recursively run the app, including
 final callbacks delivered after process restoration. Close after `run` returns.
 
+The optional model-controlled `set_reasoning` tool accepts just
+`{"mode":"normal"}` and `{"mode":"high"}`. Enable it with
+`[agent] reasoning_tool = true`, `CAI_REASONING_TOOL=true`, or
+`--reasoning-tool`. Independent `normal_reasoning_effort` and
+`high_reasoning_effort` settings default to `medium` and `high`; the
+corresponding `CAI_NORMAL_REASONING_EFFORT` / `CAI_HIGH_REASONING_EFFORT`
+variables and `--normal-reasoning-effort` / `--high-reasoning-effort` flags
+override them. The generated INI template includes these settings.
+The model is instructed to raise effort for complex tasks and only return to
+normal when explicitly told. A high request never lowers a higher current
+effort. Changes take effect after the durable tool round, before another model
+request, and use the existing persisted request settings on resume.
+
+Unsupported or unavailable advertised effort lists produce a user warning and
+a successful `{"changed":false}` tool result. No recovery prompt or provider
+request is generated for an unsupported change. The tool tells the model to
+continue its task instead of diagnosing CAI. Supply metadata through the
+existing provider catalog when choices are unavailable.
+Mappings and tool enablement come from configuration, not conversation storage;
+manual `-r` and `/reasoning` remain independent of the normal mapping.
+`/reasoning-tool [on|off|normal LEVEL|high LEVEL]` configures the current app
+between turns, including subsequent `/new` or `/resume`, without editing INI.
+Review children retain their own reasoning settings and do not inherit the tool.
+
+C hosts initialize `cai_agent_runtime_config.reasoning_tool` with
+`cai_reasoning_tool_config_init`, then set `enabled`, `normal_effort`, and
+`high_effort`. The owner-thread `cai_agent_runtime_get_reasoning_tool` and
+`cai_agent_runtime_set_reasoning_tool` APIs inspect or reconfigure it between
+turns; setters copy strings. Lua hosts pass
+`reasoning_tool={enabled=true, normal_effort="medium", high_effort="high"}`
+to `client:new_smith_runtime` and use `runtime:reasoning_tool()` or
+`runtime:reasoning_tool{enabled=false}` to inspect or update it.
+
 ```c
 cai_app_status status;
 unsigned long long id;

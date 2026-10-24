@@ -287,6 +287,16 @@
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_send_message_test.sh"
       "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_send_message PROPERTIES TIMEOUT 10)
+    foreach(_reasoning_protocol responses chat_completions)
+      add_test(NAME cai_cli_reasoning_tool_${_reasoning_protocol} COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_reasoning_tool_test.sh"
+        "$<TARGET_FILE:cai_cli_mock_fixture>" "${_reasoning_protocol}")
+      set_tests_properties(cai_cli_reasoning_tool_${_reasoning_protocol} PROPERTIES TIMEOUT 15)
+    endforeach()
+    add_test(NAME cai_cli_reasoning_catalog COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_reasoning_catalog_test.sh"
+      "$<TARGET_FILE:cai_cli_settings_fixture>")
+    set_tests_properties(cai_cli_reasoning_catalog PROPERTIES TIMEOUT 5)
     add_test(NAME cai_cli_catalog_empty_choices
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_catalog_empty_choices_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>")

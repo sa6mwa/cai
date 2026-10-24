@@ -1432,6 +1432,26 @@ int cai_tool_registry_new(cai_tool_registry **out, cai_error *error) {
   return CAI_OK;
 }
 
+int cai_tool_registry_remove_internal(cai_tool_registry *registry,
+                                      const char *name, cai_error *error) {
+  cai_tool_registry_impl *impl = cai_tool_registry_impl_from_public(registry);
+  size_t i;
+  if (impl == NULL || name == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool registry and name required");
+  for (i = 0U; i < impl->count; i++) {
+    if (strcmp(impl->entries[i].name, name) == 0) {
+      cai_tool_entry_cleanup(&impl->entries[i]);
+      memmove(&impl->entries[i], &impl->entries[i + 1U],
+              (impl->count - i - 1U) * sizeof(*impl->entries));
+      impl->count--;
+      memset(&impl->entries[impl->count], 0, sizeof(*impl->entries));
+      return CAI_OK;
+    }
+  }
+  return cai_set_error(error, CAI_ERR_INVALID, "tool is not registered");
+}
+
 void cai_tool_registry_destroy(cai_tool_registry *registry) {
   cai_tool_registry_impl *impl;
   size_t i;

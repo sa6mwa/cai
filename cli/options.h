@@ -38,6 +38,8 @@ typedef struct cai_cli_options {
   const char *auth_json;
   const char *model;
   const char *reasoning_effort;
+  int reasoning_tool;
+  const char *normal_reasoning_effort, *high_reasoning_effort;
   const char *reasoning_summary;
   const char *service_tier;
   int model_explicit;

@@ -75,6 +75,7 @@ typedef struct cli_state {
   int host_stopped;
   size_t batch_pending_turns;
   cai_cli_options options;
+  char *normal_reasoning_override, *high_reasoning_override;
   cai_config *configuration;
   cai_agent_session_store store;
   cai_cli_pouch pouch;
@@ -1890,6 +1891,76 @@ static int cli_switch_session(cli_state *state, const char *id, int new_session,
   return cli_open_runtime(state, id, new_session, error);
 }
 
+static int cli_reasoning_tool_command(cli_state *state, const char *arg,
+                                      cai_error *error) {
+  cai_reasoning_tool_config config;
+  char buffer[256], message[512], *action, *level, *extra, *save = NULL;
+  int rc = cai_agent_runtime_get_reasoning_tool(state->runtime, &config, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (strlen(arg) >= sizeof(buffer))
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "Reasoning tool command too long.");
+  strcpy(buffer, arg);
+  action = strtok_r(buffer, " \t\r\n", &save);
+  level = strtok_r(NULL, " \t\r\n", &save);
+  extra = strtok_r(NULL, " \t\r\n", &save);
+  if (action != NULL) {
+    char *normal, *high;
+    if (extra != NULL)
+      goto usage;
+    if (strcmp(action, "on") == 0 && level == NULL)
+      config.enabled = 1;
+    else if (strcmp(action, "off") == 0 && level == NULL)
+      config.enabled = 0;
+    else if (strcmp(action, "normal") == 0 && level != NULL)
+      config.normal_effort = level;
+    else if (strcmp(action, "high") == 0 && level != NULL)
+      config.high_effort = level;
+    else
+      goto usage;
+    normal = strdup(config.normal_effort);
+    high = strdup(config.high_effort);
+    if (normal == NULL || high == NULL) {
+      free(normal);
+      free(high);
+      return cai_cli_error(error, CAI_ERR_NOMEM, "copy reasoning mappings");
+    }
+    rc = cai_agent_runtime_set_reasoning_tool(state->runtime, &config, error);
+    if (rc != CAI_OK) {
+      free(normal);
+      free(high);
+      return rc;
+    }
+    free(state->normal_reasoning_override);
+    free(state->high_reasoning_override);
+    state->normal_reasoning_override = normal;
+    state->high_reasoning_override = high;
+    state->options.normal_reasoning_effort = normal;
+    state->options.high_reasoning_effort = high;
+    state->options.reasoning_tool = config.enabled;
+    rc = cai_agent_runtime_get_reasoning_tool(state->runtime, &config, error);
+    if (rc != CAI_OK)
+      return rc;
+  }
+  snprintf(message, sizeof(message),
+           "## Reasoning tool\n\n| Setting | Value |\n| --- | --- |\n"
+           "| Enabled | %s |\n| Normal effort | %s |\n| High effort | %s |\n\n"
+           "Changes apply to this app; config.ini is unchanged. Unsupported or "
+           "unknown choices leave "
+           "the current effort unchanged.\n",
+           config.enabled ? "on" : "off", config.normal_effort,
+           config.high_effort);
+  return cli_text(state, message, strlen(message)) == 0 &&
+                 cli_finish_response(state) == 0
+             ? CAI_OK
+             : CAI_ERR_TRANSPORT;
+usage:
+  return cai_cli_error(error, CAI_ERR_INVALID,
+                       "Use /reasoning-tool [on|off|normal LEVEL|high LEVEL]. "
+                       "Configure between turns.");
+}
+
 static int cli_goal_command(cli_state *state, const char *arg,
                             cai_error *error) {
   static const char usage[] =
@@ -2843,6 +2914,10 @@ static int cli_handle_command(cli_state *state, const char *line,
   if (strcmp(line, "/goal") == 0 || strncmp(line, "/goal ", 6U) == 0 ||
       strncmp(line, "/goal\t", 6U) == 0)
     return cli_goal_command(state, line + 5U, error);
+  if (strcmp(line, "/reasoning-tool") == 0 ||
+      strncmp(line, "/reasoning-tool ", 16U) == 0 ||
+      strncmp(line, "/reasoning-tool\t", 16U) == 0)
+    return cli_reasoning_tool_command(state, line + 15U, error);
   if (strcmp(line, "/model") == 0 || strncmp(line, "/model ", 7U) == 0 ||
       strncmp(line, "/model\t", 7U) == 0)
     return cli_settings_command(state, line + 6U, 0, error);
@@ -2917,6 +2992,9 @@ static int cli_handle_command(cli_state *state, const char *line,
         "model/tool boundary, keeping this conversation. |\n",
         "| `/reasoning [EFFORT]` | Show model-specific reasoning choices or "
         "change effort at the next safe model/tool boundary. |\n",
+        "| `/reasoning-tool [on\\|off\\|normal LEVEL\\|high LEVEL]` | "
+        "Configure "
+        "the optional model-controlled effort tool between turns. |\n",
         "| `/tier [list\\|NAME]` | Cycle service tiers, list choices, or "
         "select a tier at the next safe boundary. |\n"
         "| `/fast` | Toggle Fast/priority and explicit normal routing. |\n",
@@ -4003,6 +4081,8 @@ cleanup:
   if (state.sl == NULL)
     (void)cai_cli_log_notices(&state.log, cli_startup_notice, &state);
   free(state.sessions);
+  free(state.normal_reasoning_override);
+  free(state.high_reasoning_override);
   free(state.review_report);
   free(metadata_json);
   cai_config_close(state.configuration);

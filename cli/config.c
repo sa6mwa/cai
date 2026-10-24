@@ -283,11 +283,15 @@ static int tool_environment(cai_config *cfg, cai_error *error) {
                                     "CAI_SKILLS",
                                     "CAI_SHELL_CONTEXT",
                                     "CAI_SHELL_CONTEXT_MAX_LINES",
-                                    "CAI_SHELL_CONTEXT_MAX_BYTES"};
+                                    "CAI_SHELL_CONTEXT_MAX_BYTES",
+                                    "CAI_REASONING_TOOL",
+                                    "CAI_NORMAL_REASONING_EFFORT",
+                                    "CAI_HIGH_REASONING_EFFORT"};
   static const char *const sections[] = {
-      "agent", "chrome", "agent",   "agent",  "agent",  "agent",   "agent",
-      "agent", "agent",  "searxng", "revgeo", "chrome", "agent",   "agent",
-      "agent", "agent",  "agent",   "agent",  "ui",     "runtime", "runtime"};
+      "agent", "chrome",  "agent",   "agent",   "agent",  "agent",
+      "agent", "agent",   "agent",   "searxng", "revgeo", "chrome",
+      "agent", "agent",   "agent",   "agent",   "agent",  "agent",
+      "ui",    "runtime", "runtime", "agent",   "agent",  "agent"};
   static const char *const keys[] = {"web_search",
                                      "enabled",
                                      "todo",
@@ -308,7 +312,10 @@ static int tool_environment(cai_config *cfg, cai_error *error) {
                                      "skills",
                                      "shell_context",
                                      "shell_context_max_lines",
-                                     "shell_context_max_bytes"};
+                                     "shell_context_max_bytes",
+                                     "reasoning_tool",
+                                     "normal_reasoning_effort",
+                                     "high_reasoning_effort"};
   size_t i;
   if (getenv("CAI_BOARD") != NULL &&
       cai_config_set(cfg, "todo", "default_board", getenv("CAI_BOARD"),
@@ -504,6 +511,12 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   defaults.view_image =
       cai_config_get_bool(cfg, "agent", "view_image", defaults.view_image);
   defaults.goals = cai_config_get_bool(cfg, "agent", "goals", defaults.goals);
+  defaults.reasoning_tool = cai_config_get_bool(cfg, "agent", "reasoning_tool",
+                                                defaults.reasoning_tool);
+  optional_string(cfg, "agent", "normal_reasoning_effort",
+                  &defaults.normal_reasoning_effort);
+  optional_string(cfg, "agent", "high_reasoning_effort",
+                  &defaults.high_reasoning_effort);
   defaults.skills =
       cai_config_get_bool(cfg, "agent", "skills", defaults.skills);
   optional_string(cfg, "searxng", "base_url", &defaults.searxng_url);

@@ -3740,6 +3740,16 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
       cai_lua_opt_string_field(L, 2, "reasoning_summary", NULL);
   config.service_tier = cai_lua_opt_string_field(L, 2, "service_tier", NULL);
   config.review_model = cai_lua_opt_string_field(L, 2, "review_model", NULL);
+  lua_getfield(L, 2, "reasoning_tool");
+  if (!lua_isnil(L, -1)) {
+    luaL_checktype(L, -1, LUA_TTABLE);
+    config.reasoning_tool.enabled = cai_lua_opt_bool_field(L, -1, "enabled", 0);
+    config.reasoning_tool.normal_effort =
+        cai_lua_opt_string_field(L, -1, "normal_effort", "medium");
+    config.reasoning_tool.high_effort =
+        cai_lua_opt_string_field(L, -1, "high_effort", "high");
+  }
+  lua_pop(L, 1);
   config.review_reasoning_effort =
       cai_lua_opt_string_field(L, 2, "review_reasoning_effort", NULL);
   config.review_reasoning_summary =
@@ -4935,6 +4945,37 @@ static int cai_lua_agent_runtime_todo_board(lua_State *L) {
     return cai_lua_fail(L, rc, &error);
   cai_error_cleanup(&error);
   lua_pushstring(L, name);
+  return 1;
+}
+
+static int cai_lua_agent_runtime_reasoning_tool(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  cai_reasoning_tool_config config;
+  cai_error error;
+  int rc;
+  cai_error_init(&error);
+  rc = cai_agent_runtime_get_reasoning_tool(self->ptr, &config, &error);
+  if (rc == CAI_OK && !lua_isnoneornil(L, 2)) {
+    luaL_checktype(L, 2, LUA_TTABLE);
+    config.enabled = cai_lua_opt_bool_field(L, 2, "enabled", config.enabled);
+    config.normal_effort =
+        cai_lua_opt_string_field(L, 2, "normal_effort", config.normal_effort);
+    config.high_effort =
+        cai_lua_opt_string_field(L, 2, "high_effort", config.high_effort);
+    rc = cai_agent_runtime_set_reasoning_tool(self->ptr, &config, &error);
+    if (rc == CAI_OK)
+      rc = cai_agent_runtime_get_reasoning_tool(self->ptr, &config, &error);
+  }
+  if (rc != CAI_OK)
+    return cai_lua_fail(L, rc, &error);
+  lua_newtable(L);
+  lua_pushboolean(L, config.enabled);
+  lua_setfield(L, -2, "enabled");
+  lua_pushstring(L, config.normal_effort);
+  lua_setfield(L, -2, "normal_effort");
+  lua_pushstring(L, config.high_effort);
+  lua_setfield(L, -2, "high_effort");
+  cai_error_cleanup(&error);
   return 1;
 }
 
@@ -11948,6 +11989,7 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"submit_interactive", cai_lua_agent_runtime_submit_interactive},
     {"set_model", cai_lua_agent_runtime_set_model},
     {"settings", cai_lua_agent_runtime_settings},
+    {"reasoning_tool", cai_lua_agent_runtime_reasoning_tool},
     {"select_board", cai_lua_agent_runtime_select_board},
     {"todo_board", cai_lua_agent_runtime_todo_board},
     {"instruction_status", cai_lua_agent_runtime_instruction_status},

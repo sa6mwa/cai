@@ -525,6 +525,13 @@ struct cai_agent_runtime {
   int model_switching;
   int settings_applying;
   int pending_settings_failed;
+  int reasoning_tool_pending;
+  struct {
+    int enabled;
+    char *normal_effort, *high_effort;
+  } reasoning_tool;
+  char *reasoning_warning_model;
+  unsigned int reasoning_warning_mask;
   int pending_after_active;
   cai_runtime_settings_owned pending_settings;
   cai_runtime_settings_owned settings_view_effective;
@@ -748,6 +755,13 @@ static int cai_runtime_capture_active_model_metadata(cai_agent_runtime *runtime,
                                                      cai_error *error);
 static int cai_runtime_compact_pending_history(cai_agent_runtime *runtime,
                                                cai_error *error);
+static void cai_runtime_reasoning_check(cai_agent_runtime *runtime);
+static int cai_runtime_reasoning_supported(cai_agent_runtime *runtime,
+                                           const char *model,
+                                           const char *effort);
+static void cai_runtime_reasoning_warn(cai_agent_runtime *runtime,
+                                       const char *model, const char *effort,
+                                       int high);
 static int cai_runtime_apply_pending_settings(cai_agent_runtime *runtime,
                                               cai_error *error);
 static int cai_runtime_append_journal_event_locked(
@@ -5490,6 +5504,8 @@ static void *cai_runtime_worker(void *context) {
     }
     if (rc == CAI_OK)
       rc = cai_runtime_capture_active_model_metadata(runtime, &error);
+    if (rc == CAI_OK)
+      cai_runtime_reasoning_check(runtime);
     if (rc == CAI_OK) {
       rc = cai_runtime_compact_pending_history(runtime, &error);
     }
@@ -7191,6 +7207,7 @@ static int cai_runtime_model_switch_metadata(
 void cai_agent_runtime_config_init(cai_agent_runtime_config *config) {
   if (config != NULL) {
     memset(config, 0, sizeof(*config));
+    cai_reasoning_tool_config_init(&config->reasoning_tool);
     config->shell_context_max_lines = 5000U;
     config->shell_context_max_bytes = 4U * 1024U * 1024U;
     config->todo.default_board = CAI_TODO_DEFAULT_BOARD;
@@ -7550,6 +7567,9 @@ int cai_agent_runtime_open(cai_client *client,
   if (rc == CAI_OK && !review_mode) {
     rc = cai_runtime_register_subagent_tool(runtime, error);
   }
+  if (rc == CAI_OK)
+    rc = cai_agent_runtime_set_reasoning_tool(runtime, &config->reasoning_tool,
+                                              error);
   if (rc == CAI_OK && config->register_agent_tools != NULL) {
     rc = review_mode
              ? cai_set_error(error, CAI_ERR_INVALID,
@@ -8483,7 +8503,25 @@ static int cai_runtime_apply_pending_settings(cai_agent_runtime *runtime,
   int rc;
 
   pthread_mutex_lock(&runtime->lock);
+  if (runtime->reasoning_tool_pending) {
+    const char *model = runtime->pending_settings.model != NULL
+                            ? runtime->pending_settings.model
+                            : CAI_AGENT_IMPL(runtime->agent)->model;
+    const char *effort = runtime->pending_settings.reasoning_effort;
+    if (effort != NULL &&
+        !cai_runtime_reasoning_supported(runtime, model, effort)) {
+      cai_runtime_reasoning_warn(runtime, model, effort,
+                                 runtime->reasoning_tool_pending == 2);
+      cai_free_mem(runtime->pending_settings.allocator,
+                   runtime->pending_settings.reasoning_effort);
+      runtime->pending_settings.reasoning_effort = NULL;
+      runtime->pending_settings.present &=
+          ~CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT;
+    }
+    runtime->reasoning_tool_pending = 0;
+  }
   if (runtime->pending_settings.present == 0U) {
+    runtime->pending_after_active = 0;
     pthread_mutex_unlock(&runtime->lock);
     return CAI_OK;
   }
@@ -8526,6 +8564,8 @@ static int cai_runtime_settings_value_valid(unsigned int field,
   }
   return strpbrk(value, " \t\r\n") == NULL;
 }
+
+#include "cai_runtime_reasoning.inc"
 
 int cai_agent_runtime_get_settings(cai_agent_runtime *runtime,
                                    cai_agent_runtime_settings *effective,
@@ -8676,6 +8716,8 @@ int cai_agent_runtime_update_settings(
   if (active) {
     cai_runtime_settings_clear(&runtime->pending_settings);
     runtime->pending_settings = candidate;
+    if ((requested->present & CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT) != 0U)
+      runtime->reasoning_tool_pending = 0;
     memset(&candidate, 0, sizeof(candidate));
     runtime->pending_settings_failed = 0;
     runtime->pending_after_active =
@@ -12414,6 +12456,9 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
   cai_runtime_settings_clear(&runtime->pending_settings);
   cai_runtime_settings_clear(&runtime->settings_view_effective);
   cai_runtime_settings_clear(&runtime->settings_view_pending);
+  cai_free_mem(NULL, runtime->reasoning_tool.normal_effort);
+  cai_free_mem(NULL, runtime->reasoning_tool.high_effort);
+  cai_free_mem(NULL, runtime->reasoning_warning_model);
   if (runtime->session != NULL) {
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                  runtime->model_compaction_hash);

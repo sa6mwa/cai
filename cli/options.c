@@ -24,6 +24,8 @@ void cai_cli_options_init(cai_cli_options *options) {
   options->provider = "chatgpt";
   options->model = CAI_MODEL_GPT_6_LUNA;
   options->reasoning_effort = "medium";
+  options->normal_reasoning_effort = "medium";
+  options->high_reasoning_effort = "high";
   options->reasoning_summary = "concise";
   options->image_generation = 1;
   options->terminal = 1;
@@ -115,8 +117,9 @@ int cai_cli_read_options(int argc, char *const *argv,
                                           "image-generation",
                                           "review-subagent",
                                           "codex-agents-md",
-                                          "mcp"};
-      int *values[15];
+                                          "mcp",
+                                          "reasoning-tool"};
+      int *values[16];
       size_t k;
       int enabled = strncmp(flag, "--no-", 5U) != 0;
       const char *name = flag + (enabled ? 2U : 5U);
@@ -135,6 +138,7 @@ int cai_cli_read_options(int argc, char *const *argv,
       values[12] = &options->review_subagent;
       values[13] = &options->codex_agents_md;
       values[14] = &options->mcp;
+      values[15] = &options->reasoning_tool;
       for (k = 0U; k < sizeof(names) / sizeof(names[0]); k++)
         if (strncmp(flag, "--", 2U) == 0 && strcmp(name, names[k]) == 0) {
           *values[k] = enabled;
@@ -343,6 +347,10 @@ int cai_cli_read_options(int argc, char *const *argv,
       field = &options->reasoning_effort;
     else if (strcmp(flag, "--reasoning-summary") == 0)
       field = &options->reasoning_summary;
+    else if (strcmp(flag, "--normal-reasoning-effort") == 0)
+      field = &options->normal_reasoning_effort;
+    else if (strcmp(flag, "--high-reasoning-effort") == 0)
+      field = &options->high_reasoning_effort;
     else if (strcmp(flag, "--service-tier") == 0)
       field = &options->service_tier;
     else if (strcmp(flag, "--message-queue") == 0)
@@ -400,6 +408,8 @@ int cai_cli_read_options(int argc, char *const *argv,
     if (field == &options->reasoning_summary)
       options->reasoning_summary_explicit = 1;
     if ((field == &options->reasoning_effort ||
+         field == &options->normal_reasoning_effort ||
+         field == &options->high_reasoning_effort ||
          field == &options->review_reasoning_effort) &&
         !cai_cli_one_of(value, efforts)) {
       cai_cli_option_error(options, "cai: invalid reasoning effort: %s\n",

@@ -52110,7 +52110,10 @@ static void test_mcp_raw_input_transport_failures(test_state *state) {
   }
 }
 
+#include "reasoning_pending_test.inc"
+
 static const test_entry test_entries[] = {
+    {"reasoning_model_boundary", test_reasoning_model_boundary},
     {"mcp_raw_input_cancellation", test_mcp_raw_input_cancellation},
     {"mcp_raw_input_registration_ownership",
      test_mcp_raw_input_registration_ownership},

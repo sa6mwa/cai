@@ -349,6 +349,25 @@ or
 The default is
 .BR medium .
 .TP
+.BR \-\-reasoning-tool " / " \-\-no-reasoning-tool
+Enable the model's set_reasoning tool (default off). It accepts only normal
+and high modes and is instructed to raise effort unless explicitly told to
+return to normal. It never automatically lowers a higher current effort when
+requesting high. Changes apply at the next durable tool boundary and the
+selected actual effort is restored on conversation resume.
+.TP
+.BI \-\-normal-reasoning-effort " LEVEL"
+Normal tool mapping, default medium, independent of -r. Also
+CAI_NORMAL_REASONING_EFFORT or [agent] normal_reasoning_effort.
+.TP
+.BI \-\-high-reasoning-effort " LEVEL"
+High tool mapping, default high. Also CAI_HIGH_REASONING_EFFORT or
+[agent] high_reasoning_effort. CAI_REASONING_TOOL and [agent] reasoning_tool
+control whether the tool is enabled. Unsupported or unadvertised choices
+warn the user and return a successful no-op to the model. The task continues;
+the model is not asked to diagnose CAI. Configure valid mappings and model
+metadata when the provider does not advertise its choices.
+.TP
 .BI \-\-service-tier " NAME"
 Select provider routing, for example default (explicit normal), priority
 (Fast), or flex. With no selection, a saved tier resumes; new sessions leave
@@ -513,6 +532,10 @@ survive resume. Explicit unsupported advertised choices fail unchanged.
 .B /fast
 Toggle Fast/priority and explicit normal routing. Requires a known Fast choice
 to enable it. This is a convenience over /tier; it does not change the model.
+.TP
+.BI /reasoning-tool " [on|off|normal LEVEL|high LEVEL]"
+Inspect or configure the optional reasoning tool between turns. Applies to
+this app, including new/resumed conversations; does not modify config.ini.
 .TP
 .BI /reasoning " [EFFORT]"
 Set reasoning effort, or list provider-advertised choices and the default for

@@ -34,6 +34,9 @@ void cai_cli_apply_runtime_options(const cai_cli_options *options,
   config->model = options->model_explicit ? options->model : NULL;
   config->reasoning_effort =
       options->reasoning_effort_explicit ? options->reasoning_effort : NULL;
+  config->reasoning_tool.enabled = !options->review && options->reasoning_tool;
+  config->reasoning_tool.normal_effort = options->normal_reasoning_effort;
+  config->reasoning_tool.high_effort = options->high_reasoning_effort;
   config->reasoning_summary =
       options->reasoning_summary_explicit ? options->reasoning_summary : NULL;
   config->review_model = options->review_model;

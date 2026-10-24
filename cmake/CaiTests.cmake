@@ -1,6 +1,12 @@
 
 if(CAI_BUILD_TESTS)
   enable_testing()
+  add_executable(cai_reasoning_tool_test tests/reasoning_tool_test.c)
+  cai_link_internal_consumer(cai_reasoning_tool_test)
+  cai_configure_c_target(cai_reasoning_tool_test)
+  target_compile_options(cai_reasoning_tool_test PRIVATE -UNDEBUG)
+  add_test(NAME cai_reasoning_tool COMMAND cai_reasoning_tool_test "${CMAKE_CURRENT_BINARY_DIR}")
+  set_tests_properties(cai_reasoning_tool PROPERTIES LABELS "unit;local;offline" TIMEOUT 3)
   add_test(NAME cai_pkgconfig_prefix_test COMMAND "${CMAKE_COMMAND}"
     "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
     "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
@@ -548,6 +554,7 @@ if(CAI_BUILD_TESTS)
     conversations
     stream_response_text
     provider_model_metadata
+    reasoning_model_boundary
     provider_catalog_empty_choices
     chat_client_compaction
     chat_compaction_failure_preserves_history
@@ -1172,6 +1179,11 @@ if(CAI_BUILD_TESTS)
       "${CAI_LUA_EXECUTABLE}")
     set_tests_properties(cai_lua_chat_message_items PROPERTIES
       LABELS "unit;local;offline" ENVIRONMENT "${CAI_LUA_TEST_ENV}" TIMEOUT 10)
+    add_test(NAME cai_lua_reasoning_tool COMMAND "${CAI_LUA_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/reasoning_tool.lua"
+      "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(cai_lua_reasoning_tool PROPERTIES
+      LABELS "unit;local;offline" ENVIRONMENT "${CAI_LUA_TEST_ENV}" TIMEOUT 3)
     foreach(_cai_lua_context_protocol responses chat_completions)
       add_test(NAME cai_lua_context_instructions_${_cai_lua_context_protocol}
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_context_instructions_test.sh"

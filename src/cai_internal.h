@@ -545,6 +545,9 @@ int cai_mcp_test_authenticated_url_status(const char *url, const char *field,
                                           char *detail, size_t detail_len);
 #endif
 int cai_stream_fuzz_sse(const unsigned char *data, size_t size);
+/* Mutate only while the registry is quiescent. */
+int cai_tool_registry_remove_internal(cai_tool_registry *registry,
+                                      const char *name, cai_error *error);
 int cai_tool_registry_register_lonejson_owned(
     cai_tool_registry *registry, const char *name, const char *description,
     const lonejson_map *params_map, const lonejson_map *result_map,

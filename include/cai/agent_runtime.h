@@ -510,6 +510,15 @@ typedef struct cai_agent_goal_request {
 
 void cai_agent_goal_request_init(cai_agent_goal_request *request);
 
+/** Optional model-controlled effort mappings. Defaults: disabled, medium/high.
+ * The normal mapping is independent of the current request effort. */
+typedef struct cai_reasoning_tool_config {
+  int enabled;
+  const char *normal_effort;
+  const char *high_effort;
+} cai_reasoning_tool_config;
+void cai_reasoning_tool_config_init(cai_reasoning_tool_config *config);
+
 /** Configuration for a host-neutral CAI agent runtime. */
 typedef struct cai_agent_runtime_config {
   /**
@@ -546,6 +555,8 @@ typedef struct cai_agent_runtime_config {
   /** Optional reasoning-effort override; NULL restores saved effort on resume
    * or uses the preset default (Smith: medium) for new sessions. */
   const char *reasoning_effort;
+  /** Optional set_reasoning tool. Not inherited by child agents. */
+  cai_reasoning_tool_config reasoning_tool;
   /**
    * Optional provider reasoning-summary mode for this runtime. Accepted values
    * are CAI_REASONING_SUMMARY_NONE, _AUTO, _CONCISE, and _DETAILED. NULL
@@ -814,6 +825,18 @@ int cai_agent_runtime_get_settings(cai_agent_runtime *runtime,
 int cai_agent_runtime_update_settings(
     cai_agent_runtime *runtime, const cai_agent_runtime_settings *requested,
     cai_agent_runtime_control_result *result, cai_error *error);
+/** Owner-thread-only. Configure between turns; strings are copied. A tool
+ * request changes the current effort at the next durable tool boundary.
+ * Unsupported or unknown advertised choices warn the host and return a harmless
+ * no-op to the model. Isolated review cannot enable this tool. */
+int cai_agent_runtime_set_reasoning_tool(
+    cai_agent_runtime *runtime, const cai_reasoning_tool_config *config,
+    cai_error *error);
+/** Owner-thread-only. Returned strings remain borrowed until reconfiguration
+ * or close. This configuration is not restored from conversation storage. */
+int cai_agent_runtime_get_reasoning_tool(cai_agent_runtime *runtime,
+                                         cai_reasoning_tool_config *out,
+                                         cai_error *error);
 /**
  * Request cancellation of the active turn without closing the runtime.
  * Owner-thread-only and idempotent while cancellation is pending. Returns an

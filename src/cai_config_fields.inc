@@ -169,6 +169,18 @@ F("agent", "view_image", NOTBOOL, RUNTIME, disable_view_image, 0, NULL,
   "Enable local image inspection when supported by the model.")
 F("agent", "goals", NOTBOOL, RUNTIME, disable_goals, 0, NULL,
   "Enable model goal lifecycle tools.")
+F("agent", "reasoning_tool", BOOL, RUNTIME, reasoning_tool.enabled, 0, NULL,
+  "Enable set_reasoning normal/high; unsupported or unknown choices are "
+  "harmless no-ops.")
+F("agent", "normal_reasoning_effort", STR, RUNTIME,
+  reasoning_tool.normal_effort, 0,
+  "none|minimal|low|medium|high|xhigh|max|ultra",
+  "Normal tool mapping; independent of current reasoning_effort. Default "
+  "medium.")
+F("agent", "high_reasoning_effort", STR, RUNTIME, reasoning_tool.high_effort, 0,
+  "none|minimal|low|medium|high|xhigh|max|ultra",
+  "High tool mapping. Default high; model should only raise effort unless told "
+  "otherwise.")
 F("agent", "skills", NOTBOOL, RUNTIME, disable_skills, 0, NULL,
   "Enable skill discovery and reading.")
 F("agent", "todo", BOOL, RUNTIME, enable_todo, 0, NULL,
