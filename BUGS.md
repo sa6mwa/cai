@@ -17,6 +17,17 @@ commit and verification evidence.
 - **Verification:** native coverage includes relative/absolute aliases, all
   four operations, shared missing parents and normalized destination collisions.
   The mock-provider CLI creates `internal/toll` files with both path spellings.
+- **Expanded regression coverage:** direct and spooled APIs check 31 failure
+  cases each: path aliases, source/destination collisions, missing sources,
+  directory/file mismatches, hardlinks, symlinks, traversal and absolute paths
+  into a similarly named sibling workspace. Each verifies source/outside
+  preservation, rollback of the preceding add and absence of success receipts.
+  Additional cases cover exact/exceeded patch and file byte limits, spaces,
+  UTF-8, hidden filenames, long normalized spellings, actual overlong paths,
+  injected new-parent synchronization failures, partial OS writes under a
+  child-local file-size limit and rollback across new nested directories after
+  a later publication conflict. Synchronization uses process
+  barriers, without timed sleeps, polling or inference.
 
 ## BUG-019: libmdf drops escaped punctuation in headings and plain paragraphs
 

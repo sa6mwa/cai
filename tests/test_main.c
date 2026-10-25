@@ -33495,6 +33495,459 @@ static void test_patch_nested_paths(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static int test_patch_invoke(test_state *state,
+                             const cai_patch_tool_config *config,
+                             cai_tool_registry *registry, const char *patch,
+                             cai_sink *sink, cai_error *error) {
+  lonejson_spooled input;
+  int rc;
+  if (registry == NULL)
+    return cai_apply_patch(config, patch, sink, error);
+  test_init_spooled_text(state, "patch_failure_input", &input, patch);
+  rc = registry->run_spooled(registry, "apply_patch", &input, sink, error);
+  input.cleanup(&input);
+  return rc;
+}
+
+static void test_patch_size_limits(test_state *state,
+                                   const cai_patch_tool_config *config,
+                                   cai_sink *sink, write_state *writer) {
+  static const char add[] = "*** Begin Patch\n*** Add File: limit.txt\n"
+                            "+123456\n*** End Patch\n";
+  static const char update[] = "*** Begin Patch\n*** Update File: victim.txt\n"
+                               "@@\n-before\n+too long\n*** End Patch\n";
+  static const char move[] = "*** Begin Patch\n*** Update File: victim.txt\n"
+                             "*** Move to: limit.txt\n*** End Patch\n";
+  char path[PATH_MAX], contents[64];
+  int mode, i;
+  for (mode = 0; mode < 2; mode++) {
+    for (i = 0; i < 7; i++) {
+      cai_patch_tool_config limited = *config;
+      cai_tool_registry *registry = NULL;
+      cai_error error;
+      const char *patch = i == 2 || i == 3 ? update : i == 4 ? move : add;
+      int expected = i == 0 || i == 5 ? CAI_OK : CAI_ERR_INVALID;
+      int rc = CAI_OK;
+      cai_error_init(&error);
+      limited.max_file_bytes = i == 0 || i == 3 ? 7U : i < 5 ? 6U : 0U;
+      limited.max_patch_bytes =
+          i >= 5 ? strlen(patch) - (i == 6 ? 1U : 0U) : 0U;
+      writer->length = 0U;
+      writer->buffer[0] = '\0';
+      if (mode != 0) {
+        rc = cai_tool_registry_new(&registry, &error);
+        if (rc == CAI_OK)
+          rc =
+              cai_tool_registry_register_patch_tool(registry, &limited, &error);
+      }
+      if (rc == CAI_OK)
+        rc = test_patch_invoke(state, &limited, registry, patch, sink, &error);
+      expect_int(state, "patch_configured_byte_limit", rc, expected);
+      expect_int(state, "patch_limit_receipt_only_on_success",
+                 writer->length != 0U, expected == CAI_OK);
+      snprintf(path, sizeof(path), "%s/limit.txt", config->root_path);
+      expect_int(state, "patch_limit_publication", access(path, F_OK),
+                 expected == CAI_OK ? 0L : -1L);
+      if (expected == CAI_OK) {
+        contents[0] = '\0';
+        expect_int(state, "patch_exact_limit_readable",
+                   read_text_file(path, contents, sizeof(contents)), 1L);
+        expect_str(state, "patch_exact_limit_content", contents, "123456\n");
+      }
+      unlink(path);
+      snprintf(path, sizeof(path), "%s/victim.txt", config->root_path);
+      contents[0] = '\0';
+      expect_int(state, "patch_limit_source_readable",
+                 read_text_file(path, contents, sizeof(contents)), 1L);
+      expect_str(state, "patch_limit_source_unchanged", contents, "before\n");
+      cai_tool_registry_destroy(registry);
+      cai_error_cleanup(&error);
+    }
+  }
+}
+
+static void test_patch_nested_rollback(test_state *state,
+                                       const cai_patch_tool_config *config) {
+  static const char patch[] =
+      "*** Begin Patch\n"
+      "*** Add File: rollback-one/deep/first.txt\n+first\n"
+      "*** Add File: rollback-two/second.txt\n+second\n"
+      "*** End Patch\n";
+  char first[PATH_MAX], second[PATH_MAX], path[PATH_MAX], contents[64];
+  pid_t child, waited;
+  int status = 0, step, reaped = 0;
+  snprintf(first, sizeof(first), "%s/rollback-one/deep/first.txt",
+           config->root_path);
+  snprintf(second, sizeof(second), "%s/rollback-two/second.txt",
+           config->root_path);
+  cai_patch_test_pause_before_publish(1);
+  child = fork();
+  if (child == 0) {
+    cai_error error;
+    int rc;
+    cai_error_init(&error);
+    rc = cai_apply_patch(config, patch, NULL, &error);
+    cai_error_cleanup(&error);
+    _exit(rc == CAI_ERR_INVALID ? 0 : 1);
+  }
+  cai_patch_test_pause_before_publish(0);
+  if (child < 0) {
+    test_fail(state, "patch_nested_rollback_fork", "fork failed");
+    return;
+  }
+  /* Publication barriers make the conflict deterministic without sleeps. */
+  for (step = 0; step < 2; step++) {
+    do {
+      waited = waitpid(child, &status, WUNTRACED);
+    } while (waited < 0 && errno == EINTR);
+    if (waited != child || !WIFSTOPPED(status)) {
+      reaped = waited == child && (WIFEXITED(status) || WIFSIGNALED(status));
+      test_fail(state, "patch_nested_rollback_barrier",
+                "missing publication stop");
+      break;
+    }
+    if (step == 1) {
+      int conflict_fd, close_rc;
+      ssize_t written;
+      contents[0] = '\0';
+      expect_int(state, "patch_nested_first_was_published",
+                 read_text_file(first, contents, sizeof(contents)), 1L);
+      expect_str(state, "patch_nested_first_before_rollback", contents,
+                 "first\n");
+      conflict_fd = open(second, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+      if (conflict_fd < 0) {
+        test_fail(state, "patch_nested_conflict_open", "open failed");
+        break;
+      }
+      written = write(conflict_fd, "external\n", 9U);
+      close_rc = close(conflict_fd);
+      if (written != 9 || close_rc != 0) {
+        test_fail(state, "patch_nested_conflict_write", "write failed");
+        break;
+      }
+    }
+    if (kill(child, SIGCONT) != 0) {
+      test_fail(state, "patch_nested_rollback_continue", "SIGCONT failed");
+      break;
+    }
+  }
+  if (!reaped) {
+    if (step != 2)
+      (void)kill(child, SIGKILL);
+    do {
+      waited = waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    expect_int(state, "patch_nested_rollback_child",
+               waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+               1L);
+  }
+  expect_int(state, "patch_nested_partial_publication_rolled_back",
+             access(first, F_OK), -1L);
+  contents[0] = '\0';
+  expect_int(state, "patch_nested_external_readable",
+             read_text_file(second, contents, sizeof(contents)), 1L);
+  expect_str(state, "patch_nested_external_preserved", contents, "external\n");
+  unlink(first);
+  unlink(second);
+  snprintf(path, sizeof(path), "%s/rollback-one/deep", config->root_path);
+  rmdir(path);
+  snprintf(path, sizeof(path), "%s/rollback-one", config->root_path);
+  rmdir(path);
+  snprintf(path, sizeof(path), "%s/rollback-two", config->root_path);
+  rmdir(path);
+}
+
+static void test_patch_partial_write(test_state *state,
+                                     const cai_patch_tool_config *config,
+                                     cai_tool_registry *registry,
+                                     cai_sink *sink) {
+  static const char patch[] = "*** Begin Patch\n"
+                              "*** Add File: write-one/first.txt\n+first\n"
+                              "*** Add File: write-two/second.txt\n+second\n"
+                              "*** End Patch\n";
+  char path[PATH_MAX];
+  int mode;
+  for (mode = 0; mode < 2; mode++) {
+    pid_t child = fork();
+    int status = 0;
+    if (child == 0) {
+      struct rlimit limit;
+      cai_error error;
+      int rc, matched;
+      /* Only the child gets this limit and signal disposition. The first
+       * six-byte file fits; the next write fails after a partial write. */
+      if (getrlimit(RLIMIT_FSIZE, &limit) != 0 ||
+          signal(SIGXFSZ, SIG_IGN) == SIG_ERR)
+        _exit(2);
+      limit.rlim_cur = 6U;
+      if (setrlimit(RLIMIT_FSIZE, &limit) != 0)
+        _exit(2);
+      cai_error_init(&error);
+      rc = test_patch_invoke(state, config, mode == 0 ? NULL : registry, patch,
+                             sink, &error);
+      matched = rc == CAI_ERR_INVALID && error.message != NULL &&
+                strcmp(error.message, "failed to write patch file") == 0;
+      cai_error_cleanup(&error);
+      _exit(matched ? 0 : 1);
+    }
+    if (child < 0) {
+      test_fail(state, "patch_partial_write_fork", "fork failed");
+      return;
+    }
+    expect_int(state, "patch_partial_write_error",
+               waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+                   WEXITSTATUS(status) == 0,
+               1L);
+    snprintf(path, sizeof(path), "%s/write-one/first.txt", config->root_path);
+    expect_int(state, "patch_partial_write_rolls_back_first",
+               access(path, F_OK), -1L);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/write-two/second.txt", config->root_path);
+    expect_int(state, "patch_partial_write_no_second", access(path, F_OK), -1L);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/write-one", config->root_path);
+    expect_int(state, "patch_partial_write_first_cleanup", rmdir(path), 0L);
+    snprintf(path, sizeof(path), "%s/write-two", config->root_path);
+    expect_int(state, "patch_partial_write_temporary_cleanup", rmdir(path), 0L);
+  }
+}
+
+static void test_patch_failure_modes(test_state *state) {
+  static const struct {
+    const char *name;
+    const char *fragment;
+  } cases[] = {
+      {"existing file", "*** Add File: ./victim.txt\n+changed\n"},
+      {"existing directory", "*** Add File: ./folder\n+changed\n"},
+      {"dangling destination", "*** Add File: ./dangling\n+changed\n"},
+      {"symlink parent", "*** Add File: ./escape/./deep/new.txt\n+changed\n"},
+      {"file parent", "*** Add File: ./victim.txt/child\n+changed\n"},
+      {"absolute sibling add", "*** Add File: %s/new.txt\n+changed\n"},
+      {"absolute sibling update",
+       "*** Update File: %s/outside.txt\n@@\n-before\n+changed\n"},
+      {"absolute sibling delete", "*** Delete File: %s/outside.txt\n"},
+      {"directory update",
+       "*** Update File: ./folder\n@@\n-before\n+changed\n"},
+      {"directory delete", "*** Delete File: ./folder\n"},
+      {"hardlink update",
+       "*** Update File: ./hardlink\n@@\n-before\n+changed\n"},
+      {"hardlink delete", "*** Delete File: ./hardlink\n"},
+      {"hardlink move",
+       "*** Update File: ./hardlink\n*** Move to: moved.txt\n"},
+      {"escaping move",
+       "*** Update File: ./victim.txt\n*** Move to: ./escape/new.txt\n"},
+      {"dangling move",
+       "*** Update File: ./victim.txt\n*** Move to: ./dangling\n"},
+      {"self move", "*** Update File: ./victim.txt\n*** Move to: victim.txt\n"},
+      {"absolute sibling move",
+       "*** Update File: ./victim.txt\n*** Move to: %s/new.txt\n"},
+      {"missing update",
+       "*** Update File: ./missing/deep/file\n@@\n-before\n+changed\n"},
+      {"missing delete", "*** Delete File: ./missing/deep/file\n"},
+      {"missing move",
+       "*** Update File: ./missing/deep/file\n*** Move to: moved.txt\n"},
+      {"traversing add", "*** Add File: ./folder/../new.txt\n+changed\n"},
+      {"traversing update",
+       "*** Update File: ./folder/../victim.txt\n@@\n-before\n+changed\n"},
+      {"traversing delete", "*** Delete File: ./folder/../victim.txt\n"},
+      {"directory move",
+       "*** Update File: ./victim.txt\n*** Move to: ./folder/.\n"},
+      {"aliased source collision",
+       "*** Update File: victim.txt\n@@\n-before\n+changed\n*** Delete File: "
+       "./victim.txt\n"},
+      {"aliased add collision", "*** Add File: alias/./same.txt\n+one\n*** Add "
+                                "File: ./alias//same.txt\n+two\n"},
+      {"aliased move collision",
+       "*** Update File: ./victim.txt\n*** Move to: alias/same.txt\n*** Add "
+       "File: alias/./same.txt\n+two\n"},
+      {"empty filename", "*** Add File: \n+changed\n"},
+      {"trailing separator", "*** Add File: ./new/\n+changed\n"},
+      {"bare dot", "*** Add File: .\n+changed\n"},
+      {"bare parent", "*** Add File: ..\n+changed\n"}};
+  char temporary[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-patch-failures-XXXXXX";
+  char root[PATH_MAX], outside[PATH_MAX], path[PATH_MAX];
+  char patch[PATH_MAX * 2U + 512U], fragment[PATH_MAX + 256U];
+  char message[256], contents[64];
+  cai_patch_tool_config config;
+  cai_tool_registry *registry = NULL;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink = NULL;
+  cai_error error;
+  write_state writer;
+  struct stat st;
+  size_t i;
+  int mode, rc;
+  if (mkdtemp(temporary) == NULL) {
+    test_fail(state, "patch_failure_setup", "mkdtemp failed");
+    return;
+  }
+  snprintf(root, sizeof(root), "%s/root", temporary);
+  snprintf(outside, sizeof(outside), "%s/root-sibling", temporary);
+  expect_int(state, "patch_failure_root", mkdir(root, 0700), 0L);
+  expect_int(state, "patch_failure_sibling", mkdir(outside, 0700), 0L);
+  snprintf(path, sizeof(path), "%s/root/victim.txt", temporary);
+  write_file_or_die(path, "before\n");
+  snprintf(path, sizeof(path), "%s/root-sibling/outside.txt", temporary);
+  write_file_or_die(path, "before\n");
+  snprintf(fragment, sizeof(fragment), "%s/root/hardlink", temporary);
+  expect_int(state, "patch_failure_hardlink", link(path, fragment), 0L);
+  snprintf(path, sizeof(path), "%s/root/folder", temporary);
+  expect_int(state, "patch_failure_directory", mkdir(path, 0700), 0L);
+  snprintf(path, sizeof(path), "%s/root/escape", temporary);
+  expect_int(state, "patch_failure_symlink", symlink(outside, path), 0L);
+  snprintf(path, sizeof(path), "%s/root/dangling", temporary);
+  snprintf(fragment, sizeof(fragment), "%s/root-sibling/absent.txt", temporary);
+  expect_int(state, "patch_failure_dangling", symlink(fragment, path), 0L);
+  memset(&config, 0, sizeof(config));
+  config.root_path = root;
+  cai_error_init(&error);
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  memset(&writer, 0, sizeof(writer));
+  expect_int(state, "patch_failure_sink",
+             cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "patch_failure_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL)
+    expect_int(state, "patch_failure_register",
+               cai_tool_registry_register_patch_tool(registry, &config, &error),
+               CAI_OK);
+  for (mode = 0; mode < 2 && registry != NULL && sink != NULL; mode++) {
+    for (i = 0U; i < sizeof(cases) / sizeof(cases[0]); i++) {
+      snprintf(fragment, sizeof(fragment), cases[i].fragment, outside);
+      snprintf(patch, sizeof(patch),
+               "*** Begin Patch\n*** Add File: "
+               "proposed.txt\n+unpublished\n%s*** End Patch\n",
+               fragment);
+      writer.length = 0U;
+      writer.buffer[0] = '\0';
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+      rc = test_patch_invoke(state, &config, mode == 0 ? NULL : registry, patch,
+                             sink, &error);
+      snprintf(message, sizeof(message), "%s (%s): %s", cases[i].name,
+               mode == 0 ? "direct" : "spooled",
+               error.message != NULL ? error.message : "missing diagnostic");
+      if (rc != CAI_ERR_INVALID || error.message == NULL || writer.length != 0U)
+        test_fail(state, "patch_failure_rejected_without_receipt", message);
+      snprintf(path, sizeof(path), "%s/root/proposed.txt", temporary);
+      expect_int(state, "patch_failure_no_partial_add", access(path, F_OK),
+                 -1L);
+      snprintf(path, sizeof(path), "%s/root/victim.txt", temporary);
+      contents[0] = '\0';
+      expect_int(state, "patch_failure_source_readable",
+                 read_text_file(path, contents, sizeof(contents)), 1L);
+      expect_str(state, "patch_failure_source_unchanged", contents, "before\n");
+      snprintf(path, sizeof(path), "%s/root-sibling/outside.txt", temporary);
+      contents[0] = '\0';
+      expect_int(state, "patch_failure_outside_readable",
+                 read_text_file(path, contents, sizeof(contents)), 1L);
+      expect_str(state, "patch_failure_outside_unchanged", contents,
+                 "before\n");
+      snprintf(path, sizeof(path), "%s/root/dangling", temporary);
+      expect_int(state, "patch_failure_dangling_preserved",
+                 lstat(path, &st) == 0 && S_ISLNK(st.st_mode), 1L);
+      snprintf(path, sizeof(path), "%s/root/folder", temporary);
+      expect_int(state, "patch_failure_directory_preserved",
+                 stat(path, &st) == 0 && S_ISDIR(st.st_mode), 1L);
+      snprintf(path, sizeof(path), "%s/root/missing", temporary);
+      expect_int(state, "patch_failure_no_missing_parent_created",
+                 access(path, F_OK), -1L);
+      snprintf(path, sizeof(path), "%s/root/alias", temporary);
+      expect_int(state, "patch_failure_no_collision_parent_created",
+                 access(path, F_OK), -1L);
+    }
+    /* Distinguish long spellings from genuinely overlong resolved paths. */
+    for (i = 0U; i < 5U; i++) {
+      static const char *spellings[] = {"./space dir/./caf\303\251.txt",
+                                        "./.hidden", "./...dots"};
+      static const char *resolved[] = {"space dir/caf\303\251.txt", ".hidden",
+                                       "...dots", "long-alias.txt"};
+      size_t offset;
+      if (i < 3U)
+        snprintf(fragment, sizeof(fragment), "%s", spellings[i]);
+      else if (i == 3U) {
+        for (offset = 0U; offset < PATH_MAX + 16U; offset += 2U)
+          memcpy(fragment + offset, "./", 2U);
+        strcpy(fragment + offset, "long-alias.txt");
+      } else {
+        memset(fragment, 'a', PATH_MAX + 8U);
+        fragment[PATH_MAX + 8U] = '\0';
+      }
+      snprintf(patch, sizeof(patch),
+               "*** Begin Patch\n*** Add File: %s\n+ok\n*** End Patch\n",
+               fragment);
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+      writer.length = 0U;
+      writer.buffer[0] = '\0';
+      rc = test_patch_invoke(state, &config, mode == 0 ? NULL : registry, patch,
+                             sink, &error);
+      expect_int(state, "patch_path_spelling_boundary", rc,
+                 i < 4U ? CAI_OK : CAI_ERR_INVALID);
+      if (i < 4U) {
+        snprintf(path, sizeof(path), "%s/root/%s", temporary, resolved[i]);
+        contents[0] = '\0';
+        expect_int(state, "patch_spelling_file_created",
+                   read_text_file(path, contents, sizeof(contents)), 1L);
+        expect_str(state, "patch_spelling_file_contents", contents, "ok\n");
+        unlink(path);
+        if (i == 0U) {
+          snprintf(path, sizeof(path), "%s/root/space dir", temporary);
+          expect_int(state, "patch_spelling_directory_cleanup", rmdir(path),
+                     0L);
+        }
+      } else
+        expect_int(state, "patch_overlong_path_no_receipt", writer.length, 0L);
+    }
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    writer.length = 0U;
+    writer.buffer[0] = '\0';
+    cai_patch_test_fail_directory_sync(1);
+    rc = test_patch_invoke(state, &config, mode == 0 ? NULL : registry,
+                           "*** Begin Patch\n*** Add File: "
+                           "sync-parent/child.txt\n+content\n*** End Patch\n",
+                           sink, &error);
+    cai_patch_test_fail_directory_sync(0);
+    expect_int(state, "patch_parent_sync_failure", rc, CAI_ERR_INVALID);
+    expect_str(state, "patch_parent_sync_failure_diagnostic", error.message,
+               "failed to synchronize patch directory");
+    expect_int(state, "patch_parent_sync_failure_no_receipt", writer.length,
+               0L);
+    snprintf(path, sizeof(path), "%s/root/sync-parent/child.txt", temporary);
+    expect_int(state, "patch_parent_sync_failure_no_file", access(path, F_OK),
+               -1L);
+    snprintf(path, sizeof(path), "%s/root/sync-parent", temporary);
+    expect_int(state, "patch_parent_sync_failure_fixture_cleanup", rmdir(path),
+               0L);
+  }
+  if (sink != NULL)
+    test_patch_size_limits(state, &config, sink, &writer);
+  test_patch_nested_rollback(state, &config);
+  if (registry != NULL && sink != NULL)
+    test_patch_partial_write(state, &config, registry, sink);
+  cai_sink_close(sink);
+  cai_tool_registry_destroy(registry);
+  cai_error_cleanup(&error);
+  snprintf(path, sizeof(path), "%s/root/victim.txt", temporary);
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/root/hardlink", temporary);
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/root/escape", temporary);
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/root/dangling", temporary);
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/root/folder", temporary);
+  rmdir(path);
+  snprintf(path, sizeof(path), "%s/root-sibling/outside.txt", temporary);
+  unlink(path);
+  expect_int(state, "patch_failure_root_cleanup", rmdir(root), 0L);
+  expect_int(state, "patch_failure_sibling_cleanup", rmdir(outside), 0L);
+  expect_int(state, "patch_failure_cleanup", rmdir(temporary), 0L);
+}
+
 static void test_patch_tool(test_state *state) {
   static const char update_and_add[] = "*** Begin Patch\n"
                                        "*** Update File: alpha.txt\n"
@@ -33607,6 +34060,7 @@ static void test_patch_tool(test_state *state) {
   mode_t original_umask;
 
   test_patch_nested_paths(state);
+  test_patch_failure_modes(state);
   if (mkdtemp(dir_template) == NULL) {
     test_fail(state, "patch_tempdir", "mkdtemp failed");
     return;
