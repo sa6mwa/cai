@@ -27,3 +27,20 @@ contains "$term/text" 'Body line one.'
 absent "$term/text" '[reasoning]'
 release; expect 'MULTILINE DONE'; expect 'Worked for'
 terminal_close
+# Commentary, a provider summary and more answer text can share one response.
+# The paused stream is still an active turn; only visible block types change.
+plan '{"plan":[{"preamble":"Commentary before reasoning.","reasoning":["**Choosing a boundary**\n\nSummary body ","one continues.\n\nSummary body two."],"pause":true,"pause_text":"Answer after reasoning. ","text":"Still the same response."}]}'
+terminal_start -N
+before=$(requests)
+send 'alternate text and reasoning\r'
+expect 'Answer after reasoning.'
+expect '! Choosing a boundary'
+absent "$term/text" 'Worked for'
+release; expect 'Still the same response.'; expect 'Worked for'
+[[ $(requests) == $((before+1)) ]]
+sed -E $'s/\033\[[0-?]*[ -/]*[@-~]//g' "$term/feed" >"$root/blocks"
+contains "$root/blocks" $'  Commentary before reasoning.\n\n? Summary body one continues.'
+contains "$root/blocks" $'? Summary body two.\n\n  Answer after reasoning. Still the same response.'
+absent "$root/blocks" 'Choosing a boundary'
+absent "$root/blocks" '? Answer after reasoning.'
+terminal_close

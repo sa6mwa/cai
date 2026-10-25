@@ -298,7 +298,7 @@ static int test_output_failure(int operation) {
   close(pipe_fd[1]);
   pipe_fd[1] = -1;
   if (operation == 8)
-    state.tool_output_pending = 1;
+    state.block_spacing_pending = 1;
   event.data = "Output unavailable.\n\n";
   event.data_length = strlen(event.data);
   if (operation == 0 || operation == 8) {
@@ -652,6 +652,11 @@ int main(void) {
     fprintf(stderr, "single header: %s open=%d\n", title, state.reasoning_open);
     return 1;
   }
+  event.type = CAI_AGENT_EVENT_TEXT_DELTA;
+  event.data = "Commentary before reasoning.\n";
+  event.data_length = strlen(event.data);
+  if (rc == CAI_OK)
+    rc = cli_event(&state, &event, NULL);
   event.type = CAI_AGENT_EVENT_REASONING_SUMMARY;
   event.data = "**Next header**\r";
   event.data_length = strlen(event.data);
@@ -751,6 +756,16 @@ int main(void) {
     return 1;
   }
   output[count] = '\0';
+  if (strstr(output, "Commentary before reasoning.\n\n? First body line") ==
+          NULL ||
+      strstr(output,
+             "? First body line Second body line\n\n  Assistant text\n") ==
+          NULL ||
+      strstr(output, "? Reasoning after tool\n\n  Answer after tool.\n") ==
+          NULL) {
+    fprintf(stderr, "missing assistant/reasoning block spacing: %s\n", output);
+    return 1;
+  }
   if (strstr(output, "{\"ok\":true}\n\n  Answer after tool.\n") == NULL ||
       strstr(output, "failed output\n\n  Answer after tool.\n") == NULL ||
       strstr(output, "already separated\n\n  Answer after tool.\n") == NULL ||
@@ -778,7 +793,9 @@ int main(void) {
       strstr(output, "Thinking...") != NULL ||
       strstr(output, "* WARN: **literal** _file_ `tick` [name](url)") == NULL ||
       strstr(output, "\n  word") == NULL ||
-      strstr(output, "Local informational Markdown\n? First body") == NULL) {
+      strstr(output,
+             "Local informational Markdown\n\nCommentary before reasoning.") ==
+          NULL) {
     fprintf(stderr, "reasoning header/body routing failed: %s\n", output);
     return 1;
   }

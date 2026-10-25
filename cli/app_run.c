@@ -126,7 +126,7 @@ typedef struct cli_state {
   int response_open;
   int documents_rendered;
   int reasoning_open;
-  int tool_output_pending;
+  int block_spacing_pending;
   int feed_breaks;
   int feed_ansi;
   int exit_requested;
@@ -332,7 +332,7 @@ static int cli_tool_sink(void *context, const void *bytes, size_t count,
   cli_state *state = context;
   if (cli_sink(context, (const char *)bytes, count) == 0) {
     if (count > 0U)
-      state->tool_output_pending = 1;
+      state->block_spacing_pending = 1;
     return CAI_OK;
   }
   return cai_cli_error(error, CAI_ERR_TRANSPORT, "cannot write tool activity");
@@ -402,11 +402,11 @@ static int cli_prefixed_sink(void *context, const char *bytes, size_t count) {
  */
 static int cli_renderer_sink(void *context, const char *bytes, size_t count) {
   cli_state *state = context;
-  if (count > 0U && state->tool_output_pending) {
+  if (count > 0U && state->block_spacing_pending) {
     while (state->feed_breaks < 2)
       if (cli_sink(state, "\n", 1U) != 0)
         return -1;
-    state->tool_output_pending = 0;
+    state->block_spacing_pending = 0;
   }
   return state->reasoning_open || state->notice_open
              ? cli_prefixed_sink(context, bytes, count)
@@ -469,6 +469,7 @@ static int cli_finish_response(cli_state *state) {
   }
   state->documents_rendered++;
   state->response_open = 0;
+  state->block_spacing_pending = 1;
   return 0;
 }
 
@@ -481,6 +482,7 @@ static int cli_finish_reasoning(cli_state *state) {
   }
   state->documents_rendered++;
   state->reasoning_open = 0;
+  state->block_spacing_pending = 1;
   if (state->renderer->set_geometry(state->renderer, state->width,
                                     state->width >= 5 ? 2 : 0, 0) != MDF_OK)
     return -1;

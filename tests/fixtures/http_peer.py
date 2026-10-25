@@ -112,6 +112,9 @@ class Peer(http.server.BaseHTTPRequestHandler):
             self.wfile.write(('data: ' + json.dumps({'id': 'chat-fixture', 'object': 'chat.completion.chunk',
                 'choices': [{'index': 0, 'delta': value, 'finish_reason': finish}]}) + '\n\n').encode())
             self.wfile.flush()
+        if item.get('preamble'):
+            if chat: delta({'role': 'assistant', 'content': item['preamble']})
+            else: self.event('response.output_text.delta', delta=item['preamble'])
         for summary in item.get('reasoning', []):
             if chat: delta({'reasoning_content': summary})
             else: self.event('response.reasoning_summary_text.delta', delta=summary)

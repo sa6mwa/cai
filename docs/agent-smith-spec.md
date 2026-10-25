@@ -399,6 +399,11 @@ Smith-review request the provider-directed `auto` summary mode by default. A
 generic runtime renderer decides whether and how to display that event; CAI
 never silently substitutes it into normal answer text.
 
+The application feed separates answer, reasoning-summary and tool blocks by a
+blank row. A summary heading stays in the status line; its body uses the `?`
+prefix. Answer and summary blocks may alternate within one response without
+ending the turn or restarting the output stream.
+
 `RESPONSE_COMPLETED` marks the end of every successfully streamed and
 persisted model response, including responses that request local tools before
 the automatic continuation. It is distinct from `RUN_COMPLETED`: a run can

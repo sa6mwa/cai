@@ -5,6 +5,20 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-018: Reasoning summaries run against surrounding assistant text
+
+- **Status:** fixed.
+- **Cause:** switching between answer and reasoning documents finished the
+  renderer document without separating the next visible block. The `?` marker
+  already identified provider reasoning summaries, but both transitions lacked
+  a blank row.
+- **Resolution:** apply the existing feed separator to completed answer and
+  reasoning blocks as well as tool output. Preserve one continuous turn/feed,
+  immediate streaming and uninterrupted chunks within each block.
+- **Verification:** renderer assertions cover both transitions; a paused
+  mock-provider response emits commentary, a fragmented multi-paragraph summary
+  and more answer text, proving the turn remains active and uses one request.
+
 ## BUG-017: Nested patch additions fail when parent directories are missing
 
 - **Status:** fixed.
