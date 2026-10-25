@@ -1,5 +1,6 @@
 #include "theme.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const struct {
@@ -72,6 +73,57 @@ void cai_cli_theme_markdown(const cai_cli_theme *theme, mdf_options *options) {
   options->theme_name = theme->markdown;
   if (theme->ascii)
     options->ansi_mode = MDF_ANSI_OFF;
+}
+
+const char *cai_cli_theme_prompt_name(const cai_cli_theme *theme) {
+  size_t i;
+  for (i = 0U; i < sizeof(themes) / sizeof(themes[0]); i++)
+    if (themes[i].prompt == theme->prompt)
+      return themes[i].name;
+  return NULL;
+}
+
+int cai_cli_theme_describe(const cai_cli_theme *theme, cai_sink *sink,
+                           cai_error *error) {
+  char row[256];
+  const char *text;
+  size_t i;
+  int n, rc;
+  n = snprintf(row, sizeof(row), "## Theme\n\nCurrent: `%s:%s`\n\n",
+               cai_cli_theme_prompt_name(theme),
+               theme->ascii ? "ascii" : theme->markdown);
+  rc = cai_sink_write(sink, row, (size_t)n, error);
+  text = "Use `/theme NAME` or `/theme SOFTLINE:LIBMDF` between turns. "
+         "Changes affect future output in this app invocation.\n\n";
+  if (rc == CAI_OK)
+    rc = cai_sink_write(sink, text, strlen(text), error);
+  if (rc == CAI_OK && getenv("NO_COLOR") != NULL) {
+    text = "`NO_COLOR` is set: the prompt stays plain and Markdown ANSI "
+           "styling stays disabled.\n\n";
+    rc = cai_sink_write(sink, text, strlen(text), error);
+  }
+  text = "### Softline themes and pairings\n\n"
+         "| Alias | Softline:libmdf |\n| --- | --- |\n";
+  if (rc == CAI_OK)
+    rc = cai_sink_write(sink, text, strlen(text), error);
+  for (i = 0U; rc == CAI_OK && i < sizeof(themes) / sizeof(themes[0]); i++) {
+    n = snprintf(row, sizeof(row), "| `%s` | `%s:%s` |\n", themes[i].name,
+                 themes[i].name, themes[i].markdown);
+    rc = cai_sink_write(sink, row, (size_t)n, error);
+  }
+  text = "\n### Libmdf themes\n\n";
+  if (rc == CAI_OK)
+    rc = cai_sink_write(sink, text, strlen(text), error);
+  for (i = 0U; rc == CAI_OK && i < mdf_theme_count(); i++) {
+    n = snprintf(row, sizeof(row), "%s`%s`", i != 0U ? ", " : "",
+                 mdf_theme_name(i));
+    rc = cai_sink_write(sink, row, (size_t)n, error);
+  }
+  text = ", `ascii`.\n\n`ascii` selects escape-free UTF-8 Markdown, "
+         "not a color theme.\n";
+  if (rc == CAI_OK)
+    rc = cai_sink_write(sink, text, strlen(text), error);
+  return rc;
 }
 
 int cai_cli_theme_list(cai_sink *sink, cai_error *error) {

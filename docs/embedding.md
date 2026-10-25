@@ -178,6 +178,10 @@ disables Markdown ANSI styling while preserving UTF-8. `NO_COLOR` overrides
 the selection with the plain prompt and escape-free Markdown. Themes apply
 to the Markdown introduction and conversation feed; raw banners stay verbatim
 and logger configuration remains independent.
+The same TUI provides `/theme` to show the active pair and both libraries'
+themes, and `/theme NAME` or `/theme SOFTLINE:LIBMDF` to switch between turns.
+This selection applies to future output in the current app invocation,
+including after `/new` or `/resume`, without changing startup settings.
 `[paths]`, `[storage]`, and `[env]` XDG variables provide host path overrides.
 Configuration strings/settings are copied by open. Logger ownership stays with
 the host until close; CAI neither closes nor reconfigures a supplied logger.

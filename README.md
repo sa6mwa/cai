@@ -433,6 +433,10 @@ mixes the two libraries' themes. Names are case-insensitive. The startup default
 is `default:default`. Set `CAI_THEME` or `[ui] theme = "synthwave"` in
 `config.ini`; argv overrides both. Embedders use the same `ui.theme` setting,
 and their configured environment prefix replaces `CAI_`.
+In the TUI, `/theme` shows the current pair, all softline pairings, and all
+libmdf themes. `/theme synthwave` or `/theme riced:iosvkem` changes future
+output between turns. The selection survives `/new` and `/resume` within
+the app invocation; it does not rewrite `config.ini` or session history.
 `ascii` is a libmdf output mode, not a theme: it disables Markdown ANSI styling
 while retaining UTF-8 text. `NO_COLOR` selects the plain prompt and disables
 Markdown styling regardless of the selected theme. The gray reasoning message

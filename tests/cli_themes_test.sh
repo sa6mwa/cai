@@ -61,6 +61,69 @@ plain_styles() {
   absent "$1" $'\033[1m'
   absent "$1" $'\033[3m'
 }
+tui_themes() {
+  local count offset
+  cp "$root/config/cai/config.ini" "$root/config-before"
+  plan '{"plan":[]}'
+  terminal_start -N -t monogreen
+  count=$(requests)
+  send '/theme\r'; expect 'Current: monogreen:everforest'
+  expect 'Softline themes and pairings'; expect 'Libmdf themes'
+  expect 'escape-free UTF-8 Markdown'
+  for pair in synthwave:synthwave-84 plain:ascii accent:night-owl dracula:dracula gruvbox:gruvbox monochrome:horizon monogreen:everforest outrun:outrun-electric riced:catppuccin-mocha default:default; do
+    contains "$term/feed" "$pair"
+  done
+  send '/theme  RICED:IOSVKEM  \r'; expect 'Theme changed to riced:iosvkem.'
+  send '/theme\r'; expect 'Current: riced:iosvkem'
+  send '/theme unknown\r'; expect 'unknown softline theme'
+  send '/theme riced:\r'; expect 'theme requires a softline name'
+  send '/theme riced:bogus\r'; expect 'unknown libmdf theme'
+  send '/theme dracula extra\r'; expect 'unknown softline theme'
+  send '/theme\r'; expect 'Current: riced:iosvkem'
+  [[ $(requests) == "$count" ]]
+  send '/theme plain\r'; expect 'Theme changed to plain:ascii.'
+  printf 'THEME TOOL CONTENT\n' >"$work/theme.txt"
+  plan "$(jq -n --arg sample "$sample" '{plan:[{tool:"read_file",arguments:{path:"theme.txt"}},$sample]}')"
+  offset=$(wc -c <"$term/raw")
+  prompt 'plain theme response' 'Bold and italic text.'
+  tail -c +$((offset+1)) "$term/raw" >"$root/plain-runtime"
+  plain_styles "$root/plain-runtime"
+  absent "$root/plain-runtime" $'\033[1;96m'
+  absent "$root/plain-runtime" $'\033[92m'
+  send '/theme dracula\r'; expect 'Theme changed to dracula:dracula.'
+  plan "$(jq -n --arg sample "$sample" '{plan:[$sample]}')"
+  offset=$(wc -c <"$term/raw")
+  prompt 'colored theme response' 'Bold and italic text.'
+  tail -c +$((offset+1)) "$term/raw" >"$root/colored-runtime"
+  contains "$root/colored-runtime" '38;'
+  contains "$root/colored-runtime" $'\033[1m'
+  plan '{"plan":[{"pause":true,"tool":"read_file","arguments":{"path":"theme.txt"}},"THEME BOUNDARY DONE"]}'
+  offset=$(wc -c <"$term/text")
+  send 'read while checking theme guard\r'; expect 'STREAM in flight'
+  count=$(requests)
+  send '/theme synthwave\r'; expect 'Change themes between turns'
+  send '/theme\r'; expect 'Current: dracula:dracula'
+  [[ $(requests) == "$count" ]]
+  release; expect_turn "$offset" 'THEME BOUNDARY DONE'
+  contains "$root/peer/requests.jsonl" 'THEME TOOL CONTENT'
+  send '/new\r'; expect 'New session'
+  send '/theme\r'; expect 'Current: dracula:dracula'
+  cmp "$root/config-before" "$root/config/cai/config.ini"
+  terminal_close
+  export NO_COLOR=1
+  terminal_start -N -t monogreen
+  send '/theme synthwave\r'; expect 'Theme changed to synthwave:synthwave-84.'
+  expect 'NO_COLOR keeps the prompt plain'
+  send '/theme\r'; expect 'Current: synthwave:synthwave-84'
+  expect 'NO_COLOR is set'
+  plan "$(jq -n --arg sample "$sample" '{plan:[$sample]}')"
+  offset=$(wc -c <"$term/raw")
+  prompt 'no color override after switch' 'Bold and italic text.'
+  tail -c +$((offset+1)) "$term/raw" >"$root/no-color-runtime"
+  plain_styles "$root/no-color-runtime"
+  terminal_close
+  unset NO_COLOR
+}
 if [[ "$scope" != full ]]; then
   render host
   unset CAI_TEST_APP_THEME
@@ -75,6 +138,7 @@ if [[ "$scope" != full ]]; then
   export SMITH_THEME=riced:iosvkem
   run --list; ok
   unset CAI_TEST_APP_NAME SMITH_THEME
+  tui_themes
   exit 0
 fi
 render config
@@ -101,3 +165,4 @@ run -Nnt synthwave -i THEME_FIRST -i THEME_SECOND; ok
 absent "$root/stdout" $'\033'
 contains "$root/peer/requests.jsonl" THEME_FIRST
 contains "$root/peer/requests.jsonl" THEME_SECOND
+tui_themes

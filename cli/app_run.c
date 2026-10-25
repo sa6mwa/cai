@@ -411,16 +411,39 @@ static int cli_renderer_sink(void *context, const char *bytes, size_t count) {
   return state->notice_open ? cli_notice_sink(context, bytes, count)
                             : cli_sink(context, bytes, count);
 }
-static int cli_tool_display_init(cli_state *state, cai_error *error) {
+static int cli_renderer_create(cli_state *state, const cai_cli_theme *theme,
+                               mdf **out, cai_error *error) {
+  mdf_options options;
+  mdf_sink sink;
+  mdf_status status;
+  int width = state->width;
+  mdf_options_init(&options);
+  cai_cli_theme_markdown(theme, &options);
+  options.output_fd = STDOUT_FILENO;
+  if (getenv("NO_COLOR") != NULL)
+    options.ansi_mode = MDF_ANSI_OFF;
+  options.width = width;
+  options.margin_left = width >= 5 ? 2 : 0;
+  options.boring = !state->interactive;
+  status = mdf_create(MDF_FORMAT_ANSI, &options, out);
+  if (status != MDF_OK)
+    return cai_cli_error(
+        error, status == MDF_ERROR_NOMEM ? CAI_ERR_NOMEM : CAI_ERR_INVALID,
+        "create Markdown renderer");
+  sink.userdata = state;
+  sink.write = cli_renderer_sink;
+  if ((*out)->set_sink(*out, &sink) != MDF_OK) {
+    (*out)->destroy(*out);
+    *out = NULL;
+    return cai_cli_error(error, CAI_ERR_TRANSPORT, "connect Markdown renderer");
+  }
+  return CAI_OK;
+}
+
+static int cli_tool_display_create(cli_state *state, const cai_cli_theme *theme,
+                                   cai_tool_display **out, cai_error *error) {
   cai_tool_display_config config;
-  cai_sink_callbacks callbacks;
   int rc, width;
-  memset(&callbacks, 0, sizeof(callbacks));
-  callbacks.write = cli_tool_sink;
-  callbacks.context = state;
-  rc = cai_sink_from_callbacks(&callbacks, &state->tool_sink, error);
-  if (rc != CAI_OK)
-    return rc;
   memset(&config, 0, sizeof(config));
   config.sink = state->tool_sink;
   config.mode = state->options.tool_output != NULL &&
@@ -428,18 +451,34 @@ static int cli_tool_display_init(cli_state *state, cai_error *error) {
                     ? CAI_TOOL_OUTPUT_FULL
                     : CAI_TOOL_OUTPUT_COMPACT;
   config.color =
-      state->interactive && !state->theme.ascii && getenv("NO_COLOR") == NULL;
+      state->interactive && !theme->ascii && getenv("NO_COLOR") == NULL;
   config.begin_block = cli_tool_begin_block;
   config.begin_block_context = state;
-  rc = cai_tool_display_new(&config, &state->tool_display, error);
+  rc = cai_tool_display_new(&config, out, error);
   width = cli_render_width();
   if (rc == CAI_OK)
-    rc = cai_tool_display_set_width(state->tool_display,
+    rc = cai_tool_display_set_width(*out,
                                     (size_t)(width < 32     ? 0
                                              : width > 4096 ? 4096
                                                             : width),
                                     error);
+  if (rc != CAI_OK) {
+    cai_tool_display_close(*out);
+    *out = NULL;
+  }
   return rc;
+}
+
+static int cli_tool_display_init(cli_state *state, cai_error *error) {
+  cai_sink_callbacks callbacks;
+  int rc;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = cli_tool_sink;
+  callbacks.context = state;
+  rc = cai_sink_from_callbacks(&callbacks, &state->tool_sink, error);
+  return rc == CAI_OK ? cli_tool_display_create(state, &state->theme,
+                                                &state->tool_display, error)
+                      : rc;
 }
 
 static int cli_geometry(cli_state *state) {
@@ -2834,6 +2873,99 @@ static int cli_tools_write(void *context, const char *bytes, size_t count) {
   return cli_text(context, bytes, count);
 }
 
+static int cli_theme_write(void *context, const void *bytes, size_t count,
+                           cai_error *error) {
+  (void)error;
+  return cli_text(context, bytes, count) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+}
+
+static int cli_theme_command(cli_state *state, const char *arguments,
+                             cai_error *error) {
+  cai_cli_theme selected;
+  cai_agent_runtime_metrics metrics;
+  cai_agent_run_state run_state;
+  mdf *renderer = NULL;
+  cai_tool_display *display = NULL;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink = NULL;
+  char name[128], message[192];
+  const char *reason;
+  size_t length;
+  int rc;
+  while (*arguments == ' ' || *arguments == '\t')
+    arguments++;
+  length = strlen(arguments);
+  while (length > 0U &&
+         (arguments[length - 1U] == ' ' || arguments[length - 1U] == '\t'))
+    length--;
+  if (length == 0U) {
+    memset(&callbacks, 0, sizeof(callbacks));
+    callbacks.write = cli_theme_write;
+    callbacks.context = state;
+    rc = cai_sink_from_callbacks(&callbacks, &sink, error);
+    if (rc == CAI_OK)
+      rc = cai_cli_theme_describe(&state->theme, sink, error);
+    cai_sink_close(sink);
+    if (rc == CAI_OK && cli_finish_response(state) != 0)
+      rc = CAI_ERR_TRANSPORT;
+    return rc;
+  }
+  if (length >= sizeof(name))
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "use /theme NAME or /theme SOFTLINE:LIBMDF");
+  memcpy(name, arguments, length);
+  name[length] = '\0';
+  reason = cai_cli_theme_parse(name, &selected);
+  if (reason != NULL)
+    return cai_cli_error(error, CAI_ERR_INVALID, reason);
+  rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
+  if (rc == CAI_OK)
+    rc = cai_agent_runtime_state(state->runtime, &run_state, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (metrics.turn_active || state->awaiting_turn ||
+      state->review_runtime != NULL || state->shell.pid > 0 ||
+      run_state == CAI_AGENT_SAMPLING ||
+      run_state == CAI_AGENT_DISPATCHING_TOOL)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "Change themes between turns; use /theme to list "
+                         "the current selection and available themes.");
+  rc = cli_renderer_create(state, &selected, &renderer, error);
+  if (rc == CAI_OK)
+    rc = cli_tool_display_create(state, &selected, &display, error);
+  if (rc == CAI_OK &&
+      (cli_flush_command(state, 1) != 0 || cli_finish_response(state) != 0 ||
+       cli_finish_reasoning(state) != 0 ||
+       renderer->set_geometry(renderer, state->width, state->width >= 5 ? 2 : 0,
+                              0) != MDF_OK ||
+       sl_set_prompt_theme(state->sl, getenv("NO_COLOR") != NULL
+                                          ? SL_PROMPT_THEME_PLAIN
+                                          : selected.prompt) != SL_OK))
+    rc = cai_cli_error(error, CAI_ERR_TRANSPORT, "apply terminal theme");
+  if (rc != CAI_OK) {
+    if (renderer != NULL)
+      renderer->destroy(renderer);
+    cai_tool_display_close(display);
+    return rc;
+  }
+  state->renderer->destroy(state->renderer);
+  cai_tool_display_close(state->tool_display);
+  state->renderer = renderer;
+  state->tool_display = display;
+  state->theme = selected;
+  state->documents_rendered = 0;
+  snprintf(message, sizeof(message), "Theme changed to `%s:%s`.\n%s",
+           cai_cli_theme_prompt_name(&selected),
+           selected.ascii ? "ascii" : selected.markdown,
+           getenv("NO_COLOR") != NULL
+               ? "`NO_COLOR` keeps the prompt plain and Markdown ANSI "
+                 "styling disabled.\n"
+               : "");
+  cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, "theme_selection",
+                      "user", message, strlen(message), NULL, 0U);
+  return cli_markdown(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+}
+
 static int cli_trim_row(void *context, const cai_agent_history_entry *entry,
                         cai_error *error) {
   cli_state *state = context;
@@ -3076,6 +3208,9 @@ static int cli_handle_command(cli_state *state, const char *line,
   unsigned long number;
   int rc;
   *handled = 1;
+  if (strcmp(line, "/theme") == 0 || strncmp(line, "/theme ", 7U) == 0 ||
+      strncmp(line, "/theme\t", 7U) == 0)
+    return cli_theme_command(state, line + 6U, error);
   if (strcmp(line, "/review-and-fix") == 0 ||
       strncmp(line, "/review-and-fix ", 16U) == 0 ||
       strncmp(line, "/review-and-fix\t", 16U) == 0)
@@ -3275,6 +3410,9 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| Command | Action |\n"
         "| --- | --- |\n"
         "| `/help` | Show this help. |\n",
+        "| `/theme [NAME or SOFTLINE:LIBMDF]` | Show the current pair and all "
+        "themes, or change themes between turns for this app invocation. "
+        "|\n",
         "| `/review [uncommitted\\|base REF\\|custom TEXT]` | Run an isolated "
         "reviewer; no argument compares against the Git default branch. |\n",
         "| `/review-and-fix [uncommitted\\|base REF]` | Replace the current "
@@ -3768,8 +3906,6 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   cli_state state;
   cai_client_config client_config;
   cai_chatgpt_auth_config auth_config;
-  mdf_options mdf_config;
-  mdf_sink sink;
   sl_config_t prompt_config;
   cai_error error;
   sl_readline_status_t prompt_status;
@@ -4027,30 +4163,19 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     }
   }
   state.width = cli_render_width();
-  mdf_options_init(&mdf_config);
-  cai_cli_theme_markdown(&state.theme, &mdf_config);
-  mdf_config.output_fd = STDOUT_FILENO;
-  if (getenv("NO_COLOR") != NULL)
-    mdf_config.ansi_mode = MDF_ANSI_OFF;
-  mdf_config.width = state.width;
-  mdf_config.margin_left = state.width >= 5 ? 2 : 0;
-  mdf_config.boring = !state.interactive;
   if ((state.interactive &&
        (sl_bind_key(state.sl, SL_KEY_ESCAPE, cli_cancel_editor, NULL) !=
             SL_OK ||
         sl_set_statusline(state.sl, 1, 0) != SL_OK ||
         sl_set_status_message(state.sl, state.welcome) != SL_OK)) ||
-      (!state.batch && sl_output_stream_begin(state.sl) != SL_OK) ||
-      mdf_create(MDF_FORMAT_ANSI, &mdf_config, &state.renderer) != MDF_OK) {
+      (!state.batch && sl_output_stream_begin(state.sl) != SL_OK)) {
     cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
                    "failed to initialize terminal renderers\n");
     goto cleanup;
   }
-  sink.userdata = &state;
-  sink.write = cli_renderer_sink;
-  if (state.renderer->set_sink(state.renderer, &sink) != MDF_OK) {
-    cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
-                   "failed to connect Markdown renderer\n");
+  if (cli_renderer_create(&state, &state.theme, &state.renderer, &error) !=
+      CAI_OK) {
+    cli_print_error(&state, "initialize Markdown renderer", &error);
     goto cleanup;
   }
   if (cli_introduction(&state, application) != 0) {
