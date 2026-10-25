@@ -1316,9 +1316,10 @@ contract:
 - `clear_goal` is Smith's idempotent equivalent of Codex's `/goal clear`:
   it removes the current goal without asserting completion, so a subsequent
   `create_goal` starts fresh;
-- `blocked` is allowed only after the same external blocking condition has
-  occurred across three consecutive goal turns; hard work, uncertainty, or a
-  desire for clarification is not enough;
+- Smith is instructed to use `blocked` only after the same external blocking
+  condition has occurred across three consecutive goal turns; hard work,
+  uncertainty, or a desire for clarification is not enough. As in Codex, this
+  is model guidance: valid updates do not require earlier rejected tool calls;
 - a budgeted completed goal reports its final usage.
 
 Goal statuses are `active`, `paused`, `complete`, `blocked`, `usage_limited`,
@@ -1734,8 +1735,9 @@ use observable model/tool/store behavior rather than private fields.
 - Steering tests cover queue while text streams, next-tool delivery, tool error
   boundary, no-tool fallback delivery, FIFO multiple entries, cancellation,
   and resume before delivery.
-- Goal tests cover explicit creation, unfinished-goal rejection, three-turn
-  blocked threshold, complete accounting, and invisible internal context.
+- Goal tests cover explicit creation, unfinished-goal rejection, accepted
+  blocked updates without prior rejected calls, restored stopped goals,
+  complete accounting, and invisible internal context.
 - Compaction tests cover threshold, same-hash switch no compaction,
   changed-hash compaction, downshift compaction, unknown-profile conservative
   policy, failed compaction preservation, and replay of compacted history.

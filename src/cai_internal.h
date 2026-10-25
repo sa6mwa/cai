@@ -191,11 +191,6 @@ typedef struct cai_session_impl {
   long long goal_active_started_at;
   long long goal_created_at;
   long long goal_updated_at;
-  /** Monotonic user-turn ordinal used to qualify blocked-goal updates. */
-  long long goal_turn_count;
-  /** Last turn that counted toward blocked-goal qualification, or -1. */
-  long long goal_blocked_last_turn;
-  int goal_blocked_attempts;
   cai_token_usage last_usage;
   int has_last_usage;
   /* Most recent measured size of the retained request context. This differs

@@ -52,14 +52,12 @@ if [[ "$mode" == batch ]]; then
   count=$(requests)
   plan "$(jq -n --argjson chat "$chat" '{chat:$chat,plan:[
     {tool:"create_goal",arguments:{objective:"Stop when blocked"}},
-    {tool:"update_goal",arguments:{status:"blocked"}},"BLOCKER REMAINS",
-    {tool:"update_goal",arguments:{status:"blocked"}},"BLOCKER REMAINS",
     {tool:"update_goal",arguments:{status:"blocked"}},
     "BLOCKED FINAL REPORT",
     {error:"MUST NOT CONTINUE"}
   ]}')"
   run -Nni 'Create a goal, then report the blocker' -i 'MUST NOT START'; bad
-  [[ $(requests) == "$((count+7))" ]]
+  [[ $(requests) == "$((count+3))" ]]
   [[ $(stdout_text) == 'BLOCKED FINAL REPORT' ]]
   contains "$root/stderr" 'blocked'
   exit 0

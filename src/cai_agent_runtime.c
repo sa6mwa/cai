@@ -3361,9 +3361,6 @@ cai_runtime_apply_goal_control(cai_agent_runtime *runtime,
       goal->goal_active_started_at = 0LL;
       goal->goal_created_at = now;
       goal->goal_updated_at = now;
-      goal->goal_turn_count = 0LL;
-      goal->goal_blocked_last_turn = -1LL;
-      goal->goal_blocked_attempts = 0;
       cai_session_goal_start_elapsed(runtime->session, now);
       event_data =
           control->kind == CAI_RUNTIME_GOAL_REPLACE ? "replaced" : "created";
@@ -3464,9 +3461,6 @@ cai_runtime_apply_goal_control(cai_agent_runtime *runtime,
     goal->goal_active_started_at = 0LL;
     goal->goal_created_at = 0LL;
     goal->goal_updated_at = 0LL;
-    goal->goal_turn_count = 0LL;
-    goal->goal_blocked_last_turn = -1LL;
-    goal->goal_blocked_attempts = 0;
     event_data = "cleared";
     rc = cai_session_add_internal_context_text(
         runtime->session,

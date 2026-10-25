@@ -33048,7 +33048,9 @@ static void test_goal_tools(test_state *state) {
              CAI_AGENT_IMPL(agent)->tools->run(
                  CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
                  "{\"status\":\"blocked\"}", sink, &error),
-             CAI_ERR_INVALID);
+             CAI_OK);
+  expect_substr(state, "goal_blocked_first_status", writer.buffer,
+                "\"status\":\"blocked\"");
   cai_error_cleanup(&error);
   cai_error_init(&error);
   expect_int(state, "goal_blocked_same_turn_rejected",
@@ -33057,17 +33059,13 @@ static void test_goal_tools(test_state *state) {
                  "{\"status\":\"blocked\"}", sink, &error),
              CAI_ERR_INVALID);
   expect_str(state, "goal_blocked_same_turn_error", error.message,
-             "blocked already assessed in this goal turn");
+             "only an active goal may be updated");
   cai_error_cleanup(&error);
   cai_error_init(&error);
   expect_int(state, "goal_blocked_steering_not_turn",
              cai_session_add_steering_text(
                  session, "steering is not a normal turn", &error),
              CAI_OK);
-  expect_int(state, "goal_blocked_steering_turn_unchanged",
-             CAI_SESSION_IMPL(session)->goal_turn_count, 0L);
-  expect_int(state, "goal_blocked_steering_attempts_unchanged",
-             CAI_SESSION_IMPL(session)->goal_blocked_attempts, 1L);
   expect_int(state, "goal_blocked_image_turn_one",
              cai_session_add_user_image_url(
                  session, "https://example.invalid/external-blocker.png", NULL,
@@ -33093,12 +33091,8 @@ static void test_goal_tools(test_state *state) {
              CAI_OK);
   if (read_source_text(state, "goal_blocked_state_read", state_source,
                        state_json, sizeof(state_json), &error)) {
-    expect_substr(state, "goal_blocked_state_attempts", state_json,
-                  "\"goal_blocked_attempts\":2");
-    expect_substr(state, "goal_blocked_state_turn", state_json,
-                  "\"goal_turn_count\":2");
-    expect_substr(state, "goal_blocked_state_last_turn", state_json,
-                  "\"goal_blocked_last_turn\":1");
+    expect_substr(state, "goal_blocked_state_status", state_json,
+                  "\"goal_status\":\"blocked\"");
     expect_substr(state, "goal_blocked_state_elapsed", state_json,
                   "\"goal_elapsed_seconds\":");
     memset(&source_callbacks, 0, sizeof(source_callbacks));
@@ -33130,12 +33124,13 @@ static void test_goal_tools(test_state *state) {
           state, "goal_blocked_resume_register",
           cai_agent_register_goal_tools(resumed_agent, resumed_session, &error),
           CAI_OK);
-      expect_int(state, "goal_blocked_resume_third",
+      expect_int(state, "goal_blocked_resume_get",
                  CAI_AGENT_IMPL(resumed_agent)
                      ->tools->run(CAI_AGENT_IMPL(resumed_agent)->tools,
-                                  CAI_GOAL_UPDATE_TOOL_NAME,
-                                  "{\"status\":\"blocked\"}", sink, &error),
+                                  CAI_GOAL_GET_TOOL_NAME, "{}", sink, &error),
                  CAI_OK);
+      expect_substr(state, "goal_blocked_resume_status", writer.buffer,
+                    "\"status\":\"blocked\"");
       expect_substr(state, "goal_blocked_resume_usage", writer.buffer,
                     "\"tokens_used\":19");
     }
@@ -33144,10 +33139,10 @@ static void test_goal_tools(test_state *state) {
   state_source = NULL;
   cai_source_close(resumed_state_source);
   resumed_state_source = NULL;
-  expect_int(state, "goal_blocked_third",
-             CAI_AGENT_IMPL(agent)->tools->run(
-                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
-                 "{\"status\":\"blocked\"}", sink, &error),
+  expect_int(state, "goal_blocked_get_after_inputs",
+             CAI_AGENT_IMPL(agent)->tools->run(CAI_AGENT_IMPL(agent)->tools,
+                                               CAI_GOAL_GET_TOOL_NAME, "{}",
+                                               sink, &error),
              CAI_OK);
   expect_int(state, "goal_blocked_immutable",
              CAI_AGENT_IMPL(agent)->tools->run(
@@ -51405,23 +51400,6 @@ static void test_session_state_validation(test_state *state) {
              CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
-  cai_source_close(source);
-  source = NULL;
-
-  reader.text = "{\"version\":1,\"goal_objective\":\"wait\","
-                "\"goal_status\":\"active\",\"goal_blocked_attempts\":2,"
-                "\"goal_turn_count\":0,\"goal_blocked_last_turn\":-1}";
-  reader.offset = 0U;
-  reader.closed = 0;
-  expect_int(state, "state_validation_goal_counter_source",
-             cai_source_from_callbacks(&source_callbacks, &source, &error),
-             CAI_OK);
-  expect_int(state, "state_validation_goal_counter_import",
-             cai_session_import_state_source(restored, source, &error), CAI_OK);
-  expect_int(state, "state_validation_goal_counter_reset",
-             CAI_SESSION_IMPL(restored)->goal_blocked_attempts, 0L);
-  expect_int(state, "state_validation_goal_counter_last_turn_reset",
-             CAI_SESSION_IMPL(restored)->goal_blocked_last_turn, -1L);
   cai_source_close(source);
   source = NULL;
 
