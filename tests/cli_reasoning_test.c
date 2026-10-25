@@ -332,7 +332,10 @@ static int test_output_failure(int operation) {
   } else {
     replay.type = "assistant_text_delta";
     replay.data = event.data;
-    rc = cli_replay_event(&state, &replay, NULL);
+    if (operation == 5)
+      state.options.replay_turns = -1L;
+    rc = operation == 9 ? cli_replay_render(&state, &replay, NULL)
+                        : cli_replay_event(&state, &replay, NULL);
   }
 cleanup:
   if (state.notice_renderer != NULL)
@@ -344,8 +347,8 @@ cleanup:
   close(pipe_fd[0]);
   if (pipe_fd[1] >= 0)
     close(pipe_fd[1]);
-  if (rc != CAI_ERR_TRANSPORT) {
-    fprintf(stderr, "output failure operation %d was not propagated: %d\n",
+  if (rc != (operation == 10 ? CAI_OK : CAI_ERR_TRANSPORT)) {
+    fprintf(stderr, "unexpected output result for operation %d: %d\n",
             operation, rc);
     return 1;
   }
@@ -627,7 +630,7 @@ int main(void) {
   struct timespec before = {400, 499999999L};
   struct timespec boundary = {400, 500000000L};
 
-  for (rc = 0; rc < 9; rc++)
+  for (rc = 0; rc < 11; rc++)
     if (test_output_failure(rc) != 0)
       return 1;
   if (test_goal_handoff() != 0 || test_shared_auth() != 0 ||

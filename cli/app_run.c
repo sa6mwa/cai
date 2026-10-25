@@ -146,6 +146,8 @@ typedef struct cli_state {
   int automation_done;
   int automation_failed;
   size_t goal_starts_pending;
+  int starting_goal;
+  size_t startup_goal_pending;
   size_t next_instruction;
   cai_chatgpt_quota quota;
   cai_cli_quota_refresh quota_refresh;
@@ -1195,6 +1197,9 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     state->review_report_length = event->data_length;
   }
   if (event->parent_tool_call_id == NULL) {
+    if (event->type == CAI_AGENT_EVENT_GOAL_CHANGED && state->starting_goal &&
+        state->startup_goal_pending > 0U)
+      state->startup_goal_pending--;
     if (state->batch && state->batch_pending_turns > 0U &&
         (event->type == CAI_AGENT_EVENT_RUN_COMPLETED ||
          event->type == CAI_AGENT_EVENT_RUN_FAILED ||
@@ -2411,6 +2416,8 @@ static int cli_goal_command(cli_state *state, const char *arg,
   }
   if (rc != CAI_OK)
     return rc;
+  if (state->starting_goal)
+    state->startup_goal_pending++;
   if (objective != NULL || strcmp(action, "resume") == 0)
     state->goal_starts_pending++;
   fields[0] = pslog_str("command", action);
@@ -2427,6 +2434,10 @@ static int cli_goal_command(cli_state *state, const char *arg,
   }
   state->automation_done = 0;
   state->automation_failed = 0;
+  /* Settle all startup goal controls before choosing the first prompt. A
+   * replacement here must not submit work alongside the startup prompt. */
+  if (state->starting_goal)
+    return CAI_OK;
   rc = cai_agent_runtime_state(state->runtime, &run_state, error);
   if (rc != CAI_OK)
     return rc;
@@ -3758,29 +3769,30 @@ static int cli_submit_automation(cli_state *state, const char *instruction,
 
 static int cli_start_goal(cli_state *state, const char *objective,
                           cai_error *error) {
-  cai_agent_goal_snapshot goal;
   int rc;
 
+  state->starting_goal = 1;
+  state->startup_goal_pending = 1U;
   rc = cai_agent_runtime_replace_goal(state->runtime, objective, error);
-  if (rc != CAI_OK)
-    return rc;
-  do {
+  while (rc == CAI_OK && state->startup_goal_pending > 0U) {
     rc = cli_pump(state, 100L, error);
     if (rc != CAI_OK)
-      return rc;
+      break;
     if (state->host_stopped)
-      return CAI_OK;
-    if (state->automation_failed)
-      return cai_cli_error(
-          error, CAI_ERR_TRANSPORT,
-          "goal could not be started; see the preceding error");
-    rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
-  } while (rc == CAI_OK &&
-           (!goal.has_goal || strcmp(goal.objective, objective) != 0));
+      break;
+    if (state->automation_failed) {
+      rc = cai_cli_error(error, CAI_ERR_TRANSPORT,
+                         "goal could not be started; see the preceding error");
+      break;
+    }
+  }
+  state->starting_goal = 0;
+  state->startup_goal_pending = 0U;
   return rc;
 }
 
 static int cli_start_automation(cli_state *state, cai_error *error) {
+  cai_agent_goal_snapshot goal;
   const char *objective;
   const char *instruction;
   int rc;
@@ -3800,6 +3812,14 @@ static int cli_start_automation(cli_state *state, cai_error *error) {
       return rc;
     if (state->exit_requested)
       return CAI_OK;
+    rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
+    if (rc != CAI_OK)
+      return rc;
+    /* Host controls may have cleared, paused or replaced the initial goal.
+     * Seed the settled goal, never the superseded startup objective. */
+    objective = goal.has_goal && strcmp(goal.status, "active") == 0
+                    ? goal.objective
+                    : NULL;
   }
   if (state->options.instruction_count > 0U) {
     instruction = cai_cli_instruction_at(&state->options, 0U);

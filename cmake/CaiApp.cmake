@@ -76,6 +76,16 @@ if(CAI_BUILD_TESTS)
   target_link_libraries(cai_app_controls_host PRIVATE cai_app_static)
   cai_configure_cli_target(cai_app_controls_host)
   target_compile_options(cai_app_controls_host PRIVATE -UNDEBUG)
+  add_executable(cai_app_startup_goal_test tests/app_startup_goal_test.c
+    tests/cli_storage_fixture.c)
+  target_link_options(cai_app_startup_goal_test PRIVATE "-Wl,--wrap=lc_client_open")
+  target_link_libraries(cai_app_startup_goal_test PRIVATE cai_app_static)
+  cai_configure_cli_target(cai_app_startup_goal_test)
+  target_compile_options(cai_app_startup_goal_test PRIVATE -UNDEBUG)
+  add_test(NAME cai_app_startup_goal COMMAND bash
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_startup_goal_test.sh"
+    "$<TARGET_FILE:cai_app_startup_goal_test>")
+  set_tests_properties(cai_app_startup_goal PROPERTIES LABELS "cli;local;offline" TIMEOUT 15)
   add_executable(cai_app_utility_stop_test tests/app_utility_stop_test.c tests/cli_storage_fixture.c)
   target_link_libraries(cai_app_utility_stop_test PRIVATE cai_app_static)
   cai_configure_cli_target(cai_app_utility_stop_test)
