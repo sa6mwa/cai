@@ -38,8 +38,8 @@ small choices prefer ancestors nearest the basename; character length has no
 weight. No hashes, invented qualifiers, abbreviations or shortened names are
 generated.
 
-For example, if `/lab` already owns `cai.lab`, `/home/mike/g/lab` receives
-`cai.g.lab`. If `/home/alice/g/lab` owns `cai.lab`, `/home/mike/g/lab` receives
+For example, if `/lab` already owns `cai.lab`, `/workspaces/mike/g/lab` receives
+`cai.g.lab`. If `/workspaces/alice/g/lab` owns `cai.lab`, `/workspaces/mike/g/lab` receives
 `cai.mike.lab`: the shared `g` provides no distinction. Existing names stay
 unchanged, so allocation depends on registration order.
 

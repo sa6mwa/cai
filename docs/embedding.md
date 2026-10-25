@@ -87,15 +87,15 @@ both accept `environment_prefix`, `namespace_prefix`, `queue_prefix`,
 `data_directory`, `history_directory`, `clipboard_directory`, `log_directory`,
 and `pouch_key_file`. Roots are independent: moving the config file does not
 implicitly move instructions or state. Child defaults follow their selected
-root. For example:
+root. For example, a host can supply its own resolved XDG paths:
 
 ```c
 config.program_name = "smith";
 config.invocation_name = "vectis -a smith --";
-config.config_file = "/home/mike/.config/vectis/cai.ini";
-config.config_directory = "/home/mike/.config/vectis";
-config.cache_directory = "/home/mike/.cache/vectis/cai";
-config.state_directory = "/home/mike/.local/state/vectis/cai";
+config.config_file = host_config_file;
+config.config_directory = host_config_directory;
+config.cache_directory = host_cache_directory;
+config.state_directory = host_state_directory;
 ```
 
 These fields seed defaults. Explicit INI values, environment, `settings`, and
