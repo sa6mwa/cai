@@ -475,6 +475,9 @@ independent contexts need a common destination. Liblockdc owns reconnect behavio
 
 `--temp` (or `settings = {ui = {temporary = true}}` in Lua) creates a private
 cache workspace and conversation store without rewriting the normal config.
+Relative forwarded input paths resolve against the original selected workspace
+before entering the temporary workspace; INI paths remain relative to the
+configuration file.
 Auth and messaging retain their selected stores. Teardown closes workers,
 clients and softline, restores the preceding working directory, and deletes
 private history, prompt history and managed cache data. The workspace deletion

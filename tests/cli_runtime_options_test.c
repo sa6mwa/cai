@@ -229,6 +229,84 @@ static int replay_settings(const char *path) {
   return failed;
 }
 
+static int retained_paths(const char *file, const char *workspace) {
+  static const char *const flags[] = {"--agents-md",        "--skills-dir",
+                                      "--model-metadata",   "--auth-json",
+                                      "--lockd-client-pem", "--chrome-socket"};
+  static const char *const values[] = {"policy.md",   "skills",
+                                       "models.json", "auth.json",
+                                       "client.pem",  "chrome.sock"};
+  const char **resolved[6];
+  cai_cli_options options;
+  cai_config *configuration = NULL;
+  cai_error error;
+  char original[4096], selected[4096], expected[8192];
+  char *args[17];
+  FILE *stream;
+  size_t i;
+  int rc, source, failed = 0;
+  if (getcwd(original, sizeof(original)) == NULL)
+    return 1;
+  args[0] = strdup("cai");
+  args[1] = strdup("--config");
+  args[2] = strdup(file);
+  args[3] = strdup("-C");
+  args[4] = strdup(workspace);
+  for (i = 0U; i < 6U; i++) {
+    args[5U + 2U * i] = strdup(flags[i]);
+    args[6U + 2U * i] = strdup(values[i]);
+  }
+  cai_error_init(&error);
+  for (source = 0; source < 2; source++) {
+    stream = fopen(file, "w");
+    if (stream == NULL)
+      break;
+    if (source == 1) {
+      fputs("[paths]\nagents_md=policy.md\nskills_dir=skills\n"
+            "model_metadata=models.json\nauth_json=auth.json\n"
+            "[store.default]\nclient_pem=client.pem\n"
+            "[chrome]\nsocket=chrome.sock\n",
+            stream);
+      free(args[4]);
+      args[4] = strdup(original);
+    }
+    if (fclose(stream) != 0)
+      break;
+    rc = cai_cli_configure(source == 0 ? 17 : 5, args, &options, &configuration,
+                           NULL, &error);
+    if (rc != 1 || getcwd(selected, sizeof(selected)) == NULL)
+      failed = 1;
+    else {
+      resolved[0] = &options.agents_md;
+      resolved[1] = &options.skills_dir;
+      resolved[2] = &options.model_metadata;
+      resolved[3] = &options.auth_json;
+      resolved[4] = &options.lockd_client_pem;
+      resolved[5] = &options.chrome_socket;
+      for (i = 0U; i < 6U; i++) {
+        snprintf(expected, sizeof(expected), "%s/%s",
+                 source == 0 ? selected : workspace, values[i]);
+        if (*resolved[i] == NULL || strcmp(*resolved[i], expected) != 0) {
+          fprintf(stderr, "%s lost its path origin (source=%d): %s\n", flags[i],
+                  source, *resolved[i] != NULL ? *resolved[i] : "(null)");
+          failed = 1;
+        }
+      }
+    }
+    cai_config_close(configuration);
+    configuration = NULL;
+  }
+  if (source != 2)
+    failed = 1;
+  if (chdir(original) != 0)
+    failed = 1;
+  cai_config_close(configuration);
+  cai_error_cleanup(&error);
+  for (i = 0U; i < 17U; i++)
+    free(args[i]);
+  return failed;
+}
+
 int main(int argc, char **argv) {
   static const char *const env[] = {"CAI_TODO",       "CAI_CHROME",
                                     "CAI_WEB_SEARCH", "CAI_SEARXNG",
@@ -271,6 +349,7 @@ int main(int argc, char **argv) {
   failed |= resolve(path, "--no-todo", 0);
   failed |= messaging_settings(path);
   failed |= replay_settings(path);
+  failed |= retained_paths(path, argv[1]);
   unlink(path);
   return failed != 0;
 }

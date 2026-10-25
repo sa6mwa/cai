@@ -187,13 +187,10 @@ static int absolute_path(char *out, size_t size, const char *path,
  * temporary path and repeated application runs have no global identity. */
 static int default_string(cai_config *cfg, const char *section, const char *key,
                           const char *value, const char **target, int document,
-                          cai_error *error) {
+                          int is_path, cai_error *error) {
   const char *resolved;
   char absolute[PATH_MAX];
-  int rc, is_path;
-  is_path =
-      strcmp(section, "paths") == 0 ||
-      (strcmp(section, "store.default") == 0 && strcmp(key, "key_file") == 0);
+  int rc;
   if (is_path) {
     if (value == NULL || value[0] == '\0')
       return fail(error, key, "path must not be empty");
@@ -236,6 +233,10 @@ static int application_defaults(cai_config *cfg, cai_cli_options *o,
   const char **children[8];
   const char *host_children[8];
   const char *parents[8];
+  const char **inputs[3];
+  static const char *const input_sections[] = {"paths", "store.default",
+                                               "chrome"};
+  static const char *const input_keys[] = {"auth_json", "client_pem", "socket"};
   static const char *const keys[] = {
       "history_dir", "clipboard_dir", "log_dir",    "pouch_key_file",
       "export_dir",  "agents_md",     "skills_dir", "model_metadata"};
@@ -268,7 +269,7 @@ static int application_defaults(cai_config *cfg, cai_cli_options *o,
         return rc;
       v = path;
     }
-    rc = default_string(cfg, "paths", root_keys[i], v, roots[i], document,
+    rc = default_string(cfg, "paths", root_keys[i], v, roots[i], document, 1,
                         error);
     if (rc != CAI_OK)
       return rc;
@@ -306,7 +307,7 @@ static int application_defaults(cai_config *cfg, cai_cli_options *o,
   for (i = 0U; i < 8U; i++) {
     const char *v = *children[i] != NULL ? *children[i] : host_children[i];
     /* Optional discovery retains its "missing is okay" semantics. */
-    if (!document && i >= 5U)
+    if (!document && i >= 5U && v == NULL)
       continue;
     if (v == NULL) {
       n = snprintf(path, sizeof(path), "%s%s", parents[i], suffixes[i]);
@@ -316,7 +317,21 @@ static int application_defaults(cai_config *cfg, cai_cli_options *o,
     }
     rc = default_string(cfg, i == 3U ? "store.default" : "paths",
                         i == 3U ? "key_file" : keys[i], v, children[i],
-                        document, error);
+                        document, 1, error);
+    if (rc != CAI_OK)
+      return rc;
+  }
+  /* Retained inputs must stay anchored here, before --temp changes cwd.
+   * INI paths are already config-relative absolutes; CLI paths use this
+   * selected workspace. Unset optional paths retain automatic discovery. */
+  inputs[0] = &o->auth_json;
+  inputs[1] = &o->lockd_client_pem;
+  inputs[2] = &o->chrome_socket;
+  for (i = 0U; !document && i < 3U; i++) {
+    if (*inputs[i] == NULL)
+      continue;
+    rc = default_string(cfg, input_sections[i], input_keys[i], *inputs[i],
+                        inputs[i], 0, 1, error);
     if (rc != CAI_OK)
       return rc;
   }
@@ -333,10 +348,10 @@ static int application_defaults(cai_config *cfg, cai_cli_options *o,
         error, NULL,
         "queue_prefix must be a single lowercase identifier (up to 32 bytes)");
   rc = default_string(cfg, "storage", "namespace_prefix", o->namespace_prefix,
-                      &o->namespace_prefix, document, error);
+                      &o->namespace_prefix, document, 0, error);
   if (rc == CAI_OK)
     rc = default_string(cfg, "messaging", "queue_prefix", o->queue_prefix,
-                        &o->queue_prefix, document, error);
+                        &o->queue_prefix, document, 0, error);
   if (rc != CAI_OK)
     return rc;
   namespaces[0] = &o->sessions_namespace;
@@ -358,7 +373,7 @@ static int application_defaults(cai_config *cfg, cai_cli_options *o,
                   "89._-") != strlen(v))
       return fail(error, NULL, "invalid storage namespace");
     rc = default_string(cfg, "storage", ns_keys[i], v, namespaces[i], document,
-                        error);
+                        0, error);
     if (rc != CAI_OK)
       return rc;
   }

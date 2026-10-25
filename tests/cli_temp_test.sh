@@ -32,6 +32,18 @@ INI
 cp "$config" "$root/config-original"
 base=("$cli" --config "$config" --no-terminal -C "$work")
 run --list; ok; cp "$root/stdout" "$root/list-before"
+mkdir -p "$work/input/skills/temp-input-skill"
+printf 'TEMP_RETAINED_AGENTS\n' >"$work/input/policy.md"
+printf '%s\n' '---' 'name: temp-input-skill' 'description: TEMP_RETAINED_SKILLS' '---' 'Skill body.' >"$work/input/skills/temp-input-skill/SKILL.md"
+printf '%s\n' '{"models":[]}' >"$work/input/models.json"
+for input_root in input "$work/input"; do
+  plan '{"plan":["INPUT PATHS READY"]}'
+  run --temp --force -ni 'check retained inputs' --agents-md "$input_root/policy.md" --skills-dir "$input_root/skills" --model-metadata "$input_root/models.json"; ok
+  tail -1 "$root/peer/requests.jsonl" >"$root/input-request"
+  contains "$root/input-request" TEMP_RETAINED_AGENTS
+  contains "$root/input-request" TEMP_RETAINED_SKILLS
+  cmp "$config" "$root/config-original"
+done
 temp_workspace() { jq -sr '[.[] | select(.event == "temp_workspace_opened") | .workspace] | last' "$root/stderr"; }
 write_plan() {
   plan '{"plan":[{"tool":"apply_patch","arguments":"*** Begin Patch\n*** Add File: kept.txt\n+TEMP CONTENT\n*** End Patch"},"TEMP DONE"]}'
@@ -137,9 +149,12 @@ mkdir -p "$HOME/.codex"
 printf '%s\n' '{"auth_mode":"chatgpt","tokens":{"id_token":"eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA0MTAyNDQ0ODAwfQ.sig","access_token":"eyJhbGciOiAibm9uZSJ9.eyJleHAiOiA0MTAyNDQ0ODAwfQ.sig","refresh_token":"fixture","account_id":"fixture"}}' >"$HOME/.codex/auth.json"
 export CAI_TEST_API_BASE_URL="$endpoint"
 cp "$root/message.key" "$root/message-key-before"
-for source in codex stored; do
+cp "$HOME/.codex/auth.json" "$work/input/auth.json"
+for source in relative codex stored; do
+  auth_flags=()
+  if [[ "$source" == relative ]]; then auth_flags=(--auth-json input/auth.json); fi
   plan '{"plan":["AUTH TEMP DONE"]}'
-  run --temp --yes -p chatgpt --auth-store messages -ni 'shared auth'; ok
+  run --temp --yes -p chatgpt --auth-store messages "${auth_flags[@]}" -ni 'shared auth'; ok
   [[ $(stdout_text) == 'AUTH TEMP DONE' ]]
   cmp "$root/message.key" "$root/message-key-before"
   if [[ "$source" == codex ]]; then rm "$HOME/.codex/auth.json"; fi

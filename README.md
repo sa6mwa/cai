@@ -447,8 +447,12 @@ configuration. Host-supplied raw banners are printed verbatim.
 `cache_dir/temp/chat-XXXXXX/workspace` directory. Its sibling `private/`
 contains the encrypted conversation pouch and key, prompt history, clipboard,
 exports, and app-owned logs. The normal global or explicit `--config` file is
-loaded unchanged; path isolation is applied only in memory. On normal teardown,
-workers and softline close first, and private history/state is deleted. The
+loaded unchanged; path isolation is applied only in memory. Relative CLI input
+paths (instructions, skills, model metadata, authentication, client PEM, and
+Chrome socket) resolve against the original workspace selected by `-C` before
+entering the temporary directory. INI paths remain relative to their config
+file. On normal teardown, workers and softline close first, and private
+history/state is deleted. The
 plain terminal question `Remove temporary workspace …? [y/N]` controls whether
 the workspace files are also deleted. No, empty input, EOF, interruption, host
 STOP, and non-interactive runs preserve the workspace and report its location.
