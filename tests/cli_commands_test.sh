@@ -60,5 +60,19 @@ for colors in yes no; do
   contains "$term/feed" '`code`'
   # Model identifiers are literal code, even when they contain Markdown.
   send '/model odd_`literal`**name**\r'; expect 'Model changed to odd_`literal`**name**'
-  terminal_close
+  if [[ "$colors" == yes ]]; then
+    plan '{"plan":["QUIT TEST DONE"]}'
+    prompt 'finish a turn before quitting' 'QUIT TEST DONE'
+  fi
+  # Both exit aliases replace the gray status message before releasing the
+  # editor, without adding a farewell to the conversation feed.
+  count=$(requests)
+  if [[ "$colors" == yes ]]; then command=/quit; else command=/exit; fi
+  terminal_close "$command"
+  [[ $(requests) == "$count" ]]
+  tail -c +$((send_offset+1)) "$term/text" >"$root/farewell"
+  contains "$root/farewell" '! Goodbye.'
+  absent "$root/farewell" 'Worked for'
+  tail -c +$((send_feed_offset+1)) "$term/feed" >"$root/farewell-feed"
+  absent "$root/farewell-feed" 'Goodbye.'
 done

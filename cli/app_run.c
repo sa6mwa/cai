@@ -817,15 +817,32 @@ static int cli_terminal_shell_ready(cli_state *state, cai_error *error) {
   return CAI_OK;
 }
 
-/* Key callbacks only guard submission. Terminal handoff runs in the owner
- * loop after next_prompt returns, outside every active editor callback. */
-static int cli_shell_editor_key(sl_t *sl, sl_key_t key, void *context,
-                                sl_key_action_t *action) {
+static int cli_goodbye(cli_state *state) {
+  if (!state->interactive)
+    return SL_OK;
+  if (sl_set_status_spinner(state->sl, 0) != SL_OK ||
+      sl_set_status_busy(state->sl, 0) != SL_OK ||
+      sl_set_status_message(state->sl, "Goodbye.") != SL_OK)
+    return SL_ERROR_IO;
+  state->was_busy = 0;
+  return SL_OK;
+}
+
+/* Render exit status before next_prompt releases the active editor. Terminal
+ * handoff still runs in the owner loop, outside every editor callback. */
+static int cli_editor_key(sl_t *sl, sl_key_t key, void *context,
+                          sl_key_action_t *action) {
   cli_state *state = context;
+  const char *text = sl_buffer(sl);
   cai_error error;
   int rc = SL_OK;
   *action = SL_KEY_ACTION_PASS;
-  if (sl_history_search_active(sl) || !cli_is_terminal_shell(sl_buffer(sl)))
+  if (sl_history_search_active(sl))
+    return SL_OK;
+  if ((key == SL_KEY_ENTER || key == SL_KEY_ALT_ENTER) &&
+      (strcmp(text, "/quit") == 0 || strcmp(text, "/exit") == 0))
+    return cli_goodbye(state);
+  if (!cli_is_terminal_shell(text))
     return SL_OK;
   cai_error_init(&error);
   if (key == SL_KEY_TAB || cli_terminal_shell_ready(state, &error) != CAI_OK) {
@@ -1305,6 +1322,8 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
   if (!state->interactive) {
     return CAI_OK;
   }
+  if (state->exit_requested)
+    return cli_goodbye(state) == SL_OK ? CAI_OK : CAI_ERR_TRANSPORT;
   rc = cai_agent_runtime_state(display_runtime, &run_state, error);
   if (rc != CAI_OK) {
     return rc;
@@ -4028,14 +4047,12 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     }
   }
   if (state.interactive) {
-    if (sl_bind_key(state.sl, SL_KEY_ENTER, cli_shell_editor_key, &state) !=
+    if (sl_bind_key(state.sl, SL_KEY_ENTER, cli_editor_key, &state) != SL_OK ||
+        sl_bind_key(state.sl, SL_KEY_ALT_ENTER, cli_editor_key, &state) !=
             SL_OK ||
-        sl_bind_key(state.sl, SL_KEY_ALT_ENTER, cli_shell_editor_key, &state) !=
-            SL_OK ||
-        sl_bind_key(state.sl, SL_KEY_TAB, cli_shell_editor_key, &state) !=
-            SL_OK) {
+        sl_bind_key(state.sl, SL_KEY_TAB, cli_editor_key, &state) != SL_OK) {
       cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
-                     "bind interactive shell submission guards");
+                     "bind interactive submission guards");
       goto cleanup;
     }
     state.timer_fd =

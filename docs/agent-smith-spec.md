@@ -407,6 +407,10 @@ blocks may alternate within one response without ending the turn or restarting
 the output stream. Quote colors and body styling follow libmdf's active theme;
 the default theme retains normal body text.
 
+Interactive `/quit` and `/exit` replace the gray message line with `Goodbye.`
+before the editor releases the terminal. The farewell stays in that status
+line, with no farewell added to the conversation feed.
+
 `RESPONSE_COMPLETED` marks the end of every successfully streamed and
 persisted model response, including responses that request local tools before
 the automatic continuation. It is distinct from `RUN_COMPLETED`: a run can

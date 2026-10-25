@@ -5,11 +5,13 @@
 #define _XOPEN_SOURCE 700
 #include <cai/agent_runtime.h>
 #include <softline/softline.h>
+#include <stdio.h>
 #include <string.h>
 
 static cai_agent_runtime_metrics fixture_metrics;
 static cai_agent_run_state fixture_state;
 static int busy_calls, spinner_calls, busy_value, spinner_value;
+static char status_message[640];
 
 static int fixture_get_state(cai_agent_runtime *runtime,
                              cai_agent_run_state *out, cai_error *error) {
@@ -64,6 +66,10 @@ static int fixture_spinner(sl_t *sl, int value) {
   spinner_value = value;
   return sl_set_status_spinner(sl, value);
 }
+static int fixture_message(sl_t *sl, const char *value) {
+  snprintf(status_message, sizeof(status_message), "%s", value);
+  return sl_set_status_message(sl, value);
+}
 #define cai_agent_runtime_state fixture_get_state
 #define cai_agent_runtime_get_metrics fixture_get_metrics
 #define cai_agent_runtime_get_settings fixture_get_settings
@@ -71,6 +77,7 @@ static int fixture_spinner(sl_t *sl, int value) {
 #define cai_agent_runtime_get_goal fixture_get_goal
 #define sl_set_status_busy fixture_busy
 #define sl_set_status_spinner fixture_spinner
+#define sl_set_status_message fixture_message
 #include "../cli/app_run.c"
 
 int main(void) {
@@ -113,6 +120,15 @@ int main(void) {
           busy_value != 0 || spinner_value != 0)
         failed = 1;
   }
+  /* The owner loop publishes once more after handling /quit. It must retain
+   * the goodbye rather than restore the welcome, reasoning or worked text. */
+  state.exit_requested = 1;
+  state.show_welcome = 1;
+  fixture_metrics.turn_active = 1;
+  fixture_state = CAI_AGENT_SAMPLING;
+  if (cli_sync_status(&state, &error) != CAI_OK || busy_value ||
+      spinner_value || strcmp(status_message, "Goodbye.") != 0)
+    failed = 1;
   sl_destroy(state.sl);
   cai_error_cleanup(&error);
   if (failed)

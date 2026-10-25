@@ -113,7 +113,7 @@ expect_turn() { wait_for turn_finished "$1" "$2" "${send_feed_offset:-0}"; }
 prompt() { local offset=$(wc -c <"$term/text"); send "$1\r"; expect_turn "$offset" "$2"; }
 resize() { printf '%s\n' "$1" >"$term/width"; kill -USR1 "$terminal_pid"; }
 terminal_close() {
-  send '\025/quit\r'
+  send "\025${1:-/quit}\r"
   wait_for test -s "$term/status"
   wait "$terminal_pid" || fail 'Terminal CLI failed'
   terminal_pid=
