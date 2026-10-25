@@ -389,7 +389,15 @@ static int application_defaults(cai_config *cfg, cai_cli_options *o,
   if (!document) {
     const char *v = cfg->get(cfg, "chrome", "socket_directory");
     if (v == NULL || v[0] == '\0') {
-      n = snprintf(path, sizeof(path), "%s/chrome", o->cache_dir);
+      const char *runtime = getenv("XDG_RUNTIME_DIR");
+      if (runtime != NULL && runtime[0] != '\0') {
+        if (runtime[0] != '/')
+          return fail(error, "XDG_RUNTIME_DIR",
+                      "Chrome requires an absolute runtime directory");
+        n = snprintf(path, sizeof(path), "%s/%s/chrome", runtime,
+                     o->program_name);
+      } else
+        n = snprintf(path, sizeof(path), "%s/chrome", o->cache_dir);
       if (n < 0 || (size_t)n >= sizeof(path))
         return fail(error, NULL, "Chrome path too long");
       if (cfg->set(cfg, "chrome", "socket_directory", path, error) != CAI_OK)

@@ -76,7 +76,7 @@ With `program_name = "smith"`, automatic defaults are:
 | Pouch / encryption key / prompt history | `state_directory/pouch`, `pouch.key`, `history` |
 | Clipboard / interactive logs | `cache_directory/clipboard`, `cache_directory` |
 | Exports | `data_directory/exports` |
-| Chrome sockets | `cache_directory/chrome` |
+| Chrome sockets | `$XDG_RUNTIME_DIR/smith/chrome` when set; otherwise `cache_directory/chrome` |
 | Storage namespaces | `smith.sessions`, `smith.scopes`, `smith.auth`, `smith.todo`, `smith.messages` |
 | Automatic mailbox / receipt prefix | `smith` |
 | MCP client name / default agent identity | `smith` |

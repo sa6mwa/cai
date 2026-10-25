@@ -63,6 +63,10 @@ host. Sent operations are never automatically retried.
 Each Chrome extension connection creates a private socket named `<pid>.sock`
 in `$XDG_RUNTIME_DIR/cai/chrome`, falling back to
 `${XDG_CACHE_HOME:-$HOME/.cache}/cai/chrome` when the runtime directory is unset.
+Embedding applications replace `cai` with their `program_name`; their configured
+cache directory supplies the fallback. `[chrome] socket_directory` overrides
+both locations. Default CAI applications and default SDK clients share the same
+discovery directory.
 Directories and sockets are private to the current user. Discovery ignores
 stale sockets and requires exactly one live endpoint; with multiple Chrome
 instances use `cai --chrome-socket /absolute/path/to/<pid>.sock`. This also

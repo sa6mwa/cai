@@ -307,6 +307,84 @@ static int retained_paths(const char *file, const char *workspace) {
   return failed;
 }
 
+static int chrome_directory_settings(const char *file, const char *workspace) {
+  static char program[] = "cai", config_flag[] = "--config", list[] = "--list";
+  static const char *const names[] = {"cai", "smith"};
+  char *args[4];
+  const char *runtime = getenv("XDG_RUNTIME_DIR");
+  char *saved = runtime != NULL ? strdup(runtime) : NULL;
+  char directory[4096], expected[8192];
+  cai_app_config app;
+  cai_cli_options options;
+  cai_config *cfg;
+  cai_error error;
+  FILE *stream;
+  size_t name;
+  int mode, rc, failed = 0;
+  args[0] = program;
+  args[1] = config_flag;
+  args[2] = strdup(file);
+  args[3] = list;
+  snprintf(directory, sizeof(directory), "%s/runtime", workspace);
+  for (name = 0U; name < 2U; name++) {
+    memset(&app, 0, sizeof(app));
+    app.program_name = names[name];
+    for (mode = 0; mode < 6; mode++) {
+      stream = fopen(file, "w");
+      if (stream == NULL) {
+        failed = 1;
+        break;
+      }
+      if (mode >= 4)
+        fputs("[chrome]\nsocket_directory = override\n", stream);
+      if (fclose(stream) != 0) {
+        failed = 1;
+        break;
+      }
+      if (mode == 0)
+        unsetenv("XDG_RUNTIME_DIR");
+      else
+        setenv("XDG_RUNTIME_DIR",
+               mode == 1                ? ""
+               : mode == 3 || mode == 5 ? "relative"
+                                        : directory,
+               1);
+      cfg = NULL;
+      cai_error_init(&error);
+      rc = cai_cli_configure(4, args, &options, &cfg, &app, &error);
+      if (mode == 3) {
+        if (rc != -1 || error.message == NULL)
+          failed = 1;
+      } else if (rc != 1)
+        failed = 1;
+      else {
+        if (mode >= 4)
+          snprintf(expected, sizeof(expected), "%s/override", workspace);
+        else if (mode == 2)
+          snprintf(expected, sizeof(expected), "%s/%s/chrome", directory,
+                   names[name]);
+        else
+          snprintf(expected, sizeof(expected), "%s/chrome", options.cache_dir);
+        if (strcmp(cfg->get(cfg, "chrome", "socket_directory"), expected) !=
+            0) {
+          fprintf(stderr, "Chrome directory mismatch: name=%s mode=%d\n",
+                  names[name], mode);
+          failed = 1;
+        }
+      }
+      cai_config_close(cfg);
+      cai_error_cleanup(&error);
+    }
+  }
+  if (saved != NULL)
+    setenv("XDG_RUNTIME_DIR", saved, 1);
+  else
+    unsetenv("XDG_RUNTIME_DIR");
+  free(saved);
+  free(args[2]);
+  return failed;
+}
+
 int main(int argc, char **argv) {
   static const char *const env[] = {"CAI_TODO",       "CAI_CHROME",
                                     "CAI_WEB_SEARCH", "CAI_SEARXNG",
@@ -350,6 +428,7 @@ int main(int argc, char **argv) {
   failed |= messaging_settings(path);
   failed |= replay_settings(path);
   failed |= retained_paths(path, argv[1]);
+  failed |= chrome_directory_settings(path, argv[1]);
   unlink(path);
   return failed != 0;
 }

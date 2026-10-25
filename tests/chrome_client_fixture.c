@@ -111,12 +111,14 @@ int main(int argc, char **argv) {
   cai_error_init(&error);
   if (strcmp(argv[2], "discover") == 0)
     config.socket_directory = argv[1];
-  else
+  else if (strcmp(argv[2], "default") != 0)
     config.socket_path = argv[1];
   config.timeout_ms = 400L;
   if (strcmp(argv[2], "limit") == 0)
     config.max_response_bytes = 200U;
-  rc = cai_chrome_open(&config, &chrome, &error);
+  rc = strcmp(argv[2], "default") == 0
+           ? cai_chrome_open_lazy(&config, &chrome, &error)
+           : cai_chrome_open(&config, &chrome, &error);
   if (rc == CAI_OK && argc > 4 && strncmp(argv[2], "runtime-", 8U) == 0)
     rc = run_runtime(chrome, argv[3], argv[4], argv[2], &error);
   else if (rc == CAI_OK && argc > 3) {

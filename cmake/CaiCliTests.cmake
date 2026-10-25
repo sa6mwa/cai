@@ -131,7 +131,7 @@
     add_test(NAME cai_cli_chrome
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/chrome_test.sh"
         cli "$<TARGET_FILE:cai_cli_mock_fixture>" "${CMAKE_CURRENT_BINARY_DIR}"
-        "$<TARGET_FILE:cai_cli_startup_fixture>")
+        "$<TARGET_FILE:cai_chrome_client_fixture>")
     set_tests_properties(cai_cli_chrome PROPERTIES LABELS "integration;local;offline" TIMEOUT 90)
 
     add_executable(cai_cli_shell_fixture tests/cli_shell_fixture.c)
@@ -408,7 +408,7 @@
     get_property(_cai_cli_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
     list(FILTER _cai_cli_targets INCLUDE REGEX "^cai_cli($|_)|^cai_terminal_peer$")
     add_custom_target(cai_cli_tests DEPENDS ${_cai_cli_targets})
-    add_dependencies(cai_cli_tests cai_app_test cai_app_status_test cai_app_host cai_app_controls_host cai_app_startup_goal_test cai_app_utility_stop_test cai_kanban_test)
+    add_dependencies(cai_cli_tests cai_app_test cai_app_status_test cai_app_host cai_app_controls_host cai_app_startup_goal_test cai_app_utility_stop_test cai_kanban_test cai_chrome_client_fixture)
     add_test(NAME cai_cli_kanban COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_kanban_test.sh"
       "$<TARGET_FILE:cai_cli_mock_fixture>")

@@ -70,7 +70,7 @@ if [[ "$mode" == host || "$mode" == cli ]]; then
   # Bash owns host execution. The extension fixture only responds on stdio.
   mkfifo "$chrome/host-input" "$chrome/extension-input"
   exec 8<>"$chrome/host-input" 9<>"$chrome/extension-input"
-  "$cli" chrome-extension://hehggadaopoacecdllhhajmbjkdcmajg/ <"$chrome/host-input" >"$chrome/extension-input" 2>"$chrome/host-stderr" 8>&- 9>&- & host_pid=$!
+  LOG_LEVEL=info "$cli" chrome-extension://hehggadaopoacecdllhhajmbjkdcmajg/ <"$chrome/host-input" >"$chrome/extension-input" 2>"$chrome/host-stderr" 8>&- 9>&- & host_pid=$!
   "${CAI_TEST_PYTHON:-python3}" "$support/fixtures/chrome_peer.py" extension "$chrome" <"$chrome/extension-input" >"$chrome/host-input" 8>&- 9>&- & extension_pid=$!
   if [[ "$mode" == host ]]; then
     # A compiled host-only fixture follows the same entry point.
@@ -81,10 +81,16 @@ if [[ "$mode" == host || "$mode" == cli ]]; then
     contains "$root/stdout" Fixture
     jq -se '.[0].method == "getInfo" and any(.[]; .method == "getUserTabs")' "$chrome/calls.jsonl" >/dev/null
   else
+    # Readiness is independent of the directory under test. SDK discovery
+    # must find the application's host without an explicit path override.
+    wait_for has "$chrome/host-stderr" 'CAI Chrome native host ready'
+    client=${2:?compiled Chrome client fixture}
+    "$client" "$root" default >"$root/stdout" 2>"$root/stderr"
+    contains "$root/stdout" Fixture
     plan '{"plan":[{"tool":"chrome","arguments":{"action":"open","url":"https://example.test/"}},{"tool":"chrome","arguments":{"action":"screenshot","tab_id":7}},{"tool":"chrome","arguments":{"action":"keep","tab_id":7}},"Chrome final response"]}'
     run -Nni 'Inspect the browser' --chrome; ok
     [[ $(stdout_text) == 'Chrome final response' ]]
-    jq -se '[.[].method] == ["getInfo","createTab","attach","executeCdp","executeCdp","markTab","turnEnded"]' "$chrome/calls.jsonl" >/dev/null
+    jq -se '[.[].method] == ["getInfo","getUserTabs","getInfo","createTab","attach","executeCdp","executeCdp","markTab","turnEnded"]' "$chrome/calls.jsonl" >/dev/null
     sed -n '3p' "$root/peer/requests.jsonl" >"$root/image-request"; contains "$root/image-request" 'data:image/png;base64,'
     sed -n '4p' "$root/peer/requests.jsonl" >"$root/durable-request"; absent "$root/durable-request" 'data:image/png;base64,'
   fi
