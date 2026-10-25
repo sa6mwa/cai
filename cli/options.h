@@ -15,6 +15,8 @@ typedef struct cai_cli_options {
   const char *state_dir, *cache_dir, *data_dir, *history_dir;
   const char *clipboard_dir, *log_dir, *pouch_key_file;
   int help, version;
+  int list_themes;
+  const char *theme;
   const char *provider;
   const char *config_file;
   int no_config;

@@ -49,6 +49,7 @@ void cai_cli_options_init(cai_cli_options *options) {
   options->high_reasoning_effort = "high";
   options->reasoning_summary = "concise";
   options->todo_layout = "board";
+  options->theme = "default";
   options->image_generation = 1;
   options->terminal = 1;
   options->shell_context = 1;
@@ -219,7 +220,8 @@ int cai_cli_read_options(int argc, char *const *argv,
           options->verbosity++;
         else if (flag[j] == 'l')
           options->list = 1;
-        else if (flag[j + 1U] == '\0' && (flag[j] == 'i' || flag[j] == 'g')) {
+        else if (flag[j + 1U] == '\0' &&
+                 (flag[j] == 'i' || flag[j] == 'g' || flag[j] == 't')) {
           short_flag[0] = '-';
           short_flag[1] = flag[j];
           short_flag[2] = '\0';
@@ -240,6 +242,10 @@ int cai_cli_read_options(int argc, char *const *argv,
     }
     if (strcmp(flag, "--version") == 0) {
       options->version = 1;
+      return 0;
+    }
+    if (strcmp(flag, "--list-themes") == 0) {
+      options->list_themes = 1;
       return 0;
     }
     if (strcmp(flag, "-N") == 0 || strcmp(flag, "--new") == 0) {
@@ -320,7 +326,9 @@ int cai_cli_read_options(int argc, char *const *argv,
       options->instruction_count++;
       continue;
     }
-    if (strcmp(flag, "--resume") == 0)
+    if (strcmp(flag, "-t") == 0 || strcmp(flag, "--theme") == 0)
+      field = &options->theme;
+    else if (strcmp(flag, "--resume") == 0)
       field = &options->resume_id;
     else if (strcmp(flag, "--export") == 0)
       field = &options->export_id;
@@ -711,7 +719,8 @@ const char *cai_cli_instruction_at(const cai_cli_options *options,
         strcmp(flag, "--goal") == 0 || strcmp(flag, "--base") == 0 ||
         strcmp(flag, "-o") == 0 || strcmp(flag, "--out") == 0 ||
         strcmp(flag, "-T") == 0 || strcmp(flag, "--output-type") == 0 ||
-        strcmp(flag, "--tool-output") == 0 || strcmp(flag, "-p") == 0 ||
+        strcmp(flag, "--tool-output") == 0 || strcmp(flag, "-t") == 0 ||
+        strcmp(flag, "--theme") == 0 || strcmp(flag, "-p") == 0 ||
         strcmp(flag, "--provider") == 0 || strcmp(flag, "--endpoint") == 0 ||
         strcmp(flag, "--api-key-env") == 0 ||
         strcmp(flag, "--model-metadata") == 0 || strcmp(flag, "-C") == 0 ||

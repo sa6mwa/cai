@@ -20,6 +20,7 @@
 #include "shell.h"
 #include "skills.h"
 #include "status.h"
+#include "theme.h"
 #include "todo.h"
 #include <cai/chrome.h>
 #include <locale.h>
@@ -75,6 +76,7 @@ typedef struct cli_state {
   int host_stopped;
   size_t batch_pending_turns;
   cai_cli_options options;
+  cai_cli_theme theme;
   char *normal_reasoning_override, *high_reasoning_override;
   cai_config *configuration;
   cai_agent_session_store store;
@@ -358,7 +360,8 @@ static int cli_notice_sink(void *context, const char *bytes, size_t count) {
         ch != '\n' && ch != '\r') {
       const char *prefix =
           state->notice_first_row ? (state->command_input ? "$ " : "* ") : "  ";
-      if (state->interactive && getenv("NO_COLOR") == NULL) {
+      if (state->interactive && !state->theme.ascii &&
+          getenv("NO_COLOR") == NULL) {
         if (state->command_input) {
           prefix = !state->notice_first_row
                        ? "\033[38;2;215;160;95m  "
@@ -424,7 +427,8 @@ static int cli_tool_display_init(cli_state *state, cai_error *error) {
                         strcmp(state->options.tool_output, "full") == 0
                     ? CAI_TOOL_OUTPUT_FULL
                     : CAI_TOOL_OUTPUT_COMPACT;
-  config.color = state->interactive && getenv("NO_COLOR") == NULL;
+  config.color =
+      state->interactive && !state->theme.ascii && getenv("NO_COLOR") == NULL;
   config.begin_block = cli_tool_begin_block;
   config.begin_block_context = state;
   rc = cai_tool_display_new(&config, &state->tool_display, error);
@@ -535,6 +539,7 @@ static int cli_introduction(cli_state *state, const cai_app_config *config) {
       config->introduction_markdown[0] == '\0')
     return 0;
   mdf_options_init(&options);
+  cai_cli_theme_markdown(&state->theme, &options);
   options.output_fd = STDOUT_FILENO;
   if (getenv("NO_COLOR") != NULL)
     options.ansi_mode = MDF_ANSI_OFF;
@@ -643,7 +648,7 @@ static int cli_flush_command(cli_state *state, int ok) {
   rc = cai_cli_literal_render(state->notice_renderer, text);
   state->notice_open = 0;
   state->command_input = 0;
-  if (state->interactive && getenv("NO_COLOR") == NULL &&
+  if (state->interactive && !state->theme.ascii && getenv("NO_COLOR") == NULL &&
       cli_sink(state, "\033[0m", 4U) != 0)
     rc = -1;
   while (rc == 0 && state->feed_breaks < 2)
@@ -3824,6 +3829,13 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   }
   parsed = cai_cli_configure(argc, argv, &state.options, &state.configuration,
                              application, &error);
+  if (parsed > 0) {
+    const char *reason = cai_cli_theme_parse(state.options.theme, &state.theme);
+    if (reason != NULL) {
+      cai_cli_error(&error, CAI_ERR_INVALID, reason);
+      parsed = -1;
+    }
+  }
   if (parsed <= 0) {
     if (parsed < 0 &&
         cai_cli_log_open_with_logger(
@@ -3999,6 +4011,8 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
       goto cleanup;
     }
     sl_config_init(&prompt_config);
+    prompt_config.prompt_theme =
+        getenv("NO_COLOR") != NULL ? SL_PROMPT_THEME_PLAIN : state.theme.prompt;
     prompt_config.prompt_queue = 1;
     prompt_config.line_max_len = 65536U + 512U;
     prompt_config.history_max_len = 1000;
@@ -4014,6 +4028,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   }
   state.width = cli_render_width();
   mdf_options_init(&mdf_config);
+  cai_cli_theme_markdown(&state.theme, &mdf_config);
   mdf_config.output_fd = STDOUT_FILENO;
   if (getenv("NO_COLOR") != NULL)
     mdf_config.ansi_mode = MDF_ANSI_OFF;

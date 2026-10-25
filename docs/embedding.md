@@ -166,6 +166,18 @@ hook. It is not inherited by child agents and is rejected in isolated review,
 matching the core runtime's extension policy.
 Precedence is defaults, file/environment, explicit settings, then arguments.
 Environment entries retain the normal `config_env_has_precedence` policy.
+Prompt and Markdown themes use the application setting `ui.theme` (default
+`default`). For example, pass `{"ui", "theme", "synthwave"}` in the C
+`config.settings` array, or `settings = {ui = {theme = "synthwave"}}` in Lua.
+Aliases select paired softline/libmdf themes; `riced:iosvkem` selects them
+independently. The same setting accepts `--theme` / `-t`, `CAI_THEME` (rebased
+to the host's environment prefix), and `[ui] theme` in INI. `--list-themes`
+lists both libraries' themes before configuration, authentication or storage
+startup. See the [pairing table](../README.md) for aliases. `plain:ascii`
+disables Markdown ANSI styling while preserving UTF-8. `NO_COLOR` overrides
+the selection with the plain prompt and escape-free Markdown. Themes apply
+to the Markdown introduction and conversation feed; raw banners stay verbatim
+and logger configuration remains independent.
 `[paths]`, `[storage]`, and `[env]` XDG variables provide host path overrides.
 Configuration strings/settings are copied by open. Logger ownership stays with
 the host until close; CAI neither closes nor reconfigures a supplied logger.

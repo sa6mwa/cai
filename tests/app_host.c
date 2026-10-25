@@ -47,7 +47,7 @@ static int register_host_tools(void *context, cai_agent *agent,
 }
 int main(int argc, char **argv) {
   cai_app_config config;
-  cai_app_setting setting;
+  cai_app_setting settings[2];
   cai_app *app = NULL;
   cai_error error;
   pslog_config logging;
@@ -103,12 +103,16 @@ int main(int argc, char **argv) {
     config.logger = logger;
   }
   if (getenv("CAI_TEST_APP_MODEL") != NULL) {
-    setting.section = "agent";
-    setting.key = "model";
-    setting.value = getenv("CAI_TEST_APP_MODEL");
-    config.settings = &setting;
-    config.setting_count = 1U;
+    settings[config.setting_count].section = "agent";
+    settings[config.setting_count].key = "model";
+    settings[config.setting_count++].value = getenv("CAI_TEST_APP_MODEL");
   }
+  if (getenv("CAI_TEST_APP_THEME") != NULL) {
+    settings[config.setting_count].section = "ui";
+    settings[config.setting_count].key = "theme";
+    settings[config.setting_count++].value = getenv("CAI_TEST_APP_THEME");
+  }
+  config.settings = settings;
   cai_error_init(&error);
   rc = cai_app_open(&config, &app, &error);
   config.register_agent_tools = NULL;

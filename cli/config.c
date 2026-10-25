@@ -2,6 +2,7 @@
 #include "config.h"
 #include "app_internal.h"
 #include "identity.h"
+#include "theme.h"
 #include <cai/models.h>
 #include <cai/version.h>
 #include <errno.h>
@@ -112,6 +113,10 @@ static const cli_field fields[] = {
       "explicit values are lockd endpoint URLs."),
     B("ui", "shell_context", shell_context,
       "Share sanitized !COMMAND output; /shell and !sh always stay local."),
+    S("ui", "theme", theme, 0U,
+      "Softline theme alias or SOFTLINE:LIBMDF. Use --list-themes for names "
+      "and default pairings. plain selects plain:ascii (non-colored "
+      "Markdown)."),
     {"ui", "todo_layout", offsetof(cai_cli_options, todo_layout),
      CAI_CONFIG_STRING, 0U, "board|list",
      "Kanban presentation; board groups cards by column with titles capped at "
@@ -436,6 +441,8 @@ int cai_cli_app_schema(cai_config **out, cai_error *error) {
   if (rc == CAI_OK)
     rc = cai_config_set_default(*out, "ui", "tool_output", "compact", error);
   if (rc == CAI_OK)
+    rc = cai_config_set_default(*out, "ui", "theme", defaults.theme, error);
+  if (rc == CAI_OK)
     rc = cai_config_set_default(*out, "messaging", "ack_timeout_ms", "300000",
                                 error);
   return rc == CAI_OK ? 1 : -1;
@@ -522,6 +529,7 @@ static int tool_environment(cai_config *cfg, const char *prefix,
   {
     static const char *const aliases[][3] = {
         {"MODEL", "agent", "model"},
+        {"THEME", "ui", "theme"},
         {"PROVIDER", "client", "provider"},
         {"REASONING_EFFORT", "agent", "reasoning_effort"},
         {"API_KEY_ENV", "client", "api_key_env"},
@@ -645,6 +653,14 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
                  : -1;
     if (early.version)
       puts(CAI_VERSION_STRING);
+    if (early.list_themes) {
+      cai_sink *sink = NULL;
+      int written = cai_sink_stdout(&sink, error);
+      if (written == CAI_OK)
+        written = cai_cli_theme_list(sink, error);
+      cai_sink_close(sink);
+      return written == CAI_OK ? 0 : -1;
+    }
     return rc;
   }
   if (application != NULL) {
@@ -840,5 +856,11 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
     return -1;
   if (cai_cli_validate_options(options) < 0)
     return -1;
+  {
+    cai_cli_theme theme;
+    const char *reason = cai_cli_theme_parse(options->theme, &theme);
+    if (reason != NULL)
+      return fail(error, options->theme, reason);
+  }
   return 1;
 }

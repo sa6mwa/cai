@@ -410,6 +410,35 @@ summary arrives, the bar says
 252243`, where the final six digits are the local day, hour, and minute.
 The live timer advances while the turn is active and stops when it settles.
 
+Theme selection belongs to `libcai_app`, including its C and Lua embedders.
+`cai --list-themes` lists softline themes, their default libmdf pairings, and
+all available libmdf themes without opening a session. `--theme` / `-t` accepts
+an alias or an explicit `SOFTLINE:LIBMDF` pair:
+
+| Alias | Pair |
+| --- | --- |
+| `default` | `default:default` |
+| `synthwave` | `synthwave:synthwave-84` |
+| `plain` | `plain:ascii` |
+| `accent` | `accent:night-owl` |
+| `dracula` | `dracula:dracula` |
+| `gruvbox` | `gruvbox:gruvbox` |
+| `monochrome` | `monochrome:horizon` |
+| `monogreen` | `monogreen:everforest` |
+| `outrun` | `outrun:outrun-electric` |
+| `riced` | `riced:catppuccin-mocha` |
+
+For example, `cai -t synthwave` selects its pairing; `cai -t riced:iosvkem`
+mixes the two libraries' themes. Names are case-insensitive. The startup default
+is `default:default`. Set `CAI_THEME` or `[ui] theme = "synthwave"` in
+`config.ini`; argv overrides both. Embedders use the same `ui.theme` setting,
+and their configured environment prefix replaces `CAI_`.
+`ascii` is a libmdf output mode, not a theme: it disables Markdown ANSI styling
+while retaining UTF-8 text. `NO_COLOR` selects the plain prompt and disables
+Markdown styling regardless of the selected theme. The gray reasoning message
+remains plain text styled by softline, and pslog retains its separate `LOG_`
+configuration. Host-supplied raw banners are printed verbatim.
+
 Berget uses its OpenAI-compatible Chat Completions endpoint. The CLI streams
 text, image URLs, and function tools, including `apply_patch` and MCP tools,
 through libcai's normal agent and session runtime. It resumes conversations

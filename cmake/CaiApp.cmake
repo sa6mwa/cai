@@ -123,6 +123,11 @@ if(CAI_BUILD_TESTS)
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_goal_pursuit_test.sh"
       "$<TARGET_FILE:cai_app_host>" responses batch basic)
     set_tests_properties(cai_app_goal_pursuit PROPERTIES LABELS "cli;local;offline" TIMEOUT 15)
+    add_test(NAME cai_app_themes COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_themes_test.sh"
+      "$<TARGET_FILE:cai_app_host>" host)
+    set_tests_properties(cai_app_themes PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
+      ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
   endif()
   if(TARGET cai_app_shared)
     add_test(NAME cai_app_exports COMMAND bash

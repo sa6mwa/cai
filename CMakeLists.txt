@@ -891,7 +891,7 @@ if(CAI_BUILD_APP)
   # Compile them once per configuration; keep fixture substitutions in main.
   add_library(cai_cli_support OBJECT cli/identity.c cli/app_control.c cli/options.c cli/help.c cli/config.c cli/runtime_options.c cli/mcp.c cli/skills.c cli/status.c cli/reasoning.c cli/literal.c cli/shell.c cli/login.c
     cli/review_report.c cli/pouch.c cli/pouch_stream.c cli/quota_refresh.c cli/session_commands.c
-    cli/log.c cli/response.c cli/messages.c cli/message_names.c cli/todo.c)
+    cli/log.c cli/response.c cli/messages.c cli/message_names.c cli/todo.c cli/theme.c)
   target_link_libraries(cai_cli_support PUBLIC cai_static
     softline::softline_static libmdf::mdf_static lockdc::static)
   cai_configure_c_target(cai_cli_support)
@@ -1072,6 +1072,11 @@ if(CAI_BUILD_LUA)
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_goal_pursuit_test.sh"
           "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host" responses interactive basic)
         set_tests_properties(cai_app_lua_goal_pursuit PROPERTIES LABELS "cli;local;offline" TIMEOUT 30
+          ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
+        add_test(NAME cai_app_lua_themes COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_themes_test.sh"
+          "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host" host)
+        set_tests_properties(cai_app_lua_themes PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
           ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
         add_test(NAME cai_app_lua_startup_text COMMAND bash
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_startup_text_test.sh"

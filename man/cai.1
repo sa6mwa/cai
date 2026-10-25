@@ -28,6 +28,23 @@ Use
 to start a new session.
 .SH OPTIONS
 .TP
+.B \-\-list-themes
+List softline themes and their default pairings, then all libmdf themes.
+Exits before configuration, authentication or storage startup.
+.TP
+.BR \-t , " " \-\-theme " " NAME|SOFTLINE:LIBMDF
+Select a paired theme or choose the prompt and Markdown themes independently.
+Names are case-insensitive. Default: default:default.
+Aliases are synthwave:synthwave-84, plain:ascii, accent:night-owl,
+dracula:dracula, gruvbox:gruvbox, monochrome:horizon, monogreen:everforest,
+outrun:outrun-electric, riced:catppuccin-mocha, and default:default.
+For example, -t synthwave selects its pair, while -t riced:iosvkem mixes themes.
+Also configurable through CAI_THEME or [ui] theme in config.ini.
+The ascii selection is escape-free UTF-8 Markdown, not a color theme.
+NO_COLOR selects the plain prompt and disables Markdown ANSI styling.
+Themes apply to the introduction and conversation feed; host-supplied raw
+banners stay verbatim and LOG_ settings remain independent.
+.TP
 .BR \-\-state-dir " DIR, " \-\-cache-dir " DIR, " \-\-data-dir " DIR"
 Override individual application roots. Defaults use the matching XDG home and
 the application name (cai for this binary). Environment aliases are CAI_STATE_DIR,

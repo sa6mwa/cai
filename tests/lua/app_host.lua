@@ -19,7 +19,8 @@ local app = assert(require("cai.app").open {
   introduction_margin_left = tonumber(os.getenv("CAI_TEST_APP_INTRODUCTION_LEFT")),
   introduction_margin_right = tonumber(os.getenv("CAI_TEST_APP_INTRODUCTION_RIGHT")),
   logger = logger,
-  settings = {agent = {model = os.getenv("CAI_TEST_APP_MODEL")}},
+  settings = {agent = {model = os.getenv("CAI_TEST_APP_MODEL")},
+              ui = {theme = os.getenv("CAI_TEST_APP_THEME")}},
 })
 local code, err = app:run(arg)
 assert(code, err)
