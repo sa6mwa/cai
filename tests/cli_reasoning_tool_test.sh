@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/cli_test_common.sh"
-peer_start
 protocol=${1:-responses}
+scenario=${2:?reasoning scenario required: persistence, unsupported, interactive}
+case "$scenario" in persistence|unsupported|interactive) ;; *) fail "Unknown reasoning scenario: $scenario" ;; esac
+peer_start
 chat=false
 [[ "$protocol" != chat_completions ]] || chat=true
 printf '[client]\napi_protocol = %s\n' "$protocol" >"$root/protocol.ini"
@@ -20,6 +22,7 @@ acknowledged() {
     | length > 0 and all(.[]; . == "ok")' >/dev/null
 }
 metadata '["low","medium","high","xhigh"]'
+if [[ "$scenario" == persistence ]]; then
 plan "{\"chat\":$chat,\"plan\":[\"DEFAULT OFF\"]}"
 run -Nni first; ok
 tail -1 "$root/peer/requests.jsonl" | jq -e 'all(.tools[]?; (.name // .function.name) != "set_reasoning")' >/dev/null
@@ -37,6 +40,9 @@ plan "{\"chat\":$chat,\"plan\":[{\"tool\":\"set_reasoning\",\"arguments\":{\"mod
 run -Nni complex -r xhigh --reasoning-tool; ok
 efforts '["xhigh","xhigh"]'
 acknowledged
+fi
+if [[ "$scenario" == unsupported ]]; then
+export CAI_TEST_VOLATILE_SESSION=1
 for supported in '["low"]' '[]' null; do
   if [[ "$supported" == null ]]; then
     printf '%s\n' '{"models":[{"provider":"custom","id":"gpt-5.6-luna"}]}' >"$root/models.json"
@@ -53,6 +59,9 @@ for supported in '["low"]' '[]' null; do
   absent "$root/request" 'has no effect'
   acknowledged
 done
+fi
+if [[ "$scenario" == interactive ]]; then
+export CAI_TEST_VOLATILE_SESSION=1
 metadata '["low","medium","high","xhigh"]'
 printf '[agent]\nreasoning_tool = true\nnormal_reasoning_effort = low\nhigh_reasoning_effort = xhigh\n' >>"$root/protocol.ini"
 export CAI_NORMAL_REASONING_EFFORT=medium CAI_HIGH_REASONING_EFFORT=high
@@ -79,3 +88,4 @@ plan "{\"chat\":$chat,\"plan\":[\"TOOL OFF\"]}"
 prompt next 'TOOL OFF'
 tail -1 "$root/peer/requests.jsonl" | jq -e 'all(.tools[]?; (.name // .function.name) != "set_reasoning")' >/dev/null
 terminal_close
+fi

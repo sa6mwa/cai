@@ -2,7 +2,7 @@
 #define CAI_CLI_IDENTITY_H
 #include <cai/app.h>
 
-/* All owned application strings, shared by the C receiver and Lua facade. */
+/* Owned application strings copied by the C receiver. */
 /* Keep the X-macro entries separate; clang-format otherwise merges them on
  * successive runs. */
 /* clang-format off */

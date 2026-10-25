@@ -137,6 +137,9 @@ if(CAI_BUILD_TESTS)
       "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}" "-DCAI_C_COMPILER=${CMAKE_C_COMPILER}"
       "-DCAI_DEPENDENCY_PREFIXES=${_app_prefixes}"
       "-DCAI_LUA_RUNNER=${_app_lua_runner}"
+      "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+      "-DCAI_LUA_INCLUDE_DIR=${CAI_LUA_INCLUDE_DIR}"
+      "-DCAI_PSLOG_LUA_INCLUDE_DIR=${CAI_PSLOG_LUA_INCLUDE_DIR}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_install_test.cmake")
     set_tests_properties(cai_app_install PROPERTIES LABELS "cli;local;offline;packaging" TIMEOUT 30)
   endif()

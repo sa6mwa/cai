@@ -3,6 +3,14 @@ assert(not application.open(false))
 assert(not application.open {on_event = true})
 assert(not application.open {on_replay = "not a callback"})
 assert(not application.open {introduction_markdown = true})
+for _, field in ipairs {
+  "program_name", "invocation_name", "environment_prefix", "namespace_prefix", "queue_prefix",
+  "state_directory", "cache_directory", "data_directory", "history_directory", "clipboard_directory",
+  "log_directory", "pouch_key_file", "banner", "config_file", "config_directory", "introduction_markdown",
+} do
+  assert(not application.open {[field] = true})
+  assert(not application.open {[field] = "invalid\0text"})
+end
 for _, margin in ipairs {"introduction_margin_left", "introduction_margin_right"} do
   for _, invalid in ipairs {-1, 1.5, true, "2", 2147483648} do
     assert(not application.open {[margin] = invalid})

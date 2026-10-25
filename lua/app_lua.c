@@ -1,5 +1,4 @@
 #define _POSIX_C_SOURCE 200809L
-#include "../cli/identity.h"
 #include "todo_lua.h"
 #include <cai/app.h>
 #include <dlfcn.h>
@@ -7,10 +6,35 @@
 #include <limits.h>
 #include <lua.h>
 #include <pslog_lua.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define APP_MT "cai.app"
+/* Facade bindings reference only the installed public configuration struct. */
+typedef struct app_text_field {
+  const char *name;
+  size_t offset;
+} app_text_field;
+#define APP_TEXT_FIELD(n) {#n, offsetof(cai_app_config, n)}
+static const app_text_field text_fields[] = {
+    APP_TEXT_FIELD(program_name),
+    APP_TEXT_FIELD(invocation_name),
+    APP_TEXT_FIELD(environment_prefix),
+    APP_TEXT_FIELD(namespace_prefix),
+    APP_TEXT_FIELD(queue_prefix),
+    APP_TEXT_FIELD(state_directory),
+    APP_TEXT_FIELD(cache_directory),
+    APP_TEXT_FIELD(data_directory),
+    APP_TEXT_FIELD(history_directory),
+    APP_TEXT_FIELD(clipboard_directory),
+    APP_TEXT_FIELD(log_directory),
+    APP_TEXT_FIELD(pouch_key_file),
+    APP_TEXT_FIELD(banner),
+    APP_TEXT_FIELD(config_file),
+    APP_TEXT_FIELD(config_directory),
+    APP_TEXT_FIELD(introduction_markdown)};
+#undef APP_TEXT_FIELD
 typedef int (*logger_ref_fn)(lua_State *, int, const pslog_field *, size_t,
                              pslog_lua_logger_ref *);
 typedef void (*logger_unref_fn)(pslog_lua_logger_ref *);
@@ -296,15 +320,11 @@ static int observe_replay(void *context, const cai_agent_session_event *event,
   return observe(&call, error);
 }
 static int open_app(lua_State *L) {
-#define STRING_NAME(n) #n,
-  static const char *const names[] = {CAI_APP_STRINGS(STRING_NAME)};
-#undef STRING_NAME
   static const char *const margins[] = {"introduction_margin_left",
                                         "introduction_margin_right"};
   cai_app_config config;
   cai_error error;
   app_lua *ud;
-  const char **strings[sizeof(names) / sizeof(names[0])];
   int *margin_values[2];
   size_t i;
   int rc;
@@ -316,13 +336,6 @@ static int open_app(lua_State *L) {
   ud->state = L;
   ud->self_ref = LUA_NOREF;
   luaL_setmetatable(L, APP_MT);
-#define STRING_OFFSET(n) offsetof(cai_app_config, n),
-  {
-    static const size_t offsets[] = {CAI_APP_STRINGS(STRING_OFFSET)};
-    for (i = 0U; i < sizeof(names) / sizeof(names[0]); i++)
-      strings[i] = (const char **)((char *)&config + offsets[i]);
-  }
-#undef STRING_OFFSET
   margin_values[0] = &config.introduction_margin_left;
   margin_values[1] = &config.introduction_margin_right;
   if (lua_istable(L, 1)) {
@@ -331,8 +344,9 @@ static int open_app(lua_State *L) {
       const char *key =
           lua_type(L, -2) == LUA_TSTRING ? plain_string(L, -2) : NULL;
       int known = 0;
-      for (i = 0U; key != NULL && i < sizeof(names) / sizeof(names[0]); i++)
-        if (strcmp(key, names[i]) == 0)
+      for (i = 0U;
+           key != NULL && i < sizeof(text_fields) / sizeof(text_fields[0]); i++)
+        if (strcmp(key, text_fields[i].name) == 0)
           known = 1;
       for (i = 0U; key != NULL && i < sizeof(margins) / sizeof(margins[0]); i++)
         if (strcmp(key, margins[i]) == 0)
@@ -346,13 +360,15 @@ static int open_app(lua_State *L) {
         return failure(L, "unknown application configuration field");
       lua_pop(L, 1);
     }
-    for (i = 0U; i < sizeof(names) / sizeof(names[0]); i++) {
-      lua_getfield(L, 1, names[i]);
+    for (i = 0U; i < sizeof(text_fields) / sizeof(text_fields[0]); i++) {
+      const char **value =
+          (const char **)((char *)&config + text_fields[i].offset);
+      lua_getfield(L, 1, text_fields[i].name);
       if (!lua_isnil(L, -1)) {
         if (lua_type(L, -1) != LUA_TSTRING)
           return failure(L, "application text fields must be strings");
-        *strings[i] = plain_string(L, -1);
-        if (*strings[i] == NULL)
+        *value = plain_string(L, -1);
+        if (*value == NULL)
           return failure(L, "application text cannot contain NUL bytes");
       }
       lua_pop(L, 1);

@@ -278,6 +278,12 @@
     add_test(NAME cai_cli_login
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_login_test.sh"
         "$<TARGET_FILE:cai_cli>")
+    add_executable(cai_cli_login_response_test tests/cli_login_response_test.c)
+    target_link_libraries(cai_cli_login_response_test PRIVATE cai_cli_support)
+    cai_configure_cli_target(cai_cli_login_response_test)
+    target_compile_options(cai_cli_login_response_test PRIVATE -UNDEBUG)
+    add_test(NAME cai_cli_login_response COMMAND cai_cli_login_response_test)
+    set_tests_properties(cai_cli_login_response PROPERTIES TIMEOUT 3)
     add_test(NAME cai_cli_modes
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_modes_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>")
@@ -318,10 +324,13 @@
       "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_send_message PROPERTIES TIMEOUT 10)
     foreach(_reasoning_protocol responses chat_completions)
-      add_test(NAME cai_cli_reasoning_tool_${_reasoning_protocol} COMMAND bash
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_reasoning_tool_test.sh"
-        "$<TARGET_FILE:cai_cli_mock_fixture>" "${_reasoning_protocol}")
-      set_tests_properties(cai_cli_reasoning_tool_${_reasoning_protocol} PROPERTIES TIMEOUT 15)
+      foreach(_reasoning_case persistence unsupported interactive)
+        add_test(NAME cai_cli_reasoning_tool_${_reasoning_protocol}_${_reasoning_case}
+          COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_reasoning_tool_test.sh"
+            "$<TARGET_FILE:cai_cli_mock_fixture>" "${_reasoning_protocol}" "${_reasoning_case}")
+        set_tests_properties(cai_cli_reasoning_tool_${_reasoning_protocol}_${_reasoning_case}
+          PROPERTIES TIMEOUT 15)
+      endforeach()
     endforeach()
     add_test(NAME cai_cli_reasoning_catalog COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_reasoning_catalog_test.sh"

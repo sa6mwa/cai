@@ -147,5 +147,37 @@ app:close()
   if(NOT result EQUAL 0)
     message(FATAL_ERROR "run installed Lua application facade: ${output}\n${errors}")
   endif()
+  # Compile the shipped facade sources against the relocated public SDK.
+  # No cli/ or src/ private headers are available in this source product.
+  execute_process(COMMAND bash "${CAI_SOURCE_DIR}/scripts/stage_lua_rock_sources.sh"
+    "${CAI_SOURCE_DIR}" "${root}/lua-source" 0.0.0
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors)
+  if(NOT result EQUAL 0)
+    message(FATAL_ERROR "stage Lua facade sources: ${output}\n${errors}")
+  endif()
+  execute_process(COMMAND "${CMAKE_COMMAND}" -E env "PKG_CONFIG_PATH=${pkg_path}"
+    "${CMAKE_COMMAND}" -S "${root}/lua-source/lua" -B "${root}/lua-build" -G Ninja
+    "-DCMAKE_C_COMPILER=${CAI_C_COMPILER}"
+    "-DCAI_LUA_INCLUDE_DIR=${CAI_LUA_INCLUDE_DIR}"
+    "-DCAI_PSLOG_LUA_INCLUDE_DIR=${CAI_PSLOG_LUA_INCLUDE_DIR}"
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors)
+  if(NOT result EQUAL 0)
+    message(FATAL_ERROR "configure packaged Lua facade: ${output}\n${errors}")
+  endif()
+  execute_process(COMMAND "${CMAKE_COMMAND}" --build "${root}/lua-build" --parallel 4
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors)
+  if(NOT result EQUAL 0)
+    message(FATAL_ERROR "build packaged Lua facade: ${output}\n${errors}")
+  endif()
+  if(NOT EXISTS "${root}/lua-build/cai/app.so")
+    message(FATAL_ERROR "packaged Lua build omitted the application facade")
+  endif()
+  execute_process(COMMAND "${CMAKE_COMMAND}" -E env "LD_LIBRARY_PATH=${loader}"
+    "LUA_CPATH=${root}/lua-build/?.so;;"
+    "${CAI_LUA_RUNNER}" "${root}/lua-consumer.lua"
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE errors)
+  if(NOT result EQUAL 0)
+    message(FATAL_ERROR "run packaged Lua application facade: ${output}\n${errors}")
+  endif()
 endif()
 file(REMOVE_RECURSE "${root}")

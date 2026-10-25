@@ -133,28 +133,30 @@ static int parse_request_line(char *request, char **method, char **target) {
   return 1;
 }
 
-static void write_all_ignore_errors(int fd, const char *data, size_t length) {
+static int write_all(int fd, const char *data, size_t length) {
   size_t written;
   ssize_t count;
 
   written = 0U;
   while (written < length) {
-    count = write(fd, data + written, length - written);
+    count = send(fd, data + written, length - written, MSG_NOSIGNAL);
     if (count < 0) {
       if (errno == EINTR) {
         continue;
       }
-      return;
+      return -1;
     }
     if (count == 0) {
-      return;
+      errno = EIO;
+      return -1;
     }
     written += (size_t)count;
   }
+  return 0;
 }
 
-static void write_http_response(int fd,
-                                const cai_chatgpt_login_response *response) {
+int cai_cli_login_write_response(int fd,
+                                 const cai_chatgpt_login_response *response) {
   const char *body;
   const char *content_type;
   const char *status_text;
@@ -179,10 +181,22 @@ static void write_http_response(int fd,
                "Content-Length: %lu\r\n"
                "Connection: close\r\n\r\n",
                status, status_text, content_type, (unsigned long)strlen(body));
-  if (header_len > 0 && (size_t)header_len < sizeof(header)) {
-    write_all_ignore_errors(fd, header, (size_t)header_len);
+  if (header_len <= 0 || (size_t)header_len >= sizeof(header)) {
+    errno = EOVERFLOW;
+    return -1;
   }
-  write_all_ignore_errors(fd, body, strlen(body));
+  if (write_all(fd, header, (size_t)header_len) != 0)
+    return -1;
+  return write_all(fd, body, strlen(body));
+}
+
+static void write_http_response(int fd,
+                                const cai_chatgpt_login_response *response,
+                                pslog_logger *logger) {
+  if (cai_cli_login_write_response(fd, response) != 0) {
+    pslog_field field = pslog_str("detail", strerror(errno));
+    logger->warn(logger, "Could not write OAuth callback response", &field, 1U);
+  }
 }
 
 int cai_cli_login(const cai_blob_store *storage, pslog_logger *logger,
@@ -288,7 +302,7 @@ int cai_cli_login(const cai_blob_store *storage, pslog_logger *logger,
       login_response.status = 400;
       login_response.content_type = "text/plain; charset=utf-8";
       login_response.body = bad_request_body;
-      write_http_response(client_fd, &login_response);
+      write_http_response(client_fd, &login_response, logger);
       close(client_fd);
       continue;
     }
@@ -303,7 +317,7 @@ int cai_cli_login(const cai_blob_store *storage, pslog_logger *logger,
       login_response.body = callback_failed_body;
       login_response.completed = 1;
     }
-    write_http_response(client_fd, &login_response);
+    write_http_response(client_fd, &login_response, logger);
     close(client_fd);
     callback_completed = login_response.completed;
     if (callback_completed && !login->completed(login) && rc == CAI_OK) {

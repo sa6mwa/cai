@@ -375,6 +375,8 @@ The optional native module installs with component `cai-app-lua` under
 or compile `lua/app_lua.c` against the installed public `cai-app` SDK and Lua
 5.5/lua-pslog headers. `lua/CMakeLists.txt` builds this module when pkg-config
 finds `cai-app`; its install target places the module in the same Lua layout.
+Both Lua modules use installed public SDK headers and shared libraries;
+neither requires CAI's private application or runtime headers.
 The ordinary core `cai` LuaRock stays usable without libcai_app. Its source
 archive includes the optional application facade for native embedders.
 `make lua-app-test` builds this optional surface against the native application

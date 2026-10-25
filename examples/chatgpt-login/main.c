@@ -175,10 +175,20 @@ static int parse_request_line(char *request, char **method, char **target) {
 static void write_all_ignore_errors(int fd, const char *data, size_t length) {
   size_t written;
   ssize_t count;
+  int flags = 0;
+#if defined(MSG_NOSIGNAL)
+  flags = MSG_NOSIGNAL;
+#elif defined(SO_NOSIGPIPE)
+  int one = 1;
+  if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one)) != 0)
+    return;
+#else
+#error "OAuth callback sockets require MSG_NOSIGNAL or SO_NOSIGPIPE"
+#endif
 
   written = 0U;
   while (written < length) {
-    count = write(fd, data + written, length - written);
+    count = send(fd, data + written, length - written, flags);
     if (count < 0) {
       if (errno == EINTR) {
         continue;
