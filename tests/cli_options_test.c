@@ -4,7 +4,66 @@
 #include <cai/models.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+static int short_argument_options(void) {
+  static const char *const invalid[] = {"", "-", "--", "-x", "-Nq"};
+  char program[] = "cai";
+  char *args[2];
+  cai_cli_options options;
+  size_t i, length;
+  int rc;
+  args[0] = program;
+  for (i = 0U; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+    /* Exact allocations expose lookahead past a terminating NUL to memory
+     * checkers, matching the app receiver's copied argv strings. */
+    length = strlen(invalid[i]) + 1U;
+    args[1] = malloc(length);
+    if (args[1] == NULL)
+      return 1;
+    memcpy(args[1], invalid[i], length);
+    rc = cai_cli_parse_options(2, args, &options);
+    free(args[1]);
+    if (rc != -1 || options.diagnostic[0] == '\0')
+      return 1;
+  }
+  return 0;
+}
+
+static int grouped_value_options(void) {
+  char flags[][16] = {"-g", "-Ng", "-Nng", "-vng",   "--goal",
+                      "-t", "-Nt", "-Nnt", "--theme"};
+  char values[][16] = {"-i", "--instruction", "-Nni", "-g", "-Nng", "-"};
+  char program[] = "cai", instruction[] = "-i";
+  char first[] = "actual prompt", second_flag[] = "--instruction";
+  char second[] = "second prompt";
+  char *args[7];
+  cai_cli_options options;
+  size_t i, j;
+  args[0] = program;
+  args[3] = instruction;
+  args[4] = first;
+  args[5] = second_flag;
+  args[6] = second;
+  for (i = 0U; i < sizeof(flags) / sizeof(flags[0]); i++) {
+    args[1] = flags[i];
+    for (j = 0U; j < sizeof(values) / sizeof(values[0]); j++) {
+      args[2] = values[j];
+      if (cai_cli_parse_options(7, args, &options) != 1 ||
+          (i < 5U ? options.goal : options.theme) != args[2] ||
+          options.instruction_count != 2U ||
+          cai_cli_instruction_at(&options, 0U) != first ||
+          cai_cli_instruction_at(&options, 1U) != second ||
+          cai_cli_instruction_at(&options, 2U) != NULL) {
+        fprintf(stderr, "incorrect prompt extraction for %s '%s'\n", args[1],
+                args[2]);
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
 
 static int storage_options(void) {
   cai_cli_options options;
@@ -475,6 +534,7 @@ int main(void) {
       cai_cli_parse_options(3, invalid_legacy_instructions, &options) != -1 ||
       cai_cli_parse_options(3, invalid_legacy_workspace, &options) != -1)
     return 1;
-  return help_columns() || shell_options() || storage_options() ||
+  return short_argument_options() || grouped_value_options() ||
+         help_columns() || shell_options() || storage_options() ||
          tool_options() || capture_options() || messaging_options();
 }

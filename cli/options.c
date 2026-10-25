@@ -74,6 +74,24 @@ static int cai_cli_one_of(const char *value, const char *const *values) {
   return 0;
 }
 
+/* Value-taking short options may end a group. Keep the parser and the later
+ * instruction rescan in agreement about which following argv entry they own.
+ */
+static int cai_cli_short_value_option(const char *flag) {
+  size_t length;
+  if (flag[0] != '-' || flag[1] == '\0' || flag[1] == '-')
+    return 0;
+  length = strlen(flag);
+  switch (flag[length - 1U]) {
+  case 'i':
+  case 'g':
+  case 't':
+    return flag[length - 1U];
+  default:
+    return 0;
+  }
+}
+
 int cai_cli_read_options(int argc, char *const *argv,
                          const cai_cli_options *defaults,
                          cai_cli_options *options) {
@@ -209,8 +227,8 @@ int cai_cli_read_options(int argc, char *const *argv,
       continue;
     }
 
-    if (flag[0] == '-' && flag[1] != '-' && flag[2] != '\0' &&
-        strcmp(flag, "-vv") != 0) {
+    if (flag[0] == '-' && flag[1] != '\0' && flag[1] != '-' &&
+        flag[2] != '\0' && strcmp(flag, "-vv") != 0) {
       for (j = 1U; flag[j] != '\0'; j++) {
         if (flag[j] == 'N')
           options->new_session = 1;
@@ -221,7 +239,7 @@ int cai_cli_read_options(int argc, char *const *argv,
         else if (flag[j] == 'l')
           options->list = 1;
         else if (flag[j + 1U] == '\0' &&
-                 (flag[j] == 'i' || flag[j] == 'g' || flag[j] == 't')) {
+                 cai_cli_short_value_option(flag) != 0) {
           short_flag[0] = '-';
           short_flag[1] = flag[j];
           short_flag[2] = '\0';
@@ -700,29 +718,27 @@ const char *cai_cli_instruction_at(const cai_cli_options *options,
   const char *flag;
   int has_value;
   int instruction;
+  int short_value;
 
   if (options == NULL || options->argv == NULL)
     return NULL;
   found = 0U;
   for (i = 1; i < options->argc; i++) {
     flag = options->argv[i];
-    instruction = strcmp(flag, "-i") == 0 ||
-                  strcmp(flag, "--instruction") == 0 ||
-                  (flag[0] == '-' && flag[1] != '-' && strlen(flag) > 2U &&
-                   flag[strlen(flag) - 1U] == 'i');
+    short_value = cai_cli_short_value_option(flag);
+    instruction = short_value == 'i' || strcmp(flag, "--instruction") == 0;
     has_value =
-        instruction || strcmp(flag, "--resume") == 0 ||
-        strcmp(flag, "--lockd") == 0 ||
+        instruction || short_value == 'g' || short_value == 't' ||
+        strcmp(flag, "--resume") == 0 || strcmp(flag, "--lockd") == 0 ||
         strcmp(flag, "--lockd-client-pem") == 0 ||
         strcmp(flag, "--export") == 0 || strcmp(flag, "--export-dir") == 0 ||
-        strcmp(flag, "--import") == 0 || strcmp(flag, "-g") == 0 ||
-        strcmp(flag, "--goal") == 0 || strcmp(flag, "--base") == 0 ||
-        strcmp(flag, "-o") == 0 || strcmp(flag, "--out") == 0 ||
-        strcmp(flag, "-T") == 0 || strcmp(flag, "--output-type") == 0 ||
-        strcmp(flag, "--tool-output") == 0 || strcmp(flag, "-t") == 0 ||
-        strcmp(flag, "--theme") == 0 || strcmp(flag, "-p") == 0 ||
-        strcmp(flag, "--provider") == 0 || strcmp(flag, "--endpoint") == 0 ||
-        strcmp(flag, "--api-key-env") == 0 ||
+        strcmp(flag, "--import") == 0 || strcmp(flag, "--goal") == 0 ||
+        strcmp(flag, "--base") == 0 || strcmp(flag, "-o") == 0 ||
+        strcmp(flag, "--out") == 0 || strcmp(flag, "-T") == 0 ||
+        strcmp(flag, "--output-type") == 0 ||
+        strcmp(flag, "--tool-output") == 0 || strcmp(flag, "--theme") == 0 ||
+        strcmp(flag, "-p") == 0 || strcmp(flag, "--provider") == 0 ||
+        strcmp(flag, "--endpoint") == 0 || strcmp(flag, "--api-key-env") == 0 ||
         strcmp(flag, "--model-metadata") == 0 || strcmp(flag, "-C") == 0 ||
         strcmp(flag, "--board") == 0 || strcmp(flag, "--searxng-url") == 0 ||
         strcmp(flag, "--revgeo-url") == 0 ||
