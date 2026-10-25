@@ -4,6 +4,16 @@
 #include <wchar.h>
 
 #define CAI_DISPLAY_LINE_MAX 65536U
+#define COMMAND_SGR_SLOTS 16U
+#define COMMAND_SGR_SIZE 40U
+enum {
+  COMMAND_TEXT,
+  COMMAND_ESCAPE,
+  COMMAND_INTERMEDIATE,
+  COMMAND_CSI,
+  COMMAND_STRING,
+  COMMAND_STRING_ESCAPE
+};
 
 typedef struct patch_location {
   size_t old_line, new_line;
@@ -19,6 +29,14 @@ typedef struct cai_display_call {
   int partial_line;
   int pending_cr;
   int omitted;
+  /* Command controls and styles belong to the originating call, including
+   * across wait/write_stdin events. No command output is retained. */
+  unsigned int control_state;
+  int osc, control_invalid, style_open, style_dirty;
+  char control[128], style[COMMAND_SGR_SLOTS][COMMAND_SGR_SIZE];
+  size_t control_length;
+  unsigned char command_utf8[4];
+  size_t command_utf8_length, command_utf8_need;
   char *line;
   size_t length;
   char *first;
@@ -692,6 +710,42 @@ static int patch_feed(cai_tool_display *d, cai_display_call *c,
   }
   return CAI_OK;
 }
+/* Restore only this command's SGR attributes; always reset them before
+ * returning to the host, so assistant text and interleaved calls cannot inherit
+ * them. */
+static int command_styled(cai_tool_display *d, cai_display_call *c,
+                          const char *s, size_t n, cai_error *error) {
+  size_t i;
+  int rc = CAI_OK;
+  if (n == 0U)
+    return CAI_OK;
+  if (!c->command_active)
+    return display_safe(d, s, n, error);
+  if (d->config.color && (!c->style_open || c->style_dirty)) {
+    if (c->style_open)
+      rc = display_text(d, "\033[0m", error);
+    c->style_open = 0;
+    for (i = 0U; rc == CAI_OK && i < COMMAND_SGR_SLOTS; i++) {
+      if (c->style[i][0] == '\0')
+        continue;
+      rc = display_text(d, "\033[", error);
+      if (rc == CAI_OK)
+        rc = display_text(d, c->style[i], error);
+      if (rc == CAI_OK)
+        rc = display_text(d, "m", error);
+      c->style_open = 1;
+    }
+    c->style_dirty = 0;
+  }
+  return rc == CAI_OK ? display_safe(d, s, n, error) : rc;
+}
+static int command_style_end(cai_tool_display *d, cai_display_call *c,
+                             cai_error *error) {
+  if (!c->style_open)
+    return CAI_OK;
+  c->style_open = 0;
+  return display_text(d, "\033[0m", error);
+}
 static int command_output(cai_tool_display *d, cai_display_call *c,
                           const char *s, size_t n, cai_error *error) {
   size_t i, start;
@@ -701,11 +755,14 @@ static int command_output(cai_tool_display *d, cai_display_call *c,
     if (c->mode == CAI_TOOL_OUTPUT_COMPACT &&
         c->lines >= d->config.preview_lines) {
       if (i > start) {
-        rc = display_safe(d, s + start, i - start, error);
+        rc = command_styled(d, c, s + start, i - start, error);
         if (rc != CAI_OK)
           return rc;
       }
       if (!c->omitted) {
+        rc = command_style_end(d, c, error);
+        if (rc != CAI_OK)
+          return rc;
         rc = display_text(
             d, " ⋮ (output omitted; /output full for future calls)\n", error);
         if (rc != CAI_OK)
@@ -718,39 +775,299 @@ static int command_output(cai_tool_display *d, cai_display_call *c,
     if (s[i] == '\n')
       c->lines++;
   }
-  return display_safe(d, s, n, error);
+  return command_styled(d, c, s, n, error);
 }
-static int command_feed(cai_tool_display *d, cai_display_call *c, const char *s,
-                        size_t n, cai_error *error) {
-  size_t i, start;
-  int rc;
-  if (n == 0U)
-    return CAI_OK;
-  if (c->pending_cr) {
-    c->pending_cr = 0;
-    if (s[0] != '\n') {
-      rc = command_output(d, c, "\r", 1U, error);
-      if (rc != CAI_OK)
-        return rc;
+
+/* Canonical attribute slots bound style state even for an endless stream of
+ * SGR changes without resets. Unknown SGR attributes are ignored. */
+static void command_sgr(cai_display_call *c) {
+  size_t starts[32], ends[32], count = 0U, i = 0U, j, end;
+  unsigned int codes[32], code, mode;
+  char next[COMMAND_SGR_SLOTS][COMMAND_SGR_SIZE];
+  int slot;
+  if (c->control_invalid)
+    return;
+  do {
+    if (count == 32U)
+      return;
+    starts[count] = i;
+    code = 0U;
+    while (i < c->control_length && c->control[i] != ';') {
+      if (c->control[i] == ':') {
+        while (i < c->control_length && c->control[i] != ';')
+          i++;
+        break;
+      }
+      if (code > 1000U)
+        return;
+      code = code * 10U + (unsigned int)(c->control[i++] - '0');
+    }
+    codes[count] = code;
+    ends[count++] = i;
+  } while (i++ < c->control_length);
+  memcpy(next, c->style, sizeof(next));
+  for (i = 0U; i < count; i++) {
+    code = codes[i];
+    end = ends[i];
+    slot = -1;
+    if (code == 0U)
+      memset(next, 0, sizeof(next));
+    else if (code == 1U || code == 2U)
+      slot = (int)code - 1;
+    else if (code == 3U || code == 20U)
+      slot = 2;
+    else if (code == 4U || code == 21U)
+      slot = 3;
+    else if (code == 5U || code == 6U)
+      slot = 4;
+    else if (code >= 7U && code <= 9U)
+      slot = (int)code - 2;
+    else if (code >= 11U && code <= 19U)
+      slot = 8;
+    else if (code == 51U || code == 52U)
+      slot = 9;
+    else if (code == 53U)
+      slot = 10;
+    else if (code == 73U || code == 74U)
+      slot = 11;
+    else if ((code >= 30U && code <= 37U) || (code >= 90U && code <= 97U))
+      slot = 12;
+    else if ((code >= 40U && code <= 47U) || (code >= 100U && code <= 107U))
+      slot = 13;
+    else if (code == 26U)
+      slot = 15;
+    else if (code == 38U || code == 48U || code == 58U) {
+      slot = code == 38U ? 12 : code == 48U ? 13 : 14;
+      if (memchr(c->control + starts[i], ':', end - starts[i]) == NULL) {
+        if (i + 1U == count)
+          return;
+        mode = codes[i + 1U];
+        j = mode == 2U ? 4U : mode == 5U ? 2U : 0U;
+        if (j == 0U || j >= count - i)
+          return;
+        end = ends[i + j];
+        for (j = i + 2U; j < count && ends[j] <= end; j++)
+          if (codes[j] > 255U)
+            return;
+      }
+    } else {
+      if (code == 22U)
+        next[0][0] = next[1][0] = '\0';
+      else if (code == 23U)
+        next[2][0] = '\0';
+      else if (code == 24U)
+        next[3][0] = '\0';
+      else if (code == 25U)
+        next[4][0] = '\0';
+      else if (code >= 27U && code <= 29U)
+        next[code - 22U][0] = '\0';
+      else if (code == 10U)
+        next[8][0] = '\0';
+      else if (code == 54U)
+        next[9][0] = '\0';
+      else if (code == 55U)
+        next[10][0] = '\0';
+      else if (code == 75U)
+        next[11][0] = '\0';
+      else if (code == 39U)
+        next[12][0] = '\0';
+      else if (code == 49U)
+        next[13][0] = '\0';
+      else if (code == 59U)
+        next[14][0] = '\0';
+      else if (code == 50U)
+        next[15][0] = '\0';
+    }
+    if (slot >= 0) {
+      if (end - starts[i] >= COMMAND_SGR_SIZE)
+        return;
+      memcpy(next[slot], c->control + starts[i], end - starts[i]);
+      next[slot][end - starts[i]] = '\0';
+      while (ends[i] < end)
+        i++;
     }
   }
-  start = 0U;
-  for (i = 0U; i < n; i++) {
-    if (s[i] != '\r')
-      continue;
-    rc = command_output(d, c, s + start, i - start, error);
+  memcpy(c->style, next, sizeof(next));
+  c->style_dirty = 1;
+}
+
+typedef struct command_writer {
+  cai_tool_display *display;
+  cai_display_call *call;
+  cai_error *error;
+  char bytes[4096];
+  size_t length;
+} command_writer;
+static int command_flush(command_writer *w) {
+  int rc = command_output(w->display, w->call, w->bytes, w->length, w->error);
+  w->length = 0U;
+  return rc;
+}
+static int command_append(command_writer *w, const char *s, size_t n) {
+  int rc;
+  if (n > sizeof(w->bytes) - w->length) {
+    rc = command_flush(w);
     if (rc != CAI_OK)
       return rc;
-    if (i + 1U == n)
-      c->pending_cr = 1;
-    else if (s[i + 1U] != '\n') {
-      rc = command_output(d, c, "\r", 1U, error);
-      if (rc != CAI_OK)
-        return rc;
-    }
-    start = i + 1U;
   }
-  return command_output(d, c, s + start, n - start, error);
+  memcpy(w->bytes + w->length, s, n);
+  w->length += n;
+  return CAI_OK;
+}
+static int command_hex(command_writer *w, unsigned char ch) {
+  char escaped[5];
+  snprintf(escaped, sizeof(escaped), "\\x%02x", (unsigned)ch);
+  return command_append(w, escaped, 4U);
+}
+static int command_control(command_writer *w, unsigned char ch) {
+  cai_display_call *c = w->call;
+  int rc;
+  if (c->control_state == COMMAND_STRING ||
+      c->control_state == COMMAND_STRING_ESCAPE) {
+    if (ch == 156U || (c->osc && ch == 7U) || ch == 24U || ch == 26U ||
+        (c->control_state == COMMAND_STRING_ESCAPE && ch == '\\'))
+      c->control_state = COMMAND_TEXT;
+    else
+      c->control_state = ch == 27U ? COMMAND_STRING_ESCAPE : COMMAND_STRING;
+    return CAI_OK;
+  }
+  if (ch == 27U) {
+    rc = command_flush(w);
+    c->control_state = COMMAND_ESCAPE;
+    return rc;
+  }
+  if (ch == 155U || ch == 144U || ch == 152U || ch == 157U || ch == 158U ||
+      ch == 159U) {
+    rc = command_flush(w);
+    c->control_state = ch == 155U ? COMMAND_CSI : COMMAND_STRING;
+    c->osc = ch == 157U;
+    c->control_length = 0U;
+    c->control_invalid = 0;
+    return rc;
+  }
+  if (c->control_state == COMMAND_ESCAPE) {
+    if (ch == '[') {
+      c->control_state = COMMAND_CSI;
+      c->control_length = 0U;
+      c->control_invalid = 0;
+    } else if (ch == ']' || ch == 'P' || ch == 'X' || ch == '^' || ch == '_') {
+      c->control_state = COMMAND_STRING;
+      c->osc = ch == ']';
+    } else
+      c->control_state =
+          ch >= 32U && ch <= 47U ? COMMAND_INTERMEDIATE : COMMAND_TEXT;
+    return CAI_OK;
+  }
+  if (c->control_state == COMMAND_CSI ||
+      c->control_state == COMMAND_INTERMEDIATE) {
+    if (ch == 24U || ch == 26U)
+      c->control_state = COMMAND_TEXT;
+    else if (ch >= 64U && ch <= 126U) {
+      if (c->control_state == COMMAND_CSI && ch == 'm')
+        command_sgr(c);
+      c->control_state = COMMAND_TEXT;
+    } else if (c->control_state == COMMAND_INTERMEDIATE && ch >= 48U)
+      c->control_state = COMMAND_TEXT;
+    else if (c->control_state == COMMAND_CSI) {
+      if ((ch >= '0' && ch <= '9') || ch == ';' || ch == ':') {
+        if (c->control_length < sizeof(c->control))
+          c->control[c->control_length++] = (char)ch;
+        else
+          c->control_invalid = 1;
+      } else
+        c->control_invalid = 1;
+    }
+    return CAI_OK;
+  }
+  if (ch == '\r' || ch == '\n') {
+    rc = ch == '\n' && c->pending_cr ? CAI_OK : command_append(w, "\n", 1U);
+    c->pending_cr = ch == '\r';
+    return rc;
+  }
+  if (ch >= 32U && ch != 127U && (ch < 128U || ch >= 160U)) {
+    c->pending_cr = 0;
+    return ch < 128U ? command_append(w, (const char *)&ch, 1U)
+                     : command_hex(w, ch);
+  }
+  if (ch == '\t') {
+    c->pending_cr = 0;
+    return command_append(w, "\t", 1U);
+  }
+  return CAI_OK;
+}
+static int command_invalid_utf8(command_writer *w) {
+  cai_display_call *c = w->call;
+  size_t i;
+  int rc = CAI_OK;
+  if (c->control_state == COMMAND_TEXT)
+    for (i = 0U; rc == CAI_OK && i < c->command_utf8_length; i++)
+      rc = command_hex(w, c->command_utf8[i]);
+  c->command_utf8_length = 0U;
+  return rc;
+}
+static int command_byte(command_writer *w, unsigned char ch) {
+  cai_display_call *c = w->call;
+  unsigned long scalar;
+  size_t i;
+  int rc;
+  if (c->command_utf8_length != 0U) {
+    if ((ch & 192U) != 128U) {
+      rc = command_invalid_utf8(w);
+      return rc == CAI_OK ? command_byte(w, ch) : rc;
+    }
+    c->command_utf8[c->command_utf8_length++] = ch;
+    if (c->command_utf8_length != c->command_utf8_need)
+      return CAI_OK;
+    scalar = c->command_utf8[0] & ((1U << (7U - c->command_utf8_need)) - 1U);
+    for (i = 1U; i < c->command_utf8_need; i++)
+      scalar = (scalar << 6) | (c->command_utf8[i] & 63U);
+    if ((c->command_utf8_need == 2U && scalar < 128UL) ||
+        (c->command_utf8_need == 3U && scalar < 2048UL) ||
+        (c->command_utf8_need == 4U && scalar < 65536UL) ||
+        scalar > 1114111UL || (scalar >= 55296UL && scalar <= 57343UL))
+      return command_invalid_utf8(w);
+    c->command_utf8_length = 0U;
+    if (scalar >= 128UL && scalar <= 159UL)
+      return command_control(w, (unsigned char)scalar);
+    if (c->control_state != COMMAND_TEXT) {
+      if (c->control_state == COMMAND_CSI)
+        c->control_invalid = 1;
+      return CAI_OK;
+    }
+    c->pending_cr = 0;
+    return command_append(w, (const char *)c->command_utf8,
+                          c->command_utf8_need);
+  }
+  if (ch >= 194U && ch <= 244U) {
+    c->command_utf8[0] = ch;
+    c->command_utf8_length = 1U;
+    c->command_utf8_need = ch < 224U ? 2U : ch < 240U ? 3U : 4U;
+    if (c->control_state == COMMAND_STRING_ESCAPE)
+      c->control_state = COMMAND_STRING;
+    return CAI_OK;
+  }
+  return command_control(w, ch);
+}
+static int command_feed(cai_tool_display *d, cai_display_call *c, const char *s,
+                        size_t n, int finish, cai_error *error) {
+  command_writer w;
+  size_t i;
+  int rc = CAI_OK;
+  if (c->omitted)
+    return CAI_OK;
+  w.display = d;
+  w.call = c;
+  w.error = error;
+  w.length = 0U;
+  for (i = 0U; rc == CAI_OK && i < n; i++)
+    rc = command_byte(&w, (unsigned char)s[i]);
+  if (rc == CAI_OK && finish)
+    rc = command_invalid_utf8(&w);
+  if (rc == CAI_OK)
+    rc = command_flush(&w);
+  if (rc == CAI_OK)
+    rc = command_style_end(d, c, error);
+  return rc;
 }
 
 static int patch_locations(cai_display_call *c, const char *data, size_t n,
@@ -916,7 +1233,7 @@ int cai_tool_display_event(cai_tool_display *d,
                           error);
   }
   if (e->type == CAI_AGENT_EVENT_TERMINAL_OUTPUT)
-    return c != NULL ? command_feed(d, c, e->data, e->data_length, error)
+    return c != NULL ? command_feed(d, c, e->data, e->data_length, 0, error)
                      : CAI_OK;
   if (e->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED ||
       e->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED) {
@@ -925,9 +1242,7 @@ int cai_tool_display_event(cai_tool_display *d,
     if (!c->command_active)
       return cai_set_error(error, CAI_ERR_INVALID,
                            "terminal completion has no started command");
-    rc = command_feed(d, c, e->data, e->data_length, error);
-    if (rc == CAI_OK && c->pending_cr)
-      rc = command_output(d, c, "\r", 1U, error);
+    rc = command_feed(d, c, e->data, e->data_length, 1, error);
     if (rc == CAI_OK && c->partial_line)
       rc = display_text(d, "\n", error);
     if (rc == CAI_OK && e->terminal_output_truncated)

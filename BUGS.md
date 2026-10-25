@@ -5,6 +5,23 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-027: Command previews print terminal escapes as unreadable text
+
+- **Status:** fixed.
+- **Cause:** the tool renderer escaped every control byte, including the ESC
+  introducing ordinary Git/ripgrep color sequences, displaying `\x1b[32m`.
+- **Resolution:** incrementally filter command terminal controls, preserving
+  recognized SGR colors/styles when enabled. Drop cursor operations and control
+  strings. Isolate style and split UTF-8/control state per command, resetting
+  styling before returning to the host. `NO_COLOR` produces plain previews;
+  structured logs and model-facing tool results retain their original content.
+- **Verification:** `cai_display` covers every two-chunk split, malformed and
+  unfinished controls, hidden strings, UTF-8/C1 boundaries, interleaving, style
+  resets, bounded state, previews and sink errors. `cai_cli_tool_display` checks
+  colored/plain output through softline and original content in JSON logs.
+  Related terminal/theme/reasoning and Lua application checks pass, as does
+  Valgrind for the renderer.
+
 ## BUG-026: Routine Pouch compaction cleanup appears as failure warnings
 
 - **Status:** investigated; upstream diagnostic improvement needed. No

@@ -155,7 +155,36 @@ awk '
   END {if (seen<8 || answers<10) exit 1}
 ' "$root/feed"
 contains "$root/feed" PARTIAL
+cat >"$work/color-output.sh" <<'SH'
+printf '\033]0;HIDDEN_TITLE\007\033[32mCOLORED_BRANCH\033[m\n'
+printf '\033[35m/colored/README.md\033[0m\033[2J\n'
+SH
+color_plan() {
+  plan '{"plan":[{"tool":"exec_command","arguments":{"cmd":"sh color-output.sh","yield_time_ms":1000}},{"tool":"write_stdin","arguments":{"session_id":"terminal-1","chars":"","yield_time_ms":1000}},"COLOR OUTPUT DONE"]}'
+}
+color_plan
+offset=$(wc -c <"$term/feed")
+prompt 'check command colors' 'COLOR OUTPUT DONE'
+tail -c +$((offset+1)) "$term/feed" >"$root/color-feed"
+contains "$root/color-feed" COLORED_BRANCH
+contains "$root/color-feed" /colored/README.md
+absent "$root/color-feed" HIDDEN_TITLE
+absent "$root/color-feed" '\x1b'
+grep -Eq $'\033\\[(0;)?32mCOLORED_BRANCH' "$term/raw"
+grep -Eq $'\033\\[(0;)?35m/colored/README.md' "$term/raw"
 terminal_close
+# NO_COLOR strips the command's own styling as well as CAI's receipt colors.
+export NO_COLOR=1
+color_plan
+terminal_start -N
+prompt 'check plain command colors' 'COLOR OUTPUT DONE'
+contains "$term/feed" COLORED_BRANCH
+contains "$term/feed" /colored/README.md
+absent "$term/feed" HIDDEN_TITLE
+absent "$term/feed" '\x1b'
+if grep -Eq $'\033\\[(0;)?(32|35)m' "$term/raw"; then fail 'NO_COLOR retained command styling'; fi
+terminal_close
+unset NO_COLOR
 cp "$root/original" "$work/file.c"; patch_plan 'FINAL ONLY'
 run -Nni 'apply patch'; ok
 [[ $(stdout_text) == 'FINAL ONLY' ]]
@@ -166,4 +195,8 @@ plan '{"plan":[{"tool":"exec_command","arguments":{"cmd":"sh command.sh","yield_
 run -Nni 'run command' --tool-output compact; ok
 [[ $(stdout_text) == 'LAST RESPONSE' ]]
 contains "$root/stderr" OUT06; contains "$root/stderr" OUT07; jq -e . "$root/stderr" >/dev/null
+color_plan
+run -Nni 'check structured command output'; ok
+[[ $(stdout_text) == 'COLOR OUTPUT DONE' ]]
+jq -se 'any(.[]; (.event == "terminal_output" or .event == "terminal_command_completed") and (.msg | contains("\u001b[32mCOLORED_BRANCH")))' "$root/stderr" >/dev/null
 run --tool-output invalid; bad; contains "$root/stderr" 'compact or full'

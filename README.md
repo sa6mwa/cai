@@ -969,8 +969,17 @@ startup setting. Each tool call captures its mode when it starts: active calls
 and already displayed output stay unchanged. Full mode retains supplied
 command and MCP output and all patch context. Any tool-level output limit is
 still reported explicitly.
-The UI escapes binary/control bytes. Terminal tool results and JSON logs preserve
-valid UTF-8 and replace malformed bytes with `?`.
+Command previews preserve recognized ANSI SGR colors/styles and discard other
+terminal controls, including cursor movement and title/clipboard strings.
+`NO_COLOR` and plain output strip command styling too. Styles are isolated per
+command and reset before returning to the host, including during streaming.
+CRLF becomes a newline; standalone carriage returns separate progress lines.
+Split control sequences and UTF-8 are handled incrementally; no terminal screen
+emulation or whole-output buffering is used. Malformed UTF-8, non-control
+binary bytes, and control bytes in other tool labels/results/patches are escaped
+in the UI.
+Terminal tool results and JSON logs preserve valid UTF-8 and replace malformed
+bytes with `?`; their content is unaffected by preview filtering.
 
 Successful `apply_patch` calls display the **agent's submitted changes**, with
 one neighboring unchanged line from the current edit's snapshot when the patch

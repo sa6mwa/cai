@@ -18,7 +18,8 @@ typedef struct cai_tool_display_config {
   /** Borrowed output sink. The renderer never closes it. */
   cai_sink *sink;
   /** Enable patch backgrounds and bright success/failure markers. Activity
-   * verbs use normal cyan; command/path details use bold bright cyan. */
+   * verbs use normal cyan; command/path details use bold bright cyan. Command
+   * output retains recognized ANSI SGR colors/styles only when enabled. */
   int color;
   /** Default captured by the next tool call; compact is the zero default. */
   int mode;
@@ -52,7 +53,13 @@ int cai_tool_display_set_width(cai_tool_display *display, size_t width,
                                cai_error *error);
 /** Consume a borrowed owner-thread runtime event. Payloads are written as they
  * arrive; command output is never retained for later expansion. Sink failures
- * propagate to the caller. Control bytes are escaped before terminal output.
+ * propagate to the caller. Command previews filter terminal controls, retain
+ * recognized SGR colors/styles when color is enabled, and reset styling before
+ * returning. Split controls/UTF-8 and styles are tracked per command. CRLF is
+ * normalized; standalone CR starts a new transcript line. Incomplete controls
+ * are discarded. Malformed UTF-8 and non-control binary bytes are escaped;
+ * other tool labels, results and patch contents continue to escape control
+ * bytes literally.
  */
 int cai_tool_display_event(cai_tool_display *display,
                            const cai_agent_runtime_event *event,

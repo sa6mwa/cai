@@ -500,8 +500,7 @@ static void commands(capture *c) {
   event(d, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "utf8",
         "\xa5 \xff \xc2\x80 \xed\xa0\x80 \xc3", 0, 0);
   event(d, CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED, "utf8", NULL, 0, 0);
-  assert(strstr(c->bytes, "split å \\xff \\xc2\\x80 \\xed\\xa0\\x80 \\xc3\n") !=
-         NULL);
+  assert(strstr(c->bytes, "split å \\xff  \\xed\\xa0\\x80 \\xc3\n") != NULL);
   reset(c);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_STARTED, "mcp", NULL,
         CAI_AGENT_TOOL_ACTION_MCP, 0);
@@ -633,6 +632,222 @@ static void utf8_text(void) {
     assert(bytes[n] == '\0');
   }
 }
+static void command_data(cai_tool_display *d, int type, const char *id,
+                         const char *data, size_t length) {
+  cai_agent_runtime_event e;
+  cai_error error;
+  memset(&e, 0, sizeof(e));
+  e.type = type;
+  e.tool_call_id = id;
+  e.runtime_session_id = "session";
+  e.data = data;
+  e.data_length = length;
+  e.terminal_has_exit_code = 1;
+  cai_error_init(&error);
+  assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
+  cai_error_cleanup(&error);
+}
+/* Strip only SGR emitted by the renderer. Any other actual terminal escape is
+ * a test failure rather than something this assertion silently sanitizes. */
+static void without_sgr(char *out, const char *bytes) {
+  while (*bytes != '\0') {
+    if (*bytes != '\033') {
+      *out++ = *bytes++;
+      continue;
+    }
+    assert(*++bytes == '[');
+    bytes++;
+    while ((*bytes >= '0' && *bytes <= '9') || *bytes == ';' || *bytes == ':')
+      bytes++;
+    assert(*bytes++ == 'm');
+  }
+  *out = '\0';
+}
+static void command_control_case(const char *bytes, size_t length,
+                                 const char *expected) {
+  capture c;
+  cai_sink_callbacks callbacks;
+  cai_tool_display_config config;
+  cai_tool_display *d;
+  cai_sink *sink;
+  cai_error error;
+  char plain[8192];
+  size_t split, expected_length = strlen(expected);
+  int color;
+  memset(&c, 0, sizeof(c));
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = write_capture;
+  callbacks.context = &c;
+  cai_error_init(&error);
+  assert(cai_sink_from_callbacks(&callbacks, &sink, &error) == CAI_OK);
+  for (color = 0; color <= 1; color++) {
+    memset(&config, 0, sizeof(config));
+    config.sink = sink;
+    config.color = color;
+    config.mode = CAI_TOOL_OUTPUT_FULL;
+    for (split = 0U; split <= length; split++) {
+      assert(cai_tool_display_new(&config, &d, &error) == CAI_OK);
+      event(d, CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED, "one", "command", 0,
+            0);
+      reset(&c);
+      command_data(d, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "one", bytes, split);
+      if (color && c.length != 0U && strchr(c.bytes, '\033') != NULL)
+        assert(strncmp(strrchr(c.bytes, '\033'), "\033[0m", 4U) == 0);
+      command_data(d, CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED, "one",
+                   bytes + split, length - split);
+      assert(c.length < sizeof(plain));
+      if (!color)
+        assert(strchr(c.bytes, '\033') == NULL);
+      without_sgr(plain, c.bytes);
+      if (strncmp(plain, expected, expected_length) != 0 ||
+          strcmp(plain + expected_length, "\n\n* Ran command\n") != 0) {
+        fprintf(stderr,
+                "command controls color=%d split=%lu: [%s], expected [%s]\n",
+                color, (unsigned long)split, plain, expected);
+        abort();
+      }
+      assert(strstr(c.bytes, "\\x1b") == NULL);
+      cai_tool_display_close(d);
+    }
+  }
+  cai_sink_close(sink);
+  cai_error_cleanup(&error);
+  free(c.bytes);
+}
+#define CONTROL_CASE(input, expected)                                          \
+  command_control_case(input, sizeof(input) - 1U, expected)
+static void command_controls(void) {
+  capture c;
+  cai_sink_callbacks callbacks;
+  cai_tool_display_config config;
+  cai_tool_display *d;
+  cai_sink *sink;
+  cai_error error;
+  char oversized[320];
+  size_t i;
+  CONTROL_CASE("## "
+               "\033[32mfeature/cai-agent\033[m...\033[31morigin/feature/"
+               "cai-agent\033[m\n"
+               "\033[0m\033[35m/home/mike/g/cai/README.md\033[0m",
+               "## "
+               "feature/cai-agent...origin/feature/cai-agent\n/home/mike/g/cai/"
+               "README.md");
+  CONTROL_CASE("\033[1;31mred\033[22;39m normal\033[38;5;202m orange"
+               "\033[48;2;1;2;3m background\033[0m END",
+               "red normal orange background END");
+  CONTROL_CASE("\033[4:3;38:2::1:2:3munderlined\033[m END", "underlined END");
+  CONTROL_CASE(
+      "\033]0;hidden\n\xc3\x9c title\007visible\033]8;;https://hidden\033\\"
+      "link\033]8;;\033\\\033P\xe2\x9c\x93 hidden\033\\"
+      "\033_\xf0\x9f\x9c\x80 hidden\033\\ END",
+      "visiblelink END");
+  CONTROL_CASE("\x9dhidden\x9c\xc2\x9b"
+               "32mgreen\xc2\x9b"
+               "0m\033]hidden\xc2\x9c END",
+               "green END");
+  CONTROL_CASE("\033]hidden\033\xc3\x9c\\still hidden\007END", "END");
+  CONTROL_CASE("\033]52;c;hidden clipboard\007\033Xhidden SOS\033\\"
+               "\033^hidden PM\033\\END",
+               "END");
+  CONTROL_CASE("\033]hidden\xe0\x80\x9c still hidden\007END", "END");
+  CONTROL_CASE("\033]hidden\xe2\007END", "END");
+  CONTROL_CASE("before\033[2J\033[H\033[?25l\033[3A\033(Bafter\0\007\b\177 END",
+               "beforeafter END");
+  CONTROL_CASE("progress\rnext\r\nlast", "progress\nnext\nlast");
+  CONTROL_CASE("€🚀å\033[31mÜ\033[0m END", "€🚀åÜ END");
+  CONTROL_CASE("invalid\xff\xed\xa0\x80\xc3",
+               "invalid\\xff\\xed\\xa0\\x80\\xc3");
+  CONTROL_CASE("keep\033[31", "keep");
+  CONTROL_CASE("keep\033]unfinished", "keep");
+  CONTROL_CASE("keep\033[?31mEND", "keepEND");
+  CONTROL_CASE("keep\033[1;38;2;3mEND", "keepEND");
+  CONTROL_CASE("keep\033[31\030END", "keepEND");
+  memcpy(oversized, "keep\033[", 6U);
+  memset(oversized + 6U, '1', sizeof(oversized) - 11U);
+  memcpy(oversized + sizeof(oversized) - 5U, "mEND", 5U);
+  command_control_case(oversized, sizeof(oversized) - 1U, "keepEND");
+
+  memset(&c, 0, sizeof(c));
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = write_capture;
+  callbacks.context = &c;
+  cai_error_init(&error);
+  assert(cai_sink_from_callbacks(&callbacks, &sink, &error) == CAI_OK);
+  memset(&config, 0, sizeof(config));
+  config.sink = sink;
+  config.color = 1;
+  config.preview_lines = 2U;
+  assert(cai_tool_display_new(&config, &d, &error) == CAI_OK);
+  event(d, CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED, "a", "first", 0, 0);
+  reset(&c);
+  event(d, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "a", "\033[1;31mRED", 0, 0);
+  assert(strstr(c.bytes, "\033[1m\033[31mRED\033[0m") != NULL);
+  reset(&c);
+  event(d, CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED, "b", "second", 0, 0);
+  event(d, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "b", "PLAIN", 0, 0);
+  assert(strstr(c.bytes, "\033[31m") == NULL);
+  reset(&c);
+  event(d, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "a", "STILL RED", 0, 0);
+  assert(strcmp(c.bytes, "\033[1m\033[31mSTILL RED\033[0m") == 0);
+  reset(&c);
+  event(d, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "a", "\033[22;39mNORMAL", 0, 0);
+  assert(strstr(c.bytes, "\033[31m") == NULL &&
+         strstr(c.bytes, "NORMAL") != NULL);
+  /* Repeated style changes never grow retained state or hide reset handling. */
+  for (i = 0U; i < 1000U; i++)
+    event(d, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "a", "\033[38;2;1;2;3m", 0, 0);
+  reset(&c);
+  event(d, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "a", "RGB", 0, 0);
+  assert(strcmp(c.bytes, "\033[38;2;1;2;3mRGB\033[0m") == 0);
+  reset(&c);
+  event(d, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "a", "\033[38;2;999;0;0mBAD", 0, 0);
+  assert(strcmp(c.bytes, "\033[38;2;1;2;3mBAD\033[0m") == 0);
+  reset(&c);
+  event(d, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "a", "\xc3", 0, 0);
+  assert(c.length == 0U);
+  event(d, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "b", "PLAIN", 0, 0);
+  assert(strcmp(c.bytes, "PLAIN") == 0);
+  reset(&c);
+  event(d, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "a", "\xa5", 0, 0);
+  assert(strcmp(c.bytes, "\033[38;2;1;2;3må\033[0m") == 0);
+  event(d, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "a",
+        "\033[1;2;3;4:3;5;7;8;9;11;51;53;73;26;38;5;9;48;2;1;2;3;58:2::4:5:6m"
+        "ATTRIBUTES",
+        0, 0);
+  reset(&c);
+  event(d, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "a",
+        "\033[22;23;24;25;27;28;29;10;54;55;75;39;49;59;50mPLAIN", 0, 0);
+  assert(strcmp(c.bytes, "PLAIN") == 0);
+  event(d, CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED, "a", NULL, 0, 0);
+  event(d, CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED, "b", NULL, 0, 0);
+  event(d, CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED, "preview", "preview", 0,
+        0);
+  reset(&c);
+  event(d, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "preview",
+        "\033]hidden\n\n\007\033[32mfirst\nsecond\nHIDDEN\033[31m", 0, 0);
+  assert(strstr(c.bytes, "first\nsecond\n\033[0m ⋮") != NULL);
+  assert(strstr(c.bytes, "hidden") == NULL &&
+         strstr(c.bytes, "HIDDEN") == NULL);
+  assert(strstr(c.bytes, "\033[31m") == NULL);
+  event(d, CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED, "preview", NULL, 0, 0);
+  event(d, CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED, "failure", "failure", 0,
+        0);
+  c.fail = 1;
+  {
+    cai_agent_runtime_event e;
+    memset(&e, 0, sizeof(e));
+    e.type = CAI_AGENT_EVENT_TERMINAL_OUTPUT;
+    e.tool_call_id = "failure";
+    e.runtime_session_id = "session";
+    e.data = "\033[31mtext";
+    e.data_length = strlen(e.data);
+    assert(cai_tool_display_event(d, &e, &error) == CAI_ERR_TRANSPORT);
+  }
+  cai_tool_display_close(d);
+  cai_sink_close(sink);
+  cai_error_cleanup(&error);
+  free(c.bytes);
+}
 int main(void) {
   capture c;
   memset(&c, 0, sizeof(c));
@@ -642,6 +857,7 @@ int main(void) {
   numbered_patches(&c);
   patches(&c);
   commands(&c);
+  command_controls();
   free(c.bytes);
   puts("patch rendering, live previews, status, mode capture and failure "
        "checks passed");
