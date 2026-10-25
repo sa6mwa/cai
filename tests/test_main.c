@@ -41456,7 +41456,9 @@ static void test_chat_client_compaction(test_state *state) {
       "data: [DONE]\n\n";
   static const char summary_body[] =
       "data: {\"id\":\"summary\",\"choices\":[{\"index\":0,\"delta\":{"
-      "\"content\":\"remembered objective\"},\"finish_reason\":\"stop\"}]}\n\n"
+      "\"content\":\"remembered objective\"},\"finish_reason\":\"stop\"}],"
+      "\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":50,"
+      "\"total_tokens\":150}}\n\n"
       "data: [DONE]\n\n";
   static const char recent_body[] =
       "data: {\"id\":\"recent\",\"choices\":[{\"index\":0,\"delta\":{"
@@ -41467,10 +41469,11 @@ static void test_chat_client_compaction(test_state *state) {
       "\"content\":\"after\"},\"finish_reason\":\"stop\"}]}\n\n"
       "data: [DONE]\n\n";
   static const char *first_required[] = {"first objective"};
-  static const char *summary_required[] = {"Transcript fragment:",
-                                           "first objective"};
-  static const char *follow_required[] = {"Transcript fragment:",
-                                          "remembered objective"};
+  static const char *summary_required[] = {
+      "Transcript fragment:", "first objective", "\"service_tier\":\"flex\""};
+  static const char *follow_required[] = {
+      "Transcript fragment:", "remembered objective",
+      "\"service_tier\":\"flex\""};
   static const char *recent_required[] = {"recent user"};
   static const char *last_required[] = {"remembered objective", "recent user",
                                         "recent reply", "second task"};
@@ -41479,11 +41482,11 @@ static void test_chat_client_compaction(test_state *state) {
        "OK", "text/event-stream", NULL, first_body},
       {"POST /v1/chat/completions HTTP/", recent_required, 1U, NULL, 0U, 200,
        "OK", "text/event-stream", NULL, recent_body},
-      {"POST /v1/chat/completions HTTP/", summary_required, 2U, NULL, 0U, 200,
+      {"POST /v1/chat/completions HTTP/", summary_required, 3U, NULL, 0U, 200,
        "OK", "text/event-stream", NULL, summary_body},
-      {"POST /v1/chat/completions HTTP/", follow_required, 2U, NULL, 0U, 200,
+      {"POST /v1/chat/completions HTTP/", follow_required, 3U, NULL, 0U, 200,
        "OK", "text/event-stream", NULL, summary_body},
-      {"POST /v1/chat/completions HTTP/", follow_required, 2U, NULL, 0U, 200,
+      {"POST /v1/chat/completions HTTP/", follow_required, 3U, NULL, 0U, 200,
        "OK", "text/event-stream", NULL, summary_body},
       {"POST /v1/chat/completions HTTP/", last_required, 4U, NULL, 0U, 200,
        "OK", "text/event-stream", NULL, last_body}};
@@ -41495,6 +41498,7 @@ static void test_chat_client_compaction(test_state *state) {
   cai_session *session = NULL;
   cai_response *response = NULL;
   cai_source *history = NULL;
+  cai_usage_accounting usage;
   cai_error error;
   char history_json[4096];
   char *first_prompt;
@@ -41518,6 +41522,7 @@ static void test_chat_client_compaction(test_state *state) {
       "\"context_window_tokens\":96000}]}";
   cai_agent_config_init(&agent_config);
   agent_config.model = "test-model";
+  agent_config.service_tier = "flex";
   agent_config.disable_auto_compaction = 1;
   first_prompt = (char *)malloc(52001U);
   if (first_prompt != NULL) {
@@ -41552,6 +41557,16 @@ static void test_chat_client_compaction(test_state *state) {
   if (rc == CAI_OK) {
     rc = cai_session_compact(session, &error);
     expect_int(state, "chat_compact_summary", rc, CAI_OK);
+    if (rc == CAI_OK) {
+      expect_int(state, "chat_compact_usage",
+                 cai_session_usage(session, &usage, &error), CAI_OK);
+      expect_int(state, "chat_compact_usage_total", usage.usage.total_tokens,
+                 450L);
+      expect_int(state, "chat_compact_client_usage",
+                 cai_client_usage(client, &usage, &error), CAI_OK);
+      expect_int(state, "chat_compact_client_total", usage.usage.total_tokens,
+                 450L);
+    }
     if (rc != CAI_OK) {
       test_fail(state, "chat_compact_summary_detail",
                 error.message != NULL ? error.message : "missing error");
@@ -41592,17 +41607,19 @@ static void test_chat_client_compaction(test_state *state) {
                     &server.child_status);
 }
 
-static void test_chat_compaction_failure_preserves_history(test_state *state) {
+static void test_chat_compaction_failure_case(test_state *state, int variant) {
   static const char first_body[] =
       "data: {\"id\":\"first\",\"choices\":[{\"index\":0,\"delta\":{"
-      "\"content\":\"original reply\"},\"finish_reason\":\"stop\"}]}\n\n"
+      "\"content\":\"original reply\"},\"finish_reason\":\"stop\"}],"
+      "\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":10,"
+      "\"total_tokens\":30}}\n\n"
       "data: [DONE]\n\n";
   static const char *summary_required[] = {
       "Transcript fragment:", "original objective",
       "Copy identifiers, exact values, markers",
       "Record completed tool calls and their results",
       "\"max_completion_tokens\":1000"};
-  static const mock_http_expectation script[] = {
+  mock_http_expectation script[] = {
       {"POST /v1/chat/completions HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
        "text/event-stream", NULL, first_body},
       {"POST /v1/chat/completions HTTP/", summary_required, 5U, NULL, 0U, 500,
@@ -41616,11 +41633,35 @@ static void test_chat_compaction_failure_preserves_history(test_state *state) {
   cai_session *session = NULL;
   cai_response *response = NULL;
   cai_source *history = NULL;
+  cai_usage_accounting usage;
+  cai_usage_limits limits;
   cai_error error;
-  char history_json[4096];
+  char history_json[4096], original_history[4096] = "", summary_body[2048];
+  char name[96];
   int rc;
 
-  if (http_mock_server_open_script(state, "chat_compaction_failure", script,
+  snprintf(name, sizeof(name), "chat_compaction_failure_%d", variant);
+  script[1].request_id = "req-summary-failure";
+  if (variant != 0) {
+    snprintf(summary_body, sizeof(summary_body),
+             "data: {\"id\":\"summary\",\"choices\":[{\"index\":0,"
+             "\"delta\":{%s},\"finish_reason\":\"%s\"}]}\n\n"
+             "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":100,"
+             "\"prompt_tokens_details\":{\"cached_tokens\":25},"
+             "\"completion_tokens\":50,\"completion_tokens_details\":{"
+             "\"reasoning_tokens\":40},\"total_tokens\":150}}\n\n"
+             "%s",
+             variant == 2 || variant == 4
+                 ? "\"reasoning_content\":\"unfinished summary\""
+                 : "\"content\":\"incomplete summary\"",
+             variant == 5 || variant == 6 ? "stop" : "length",
+             variant == 6 ? "" : "data: [DONE]\n\n");
+    script[1].status = 200;
+    script[1].status_text = "OK";
+    script[1].content_type = "text/event-stream";
+    script[1].body = summary_body;
+  }
+  if (http_mock_server_open_script(state, name, script,
                                    sizeof(script) / sizeof(script[0]),
                                    &server) != 0)
     return;
@@ -41644,28 +41685,77 @@ static void test_chat_compaction_failure_preserves_history(test_state *state) {
     rc = cai_client_new_agent(client, &agent_config, &agent, &error);
   if (rc == CAI_OK)
     rc = cai_agent_new_session(agent, &session, &error);
+  cai_usage_limits_init(&limits);
+  limits.max_total_tokens = 50LL;
+  if (rc == CAI_OK && (variant == 3 || variant == 5))
+    rc = cai_session_set_usage_limits(session, &limits, &error);
+  if (rc == CAI_OK && variant == 4)
+    rc = cai_client_set_usage_limits(client, &limits, &error);
   if (rc == CAI_OK) {
     rc =
         cai_session_send_text(session, "original objective", &response, &error);
     expect_int(state, "chat_compaction_failure_first", rc, CAI_OK);
   }
   cai_response_destroy(response);
+  response = NULL;
+  if (rc == CAI_OK) {
+    rc = cai_session_export_history_source(session, &history, &error);
+    expect_int(state, name, rc, CAI_OK);
+    if (rc == CAI_OK)
+      expect_int(state, name,
+                 read_source_text(state, name, history, original_history,
+                                  sizeof(original_history), &error),
+                 1L);
+    cai_source_close(history);
+    history = NULL;
+  }
   if (rc == CAI_OK) {
     rc = cai_session_compact(session, &error);
-    expect_int(state, "chat_compaction_failure_result", rc != CAI_OK, 1L);
-    expect_substr(state, "chat_compaction_failure_detail", error.detail,
-                  "summary unavailable");
+    expect_int(state, name, rc,
+               variant == 0   ? CAI_ERR_SERVER
+               : variant == 6 ? CAI_ERR_PROTOCOL
+                              : CAI_ERR_LIMIT);
+    if (variant == 0)
+      expect_substr(state, name, error.detail, "summary unavailable");
+    else if (variant == 6)
+      expect_substr(state, name, error.message, "[DONE]");
+    else if (variant != 5) {
+      expect_str(state, name, error.server_code, "output_length");
+      expect_substr(state, name, error.message, "output token limit");
+      expect_str(state, name, error.request_id, "req-summary-failure");
+    } else
+      expect_substr(state, name, error.message, "usage or spend limit");
     cai_error_cleanup(&error);
     cai_error_init(&error);
+    expect_int(state, name, cai_session_usage(session, &usage, &error), CAI_OK);
+    expect_int(state, name, usage.usage.total_tokens,
+               variant == 0 ? 30L : 180L);
+    expect_int(state, name, usage.usage.input_cached_tokens,
+               variant == 0 ? 0L : 25L);
+    expect_int(state, name, usage.usage.output_reasoning_tokens,
+               variant == 0 ? 0L : 40L);
+    expect_int(state, name, usage.limit_exceeded, variant == 3 || variant == 5);
+    expect_int(state, name, cai_client_usage(client, &usage, &error), CAI_OK);
+    expect_int(state, name, usage.usage.total_tokens,
+               variant == 0 ? 30L : 180L);
+    expect_int(state, name, usage.limit_exceeded, variant == 4);
     rc = cai_session_export_history_source(session, &history, &error);
     expect_int(state, "chat_compaction_failure_export", rc, CAI_OK);
     if (rc == CAI_OK &&
         read_source_text(state, "chat_compaction_failure_read", history,
                          history_json, sizeof(history_json), &error)) {
+      expect_str(state, name, history_json, original_history);
       expect_substr(state, "chat_compaction_failure_original_prompt",
                     history_json, "original objective");
       expect_substr(state, "chat_compaction_failure_original_reply",
                     history_json, "original reply");
+    }
+    if (variant >= 3 && variant <= 5) {
+      expect_int(state, name,
+                 cai_session_send_text(session, "Must not request again",
+                                       &response, &error),
+                 CAI_ERR_LIMIT);
+      cai_response_destroy(response);
     }
   }
   cai_source_close(history);
@@ -41673,8 +41763,13 @@ static void test_chat_compaction_failure_preserves_history(test_state *state) {
   cai_agent_destroy(agent);
   cai_client_close(client);
   cai_error_cleanup(&error);
-  expect_child_exit(state, "chat_compaction_failure", server.pid,
-                    &server.child_status);
+  expect_child_exit(state, name, server.pid, &server.child_status);
+}
+
+static void test_chat_compaction_failure_preserves_history(test_state *state) {
+  int variant;
+  for (variant = 0; variant < 7; variant++)
+    test_chat_compaction_failure_case(state, variant);
 }
 
 static void test_chat_compaction_tiny_context(test_state *state) {

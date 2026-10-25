@@ -4745,8 +4745,8 @@ static int cai_chat_summary_delta(void *context, const char *item_id,
 
 /* Chat Completions has no compaction item. Summarize bounded consecutive
  * fragments of the recorded history, carrying the previous summary forward.
- * A failure leaves the original history intact; successful chunks are still
- * charged to the session and client. */
+ * A failure leaves the original history intact; reported usage is still charged
+ * to the session and client, including unsuccessful chunks. */
 static int cai_chat_summarize_fragment(cai_session *session,
                                        lonejson_spooled *fragment,
                                        lonejson_spooled *previous,
@@ -4822,6 +4822,9 @@ static int cai_chat_summarize_fragment(cai_session *session,
                            error);
   }
   if (rc == CAI_OK)
+    rc = params->set_service_tier(
+        params, CAI_SESSION_AGENT_IMPL(session)->service_tier, error);
+  if (rc == CAI_OK)
     rc = params->set_instructions(params, instructions, error);
   if (rc == CAI_OK)
     rc = params->set_max_output_tokens(params, output_limit, error);
@@ -4846,6 +4849,10 @@ static int cai_chat_summarize_fragment(cai_session *session,
   }
   if (rc == CAI_OK)
     rc = cai_session_record_usage(session, &usage, error);
+  else if (!cai_token_usage_is_empty(&usage))
+    /* Preserve the stream failure, including its provider diagnostic, even
+     * when recording this billed usage also crosses an accounting limit. */
+    (void)cai_session_record_usage(session, &usage, NULL);
   if (rc == CAI_OK &&
       (next->size_fn(next) == 0U || next->size_fn(next) > summary_limit)) {
     rc = cai_set_error(error, CAI_ERR_LIMIT,

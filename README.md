@@ -1450,6 +1450,8 @@ handling, and session state save/restore. See
   Reported cutoff usage is counted even when only reasoning or incomplete tool
   arguments were emitted. Session/client limits and goal token budgets apply
   before continuation; incomplete calls are never executed or added to history.
+  Chat compaction summaries keep the selected service tier. Failed summaries
+  still count reported usage while retaining the original history and error.
 - Local spooled session history is opt-in with `enable_local_history`; default
   sessions rely on OpenAI server-side context through `previous_response_id` or
   Conversations. When enabled, `cai_session_export_history_source` streams the
