@@ -12,13 +12,11 @@ static int test_goal_handoff(void) {
   memset(&state, 0, sizeof(state));
   memset(&event, 0, sizeof(event));
   state.batch = 1;
-  state.auto_goal = 1;
   state.awaiting_turn = 1;
   state.goal_starts_pending = 2U;
   event.type = CAI_AGENT_EVENT_RUN_COMPLETED;
   if (cli_event(&state, &event, NULL) != CAI_OK || state.awaiting_turn ||
-      cli_advance_automation(&state, NULL) != CAI_OK || state.automation_done ||
-      !state.auto_goal)
+      cli_advance_automation(&state, NULL) != CAI_OK || state.automation_done)
     return 1;
   /* An older turn completing must not consult an obsolete goal projection.
    * Unrelated and child goal events cannot acknowledge these host starts. */

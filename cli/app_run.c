@@ -136,7 +136,6 @@ typedef struct cli_state {
   int suppress_replay;
   int automation_done;
   int automation_failed;
-  int auto_goal;
   size_t goal_starts_pending;
   size_t next_instruction;
   cai_chatgpt_quota quota;
@@ -1180,10 +1179,8 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     if (event->type == CAI_AGENT_EVENT_RUN_STARTED) {
       state->has_review_metrics = 0;
       cai_app_bridge_outcome(state->bridge, CAI_APP_RUNNING);
-      if (state->batch && state->batch_pending_turns > 0U) {
-        state->awaiting_turn = 1;
-        state->automation_failed = 0;
-      }
+      state->awaiting_turn = 1;
+      state->automation_failed = 0;
       state->show_welcome = 0;
       cai_cli_reasoning_reset(&state->reasoning);
       cai_cli_response_close(&state->final_response);
@@ -2058,9 +2055,14 @@ static int cli_switch_session(cli_state *state, const char *id, int new_session,
   if (cli_finish_response(state) != 0)
     return CAI_ERR_TRANSPORT;
   cli_close_runtime(state);
+  state->awaiting_turn = 0;
+  state->automation_done = 1;
+  state->automation_failed = 0;
   rc = cli_open_runtime(state, id, new_session, error);
-  if (rc != CAI_OK || !new_session)
+  if (rc != CAI_OK)
     return rc;
+  if (!new_session)
+    return cli_advance_automation(state, error);
   created_id = cai_agent_runtime_session_id(state->runtime);
   if (created_id == NULL)
     return cai_cli_error(error, CAI_ERR_PROTOCOL, "new session ID unavailable");
@@ -2266,11 +2268,9 @@ static int cli_goal_command(cli_state *state, const char *arg,
                    "boundary.\n") != 0)
     return CAI_ERR_TRANSPORT;
   if (objective == NULL && strcmp(action, "resume") != 0) {
-    state->auto_goal = 0;
     state->automation_done = 1;
     return CAI_OK;
   }
-  state->auto_goal = 1;
   state->automation_done = 0;
   state->automation_failed = 0;
   rc = cai_agent_runtime_state(state->runtime, &run_state, error);
@@ -3541,7 +3541,6 @@ static int cli_start_automation(cli_state *state, cai_error *error) {
       return rc;
     objective = state->generated_goal;
   }
-  state->auto_goal = objective != NULL;
   if (objective != NULL) {
     rc = cli_start_goal(state, objective, error);
     if (rc != CAI_OK)
@@ -3557,18 +3556,20 @@ static int cli_start_automation(cli_state *state, cai_error *error) {
   }
   if (instruction == NULL) {
     state->automation_done = 1;
-    return CAI_OK;
+    return cli_advance_automation(state, error);
   }
   return cli_submit_automation(state, instruction, error);
 }
 
 static int cli_advance_automation(cli_state *state, cai_error *error) {
   cai_agent_goal_snapshot goal;
+  cai_agent_run_state run_state;
   const char *next;
   int rc;
 
-  if (state->automation_done || state->awaiting_turn ||
-      state->batch_pending_turns > 0U || state->exit_requested)
+  if (state->awaiting_turn || state->batch_pending_turns > 0U ||
+      state->exit_requested || state->review_runtime != NULL ||
+      state->shell.pid > 0)
     return CAI_OK;
   if (state->automation_failed) {
     state->automation_done = 1;
@@ -3578,30 +3579,39 @@ static int cli_advance_automation(cli_state *state, cai_error *error) {
    * applied. Do not consume that older goal projection as the new outcome. */
   if (state->goal_starts_pending > 0U)
     return CAI_OK;
-  if (state->auto_goal) {
+  rc = cai_agent_runtime_state(state->runtime, &run_state, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (run_state != CAI_AGENT_IDLE && run_state != CAI_AGENT_COMPLETED)
+    return CAI_OK;
+  /* Pursuit belongs to the durable goal, not to the UI path that created it.
+   * This also covers model-created goals and resumed active checkpoints.
+   * Cancellation/failure above requires a new user turn or explicit resume.
+   */
+  if (state->options.goals) {
     rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
     if (rc != CAI_OK)
       return rc;
-    if (!goal.has_goal || goal.status == NULL) {
-      state->automation_failed = 1;
-      state->automation_done = 1;
-      return CAI_OK;
-    }
-    if (strcmp(goal.status, "active") == 0)
+    if (goal.has_goal && goal.status != NULL &&
+        strcmp(goal.status, "active") == 0) {
+      state->automation_done = 0;
       return cli_submit_automation(
           state,
           "Continue pursuing the active goal. Finish the remaining "
           "work, verify the result, and update the goal status when "
           "appropriate.",
           error);
-    if (strcmp(goal.status, "complete") != 0) {
+    }
+    if (!state->automation_done && goal.has_goal && goal.status != NULL &&
+        strcmp(goal.status, "complete") != 0) {
       state->automation_failed = 1;
       state->automation_done = 1;
       cli_diagnostic(state, PSLOG_LEVEL_WARN, goal.status);
       return CAI_OK;
     }
-    state->auto_goal = 0;
   }
+  if (state->automation_done)
+    return CAI_OK;
   next = cai_cli_instruction_at(&state->options, state->next_instruction);
   if (next != NULL) {
     state->next_instruction++;

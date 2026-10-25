@@ -166,8 +166,8 @@ int main(void) {
   failures += check(strcmp(status.elements[4], "crd 43") == 0, "credits order");
   failures +=
       check(strcmp(status.elements[5], "feature/ui") == 0, "branch order");
-  failures += check(strcmp(status.elements[6], "goal active: Ship agent") == 0,
-                    "goal order");
+  failures +=
+      check(strcmp(status.elements[6], "goal=active 0m") == 0, "goal order");
   sl = sl_create();
   failures += check(sl != NULL && cai_cli_status_apply(sl, &status) == 0,
                     "softline accepts status");
@@ -180,14 +180,43 @@ int main(void) {
                        0.0, 0.0, "openai", &goal);
   failures += check(status.count == 5U && status.credits[0] == '\0',
                     "unavailable credits cleared on refresh");
-  failures += check(strcmp(status.elements[4], "goal active: Line Break") == 0,
-                    "goal controls sanitized");
+  failures += check(strcmp(status.elements[4], "goal=active 0m") == 0,
+                    "goal objective omitted, including controls");
+  {
+    const long long seconds[] = {-1LL,   59LL,    60LL,    2759LL,
+                                 3600LL, 38699LL, 86400LL, 903900LL};
+    const char *expected[] = {"goal=active 0m",     "goal=active 0m",
+                              "goal=active 1m",     "goal=active 45m",
+                              "goal=active 1h0m",   "goal=active 10h44m",
+                              "goal=active 1d0h0m", "goal=active 10d11h5m"};
+    size_t i;
+    for (i = 0U; i < sizeof(seconds) / sizeof(seconds[0]); i++) {
+      goal.elapsed_seconds = seconds[i];
+      cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0,
+                           &quota, 0.0, 0.0, "openai", &goal);
+      failures += check(strcmp(status.elements[4], expected[i]) == 0,
+                        "compact goal duration without seconds");
+    }
+    goal.status = "paused";
+    goal.elapsed_seconds = 902700LL;
+    cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
+                         0.0, 0.0, "openai", &goal);
+    failures += check(strcmp(status.elements[4], "goal=paused 10d10h45m") == 0,
+                      "paused goal retains elapsed time");
+  }
   cai_cli_status_refresh_branch(&status, "/proc");
   failures += check(status.branch[0] == '\0', "nonrepository branch hidden");
   goal.status = "complete";
   cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
                        0.0, 0.0, "openai", &goal);
-  failures += check(status.count == 3U, "completed goal hidden");
+  failures +=
+      check(status.count == 4U &&
+                strcmp(status.elements[3], "goal=achieved 10d10h45m") == 0,
+            "achieved goal shows final elapsed time");
+  goal.has_goal = 0;
+  cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
+                       0.0, 0.0, "openai", &goal);
+  failures += check(status.count == 3U, "cleared goal hidden");
   quota.has_weekly = 1;
   quota.weekly_remaining_percent = 73.0;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,

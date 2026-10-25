@@ -675,6 +675,11 @@ keep their > prefix. The gray ! message line receives ANSI-free libmdf text.
 Show the current durable goal with status, token accounting, and active time.
 The status command also shows this view; help renders the command table.
 Prefer asking the agent to create and manage goals.
+Goals created by model tools, commands, startup options or host controls use
+the same pursuit loop. An active goal continues after a completed turn and
+when resumed from storage. Approved queued prompts take priority.
+Cancellation or provider failure stops automatic pursuit for the current
+invocation until another user turn; pause also prevents pursuit on restart.
 .TP
 .BI /goal " new TEXT"
 Start and pursue a fresh, unbudgeted goal, replacing any current goal without
@@ -728,7 +733,11 @@ Before the first turn, the thinking line shows
 including after replaying a resumed conversation.
 The status line shows model and reasoning effort, context used as a percentage,
 the workspace, available ChatGPT subscription quota and credits or API cost estimate,
-the Git branch when available, and an active goal.
+the Git branch when available, and goal status with elapsed active time such
+as goal=active 45m or goal=active 10d10h45m.
+The objective is available through /goal rather than the status line.
+Completed goals show goal=achieved with their final elapsed active time until
+replaced or cleared.
 Quota windows are labeled by their returned duration, including weekly-only
 accounts and any shorter window returned by the backend. Quota is fetched at
 startup and after completed turns in the background, without delaying prompt

@@ -27,7 +27,8 @@ send '/goal pause\r'; release; expect paused
 terminal_close
 count=$(requests)
 terminal_start
-expect 'Pausable objective'; [[ $(requests) == "$count" ]]
+send '/goal\r'; expect 'Pausable objective'; expect 'Status: paused'
+[[ $(requests) == "$count" ]]
 plan '{"plan":[{"tool":"update_goal","arguments":{"status":"complete"}},"RESUMED done"]}'
 send '/goal resume\r'; expect_assistant 'RESUMED done'
 send '/goal status\r'; expect complete

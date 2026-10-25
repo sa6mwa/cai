@@ -1068,6 +1068,11 @@ if(CAI_BUILD_LUA)
           "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host")
         set_tests_properties(cai_app_identity_lua PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
           ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
+        add_test(NAME cai_app_lua_goal_pursuit COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_goal_pursuit_test.sh"
+          "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host" responses interactive basic)
+        set_tests_properties(cai_app_lua_goal_pursuit PROPERTIES LABELS "cli;local;offline" TIMEOUT 30
+          ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
         add_test(NAME cai_app_lua_startup_text COMMAND bash
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_startup_text_test.sh"
           "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host" host)

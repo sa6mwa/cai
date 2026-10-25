@@ -5,6 +5,29 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-023: Model-created active goals stop after the first turn
+
+- **Status:** fixed.
+- **Cause:** the application enabled automatic pursuit only for goals started
+  through commands or startup flags. A model's `create_goal` tool updated the
+  durable goal but left the application's separate activation flag unset.
+- **Resolution:** remove the separate activation flag and consult durable goal
+  state at settled turn boundaries, including after replay. All creation paths
+  share continuation scheduling. Failed/cancelled turns stop pursuit until a
+  new user turn; paused or limited goals do not automatically continue.
+  Approved queued prompts precede generated continuations.
+- **Verification:** the original two-request stall was reproduced with a mock
+  provider before the fix. Regressions exercise Responses and Chat Completions
+  interactively and in batch, plus public C and Lua application receivers:
+  model-created goals, multiple continuations, completion, repeated startup
+  instructions, queue ordering, pause/reopen/resume, cancellation, provider
+  failure, blocked-goal termination, startup replay and explicit session
+  switching.
+- **Presentation:** the status bar shows `goal=STATUS` and elapsed active time
+  in compact days/hours/minutes (for example `goal=active 10d10h45m`); the
+  objective and accounting remain available through `/goal`. Completed goals
+  remain as `goal=achieved` with their final duration until replaced or cleared.
+
 ## BUG-021: Reasoning row markers and styling are applied after Markdown rendering
 
 - **Status:** fixed.

@@ -474,8 +474,12 @@ the effective initial delay must not exceed the maximum delay.
 The softline prompt is `> `. Its status bar shows model and reasoning effort,
 the last measured context percentage, a shortened workspace path, available
 ChatGPT subscription quota remaining and credits, the Git branch when present,
-and an active goal. Quota appears as `w 72%` when only a weekly window is available,
-or `w 72% 1h 48%` when the backend also reports an hourly window. Windows are
+and goal status with elapsed active time, such as `goal=active 45m` or
+`goal=active 10d10h45m`, without the objective. Completed goals show
+`goal=achieved` with their final elapsed active time until replaced or cleared;
+`/goal` shows the objective and accounting. Quota appears as `w 72%` when only
+a weekly window is available, or `w 72% 1h 48%` when the backend also reports an
+hourly window. Windows are
 identified by their returned duration. Available credits follow the quota as
 `crd 43` or `crd unlimited`, rounded to whole numbers; `/status` retains
 fractional balances. Missing credit values are hidden. `libcai` exposes windows
@@ -493,8 +497,13 @@ next safe model/tool boundary; `/goal resume` resumes pursuit. `/goal clear`
 removes goal tracking while allowing the current user turn to finish.
 `/goal help` renders the command table. Unknown commands and missing objectives
 are errors; they never become goal instructions. Commands remain responsive
-during a turn, and goal state survives session replay. Completed or stopped
-pursuit leaves the interactive prompt open.
+during a turn, and goal state survives session replay. Goals created by model
+tools, slash commands, startup options or host controls use the same pursuit
+loop: an active goal continues after each completed turn and when resumed from
+storage. Approved queued prompts take priority over generated continuations.
+Cancellation or a provider failure stops automatic pursuit for the current
+invocation until another user turn; pausing the goal also prevents pursuit on
+restart. Completed or stopped pursuit leaves the interactive prompt open.
 
 `/model [MODEL [EFFORT]]` shows the current and pending settings and the
 provider catalog, or changes model and optionally reasoning effort.

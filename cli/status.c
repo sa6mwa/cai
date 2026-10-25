@@ -205,7 +205,6 @@ void cai_cli_status_build(cai_cli_status *status, const char *model,
   char safe_model[128];
   char safe_effort[32];
   char safe_tier[32];
-  char safe_objective[120];
   char safe_status[32];
   size_t n;
   cai_cli_status_copy(safe_model, sizeof(safe_model), model);
@@ -284,13 +283,23 @@ void cai_cli_status_build(cai_cli_status *status, const char *model,
   if (status->branch[0] != '\0') {
     status->elements[status->count++] = status->branch;
   }
-  if (goal != NULL && goal->has_goal && goal->status != NULL &&
-      strcmp(goal->status, "complete") != 0) {
-    cai_cli_status_copy(safe_objective, sizeof(safe_objective),
-                        goal->objective);
-    cai_cli_status_copy(safe_status, sizeof(safe_status), goal->status);
-    snprintf(status->goal, sizeof(status->goal), "goal %s: %s", safe_status,
-             safe_objective);
+  if (goal != NULL && goal->has_goal && goal->status != NULL) {
+    long long minutes =
+        goal->elapsed_seconds > 0LL ? goal->elapsed_seconds / 60LL : 0LL;
+    char duration[80];
+    if (minutes >= 1440LL)
+      snprintf(duration, sizeof(duration), "%lldd%lldh%lldm", minutes / 1440LL,
+               (minutes / 60LL) % 24LL, minutes % 60LL);
+    else if (minutes >= 60LL)
+      snprintf(duration, sizeof(duration), "%lldh%lldm", minutes / 60LL,
+               minutes % 60LL);
+    else
+      snprintf(duration, sizeof(duration), "%lldm", minutes);
+    cai_cli_status_copy(safe_status, sizeof(safe_status),
+                        strcmp(goal->status, "complete") == 0 ? "achieved"
+                                                              : goal->status);
+    snprintf(status->goal, sizeof(status->goal), "goal=%s %s", safe_status,
+             duration);
     status->elements[status->count++] = status->goal;
   }
 }

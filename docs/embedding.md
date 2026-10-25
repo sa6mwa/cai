@@ -228,6 +228,15 @@ the app reaches its control boundary.
 | `CAI_APP_RESUME_GOAL` | None | Resume a resumable goal and pursue it. |
 | `CAI_APP_CLEAR_GOAL` | None | Clear goal tracking without undoing completed work. |
 
+The application pursues the runtime's active durable goal regardless of whether
+it was created by a model tool, a slash command, startup options or host control.
+Successful turns generate further goal continuations until the goal completes
+or stops; approved queued prompts run first. Resuming an active goal from storage
+also starts pursuit. Cancellation or a provider failure stops automatic pursuit
+for the current invocation until another user turn. Pause the goal to suppress
+pursuit across restarts. This behavior is shared by the C receiver, Lua facade
+and CAI executable.
+
 Acceptance into the app FIFO is distinct from acceptance by the runtime or
 softline. `control_callback(context, id, status, error)` acknowledges each
 accepted command on the run thread, outside the queue lock. This includes
