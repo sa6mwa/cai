@@ -138,7 +138,8 @@ if [[ "$scope" != full ]]; then
   export SMITH_THEME=riced:iosvkem
   run --list; ok
   unset CAI_TEST_APP_NAME SMITH_THEME
-  tui_themes
+  # The shared /theme command runs through the full CLI scope below. Hosts
+  # verify their own settings/argv/environment boundary without repeating it.
   exit 0
 fi
 render config

@@ -37,11 +37,11 @@ static int write_all(int fd, const char *data, size_t size) {
   return 0;
 }
 
-/* Record the ASCII input row independently of sticky-line redraws. This is a
- * bounded data snapshot, not a terminal emulator or an assertion engine. */
-static void prompt_control(const char *csi, char *prompt, size_t capacity,
-                           int rows, int width, int *row, int *column,
-                           int *scroll_bottom) {
+/* Record fixed ASCII rows independently of interleaved feed writes. These
+ * bounded snapshots contain data, not test decisions. */
+static void row_control(const char *csi, char *snapshot, size_t capacity,
+                        int target, int rows, int width, int *row, int *column,
+                        int *scroll_bottom) {
   char *end;
   long first = strtol(csi, &end, 10);
   long second = *end == ';' ? strtol(end + 1, NULL, 10) : 1L;
@@ -68,16 +68,41 @@ static void prompt_control(const char *csi, char *prompt, size_t capacity,
     if (*end != ';')
       second = rows;
     *scroll_bottom = (int)(second > rows ? rows : second);
-  } else if ((command == 'K' && *row == rows) || command == 'J') {
+  } else if ((command == 'K' && *row == target) || command == 'J') {
     /* Default K erases from the cursor; K=1 erases through it. */
     long mode = strtol(csi, NULL, 10);
-    int start = mode == 1L || mode == 2L || *row < rows ? 0 : *column - 1;
-    int stop = mode == 1L ? *column : (int)capacity;
-    if (mode > 2L || (command == 'J' && mode == 1L && *row < rows))
+    int start = mode == 1L || mode == 2L || *row < target ? 0 : *column - 1;
+    int stop = mode == 1L && *row == target ? *column : (int)capacity;
+    if (mode > 2L || (command == 'J' && ((mode == 1L && *row < target) ||
+                                         (mode == 0L && *row > target))))
       return;
     for (i = start; i < stop && i < (int)capacity; i++)
-      prompt[i] = ' ';
+      snapshot[i] = ' ';
   }
+}
+
+static int save_rows(const char *directory, const char *name, char rows[][4096],
+                     size_t count, size_t width) {
+  char path[4096], final[4096];
+  FILE *file;
+  size_t row, length;
+  int rc = 0;
+  snprintf(path, sizeof(path), "%s/%s.tmp", directory, name);
+  snprintf(final, sizeof(final), "%s/%s", directory, name);
+  file = fopen(path, "w");
+  if (file == NULL)
+    return -1;
+  for (row = 0U; row < count; row++) {
+    length = width;
+    while (length > 0U && rows[row][length - 1U] == ' ')
+      length--;
+    if (fwrite(rows[row], 1U, length, file) != length ||
+        fputc('\n', file) == EOF)
+      rc = -1;
+  }
+  if (fclose(file) != 0)
+    rc = -1;
+  return rc == 0 ? rename(path, final) : rc;
 }
 
 int main(int argc, char **argv) {
@@ -89,15 +114,16 @@ int main(int argc, char **argv) {
       *name;
   ssize_t count;
   size_t i, used, feed_used;
+  int row;
   fd_set reads;
   struct timeval timeout;
   struct winsize window;
   struct termios attributes;
   FILE *settings;
-  char prompt[4096], csi[64];
-  size_t csi_length = 0U, prompt_length;
+  char screen[30][4096], csi[64];
+  size_t csi_length = 0U, row_length;
   int cursor_row = 1, cursor_column = 1, scroll_bottom = 30;
-  memset(prompt, ' ', sizeof(prompt));
+  memset(screen, ' ', sizeof(screen));
   if (argc < 4) {
     fprintf(stderr, "usage: terminal_peer OUTPUT_DIR WIDTH COMMAND [ARG...]\n");
     return 2;
@@ -227,8 +253,15 @@ int main(int argc, char **argv) {
                   write_all(master, reply, (size_t)length) != 0)
                 stopped = 1;
             }
-            prompt_control(csi, prompt, sizeof(prompt), window.ws_row, width,
-                           &cursor_row, &cursor_column, &scroll_bottom);
+            for (row = 1; row < window.ws_row; row++) {
+              int r = cursor_row, column = cursor_column;
+              int bottom = scroll_bottom;
+              row_control(csi, screen[row - 1], sizeof(screen[0]), row,
+                          window.ws_row, width, &r, &column, &bottom);
+            }
+            row_control(csi, screen[window.ws_row - 1], sizeof(screen[0]),
+                        window.ws_row, window.ws_row, width, &cursor_row,
+                        &cursor_column, &scroll_bottom);
             state = 0;
           }
           continue;
@@ -261,9 +294,9 @@ int main(int argc, char **argv) {
             if (cursor_column > 1)
               cursor_column--;
           } else if (ch >= 32U && ch < 127U) {
-            if (cursor_row == window.ws_row && cursor_column > 0 &&
-                cursor_column <= (int)sizeof(prompt))
-              prompt[cursor_column - 1] = (char)ch;
+            if (cursor_row > 0 && cursor_row <= window.ws_row &&
+                cursor_column > 0 && cursor_column <= (int)sizeof(screen[0]))
+              screen[cursor_row - 1][cursor_column - 1] = (char)ch;
             if (cursor_column < width)
               cursor_column++;
           }
@@ -271,24 +304,21 @@ int main(int argc, char **argv) {
             plain[used++] = (char)ch;
         }
       }
-      if (write_all(text, plain, used))
+      row_length =
+          (size_t)width < sizeof(screen[0]) ? (size_t)width : sizeof(screen[0]);
+      if (save_rows(argv[1], "prompt", &screen[window.ws_row - 1], 1U,
+                    row_length) != 0 ||
+          save_rows(argv[1], "message", &screen[scroll_bottom],
+                    scroll_bottom < window.ws_row
+                        ? (size_t)(window.ws_row - scroll_bottom - 1)
+                        : 0U,
+                    row_length) != 0)
+        stopped = 1;
+      /* A newly visible feed fragment must not expose the previous frame's
+       * fixed rows to a reader. Publish snapshots before append-only bytes. */
+      if (write_all(text, plain, used) ||
+          write_all(feed, feed_bytes, feed_used))
         break;
-      if (write_all(feed, feed_bytes, feed_used))
-        break;
-      snprintf(path, sizeof(path), "%s/prompt.tmp", argv[1]);
-      settings = fopen(path, "w");
-      if (settings) {
-        prompt_length =
-            (size_t)width < sizeof(prompt) ? (size_t)width : sizeof(prompt);
-        while (prompt_length > 0U && prompt[prompt_length - 1U] == ' ')
-          prompt_length--;
-        fwrite(prompt, 1U, prompt_length, settings);
-        fputc('\n', settings);
-        fclose(settings);
-        snprintf(state_path, sizeof(state_path), "%s/prompt", argv[1]);
-        if (rename(path, state_path) != 0)
-          stopped = 1;
-      }
     }
     snprintf(path, sizeof(path), "%s/tty.tmp", argv[1]);
     settings = fopen(path, "w");

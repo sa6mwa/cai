@@ -103,11 +103,9 @@ expect_assistant() {
 turn_finished() {
   tail -c +$((${3:-0}+1)) "$term/feed" | tr '\n\r\t' '   ' |
     sed 's/[[:space:]][[:space:]]*/ /g' | grep -F -- "$2" >/dev/null || return 1
-  tail -c +$(($1+1)) "$term/text" | awk -v marker="$2" '
-    BEGIN {count=split(marker,words,/[[:space:]]+/); word=1}
-    {while(word<=count) {position=index($0,words[word]); if(!position) break; $0=substr($0,position+length(words[word])); word++}}
-    word>count && index($0,"Worked for") {done=1}
-    END {exit !done}'
+  # Inspect the current sticky row, not historical redraws interleaved with
+  # feed text. Earlier goal turns can also have displayed "Worked for".
+  grep -Eq '^! Worked for' "$term/message"
 }
 expect_turn() { wait_for turn_finished "$1" "$2" "${send_feed_offset:-0}"; }
 prompt() { local offset=$(wc -c <"$term/text"); send "$1\r"; expect_turn "$offset" "$2"; }

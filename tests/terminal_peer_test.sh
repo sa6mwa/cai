@@ -42,13 +42,28 @@ SH
 "$peer" "$scratch/erase" 120 /bin/sh "$scratch/erase.sh" </dev/null
 [[ $(cat "$scratch/erase/prompt") == '> history-steering' ]]
 cat >"$scratch/feed.sh" <<'SH'
-printf '\033[1;27r\033[65535;3H\033[3ARESPONSE alpha'
-printf '\033[65535;1H\033[2A! Working'
-printf '\033[65535;17H\033[3A beta\r\n'
-printf '\033[65535;1H\033[2A! Worked for 1s'
+printf '\033[1;25r\033[65535;3H\033[5ARESPONSE alpha'
+printf '\033[65535;1H\033[4AQ 1. queued input'
+printf '\033[65535;1H\033[3A! Worked for 1s'
+printf '\033[65535;1H\033[2AMODEL ROW ONE'
+printf '\033[65535;1H\033[1AMODEL ROW TWO'
+printf '\033[65535;17H\033[5A beta\r\n'
 printf '\033[65535;1H\033[2K> draft'
 SH
 "$peer" "$scratch/feed" 120 /bin/sh "$scratch/feed.sh" </dev/null
 [[ $(cat "$scratch/feed/feed") == 'RESPONSE alpha beta' ]]
 [[ $(cat "$scratch/feed/prompt") == '> draft' ]]
+grep -Fxq '! Worked for 1s' "$scratch/feed/message"
+grep -Fxq 'Q 1. queued input' "$scratch/feed/message"
+grep -Fxq 'MODEL ROW TWO' "$scratch/feed/message"
 ! grep -Fq 'RESPONSE alpha beta' "$scratch/feed/text"
+(
+  source "$(dirname "$0")/cli_test_common.sh"
+  term="$scratch/feed"
+  # A completed sticky row may interrupt the answer in flattened text.
+  # Both a complete feed answer and completion status must still be present.
+  turn_finished 0 'RESPONSE alpha beta' 0
+  if turn_finished 0 'RESPONSE alpha missing' 0; then fail 'Accepted incomplete feed'; fi
+  printf '! Working\n' >"$term/message"
+  if turn_finished 0 'RESPONSE alpha beta' 0; then fail 'Accepted unfinished turn'; fi
+)
