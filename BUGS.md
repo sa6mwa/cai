@@ -5,6 +5,22 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-026: Routine Pouch compaction cleanup appears as failure warnings
+
+- **Status:** investigated; upstream diagnostic improvement needed. No
+  functional compaction failure was confirmed in this incident.
+- **Evidence:** compaction completed at 13:09:02 with three obsolete artifacts
+  awaiting deletion. The derived index was deliberately invalidated and rebuilt
+  successfully on reopening at 13:11:39. The 15-minute deletion grace period
+  does not promise cleanup at that deadline; background maintenance defaults
+  to a 30-minute interval.
+- **Verification:** an isolated copy of the reported store reopened and listed
+  sessions without errors. Both existing CAI compaction/recovery checks passed,
+  including byte-for-byte exports, credentials, keys, and resumed context.
+- **Upstream report:** [compaction diagnostics](docs/liblockdc-compaction-diagnostics.md)
+  identifies the duplicate warning sites and the misleading `records` field.
+  No liblockdc source or original user storage was modified.
+
 ## BUG-024: apply_patch rejects delete/add replacements
 
 - **Status:** fixed.
