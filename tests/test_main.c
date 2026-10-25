@@ -33332,9 +33332,21 @@ static void test_patch_nested_paths(test_state *state) {
   char outside[PATH_MAX], link_path[PATH_MAX];
   static const char *names[] = {"car", "congestioncalculator", "motorbike",
                                 "vehicle"};
-  static const char *rejected[] = {
-      "../outside/escape.txt", "link/new/escape.txt", "dangling/new/escape.txt",
-      "blocked/new/escape.txt", "new/../escape.txt"};
+  static const char *rejected[] = {"../outside/escape.txt",
+                                   "link/new/escape.txt",
+                                   "dangling/new/escape.txt",
+                                   "blocked/new/escape.txt",
+                                   "new/../escape.txt",
+                                   "./../outside/escape.txt",
+                                   "./link/new/escape.txt",
+                                   "./dangling/new/escape.txt",
+                                   "./new/../escape.txt",
+                                   "new/.",
+                                   "./"};
+  static const char *aliases[] = {"./golang/calculator/car.go",
+                                  "golang/./calculator/congestioncalculator.go",
+                                  "././golang//calculator/motorbike.go",
+                                  "golang/calculator/vehicle.go"};
   cai_patch_tool_config config;
   cai_error error;
   struct stat st;
@@ -33394,10 +33406,11 @@ static void test_patch_nested_paths(test_state *state) {
       cai_apply_patch(
           &config,
           "*** Begin Patch\n"
-          "*** Add File: golang/calculator/car.go\n+package calculator\n"
-          "*** Add File: golang/calculator/congestioncalculator.go\n+package "
+          "*** Add File: ./golang/calculator/car.go\n+package calculator\n"
+          "*** Add File: golang/./calculator/congestioncalculator.go\n+package "
           "calculator\n"
-          "*** Add File: golang/calculator/motorbike.go\n+package calculator\n"
+          "*** Add File: ././golang//calculator/motorbike.go\n+package "
+          "calculator\n"
           "*** Add File: golang/calculator/vehicle.go\n+package calculator\n"
           "*** End Patch",
           NULL, &error),
@@ -33415,6 +33428,22 @@ static void test_patch_nested_paths(test_state *state) {
     free(contents);
     expect_int(state, "patch_nested_file_permissions",
                stat(path, &st) == 0 && (st.st_mode & 0777) == 0600, 1L);
+    snprintf(patch, sizeof(patch),
+             "*** Begin Patch\n*** Update File: %s\n@@\n-package calculator\n"
+             "+package updated\n*** End Patch",
+             aliases[i]);
+    expect_int(state, "patch_update_normalized_path",
+               cai_apply_patch(&config, patch, NULL, &error), CAI_OK);
+    contents = read_file_or_die(path);
+    expect_str(state, "patch_update_normalized_contents", contents,
+               "package updated\n");
+    free(contents);
+    snprintf(patch, sizeof(patch),
+             "*** Begin Patch\n*** Delete File: %s\n*** End Patch", aliases[i]);
+    expect_int(state, "patch_delete_normalized_path",
+               cai_apply_patch(&config, patch, NULL, &error), CAI_OK);
+    expect_int(state, "patch_delete_normalized_removed", access(path, F_OK),
+               -1L);
     unlink(path);
   }
   snprintf(path, sizeof(path), "%s/workspace/golang/calculator", temporary);
@@ -33426,8 +33455,8 @@ static void test_patch_nested_paths(test_state *state) {
   expect_int(
       state, "patch_nested_move_missing_parents",
       cai_apply_patch(&config,
-                      "*** Begin Patch\n*** Update File: blocked\n"
-                      "*** Move to: moved/deeper/file.txt\n*** End Patch",
+                      "*** Begin Patch\n*** Update File: ./blocked\n"
+                      "*** Move to: ./moved/./deeper/file.txt\n*** End Patch",
                       NULL, &error),
       CAI_OK);
   snprintf(path, sizeof(path), "%s/workspace/moved/deeper/file.txt", temporary);
@@ -33445,6 +33474,17 @@ static void test_patch_nested_paths(test_state *state) {
   snprintf(path, sizeof(path), "%s/workspace/moved/deeper", temporary);
   rmdir(path);
   snprintf(path, sizeof(path), "%s/workspace/moved", temporary);
+  rmdir(path);
+  snprintf(patch, sizeof(patch),
+           "*** Begin Patch\n*** Add File: %s/workspace/./absolute//file.txt\n"
+           "+absolute\n*** End Patch",
+           temporary);
+  expect_int(state, "patch_add_normalized_absolute_path",
+             cai_apply_patch(&config, patch, NULL, &error), CAI_OK);
+  snprintf(path, sizeof(path), "%s/workspace/absolute/file.txt", temporary);
+  expect_int(state, "patch_add_absolute_file_created", access(path, F_OK), 0L);
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/workspace/absolute", temporary);
   rmdir(path);
   snprintf(path, sizeof(path), "%s/workspace/link", temporary);
   unlink(path);
@@ -33855,6 +33895,8 @@ static void test_patch_tool(test_state *state) {
   expect_int(state, "patch_reject_relative_alias",
              cai_apply_patch(&config, relative_alias_patch, NULL, &error),
              CAI_ERR_INVALID);
+  expect_str(state, "patch_relative_alias_is_a_collision", error.message,
+             "patch has colliding destination paths");
   expect_int(state, "patch_relative_alias_preserves_target",
              access(alias_path, F_OK) != 0, 1L);
   cai_error_cleanup(&error);

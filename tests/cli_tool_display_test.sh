@@ -77,6 +77,10 @@ cat >"$root/patch" <<'PATCH'
 +package calculator
 *** Add File: golang/calculator/vehicle.go
 +package calculator
+*** Add File: ./internal/toll/./calculator.go
++package toll
+*** Add File: internal/toll/vehicle.go
++package toll
 *** End Patch
 PATCH
 patch_plan 'NESTED PATCH DONE'
@@ -84,6 +88,10 @@ prompt 'add nested project files' 'NESTED PATCH DONE'
 for name in car vehicle; do
   contains "$term/feed" "Added golang/calculator/$name.go"
   [[ $(cat "$work/golang/calculator/$name.go") == 'package calculator' ]]
+done
+contains "$term/feed" 'Added ./internal/toll/./calculator.go'
+for name in calculator vehicle; do
+  [[ $(cat "$work/internal/toll/$name.go") == 'package toll' ]]
 done
 cp "$root/full-patch" "$root/patch"
 printf "printf 'OUT01\\nOUT02\\nOUT03\\nOUT04\\nOUT05\\nOUT06\\nOUT07\\n'\nexit 3\n" >"$work/command.sh"

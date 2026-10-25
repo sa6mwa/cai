@@ -368,19 +368,54 @@ static int cai_patch_validate_relative_path(const char *path,
 
 static int cai_patch_join(char *out, size_t out_size, const char *root,
                           const char *path, cai_error *error) {
+  const char *cursor, *start;
+  size_t used, length, separator;
+  int has_name = 0;
   int written;
 
-  if (path[0] == '/') {
-    written = snprintf(out, out_size, "%s", path);
-  } else {
-    if (cai_patch_validate_relative_path(path, error) != CAI_OK) {
-      return error != NULL ? error->code : CAI_ERR_INVALID;
-    }
-    written = snprintf(out, out_size, "%s/%s", root, path);
-  }
-  if (written < 0 || (size_t)written >= out_size) {
+  if (path == NULL || path[0] == '\0')
+    return cai_set_error(error, CAI_ERR_INVALID, "patch path is required");
+  if (path[strlen(path) - 1U] == '/')
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "patch target must have a file name");
+  written = snprintf(out, out_size, "%s", path[0] == '/' ? "/" : root);
+  if (written < 0 || (size_t)written >= out_size)
     return cai_set_error(error, CAI_ERR_INVALID, "patch path is too long");
+  used = (size_t)written;
+  cursor = path;
+  /* Normalize harmless aliases before collision checks. Never collapse '..':
+   * traversal remains forbidden, including through a symlink component. */
+  while (*cursor != '\0') {
+    while (*cursor == '/')
+      cursor++;
+    if (*cursor == '\0')
+      break;
+    start = cursor;
+    while (*cursor != '\0' && *cursor != '/')
+      cursor++;
+    length = (size_t)(cursor - start);
+    if (length == 1U && start[0] == '.') {
+      if (*cursor == '\0')
+        return cai_set_error(error, CAI_ERR_INVALID,
+                             "patch target must have a file name");
+      continue;
+    }
+    if (length == 2U && start[0] == '.' && start[1] == '.')
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "patch path contains an unsafe segment");
+    separator = used > 0U && out[used - 1U] != '/' ? 1U : 0U;
+    if (separator >= out_size - used || length >= out_size - used - separator)
+      return cai_set_error(error, CAI_ERR_INVALID, "patch path is too long");
+    if (separator != 0U)
+      out[used++] = '/';
+    memcpy(out + used, start, length);
+    used += length;
+    out[used] = '\0';
+    has_name = 1;
   }
+  if (!has_name)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "patch target must have a file name");
   return CAI_OK;
 }
 

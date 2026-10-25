@@ -1039,7 +1039,9 @@ to wrap the patch in JSON. It supports add, update, delete, and move; validates
 all paths and expected update contexts before publishing success; creates
 missing add/move parent directories within the workspace after validation,
 respecting the process umask and rejecting symlink parents; and returns
-the Codex-style changed-file summary. On a failure it returns a precise parser,
+the Codex-style changed-file summary. Harmless `./` components and repeated
+separators are normalized before destination collision checks; `..` traversal
+is rejected. On a failure it returns a precise parser,
 path-policy, or context-mismatch error and must not claim a partial patch was
 applied. Its implementation is CAI-native: it must not invoke a shell or
 depend on `diff` or `patch` executables.

@@ -5,6 +5,19 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-020: apply_patch rejects harmless dot components as unsafe
+
+- **Status:** fixed.
+- **Cause:** path validation rejected `./` and interior `.` components before
+  resolving the actual destination. The missing-parent rejection was fixed
+  separately in BUG-017; running applications need a restart to use that fix.
+- **Resolution:** normalize dot components and repeated separators for add,
+  update, move and delete before collision checks. Continue rejecting `..`
+  traversal, directory-only targets and escaping symlink parents.
+- **Verification:** native coverage includes relative/absolute aliases, all
+  four operations, shared missing parents and normalized destination collisions.
+  The mock-provider CLI creates `internal/toll` files with both path spellings.
+
 ## BUG-019: libmdf drops escaped punctuation in headings and plain paragraphs
 
 - **Status:** upstream issue; reproduced independently of CAI's feed.
