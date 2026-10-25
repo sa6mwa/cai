@@ -315,6 +315,47 @@ static int cai_cli_table_row(char *out, size_t capacity, size_t *used,
   return 0;
 }
 
+int cai_cli_status_ids_markdown(const cai_agent_runtime_ids *ids,
+                                int (*write)(void *, const char *, size_t),
+                                void *context) {
+  static const char *const labels[] = {"| Session ID | ",
+                                       "| Last response ID | ",
+                                       "| Provider conversation ID | "};
+  const char *values[3];
+  const unsigned char *p;
+  char buffer[256];
+  size_t i, used;
+  if (ids == NULL || write == NULL)
+    return -1;
+  values[0] = ids->session_id;
+  values[1] = ids->response_id;
+  values[2] = ids->conversation_id;
+  for (i = 0U; i < 3U; i++) {
+    if (i == 2U && (values[i] == NULL || values[i][0] == '\0'))
+      continue;
+    if (write(context, labels[i], strlen(labels[i])) != 0)
+      return -1;
+    p = (const unsigned char *)(values[i] != NULL && values[i][0] != '\0'
+                                    ? values[i]
+                                    : "Not available");
+    used = 0U;
+    for (; *p; p++) {
+      if (used + 2U > sizeof(buffer)) {
+        if (write(context, buffer, used) != 0)
+          return -1;
+        used = 0U;
+      }
+      if (strchr("\\|`*_~[]<>#", *p) != NULL)
+        buffer[used++] = '\\';
+      buffer[used++] = *p < 32U || *p == 127U ? ' ' : (char)*p;
+    }
+    if ((used != 0U && write(context, buffer, used) != 0) ||
+        write(context, " |\n", 3U) != 0)
+      return -1;
+  }
+  return 0;
+}
+
 int cai_cli_status_markdown(char *out, size_t capacity,
                             const char *program_name, const char *model,
                             const char *effort, const char *provider,

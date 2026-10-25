@@ -36,6 +36,11 @@ int cai_cli_status_markdown(char *out, size_t capacity,
                             const cai_agent_runtime_metrics *metrics,
                             const cai_chatgpt_quota *quota,
                             const cai_agent_instruction_status *instructions);
+/* Append identifier rows to the same table, escaping provider text in bounded
+ * chunks so IDs are neither truncated nor interpreted as Markdown/control. */
+int cai_cli_status_ids_markdown(const cai_agent_runtime_ids *ids,
+                                int (*write)(void *, const char *, size_t),
+                                void *context);
 /** Format the active summary or most recent turn duration for softline. */
 int cai_cli_turn_status_message(char *out, size_t capacity,
                                 const char *reasoning_summary,

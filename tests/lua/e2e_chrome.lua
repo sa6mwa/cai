@@ -15,6 +15,8 @@ local runtime = assert(client:new_smith_runtime({
     end
   end,
 }))
+local initial_ids = assert(runtime:ids())
+assert(initial_ids.session_id == runtime:session_id() and initial_ids.response_id == nil)
 assert(runtime:submit("Inspect the browser"))
 local state
 repeat
@@ -22,6 +24,9 @@ repeat
 until state == "completed" or state == "failed" or state == "cancelled"
 assert(state == "completed", state)
 assert(table.concat(chunks) == "Chrome final response")
+local ids = assert(runtime:ids())
+assert(ids.session_id == initial_ids.session_id)
+assert(ids.response_id:match("^resp_fixture_") and ids.conversation_id == nil)
 if finish == "gc" then
   runtime = nil
   collectgarbage("collect")

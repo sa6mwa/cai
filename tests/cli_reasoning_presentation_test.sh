@@ -10,6 +10,16 @@ absent "$term/text" '? Applying patch'
 expect '! Applying patch to script path'
 release; expect 'ONE LINE DONE'; expect 'Worked for'
 terminal_close
+# A failed tool and its diagnostic must begin outside the reasoning quote,
+# including when the final reasoning fragment has no terminating newline.
+plan '{"plan":[{"reasoning":["**Checking goal**\n\nREASONING ENDS HERE"],"tool":"get_goal","arguments":{"unexpected":true}},"AFTER TOOL FAILURE"]}'
+terminal_start -N
+prompt 'check reasoning-to-tool boundary' 'AFTER TOOL FAILURE'
+sed -E $'s/\033\[[0-?]*[ -/]*[@-~]//g' "$term/feed" >"$root/failed-tool"
+grep -q '^\* Failed get_goal' "$root/failed-tool"
+grep -q '^\* WARN:' "$root/failed-tool"
+if grep -Eq '^.*[>│].*\* (Failed|WARN:)' "$root/failed-tool"; then fail 'tool output retained a reasoning quote'; fi
+terminal_close
 plan '{"plan":[{"reasoning_parts":[["**Planning full ANSI Tetris implementation**"],["**Confirming ","build and source setup**"]],"pause":true,"text":"PARTS DONE"}]}'
 terminal_start -N
 send 'separate reasoning sections\r'; expect 'STREAM in flight'

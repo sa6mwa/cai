@@ -1048,6 +1048,19 @@ typedef struct cai_agent_runtime_metrics {
 int cai_agent_runtime_get_metrics(cai_agent_runtime *runtime,
                                   cai_agent_runtime_metrics *out,
                                   cai_error *error);
+/** Session identifiers published at safe boundaries. response_id is the last
+ * retained provider response ID; conversation_id is a provider conversation
+ * when configured. Neither is the local session_id. Absent IDs are NULL. */
+typedef struct cai_agent_runtime_ids {
+  const char *session_id;
+  const char *response_id;
+  const char *conversation_id;
+} cai_agent_runtime_ids;
+/** Owner-thread snapshot, available while idle or running, including after
+ * resume. Strings are borrowed until the next successful get_ids or close;
+ * worker updates do not invalidate them. Does not make provider requests. */
+int cai_agent_runtime_get_ids(cai_agent_runtime *runtime,
+                              cai_agent_runtime_ids *out, cai_error *error);
 typedef enum cai_agent_tool_source {
   CAI_AGENT_TOOL_LOCAL = 0,
   CAI_AGENT_TOOL_HOSTED = 1,

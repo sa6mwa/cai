@@ -329,9 +329,11 @@ static void patches(capture *c) {
   assert(strstr(c->bytes,
                 "\033[48;2;74;34;29m\033[97m\033[91m-\033[97mold\033[0m\n") !=
          NULL);
-  assert(strstr(c->bytes,
-                "\033[92m*\033[0m \033[1;96mEdited dir/file.c\033[0m\n") !=
-         NULL);
+  assert(
+      strstr(
+          c->bytes,
+          "\033[92m*\033[0m \033[0;36mEdited \033[1;96mdir/file.c\033[0m\n") !=
+      NULL);
   assert(strstr(c->bytes, "\n between0\n ⋮\n between3\n") != NULL);
   reset(c);
   assert(render(c, patch, sizeof(patch) - 1U, 4096U, 1, 0, 0) == CAI_OK);
@@ -431,6 +433,8 @@ static void commands(capture *c) {
         CAI_AGENT_TOOL_ACTION_EXECUTE, 0);
   event(d, CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED, "one", "printf args", 0,
         0);
+  assert(strstr(c->bytes, "\033[0;36mRunning \033[1;96mprintf args\033[0m") !=
+         NULL);
   event(d, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "one", "1\n2", 0, 0);
   assert(strstr(c->bytes, "1\n2") != NULL); /* Visible before completion. */
   assert(cai_tool_display_set_mode(d, CAI_TOOL_OUTPUT_FULL, &error) == CAI_OK);
@@ -438,7 +442,8 @@ static void commands(capture *c) {
         "\n3\n4\n5\nHIDDEN6\nHIDDEN7\n", 0, 0);
   event(d, CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED, "one", NULL, 0, 0);
   assert(strstr(c->bytes, "HIDDEN") == NULL);
-  assert(strstr(c->bytes, "\033[92m*\033[0m \033[1;96mRan printf args") !=
+  assert(strstr(c->bytes,
+                "\033[92m*\033[0m \033[0;36mRan \033[1;96mprintf args") !=
          NULL);
   reset(c);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_STARTED, "two", NULL,
@@ -448,9 +453,11 @@ static void commands(capture *c) {
         0, 0);
   event(d, CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED, "two", NULL, 0, 3);
   assert(strstr(c->bytes, "SIX\nSEVEN\n") != NULL);
-  assert(strstr(c->bytes,
-                "\033[91m*\033[0m \033[1;96mRan exit 3\033[0m\n  exit=3") !=
-         NULL);
+  assert(
+      strstr(
+          c->bytes,
+          "\033[91m*\033[0m \033[0;36mRan \033[1;96mexit 3\033[0m\n  exit=3") !=
+      NULL);
   reset(c);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_STARTED, "quick", NULL,
         CAI_AGENT_TOOL_ACTION_EXECUTE, 0);
@@ -476,9 +483,11 @@ static void commands(capture *c) {
     e.terminal_signal = 15;
     e.terminal_output_truncated = 1;
     assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
-    assert(strstr(c->bytes,
-                  "\033[91m*\033[0m \033[1;96mCancelled signal command") !=
-           NULL);
+    assert(
+        strstr(
+            c->bytes,
+            "\033[91m*\033[0m \033[0;36mCancelled \033[1;96msignal command") !=
+        NULL);
     assert(strstr(c->bytes, "exit=-1 signal=15") != NULL);
     assert(strstr(c->bytes, "truncated by the tool") != NULL);
   }
@@ -498,15 +507,18 @@ static void commands(capture *c) {
         CAI_AGENT_TOOL_ACTION_MCP, 0);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_COMPLETED, "mcp", "MCP result",
         CAI_AGENT_TOOL_ACTION_MCP, 0);
-  assert(strstr(c->bytes,
-                "*\033[0m \033[1;96mMCP fixture\033[0m\nMCP result") != NULL);
+  assert(
+      strstr(c->bytes,
+             "*\033[0m \033[0;36mMCP \033[1;96mfixture\033[0m\nMCP result") !=
+      NULL);
   reset(c);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_STARTED, "mcperror", NULL,
         CAI_AGENT_TOOL_ACTION_MCP, 0);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_COMPLETED, "mcperror",
         "{\"content\":[{\"text\":\"failed\"}],\"isError\":true}",
         CAI_AGENT_TOOL_ACTION_MCP, 0);
-  assert(strstr(c->bytes, "\033[91m*\033[0m \033[1;96mMCP failed fixture") !=
+  assert(strstr(c->bytes,
+                "\033[91m*\033[0m \033[0;36mMCP failed \033[1;96mfixture") !=
          NULL);
   reset(c);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_STARTED, "mcpsuccess", NULL,
@@ -514,27 +526,31 @@ static void commands(capture *c) {
   event(d, CAI_AGENT_EVENT_TOOL_CALL_COMPLETED, "mcpsuccess",
         "{\"content\":[{\"text\":\"isError: true\"}],\"isError\":false}",
         CAI_AGENT_TOOL_ACTION_MCP, 0);
-  assert(strstr(c->bytes, "\033[92m*\033[0m \033[1;96mMCP fixture") != NULL);
+  assert(strstr(c->bytes, "\033[92m*\033[0m \033[0;36mMCP \033[1;96mfixture") !=
+         NULL);
   reset(c);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_STARTED, "chrome", NULL,
         CAI_AGENT_TOOL_ACTION_CHROME, 0);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_COMPLETED, "chrome", "page snapshot",
         CAI_AGENT_TOOL_ACTION_CHROME, 0);
-  assert(strstr(c->bytes, "\033[92m*\033[0m \033[1;96mUsed Chrome fixture") !=
+  assert(strstr(c->bytes,
+                "\033[92m*\033[0m \033[0;36mUsed Chrome \033[1;96mfixture") !=
          NULL);
   reset(c);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_STARTED, "chromeerror", NULL,
         CAI_AGENT_TOOL_ACTION_CHROME, 0);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_FAILED, "chromeerror", "Debugger detached",
         CAI_AGENT_TOOL_ACTION_CHROME, 0);
-  assert(strstr(c->bytes, "\033[91m*\033[0m \033[1;96mFailed fixture") != NULL);
+  assert(strstr(c->bytes,
+                "\033[91m*\033[0m \033[0;36mFailed \033[1;96mfixture") != NULL);
   assert(strstr(c->bytes, "Debugger detached") != NULL);
   reset(c);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_STARTED, "badpatch", NULL,
         CAI_AGENT_TOOL_ACTION_PATCH, 0);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_FAILED, "badpatch", "context mismatch",
         CAI_AGENT_TOOL_ACTION_PATCH, 0);
-  assert(strstr(c->bytes, "\033[91m*\033[0m \033[1;96mFailed fixture") != NULL);
+  assert(strstr(c->bytes,
+                "\033[91m*\033[0m \033[0;36mFailed \033[1;96mfixture") != NULL);
   assert(strstr(c->bytes, "Edited") == NULL);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_STARTED, "cancel", NULL,
         CAI_AGENT_TOOL_ACTION_EXECUTE, 0);
@@ -583,8 +599,8 @@ static void commands(capture *c) {
     e.tool_path = "two.c";
     e.runtime_session_id = "child-two";
     assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
-    assert(strstr(c->bytes, "Read one.c") != NULL &&
-           strstr(c->bytes, "Read two.c") != NULL);
+    assert(strstr(c->bytes, "Read \033[1;96mone.c") != NULL &&
+           strstr(c->bytes, "Read \033[1;96mtwo.c") != NULL);
   }
   assert(cai_tool_display_set_mode(d, 999, &error) == CAI_ERR_INVALID);
   cai_error_cleanup(&error);

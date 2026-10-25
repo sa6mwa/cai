@@ -5633,6 +5633,28 @@ static int cai_lua_agent_runtime_metrics(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_agent_runtime_ids(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  cai_agent_runtime_ids ids;
+  cai_error error;
+  int rc;
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_get_ids(self->ptr, &ids, &error);
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK)
+    return cai_lua_fail(L, rc, &error);
+  lua_newtable(L);
+  lua_pushstring(L, ids.session_id);
+  lua_setfield(L, -2, "session_id");
+  lua_pushstring(L, ids.response_id);
+  lua_setfield(L, -2, "response_id");
+  lua_pushstring(L, ids.conversation_id);
+  lua_setfield(L, -2, "conversation_id");
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
 static int cai_lua_agent_runtime_session_id(lua_State *L) {
   cai_lua_agent_runtime *self;
   const char *session_id;
@@ -12016,6 +12038,7 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"pump", cai_lua_agent_runtime_pump},
     {"state", cai_lua_agent_runtime_state},
     {"metrics", cai_lua_agent_runtime_metrics},
+    {"ids", cai_lua_agent_runtime_ids},
     {"tools", cai_lua_agent_runtime_tools},
     {"session_id", cai_lua_agent_runtime_session_id},
     {"model", cai_lua_agent_runtime_model},

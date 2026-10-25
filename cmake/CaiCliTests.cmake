@@ -193,6 +193,12 @@
       "${CAI_PUBLIC_INCLUDE_DIR}" "${CAI_GENERATED_INCLUDE_DIR}")
     cai_configure_cli_target(cai_cli_options_test)
     add_test(NAME cai_cli_options COMMAND cai_cli_options_test)
+    foreach(_cai_ids_protocol responses chat_completions)
+      add_test(NAME cai_cli_status_ids_${_cai_ids_protocol} COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_status_ids_test.sh"
+        "$<TARGET_FILE:cai_cli_mock_fixture>" "${_cai_ids_protocol}")
+      set_tests_properties(cai_cli_status_ids_${_cai_ids_protocol} PROPERTIES TIMEOUT 15)
+    endforeach()
     add_executable(cai_cli_replay_test tests/cli_replay_test.c)
     target_link_libraries(cai_cli_replay_test PRIVATE cai_cli_support)
     cai_configure_cli_target(cai_cli_replay_test)

@@ -37,7 +37,9 @@ for marker in between1 before0 after1; do absent "$term/text" "$marker"; done
 contains "$term/text" ⋮
 contains "$term/raw" $'\033[48;2;74;34;29m'; contains "$term/raw" $'\033[48;2;33;58;43m'
 contains "$term/raw" $'\033[91m-\033[97m'; contains "$term/raw" $'\033[92m+\033[97m'
-grep -Eq $'\033\\[(0;)?1;96mEdited' "$term/raw"
+# Softline may redraw its sticky rows between individual receipt writes.
+grep -Eq $'\033\\[(0;)?36mEdited' "$term/raw"
+grep -Eq $'\033\\[(0;)?1;96mfile.c' "$term/raw"
 count=$(requests); send '/output full\r'; expect 'setting applies from the next tool call'; [[ $(requests) == "$count" ]]
 cp "$root/original" "$work/file.c"; patch_plan 'FULL PATCH DONE'
 prompt 'full patch' 'FULL PATCH DONE'

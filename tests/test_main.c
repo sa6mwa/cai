@@ -27784,6 +27784,79 @@ static size_t test_inventory_empty_transport(const cai_mcp_client *client) {
   return 0U;
 }
 
+static void test_agent_runtime_ids(test_state *state) {
+  static const char *const checkpoints[] = {
+      "{\"version\":1}",
+      "{\"version\":1,\"previous_response_id\":\"resp_restored\"}",
+      "{\"version\":1,\"conversation_id\":\"conv_restored\"}"};
+  runtime_session_store_state storage;
+  cai_agent_session_store store;
+  cai_agent_runtime_config config;
+  cai_client_config cc;
+  cai_client *client = NULL;
+  cai_agent_runtime *runtime = NULL;
+  cai_agent_runtime_ids ids;
+  cai_error error;
+  size_t i;
+  cai_error_init(&error);
+  cai_client_config_init(&cc);
+  cc.api_key = "test-key";
+  cc.logger_disabled = 1;
+  expect_int(state, "ids_client", cai_client_open(&cc, &client, &error),
+             CAI_OK);
+  expect_int(state, "ids_null_runtime",
+             cai_agent_runtime_get_ids(NULL, &ids, &error), CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  for (i = 0U; client != NULL && i < 3U; i++) {
+    memset(&storage, 0, sizeof(storage));
+    memset(&store, 0, sizeof(store));
+    storage.checkpoint_json = checkpoints[i];
+    store.context = &storage;
+    store.checkpoint = test_runtime_session_store_checkpoint;
+    store.load_latest = test_runtime_session_store_load;
+    store.append_event = test_runtime_session_store_append_event;
+    store.load_events_after = test_runtime_session_store_load_events_after;
+    cai_agent_runtime_config_init(&config);
+    config.workspace_directory = CAI_TEST_BINARY_DIR;
+    config.session_store = &store;
+    config.resume_latest = i != 0U;
+    config.logger_disabled = 1;
+    expect_int(state, "ids_open",
+               cai_agent_runtime_open(client, &config, &runtime, &error),
+               CAI_OK);
+    if (runtime == NULL)
+      continue;
+    expect_int(state, "ids_null_output",
+               cai_agent_runtime_get_ids(runtime, NULL, &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "ids_snapshot",
+               cai_agent_runtime_get_ids(runtime, &ids, &error), CAI_OK);
+    expect_str(state, "ids_local_session", ids.session_id,
+               cai_agent_runtime_session_id(runtime));
+    if (i == 1U)
+      expect_str(state, "ids_provider_response", ids.response_id,
+                 "resp_restored");
+    else
+      expect_int(state, "ids_missing_response", ids.response_id == NULL, 1L);
+    if (i == 2U)
+      expect_str(state, "ids_provider_conversation", ids.conversation_id,
+                 "conv_restored");
+    else
+      expect_int(state, "ids_missing_conversation", ids.conversation_id == NULL,
+                 1L);
+    expect_int(state, "ids_snapshot_again",
+               cai_agent_runtime_get_ids(runtime, &ids, &error), CAI_OK);
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  if (client != NULL)
+    cai_client_close(client);
+  cai_error_cleanup(&error);
+}
+
 static void test_agent_runtime_lifecycle(test_state *state) {
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
@@ -53930,6 +54003,7 @@ static const test_entry test_entries[] = {
     {"smith_review_pause_checkpoint_failure",
      test_smith_review_pause_checkpoint_failure},
     {"agent_runtime_lifecycle", test_agent_runtime_lifecycle},
+    {"agent_runtime_ids", test_agent_runtime_ids},
     {"agent_runtime_model_switch", test_agent_runtime_model_switch},
     {"agent_runtime_controls", test_agent_runtime_controls},
     {"agent_runtime_cancel_terminal", test_agent_runtime_cancel_terminal},

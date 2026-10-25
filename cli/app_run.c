@@ -3647,6 +3647,7 @@ static int cli_handle_command(cli_state *state, const char *line,
     return rc;
   }
   if (strcmp(line, "/status") == 0) {
+    cai_agent_runtime_ids ids;
     cai_agent_instruction_status instructions;
     cai_agent_runtime_settings settings;
     cai_agent_runtime_metrics metrics;
@@ -3667,6 +3668,9 @@ static int cli_handle_command(cli_state *state, const char *line,
     rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
     if (rc != CAI_OK)
       return rc;
+    rc = cai_agent_runtime_get_ids(state->runtime, &ids, error);
+    if (rc != CAI_OK)
+      return rc;
     rc = cai_agent_runtime_get_instruction_status(state->runtime, &instructions,
                                                   error);
     if (rc != CAI_OK)
@@ -3684,6 +3688,7 @@ static int cli_handle_command(cli_state *state, const char *line,
             effort, state->options.provider, &metrics,
             state->auth != NULL ? &state->quota : NULL, &instructions) != 0 ||
         cli_text(state, markdown, strlen(markdown)) != 0 ||
+        cai_cli_status_ids_markdown(&ids, cli_tools_write, state) != 0 ||
         cli_text(state, mailbox_row, strlen(mailbox_row)) != 0 ||
         cai_cli_todo_status(state->runtime, cli_tools_write, state, error) !=
             CAI_OK ||

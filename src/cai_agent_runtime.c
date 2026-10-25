@@ -567,6 +567,8 @@ struct cai_agent_runtime {
   char *workspace_directory;
   char *session_scope;
   char *session_id;
+  char *response_id_projection, *conversation_id_projection;
+  char *response_id_snapshot, *conversation_id_snapshot;
   /* The worker publishes this immutable-to-host projection only at model/tool
    * safe boundaries.  Owner-thread polling must never dereference the live
    * session, which the worker mutates while sampling. */
@@ -3202,12 +3204,13 @@ static void cai_runtime_turn_finish_locked(cai_agent_runtime *runtime) {
 
 /* Called only by the worker, or during open before the worker starts.  The
  * runtime lock publishes a fully copied projection for owner-thread polling;
- * callers of get_goal never read the concurrently mutable session object. */
+ * owner-thread getters never read the concurrently mutable session object. */
 static int cai_runtime_refresh_goal_projection(cai_agent_runtime *runtime,
                                                cai_error *error) {
   cai_session_impl *goal;
   char *objective;
   char *status;
+  char *response_id, *conversation_id;
   long long context_window;
   int context_available;
   double context_percent;
@@ -3237,7 +3240,26 @@ static int cai_runtime_refresh_goal_projection(cai_agent_runtime *runtime,
                            "failed to snapshot runtime goal");
     }
   }
+  response_id = goal->previous_response_id != NULL
+                    ? cai_strdup(NULL, goal->previous_response_id)
+                    : NULL;
+  conversation_id = goal->conversation_id != NULL
+                        ? cai_strdup(NULL, goal->conversation_id)
+                        : NULL;
+  if ((goal->previous_response_id != NULL && response_id == NULL) ||
+      (goal->conversation_id != NULL && conversation_id == NULL)) {
+    cai_free_mem(NULL, objective);
+    cai_free_mem(NULL, status);
+    cai_free_mem(NULL, response_id);
+    cai_free_mem(NULL, conversation_id);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to snapshot runtime identifiers");
+  }
   pthread_mutex_lock(&runtime->lock);
+  cai_free_mem(NULL, runtime->response_id_projection);
+  cai_free_mem(NULL, runtime->conversation_id_projection);
+  runtime->response_id_projection = response_id;
+  runtime->conversation_id_projection = conversation_id;
   cai_free_mem(NULL, runtime->goal_projection_objective);
   cai_free_mem(NULL, runtime->goal_projection_status);
   runtime->goal_projection_objective = objective;
@@ -7866,6 +7888,10 @@ int cai_agent_runtime_open(cai_client *client,
     cai_free_mem(NULL, runtime->goal_projection_status);
     cai_free_mem(NULL, runtime->goal_snapshot_objective);
     cai_free_mem(NULL, runtime->goal_snapshot_status);
+    cai_free_mem(NULL, runtime->response_id_projection);
+    cai_free_mem(NULL, runtime->conversation_id_projection);
+    cai_free_mem(NULL, runtime->response_id_snapshot);
+    cai_free_mem(NULL, runtime->conversation_id_snapshot);
     cai_free_mem(NULL, runtime->active_subagent_parent_tool_call_id);
     cai_runtime_clear_resumed_subagent(runtime);
     cai_runtime_clear_mcp_config(runtime);
@@ -12198,6 +12224,42 @@ int cai_agent_runtime_visit_tools(cai_agent_runtime *runtime,
   return rc;
 }
 
+int cai_agent_runtime_get_ids(cai_agent_runtime *runtime,
+                              cai_agent_runtime_ids *out, cai_error *error) {
+  char *response_id, *conversation_id;
+  int rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (out == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "runtime identifiers output is required");
+  pthread_mutex_lock(&runtime->lock);
+  response_id = runtime->response_id_projection != NULL
+                    ? cai_strdup(NULL, runtime->response_id_projection)
+                    : NULL;
+  conversation_id = runtime->conversation_id_projection != NULL
+                        ? cai_strdup(NULL, runtime->conversation_id_projection)
+                        : NULL;
+  if ((runtime->response_id_projection != NULL && response_id == NULL) ||
+      (runtime->conversation_id_projection != NULL &&
+       conversation_id == NULL)) {
+    pthread_mutex_unlock(&runtime->lock);
+    cai_free_mem(NULL, response_id);
+    cai_free_mem(NULL, conversation_id);
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to copy runtime identifiers");
+  }
+  cai_free_mem(NULL, runtime->response_id_snapshot);
+  cai_free_mem(NULL, runtime->conversation_id_snapshot);
+  runtime->response_id_snapshot = response_id;
+  runtime->conversation_id_snapshot = conversation_id;
+  out->session_id = runtime->session_id;
+  out->response_id = response_id;
+  out->conversation_id = conversation_id;
+  pthread_mutex_unlock(&runtime->lock);
+  return CAI_OK;
+}
+
 int cai_agent_runtime_get_metrics(cai_agent_runtime *runtime,
                                   cai_agent_runtime_metrics *out,
                                   cai_error *error) {
@@ -12493,6 +12555,10 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
   cai_free_mem(NULL, runtime->goal_projection_status);
   cai_free_mem(NULL, runtime->goal_snapshot_objective);
   cai_free_mem(NULL, runtime->goal_snapshot_status);
+  cai_free_mem(NULL, runtime->response_id_projection);
+  cai_free_mem(NULL, runtime->conversation_id_projection);
+  cai_free_mem(NULL, runtime->response_id_snapshot);
+  cai_free_mem(NULL, runtime->conversation_id_snapshot);
   cai_free_mem(NULL, runtime->terminal_origin_tool_call_id);
   cai_free_mem(NULL, runtime->active_subagent_parent_tool_call_id);
   cai_runtime_clear_resumed_subagent(runtime);

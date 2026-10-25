@@ -15,6 +15,60 @@ static int check(int condition, const char *name) {
   return 0;
 }
 
+typedef struct ids_capture {
+  char bytes[8192];
+  size_t used;
+  int fail;
+} ids_capture;
+static int ids_write(void *context, const char *bytes, size_t count) {
+  ids_capture *out = context;
+  if (out->fail || count >= sizeof(out->bytes) - out->used)
+    return -1;
+  memcpy(out->bytes + out->used, bytes, count);
+  out->used += count;
+  out->bytes[out->used] = '\0';
+  return 0;
+}
+static int test_ids(void) {
+  ids_capture out;
+  cai_agent_runtime_ids ids;
+  char long_id[4097];
+  int failures = 0;
+  memset(&out, 0, sizeof(out));
+  memset(&ids, 0, sizeof(ids));
+  ids.session_id = "session_1";
+  failures += check(
+      cai_cli_status_ids_markdown(&ids, ids_write, &out) == 0 &&
+          strstr(out.bytes, "| Session ID | session\\_1 |") != NULL &&
+          strstr(out.bytes, "| Last response ID | Not available |") != NULL &&
+          strstr(out.bytes, "Provider conversation ID") == NULL,
+      "identifier rows distinguish local and missing provider IDs");
+  memset(&out, 0, sizeof(out));
+  ids.response_id = "resp|`*\n\033_1";
+  ids.conversation_id = "conv_1";
+  failures +=
+      check(cai_cli_status_ids_markdown(&ids, ids_write, &out) == 0 &&
+                strstr(out.bytes, "resp\\|\\`\\*  \\_1") != NULL &&
+                strstr(out.bytes, "| Provider conversation ID | conv\\_1 |") !=
+                    NULL &&
+                strchr(out.bytes, '\033') == NULL,
+            "provider identifiers are literal sanitized table cells");
+  memset(&out, 0, sizeof(out));
+  memset(long_id, 'x', sizeof(long_id) - 1U);
+  long_id[sizeof(long_id) - 1U] = '\0';
+  ids.response_id = long_id;
+  failures += check(cai_cli_status_ids_markdown(&ids, ids_write, &out) == 0 &&
+                        strstr(out.bytes, long_id) != NULL,
+                    "long provider identifiers are not truncated");
+  out.fail = 1;
+  failures +=
+      check(cai_cli_status_ids_markdown(&ids, ids_write, &out) == -1 &&
+                cai_cli_status_ids_markdown(NULL, ids_write, &out) == -1 &&
+                cai_cli_status_ids_markdown(&ids, NULL, &out) == -1,
+            "identifier writer propagates errors");
+  return failures;
+}
+
 int main(void) {
   cai_cli_status status;
   cai_agent_goal_snapshot goal;
@@ -25,7 +79,7 @@ int main(void) {
   struct tm finished_local;
   sl_t *sl;
   int failures;
-  failures = 0;
+  failures = test_ids();
   memset(&goal, 0, sizeof(goal));
   memset(&metrics, 0, sizeof(metrics));
   memset(&quota, 0, sizeof(quota));

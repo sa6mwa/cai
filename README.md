@@ -100,7 +100,10 @@ resume can report it without blocking startup on the catalog. Current catalog
 metadata supersedes that saved value. Runtime metrics and compaction use the
 same window. Lua exposes these metrics through `runtime:metrics()`, including
 context/usage and active/completed turn timings, and accepts `resume_session_id`
-for exact resume. Lua clients select `api_protocol = "responses"` or
+for exact resume. `runtime:ids()` exposes `session_id`, the last retained
+provider `response_id`, and a provider `conversation_id` when configured.
+The C snapshot API is `cai_agent_runtime_get_ids`; it remains safe during a
+turn and makes no provider requests. Lua clients select `api_protocol = "responses"` or
 `"chat_completions"` explicitly when endpoint presets are insufficient.
 
 Smith defaults to `gpt-5.6-terra` with medium reasoning and provider-directed
@@ -729,7 +732,9 @@ application libraries for glibc and musl.
 
 ### Configured MCP tools
 
-`/status` includes instruction-file loading, local/hosted/MCP tool counts, and
+`/status` includes the local session ID, last retained provider response ID,
+provider conversation ID when available, instruction-file loading,
+local/hosted/MCP tool counts, and
 MCP server availability in its main metrics table. `/tools` shows
 their names, descriptions, input formats and server ownership, plus disabled
 or unavailable servers and discovery errors. Both render through libmdf and
@@ -954,7 +959,8 @@ under the message, and paths and punctuation retain their original spelling.
 Notices keep one blank row before and after; `NO_COLOR` disables star colors.
 
 Interactive tool activity uses bright green/red `*` receipts for success/failure,
-with bold bright cyan activity headings and separate MCP and Chrome receipts.
+with normal cyan activity verbs, bold bright cyan command/path details, and
+separate MCP and Chrome receipts.
 The heading color is independent of the green/red success/failure star.
 Commands show their
 first five logical output lines by default. `/output` shows the current setting;
