@@ -122,7 +122,7 @@ static const cli_field fields[] = {
       "Workspace deletion asks [y/N]. --yes/--force also deletes the "
       "workspace."),
     {"ui", "replay_turns", offsetof(cai_cli_options, replay_turns),
-     CAI_CONFIG_INTEGER, 0U, NULL,
+     CAI_CONFIG_INTEGER, CAI_CONFIG_SIGNED, NULL,
      "Console replay only: newest whole turns and standalone shell entries. "
      "Default 20; 0 hides replay; -1 shows all. Agent context is unchanged."},
     B("ui", "shell_context", shell_context,

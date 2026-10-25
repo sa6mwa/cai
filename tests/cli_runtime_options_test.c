@@ -159,6 +159,76 @@ static int messaging_settings(const char *path) {
   return failed;
 }
 
+/* Exercise every configuration source without storage or model requests. */
+static int replay_settings(const char *path) {
+  static char program[] = "cai", config_flag[] = "--config", list[] = "--list";
+  static char replay_flag[] = "--replay-turns";
+  static char values[][32] = {"-2", "-1",  "0",
+                              "20", "bad", "999999999999999999999999"};
+  char *args[6];
+  cai_app_config app;
+  cai_app_setting setting;
+  cai_cli_options options;
+  cai_config *configuration;
+  cai_error error;
+  FILE *file;
+  size_t i;
+  int source, rc, valid, failed = 0;
+  args[0] = program;
+  args[1] = config_flag;
+  args[2] = strdup(path);
+  args[3] = list;
+  args[4] = replay_flag;
+  if (args[2] == NULL)
+    return 1;
+  setting.section = "ui";
+  setting.key = "replay_turns";
+  for (source = 0; source < 4; source++) {
+    for (i = 0U; i < sizeof(values) / sizeof(values[0]); i++) {
+      file = fopen(path, "w");
+      if (file == NULL) {
+        free(args[2]);
+        return 1;
+      }
+      if (source == 0)
+        fprintf(file, "[ui]\nreplay_turns = %s\n", values[i]);
+      if (fclose(file) != 0) {
+        free(args[2]);
+        return 1;
+      }
+      unsetenv("CAI_REPLAY_TURNS");
+      if (source == 1)
+        setenv("CAI_REPLAY_TURNS", values[i], 1);
+      memset(&app, 0, sizeof(app));
+      app.program_name = CAI_APP_DEFAULT_PROGRAM_NAME;
+      setting.value = values[i];
+      app.settings = &setting;
+      app.setting_count = source == 2 ? 1U : 0U;
+      args[5] = values[i];
+      configuration = NULL;
+      cai_cli_options_init(&options);
+      cai_error_init(&error);
+      rc = cai_cli_configure(source == 3 ? 6 : 4, args, &options,
+                             &configuration, &app, &error);
+      valid = i >= 1U && i <= 3U;
+      if ((valid &&
+           (rc != 1 || options.replay_turns != strtol(values[i], NULL, 10))) ||
+          (!valid && (rc != -1 || (error.message == NULL &&
+                                   options.diagnostic[0] == '\0')))) {
+        fprintf(stderr, "replay source=%d value=%s rc=%d: %s\n", source,
+                values[i], rc,
+                error.message != NULL ? error.message : options.diagnostic);
+        failed = 1;
+      }
+      cai_config_close(configuration);
+      cai_error_cleanup(&error);
+    }
+  }
+  unsetenv("CAI_REPLAY_TURNS");
+  free(args[2]);
+  return failed;
+}
+
 int main(int argc, char **argv) {
   static const char *const env[] = {"CAI_TODO",       "CAI_CHROME",
                                     "CAI_WEB_SEARCH", "CAI_SEARXNG",
@@ -200,6 +270,7 @@ int main(int argc, char **argv) {
   failed |= resolve(path, NULL, 4);
   failed |= resolve(path, "--no-todo", 0);
   failed |= messaging_settings(path);
+  failed |= replay_settings(path);
   unlink(path);
   return failed != 0;
 }

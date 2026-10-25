@@ -46,8 +46,10 @@ assert(not application.open {program_name = '../bad'})
 assert(not application.open {environment_prefix = '1BAD_'})
 local list_view = assert(application.open {no_config = true, settings = {ui = {todo_layout = 'list'}}})
 list_view:close()
-local replay_view = assert(application.open {no_config = true, settings = {ui = {replay_turns = 20}}})
-replay_view:close()
+for _, limit in ipairs {-1, 0, 20} do
+  local replay_view = assert(application.open {no_config = true, settings = {ui = {replay_turns = limit}}})
+  replay_view:close()
+end
 assert(not application.open {no_config = true, settings = {ui = {replay_turns = "invalid"}}})
 assert(not application.open {no_config = true, settings = {ui = {todo_layout = 'invalid'}}})
 local options, model, resume = app:options()

@@ -1786,6 +1786,10 @@ static cai_cli_pouch *cli_named_store(cli_state *state, const char *name,
                                       int authentication, cai_error *error) {
   cai_cli_options selected;
   cai_cli_pouch *store;
+  /* Reject an empty/invalid selector before any cached-handle comparisons. */
+  if (cai_cli_store_options(state->configuration, &state->normal_options, name,
+                            &selected, error) != CAI_OK)
+    return NULL;
   if (!state->options.temporary &&
       strcmp(name, state->normal_options.sessions_store) == 0)
     return &state->pouch;
@@ -1796,10 +1800,8 @@ static cai_cli_pouch *cli_named_store(cli_state *state, const char *name,
       strcmp(name, state->normal_options.messaging_store) == 0)
     return &state->messaging_pouch;
   store = authentication ? &state->auth_pouch : &state->messaging_pouch;
-  if (cai_cli_store_options(state->configuration, &state->normal_options, name,
-                            &selected, error) != CAI_OK ||
-      cai_cli_pouch_open_options(store, &selected, cli_logger(state), error) !=
-          CAI_OK)
+  if (cai_cli_pouch_open_options(store, &selected, cli_logger(state), error) !=
+      CAI_OK)
     return NULL;
   return store;
 }

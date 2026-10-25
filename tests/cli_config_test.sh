@@ -78,6 +78,18 @@ contains "$root/custom-config/config.ini" "# skills_dir = \"$root/custom-config/
 )
 peer_start
 base=("$cli" -C "$work")
+# Empty store selectors must fail before model requests, never at strcmp().
+(
+  ulimit -c 0
+  for selector in sessions_store auth_store messaging_store; do
+    printf '[storage]\n%s = ""\n' "$selector" >"$root/empty-store.ini"
+    extra=(-p custom --endpoint "$endpoint" -m fixture)
+    if [[ "$selector" == auth_store ]]; then extra=(-p chatgpt); fi
+    run --config "$root/empty-store.ini" "${extra[@]}" --messaging -Nni never
+    [[ "$rc" == 1 ]]; contains "$root/stderr" 'invalid store name'
+    [[ ! -s "$root/stdout" && $(requests) == 0 ]]
+  done
+)
 write_config() {
   cat >"$config" <<INI
 config_env_has_precedence = ${1:-false}
