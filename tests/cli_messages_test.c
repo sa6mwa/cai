@@ -329,14 +329,14 @@ static void naming_prefixes(void) {
   cai_error_init(&error);
   self.hostname = "host";
   self.host_id = "machine";
-  self.workspace = "/home/alice/g/lab";
+  self.workspace = "/workspaces/alice/g/lab";
   self.name = "";
   self.automatic = 1;
   known[0] = self;
-  known[0].workspace = "/home/bob/g/lab";
+  known[0].workspace = "/workspaces/bob/g/lab";
   known[0].name = "smith.lab";
   known[1] = self;
-  known[1].workspace = "/home/alice/g/extra/lab";
+  known[1].workspace = "/workspaces/alice/g/extra/lab";
   known[1].name = "cai.lab";
   assert(cai_cli_message_name_select("smith", &self, known, 2U, name, &error) ==
          CAI_OK);
@@ -344,10 +344,10 @@ static void naming_prefixes(void) {
   cai_error_cleanup(&error);
 }
 static void naming_rules(void) {
-  cai_cli_message_name self = {"node-a", "machine-a", "/home/mike/g/lab", "",
-                               1};
+  cai_cli_message_name self = {"node-a", "machine-a", "/workspaces/mike/g/lab",
+                               "", 1};
   cai_cli_message_name known[3] = {
-      {"node-a", "machine-a", "/home/alice/g/lab", "cai.lab", 1},
+      {"node-a", "machine-a", "/workspaces/alice/g/lab", "cai.lab", 1},
       {"node-a", "machine-a", "/x/common/lab", "cai.x.lab", 1},
       {"node-a", "machine-a", "/y/d/b/lab", "cai.y.lab", 1}};
   cai_error error;
@@ -360,12 +360,12 @@ static void naming_rules(void) {
   assert(cai_cli_message_name_select("cai", &self, known, 1U, name, &error) ==
          CAI_OK);
   assert(strcmp(name, "cai.mike.lab") == 0);
-  self.workspace = "/home/alice/g/lab";
-  known[0].workspace = "/home/mike/g/lab";
+  self.workspace = "/workspaces/alice/g/lab";
+  known[0].workspace = "/workspaces/mike/g/lab";
   assert(cai_cli_message_name_select("cai", &self, known, 1U, name, &error) ==
          CAI_OK);
   assert(strcmp(name, "cai.alice.lab") == 0);
-  self.workspace = "/home/mike/g/lab";
+  self.workspace = "/workspaces/mike/g/lab";
   known[0].workspace = "/lab";
   assert(cai_cli_message_name_select("cai", &self, known, 1U, name, &error) ==
          CAI_OK);
@@ -381,7 +381,7 @@ static void naming_rules(void) {
   assert(cai_cli_message_name_select("cai", &self, known, 3U, name, &error) ==
          CAI_OK);
   assert(strcmp(name, "cai.long-descriptive-real-directory.lab") == 0);
-  self.workspace = "/home/mike/g/lab";
+  self.workspace = "/workspaces/mike/g/lab";
   self.hostname = "node-b";
   self.host_id = "machine-b";
   known[0].workspace = self.workspace;
