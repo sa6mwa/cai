@@ -515,7 +515,7 @@ completes or stops. Use /goal pause or /goal clear to control pursuit.
 Unlike the startup flag, this command does not create a new session or select
 non-interactive mode.
 .TP
-.BR "/todo" " [list|use NAME|new NAME|layout board|list|help]"
+.BR "/todo" " [see ID|list|use NAME|new NAME|layout board|list|help]"
 Show the selected kanban board, list shared boards, select an existing board,
 or create/select a board. Changes require a stable boundary between turns.
 The default board layout groups cards into TODO, DOING and DONE columns.
@@ -524,6 +524,9 @@ the board. /todo layout reports the current setting. Layout changes apply only
 to future output in this invocation, including across /new and /resume, without
 changing stored cards or past output. Layout changes are allowed during turns.
 The selected board is included in /status and restored with the conversation.
+/todo see ID displays a task from the selected board, including completed tasks.
+Its heading contains the canonical ID and status, followed by the full title and
+the Markdown description. Descriptions are omitted from board and list layouts.
 .TP
 .B /help
 Render help as Markdown tables of slash commands and prompt keys, with startup

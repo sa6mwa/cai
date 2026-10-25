@@ -5,6 +5,17 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-019: libmdf drops escaped punctuation in headings and plain paragraphs
+
+- **Status:** upstream issue; reproduced independently of CAI's feed.
+- **Reproduction:** libmdf 0.15.0, ANSI format, width 60, ANSI off; set a plain
+  output sink, feed `### Full \*literal\* title\n` one byte at a time, then
+  finish the document. Output is `### Full *literal title`, losing the second
+  literal asterisk. The plain-paragraph variant also loses it.
+- **Scope:** CAI generates valid escaped Markdown. A bold subtitle preserves
+  both literal asterisks, and is used for the todo detail view. No upstream
+  source or dependency pin was modified.
+
 ## BUG-018: Reasoning summaries run against surrounding assistant text
 
 - **Status:** fixed.

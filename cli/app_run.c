@@ -3260,7 +3260,7 @@ static int cli_handle_command(cli_state *state, const char *line,
         "goal with review, fix, and verification until clean; stay in this "
         "conversation. No argument uses the Git default branch. |\n",
         "| `/todo [COMMAND]` | Show the selected board; list, use NAME, "
-        "new NAME, layout board/list, or help. Requires --todo. |\n",
+        "new NAME, see ID, layout board/list, or help. Requires --todo. |\n",
         "| `/queue [on\\|off\\|NAME]` | Show the mailbox, enable/disable "
         "messaging, or replace its full name between turns. Applies to this "
         "app, including /new and /resume; leaves config.ini unchanged. |\n",

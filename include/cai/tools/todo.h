@@ -120,7 +120,10 @@ int cai_todo_open(const cai_todo_tool_config *config, cai_todo **out,
  */
 cai_todo *cai_todo_retain(cai_todo *self);
 /** Read JSON arguments and write the bounded result incrementally. Streams
- * remain caller-owned. error must be an initialized, non-NULL cai_error. */
+ * remain caller-owned. error must be an initialized, non-NULL cai_error.
+ * operation=get_item requires item_id and returns full title, status and
+ * the optional Markdown description from the selected board, including done
+ * items. Empty descriptions may be omitted. Board/list results omit them. */
 int cai_todo_call(cai_todo *self, cai_source *arguments, cai_sink *result,
                   cai_error *error);
 /** Select an existing named board, creating it first when create is nonzero.

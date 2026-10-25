@@ -792,6 +792,9 @@ terminal pair; registering both under `exec_command` is not supported.
 `--board NAME`, `CAI_BOARD`, or `[todo] default_board` select the initial kanban
 board (`default` when unset). `/todo`, `/todo list`, `/todo use NAME` and
 `/todo new NAME` inspect or switch it; selection is remembered per conversation.
+`/todo see DEF-001` displays a task on the selected board, including completed
+tasks: ID and status in the heading, full title beneath it, and its Markdown
+description as the body. Descriptions stay out of list and board layouts.
 The C/Lua receiver and read-only browser route share that same board engine.
 See [shared kanban](docs/kanban.md) for precedence and embedding APIs.
 
@@ -2303,7 +2306,8 @@ including `<cai/tools/todo.h>` and calling `cai_agent_register_todo_tool` or
 `cai_tool_registry_register_todo_tool`. The default tool name is
 `todo_kanban`. It exposes a single domain tool with an `operation` argument:
 `help`, `create_board`, `list_boards`, `set_wip_limit`, `add_item`,
-`list_board`, `current_work`, `move_item`, and `complete_item`. The registered
+`list_board`, `current_work`, `get_item`, `move_item`, `complete_item`,
+`select_board`, `current_board`, and `snapshot_board`. The registered
 tool description and JSON schema include agent-facing usage guidance, operation
 enums, field descriptions, and WIP-limit semantics. Agents can call
 `operation=help` when they need an in-band reminder of the workflow.
@@ -2320,6 +2324,11 @@ storage. Tool input is lenient for item references: `DEF-001`, `DEF#1`,
 the canonical dashed form. `list_boards` returns board records in a `boards`
 array with `board_count`; item-listing operations return work records in an
 `items` array with `item_count`.
+`add_item` accepts an optional Markdown `description` in addition to its title
+and status. `get_item` takes an `item_id` and returns its canonical ID, full
+title, status and nonempty description as top-level fields, including for done
+items. It uses the same board selectors and is independent of list-size limits.
+List and snapshot operations return compact records without descriptions.
 
 By default the store is `$XDG_CONFIG_HOME/cai/todo.json`, falling back to
 `$HOME/.config/cai/todo.json`, with `todo.lock` as the transaction lockfile.

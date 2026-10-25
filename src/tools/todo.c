@@ -46,11 +46,12 @@
   "list_boards lists boards; create_board creates; select_board selects; "     \
   "current_board shows selection; snapshot_board includes done. "
 #define CAI_TODO_HELP_TEXT_3                                                   \
-  "add_item assigns refs; callers cannot set sequence numbers. "               \
+  "add_item assigns refs and sequence numbers. "                               \
   "Refs accept DEF-001, DEF#1, DEF001, DEF1. list_board lists active; "        \
   "current_work lists in_process. "
 #define CAI_TODO_HELP_TEXT_4                                                   \
-  "move_item/complete_item require item_id; set_wip_limit sets WIP. "          \
+  "get_item reads full details, including done. "                              \
+  "get_item/move_item/complete_item require item_id; set_wip_limit sets WIP. " \
   "Denial: code=wip_limit_exceeded."
 #define CAI_TODO_HELP_TEXT                                                     \
   CAI_TODO_HELP_TEXT_1 CAI_TODO_HELP_TEXT_2 CAI_TODO_HELP_TEXT_3               \
@@ -146,6 +147,8 @@ typedef struct cai_todo_result {
   char *board_name;
   char *item_id;
   char *status;
+  char *title;
+  lonejson_spooled description;
   long long wip_limit;
   int has_wip_limit;
   long long in_process_count;
@@ -249,6 +252,8 @@ typedef struct cai_todo_list_state {
   cai_todo_result *result;
   const char *board_id;
   const char *board_name;
+  const char *item_ref;
+  size_t max_title_bytes;
   int only_current;
   int archived;
   size_t max_items;
@@ -355,6 +360,9 @@ static const lonejson_field cai_todo_result_fields[] = {
                                           "board_name"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_todo_result, item_id, "item_id"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_todo_result, status, "status"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_todo_result, title, "title"),
+    LONEJSON_FIELD_STRING_STREAM_OMIT_EMPTY(cai_todo_result, description,
+                                            "description"),
     LONEJSON_FIELD_I64_PRESENT(cai_todo_result, wip_limit, has_wip_limit,
                                "wip_limit"),
     LONEJSON_FIELD_I64_PRESENT(cai_todo_result, in_process_count,
@@ -373,6 +381,11 @@ static const lonejson_field cai_todo_result_fields[] = {
         &cai_todo_result_board_map, LONEJSON_OVERFLOW_FAIL)};
 LONEJSON_MAP_DEFINE(cai_todo_result_map, cai_todo_result,
                     cai_todo_result_fields);
+
+static void cai_todo_result_init(cai_todo_result *result) {
+  memset(result, 0, sizeof(*result));
+  CAI_LJ->init(CAI_LJ, &cai_todo_result_map, result);
+}
 
 static const lonejson_field cai_todo_board_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cai_todo_board, id, "id"),
@@ -2929,6 +2942,30 @@ static lonejson_status cai_todo_list_item_cb(void *user, void *dst) {
   if (cai_todo_streq(item->board_id, state->board_id) &&
       (!state->only_current ||
        cai_todo_streq(item->status, CAI_TODO_STATUS_IN_PROCESS))) {
+    if (state->item_ref != NULL) {
+      if (state->result->item_id != NULL ||
+          !cai_todo_item_ref_matches(item, state->item_ref))
+        return LONEJSON_STATUS_OK;
+      state->rc = cai_todo_copy_string(
+          &state->result->item_id,
+          item->item_id != NULL ? item->item_id : item->id, state->error);
+      if (state->rc == CAI_OK)
+        state->rc = cai_todo_copy_string(
+            &state->result->status, state->archived ? "done" : item->status,
+            state->error);
+      if (state->rc == CAI_OK)
+        state->rc =
+            cai_todo_spool_to_string(&item->title, state->max_title_bytes,
+                                     &state->result->title, state->error);
+      if (state->rc == CAI_OK) {
+        /* Transfer the parsed spool instead of copying the description. */
+        state->result->description.cleanup(&state->result->description);
+        state->result->description = item->description;
+        memset(&item->description, 0, sizeof(item->description));
+      }
+      return state->rc == CAI_OK ? LONEJSON_STATUS_OK
+                                 : LONEJSON_STATUS_ALLOCATION_FAILED;
+    }
     before = state->result->items.count;
     state->rc = cai_todo_add_result_item(state->result, item, state->board_name,
                                          state->max_items, state->error);
@@ -2955,6 +2992,10 @@ static int cai_todo_list(cai_todo_context *ctx, const cai_todo_args *args,
   void *txn = NULL;
   int rc;
 
+  if (cai_todo_streq(args->operation, "get_item") &&
+      (args->item_id == NULL || args->item_id[0] == '\0'))
+    return cai_todo_set_result(result, args->operation, 0, "invalid_request",
+                               "item_id is required", error);
   cai_todo_board_init(&board);
   if (cai_todo_board_arg_is_default(ctx, args)) {
     rc = cai_todo_ensure_default_board_committed(ctx, error);
@@ -3005,6 +3046,9 @@ static int cai_todo_list(cai_todo_context *ctx, const cai_todo_args *args,
     list_state.result = result;
     list_state.board_id = board.id;
     list_state.board_name = board.name;
+    list_state.item_ref =
+        cai_todo_streq(args->operation, "get_item") ? args->item_id : NULL;
+    list_state.max_title_bytes = ctx->max_title_bytes;
     list_state.only_current = only_current == 1;
     list_state.max_items = ctx->max_result_items;
     list_state.error = error;
@@ -3021,6 +3065,12 @@ static int cai_todo_list(cai_todo_context *ctx, const cai_todo_args *args,
       if (rc == CAI_OK)
         rc = list_state.rc;
     }
+    if (rc == CAI_OK && list_state.item_ref != NULL)
+      rc = cai_todo_set_result(
+          result, args->operation, result->item_id != NULL,
+          result->item_id != NULL ? "ok" : "item_not_found",
+          result->item_id != NULL ? "item details" : "item was not found",
+          error);
   }
 done:
   if (rc == CAI_OK)
@@ -3280,7 +3330,8 @@ static int cai_todo_schema_new(cai_tool_schema **out, cai_error *error) {
   static const char *const operations[] = {
       "help",          "create_board", "list_boards",   "set_wip_limit",
       "add_item",      "list_board",   "current_work",  "move_item",
-      "complete_item", "select_board", "current_board", "snapshot_board"};
+      "complete_item", "select_board", "current_board", "snapshot_board",
+      "get_item"};
   cai_tool_schema *schema;
   int rc;
 
@@ -3293,7 +3344,8 @@ static int cai_todo_schema_new(cai_tool_schema **out, cai_error *error) {
         "board selectors use the current selection. create_board creates or "
         "returns a board; list_boards discovers names/keys. select_board "
         "selects; "
-        "current_board shows it; snapshot_board includes done. add_item "
+        "current_board shows it; snapshot_board includes done. get_item reads "
+        "full details, including done. add_item "
         "creates; "
         "list_board lists active; current_work lists in_process. move_item "
         "moves "
@@ -3331,7 +3383,8 @@ static int cai_todo_schema_new(cai_tool_schema **out, cai_error *error) {
     rc = schema->describe(
         schema, "item_id",
         "Readable board-key sequence reference such as DEF-001 returned by "
-        "add_item, list_board, or current_work. Required for move_item and "
+        "add_item, list_board, or current_work. Required for get_item, "
+        "move_item and "
         "complete_item. Input is lenient: DEF-001, DEF#1, DEF001, and DEF1 "
         "refer to the same item.",
         error);
@@ -3343,7 +3396,8 @@ static int cai_todo_schema_new(cai_tool_schema **out, cai_error *error) {
   if (rc == CAI_OK) {
     rc = schema->describe(
         schema, "description",
-        "Optional task detail. Keep concise unless the work item needs enough "
+        "Optional Markdown task description. Read it with get_item; lists omit "
+        "it. Keep concise unless the work item needs enough "
         "context to be useful later.",
         error);
   }
@@ -3414,6 +3468,8 @@ static int cai_todo_run_locked(void *context, const void *params, void *out,
     return cai_todo_list(ctx, args, result, 0, error);
   }
   if (cai_todo_streq(args->operation, "snapshot_board"))
+    return cai_todo_list(ctx, args, result, 2, error);
+  if (cai_todo_streq(args->operation, "get_item"))
     return cai_todo_list(ctx, args, result, 2, error);
   if (cai_todo_streq(args->operation, "current_board")) {
     normalized_args = *args;
@@ -3521,7 +3577,7 @@ int cai_todo_select(cai_todo *self, const char *name, int create,
                          "board name must be 1..256 bytes without controls");
   ctx = self->impl;
   memset(&args, 0, sizeof(args));
-  memset(&result, 0, sizeof(result));
+  cai_todo_result_init(&result);
   args.board_name = cai_strdup(NULL, name);
   if (args.board_name == NULL)
     return cai_set_error(error, CAI_ERR_NOMEM, "copy kanban board name");
@@ -3532,7 +3588,7 @@ int cai_todo_select(cai_todo *self, const char *name, int create,
     if (rc == CAI_OK && !result.ok)
       rc = cai_set_error(error, CAI_ERR_INVALID, result.message);
     cai_tool_result_cleanup_plain(&cai_todo_result_map, &result);
-    memset(&result, 0, sizeof(result));
+    cai_todo_result_init(&result);
   }
   if (rc == CAI_OK) {
     args.operation = select_operation;
@@ -3590,7 +3646,7 @@ int cai_todo_http_snapshot(cai_todo *self, const char *board, int head,
   lonejson_error local;
   int rc, written;
   memset(&args, 0, sizeof(args));
-  memset(&result, 0, sizeof(result));
+  cai_todo_result_init(&result);
   args.operation = operation;
   args.board_name = board != NULL ? cai_strdup(NULL, board) : NULL;
   if (board != NULL && args.board_name == NULL)
@@ -3646,7 +3702,7 @@ int cai_todo_call(cai_todo *self, cai_source *arguments, cai_sink *output,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "kanban, streams and error required");
   memset(&args, 0, sizeof(args));
-  memset(&result, 0, sizeof(result));
+  cai_todo_result_init(&result);
   io.source = arguments;
   io.sink = output;
   io.error = error;

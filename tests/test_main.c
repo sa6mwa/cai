@@ -38437,12 +38437,14 @@ static void test_todo_tool(test_state *state) {
   writer.buffer[0] = '\0';
   writer.length = 0U;
   expect_int(state, "todo_add_item",
-             cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
-                                   "{\"operation\":\"add_item\","
-                                   "\"board_name\":\"default\","
-                                   "\"title\":\"first task\","
-                                   "\"status\":\"in_process\"}",
-                                   sink, &error),
+             cai_tool_registry_run(
+                 registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                 "{\"operation\":\"add_item\","
+                 "\"board_name\":\"default\","
+                 "\"title\":\"first task\","
+                 "\"description\":\"**Context**\\n\\n- Keep the invariant.\","
+                 "\"status\":\"in_process\"}",
+                 sink, &error),
              CAI_OK);
   if (strstr(writer.buffer, "\"ok\":true") == NULL ||
       strstr(writer.buffer, "\"board_key\":\"DEF\"") == NULL ||
@@ -38523,6 +38525,37 @@ static void test_todo_tool(test_state *state) {
     test_fail(state, "todo_list_board_output",
               "list_board did not return the expected item");
   }
+  expect_int(state, "todo_list_omits_description",
+             strstr(writer.buffer, "description") == NULL, 1L);
+  {
+    static const char *requests[] = {
+        "{\"operation\":\"get_item\"}",
+        "{\"operation\":\"get_item\",\"item_id\":\"DEF-999\"}",
+        "{\"operation\":\"get_item\",\"board_name\":\"missing\",\"item_id\":"
+        "\"DEF-002\"}",
+        "{\"operation\":\"get_item\",\"item_id\":\"def2\"}",
+        "{\"operation\":\"get_item\",\"item_id\":\"DEF-001\"}"};
+    static const char *expected[] = {"invalid_request", "item_not_found",
+                                     "board_not_found", "**Context**",
+                                     "default task"};
+    for (i = 0; i < 5; i++) {
+      writer.buffer[0] = '\0';
+      writer.length = 0U;
+      expect_int(state, "todo_get_item",
+                 cai_tool_registry_run(registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                                       requests[i], sink, &error),
+                 CAI_OK);
+      expect_substr(state, "todo_get_item_output", writer.buffer, expected[i]);
+      if (i == 3) {
+        expect_substr(state, "todo_get_item_canonical", writer.buffer,
+                      "\"item_id\":\"DEF-002\"");
+        expect_substr(state, "todo_get_item_status", writer.buffer,
+                      "\"status\":\"in_process\"");
+        expect_substr(state, "todo_get_item_description", writer.buffer,
+                      "**Context**\\n\\n- Keep the invariant.");
+      }
+    }
+  }
   if (item_id[0] != '\0') {
     char complete_args[256];
 
@@ -38541,6 +38574,18 @@ static void test_todo_tool(test_state *state) {
       test_fail(state, "todo_complete_item_output",
                 "complete_item did not succeed");
     }
+    writer.buffer[0] = '\0';
+    writer.length = 0U;
+    expect_int(state, "todo_get_archived_item",
+               cai_tool_registry_run(
+                   registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                   "{\"operation\":\"get_item\",\"item_id\":\"DEF-002\"}", sink,
+                   &error),
+               CAI_OK);
+    expect_substr(state, "todo_get_archived_status", writer.buffer,
+                  "\"status\":\"done\"");
+    expect_substr(state, "todo_get_archived_description", writer.buffer,
+                  "**Context**");
   } else {
     test_fail(state, "todo_item_id", "failed to capture item id");
   }
@@ -38608,6 +38653,16 @@ static void test_todo_tool(test_state *state) {
     test_fail(state, "todo_third_item_sequence",
               "third in-process item did not use the next board sequence");
   }
+  writer.buffer[0] = '\0';
+  writer.length = 0U;
+  expect_int(state, "todo_get_item_beyond_list_limit",
+             cai_tool_registry_run(
+                 registry, CAI_TODO_DEFAULT_TOOL_NAME,
+                 "{\"operation\":\"get_item\",\"item_id\":\"DEF-004\"}", sink,
+                 &error),
+             CAI_OK);
+  expect_substr(state, "todo_get_item_beyond_limit_title", writer.buffer,
+                "third task");
   writer.buffer[0] = '\0';
   writer.length = 0U;
   expect_int(state, "todo_wip_denial_after_limit_update",

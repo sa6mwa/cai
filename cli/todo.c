@@ -7,11 +7,13 @@
 typedef struct todo_request {
   const char *operation;
   const char *board_name;
+  const char *item_id;
 } todo_request;
 static const lonejson_field request_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(todo_request, operation, "operation"),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(todo_request, board_name,
-                                          "board_name")};
+                                          "board_name"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(todo_request, item_id, "item_id")};
 LONEJSON_MAP_DEFINE(request_map, todo_request, request_fields);
 typedef struct todo_entry {
   char *id, *key, *name, *title, *status;
@@ -26,6 +28,8 @@ LONEJSON_MAP_DEFINE(entry_map, todo_entry, entry_fields);
 typedef struct todo_view {
   int ok, truncated;
   char *message, *board_name;
+  char *item_id, *title, *status;
+  lonejson_spooled description;
   lonejson_object_array boards, items;
 } todo_view;
 static const lonejson_field view_fields[] = {
@@ -33,6 +37,10 @@ static const lonejson_field view_fields[] = {
     LONEJSON_FIELD_BOOL(todo_view, truncated, "truncated"),
     LONEJSON_FIELD_STRING_ALLOC(todo_view, message, "message"),
     LONEJSON_FIELD_STRING_ALLOC(todo_view, board_name, "board_name"),
+    LONEJSON_FIELD_STRING_ALLOC(todo_view, item_id, "item_id"),
+    LONEJSON_FIELD_STRING_ALLOC(todo_view, title, "title"),
+    LONEJSON_FIELD_STRING_ALLOC(todo_view, status, "status"),
+    LONEJSON_FIELD_STRING_STREAM(todo_view, description, "description"),
     LONEJSON_FIELD_OBJECT_ARRAY(todo_view, boards, "boards", todo_entry,
                                 &entry_map, LONEJSON_OVERFLOW_FAIL),
     LONEJSON_FIELD_OBJECT_ARRAY(todo_view, items, "items", todo_entry,
@@ -121,6 +129,52 @@ static size_t lane(const todo_entry *entry) {
   if (entry->status != NULL && strcmp(entry->status, "done") == 0)
     return 2U;
   return 3U;
+}
+typedef struct todo_output {
+  cai_cli_todo_write write;
+  void *context;
+  char last_byte;
+} todo_output;
+static lonejson_status description_write(void *context, const void *bytes,
+                                         size_t count, lonejson_error *error) {
+  todo_output *output = context;
+  (void)error;
+  if (output->write(output->context, bytes, count) != 0)
+    return LONEJSON_STATUS_IO_ERROR;
+  if (count > 0U)
+    output->last_byte = ((const char *)bytes)[count - 1U];
+  return LONEJSON_STATUS_OK;
+}
+static int item_view(const todo_view *view, cai_cli_todo_write write,
+                     void *context, cai_error *error) {
+  todo_output output;
+  lonejson_error local;
+  const char *status = view->status != NULL ? view->status : "unknown";
+  if (strcmp(status, "todo") == 0)
+    status = "TODO";
+  else if (strcmp(status, "in_process") == 0)
+    status = "DOING";
+  else if (strcmp(status, "done") == 0)
+    status = "DONE";
+  if (write(context, "## ", 3U) != 0 ||
+      cell(write, context, view->item_id) != 0 ||
+      write(context, " (", 2U) != 0 || cell(write, context, status) != 0 ||
+      write(context, ")\n\n**", 5U) != 0 ||
+      cell(write, context, view->title) != 0 ||
+      write(context, "**\n\n", 4U) != 0)
+    return CAI_ERR_TRANSPORT;
+  output.write = write;
+  output.context = context;
+  output.last_byte = '\n';
+  lonejson_error_init(&local);
+  if (view->description.write_to_sink != NULL &&
+      view->description.write_to_sink(&view->description, description_write,
+                                      &output, &local) != LONEJSON_STATUS_OK)
+    return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                         "display kanban description");
+  if (output.last_byte != '\n' && write(context, "\n", 1U) != 0)
+    return CAI_ERR_TRANSPORT;
+  return CAI_OK;
 }
 static int board_view(const todo_view *view, cai_cli_todo_write write,
                       void *context) {
@@ -215,8 +269,9 @@ int cai_cli_todo_command(cai_agent_runtime *runtime, const char *arguments,
   lonejson *json;
   lonejson_error local;
   const char *name;
+  char item_id[128];
   size_t i, count;
-  int list = 0, changed = 0, rc = CAI_OK;
+  int list = 0, detail = 0, changed = 0, rc = CAI_OK;
   if (layout == NULL || write == NULL)
     return cai_cli_error(error, CAI_ERR_INVALID,
                          "kanban layout and output are required");
@@ -233,6 +288,8 @@ int cai_cli_todo_command(cai_agent_runtime *runtime, const char *arguments,
         "then an italic title capped at 28 characters. |\n"
         "| `/todo layout list` | Show item/status/title rows with full titles. "
         "|\n",
+        "| `/todo see ID` | Read full task details, including Markdown "
+        "description and status. |\n"
         "| `/todo use NAME` | Select an existing board between turns. |\n"
         "| `/todo new NAME` | Create or select a named board between turns. |\n"
         "\nSelection is saved with this conversation; other conversations keep "
@@ -295,11 +352,29 @@ int cai_cli_todo_command(cai_agent_runtime *runtime, const char *arguments,
       return rc;
   } else if (strcmp(arguments, "list") == 0)
     list = 1;
-  else if (*arguments != '\0')
+  else if (strcmp(arguments, "see") == 0 ||
+           strncmp(arguments, "see ", 4U) == 0 ||
+           strncmp(arguments, "see\t", 4U) == 0) {
+    name = arguments + 3U;
+    while (*name == ' ' || *name == '\t')
+      name++;
+    count = strcspn(name, " \t");
+    i = count;
+    while (name[i] == ' ' || name[i] == '\t')
+      i++;
+    if (count == 0U || count >= sizeof(item_id) || name[i] != '\0')
+      return cai_cli_error(error, CAI_ERR_INVALID, "Usage: /todo see ID");
+    memcpy(item_id, name, count);
+    item_id[count] = '\0';
+    call.request.item_id = item_id;
+    detail = 1;
+  } else if (*arguments != '\0')
     return cai_cli_error(
         error, CAI_ERR_INVALID,
-        "Usage: /todo [list|use NAME|new NAME|layout board|list|help]");
-  call.request.operation = list ? "list_boards" : "snapshot_board";
+        "Usage: /todo [see ID|list|use NAME|new NAME|layout board|list|help]");
+  call.request.operation = detail ? "get_item"
+                           : list ? "list_boards"
+                                  : "snapshot_board";
   json = lonejson_new(NULL, &local);
   if (json == NULL)
     return cai_cli_error(error, CAI_ERR_NOMEM, "allocate kanban view parser");
@@ -311,15 +386,17 @@ int cai_cli_todo_command(cai_agent_runtime *runtime, const char *arguments,
   cai_source_close(source);
   if (rc == CAI_OK && !view.ok)
     rc = cai_cli_error(error, CAI_ERR_INVALID, view.message);
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK && !detail) {
     const char *heading = list ? "## Kanban boards\n\n" : "## Kanban: ";
     if (write(context, heading, strlen(heading)) != 0 ||
         (!list && (cell(write, context, view.board_name) != 0 ||
                    write(context, "\n\n", 2U) != 0)))
       rc = CAI_ERR_TRANSPORT;
   }
-  if (rc == CAI_OK && !list &&
-      (*layout == NULL || strcmp(*layout, "board") == 0))
+  if (rc == CAI_OK && detail)
+    rc = item_view(&view, write, context, error);
+  else if (rc == CAI_OK && !list &&
+           (*layout == NULL || strcmp(*layout, "board") == 0))
     rc = board_view(&view, write, context);
   else if (rc == CAI_OK) {
     const char *header =

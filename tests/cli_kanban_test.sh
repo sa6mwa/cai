@@ -44,14 +44,28 @@ unset CAI_BOARD
 terminal_start -N
 send '/todo\r'; expect 'Kanban: configured'
 terminal_close
-plan '{"plan":[{"tool":"todo_kanban","arguments":{"operation":"add_item","title":"Fix Snake speed progression until FINAL_TITLE_SUFFIX"}},{"tool":"todo_kanban","arguments":{"operation":"add_item","title":"Moving card"}},{"tool":"todo_kanban","arguments":{"operation":"add_item","title":"Finished card"}},{"tool":"todo_kanban","arguments":{"operation":"move_item","item_id":"DEF-002","status":"in_process"}},{"tool":"todo_kanban","arguments":{"operation":"complete_item","item_id":"DEF-003"}},"LAYOUT SEEDED"]}'
+plan '{"plan":[{"tool":"todo_kanban","arguments":{"operation":"add_item","title":"Fix Snake speed progression until FINAL_TITLE_SUFFIX","description":"**TASK_CONTEXT**\n\n- Preserve `game.c`.\n\n| Check | Expected |\n| --- | --- |\n| Speed | Stable |"}},{"tool":"todo_kanban","arguments":{"operation":"add_item","title":"Moving card"}},{"tool":"todo_kanban","arguments":{"operation":"add_item","title":"Finished card","description":"Finished context"}},{"tool":"todo_kanban","arguments":{"operation":"move_item","item_id":"DEF-002","status":"in_process"}},{"tool":"todo_kanban","arguments":{"operation":"complete_item","item_id":"DEF-003"}},"LAYOUT SEEDED"]}'
 run --board default -Nni 'seed card layouts'; ok
 terminal_start --board default
 before=$(requests)
 send '/todo\r'; expect 'TODO'; expect 'DOING'; expect 'DONE'
 expect 'DEF-001'; expect 'DEF-002'; expect 'DEF-003'; expect 'Fix Snake'
 absent "$term/feed" FINAL_TITLE_SUFFIX
+absent "$term/feed" TASK_CONTEXT
 send '/todo layout list\r'; expect 'Title'; expect FINAL_TITLE_SUFFIX
+absent "$term/feed" TASK_CONTEXT
+send '/todo see def-001\r'; expect 'DEF-001 (TODO)'; expect FINAL_TITLE_SUFFIX
+expect TASK_CONTEXT; expect 'Preserve game.c.'; expect 'Stable'
+tail -c +$((send_feed_offset+1)) "$term/feed" >"$root/details"
+absent "$root/details" '**TASK_CONTEXT**'
+send '/todo see DEF-002\r'; expect 'DEF-002 (DOING)'; expect 'Moving card'
+send '/todo see DEF-003\r'; expect 'DEF-003 (DONE)'; expect 'Finished context'
+send '/todo see\r'; expect 'Usage: /todo see ID'
+send '/todo see DEF-001 extra\r'; expect 'Usage: /todo see ID'
+send '/todo see DEF-999\r'; expect 'item was not found'
+send '/todo new other\r'; expect 'Kanban: other'
+send '/todo see DEF-001\r'; expect 'item was not found'
+send '/todo use default\r'; expect 'Title'; expect FINAL_TITLE_SUFFIX
 send '/todo layout invalid\r'; expect 'Usage: /todo layout'
 send '/todo layout\r'; expect 'Kanban layout:'; expect 'list'
 send '/new\r'; expect 'New session'
@@ -80,6 +94,7 @@ unset CAI_TODO_LAYOUT
 base+=(--no-todo)
 terminal_start --board ignored
 send '/todo\r'; expect 'Kanban is disabled'
+send '/todo see DEF-001\r'; expect 'Kanban is disabled'
 send '/todo help\r'; expect '/todo new NAME'
 terminal_close
 run --board; bad; contains "$root/stderr" --board

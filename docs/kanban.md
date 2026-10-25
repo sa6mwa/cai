@@ -15,6 +15,7 @@ remains off by default: enable `--todo`, `CAI_TODO=true`, or `[agent] todo=true`
 | `[todo] default_board` | Initial board for new conversations; defaults to `default`. |
 | `/todo` | Show the selected board, including completed cards. |
 | `/todo list` | List the boards shared on this backend. |
+| `/todo see ID` | Read the complete task on the selected board, including done items. |
 | `/todo use NAME` | Select an existing board between turns. |
 | `/todo new NAME` | Create or select a board between turns. |
 | `/todo help` | Show command help. |
@@ -30,6 +31,12 @@ The agent uses `create_board`, `list_boards` and `select_board` to manage its
 selection. `current_board` shows the current selection; `snapshot_board` includes
 archived done items. Existing `add_item`, `move_item`, `complete_item`,
 `set_wip_limit`, `current_work` and `list_board` operations retain their roles.
+`add_item` accepts an optional Markdown `description`. `get_item` reads a task
+by `item_id` on the selected or explicitly requested board, including archived
+done items. It returns canonical `item_id`, full `title`, `status` and a
+nonempty `description` as top-level fields. Empty descriptions may be omitted.
+Detail lookup is independent of `max_result_items`; missing IDs return
+`ok=false, code=item_not_found`. Missing `item_id` is an `invalid_request`.
 Explicit board selectors target a board without selecting it. WIP denials and
 missing boards are structured results (`ok=false`); transport/storage failures
 return errors. Item IDs such as `DEF-001` are assigned by the store.
@@ -48,6 +55,12 @@ setting. These settings affect future output in this application invocation,
 including after `/new` or `/resume`; they do not rewrite past output or save a
 conversation preference. Board selection still belongs to the conversation.
 `/todo list` continues to list boards, independently of card layout.
+
+`/todo see def-001` renders the canonical ID and lane in a heading, for example
+`DEF-001 (TODO)`, the complete task title as a bold subtitle, and its Markdown
+description as the body. Lanes display as TODO, DOING and DONE. Lists and board
+layouts never include descriptions. Inspecting an item leaves board selection
+and layout unchanged and makes no model request.
 
 Startup defaults can be set with `[ui] todo_layout = board|list`,
 `CAI_TODO_LAYOUT` (or the configured application prefix), and

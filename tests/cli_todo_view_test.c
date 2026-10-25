@@ -50,6 +50,73 @@ static void render(const captured *markdown, int width) {
   assert(strstr(plain.bytes, "\357\277\275") == NULL);
   renderer->destroy(renderer);
 }
+static void test_item(void) {
+  lonejson *json;
+  todo_view view;
+  captured markdown, plain;
+  mdf_options options;
+  mdf_sink sink;
+  mdf *renderer = NULL;
+  lonejson_error local;
+  cai_error error;
+  size_t i;
+  char id[] = "DEF-001", title[] = "Full *literal* title", status[] = "todo";
+  static const char body[] = "**Details**\n\n- Inspect `source.c`.\n\n"
+                             "| Check | Expected |\n| --- | --- |\n| A | B |";
+  memset(&view, 0, sizeof(view));
+  memset(&markdown, 0, sizeof(markdown));
+  memset(&plain, 0, sizeof(plain));
+  cai_error_init(&error);
+  lonejson_error_init(&local);
+  json = lonejson_new(NULL, &local);
+  assert(json != NULL);
+  view.item_id = id;
+  view.title = title;
+  view.status = status;
+  lonejson_spooled_init(json, &view.description);
+  assert(view.description.append(&view.description, body, strlen(body),
+                                 &local) == LONEJSON_STATUS_OK);
+  assert(item_view(&view, collect, &markdown, &error) == CAI_OK);
+  assert(strstr(markdown.bytes,
+                "## DEF-001 (TODO)\n\n**Full \\*literal\\* title**\n\n") !=
+         NULL);
+  assert(strstr(markdown.bytes, body) != NULL);
+  mdf_options_init(&options);
+  options.width = 60;
+  options.ansi_mode = MDF_ANSI_OFF;
+  sink.userdata = &plain;
+  sink.write = collect;
+  assert(mdf_create(MDF_FORMAT_ANSI, &options, &renderer) == MDF_OK);
+  assert(renderer->set_sink(renderer, &sink) == MDF_OK);
+  for (i = 0U; i < markdown.used; i++)
+    assert(renderer->feed(renderer, markdown.bytes + i, 1U) == MDF_OK);
+  assert(renderer->finish_document(renderer) == MDF_OK);
+  assert(strstr(plain.bytes, "DEF-001 (TODO)") != NULL);
+  if (strstr(plain.bytes, "Full *literal* title") == NULL)
+    fprintf(stderr, "Rendered item details: %s\n", plain.bytes);
+  assert(strstr(plain.bytes, "Full *literal* title") != NULL);
+  assert(strstr(plain.bytes, "Inspect source.c.") != NULL);
+  assert(strstr(plain.bytes, "\342\224\202 A") != NULL &&
+         strstr(plain.bytes, "\342\224\202 B") != NULL);
+  assert(strstr(plain.bytes, "**Details**") == NULL);
+  assert(strchr(plain.bytes, '\033') == NULL);
+  renderer->destroy(renderer);
+  markdown.used = 0U;
+  markdown.bytes[0] = '\0';
+  assert(board_view(&view, collect, &markdown) == CAI_OK);
+  assert(strstr(markdown.bytes, "Details") == NULL);
+  markdown.used = 0U;
+  markdown.fail = 1;
+  assert(item_view(&view, collect, &markdown, &error) == CAI_ERR_TRANSPORT);
+  view.description.cleanup(&view.description);
+  memset(&view.description, 0, sizeof(view.description));
+  markdown.used = 0U;
+  markdown.fail = 0;
+  assert(item_view(&view, collect, &markdown, &error) == CAI_OK);
+  assert(strstr(markdown.bytes, "DEF-001 (TODO)") != NULL);
+  cai_error_cleanup(&error);
+  lonejson_free(json);
+}
 int main(void) {
   todo_entry items[4];
   todo_view view;
@@ -63,6 +130,7 @@ int main(void) {
   const char *layout = "board";
   cai_error error;
   size_t i;
+  test_item();
   memset(items, 0, sizeof(items));
   memset(&view, 0, sizeof(view));
   memset(&output, 0, sizeof(output));
