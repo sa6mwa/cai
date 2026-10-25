@@ -63,6 +63,7 @@ void cai_cli_options_init(cai_cli_options *options) {
   options->mcp = 1;
   options->messaging = 0;
   options->message_ack_timeout_ms = 300000L;
+  options->replay_turns = 20L;
   options->read_file = options->list_files = options->apply_patch = 1;
   options->view_image = options->goals = options->skills = 1;
 }
@@ -212,6 +213,24 @@ int cai_cli_read_options(int argc, char *const *argv,
     if (strcmp(flag, "--autoqueue") == 0 ||
         strcmp(flag, "--no-autoqueue") == 0) {
       options->enable_auto_enqueue = strcmp(flag, "--autoqueue") == 0;
+      continue;
+    }
+    if (strcmp(flag, "--replay-turns") == 0) {
+      char *end;
+      long number;
+      if (++i >= argc) {
+        cai_cli_option_error(options, "%s requires -1, 0 or a positive count",
+                             flag);
+        return -1;
+      }
+      errno = 0;
+      number = strtol(argv[i], &end, 10);
+      if (errno != 0 || end == argv[i] || *end != '\0' || number < -1L) {
+        cai_cli_option_error(options, "%s requires -1, 0 or a positive count",
+                             flag);
+        return -1;
+      }
+      options->replay_turns = number;
       continue;
     }
     if (strcmp(flag, "--message-ack-timeout-ms") == 0) {
@@ -761,11 +780,11 @@ const char *cai_cli_instruction_at(const cai_cli_options *options,
         strcmp(flag, "--sessions-store") == 0 ||
         strcmp(flag, "--auth-store") == 0 ||
         strcmp(flag, "--messaging-store") == 0 ||
-        strcmp(flag, "--export") == 0 || strcmp(flag, "--export-dir") == 0 ||
-        strcmp(flag, "--import") == 0 || strcmp(flag, "--goal") == 0 ||
-        strcmp(flag, "--base") == 0 || strcmp(flag, "-o") == 0 ||
-        strcmp(flag, "--out") == 0 || strcmp(flag, "-T") == 0 ||
-        strcmp(flag, "--output-type") == 0 ||
+        strcmp(flag, "--replay-turns") == 0 || strcmp(flag, "--export") == 0 ||
+        strcmp(flag, "--export-dir") == 0 || strcmp(flag, "--import") == 0 ||
+        strcmp(flag, "--goal") == 0 || strcmp(flag, "--base") == 0 ||
+        strcmp(flag, "-o") == 0 || strcmp(flag, "--out") == 0 ||
+        strcmp(flag, "-T") == 0 || strcmp(flag, "--output-type") == 0 ||
         strcmp(flag, "--tool-output") == 0 || strcmp(flag, "--theme") == 0 ||
         strcmp(flag, "-p") == 0 || strcmp(flag, "--provider") == 0 ||
         strcmp(flag, "--endpoint") == 0 || strcmp(flag, "--api-key-env") == 0 ||

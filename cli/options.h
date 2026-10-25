@@ -33,6 +33,7 @@ typedef struct cai_cli_options {
   const char *send_queue, *message;
   int enable_auto_enqueue;
   long message_ack_timeout_ms;
+  long replay_turns;
   int todo;
   const char *board;
   int board_explicit;

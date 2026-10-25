@@ -54,6 +54,14 @@ int cai_cli_pouch_open_at(cai_cli_pouch *pouch, const char *state_directory,
                           const char *endpoint, const char *client_pem,
                           pslog_logger *logger, cai_error *error);
 void cai_cli_pouch_close(cai_cli_pouch *pouch);
+/* Console tail only: bounded journal range, selection before downloading,
+ * without invoking recovery or startup observers a second time. */
+int cai_cli_pouch_replay(cai_cli_pouch *pouch, const char *scope,
+                         const char *id, unsigned long long after,
+                         unsigned long long through,
+                         int (*select_event)(void *, unsigned long long),
+                         cai_agent_session_event_fn visit, void *context,
+                         cai_error *error);
 int cai_cli_pouch_seed_auth(cai_cli_pouch *pouch, const char *path,
                             cai_error *error);
 int cai_cli_pouch_list(cai_cli_pouch *pouch, const char *scope,

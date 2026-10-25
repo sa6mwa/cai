@@ -121,6 +121,10 @@ static const cli_field fields[] = {
       "Start in a unique cache workspace; histories are deleted on exit. "
       "Workspace deletion asks [y/N]. --yes/--force also deletes the "
       "workspace."),
+    {"ui", "replay_turns", offsetof(cai_cli_options, replay_turns),
+     CAI_CONFIG_INTEGER, 0U, NULL,
+     "Console replay only: newest whole turns and standalone shell entries. "
+     "Default 20; 0 hides replay; -1 shows all. Agent context is unchanged."},
     B("ui", "shell_context", shell_context,
       "Share sanitized !COMMAND output; /shell and !sh always stay local."),
     S("ui", "theme", theme, 0U,
@@ -472,6 +476,8 @@ int cai_cli_app_schema(cai_config **out, cai_error *error) {
   if (rc == CAI_OK)
     rc = cai_config_set_default(*out, "ui", "theme", defaults.theme, error);
   if (rc == CAI_OK)
+    rc = cai_config_set_default(*out, "ui", "replay_turns", "20", error);
+  if (rc == CAI_OK)
     rc = cai_config_set_default(*out, "messaging", "ack_timeout_ms", "300000",
                                 error);
   return rc == CAI_OK ? 1 : -1;
@@ -581,6 +587,7 @@ static int tool_environment(cai_config *cfg, const char *prefix,
         {"AUTH_STORE", "storage", "auth_store"},
         {"MESSAGING_STORE", "storage", "messaging_store"},
         {"TEMP", "ui", "temporary"},
+        {"REPLAY_TURNS", "ui", "replay_turns"},
         {"NAMESPACE_PREFIX", "storage", "namespace_prefix"},
         {"QUEUE_PREFIX", "messaging", "queue_prefix"},
         {"TODO_LAYOUT", "ui", "todo_layout"}};
@@ -761,6 +768,13 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
       return -1;
   }
   defaults.config_file = early.config_file;
+  {
+    long long replay = cai_config_get_integer(cfg, "ui", "replay_turns", 20LL);
+    if (replay < -1LL || replay > LONG_MAX)
+      return fail(error, NULL,
+                  "ui.replay_turns requires -1, 0 or a positive count");
+    defaults.replay_turns = (long)replay;
+  }
   defaults.no_config = early.no_config;
   defaults.shell_context_max_lines = (size_t)cai_config_get_integer(
       cfg, "runtime", "shell_context_max_lines", 5000LL);

@@ -1,4 +1,8 @@
 local logger, log_file
+local replay_file
+if os.getenv("CAI_TEST_APP_REPLAY_PATH") then
+  replay_file = assert(io.open(os.getenv("CAI_TEST_APP_REPLAY_PATH"), "w"))
+end
 if os.getenv("CAI_TEST_APP_LOG_PATH") then
   log_file = assert(io.open(os.getenv("CAI_TEST_APP_LOG_PATH"), "a"))
   logger = require("pslog").new_json {output = log_file, level = "trace"}
@@ -19,14 +23,19 @@ local app = assert(require("cai.app").open {
   introduction_margin_left = tonumber(os.getenv("CAI_TEST_APP_INTRODUCTION_LEFT")),
   introduction_margin_right = tonumber(os.getenv("CAI_TEST_APP_INTRODUCTION_RIGHT")),
   logger = logger,
+  on_replay = replay_file and function(event)
+    replay_file:write(event.sequence, " ", event.type, "\n")
+  end or nil,
   settings = {agent = {model = os.getenv("CAI_TEST_APP_MODEL")},
               ui = {theme = os.getenv("CAI_TEST_APP_THEME"),
-                    temporary = os.getenv("CAI_TEST_APP_TEMPORARY")}},
+                    temporary = os.getenv("CAI_TEST_APP_TEMPORARY"),
+                    replay_turns = tonumber(os.getenv("CAI_TEST_APP_REPLAY_TURNS"))}},
 })
 local code, err = app:run(arg)
 assert(code, err)
 if os.getenv("CAI_TEST_APP_REPEAT") then code, err = app:run(arg) end
 app:close()
+if replay_file then replay_file:close() end
 if logger then
   logger:info("HOST_LOGGER_STILL_OPEN")
   logger:close()

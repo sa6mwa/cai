@@ -28,6 +28,14 @@ Use
 to start a new session.
 .SH OPTIONS
 .TP
+.BI \-\-replay-turns " N"
+Limit console replay to the newest N whole turns or standalone shell entries
+(default 20). Steering and tools do not count separately. Zero suppresses
+console replay; -1 shows all history. Also CAI_REPLAY_TURNS or [ui] replay_turns.
+Applies to startup and /resume. A notice indicates omitted earlier turns.
+The complete retained conversation still loads into the agent; exports, logs
+and host replay callbacks are unaffected.
+.TP
 .B \-\-temp
 Start a new conversation in cache_dir/temp/chat-XXXXXX/workspace. Private
 conversation storage, key, prompt history, clipboard, exports and managed logs

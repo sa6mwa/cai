@@ -193,6 +193,16 @@
       "${CAI_PUBLIC_INCLUDE_DIR}" "${CAI_GENERATED_INCLUDE_DIR}")
     cai_configure_cli_target(cai_cli_options_test)
     add_test(NAME cai_cli_options COMMAND cai_cli_options_test)
+    add_executable(cai_cli_replay_test tests/cli_replay_test.c)
+    target_link_libraries(cai_cli_replay_test PRIVATE cai_cli_support)
+    cai_configure_cli_target(cai_cli_replay_test)
+    target_compile_options(cai_cli_replay_test PRIVATE -UNDEBUG)
+    add_test(NAME cai_cli_replay_unit COMMAND cai_cli_replay_test)
+    set_tests_properties(cai_cli_replay_unit PROPERTIES TIMEOUT 5)
+    add_test(NAME cai_cli_replay_tail COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_replay_tail_test.sh"
+      "$<TARGET_FILE:cai_cli_mock_fixture>")
+    set_tests_properties(cai_cli_replay_tail PROPERTIES TIMEOUT 20)
     add_executable(cai_cli_temp_unit_test tests/cli_temp_unit_test.c)
     target_link_libraries(cai_cli_temp_unit_test PRIVATE cai_cli_support)
     cai_configure_cli_target(cai_cli_temp_unit_test)

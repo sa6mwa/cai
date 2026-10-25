@@ -10,6 +10,13 @@
 #include <termios.h>
 #include <unistd.h>
 static void host_interrupt(int signo) { (void)signo; }
+static int host_replay(void *context, const cai_agent_session_event *event,
+                       cai_error *error) {
+  (void)error;
+  return fprintf(context, "%llu %s\n", event->sequence, event->type) >= 0
+             ? CAI_OK
+             : CAI_ERR_TRANSPORT;
+}
 typedef struct host_tools {
   pthread_t owner;
   pthread_mutex_t lock;
@@ -47,12 +54,13 @@ static int register_host_tools(void *context, cai_agent *agent,
 }
 int main(int argc, char **argv) {
   cai_app_config config;
-  cai_app_setting settings[3];
+  cai_app_setting settings[4];
   cai_app *app = NULL;
   cai_error error;
   pslog_config logging;
   pslog_logger *logger = NULL;
   FILE *log_file = NULL;
+  FILE *replay_file = NULL;
   host_tools tools;
   int code = 1, rc;
   struct sigaction action, after;
@@ -118,6 +126,18 @@ int main(int argc, char **argv) {
     settings[config.setting_count++].value = getenv("CAI_TEST_APP_TEMPORARY");
   }
   config.settings = settings;
+  if (getenv("CAI_TEST_APP_REPLAY_TURNS") != NULL) {
+    settings[config.setting_count].section = "ui";
+    settings[config.setting_count].key = "replay_turns";
+    settings[config.setting_count++].value =
+        getenv("CAI_TEST_APP_REPLAY_TURNS");
+  }
+  if (getenv("CAI_TEST_APP_REPLAY_PATH") != NULL) {
+    replay_file = fopen(getenv("CAI_TEST_APP_REPLAY_PATH"), "w");
+    assert(replay_file != NULL);
+    config.replay_callback = host_replay;
+    config.replay_context = replay_file;
+  }
   cai_error_init(&error);
   rc = cai_app_open(&config, &app, &error);
   config.register_agent_tools = NULL;
@@ -140,6 +160,8 @@ int main(int argc, char **argv) {
     fprintf(stderr, "%s\n",
             error.message != NULL ? error.message : "app failed");
   cai_app_close(app);
+  if (replay_file != NULL)
+    assert(fclose(replay_file) == 0);
   if (getenv("CAI_TEST_APP_TOOL_REPORT") != NULL) {
     FILE *report = fopen(getenv("CAI_TEST_APP_TOOL_REPORT"), "w");
     assert(report != NULL);

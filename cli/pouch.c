@@ -1134,10 +1134,11 @@ static int session_exists(cai_cli_pouch *pouch, const char *id, int *exists,
   return rc;
 }
 
-static int load_events(void *context, const char *scope, const char *id,
-                       unsigned long long after,
+static int read_events(void *context, const char *scope, const char *id,
+                       unsigned long long after, unsigned long long through,
+                       int (*select_event)(void *, unsigned long long),
                        cai_agent_session_event_fn visit, void *visitor,
-                       cai_error *error) {
+                       int observers, cai_error *error) {
   cai_cli_pouch *pouch;
   cai_cli_session session;
   lc_attachment_list attachments;
@@ -1151,7 +1152,7 @@ static int load_events(void *context, const char *scope, const char *id,
   int observe;
   int string_limit;
   pouch = (cai_cli_pouch *)context;
-  observe = pthread_equal(pthread_self(), pouch->owner_thread) &&
+  observe = observers && pthread_equal(pthread_self(), pouch->owner_thread) &&
             pouch->replay_scope != NULL &&
             strcmp(scope, pouch->replay_scope) == 0;
   memset(&attachments, 0, sizeof(attachments));
@@ -1171,6 +1172,10 @@ static int load_events(void *context, const char *scope, const char *id,
       continue;
     sequence = strtoull(attachments.items[i].name + 6U, NULL, 10);
     if (sequence <= after)
+      continue;
+    if (through != 0U && sequence > through)
+      break;
+    if (select_event != NULL && !select_event(visitor, sequence))
       continue;
     source = NULL;
     string_limit = 0;
@@ -1218,6 +1223,23 @@ static int load_events(void *context, const char *scope, const char *id,
   }
   lc_attachment_list_cleanup(&attachments);
   return rc;
+}
+
+static int load_events(void *context, const char *scope, const char *id,
+                       unsigned long long after,
+                       cai_agent_session_event_fn visit, void *visitor,
+                       cai_error *error) {
+  return read_events(context, scope, id, after, 0U, NULL, visit, visitor, 1,
+                     error);
+}
+int cai_cli_pouch_replay(cai_cli_pouch *pouch, const char *scope,
+                         const char *id, unsigned long long after,
+                         unsigned long long through,
+                         int (*select_event)(void *, unsigned long long),
+                         cai_agent_session_event_fn visit, void *context,
+                         cai_error *error) {
+  return read_events(pouch, scope, id, after, through, select_event, visit,
+                     context, 0, error);
 }
 
 static int auth_load(void *context, const char *key, cai_source **out,

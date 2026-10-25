@@ -161,7 +161,8 @@ typedef struct cai_app_config {
    * Events are borrowed only for the call. Return CAI_OK, or an error to abort
    * the run. Observers may call control/get_status, but must not reenter run,
    * close the app, or access the runtime. Contexts outlive each run. Replay
-   * observations never execute tools or trigger inference. */
+   * observations never execute tools or trigger inference. Console replay
+   * limits do not filter these observations. */
   cai_agent_runtime_event_fn event_callback;
   void *event_context;
   cai_agent_session_event_fn replay_callback;

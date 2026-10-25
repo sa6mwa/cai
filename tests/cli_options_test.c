@@ -65,6 +65,22 @@ static int grouped_value_options(void) {
   return 0;
 }
 
+static int replay_options(void) {
+  char values[][24] = {"cai", "--replay-turns", "2", "-i", "first",
+                       "-i",  "second"};
+  char *args[7];
+  cai_cli_options options;
+  size_t i;
+  for (i = 0U; i < 7U; i++)
+    args[i] = values[i];
+  if (cai_cli_parse_options(7, args, &options) != 1 ||
+      options.replay_turns != 2L ||
+      strcmp(cai_cli_instruction_at(&options, 0U), "first") != 0 ||
+      strcmp(cai_cli_instruction_at(&options, 1U), "second") != 0)
+    return 1;
+  return 0;
+}
+
 static int storage_options(void) {
   cai_cli_options options;
   char arguments[][64] = {"cai",
@@ -534,7 +550,8 @@ int main(void) {
       cai_cli_parse_options(3, invalid_legacy_instructions, &options) != -1 ||
       cai_cli_parse_options(3, invalid_legacy_workspace, &options) != -1)
     return 1;
-  return short_argument_options() || grouped_value_options() ||
-         help_columns() || shell_options() || storage_options() ||
-         tool_options() || capture_options() || messaging_options();
+  return replay_options() || short_argument_options() ||
+         grouped_value_options() || help_columns() || shell_options() ||
+         storage_options() || tool_options() || capture_options() ||
+         messaging_options();
 }

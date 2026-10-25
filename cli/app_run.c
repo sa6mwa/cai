@@ -13,6 +13,7 @@
 #include "pouch.h"
 #include "quota_refresh.h"
 #include "reasoning.h"
+#include "replay.h"
 #include "response.h"
 #include "review_report.h"
 #include "runtime_options.h"
@@ -141,6 +142,7 @@ typedef struct cli_state {
   int awaiting_turn;
   int show_welcome;
   int suppress_replay;
+  cai_cli_replay *replay;
   int automation_done;
   int automation_failed;
   size_t goal_starts_pending;
@@ -1564,48 +1566,46 @@ static int cli_wakeup(sl_t *sl, const sl_watch_event_t *event, void *context) {
   return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
 }
 
-static int cli_replay_event(void *context, const cai_agent_session_event *event,
-                            cai_error *error) {
-  cli_state *state;
+static int cli_replay_output(cli_state *state,
+                             const cai_agent_session_event *event, int render,
+                             int logging, cai_error *error) {
   (void)error;
-  state = (cli_state *)context;
-  if (state->application != NULL &&
-      state->application->replay_callback != NULL) {
-    int observed = state->application->replay_callback(
-        state->application->replay_context, event, error);
-    if (observed != CAI_OK) {
-      if (error->code == CAI_OK)
-        cai_cli_error(error, observed, "application replay observer failed");
-      cai_app_bridge_fail(state->bridge, error);
-      return observed;
-    }
-  }
   if (event->data != NULL &&
       strcmp(event->type, "user_shell_output_tail") == 0) {
     pslog_field fields[2];
     fields[0] = pslog_bool("replay", 1);
     fields[1] = pslog_str("prompt_kind", "shell_output");
-    cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO,
-                        "user_shell_output_tail", "user", event->data,
-                        strlen(event->data), fields, 2U);
-    return state->batch ? CAI_OK
-                        : cai_cli_shell_plain(&state->shell, event->data,
-                                              strlen(event->data), 1,
-                                              cli_shell_literal, state, error);
+    if (logging)
+      cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO,
+                          "user_shell_output_tail", "user", event->data,
+                          strlen(event->data), fields, 2U);
+    return !render ? CAI_OK
+                   : cai_cli_shell_plain(&state->shell, event->data,
+                                         strlen(event->data), 1,
+                                         cli_shell_literal, state, error);
   }
-  if (!state->batch && event->data != NULL &&
+  if ((logging || render) && event->data != NULL &&
       strcmp(event->type, "user_shell_started") == 0) {
     char command[8194];
     if (strlen(event->data) > 8192U)
       return cai_cli_error(error, CAI_ERR_PROTOCOL,
                            "saved shell command is too long");
     snprintf(command, sizeof(command), "!%s", event->data);
+    if (logging) {
+      pslog_field fields[2];
+      fields[0] = pslog_bool("replay", 1);
+      fields[1] = pslog_str("prompt_kind", "shell_command");
+      cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO, "command_input",
+                          "user", command, strlen(command), fields, 2U);
+    }
+    if (!render)
+      return CAI_OK;
     if (cai_cli_shell_plain(&state->shell, NULL, 0U, 1, cli_shell_literal,
                             state, error) != CAI_OK)
       return CAI_ERR_TRANSPORT;
     if (cli_flush_command(state, 1) != 0)
       return CAI_ERR_TRANSPORT;
-    cli_command_input(state, command);
+    state->pending_command = command;
     return cli_flush_command(state, 1) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
   }
   if (event->data != NULL &&
@@ -1627,14 +1627,16 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
     }
     fields[0] = pslog_bool("replay", 1);
     fields[1] = pslog_str("prompt_kind", "shell_output");
-    cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO,
-                        "user_shell_output", "user", bytes, n / 2U, fields, 2U);
-    return state->batch ? CAI_OK
-                        : cai_cli_shell_plain(&state->shell, bytes, n / 2U, 0,
-                                              cli_shell_literal, state, error);
+    if (logging)
+      cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO,
+                          "user_shell_output", "user", bytes, n / 2U, fields,
+                          2U);
+    return !render ? CAI_OK
+                   : cai_cli_shell_plain(&state->shell, bytes, n / 2U, 0,
+                                         cli_shell_literal, state, error);
   }
-  if (!state->batch && (strcmp(event->type, "user_shell_completed") == 0 ||
-                        strcmp(event->type, "user_shell_unshared") == 0)) {
+  if (render && (strcmp(event->type, "user_shell_completed") == 0 ||
+                 strcmp(event->type, "user_shell_unshared") == 0)) {
     int rc = cai_cli_shell_plain(&state->shell, NULL, 0U, 1, cli_shell_literal,
                                  state, error);
     return rc != CAI_OK ? rc
@@ -1642,7 +1644,7 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
                ? CAI_OK
                : CAI_ERR_TRANSPORT;
   }
-  if (event->data != NULL &&
+  if (logging && event->data != NULL &&
       (strcmp(event->type, "policy_diagnostic") == 0 ||
        strcmp(event->type, "turn_submitted") == 0 ||
        strcmp(event->type, "turn_queued") == 0 ||
@@ -1661,7 +1663,7 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
                         assistant ? "assistant" : "user", event->data,
                         strlen(event->data), fields, 2U);
   }
-  if (state->batch)
+  if (!render)
     return CAI_OK;
   if ((strcmp(event->type, "policy_diagnostic") == 0 ||
        strcmp(event->type, "turn_submitted") == 0 ||
@@ -1679,6 +1681,63 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
     return cli_finish_response(state) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
   }
   return CAI_OK;
+}
+
+static int cli_replay_event(void *context, const cai_agent_session_event *event,
+                            cai_error *error) {
+  cli_state *state = context;
+  int rc;
+  if (state->application != NULL &&
+      state->application->replay_callback != NULL) {
+    rc = state->application->replay_callback(state->application->replay_context,
+                                             event, error);
+    if (rc != CAI_OK) {
+      if (error->code == CAI_OK)
+        cai_cli_error(error, rc, "application replay observer failed");
+      cai_app_bridge_fail(state->bridge, error);
+      return rc;
+    }
+  }
+  rc = cli_replay_output(state, event,
+                         !state->batch && state->options.replay_turns < 0L, 1,
+                         error);
+  if (rc == CAI_OK && state->replay != NULL)
+    rc = cai_cli_replay_feed(state->replay, event, error);
+  return rc;
+}
+static int cli_replay_selected(void *context, unsigned long long sequence) {
+  return cai_cli_replay_contains(((cli_state *)context)->replay, sequence);
+}
+static int cli_replay_render(void *context,
+                             const cai_agent_session_event *event,
+                             cai_error *error) {
+  return cli_replay_output(context, event, 1, 0, error);
+}
+static int cli_replay_finish(cli_state *state, cai_error *error) {
+  unsigned long long first, through;
+  int rc;
+  if (state->replay == NULL)
+    return CAI_OK;
+  rc = cai_cli_replay_finish(state->replay, error);
+  first = cai_cli_replay_first(state->replay);
+  through = cai_cli_replay_last(state->replay);
+  if (rc == CAI_OK && cai_cli_replay_omitted(state->replay) != 0U) {
+    char notice[160];
+    snprintf(notice, sizeof(notice), "*Showing the latest %ld turn%s.*",
+             state->options.replay_turns,
+             state->options.replay_turns == 1L ? "" : "s");
+    if (cli_markdown(state, notice) != 0)
+      rc =
+          cai_cli_error(error, CAI_ERR_TRANSPORT, "render replay limit notice");
+  }
+  if (rc == CAI_OK && first != 0U && first <= through)
+    rc = cai_cli_pouch_replay(&state->pouch, state->workspace,
+                              cai_agent_runtime_session_id(state->runtime),
+                              first - 1U, through, cli_replay_selected,
+                              cli_replay_render, state, error);
+  cai_cli_replay_close(state->replay);
+  state->replay = NULL;
+  return rc;
 }
 
 static int cli_replay_begin(void *context, const char *id, cai_error *error) {
@@ -1829,14 +1888,24 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   }
   config.mcp_clients = state->mcp.clients;
   config.mcp_client_count = state->mcp.client_count;
+  if (config.replay_callback != NULL && !state->batch &&
+      state->options.replay_turns > 0L &&
+      cai_cli_replay_open((size_t)state->options.replay_turns, &state->replay,
+                          error) != CAI_OK)
+    return error->code;
   rc = cai_agent_runtime_open(state->client, &config, &state->runtime, error);
   state->pouch.replay_begin = NULL;
   state->pouch.replay_event = NULL;
   state->pouch.replay_context = NULL;
   state->pouch.replay_scope = NULL;
   if (rc != CAI_OK) {
+    cai_cli_replay_close(state->replay);
+    state->replay = NULL;
     return rc;
   }
+  rc = cli_replay_finish(state, error);
+  if (rc != CAI_OK)
+    return rc;
   if (state->options.board_explicit && state->options.todo) {
     rc = cai_agent_runtime_select_board(state->runtime, state->options.board, 1,
                                         error);
@@ -4678,6 +4747,7 @@ cleanup:
   free(state.normal_reasoning_override);
   free(state.high_reasoning_override);
   free(state.review_report);
+  cai_cli_replay_close(state.replay);
   free(metadata_json);
   cai_config_close(state.configuration);
   cai_error_cleanup(&error);

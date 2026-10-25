@@ -47,6 +47,8 @@ static const cai_app_option options[] = {
     {"--service-tier", '\0', CAI_APP_STRING, "NAME",
      "Provider routing tier (see /tier list)", 0, 0},
     {"--new", 'N', CAI_APP_FLAG, NULL, "Start a new session", 0, 0},
+    {"--replay-turns", '\0', CAI_APP_INTEGER, "N",
+     "Console replay turns (default 20; 0 none; -1 all)", 0, 0},
     {"--temp", '\0', CAI_APP_FLAG, NULL,
      "Disposable cache workspace and private conversation history", 0, 1},
     {"--yes", '\0', CAI_APP_FLAG, NULL,

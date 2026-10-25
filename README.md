@@ -658,9 +658,17 @@ without enumerating the directory's conversations. Missing or dirty directory
 indexes are rebuilt from authoritative session metadata. Resume falls back to
 metadata when a writer holds the directory guard, rather than waiting for it.
 Writers durably mark an index dirty before changing a checkpoint or
-publication. Runtime recovery
-and transcript display consume each journal event together in one ordered
-streaming pass, without buffering the conversation or repeating tool effects.
+publication. Runtime recovery consumes the complete journal in sequence order.
+Console replay defaults to the newest 20 whole turns (standalone shell entries
+also count); steering and tools stay with their turn. `--replay-turns N`,
+`CAI_REPLAY_TURNS`, or `[ui] replay_turns` selects the limit. Use `0` to hide
+console replay and `-1` to display all history. Older omitted turns remain in
+the restored agent context, exports, logs, and host replay callbacks.
+Limited replay retains only sequence ranges, then streams the selected journal
+records to libmdf without buffering conversation text or repeating tool effects.
+Unlimited replay renders during the recovery pass. Auto-resume, explicit
+`--resume ID`, and `/resume NUMBER` use the same limit. An omission notice is
+shown only when the positive limit actually excludes earlier entries.
 The root uses shared writer mode so cai can run in multiple directories.
 The generated plaintext key is `$XDG_STATE_HOME/cai/pouch.key` (mode 0600).
 **Back up the Pouch root and its original key together.** Losing the key
