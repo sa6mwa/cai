@@ -95,7 +95,9 @@ for name in calculator vehicle; do
 done
 cp "$root/full-patch" "$root/patch"
 printf "printf 'OUT01\\nOUT02\\nOUT03\\nOUT04\\nOUT05\\nOUT06\\nOUT07\\n'\nexit 3\n" >"$work/command.sh"
-plan '{"plan":[{"tool":"exec_command","arguments":{"cmd":"sh command.sh","yield_time_ms":1000}},"COMMAND DONE"]}'
+# Output can arrive before the child exits. Collect completion before the mock
+# agent finishes, just as a real caller must for the asynchronous terminal.
+plan '{"plan":[{"tool":"exec_command","arguments":{"cmd":"sh command.sh","yield_time_ms":1000}},{"tool":"write_stdin","arguments":{"session_id":"terminal-1","chars":"","yield_time_ms":1000}},"COMMAND DONE"]}'
 offset=$(wc -c <"$term/text")
 prompt 'run failing command' 'COMMAND DONE'
 tail -c +$((offset+1)) "$term/text" >"$root/later"
@@ -130,7 +132,7 @@ run -Nni 'apply patch'; ok
 jq -se 'any(.[]; .event == "tool_patch")' "$root/stderr" >/dev/null
 for marker in between1 before0 after1; do contains "$root/stderr" "$marker"; done
 absent "$root/stderr" $'\033'
-plan '{"plan":[{"tool":"exec_command","arguments":{"cmd":"sh command.sh","yield_time_ms":1000}},"LAST RESPONSE"]}'
+plan '{"plan":[{"tool":"exec_command","arguments":{"cmd":"sh command.sh","yield_time_ms":1000}},{"tool":"write_stdin","arguments":{"session_id":"terminal-1","chars":"","yield_time_ms":1000}},"LAST RESPONSE"]}'
 run -Nni 'run command' --tool-output compact; ok
 [[ $(stdout_text) == 'LAST RESPONSE' ]]
 contains "$root/stderr" OUT06; contains "$root/stderr" OUT07; jq -e . "$root/stderr" >/dev/null

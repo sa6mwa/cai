@@ -5,6 +5,23 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-021: Reasoning row markers and styling are applied after Markdown rendering
+
+- **Status:** fixed.
+- **Cause:** reasoning went through libmdf, then a separate output-sink state
+  machine injected `?` markers into rendered rows. Wrapping and quote styling
+  consequently belonged to different layers.
+- **Resolution:** stream real Markdown blockquote source into the existing
+  renderer. Preserve blank lines, normalize split CRLF/CR, retain Markdown body
+  structure and let libmdf wrap every row. Only line-boundary state is retained.
+  Headings remain plain text in softline's message line. Notice/command markers
+  retain their existing renderer path.
+- **Verification:** all chunk sizes, UTF-8 splits, blank lines, partial lines,
+  sink failures, narrow wrapping, multiple provider sections and transitions
+  between assistant/reasoning/tool output are covered without live inference.
+- **Styling:** quote colors and body styles belong to libmdf's active theme.
+  The default theme retains normal body text; CAI injects no colors around it.
+
 ## BUG-020: apply_patch rejects harmless dot components as unsafe
 
 - **Status:** fixed.

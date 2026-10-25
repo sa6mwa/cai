@@ -145,6 +145,7 @@ typedef struct cli_state {
   int has_quota_watch;
   cai_cli_status status;
   cai_cli_reasoning reasoning;
+  cai_cli_reasoning_quote reasoning_quote;
   int row_line_start;
   int row_ansi;
   int list_line_start;
@@ -348,7 +349,7 @@ static int cli_tool_begin_block(void *context, cai_error *error) {
 }
 /* Prefix visible renderer rows without retaining body text or inserting a
  * marker inside an ANSI sequence split across writes. Blank rows stay blank. */
-static int cli_prefixed_sink(void *context, const char *bytes, size_t count) {
+static int cli_notice_sink(void *context, const char *bytes, size_t count) {
   cli_state *state = context;
   size_t i;
   size_t start = 0U;
@@ -356,20 +357,17 @@ static int cli_prefixed_sink(void *context, const char *bytes, size_t count) {
     unsigned char ch = (unsigned char)bytes[i];
     if (state->row_line_start && state->row_ansi == 0 && ch != 27U &&
         ch != '\n' && ch != '\r') {
-      const char *prefix = "? ";
-      if (state->notice_open) {
-        prefix = state->notice_first_row ? (state->command_input ? "$ " : "* ")
-                                         : "  ";
-        if (state->interactive && getenv("NO_COLOR") == NULL) {
-          if (state->command_input) {
-            prefix = !state->notice_first_row
-                         ? "\033[38;2;215;160;95m  "
-                         : (state->command_ok
-                                ? "\033[0;92m$\033[0m \033[38;2;215;160;95m"
-                                : "\033[0;91m$\033[0m \033[38;2;215;160;95m");
-          } else if (state->notice_first_row)
-            prefix = "\033[91m*\033[0m ";
-        }
+      const char *prefix =
+          state->notice_first_row ? (state->command_input ? "$ " : "* ") : "  ";
+      if (state->interactive && getenv("NO_COLOR") == NULL) {
+        if (state->command_input) {
+          prefix = !state->notice_first_row
+                       ? "\033[38;2;215;160;95m  "
+                       : (state->command_ok
+                              ? "\033[0;92m$\033[0m \033[38;2;215;160;95m"
+                              : "\033[0;91m$\033[0m \033[38;2;215;160;95m");
+        } else if (state->notice_first_row)
+          prefix = "\033[91m*\033[0m ";
       }
       if (cli_sink(state, bytes + start, i - start) != 0 ||
           cli_sink(state, prefix, strlen(prefix)) != 0)
@@ -408,9 +406,8 @@ static int cli_renderer_sink(void *context, const char *bytes, size_t count) {
         return -1;
     state->block_spacing_pending = 0;
   }
-  return state->reasoning_open || state->notice_open
-             ? cli_prefixed_sink(context, bytes, count)
-             : cli_sink(context, bytes, count);
+  return state->notice_open ? cli_notice_sink(context, bytes, count)
+                            : cli_sink(context, bytes, count);
 }
 static int cli_tool_display_init(cli_state *state, cai_error *error) {
   cai_tool_display_config config;
@@ -450,10 +447,8 @@ static int cli_geometry(cli_state *state) {
   }
   /* Softline owns native terminal sizing; only libmdf needs the new width. */
   if (state->renderer != NULL &&
-      state->renderer->set_geometry(
-          state->renderer,
-          state->reasoning_open ? (width >= 5 ? width - 2 : 3) : width,
-          state->reasoning_open ? 0 : (width >= 5 ? 2 : 0), 0) != MDF_OK) {
+      state->renderer->set_geometry(state->renderer, width, width >= 5 ? 2 : 0,
+                                    0) != MDF_OK) {
     return -1;
   }
   state->width = width;
@@ -477,16 +472,23 @@ static int cli_finish_reasoning(cli_state *state) {
   if (!state->reasoning_open) {
     return 0;
   }
+  if (!state->reasoning_quote.line_start &&
+      state->renderer->feed(state->renderer, "\n", 1U) != MDF_OK)
+    return -1;
   if (state->renderer->finish_document(state->renderer) != MDF_OK) {
     return -1;
   }
   state->documents_rendered++;
   state->reasoning_open = 0;
   state->block_spacing_pending = 1;
-  if (state->renderer->set_geometry(state->renderer, state->width,
-                                    state->width >= 5 ? 2 : 0, 0) != MDF_OK)
-    return -1;
   return 0;
+}
+
+static int cli_reasoning_markdown(void *context, const char *data,
+                                  size_t length) {
+  cli_state *state = context;
+  return state->renderer->feed(state->renderer, data, length) == MDF_OK ? 0
+                                                                        : -1;
 }
 
 static int cli_reasoning_body(void *context, const char *data, size_t length) {
@@ -497,16 +499,11 @@ static int cli_reasoning_body(void *context, const char *data, size_t length) {
     if (state->documents_rendered > 0 &&
         state->renderer->begin_document(state->renderer) != MDF_OK)
       return -1;
-    if (state->renderer->set_geometry(state->renderer,
-                                      state->width >= 5 ? state->width - 2 : 3,
-                                      0, 0) != MDF_OK)
-      return -1;
     state->reasoning_open = 1;
-    state->row_line_start = 1;
-    state->row_ansi = 0;
+    cai_cli_reasoning_quote_init(&state->reasoning_quote);
   }
-  return state->renderer->feed(state->renderer, data, length) == MDF_OK ? 0
-                                                                        : -1;
+  return cai_cli_reasoning_quote_feed(&state->reasoning_quote, data, length,
+                                      cli_reasoning_markdown, state);
 }
 
 static int cli_text(cli_state *state, const char *data, size_t length) {

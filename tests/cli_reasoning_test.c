@@ -352,15 +352,83 @@ typedef struct reasoning_capture {
   char bytes[2048];
   size_t length;
   int fail;
+  int calls, fail_at;
 } reasoning_capture;
 static int reasoning_capture_body(void *context, const char *data,
                                   size_t length) {
   reasoning_capture *capture = context;
-  if (capture->fail || length >= sizeof(capture->bytes) - capture->length)
+  capture->calls++;
+  if (capture->fail ||
+      (capture->fail_at != 0 && capture->calls == capture->fail_at) ||
+      length >= sizeof(capture->bytes) - capture->length)
     return -1;
   memcpy(capture->bytes + capture->length, data, length);
   capture->length += length;
   capture->bytes[capture->length] = '\0';
+  return 0;
+}
+static int test_reasoning_quotes(void) {
+  static const char *inputs[] = {
+      "",
+      "one",
+      "one\n",
+      "one\r\n\r\ntwo\rthree\n",
+      "**Bold**\n\n- item with `code`\n\n```c\nint x;\n```",
+      "caf\303\251\n> nested\n"};
+  static const char *expected[] = {
+      "",
+      "> one",
+      "> one\n",
+      "> one\n> \n> two\n> three\n",
+      "> **Bold**\n> \n> - item with `code`\n> \n> ```c\n> int x;\n> ```",
+      "> caf\303\251\n> > nested\n"};
+  cai_cli_reasoning_quote quote;
+  reasoning_capture capture;
+  size_t n, chunk, offset, count, length;
+  int fail_at;
+  for (n = 0U; n < sizeof(inputs) / sizeof(inputs[0]); n++) {
+    length = strlen(inputs[n]);
+    for (chunk = 1U; chunk <= (length != 0U ? length : 1U); chunk++) {
+      cai_cli_reasoning_quote_init(&quote);
+      memset(&capture, 0, sizeof(capture));
+      if (cai_cli_reasoning_quote_feed(&quote, NULL, 0U, reasoning_capture_body,
+                                       &capture) != 0)
+        return 1;
+      for (offset = 0U; offset < length; offset += count) {
+        count = length - offset;
+        if (count > chunk)
+          count = chunk;
+        if (cai_cli_reasoning_quote_feed(&quote, inputs[n] + offset, count,
+                                         reasoning_capture_body, &capture) != 0)
+          return 1;
+      }
+      if (strcmp(capture.bytes, expected[n]) != 0) {
+        fprintf(stderr, "quoted Markdown case %lu chunk %lu: %s\n",
+                (unsigned long)n, (unsigned long)chunk, capture.bytes);
+        return 1;
+      }
+    }
+  }
+  cai_cli_reasoning_quote_init(&quote);
+  memset(&capture, 0, sizeof(capture));
+  if (cai_cli_reasoning_quote_feed(&quote, "partial", 7U,
+                                   reasoning_capture_body, &capture) != 0 ||
+      strcmp(capture.bytes, "> partial") != 0)
+    return 1; /* Output arrives without waiting for a newline or section EOF. */
+  for (fail_at = 1; fail_at <= 3; fail_at++) {
+    cai_cli_reasoning_quote_init(&quote);
+    memset(&capture, 0, sizeof(capture));
+    capture.fail_at = fail_at;
+    if (cai_cli_reasoning_quote_feed(&quote, "line\n", 5U,
+                                     reasoning_capture_body, &capture) != -1 ||
+        capture.calls != fail_at)
+      return 1;
+  }
+  if (cai_cli_reasoning_quote_feed(&quote, NULL, 1U, reasoning_capture_body,
+                                   &capture) != -1 ||
+      cai_cli_reasoning_quote_feed(NULL, "text", 4U, reasoning_capture_body,
+                                   &capture) != -1)
+    return 1;
   return 0;
 }
 static int test_reasoning_sections(void) {
@@ -560,7 +628,7 @@ int main(void) {
       return 1;
   if (test_goal_handoff() != 0 || test_shared_auth() != 0 ||
       test_event_logging() != 0 || test_reasoning_sections() != 0 ||
-      test_literal_tokens() != 0)
+      test_literal_tokens() != 0 || test_reasoning_quotes() != 0)
     return 1;
   memset(&state, 0, sizeof(state));
   if (!cai_cli_quota_due(0, start, start, 0) ||
@@ -587,7 +655,8 @@ int main(void) {
   mdf_options_init(&renderer_options);
   renderer_options.output_fd = STDOUT_FILENO;
   renderer_options.width = state.width;
-  renderer_options.boring = 1;
+  renderer_options.ansi_mode = MDF_ANSI_OFF;
+  renderer_options.margin_left = 2;
   if (mdf_create(MDF_FORMAT_ANSI, &renderer_options, &state.renderer) !=
       MDF_OK) {
     return 1;
@@ -723,11 +792,11 @@ int main(void) {
   /* A split SGR sequence and a reset-only blank row never receive markers. */
   state.row_line_start = 1;
   state.row_ansi = 0;
-  if (cli_prefixed_sink(&state, "\033[", 2U) != 0 ||
-      cli_prefixed_sink(&state, "1mDecorated\n\033[0",
-                        strlen("1mDecorated\n\033[0")) != 0 ||
-      cli_prefixed_sink(&state, "m\nPlain row\n", strlen("m\nPlain row\n")) !=
-          0)
+  state.notice_first_row = 1;
+  if (cli_notice_sink(&state, "\033[", 2U) != 0 ||
+      cli_notice_sink(&state, "1mDecorated\n\033[0",
+                      strlen("1mDecorated\n\033[0")) != 0 ||
+      cli_notice_sink(&state, "m\nPlain row\n", strlen("m\nPlain row\n")) != 0)
     return 1;
   state.timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
   if (state.timer_fd < 0 || cli_timer_wakeup(state.sl, NULL, &state) != SL_OK) {
@@ -756,12 +825,12 @@ int main(void) {
     return 1;
   }
   output[count] = '\0';
-  if (strstr(output, "Commentary before reasoning.\n\n? First body line") ==
+  if (strstr(output, "Commentary before reasoning.\n\n  > First body line") ==
           NULL ||
       strstr(output,
-             "? First body line Second body line\n\n  Assistant text\n") ==
+             "  > First body line Second body line\n\n  Assistant text\n") ==
           NULL ||
-      strstr(output, "? Reasoning after tool\n\n  Answer after tool.\n") ==
+      strstr(output, "  > Reasoning after tool\n\n  Answer after tool.\n") ==
           NULL) {
     fprintf(stderr, "missing assistant/reasoning block spacing: %s\n", output);
     return 1;
@@ -769,7 +838,8 @@ int main(void) {
   if (strstr(output, "{\"ok\":true}\n\n  Answer after tool.\n") == NULL ||
       strstr(output, "failed output\n\n  Answer after tool.\n") == NULL ||
       strstr(output, "already separated\n\n  Answer after tool.\n") == NULL ||
-      strstr(output, "before reasoning\n\n? Reasoning after tool\n") == NULL) {
+      strstr(output, "before reasoning\n\n  > Reasoning after tool\n") ==
+          NULL) {
     fprintf(stderr, "missing tool/model block spacing: %s\n", output);
     return 1;
   }
@@ -786,15 +856,17 @@ int main(void) {
   if (strstr(output, "[reasoning]") != NULL ||
       strstr(output, "Actual provider") != NULL ||
       strstr(output, "Next header") != NULL ||
-      strstr(output, "? First body line Second body line") == NULL ||
+      strstr(output, "  > First body line Second body line") == NULL ||
       strstr(output, "Assistant text") == NULL ||
-      strstr(output, "? Assistant text") != NULL ||
-      strstr(output, "\033[1m? Decorated\n\033[0m\n? Plain row\n") == NULL ||
+      strstr(output, "? ") != NULL ||
+      strstr(output, "> Assistant text") != NULL ||
+      strstr(output, "\033[1m* Decorated\n\033[0m\n  Plain row\n") == NULL ||
       strstr(output, "Thinking...") != NULL ||
       strstr(output, "* WARN: **literal** _file_ `tick` [name](url)") == NULL ||
       strstr(output, "\n  word") == NULL ||
-      strstr(output,
-             "Local informational Markdown\n\nCommentary before reasoning.") ==
+      strstr(
+          output,
+          "Local informational Markdown\n\n  Commentary before reasoning.") ==
           NULL) {
     fprintf(stderr, "reasoning header/body routing failed: %s\n", output);
     return 1;

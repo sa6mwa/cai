@@ -400,9 +400,12 @@ generic runtime renderer decides whether and how to display that event; CAI
 never silently substitutes it into normal answer text.
 
 The application feed separates answer, reasoning-summary and tool blocks by a
-blank row. A summary heading stays in the status line; its body uses the `?`
-prefix. Answer and summary blocks may alternate within one response without
-ending the turn or restarting the output stream.
+blank row. A summary heading stays in the status line. Its body is streamed as
+a Markdown blockquote into libmdf, which owns quote markers, styling and line
+wrapping. CAI adds no markers to the rendered reasoning rows. Answer and summary
+blocks may alternate within one response without ending the turn or restarting
+the output stream. Quote colors and body styling follow libmdf's active theme;
+the default theme retains normal body text.
 
 `RESPONSE_COMPLETED` marks the end of every successfully streamed and
 persisted model response, including responses that request local tools before

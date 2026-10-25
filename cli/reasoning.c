@@ -2,6 +2,45 @@
 #include <libmdf/mdf.h>
 #include <string.h>
 
+void cai_cli_reasoning_quote_init(cai_cli_reasoning_quote *quote) {
+  memset(quote, 0, sizeof(*quote));
+  quote->line_start = 1;
+}
+int cai_cli_reasoning_quote_feed(cai_cli_reasoning_quote *quote,
+                                 const char *data, size_t length,
+                                 cai_cli_reasoning_body_fn write,
+                                 void *context) {
+  size_t i = 0U, start;
+  if (quote == NULL || write == NULL || (data == NULL && length != 0U))
+    return -1;
+  while (i < length) {
+    if (quote->skip_lf) {
+      quote->skip_lf = 0;
+      if (data[i] == '\n') {
+        i++;
+        continue;
+      }
+    }
+    if (quote->line_start) {
+      if (write(context, "> ", 2U) != 0)
+        return -1;
+      quote->line_start = 0;
+    }
+    start = i;
+    while (i < length && data[i] != '\r' && data[i] != '\n')
+      i++;
+    if (i > start && write(context, data + start, i - start) != 0)
+      return -1;
+    if (i < length) {
+      if (write(context, "\n", 1U) != 0)
+        return -1;
+      quote->line_start = 1;
+      quote->skip_lf = data[i++] == '\r';
+    }
+  }
+  return 0;
+}
+
 void cai_cli_reasoning_reset(cai_cli_reasoning *reasoning) {
   memset(reasoning, 0, sizeof(*reasoning));
 }
