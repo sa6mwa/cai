@@ -64,7 +64,9 @@ typedef struct cai_app_status {
   cai_error control_error;
 } cai_app_status;
 
+/** Initialize an empty owned status before its first query. */
 void cai_app_status_init(cai_app_status *status);
+/** Release owned status strings/errors and reset it. NULL is accepted. */
 void cai_app_status_cleanup(cai_app_status *status);
 
 /** Argument shape accepted by the shared CAI command-line parser. */
@@ -188,7 +190,9 @@ struct cai_app {
    * Arguments are borrowed only during run. This method never calls exit. */
   int (*run)(cai_app *self, int argc, const char *const *argv, int *exit_code,
              cai_error *error);
+  /** Number of immutable parser/help option entries; no startup effects. */
   size_t (*option_count)(const cai_app *self);
+  /** Borrow one zero-based option entry, or NULL when index is out of range. */
   const cai_app_option *(*option_at)(const cai_app *self, size_t index);
   /** Write help with the configured identity and invocation_name to a borrowed
    * sink. No configuration files, logger, banner, auth or terminal are
@@ -196,13 +200,13 @@ struct cai_app {
    */
   int (*write_help)(const cai_app *self, cai_sink *sink, cai_error *error);
   /** Thread-safe while self remains alive. Requires a ready runtime (STOP is
-   * also accepted during startup). text is required only for prompt, steering
-   * and goal replacement, and is copied before return. Interactive prompts
-   * enter softline's approval/edit queue; batch prompts enter the runtime FIFO.
-   * CAI_OK means accepted, with a nonzero id; inspect the acknowledgement for
-   * application errors. Queue capacity is 64; a full queue rejects explicitly.
-   * STOP requests orderly shutdown, cancelling active work and waiting for
-   * workers; it does not terminate the host process. */
+   * also accepted during startup and utilities). text is required only for
+   * prompt, steering and goal replacement, and is copied before return.
+   * Interactive prompts enter softline's approval/edit queue; batch prompts
+   * enter the runtime FIFO. CAI_OK means accepted, with a nonzero id; inspect
+   * the acknowledgement for application errors. Queue capacity is 64; a full
+   * queue rejects explicitly. STOP requests orderly shutdown, cancelling active
+   * work and waiting for workers; it does not terminate the host process. */
   int (*control)(cai_app *self, cai_app_control_type type, const char *text,
                  unsigned long long *id, cai_error *error);
   /** Thread-safe copied status and final run result; no file/log parsing.
@@ -218,13 +222,22 @@ void cai_app_config_init(cai_app_config *config);
 /** Copy configuration and validate settings without reading files or running
  * the application. Logger remains borrowed. On failure *out is NULL. */
 int cai_app_open(const cai_app_config *config, cai_app **out, cai_error *error);
+/** Run synchronously with options only, excluding argv[0]. See cai_app.run. */
 int cai_app_run(cai_app *self, int argc, const char *const *argv,
                 int *exit_code, cai_error *error);
+/** Return the option count without loading configuration or starting UI. */
 size_t cai_app_option_count(const cai_app *self);
+/** Borrow a zero-based help entry; NULL self/out-of-range returns NULL. */
 const cai_app_option *cai_app_option_at(const cai_app *self, size_t index);
+/** Write identity-aware help to a borrowed sink without startup side effects.
+ */
 int cai_app_write_help(const cai_app *self, cai_sink *sink, cai_error *error);
+/** Thread-safe command acceptance, not completion. See cai_app.control for
+ * runtime requirements, acknowledgement, copied text and STOP behavior. */
 int cai_app_control(cai_app *self, cai_app_control_type type, const char *text,
                     unsigned long long *id, cai_error *error);
+/** Copy the most recent safe status. Initialize out first; success replaces
+ * its owned values and failure leaves them unchanged. Thread-safe. */
 int cai_app_get_status(const cai_app *self, cai_app_status *out,
                        cai_error *error);
 /** Close after run has returned, outside its callbacks. Calls made during run
@@ -255,6 +268,7 @@ typedef struct cai_app_kanban_config {
   /** Borrowed native logger, valid through the final receiver close. */
   struct pslog_logger *logger;
 } cai_app_kanban_config;
+/** Initialize automatic CAI paths, the default board and bounded listing. */
 void cai_app_kanban_config_init(cai_app_kanban_config *config);
 /** Returns an owned core receiver with Pouch-backed transaction callbacks.
  * Its retained references own the store; the caller closes the receiver. */

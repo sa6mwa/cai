@@ -1,5 +1,8 @@
 # lonejson CR: public spooled append API
 
+Historical API proposal. References to missing public append operations below
+describe the dependency at report time, not the currently selected SDK.
+
 ## Problem
 
 cai needs to append streamed chunks into a `lonejson_spooled` value while

@@ -110,6 +110,11 @@ make -C examples run-streaming-text
 
 ## Smith Terminal
 
+These are small core-runtime reference examples, distinct from the complete
+`cai` application. To embed CAI's existing terminal UI, configuration and
+encrypted storage instead, use `libcai_app`; see
+[the embedding guide](../docs/embedding.md) and `examples/app.lua`.
+
 The C and Lua Smith terminal examples are reference renderers for the generic
 agent-runtime event stream. They run the `smith` preset in the current
 directory, stream provider-issued reasoning summaries selected by the default
@@ -129,7 +134,10 @@ Smith loads an optional global policy from `$XDG_CONFIG_HOME/cai/AGENTS.md`
 workspace. Set `agent_config_directory`, `global_agents_md_path`, or a
 C-backed `global_instruction_store` to select another global source. CAI does
 not search workspace ancestors unless `codex_compat_agents_md` is explicitly
-enabled.
+enabled. That option also loads `$CODEX_HOME/AGENTS.md` (falling back to
+`$HOME/.codex/AGENTS.md`) after CAI's global file and before repository files.
+Files are captured at runtime construction, including resume; restart to read
+changes. Model switches and compaction retain the captured instructions.
 
 C and Lua preset/runtime configuration also accepts `image_directory`, an
 optional existing directory that `view_image` may read alongside workspace

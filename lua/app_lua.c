@@ -1,4 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
+/* Lua 5.5 facade over the public cai_app receiver. run() owns the calling
+ * thread; observers reenter Lua only there, never from native tool workers.
+ * Application strings/settings are copied by open; native logger interop is
+ * retained until close. No application-private headers are required. */
 #include "todo_lua.h"
 #include <cai/app.h>
 #include <dlfcn.h>
@@ -482,6 +486,8 @@ static int run_app(lua_State *L) {
   cai_error_cleanup(&error);
   return rc == CAI_OK ? 1 : 2;
 }
+/* app:options() is a 1-based copy of public help metadata. Missing short flags
+ * and argument labels are nil; it does not parse argv or initialize a run. */
 static int options(lua_State *L) {
   static const char *const types[] = {"flag", "string", "integer",
                                       "optional_string", "counter"};
@@ -534,6 +540,9 @@ static void boolean_field(lua_State *L, const char *key, int value) {
   lua_pushboolean(L, value);
   lua_setfield(L, -2, key);
 }
+/* Copy owned C snapshots to Lua values. session_usage token counters are
+ * flattened beside spend estimates; there is no nested C-style usage member.
+ * Runtime state is numeric; application outcome is a string. */
 static int push_status(lua_State *L) {
   static const char *const outcomes[] = {"not_run", "running",   "completed",
                                          "stopped", "cancelled", "failed"};

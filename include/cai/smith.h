@@ -147,9 +147,11 @@ typedef struct cai_agent_preset_config {
   /** Optional global skill configuration. NULL selects CAI's default root. */
   const cai_skill_config *skills;
   /**
-   * Non-zero enables Codex-compatible discovery from the nearest .git
-   * ancestor through workspace_directory. The default reads only the exact
-   * workspace_directory/AGENTS.md and never traverses its ancestors.
+   * Non-zero loads $CODEX_HOME/AGENTS.md (or $HOME/.codex/AGENTS.md when
+   * CODEX_HOME is unset/empty) after CAI global policy, then repository files
+   * from the nearest .git ancestor through workspace_directory. The default
+   * omits Codex global policy and reads only workspace_directory/AGENTS.md
+   * after CAI global policy, without traversing workspace ancestors.
    */
   int codex_compat_agents_md;
   /** Optional visible identity; NULL selects preset->default_identity. */

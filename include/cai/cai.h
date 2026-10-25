@@ -1,5 +1,6 @@
 /** @file cai/cai.h
- *  Public C89 API for cai OpenAI Responses clients, sessions, streams,
+ *  Public C89 API for Responses and compatible Chat Completions clients,
+ *  sessions, streams,
  *  tool registration, hosted tools, sources, sinks, and conversations.
  */
 #ifndef CAI_CAI_H
@@ -30,7 +31,7 @@ struct pslog_logger;
 typedef struct cai_client cai_client;
 /** Agent facade handle that owns config, tools, and an implicit session. */
 typedef struct cai_agent cai_agent;
-/** Stateful Responses session handle. */
+/** Stateful agent session using the client's selected wire protocol. */
 typedef struct cai_session cai_session;
 /** Conversation handle wrapping a server-side conversation id. */
 typedef struct cai_conversation cai_conversation;
@@ -47,7 +48,7 @@ typedef struct cai_mcp_tool_registration_config
 typedef struct cai_output cai_output;
 /** Low-level Responses create parameter builder. */
 typedef struct cai_response_create_params cai_response_create_params;
-/** Low-level Responses API response handle. */
+/** Response handle; Chat Completions is normalized to this Responses shape. */
 typedef struct cai_response cai_response;
 /** List response for response/conversation input items. */
 typedef struct cai_input_item_list cai_input_item_list;
@@ -143,7 +144,7 @@ typedef enum cai_api_protocol {
   CAI_API_PROTOCOL_CHAT_COMPLETIONS = 1
 } cai_api_protocol;
 
-/** Token usage counters reported by Responses. */
+/** Provider token usage normalized across Responses and Chat Completions. */
 typedef struct cai_token_usage {
   /** Input tokens charged for the request. */
   long long input_tokens;
@@ -212,7 +213,9 @@ typedef struct cai_client_config {
   const char *ca_path;
   /** Non-zero disables fallback from Responses WebSocket to HTTPS streaming. */
   int responses_websocket_fallback_disabled;
-  /** Maximum non-streamed JSON response bytes; zero uses default. */
+  /** Maximum non-streamed JSON response bytes; zero uses default. Also bounds
+   * Chat Completions response materialization. Streaming calls are not capped
+   * by this setting. */
   size_t json_response_limit_bytes;
   /** Optional pslog logger. */
   struct pslog_logger *logger;
@@ -333,9 +336,10 @@ typedef struct cai_model_catalog {
 
 /** Configuration for constructing an agent facade. */
 typedef struct cai_agent_config {
-  /** Model id for Responses requests. */
+  /** Model id for the client's selected protocol. */
   const char *model;
-  /** Developer instructions sent as Responses instructions. */
+  /** Developer instructions, sent as Responses instructions or a Chat
+   * Completions system-role message. */
   const char *developer_instructions;
   /** Optional prompt cache key. */
   const char *prompt_cache_key;
@@ -933,7 +937,9 @@ typedef int (*cai_stream_function_call_done_fn)(
     void *context, const char *item_id, int output_index, const char *call_id,
     const char *name, const struct lonejson_spooled *arguments,
     cai_error *error);
-/** Callback for completed streamed output items. */
+/** Callback for completed streamed output items. item_json and metadata are
+ * borrowed only during the call. Chat Completions synthesizes compatible
+ * assistant message (text/refusal) and function/custom call items. */
 typedef int (*cai_stream_output_item_done_fn)(
     void *context, const char *item_id, int output_index, const char *type,
     const struct lonejson_spooled *item_json, cai_error *error);
@@ -947,7 +953,9 @@ typedef int (*cai_stream_output_text_delta_fn)(
 /**
  * Callback after one streamed model response completes successfully.
  *
- * Session streaming invokes this after CAI has durably recorded the response.
+ * Session streaming invokes this after recording history/usage and clearing
+ * committed pending input. This is a response boundary, not a whole tool-loop
+ * or turn boundary, and does not promise a filesystem/storage checkpoint.
  */
 typedef int (*cai_stream_response_completed_fn)(void *context,
                                                 cai_error *error);
@@ -982,7 +990,8 @@ typedef struct cai_stream_sinks {
   cai_stream_function_call_done_fn function_call_arguments_done;
   /** Context passed to function-call callbacks. */
   void *function_call_context;
-  /** Callback for streamed custom/freeform tool input. */
+  /** Callback for raw custom/freeform input deltas. Chat Completions decodes
+   * the adapter's JSON string field incrementally before invoking this. */
   cai_stream_function_call_delta_fn custom_tool_call_input_delta;
   /** Callback for completed custom/freeform tool input. */
   cai_stream_function_call_done_fn custom_tool_call_input_done;
@@ -1300,7 +1309,7 @@ struct cai_agent {
   void *impl;
 };
 
-/** Public method-table facade for a stateful Responses session. */
+/** Stateful session facade for Responses or compatible Chat Completions. */
 struct cai_session {
   /** Bind the session to a server-side conversation id. */
   int (*set_conversation_id)(cai_session *session, const char *conversation_id,

@@ -545,7 +545,8 @@ typedef struct cai_agent_runtime_config {
   const cai_blob_store *global_instruction_store;
   /** Optional global skill configuration. NULL selects CAI's default root. */
   const cai_skill_config *skills;
-  /** Enable explicit Codex-compatible ancestor AGENTS.md discovery. */
+  /** Load Codex global AGENTS.md after CAI global policy, then repository
+   * ancestor files. See cai_agent_preset_config.codex_compat_agents_md. */
   int codex_compat_agents_md;
   /** Optional identity overriding Cai Smith. */
   const char *agent_identity;
@@ -805,7 +806,9 @@ const char *cai_agent_runtime_model(cai_agent_runtime *runtime);
  * Query effective request settings and changes waiting for a safe boundary.
  * Owner-thread-only. Returned strings are borrowed snapshots valid until the
  * next settings query/update or runtime close, even if a pending change applies
- * on the worker in the meantime. Either output may be NULL.
+ * on the worker in the meantime. Either output may be NULL. While settings
+ * are being applied or a model is switching, returns CAI_ERR_INVALID without
+ * replacing the prior snapshots; retain them and retry at a later boundary.
  */
 int cai_agent_runtime_get_settings(cai_agent_runtime *runtime,
                                    cai_agent_runtime_settings *effective,

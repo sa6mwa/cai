@@ -2,10 +2,9 @@
 
 **Status:** implementation specification with delivery-status notes
 
-**Branch:** `feat/agent-smith`
-
 **Scope:** CAI agent-mode foundation and the first `smith` preset. This is a
-design and delivery specification, not an implementation change. “MUST”,
+design and delivery specification. Public headers define the current callable
+surface; sections marked **Target** remain design intent. “MUST”,
 “SHOULD”, and “MAY” are normative.
 
 The first implementation is intentionally smaller than the full target design
@@ -25,8 +24,9 @@ prompt and tool contract while retaining CAI’s C89/POSIX embedding model.
 
 The default visible identity is **Cai Smith**. An embedding product may replace
 the identity, for example with **Vectis Agent Smith**, without forking the
-prompt or agent runtime. Vectis owns its TUI, Markdown rendering, input widget,
-service lifecycle, lockdc/pouch adapters, and product configuration. CAI owns
+prompt or agent runtime. A host may own its rendering, input widget, service
+lifecycle, storage adapters, and product configuration, or embed `libcai_app`
+for CAI's terminal UI and shared Pouch adapters. Core libcai owns
 the model loop, tool contracts, terminal lifecycle, steering queue, session
 semantics, compaction, and the default local session backend.
 
@@ -564,7 +564,7 @@ capability or host-interface difference:
 | A named upstream tool is absent from the selected CAI capability set | The renderer removes only the exact upstream sentence that names it, so a disabled `apply_patch` or terminal is never advertised. |
 | Codex skill discovery/providers | Only the configured global CAI skills catalog and `read_skill`. |
 | `update_plan` | Not available. Goals remain durable state and are not presented as a plan substitute. |
-| Codex AGENTS discovery | CAI's configured global/exact-workspace policy, plus optional explicit Codex-compatible traversal. |
+| Codex AGENTS discovery | CAI global policy first, then optional Codex global policy and repository traversal; default repository lookup reads only the exact workspace file. |
 
 No other upstream behavior may be weakened, removed, or restated in the CAI
 overlay or capability redaction. New divergence requires a documented
@@ -603,26 +603,31 @@ The Smith renderer produces, in order:
 
 1. Smith base/model instructions with identity substitution;
 2. selected preset policy fragments (terminal, tools, goal, storage);
-3. an optional global `AGENTS.md` policy, followed by the exact
-   `workspace_directory/AGENTS.md` policy. The global default is
+3. an optional global `AGENTS.md` policy. The global default is
    `${XDG_CONFIG_HOME:-$HOME/.config}/cai/AGENTS.md`; a host may instead set
    an explicit agent configuration directory, exact file path, or a
    callback-backed global instruction store. CAI does not traverse workspace
-   ancestors by default. `codex_compat_agents_md` explicitly enables discovery
-   from the nearest `.git` ancestor through `workspace_directory` for hosts
-   that choose Codex-compatible hierarchy semantics;
+   ancestors by default and next reads the exact workspace file.
+   `codex_compat_agents_md` first appends `${CODEX_HOME}/AGENTS.md` (or
+   `$HOME/.codex/AGENTS.md` when CODEX_HOME is unset/empty), then reads repository
+   files from the nearest `.git` ancestor through `workspace_directory`;
 4. the optional global skills catalog, when the selected preset enables
    `CAI_AGENT_PRESET_TOOL_SKILLS` and discovery finds valid packages;
 5. host-supplied developer extension fragment, if configured;
 6. the user input or internal context fragment.
 
-The runtime records the rendered prompt asset version and SHA-256 in session
-metadata. Existing sessions keep their recorded prompt asset by default; an
-explicit host migration may select a newer asset and will trigger the normal
-compaction compatibility check.
+Checkpoints record the preset name and prompt revision. Resume validates them
+against the selected runtime preset; mismatches fail rather than migrating
+prompt assets automatically. Build-time prompt hashes belong to the bundled
+asset manifest, not to a runtime prompt-migration API. Resume reconstructs the
+current developer instructions, including files read at startup, around the
+restored request model. Model switches and compaction retain those instructions
+without rereading files; restart to read file changes.
 
-Global policy is always an ordinary file or host-supplied byte source; it is
-not session state and is never stored in pouch. CAI's `cai_blob_store` is the
+Global policy is loaded from an ordinary file or host-supplied byte source;
+saved conversation state does not override its startup selection. Rendered
+instructions can appear in saved context and Markdown exports; this does not
+make configuration Pouch-backed. CAI's `cai_blob_store` is the
 common C-only callback contract for named byte objects. Its `load` callback is
 sufficient for `AGENTS.md`; ChatGPT auth requires both `load` and atomic
 `replace`, using the default key `auth.json` or a host-selected opaque key.
@@ -1014,7 +1019,7 @@ to the host as events before they are returned to the model.
 | `get_goal` | function | Read the session’s current goal and accounting. |
 | `create_goal` | function | Create an explicit user-requested goal. |
 | `update_goal` | function | Mark an eligible goal complete or blocked. |
-| `run_review` | function | Synchronously run the isolated built-in reviewer with typed `uncommitted`, `base`, `commit`, or `custom` scope, then inject its durable handover. Smith enables it by default. |
+| `run_review` | function | Synchronously run the isolated built-in reviewer against the Git default branch when scope is omitted, or use explicit `uncommitted`, `base`, `commit`, or `custom` scope, then inject its durable handover. Smith enables it by default. |
 | `run_<profile>` | function | One generated typed schema for each host-defined profile; run it synchronously and durably inject its handover. |
 | MCP tools/resources | dynamic | Register configured remote MCP capabilities as CAI tools with server-qualified names. |
 
@@ -1387,7 +1392,9 @@ or CAS remain backend policy.
 
 ### 11.2 Default local backend
 
-The local store root is `${XDG_STATE_HOME:-$HOME/.local/state}/cai/sessions`.
+This is core libcai's default backend. The terminal application uses the
+encrypted Pouch adapter instead; see [application storage](../README.md#cai-terminal-agent).
+The local JSONL store root is `${XDG_STATE_HOME:-$HOME/.local/state}/cai/sessions`.
 Each session is one append-only JSONL file under
 `sessions/<scope-sha256>/<session-file-key>.jsonl`. Filename-safe session IDs
 use their existing direct filename; other opaque IDs use a canonical `~`-
@@ -1396,12 +1403,10 @@ session IDs are
 canonical [XID](https://github.com/rs/xid)-compatible 20-character,
 lowercase-base32 values (`[0-9a-v]{20}`): a sortable timestamp, machine
 component, process ID, and randomized-start counter. They are opaque storage
-keys, not authorization secrets. The header record is
-`session_created`; its metadata stores the canonical absolute workspace path,
-human scope, opaque scope key, preset, model/profile, rendered prompt manifest
-version/hash, creation time, and format version. The hash is a file-layout
-component, not the selection key; exact absolute path remains the default scope
-filter.
+keys, not authorization secrets. Identity and model/preset metadata belong to
+the checkpoint state, not a separate `session_created` header record. The
+scope hash is a file-layout component, not the selection key; the canonical
+workspace path remains the default scope.
 
 Each complete checkpoint record carries its own creation timestamp. Latest
 selection compares that checkpoint timestamp rather than the journal file's
@@ -1409,47 +1414,49 @@ mtime, since durable input-event appends may occur after a checkpoint without
 changing the resumable snapshot. Existing records without the timestamp use
 their journal mtime only as a compatibility fallback.
 
-Writes use a same-directory temporary append/snapshot protocol, fsync the file
-before acknowledging a record, and maintain a compact snapshot record in the
-same JSONL stream. Startup scans the final line defensively, ignores only an
+Writes append checkpoint and event records to the same JSONL stream under a
+file lock and fsync accepted records before acknowledging them. Startup scans
+complete records defensively, ignores only an
 incomplete trailing line caused by a crash, and refuses malformed committed
 records. No global database or separate index is required for correctness.
 
-Opening Smith without an explicit session ID lists sessions whose stored
-canonical absolute path equals the runtime workspace path and resumes the most
-recent resumable one when `resume_latest` is set. It never silently crosses
-workspace directories. A host may provide `session_scope` for a deliberate
-shared namespace; that exact supplied opaque key then replaces directory
-matching. The local JSONL store hashes every non-empty key without interpreting
-it as a filesystem path. If checkpoint mtimes tie, it chooses the
+`resume_latest` loads the newest checkpoint in the selected scope; merely
+opening a runtime does not display a session list. By default that scope is the
+canonical workspace, so resume never silently crosses directories. A host may
+provide `session_scope` for a deliberate shared namespace; that exact supplied
+opaque key then replaces the directory key. The local JSONL store hashes every
+non-empty key without interpreting
+it as a filesystem path. If checkpoint timestamps tie, it chooses the
 lexicographically later session ID; generated XIDs preserve chronological order
 under that deterministic fallback.
 
 ### 11.3 Format
 
-Every JSONL record has at least:
+The core local JSONL backend has two envelopes. An event contains its sequence,
+type and optional string data; for example:
 
 ```json
 {
-  "format_version": 1,
-  "session_id": "9m4e2mr0ui3e8a215n4g",
+  "record_type": "event",
   "sequence": 42,
-  "time": "2026-08-17T12:34:56.123Z",
-  "type": "tool_completed",
-  "payload": {}
+  "type": "input_consumed",
+  "data": "41"
 }
 ```
 
-Record types include `session_created`, `turn_started`, `input_added`,
-`model_request`, `model_response`, `tool_started`, `tool_progress`,
-`tool_completed`, `tool_failed`, `terminal_state`, `steering_queued`,
-`turn_queued`, `input_journal_v2`, `input_consumed`, `steering_delivered`,
-`goal_changed`,
-`compaction_started`,
-`compaction_completed`, `checkpoint`, `turn_completed`, and `turn_failed`.
-Large binary/image/tool artifacts are external references with hash, MIME,
-byte size, and storage URI/path; JSONL does not contain arbitrary large base64
-blobs.
+A checkpoint contains `record_type: "checkpoint"`,
+`checkpoint_created_at_ns`, `applied_event_sequence`, and the complete `state`
+JSON value consumed from the runtime's source. Scope and session ID are backend
+lookup keys; they are not repeated in every envelope. The state has its own
+schema and metadata. Callback stores consume the same state source and typed
+events without needing this file envelope.
+
+Journal event types include `steering_queued`, `turn_queued`,
+`input_journal_v2`, `input_consumed`, and transcript/review/shell records. They
+are distinct from `CAI_AGENT_EVENT_*` presentation callbacks; not every UI event
+is a durable journal entry. Typed image artifacts use the configured artifact
+backend. The application's portable JSONL import/export has a separate envelope;
+it is not interchangeable with a core local-store file.
 
 The canonical state reconstructs model-visible history exactly, including
 function calls and outputs, internal context inputs, model/preset information,
@@ -1545,7 +1552,7 @@ current `/export`. The upstream behavior was inspected on 2026-08-19 at Codex co
   sanitized; image/audio data become placeholders; and export/copy notices,
   hidden review prompts, and nested review duplicates are excluded.
 
-CAI deliberately has no `/export` parser and does not register export as a
+Core libcai has no slash-command parser and does not register export as a
 model tool. Hosts call `cai_agent_runtime_export_markdown` to stream the
 already-resumed live runtime's durable history to a caller-owned `cai_sink`.
 The C and Lua Smith examples implement their own `/export` interception by
@@ -1553,6 +1560,8 @@ calling the default-file helper with app name `cai`, which writes
 `cai-session-<xid>.md` in the canonical workspace. A downstream TUI can bind
 the same receiver to a menu, a file picker, or a clipboard sink without CAI
 depending on libmdf, softline, or a desktop clipboard implementation.
+`libcai_app` separately implements `/export [ID]` and `--export ID`, writing
+resumable JSONL plus this Markdown handover under its configured export root.
 
 The handover contract is `cai-agent-handover/1`, headed `# CAI agent handover`.
 It is deliberately **not** a serialization or resume format: the durable
@@ -1647,10 +1656,10 @@ whose default presentation is “Making room to continue”.
 
 ## 13. Error handling, cancellation, and limits
 
-All new APIs return existing CAI status values plus `CAI_ERR_CONFLICT` and
-`CAI_ERR_STATE` if those do not already exist when implemented. Errors name the
-state, session ID, terminal ID/command ID, operation, and safe underlying
-diagnostic. Model-visible tool errors are compact actionable strings; host
+APIs return the `cai_status` values declared in `<cai/cai.h>`. Invalid runtime
+states and conflicting controls use `CAI_ERR_INVALID`. Errors supply available state,
+session/tool identifiers, operation, and safe underlying diagnostic detail.
+Model-visible tool errors are compact actionable strings; host
 events retain technical detail.
 
 Cancellation stops model streaming, prevents a new tool from starting, applies
@@ -1664,10 +1673,11 @@ enforces it before each model/compaction request. Goal accounting is additional
 metadata, not a second billing counter. A usage-limited goal ends in
 `usage_limited`; a normal session usage-limit error remains `CAI_ERR_LIMIT`.
 
-## 14. Delivery plan
+## 14. Original delivery sequence
 
-The implementation is intentionally staged; each stage must leave a coherent,
-tested public surface.
+This historical sequence explains the runtime's implementation boundaries;
+it is not an outstanding-task list. Current work is tracked in
+[ROADMAP.md](../ROADMAP.md) and [BUGS.md](../BUGS.md).
 
 1. **Runtime core and event loop.** Add owner-thread runtime, event queue,
    pump API, serial tool scheduling, and stream-to-event adapter over existing

@@ -31,8 +31,8 @@ typedef int (*cai_skill_provider_visit_fn)(void *visit_context,
  * list calls visit once for each available opaque package identifier. read
  * returns a newly owned source for a package-relative resource; resource NULL
  * means the package's SKILL.md. Callbacks may run while an agent worker is
- * sampling and must not enter a language runtime. CAI borrows the provider and
- * context until the owning preset agent or runtime closes.
+ * sampling and must not enter a language runtime. CAI copies the callback
+ * table; context remains borrowed until the owning agent or runtime closes.
  */
 typedef struct cai_skill_provider {
   int (*list)(void *context, cai_skill_provider_visit_fn visit,
@@ -63,9 +63,13 @@ typedef struct cai_skill_config {
 typedef struct cai_skill_metadata cai_skill_metadata;
 /** Owned, immutable skill identity with borrowed string getters. */
 struct cai_skill_metadata {
+  /** Borrow the parsed name until close. */
   const char *(*name)(const cai_skill_metadata *self);
+  /** Borrow the normalized single-line catalog description until close. */
   const char *(*description)(const cai_skill_metadata *self);
+  /** Destroy metadata and its owned strings. NULL is accepted. */
   void (*close)(cai_skill_metadata *self);
+  /** Private implementation; do not access directly. */
   void *impl;
 };
 /** Parse YAML front matter (buffered, maximum 1 MiB), not the Markdown body.

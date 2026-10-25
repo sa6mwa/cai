@@ -93,11 +93,14 @@ unit, such as `second`; these prices remain visible in the catalog but do not
 drive token spend estimates. These example values illustrate the file
 format; verify actual limits and prices with the provider before using them.
 Each entry needs `provider` and `id`; other fields are optional. Optional
-string fields are `name`, `description`, `model_type`, `lifecycle_status`, and
-`comp_hash`, and `default_reasoning_effort`. A nonempty optional
-`reasoning_efforts` array supplies distinct effort strings (for example,
-`["low", "medium", "high"]`). The generic live provider adapter accepts the
-same fields; live lists and defaults take precedence over fallback values.
+string fields are `name`, `description`, `model_type`, `lifecycle_status`,
+`comp_hash`, `default_reasoning_effort`, and `default_service_tier`. Optional
+`reasoning_efforts` and `service_tiers` arrays supply distinct request IDs
+(for example, `["low", "medium", "high"]` or `["default", "priority"]`).
+An explicit empty array means no supported choices; an omitted field means
+unknown. This distinction applies to both fallback JSON and generic live
+catalogs. Live lists, including empty lists, and defaults take precedence over
+fallback values.
 Optional capability booleans are `streaming`,
 `function_calling`, `vision`, `formatted_output`, and `json_mode`. Only `USD`
 and `EUR` token prices are used for estimates. Live provider fields take
@@ -220,9 +223,11 @@ Use `CAI_MODEL_META_VERIFIED` only when the row has been checked against
 official docs during the update. Use `CAI_MODEL_META_INCOMPLETE` when a known
 model id is useful to expose but key facts are missing or ambiguous.
 
-Unknown model strings remain accepted by request-building APIs. They simply do
-not get local capability validation, auto-compaction defaults, or positive USD
-spend-limit enforcement.
+Unknown model strings remain accepted by request-building APIs. Metadata may
+still come from the live provider or a configured fallback. Without any known
+pricing, positive USD spend limits fail closed; without a known context size,
+CAI cannot schedule proactive compaction by percentage. Chat Completions can
+still recover from a provider-reported context-overflow error.
 
 ## Verification
 
@@ -231,10 +236,9 @@ Run the focused checks while editing:
 ```sh
 make format
 make build-debug
-build/debug/cai_tests --filter model_capabilities
-build/debug/cai_tests --filter usage_
-make lua-rock
-eval "$(make -s lua-env)" && lua tests/lua/test_lua.lua
+ctest --test-dir build/debug --no-tests=error --output-on-failure \
+  --stop-on-failure --parallel 1 -R '^cai_tests\.(model_capabilities|usage_)'
+make lua-test
 ```
 
 Before committing a model/pricing update, run formatting and the local suite:
@@ -249,16 +253,17 @@ finalize-slice` is the default local pre-commit shortcut. It runs `make format`
 and the debug CTest suite. Add Lua, sanitizer, fuzz, integration, example, or
 release gates when the slice touches those surfaces.
 
-For a release candidate, use the normal release gates instead of only the
+For a release candidate, use the normal preparation gate instead of only the
 focused checks:
 
 ```sh
 make prerelease
-make prerelease-live
-make prerelease-hardening
 ```
 
-Live gates require valid provider credentials and intentionally spend tokens.
+Set `CAI_ENABLE_INTEGRATION_TESTS=1` to include credentialed provider tests.
+For preparation plus longer fuzzing, use
+`CAI_ENABLE_INTEGRATION_TESTS=1 make prerelease-hardening` instead of chaining
+all preparation targets. Live checks require credentials and spend tokens.
 
 ## Commit Shape
 

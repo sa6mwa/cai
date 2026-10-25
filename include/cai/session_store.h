@@ -88,7 +88,7 @@ typedef struct cai_agent_session_store {
   void *context;
 } cai_agent_session_store;
 
-/** Maximum bytes in a local or callback-provided session identifier. */
+/** Session identifier capacity including NUL; at most 128 identifier bytes. */
 #define CAI_AGENT_SESSION_ID_MAX 129U
 
 /** Configuration for the built-in append-only local JSONL session store. */
@@ -113,7 +113,8 @@ void cai_agent_local_session_store_config_init(
  * filename encoding. The local store does not interpret scope or session keys
  * as paths. The returned callback table owns private local-store state and is
  * valid until cai_agent_local_session_store_close.
- * Checkpoints are fsync'd before this function returns. Each checkpoint stores
+ * The checkpoint callback fsyncs accepted records before returning success;
+ * opening the store alone writes no checkpoint. Each checkpoint stores
  * its own creation timestamp, so later journal-event appends do not affect
  * newest-checkpoint selection. Tied checkpoint timestamps select the
  * lexicographically later session identifier deterministically. Legacy

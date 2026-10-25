@@ -1,4 +1,4 @@
-# Open bugs
+# Bug tracker
 
 This file tracks reported behavior, investigation evidence, and the verification
 needed to close each issue. An upstream cause must be reproduced independently
@@ -86,7 +86,7 @@ commit and verification evidence.
   symlinks, non-directory parents and failure without preflight side effects.
   The mock-provider CLI regression covers nested freeform tool additions.
 
-## BUG-015: Extra blank row before the first quoted user prompt
+## BUG-022: Extra blank row before the first quoted user prompt
 
 - **Status:** fixed by softline 0.12.0.
 - **Required behavior:** one empty row between the first quoted user prompt

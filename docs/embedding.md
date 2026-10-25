@@ -11,8 +11,8 @@ Build with `CAI_BUILD_APP=ON`; `CAI_BUILD_CLI=ON` also selects it. The `cai`
 executable is the small C embedding example in `cli/main.c`. Install the
 `cai-app` component alongside its separately installed core/dependency SDKs.
 Use `find_package(cai_app CONFIG REQUIRED)` and `cai::app_static` or
-`cai::app_shared`, or pkg-config `cai-app`. The new shared library has ABI 0;
-it does not change the core libcai ABI.
+`cai::app_shared`, or pkg-config `cai-app`. The application shared library has
+ABI 0; the core libcai ABI is 5.
 
 ```c
 #include <cai/app.h>
@@ -214,7 +214,8 @@ methods, but must not reenter `run`, close the app, or operate on its runtime.
 while the app remains alive. It copies input into a FIFO of at most 64 waiting
 commands and wakes the app loop. Calls with no ready runtime, invalid arguments,
 or a full queue fail immediately, with `id` set to zero. STOP is also accepted
-during startup and is handled when the app reaches its control boundary.
+during startup and utility runs, without a ready runtime, and is handled when
+the app reaches its control boundary.
 
 | Type | Text | Behavior |
 | --- | --- | --- |
@@ -323,7 +324,7 @@ A later accepted run resets status and command IDs; an invocation rejected
 before acquiring application ownership leaves the previous result intact.
 Keep the receiver alive until host threads have stopped using controls/status;
 `close` itself is idle-only and must not race other receiver calls. The new
-application surface remains ABI 0: it has no preceding released app ABI.
+application surface remains ABI 0, independently of the core library's ABI 5.
 
 ## Lua 5.5
 
@@ -369,6 +370,12 @@ strings are `not_run`, `running`, `completed`, `stopped`, `cancelled`, and
 and `control_error`. Lua callbacks may queue controls or query status; they
 cannot close or recursively run the active application. Native custom-tool
 functions remain a C-only hook because their handlers execute on workers.
+`state` is the numeric C `cai_agent_run_state` value (see `<cai/agent_runtime.h>`).
+In Lua, `metrics.session_usage` contains token counters directly alongside
+`estimated_spend_usd`, `estimated_spend_eur`, and `limit_exceeded`; it does not
+have the C accounting struct's nested `usage` member. `app:options()` returns
+a 1-based array of copied option records; absent short flags/argument labels
+are `nil`. Neither query starts a run or reads configuration files.
 
 The optional native module installs with component `cai-app-lua` under
 `lib/lua/5.5/cai/app.so`. Add that prefix's `lib/lua/5.5/?.so` to `LUA_CPATH`,

@@ -6,10 +6,11 @@ build documentation lives in [README.md](README.md).
 
 ## Current Prerelease Baseline
 
-cai is a C89/POSIX SDK-style client for OpenAI-compatible Responses workflows.
-The first prerelease target is the C SDK, Lua 5.5 facade, examples, and
-Responses WebSocket streaming for OpenAI/ChatGPT. Realtime WebSocket remains
-future work.
+cai is a C89/POSIX SDK for Responses and OpenAI-compatible Chat Completions
+workflows. The current products are core `libcai`, the embeddable `libcai_app`,
+the static musl `cai` terminal agent, Lua 5.5 facades, and examples.
+Responses WebSocket streaming supports OpenAI/ChatGPT; Realtime WebSocket
+remains future work.
 
 Implemented:
 
@@ -24,6 +25,9 @@ Implemented:
   server-side compaction.
 - Client-side history replay for stateless compatible providers such as
   OpenRouter.
+- Chat Completions text/reasoning, image input, function/custom tools, refusal
+  handling, usage accounting, and bounded compaction/continuation, including
+  the Berget provider and endpoint-selected model catalog policy.
 - Text, image URL, file, source-backed, and spooled input paths where the
   public surface needs to handle large data.
 - Tool registry with typed lonejson callbacks, raw JSON escape hatches,
@@ -46,8 +50,10 @@ Implemented:
 - Model constants and curated metadata for current OpenAI/OpenRouter models
   used by the SDK and tests.
 - External binary dependencies through `CAI_DEPENDENCY_MODE=cpkt`: official
-  `cpkt`, `lonejson`, and `libpslog` release artifacts.
-- Host dependency mode for already-installed curl/lonejson/pslog.
+  `cpkt`, `cpktmisc`, `lonejson`, and `libpslog` release artifacts. cpktmisc's
+  `CpktYaml` supplies libyaml; there is no private YAML build.
+- Host dependency mode for already-installed curl/lonejson/pslog and CpktYaml
+  with its compatible cpkt core SDK.
 - libpslog-backed client logging.
 - SearXNG, reverse-geocoding, todo/kanban, and opt-in command execution tool
   presets. The command preset uses a Codex-compatible `exec_command` schema,
@@ -82,20 +88,19 @@ Implemented:
 Verification tiers:
 
 - `make prerelease`
-  - clang-format over repo C sources,
-  - debug build and offline tests,
-  - TSan local suite,
-  - MSan smoke subset,
-  - fuzz smoke,
-  - Lua tests,
-  - deterministic local example smoke.
+  - native Debug core/CLI, Valgrind, fuzz smoke, C/Lua facade and offline tests,
+  - local MCP Everything end-to-end checks,
+  - selected Release target builds, native Release tests and ARM QEMU smoke,
+  - complete SDK/CLI/source/Lua packaging, checksums and extracted consumers.
+  Host-only fixtures run in Debug and are omitted from the Release selection.
 - `make prerelease-live`
-  - full integration suite,
-  - curated non-interactive live example smoke.
+  - credentialed integration tests, requiring `CAI_ENABLE_INTEGRATION_TESTS=1`.
+  The same opt-in adds live tests to ordinary prerelease preparation.
 - `make prerelease-hardening`
-  - both prerelease tiers,
-  - long fuzz via `make fuzz-full`,
-  - release matrix packaging and archive verification.
+  - prerelease with live coverage, then longer fuzzing via `scripts/fuzz.sh long`.
+  It requires the same live-test opt-in.
+- `make format-check` checks formatting without configuring or building.
+  `make asan` and `make test-coverage` are separate explicit gates.
 
 Every committed implementation slice should be finalized with `make format`
 before the commit is created. For ordinary local C changes, `make
@@ -103,7 +108,8 @@ finalize-slice` is the default shortcut: it runs `make format` and the debug
 CTest suite. Broader changes should add the relevant Lua, sanitizer, fuzz,
 integration, example, or release gates before committing.
 
-Recent hardening runs have covered:
+Historical hardening runs have covered the checks below. These are examples
+of coverage, not proof that the current tree passed a release gate:
 
 - `cai_tool_fuzz -runs=10000`, covering typed/raw tools plus hostile
   `todo_kanban`, `exec_command`, `list_files`, and `read_file` inputs.
@@ -140,29 +146,38 @@ Recent hardening runs have covered:
 
 ## Active First-Release Work
 
-The first `cai` CLI release targets a single static x86_64 Linux musl binary.
-It uses the Smith runtime, softline 0.12.0, libmdf 0.15.0, ChatGPT auth, and
-workspace-scoped JSONL sessions. CLI MCP connection configuration is deferred
-to a later release; the `libcai` MCP client API remains available to embedders.
+The `cai` CLI ships static musl binaries for Linux x86_64, aarch64 and armhf.
+It wraps `libcai_app` and uses the Smith runtime, softline 0.12.0, libmdf 0.15.0,
+ChatGPT or API-key providers, and encrypted liblockdc Pouch sessions/auth.
+The same application SDK also ships static/shared libraries for all three
+Linux architectures with glibc and musl. Core libcai's independent JSONL
+backend remains available to SDK hosts.
+Configured Streamable HTTP MCP servers use `[mcp.NAME]` sections; standalone
+libcai MCP clients remain available to embedders.
 Ship a `cai(1)` manual page in the binary archive alongside the executable,
 README, and LICENSE using the SDK's relocatable install layout.
 The CLI status bar reads ChatGPT subscription quota windows when the backend
-provides them. A future version should refresh quota without blocking the
-prompt during a backend request.
+provides them. Refresh runs in a background worker on startup and completed
+turns, with a five-minute debounce and no idle polling; `/status` requests a
+refresh explicitly.
 
-Before tagging the first C SDK prerelease:
+Before tagging a release:
 
 - Keep README, examples, and installed docs aligned with the current API.
 - Keep public headers clangd-helpful: exported functions, structs, callbacks,
   method-table fields, and macros need concise documentation comments.
-- Run the complete prerelease verification cycle on the release candidate tag
-  or with `CAI_VERSION_OVERRIDE` set to the intended prerelease version.
+- Run incremental prerelease preparation on the development branch, optionally
+  setting `CAI_VERSION_OVERRIDE` to the candidate version. The final release
+  gate requires the signed default-branch commit and its exact lightweight tag,
+  a clean tree and no candidate override.
 - Verify `make release` outputs:
   - binary SDK archives as `dist/cai-<version>-<target>.tar.gz`,
   - source archive as `dist/cai-<version>.tar.gz`,
   - checksum file as `dist/cai-<version>-CHECKSUMS`.
-- Verify archives contain only cai headers, `libcai`, CMake/pkg-config
-  metadata, and docs. Dependency headers/libraries stay external.
+- Verify SDK archives contain public cai headers, core libraries, application
+  libraries on Linux, CMake/pkg-config metadata and docs. Separate CLI archives
+  contain the static binary, manual and embedding examples. Dependency SDK
+  headers/libraries stay external; required licenses accompany the products.
 - Verify release builds do not contain sanitizer artifacts, host paths, or
   non-relocatable runpaths.
 
@@ -203,7 +218,8 @@ cover in whole and fragmented deltas. OSC8 rendering is a separate path.
 ## Deferred: Embeddable application on Darwin
 
 `libcai_app` ships static/shared SDK libraries for Linux x86_64, aarch64 and
-armhf, each with glibc and musl. The standalone binary remains x86_64 musl.
+armhf, each with glibc and musl. The standalone binary ships for all three
+Linux architectures with musl.
 Darwin arm64 application dependency packages are available, but application
 notification/timer descriptors, PTY handoff, environment restoration, Chrome
 host registration and Mach-O/Lua packaging need a deliberate port. Keep the
@@ -257,38 +273,20 @@ Official OpenAI docs checked:
 - <https://developers.openai.com/api/docs/guides/websocket-mode>
 - <https://developers.openai.com/api/docs/guides/streaming-responses>
 
-## Deferred: Agent Conversation Export
+## Supported: Agent Conversation Export
 
-Investigate and design a host-invoked conversation-transcript export for CAI
-agent sessions, following the useful visible behavior of Codex CLI's current
-`/export` command without coupling CAI to its TUI or treating a user export as
-a model action.
+Core libcai exposes `cai_agent_runtime_export_markdown` as a real incremental,
+sink-based handover projection of the active runtime. It includes instructions,
+conversation text, activity and goal metadata, without executing tools or
+embedding binary attachments. It is not a resumable session format.
+The optional file helper creates a new owner-only file without overwriting.
 
-Codex source inspected on 2026-08-19 (`f5a3dc55404ddc066a4e4a65602fee166ecc46b3`)
-shows that `/export` hydrates the complete persisted thread, renders Markdown,
-and offers clipboard or non-overwriting file destinations. Its output starts
-with `# Codex conversation`; uses `## User`, `## Assistant`, `## Plan`,
-`## Reasoning`, and `## Activity` sections; preserves message Markdown; indents
-activity; strips terminal-control text; represents non-text media without
-embedding its raw data; and omits export notices plus hidden review prompts.
-
-Before implementation, decide and specify:
-
-- a host-facing, sink/callback-based export API over the portable CAI session
-  transcript projection, including a streaming contract for large histories;
-- whether an optional model-facing `export_conversation` tool is ever useful.
-  It must not be enabled by the Smith preset by default: exporting is a
-  user/host action and a model-visible export can expose private transcript
-  content or create an unwanted filesystem/clipboard side effect;
-- the stable Markdown format and data policy: roles, plans, reasoning,
-  semantic local-tool receipts, terminal activity, MCP results, image/file
-  placeholders or references, ANSI/control-character treatment, and secrets;
-- destination ownership. CAI should return/render transcript bytes through a
-  host sink; Vectis or another embedding application owns clipboard access,
-  path selection, atomic file creation, collision policy, and user feedback;
-- complete-history behavior for local JSONL and callback stores, resume/replay
-  ordering, filtered review-child sessions, and deterministic snapshot,
-  privacy, no-overwrite, and large-transcript streaming tests.
+The application implements `/export [ID]` and `--export ID`, writing resumable
+JSONL plus this Markdown projection under the application data directory's
+`exports/ID/`. `--import FILE` imports JSONL into a new conversation.
+Exports are explicit user/host actions, not a model tool. Desktop clipboard
+integration remains host-owned. See [the handover contract](docs/agent-smith-spec.md#115-user-initiated-transcript-export)
+and [CLI storage/export usage](README.md#cai-terminal-agent).
 
 ## Parked: Realtime WebSocket
 
@@ -354,8 +352,10 @@ Official OpenAI docs checked:
 
 ## Future MCP Scope
 
-Current MCP support is intentionally a route-handler facade and tool-serving
-subset. cai does not include Kore or any production HTTP server.
+The MCP server is a route-handler facade and tool-serving subset; cai does not
+include Kore or any production HTTP server. Separately, the MCP client supports
+tools, resources, prompts and completions, and libcai_app configures remote
+Streamable HTTP tool servers. The deferred list below concerns server features.
 
 Implemented MCP methods:
 
@@ -387,7 +387,7 @@ Current OpenRouter boundary:
 - `cai_client_config_use_openrouter()` selects `OPENROUTER_API_KEY` and
   `https://openrouter.ai/api/v1`.
 - `CAI_OPENROUTER_MODEL_DEFAULT_RESPONSES` is
-  `poolside/laguna-xs.2:free`.
+  `openai/gpt-5.6-luna`.
 - OpenRouter Responses beta is stateless for cai's tested behavior, so
   multi-turn OpenRouter sessions use client-side history replay.
 - Do not claim OpenRouter parity for OpenAI Conversations or server-side
@@ -395,10 +395,10 @@ Current OpenRouter boundary:
 - The long OpenRouter e2e is paced by `CAI_OPENROUTER_E2E_DELAY_SEC` because
   free models can have low per-minute request limits.
 
-## Deferred Integrations
+## Integration Boundaries
 
-- Shared-Pouch conversation messaging is implemented in libcai_app using a
-  managed LQ consumers, stable workspace mailbox names, takeover fencing,
+- Shared-Pouch conversation messaging is implemented in libcai_app using
+  managed LQ consumer services, stable workspace mailbox names, takeover fencing,
   durable delivery ACKs, and softline's
   normal approval queue. Core libcai offers generic tool-registration and
   next-turn hooks without depending on liblockdc. Remote lockd fanout remains

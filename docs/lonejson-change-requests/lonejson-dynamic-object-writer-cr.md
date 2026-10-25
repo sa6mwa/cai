@@ -1,5 +1,9 @@
 # Lonejson CR: Dynamic Object Writer For Generated Schemas
 
+Historical API proposal. The implementation snapshot and requested names below
+are not the current CAI contract; current usage is in `src/cai_tools.c` and
+the selected lonejson SDK's public header.
+
 ## Context
 
 CAI now routes Responses requests, Conversations item payloads, local history

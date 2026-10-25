@@ -1,5 +1,8 @@
 # CR: primitive JSON value writer APIs for lonejson
 
+Historical API proposal. The requested names and implementation snapshot below
+are background, not the current CAI or lonejson API contract.
+
 ## Problem
 
 cai must not implement JSON escaping, token classification, or wrapper trimming

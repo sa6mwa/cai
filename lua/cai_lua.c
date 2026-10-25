@@ -6429,6 +6429,10 @@ static int cai_lua_stream_function_done(void *context, const char *item_id,
   return CAI_OK;
 }
 
+/* on_output_item_done receives a table with a separately owned json_spooled
+ * reader, unlike the C callback's borrowed item_json. It can outlive this
+ * callback; the same mapping handles Chat's synthesized message/call items.
+ * Returning false cancels; a Lua error becomes CAI_ERR_INVALID. */
 static int cai_lua_stream_output_item_done(void *context, const char *item_id,
                                            int output_index, const char *type,
                                            const lonejson_spooled *item_json,

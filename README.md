@@ -1,8 +1,9 @@
 # cai
 
-`cai` is a C89/POSIX SDK for building OpenAI Responses API agents in C and
-Lua. It gives applications a handle-oriented client, agents, sessions,
-streaming, tool execution, ChatGPT subscription auth, MCP serving and client
+`cai` is a C89/POSIX SDK for building OpenAI Responses and compatible Chat
+Completions agents in C and Lua. It gives applications a handle-oriented
+client, agents, sessions, streaming, tool execution, ChatGPT subscription auth,
+MCP serving and client
 connectivity, model/cost accounting, and release-packaged C/Lua integration
 without making embedders hand-roll HTTP, WebSocket, JSON, or tool
 orchestration.
@@ -18,6 +19,9 @@ points for existing event loops, HTTP servers, loggers, and dependency stacks.
   counting, hosted-tool passthrough, raw JSON request controls, structured text
   formats, reasoning controls, metadata, truncation, service tier, prompt
   templates, and server-side continuation.
+- OpenAI-compatible Chat Completions transport with incremental text/reasoning,
+  function and custom tools, image input, local history, and client-side
+  compaction; Berget is a built-in provider preset.
 - Conversations API helpers and higher-level agent/session facades for
   multi-turn workflows, including client-side history replay for stateless
   providers such as OpenRouter.
@@ -66,9 +70,11 @@ image generation, durable goals, and one managed PTY terminal slot with only
 one active command. `submit_interactive` follows Codex's StartOrSteer policy:
 it starts an idle turn or queues interactive direction for an active one at
 the next safe model/tool boundary. `submit_queued` queues an ordinary FIFO
-turn for after the active turn completes. CAI deliberately does not parse slash
+turn for after the active turn completes. Core `libcai` does not parse slash
 commands or render a UI: downstream applications map their own controls to
 those APIs, review lifecycle calls, and runtime Markdown export.
+`libcai_app` supplies the terminal application, including its slash commands;
+the standalone `cai` executable is its embedding example.
 
 At an idle runtime boundary, hosts can select the next-turn model with
 `cai_agent_runtime_set_model` (or Lua `runtime:set_model`). For ChatGPT
@@ -381,7 +387,7 @@ fallback JSON can override those limits. See
 [model metadata](docs/model-metadata.md) for the schema and precedence.
 `--help` lists the other
 user-facing model, review, instructions, skills, image, terminal, and session
-options. Interactive startup shows `Welcome to CAI. Send /help for usage.` in
+options. Interactive startup shows `Welcome to cai. Send /help for usage.` in
 the status line, including after replaying a resumed conversation. `/help`
 renders Markdown tables of slash commands and prompt keys through libmdf;
 it is handled locally and does not send a model request. Cai requests concise
@@ -390,8 +396,9 @@ provider reasoning summaries by default; the
 put their first nonblank line in Softline's `!` message bar with the active
 turn's elapsed time. Libmdf renders that Markdown heading as plain text because
 Softline themes the message and accepts no ANSI styling. Single-line summaries
-do not enter the feed. Any remaining body streams through libmdf with a `? `
-prefix on each rendered row, without a separate reasoning label. Before a
+do not enter the feed. Any remaining body streams through libmdf as Markdown
+blockquotes, without a separate reasoning label or injected `?` row prefixes.
+Quote markers and body styling come from the active libmdf theme. Before a
 summary arrives, the bar says
 `Working` with elapsed time. At completion it shows `Worked for 13m 32s -
 252243`, where the final six digits are the local day, hour, and minute.
@@ -1020,9 +1027,11 @@ dependency-free core integration hook, and recovery semantics.
 
 ## Release Scope
 
-The current release line is focused on the C SDK and Lua 5.5 facade for Responses API
-agents: Responses, Conversations, HTTP/SSE streaming, Responses WebSocket,
-ChatGPT subscription auth, agent/session DX, local tools, MCP tool serving and
+The current release line includes core `libcai`, the embeddable `libcai_app`,
+the static musl `cai` executable, and the Lua 5.5 facades. Supported workflows
+include Responses and Chat Completions agents, Conversations, HTTP/SSE
+streaming, Responses WebSocket, ChatGPT subscription auth, agent/session DX,
+local tools, MCP tool serving and
 client connectivity, examples, LuaRock packaging, and release packaging.
 
 Realtime WebSocket is intentionally not part of the current release line. OpenAI's
@@ -1044,8 +1053,8 @@ newer on Linux. Deployments on older glibc must upgrade their runtime or use a
 fully static musl application and validate it.
 CLI test builds require `tmux`, alongside the existing Bash/Python fixture and
 `jq` tools, for actual terminal-cell and scrollback assertions. Each test owns
-and cleans a private tmux socket/server. The open retained-frame resize
-diagnostic and its manual reproducer are documented in
+and cleans a private tmux socket/server. The resolved controlled retained-frame
+resize sequence and its manual reproducer are documented in
 [the softline resize report](docs/softline-retained-resize-report.md).
 Fuzz harnesses disable their own core dumps so Apport and other host crash
 collectors cannot delay crash reporting; no host sysctl changes are required.

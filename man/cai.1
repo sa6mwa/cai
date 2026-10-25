@@ -634,8 +634,9 @@ With no arguments, hand the real terminal to $SHELL -i, falling back to
 and an idle agent. These commands cannot be queued or steered; a busy draft
 remains editable. The shell uses normal user permissions in the workspace.
 CAI restores terminal ownership, prompt state and geometry after exit, even
-following a screen clear or resize. A real PTY relays output and foreground
-job control. Terminal output is never journaled, logged or shared with the model,
+following a screen clear or resize. The child uses the existing terminal
+directly, including its stderr, with native foreground-job control; no PTY
+relay is used. Terminal output is never journaled, logged or shared with the model,
 regardless of shell-context settings. Logs record only the executable and exit
 metadata.
 Launch failures and nonzero exits report details and return to CAI.
@@ -745,9 +746,8 @@ The message above it shows the first nonblank line of the provider's concise
 reasoning summary and the active turn's elapsed time. Libmdf renders its Markdown
 as plain text; Softline applies the message theme and accepts no ANSI styling.
 Single-line summaries appear only here. Remaining reasoning body streams
-through libmdf in the feed, with a
-.B "? "
-prefix on each rendered row and no separate reasoning label. Softline supplies
+through libmdf in the feed as Markdown blockquotes, with theme-owned quote
+markers and body styling and no separate reasoning label. Softline supplies
 its default
 .B "! "
 prefix to that message. Before a summary arrives it shows
@@ -947,7 +947,9 @@ base for google-chrome/NativeMessagingHosts/com.openai.codexextension.json.
 Host sockets live under $XDG_RUNTIME_DIR/cai/chrome, or
 ${XDG_CACHE_HOME:-$HOME/.cache}/cai/chrome when XDG_RUNTIME_DIR is unset.
 One client may use a host at a time; select a socket if multiple hosts exist.
-Browser access is opt-in, is not inherited by subagents, and is rejected by
+Smith enables browser tools by default and connects only on first use;
+--no-chrome disables them. Native-host setup remains explicit. Browser access
+is not inherited by subagents and is rejected by
 isolated review runtimes. Tabs are released after each turn; mark deliverable
 tabs with the chrome tool's keep action. Replaying history has no browser effects.
 .PP

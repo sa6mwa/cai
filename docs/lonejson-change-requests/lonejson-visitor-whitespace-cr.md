@@ -1,5 +1,9 @@
 # lonejson CR: value visitor fails on spaced object string values
 
+Historical report for the liblockdc 0.5.0/lonejson 0.5.x integration. The
+workaround below describes that snapshot; it does not establish current bug
+status.
+
 ## Context
 
 While running cai's OpenRouter tool-calling integration against liblockdc

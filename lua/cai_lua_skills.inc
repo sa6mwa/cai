@@ -1,3 +1,6 @@
+/* cai.skill_metadata(document_or_chunk_reader, fallback_name) owns only the
+ * parsed metadata. Reads may advance past the front matter: reopen the source
+ * to read the full skill. YAML parsing uses the core public SDK API. */
 #define CAI_LUA_SKILL_METADATA "cai.skill_metadata"
 typedef struct cai_lua_skill_metadata {
   cai_skill_metadata *ptr;

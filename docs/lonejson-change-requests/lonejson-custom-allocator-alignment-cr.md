@@ -1,5 +1,8 @@
 # lonejson CR: document and guard custom allocator alignment
 
+Historical report for lonejson 0.5.0. Its diagnosis and proposed changes below
+describe that version, not the current dependency's API or open CAI work.
+
 ## Summary
 
 cai hit an ASAN/UBSAN failure while parsing a normal Responses JSON fixture with

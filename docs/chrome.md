@@ -1,7 +1,8 @@
 # Chrome through the ChatGPT extension
 
 CAI can control Chrome using the official **ChatGPT** extension
-(`hehggadaopoacecdllhhajmbjkdcmajg`). This is an explicit opt-in. CAI supplies
+(`hehggadaopoacecdllhhajmbjkdcmajg`). Native-host setup is explicit; Smith's
+browser tool is enabled by default and connects lazily. CAI supplies
 its own native-messaging host in the same statically linked `cai` executable;
 no OpenAI executable, Node runtime, Playwright, or remote debugging port is
 required. Nothing from OpenAI's proprietary browser bundle is distributed.
