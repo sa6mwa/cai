@@ -5,6 +5,32 @@ config="$root/config/cai/config.ini"
 run --help; ok; contains "$root/stdout" --config; [[ ! -e "$config" ]]
 run --version; ok; [[ ! -e "$config" ]]
 run --no-config --list; ok; [[ ! -e "$config" ]]
+(
+  export CAI_CONFIG="$root/ignored.ini"
+  run --no-config --list; ok; [[ ! -e "$CAI_CONFIG" && ! -e "$config" ]]
+  printf '[agent]\ninvalid_field = true\n' >"$CAI_CONFIG"
+  run --no-config --list; ok
+  run --list; bad; contains "$root/stderr" ignored.ini
+  : >"$root/override.ini"
+  run --config "$root/override.ini" --list; ok
+  run --config "$CAI_CONFIG" --no-config --list
+  [[ "$rc" == 2 ]]; contains "$root/stderr" 'mutually exclusive'
+)
+# INI key paths are config-relative; CLI key paths are workspace-relative.
+mkdir -m 700 "$root/key-config"
+chmod 700 "$work"
+printf '[store.default]\nkey_file = ini.key\n' >"$root/key-config/config.ini"
+run --config "$root/key-config/config.ini" --lockd "pouch://$root/key-ini" --list; ok
+[[ -s "$root/key-config/ini.key" && ! -e "$work/ini.key" ]]
+run --config "$root/key-config/config.ini" --pouch-key-file selected.key --lockd "pouch://$root/key-cli" --list; ok
+[[ -s "$work/selected.key" && ! -e "$root/key-config/selected.key" ]]
+run --config "$root/key-config/config.ini" --pouch-key-file selected.key --lockd "pouch://$root/key-cli" --list; ok
+run --config "$root/key-config/config.ini" --pouch-key-file '~/home.key' --lockd "pouch://$root/key-home" --list; ok
+[[ -s "$root/home.key" ]]
+run --no-config --pouch-key-file local.key --lockd "pouch://$root/key-local" --list; ok
+[[ -s "$work/local.key" ]]
+run --config "$root/key-config/config.ini" --pouch-key-file "$root/absolute.key" --lockd "pouch://$root/key-absolute" --list; ok
+[[ -s "$root/absolute.key" ]]
 run --list; ok
 [[ $(stat -c %a "$config") == 600 && $(stat -c %a "$(dirname "$config")") == 700 ]]
 contains "$config" '# model = "gpt-6-luna"'

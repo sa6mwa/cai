@@ -190,8 +190,11 @@ static int default_string(cai_config *cfg, const char *section, const char *key,
                           cai_error *error) {
   const char *resolved;
   char absolute[PATH_MAX];
-  int rc;
-  if (strcmp(section, "paths") == 0) {
+  int rc, is_path;
+  is_path =
+      strcmp(section, "paths") == 0 ||
+      (strcmp(section, "store.default") == 0 && strcmp(key, "key_file") == 0);
+  if (is_path) {
     if (value == NULL || value[0] == '\0')
       return fail(error, key, "path must not be empty");
     if (value[0] == '~' && value[1] == '/') {
@@ -211,9 +214,7 @@ static int default_string(cai_config *cfg, const char *section, const char *key,
   if (document)
     return cai_config_set_default(cfg, section, key, value, error);
   rc = cfg->set(cfg, section, key, value, error);
-  if (rc == CAI_OK &&
-      (strcmp(section, "paths") == 0 ||
-       (strcmp(section, "store.default") == 0 && strcmp(key, "key_file") == 0)))
+  if (rc == CAI_OK && is_path)
     rc = cfg->resolve_path(cfg, section, key, &resolved, error);
   else
     resolved = cfg->get(cfg, section, key);

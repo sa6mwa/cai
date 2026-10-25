@@ -7,6 +7,90 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Every advertised value option must consume its own argv entry, even when
+ * that value looks like an instruction flag. Test both long and short forms
+ * using the primary parser without unrelated mode/provider validation. */
+static int value_option_instructions(void) {
+  cai_cli_options options;
+  char program[] = "cai", marker[] = "-i", first[] = "actual prompt";
+  char next[] = "--instruction", second[] = "second prompt";
+  char short_flag[3] = {'-', '\0', '\0'};
+  char flag_buffer[128], value_buffer[32];
+  char *args[7];
+  size_t i, count;
+  int form;
+  for (i = 0U; i < cai_cli_help_count(); i++) {
+    const cai_app_option *option = cai_cli_help_at(i);
+    const char *value = marker;
+    if (option->type != CAI_APP_STRING && option->type != CAI_APP_INTEGER &&
+        option->type != CAI_APP_OPTIONAL_STRING)
+      continue;
+    if (option->type == CAI_APP_INTEGER)
+      value = "7";
+    else if (option->type == CAI_APP_OPTIONAL_STRING)
+      value = "session-id";
+    else if (strstr(option->long_flag, "reasoning-effort") != NULL)
+      value = "medium";
+    else if (strstr(option->long_flag, "reasoning-summary") != NULL)
+      value = "concise";
+    else if (strcmp(option->long_flag, "--tool-output") == 0)
+      value = "compact";
+    else if (strcmp(option->long_flag, "--todo-layout") == 0)
+      value = "board";
+    for (form = 0; form < (option->short_flag != '\0' ? 2 : 1); form++) {
+      short_flag[1] = option->short_flag;
+      args[0] = program;
+      snprintf(flag_buffer, sizeof(flag_buffer), "%s",
+               form == 0 ? option->long_flag : short_flag);
+      snprintf(value_buffer, sizeof(value_buffer), "%s", value);
+      args[1] = flag_buffer;
+      args[2] = value_buffer;
+      args[3] = marker;
+      args[4] = first;
+      args[5] = next;
+      args[6] = second;
+      count = option->short_flag == 'i' ? 1U : 0U;
+      if (cai_cli_read_options(7, args, NULL, &options) != 1 ||
+          options.instruction_count != count + 2U ||
+          (count != 0U && cai_cli_instruction_at(&options, 0U) != args[2]) ||
+          cai_cli_instruction_at(&options, count) != first ||
+          cai_cli_instruction_at(&options, count + 1U) != second ||
+          cai_cli_instruction_at(&options, count + 2U) != NULL) {
+        fprintf(stderr, "incorrect prompt extraction for %s '%s'\n", args[1],
+                value);
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
+static int config_option_precedence(void) {
+  cai_cli_options defaults, options;
+  static char program[] = "cai", disable[] = "--no-config", list[] = "--list";
+  static char flag[] = "--config", path[] = "explicit.ini";
+  char *inherited[] = {program, disable, list};
+  char *explicit_first[] = {program, flag, path, disable, list};
+  char *explicit_last[] = {program, disable, flag, path, list};
+  cai_cli_options_init(&defaults);
+  defaults.config_file = "inherited.ini";
+  if (cai_cli_read_options(1, inherited, &defaults, &options) != 1 ||
+      cai_cli_validate_options(&options) != 1 ||
+      options.config_file != defaults.config_file ||
+      cai_cli_read_options(3, explicit_first, &defaults, &options) != 1 ||
+      cai_cli_validate_options(&options) != 1 || options.config_file != path)
+    return 1;
+  if (cai_cli_read_options(3, inherited, &defaults, &options) != 1 ||
+      cai_cli_validate_options(&options) != 1)
+    return 1;
+  if (cai_cli_read_options(5, explicit_first, &defaults, &options) != 1 ||
+      cai_cli_validate_options(&options) != -1 ||
+      cai_cli_read_options(5, explicit_last, &defaults, &options) != 1 ||
+      cai_cli_validate_options(&options) != -1)
+    return 1;
+  return 0;
+}
+
 static int short_argument_options(void) {
   static const char *const invalid[] = {"", "-", "--", "-x", "-Nq"};
   char program[] = "cai";
@@ -68,6 +152,7 @@ static int grouped_value_options(void) {
 static int replay_options(void) {
   char values[][24] = {"cai", "--replay-turns", "2", "-i", "first",
                        "-i",  "second"};
+  char resume[] = "--resume";
   char *args[7];
   cai_cli_options options;
   size_t i;
@@ -77,6 +162,14 @@ static int replay_options(void) {
       options.replay_turns != 2L ||
       strcmp(cai_cli_instruction_at(&options, 0U), "first") != 0 ||
       strcmp(cai_cli_instruction_at(&options, 1U), "second") != 0)
+    return 1;
+  /* --resume has an optional value; the next -i must remain an instruction. */
+  args[1] = resume;
+  args[2] = args[3];
+  args[3] = args[4];
+  if (cai_cli_read_options(4, args, NULL, &options) != 1 ||
+      !options.resume_list || options.instruction_count != 1U ||
+      strcmp(cai_cli_instruction_at(&options, 0U), "first") != 0)
     return 1;
   return 0;
 }
@@ -550,7 +643,8 @@ int main(void) {
       cai_cli_parse_options(3, invalid_legacy_instructions, &options) != -1 ||
       cai_cli_parse_options(3, invalid_legacy_workspace, &options) != -1)
     return 1;
-  return replay_options() || short_argument_options() ||
+  return value_option_instructions() || config_option_precedence() ||
+         replay_options() || short_argument_options() ||
          grouped_value_options() || help_columns() || shell_options() ||
          storage_options() || tool_options() || capture_options() ||
          messaging_options();

@@ -20,6 +20,7 @@ typedef struct cai_cli_options {
   const char *theme;
   const char *provider;
   const char *config_file;
+  int config_explicit;
   int no_config;
   int model_configured;
   const char *chrome_socket;

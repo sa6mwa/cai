@@ -77,9 +77,7 @@ static int cai_cli_one_of(const char *value, const char *const *values) {
   return 0;
 }
 
-/* Value-taking short options may end a group. Keep the parser and the later
- * instruction rescan in agreement about which following argv entry they own.
- */
+/* Value-taking short options may end a group. */
 static int cai_cli_short_value_option(const char *flag) {
   size_t length;
   if (flag[0] != '-' || flag[1] == '\0' || flag[1] == '-')
@@ -95,9 +93,12 @@ static int cai_cli_short_value_option(const char *flag) {
   }
 }
 
-int cai_cli_read_options(int argc, char *const *argv,
-                         const cai_cli_options *defaults,
-                         cai_cli_options *options) {
+/* Instruction selection uses this same parser: there is no second option
+ * list that can mistake another flag's value for a startup prompt. */
+static int cli_read_options(int argc, char *const *argv,
+                            const cai_cli_options *defaults,
+                            cai_cli_options *options, size_t instruction_index,
+                            const char **instruction) {
   static const char *const efforts[] = {"none",   "minimal", "low",
                                         "medium", "high",    "xhigh",
                                         "max",    "ultra",   NULL};
@@ -109,6 +110,8 @@ int cai_cli_read_options(int argc, char *const *argv,
   if (options == NULL) {
     return -1;
   }
+  if (instruction != NULL)
+    *instruction = NULL;
   if (defaults != NULL) {
     *options = *defaults;
     if (defaults->api_key_env == defaults->default_api_key_env)
@@ -370,6 +373,9 @@ int cai_cli_read_options(int argc, char *const *argv,
         cai_cli_option_error(options, "%s requires a value\n", flag);
         return -1;
       }
+      if (instruction != NULL &&
+          options->instruction_count == instruction_index)
+        *instruction = argv[i];
       options->instruction_count++;
       continue;
     }
@@ -507,6 +513,8 @@ int cai_cli_read_options(int argc, char *const *argv,
     }
     value = argv[i];
     *field = value;
+    if (field == &options->config_file)
+      options->config_explicit = 1;
     if (field == &options->todo_layout && strcmp(value, "board") != 0 &&
         strcmp(value, "list") != 0) {
       cai_cli_option_error(options, "--todo-layout must be board or list");
@@ -543,6 +551,12 @@ int cai_cli_read_options(int argc, char *const *argv,
   return 1;
 }
 
+int cai_cli_read_options(int argc, char *const *argv,
+                         const cai_cli_options *defaults,
+                         cai_cli_options *options) {
+  return cli_read_options(argc, argv, defaults, options, 0U, NULL);
+}
+
 int cai_cli_validate_options(cai_cli_options *options) {
   static const char *const providers[] = {"chatgpt", "openai", "openrouter",
                                           "berget",  "custom", NULL};
@@ -569,7 +583,7 @@ int cai_cli_validate_options(cai_cli_options *options) {
         options, "--queue NAME and --message TEXT are required together");
     return -1;
   }
-  if (options->config_file != NULL && options->no_config) {
+  if (options->config_explicit && options->no_config) {
     cai_cli_option_error(options,
                          "--config and --no-config are mutually exclusive");
     return -1;
@@ -759,60 +773,13 @@ int cai_cli_parse_options(int argc, char *const *argv,
 
 const char *cai_cli_instruction_at(const cai_cli_options *options,
                                    size_t index) {
-  size_t found;
-  int i;
-  const char *flag;
-  int has_value;
-  int instruction;
-  int short_value;
+  cai_cli_options parsed;
+  const char *instruction;
 
   if (options == NULL || options->argv == NULL)
     return NULL;
-  found = 0U;
-  for (i = 1; i < options->argc; i++) {
-    flag = options->argv[i];
-    short_value = cai_cli_short_value_option(flag);
-    instruction = short_value == 'i' || strcmp(flag, "--instruction") == 0;
-    has_value =
-        instruction || short_value == 'g' || short_value == 't' ||
-        strcmp(flag, "--resume") == 0 || strcmp(flag, "--lockd") == 0 ||
-        strcmp(flag, "--lockd-client-pem") == 0 ||
-        strcmp(flag, "--sessions-store") == 0 ||
-        strcmp(flag, "--auth-store") == 0 ||
-        strcmp(flag, "--messaging-store") == 0 ||
-        strcmp(flag, "--replay-turns") == 0 || strcmp(flag, "--export") == 0 ||
-        strcmp(flag, "--export-dir") == 0 || strcmp(flag, "--import") == 0 ||
-        strcmp(flag, "--goal") == 0 || strcmp(flag, "--base") == 0 ||
-        strcmp(flag, "-o") == 0 || strcmp(flag, "--out") == 0 ||
-        strcmp(flag, "-T") == 0 || strcmp(flag, "--output-type") == 0 ||
-        strcmp(flag, "--tool-output") == 0 || strcmp(flag, "--theme") == 0 ||
-        strcmp(flag, "-p") == 0 || strcmp(flag, "--provider") == 0 ||
-        strcmp(flag, "--endpoint") == 0 || strcmp(flag, "--api-key-env") == 0 ||
-        strcmp(flag, "--model-metadata") == 0 || strcmp(flag, "-C") == 0 ||
-        strcmp(flag, "--board") == 0 || strcmp(flag, "--searxng-url") == 0 ||
-        strcmp(flag, "--revgeo-url") == 0 ||
-        strcmp(flag, "--chrome-socket") == 0 ||
-        strcmp(flag, "--chrome-manifest") == 0 ||
-        strcmp(flag, "--shell-context-max-lines") == 0 ||
-        strcmp(flag, "--shell-context-max-bytes") == 0 ||
-        strcmp(flag, "--directory") == 0 || strcmp(flag, "-a") == 0 ||
-        strcmp(flag, "--auth-json") == 0 || strcmp(flag, "-m") == 0 ||
-        strcmp(flag, "--model") == 0 || strcmp(flag, "-r") == 0 ||
-        strcmp(flag, "--reasoning-effort") == 0 ||
-        strcmp(flag, "--reasoning-summary") == 0 ||
-        strcmp(flag, "--review-model") == 0 ||
-        strcmp(flag, "--review-reasoning-effort") == 0 ||
-        strcmp(flag, "--review-reasoning-summary") == 0 ||
-        strcmp(flag, "--agents-md") == 0 || strcmp(flag, "--config-dir") == 0 ||
-        strcmp(flag, "--config") == 0 || strcmp(flag, "--skills-dir") == 0 ||
-        strcmp(flag, "--install-skill") == 0 ||
-        strcmp(flag, "--identity") == 0 || strcmp(flag, "-I") == 0 ||
-        strcmp(flag, "--developer-instructions") == 0;
-    if (has_value && i + 1 < options->argc) {
-      if (instruction && found++ == index)
-        return options->argv[i + 1];
-      i++;
-    }
-  }
-  return NULL;
+  return cli_read_options(options->argc, options->argv, NULL, &parsed, index,
+                          &instruction) > 0
+             ? instruction
+             : NULL;
 }
