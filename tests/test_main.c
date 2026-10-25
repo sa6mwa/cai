@@ -33326,6 +33326,135 @@ static void test_goal_create_allocation_failure(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_patch_nested_paths(test_state *state) {
+  char temporary[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-nested-patch-XXXXXX";
+  char root[PATH_MAX], path[PATH_MAX], patch[PATH_MAX + 128];
+  char outside[PATH_MAX], link_path[PATH_MAX];
+  static const char *names[] = {"car", "congestioncalculator", "motorbike",
+                                "vehicle"};
+  static const char *rejected[] = {
+      "../outside/escape.txt", "link/new/escape.txt", "dangling/new/escape.txt",
+      "blocked/new/escape.txt", "new/../escape.txt"};
+  cai_patch_tool_config config;
+  cai_error error;
+  struct stat st;
+  mode_t previous_umask;
+  size_t i;
+  char *contents;
+  if (mkdtemp(temporary) == NULL) {
+    test_fail(state, "patch_nested_setup", "mkdtemp failed");
+    return;
+  }
+  snprintf(root, sizeof(root), "%s/workspace", temporary);
+  snprintf(outside, sizeof(outside), "%s/outside", temporary);
+  if (mkdir(root, 0700) != 0 || mkdir(outside, 0700) != 0) {
+    test_fail(state, "patch_nested_setup", "mkdir failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  config.root_path = root;
+  cai_error_init(&error);
+  snprintf(link_path, sizeof(link_path), "%s/workspace/link", temporary);
+  expect_int(state, "patch_nested_symlink_setup", symlink(outside, link_path),
+             0L);
+  snprintf(path, sizeof(path), "%s/outside/missing", temporary);
+  snprintf(link_path, sizeof(link_path), "%s/workspace/dangling", temporary);
+  expect_int(state, "patch_nested_dangling_setup", symlink(path, link_path),
+             0L);
+  snprintf(path, sizeof(path), "%s/workspace/blocked", temporary);
+  write_file_or_die(path, "unchanged\n");
+  for (i = 0U; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
+    snprintf(patch, sizeof(patch),
+             "*** Begin Patch\n*** Add File: %s\n+blocked\n*** End Patch",
+             rejected[i]);
+    expect_int(state, "patch_nested_reject_unsafe_parent",
+               cai_apply_patch(&config, patch, NULL, &error), CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+  }
+  snprintf(path, sizeof(path), "%s/outside/new", temporary);
+  expect_int(state, "patch_nested_no_outside_directory", access(path, F_OK),
+             -1L);
+  expect_int(state, "patch_nested_preflight_failure",
+             cai_apply_patch(&config,
+                             "*** Begin Patch\n"
+                             "*** Add File: deferred/child.txt\n+not written\n"
+                             "*** Update File: blocked\n@@\n-missing\n+new\n"
+                             "*** End Patch",
+                             NULL, &error),
+             CAI_ERR_INVALID);
+  snprintf(path, sizeof(path), "%s/workspace/deferred", temporary);
+  expect_int(state, "patch_nested_preflight_no_directories", access(path, F_OK),
+             -1L);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  previous_umask = umask(0077);
+  expect_int(
+      state, "patch_nested_add_shared_missing_parents",
+      cai_apply_patch(
+          &config,
+          "*** Begin Patch\n"
+          "*** Add File: golang/calculator/car.go\n+package calculator\n"
+          "*** Add File: golang/calculator/congestioncalculator.go\n+package "
+          "calculator\n"
+          "*** Add File: golang/calculator/motorbike.go\n+package calculator\n"
+          "*** Add File: golang/calculator/vehicle.go\n+package calculator\n"
+          "*** End Patch",
+          NULL, &error),
+      CAI_OK);
+  umask(previous_umask);
+  for (i = 0U; i < sizeof(names) / sizeof(names[0]); i++) {
+    snprintf(path, sizeof(path), "%s/workspace/golang/calculator/%s.go",
+             temporary, names[i]);
+    expect_int(state, "patch_nested_file_created", access(path, F_OK), 0L);
+    if (access(path, F_OK) != 0)
+      continue;
+    contents = read_file_or_die(path);
+    expect_str(state, "patch_nested_file_contents", contents,
+               "package calculator\n");
+    free(contents);
+    expect_int(state, "patch_nested_file_permissions",
+               stat(path, &st) == 0 && (st.st_mode & 0777) == 0600, 1L);
+    unlink(path);
+  }
+  snprintf(path, sizeof(path), "%s/workspace/golang/calculator", temporary);
+  expect_int(state, "patch_nested_directory_permissions",
+             stat(path, &st) == 0 && (st.st_mode & 0777) == 0700, 1L);
+  rmdir(path);
+  snprintf(path, sizeof(path), "%s/workspace/golang", temporary);
+  rmdir(path);
+  expect_int(
+      state, "patch_nested_move_missing_parents",
+      cai_apply_patch(&config,
+                      "*** Begin Patch\n*** Update File: blocked\n"
+                      "*** Move to: moved/deeper/file.txt\n*** End Patch",
+                      NULL, &error),
+      CAI_OK);
+  snprintf(path, sizeof(path), "%s/workspace/moved/deeper/file.txt", temporary);
+  expect_int(state, "patch_nested_move_destination", access(path, F_OK), 0L);
+  if (access(path, F_OK) == 0) {
+    contents = read_file_or_die(path);
+    expect_str(state, "patch_nested_move_contents", contents, "unchanged\n");
+    free(contents);
+    unlink(path);
+  }
+  snprintf(path, sizeof(path), "%s/workspace/blocked", temporary);
+  expect_int(state, "patch_nested_move_removes_source", access(path, F_OK),
+             -1L);
+  unlink(path);
+  snprintf(path, sizeof(path), "%s/workspace/moved/deeper", temporary);
+  rmdir(path);
+  snprintf(path, sizeof(path), "%s/workspace/moved", temporary);
+  rmdir(path);
+  snprintf(path, sizeof(path), "%s/workspace/link", temporary);
+  unlink(path);
+  unlink(link_path);
+  expect_int(state, "patch_nested_workspace_cleanup", rmdir(root), 0L);
+  expect_int(state, "patch_nested_outside_untouched", rmdir(outside), 0L);
+  expect_int(state, "patch_nested_cleanup", rmdir(temporary), 0L);
+  cai_error_cleanup(&error);
+}
+
 static void test_patch_tool(test_state *state) {
   static const char update_and_add[] = "*** Begin Patch\n"
                                        "*** Update File: alpha.txt\n"
@@ -33437,6 +33566,7 @@ static void test_patch_tool(test_state *state) {
   struct stat restrictive_umask_stat;
   mode_t original_umask;
 
+  test_patch_nested_paths(state);
   if (mkdtemp(dir_template) == NULL) {
     test_fail(state, "patch_tempdir", "mkdtemp failed");
     return;

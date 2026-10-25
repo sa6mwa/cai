@@ -71,6 +71,20 @@ for variant in separated adjacent deletion edges blank; do
       contains "$root/preview" '2  '; contains "$root/preview" '4  '; contains "$root/preview" '+blank-new' ;;
   esac
 done
+cat >"$root/patch" <<'PATCH'
+*** Begin Patch
+*** Add File: golang/calculator/car.go
++package calculator
+*** Add File: golang/calculator/vehicle.go
++package calculator
+*** End Patch
+PATCH
+patch_plan 'NESTED PATCH DONE'
+prompt 'add nested project files' 'NESTED PATCH DONE'
+for name in car vehicle; do
+  contains "$term/feed" "Added golang/calculator/$name.go"
+  [[ $(cat "$work/golang/calculator/$name.go") == 'package calculator' ]]
+done
 cp "$root/full-patch" "$root/patch"
 printf "printf 'OUT01\\nOUT02\\nOUT03\\nOUT04\\nOUT05\\nOUT06\\nOUT07\\n'\nexit 3\n" >"$work/command.sh"
 plan '{"plan":[{"tool":"exec_command","arguments":{"cmd":"sh command.sh","yield_time_ms":1000}},"COMMAND DONE"]}'
@@ -93,12 +107,12 @@ awk '
     if (NR>1 && previous!="") exit 1
     seen++
   }
-  /^  (PATCH DONE|FULL PATCH DONE|CONTEXT .* DONE|COMMAND DONE|SPACING DONE)$/ {
+  /^  (PATCH DONE|FULL PATCH DONE|NESTED PATCH DONE|CONTEXT .* DONE|COMMAND DONE|SPACING DONE)$/ {
     if (previous!="") exit 1
     answers++
   }
   {previous=$0}
-  END {if (seen<8 || answers<9) exit 1}
+  END {if (seen<8 || answers<10) exit 1}
 ' "$root/feed"
 contains "$root/feed" PARTIAL
 terminal_close

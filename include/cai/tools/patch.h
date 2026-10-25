@@ -30,6 +30,8 @@ typedef struct cai_patch_tool_config {
 /**
  * Parse, validate, and apply a Codex-style patch within root_path. CAI uses
  * its native parser/applier and never invokes system diff or patch programs.
+ * Missing add/move parent directories are created after plan validation,
+ * respecting the process umask. New destinations reject symlink parents.
  * On success it streams the changed-file receipt to result; failed parsing,
  * path validation, or context matching does not publish a partial plan.
  */

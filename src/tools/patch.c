@@ -32,6 +32,9 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_PATCH_ADD 1
 #define CAI_PATCH_DELETE 2
 #define CAI_PATCH_UPDATE 3
+#define CAI_PATCH_PARENT_EXISTING 0
+#define CAI_PATCH_PARENT_DEFER_MISSING 1
+#define CAI_PATCH_PARENT_CREATE 2
 
 #if defined(__linux__) && !defined(RENAME_EXCHANGE)
 #define RENAME_EXCHANGE (1U << 1)
@@ -448,8 +451,24 @@ static int cai_patch_resolve_new(const cai_patch_context *ctx, const char *path,
   } else {
     *slash = '\0';
   }
-  if (realpath(parent, resolved_parent) == NULL ||
-      !cai_patch_under_root(ctx->root_path, resolved_parent)) {
+  /* A new destination can have missing ancestors. Validate the nearest
+   * existing ancestor here; descriptor traversal checks every component
+   * before any directory or file is created. */
+  while (realpath(parent, resolved_parent) == NULL) {
+    if (errno != ENOENT)
+      return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                  "failed to resolve patch target parent",
+                                  strerror(errno));
+    slash = strrchr(parent, '/');
+    if (slash == NULL || parent[0] == '\0' || strcmp(parent, "/") == 0)
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "patch target has no existing parent");
+    if (slash == parent)
+      parent[1] = '\0';
+    else
+      *slash = '\0';
+  }
+  if (!cai_patch_under_root(ctx->root_path, resolved_parent)) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "patch target parent escapes configured root");
   }
@@ -695,8 +714,8 @@ static int cai_patch_read_file(int parent_fd, const char *name, size_t maximum,
  * component is opened from the pinned workspace descriptor, so an attacker
  * cannot redirect a later write by replacing an ancestor with a symlink. */
 static int cai_patch_open_parent(const cai_patch_context *ctx, const char *path,
-                                 int *out_fd, char *name, size_t name_size,
-                                 cai_error *error) {
+                                 int mode, int *out_fd, char *name,
+                                 size_t name_size, cai_error *error) {
   char relative[PATH_MAX];
   char *component;
   char *next;
@@ -770,6 +789,28 @@ static int cai_patch_open_parent(const cai_patch_context *ctx, const char *path,
     }
     next_fd =
         openat(fd, component, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (next_fd < 0 && errno == ENOENT) {
+      if (mode == CAI_PATCH_PARENT_DEFER_MISSING) {
+        close(fd);
+        return CAI_OK;
+      }
+      if (mode == CAI_PATCH_PARENT_CREATE) {
+        int created = mkdirat(fd, component, 0777) == 0;
+        if (!created && errno != EEXIST) {
+          int saved_errno = errno;
+          close(fd);
+          return cai_set_error_detail(error, CAI_ERR_INVALID,
+                                      "failed to create patch parent directory",
+                                      strerror(saved_errno));
+        }
+        if (created && cai_patch_sync_directory(fd, error) != CAI_OK) {
+          close(fd);
+          return error != NULL ? error->code : CAI_ERR_INVALID;
+        }
+        next_fd = openat(fd, component,
+                         O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+      }
+    }
     if (next_fd < 0 || fstat(next_fd, &st) != 0 || !S_ISDIR(st.st_mode)) {
       if (next_fd >= 0) {
         close(next_fd);
@@ -1557,8 +1598,9 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
                                             "added file exceeds size limit");
       }
       rc = cai_patch_open_parent(
-          ctx, change->resolved_path, &change->primary_parent_fd,
-          change->primary_name, sizeof(change->primary_name), error);
+          ctx, change->resolved_path, CAI_PATCH_PARENT_DEFER_MISSING,
+          &change->primary_parent_fd, change->primary_name,
+          sizeof(change->primary_name), error);
       if (rc != CAI_OK) {
         return rc;
       }
@@ -1574,6 +1616,7 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
       return rc;
     }
     rc = cai_patch_open_parent(ctx, change->resolved_path,
+                               CAI_PATCH_PARENT_EXISTING,
                                &change->primary_parent_fd, change->primary_name,
                                sizeof(change->primary_name), error);
     if (rc != CAI_OK) {
@@ -1600,6 +1643,7 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
         return rc;
       }
       rc = cai_patch_open_parent(ctx, change->resolved_move_path,
+                                 CAI_PATCH_PARENT_DEFER_MISSING,
                                  &change->move_parent_fd, change->move_name,
                                  sizeof(change->move_name), error);
       if (rc != CAI_OK) {
@@ -1835,7 +1879,8 @@ static int cai_patch_write_atomic(
   return CAI_OK;
 }
 
-static int cai_patch_commit(cai_patch_plan *plan, cai_error *error) {
+static int cai_patch_commit(const cai_patch_context *ctx, cai_patch_plan *plan,
+                            cai_error *error) {
   size_t i;
   int rc;
 
@@ -1848,6 +1893,23 @@ static int cai_patch_commit(cai_patch_plan *plan, cai_error *error) {
     change = &plan->items[i];
     if (change->kind == CAI_PATCH_DELETE) {
       continue;
+    }
+    /* Preflight pins existing parents. Only missing destination parents
+     * are created here, after the entire plan and its contexts validate. */
+    if (change->resolved_move_path != NULL && change->move_parent_fd < 0) {
+      rc = cai_patch_open_parent(ctx, change->resolved_move_path,
+                                 CAI_PATCH_PARENT_CREATE,
+                                 &change->move_parent_fd, change->move_name,
+                                 sizeof(change->move_name), error);
+      if (rc != CAI_OK)
+        goto rollback;
+    } else if (change->primary_parent_fd < 0) {
+      rc = cai_patch_open_parent(
+          ctx, change->resolved_path, CAI_PATCH_PARENT_CREATE,
+          &change->primary_parent_fd, change->primary_name,
+          sizeof(change->primary_name), error);
+      if (rc != CAI_OK)
+        goto rollback;
     }
     target_parent_fd = change->resolved_move_path != NULL
                            ? change->move_parent_fd
@@ -2140,7 +2202,7 @@ static int cai_patch_apply_context(const cai_patch_context *ctx,
     rc = cai_patch_preflight(ctx, &plan, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_patch_commit(&plan, error);
+    rc = cai_patch_commit(ctx, &plan, error);
   }
   if (rc == CAI_OK) {
     rc = cai_patch_write_result(result, &plan, error);
@@ -2262,7 +2324,7 @@ static int cai_patch_tool_spooled_callback(void *context,
     }
   }
   if (rc == CAI_OK) {
-    rc = cai_patch_commit(&plan, error);
+    rc = cai_patch_commit(ctx, &plan, error);
   }
   if (rc == CAI_OK) {
     rc = cai_patch_write_result(result, &plan, error);

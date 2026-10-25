@@ -5,6 +5,21 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-017: Nested patch additions fail when parent directories are missing
+
+- **Status:** fixed.
+- **Cause:** new-file resolution required an existing immediate parent and
+  reported every resolution failure as a workspace escape. Parent descriptor
+  traversal also lacked directory creation.
+- **Resolution:** validate the nearest existing ancestor, pin existing parents,
+  and create missing add/move parents only after the complete plan validates.
+  Descriptor traversal rejects symlink components and unsafe paths; new
+  directories respect the process umask.
+- **Verification:** native regression covers the reported four-file Go layout,
+  shared missing parents, moves, permissions, traversal, escaping/dangling
+  symlinks, non-directory parents and failure without preflight side effects.
+  The mock-provider CLI regression covers nested freeform tool additions.
+
 ## BUG-015: Extra blank row before the first quoted user prompt
 
 - **Status:** fixed by softline 0.12.0.

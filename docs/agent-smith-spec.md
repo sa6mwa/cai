@@ -1031,7 +1031,9 @@ the model sends its patch in the raw `custom_tool_call.input` field and CAI
 returns plain text through `custom_tool_call_output`. Its description and Lark
 grammar are derived from the Codex tool contract, including the instruction not
 to wrap the patch in JSON. It supports add, update, delete, and move; validates
-all paths and expected update contexts before publishing success; and returns
+all paths and expected update contexts before publishing success; creates
+missing add/move parent directories within the workspace after validation,
+respecting the process umask and rejecting symlink parents; and returns
 the Codex-style changed-file summary. On a failure it returns a precise parser,
 path-policy, or context-mismatch error and must not claim a partial patch was
 applied. Its implementation is CAI-native: it must not invoke a shell or
