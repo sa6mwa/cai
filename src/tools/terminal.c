@@ -48,13 +48,14 @@ extern char *realpath(const char *path, char *resolved_path);
 /*
  * The terminal is an explicit host-side capability, but it must not inherit
  * the client process environment. In particular, API credentials commonly
- * live there and tool output is returned to the model. Keep the useful,
- * deterministic shell settings here and derive HOME from the already-scoped
- * workspace below.
+ * live there and tool output is returned to the model. Keep useful shell
+ * settings here and derive HOME from the already-scoped workspace below.
+ * Preserve the caller's executable search path so installed toolchains remain
+ * available, without inheriting the rest of its environment.
  */
 static char cai_terminal_shell_flag[] = "-c";
-static char cai_terminal_safe_path[] =
-    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+static const char cai_terminal_default_path[] =
+    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 static char cai_terminal_safe_lang[] = "LANG=C.UTF-8";
 static char cai_terminal_safe_lc_all[] = "LC_ALL=C.UTF-8";
 static char cai_terminal_safe_term[] = "TERM=xterm-256color";
@@ -232,6 +233,7 @@ typedef struct cai_terminal_manager {
   char *default_workdir;
   char *shell_path;
   char *home_environment;
+  char *path_environment;
   long default_yield_ms;
   long max_yield_ms;
   long default_write_yield_ms;
@@ -806,6 +808,7 @@ static void cai_terminal_manager_destroy(cai_terminal_manager *manager) {
   cai_free_mem(NULL, manager->default_workdir);
   cai_free_mem(NULL, manager->shell_path);
   cai_free_mem(NULL, manager->home_environment);
+  cai_free_mem(NULL, manager->path_environment);
   cai_free_mem(NULL, manager->command);
   cai_free_mem(NULL, manager->workdir);
   cai_free_mem(NULL, manager->output);
@@ -843,6 +846,8 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
   cai_terminal_manager *manager;
   char resolved[PATH_MAX];
   size_t home_length;
+  cai_buffer_builder path_environment;
+  const char *path;
 
   *out = NULL;
   if (config == NULL || config->root_path == NULL ||
@@ -874,6 +879,15 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
   if (manager->home_environment != NULL) {
     (void)snprintf(manager->home_environment, home_length, "HOME=%s", resolved);
   }
+  memset(&path_environment, 0, sizeof(path_environment));
+  path = getenv("PATH");
+  if (cai_buffer_append_cstr(&path_environment, "PATH=", error) == CAI_OK &&
+      cai_buffer_append_cstr(&path_environment,
+                             path != NULL ? path : cai_terminal_default_path,
+                             error) == CAI_OK)
+    manager->path_environment = path_environment.data;
+  else
+    cai_free_mem(NULL, path_environment.data);
   manager->default_yield_ms = config->default_yield_time_ms > 0L
                                   ? config->default_yield_time_ms
                                   : CAI_TERMINAL_DEFAULT_YIELD_MS;
@@ -905,13 +919,15 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
   snprintf(manager->terminal_id, sizeof(manager->terminal_id), "terminal-1");
   if (manager->root_path == NULL || manager->root_fd < 0 ||
       manager->shell_path == NULL || manager->home_environment == NULL ||
-      manager->max_yield_ms <= 0L || manager->max_write_yield_ms <= 0L ||
-      manager->max_poll_yield_ms <= 0L || manager->output_max_bytes == 0U) {
+      manager->path_environment == NULL || manager->max_yield_ms <= 0L ||
+      manager->max_write_yield_ms <= 0L || manager->max_poll_yield_ms <= 0L ||
+      manager->output_max_bytes == 0U) {
     cai_free_mem(NULL, manager->root_path);
     cai_terminal_close_fd(&manager->root_fd);
     cai_free_mem(NULL, manager->default_workdir);
     cai_free_mem(NULL, manager->shell_path);
     cai_free_mem(NULL, manager->home_environment);
+    cai_free_mem(NULL, manager->path_environment);
     cai_free_mem(NULL, manager);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate terminal manager");
@@ -922,6 +938,7 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
     cai_free_mem(NULL, manager->default_workdir);
     cai_free_mem(NULL, manager->shell_path);
     cai_free_mem(NULL, manager->home_environment);
+    cai_free_mem(NULL, manager->path_environment);
     cai_free_mem(NULL, manager);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to initialize terminal manager lock");
@@ -933,6 +950,7 @@ static int cai_terminal_manager_new(const cai_terminal_tool_config *config,
     cai_free_mem(NULL, manager->default_workdir);
     cai_free_mem(NULL, manager->shell_path);
     cai_free_mem(NULL, manager->home_environment);
+    cai_free_mem(NULL, manager->path_environment);
     cai_free_mem(NULL, manager);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
                          "failed to initialize terminal manager condition");
@@ -1115,7 +1133,7 @@ static int cai_terminal_start(cai_terminal_manager *manager, const char *cmd,
     argv[2] = command_copy;
     argv[3] = NULL;
     environment[0] = manager->home_environment;
-    environment[1] = cai_terminal_safe_path;
+    environment[1] = manager->path_environment;
     environment[2] = cai_terminal_safe_lang;
     environment[3] = cai_terminal_safe_lc_all;
     environment[4] = cai_terminal_safe_term;

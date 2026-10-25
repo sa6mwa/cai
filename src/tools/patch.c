@@ -67,6 +67,7 @@ typedef struct cai_patch_hunk {
 
 typedef struct cai_patch_change {
   int kind;
+  int replace_content;
   char *path;
   char *move_path;
   char *new_text;
@@ -581,36 +582,39 @@ static int cai_patch_file_identity_matches(int parent_fd, const char *name,
 /* rename changes ctime even when it moves the exact same inode. Exchange
  * publication therefore compares all stable file-version fields after the
  * move, while cai_patch_verify_file() performs the full pre-exchange check. */
-static int cai_patch_relocated_file_matches(int parent_fd, const char *name,
+static int cai_patch_relocated_stat_matches(const struct stat *actual,
                                             const struct stat *expected) {
-  struct stat actual;
-
-  if (expected == NULL ||
-      fstatat(parent_fd, name, &actual, AT_SYMLINK_NOFOLLOW) != 0 ||
-      !S_ISREG(actual.st_mode)) {
+  if (expected == NULL || !S_ISREG(actual->st_mode)) {
     return 0;
   }
 #if defined(__APPLE__)
-  return actual.st_dev == expected->st_dev &&
-         actual.st_ino == expected->st_ino &&
-         actual.st_mode == expected->st_mode &&
-         actual.st_nlink == expected->st_nlink &&
-         actual.st_uid == expected->st_uid &&
-         actual.st_gid == expected->st_gid &&
-         actual.st_size == expected->st_size &&
-         actual.st_mtimespec.tv_sec == expected->st_mtimespec.tv_sec &&
-         actual.st_mtimespec.tv_nsec == expected->st_mtimespec.tv_nsec;
+  return actual->st_dev == expected->st_dev &&
+         actual->st_ino == expected->st_ino &&
+         actual->st_mode == expected->st_mode &&
+         actual->st_nlink == expected->st_nlink &&
+         actual->st_uid == expected->st_uid &&
+         actual->st_gid == expected->st_gid &&
+         actual->st_size == expected->st_size &&
+         actual->st_mtimespec.tv_sec == expected->st_mtimespec.tv_sec &&
+         actual->st_mtimespec.tv_nsec == expected->st_mtimespec.tv_nsec;
 #else
-  return actual.st_dev == expected->st_dev &&
-         actual.st_ino == expected->st_ino &&
-         actual.st_mode == expected->st_mode &&
-         actual.st_nlink == expected->st_nlink &&
-         actual.st_uid == expected->st_uid &&
-         actual.st_gid == expected->st_gid &&
-         actual.st_size == expected->st_size &&
-         actual.st_mtim.tv_sec == expected->st_mtim.tv_sec &&
-         actual.st_mtim.tv_nsec == expected->st_mtim.tv_nsec;
+  return actual->st_dev == expected->st_dev &&
+         actual->st_ino == expected->st_ino &&
+         actual->st_mode == expected->st_mode &&
+         actual->st_nlink == expected->st_nlink &&
+         actual->st_uid == expected->st_uid &&
+         actual->st_gid == expected->st_gid &&
+         actual->st_size == expected->st_size &&
+         actual->st_mtim.tv_sec == expected->st_mtim.tv_sec &&
+         actual->st_mtim.tv_nsec == expected->st_mtim.tv_nsec;
 #endif
+}
+
+static int cai_patch_relocated_file_matches(int parent_fd, const char *name,
+                                            const struct stat *expected) {
+  struct stat actual;
+  return fstatat(parent_fd, name, &actual, AT_SYMLINK_NOFOLLOW) == 0 &&
+         cai_patch_relocated_stat_matches(&actual, expected);
 }
 
 /* Replacing an existing pathname safely needs an atomic exchange rather than
@@ -1605,20 +1609,69 @@ static int cai_patch_validate_destinations(const cai_patch_plan *plan,
   return CAI_OK;
 }
 
+/* A delete followed by an add is a replacement, even when other file
+ * sections separate them. Keep one update so publication and rollback retain
+ * the original file's identity checks, permissions and contents. */
+static int cai_patch_coalesce_replacements(const cai_patch_context *ctx,
+                                           cai_patch_plan *plan,
+                                           cai_error *error) {
+  size_t i, j;
+  char deleted[PATH_MAX], added[PATH_MAX];
+  int rc;
+  for (i = 0U; i < plan->count; i++) {
+    cai_patch_change *change = &plan->items[i];
+    if (change->kind != CAI_PATCH_DELETE)
+      continue;
+    rc = cai_patch_join(deleted, sizeof(deleted), ctx->root_path, change->path,
+                        error);
+    if (rc != CAI_OK)
+      return rc;
+    for (j = i + 1U; j < plan->count; j++) {
+      cai_patch_change *addition = &plan->items[j];
+      if (addition->kind != CAI_PATCH_ADD)
+        continue;
+      rc = cai_patch_join(added, sizeof(added), ctx->root_path, addition->path,
+                          error);
+      if (rc != CAI_OK)
+        return rc;
+      if (strcmp(deleted, added) != 0)
+        continue;
+      change->kind = CAI_PATCH_UPDATE;
+      change->replace_content = 1;
+      change->new_text = addition->new_text;
+      change->new_length = addition->new_length;
+      addition->new_text = NULL;
+      cai_patch_change_cleanup(addition);
+      memmove(addition, addition + 1U,
+              (plan->count - j - 1U) * sizeof(*addition));
+      plan->count--;
+      break;
+    }
+  }
+  return CAI_OK;
+}
+
 static int cai_patch_preflight(const cai_patch_context *ctx,
                                cai_patch_plan *plan, cai_error *error) {
   size_t i;
   size_t j;
   int rc;
 
+  rc = cai_patch_coalesce_replacements(ctx, plan, error);
+  if (rc != CAI_OK)
+    return rc;
   for (i = 0U; i < plan->count; i++) {
     cai_patch_change *change;
 
     change = &plan->items[i];
     for (j = 0U; j < i; j++) {
       if (strcmp(change->path, plan->items[j].path) == 0) {
-        return cai_set_error(error, CAI_ERR_INVALID,
-                             "patch changes the same path more than once");
+        char message[PATH_MAX + 128];
+        snprintf(message, sizeof(message),
+                 "patch changes path '%s' more than once; use one file section "
+                 "with multiple @@ hunks, or separate tool calls",
+                 change->path);
+        return cai_set_error(error, CAI_ERR_INVALID, message);
       }
     }
     if (change->kind == CAI_PATCH_ADD) {
@@ -1685,14 +1738,23 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
         return rc;
       }
     }
-    rc = cai_patch_copy(&change->after, change->before, change->before_length,
-                        error);
-    if (rc == CAI_OK) {
-      change->after_length = change->before_length;
-      for (j = 0U; j < change->hunk_count; j++) {
-        rc = cai_patch_apply_hunk(change, &change->hunks[j], error);
-        if (rc != CAI_OK) {
-          break;
+    if (change->replace_content) {
+      if (change->new_length > ctx->max_file_bytes)
+        return cai_set_error(error, CAI_ERR_INVALID,
+                             "patched file exceeds size limit");
+      rc = cai_patch_copy(&change->after, change->new_text, change->new_length,
+                          error);
+      change->after_length = change->new_length;
+    } else {
+      rc = cai_patch_copy(&change->after, change->before, change->before_length,
+                          error);
+      if (rc == CAI_OK) {
+        change->after_length = change->before_length;
+        for (j = 0U; j < change->hunk_count; j++) {
+          rc = cai_patch_apply_hunk(change, &change->hunks[j], error);
+          if (rc != CAI_OK) {
+            break;
+          }
         }
       }
     }
@@ -1882,7 +1944,8 @@ static int cai_patch_write_atomic(
       return cai_set_error(error, CAI_ERR_INVALID,
                            "patch file changed since preflight");
     }
-    if (!cai_patch_relocated_file_matches(parent_fd, name, &temporary_stat)) {
+    if (fstatat(parent_fd, name, &st, AT_SYMLINK_NOFOLLOW) != 0 ||
+        !cai_patch_relocated_stat_matches(&st, &temporary_stat)) {
       /* A writer changed the destination after the exchange. Keep that newer
        * file in place and discard only the now-obsolete preflight inode. */
       cai_patch_unlink_if_matches(parent_fd, temporary, expected_destination);
@@ -1891,7 +1954,9 @@ static int cai_patch_write_atomic(
     }
     *out_published = 1;
     if (out_published_stat != NULL) {
-      *out_published_stat = temporary_stat;
+      /* Exchange changes ctime. Rollback verifies this published version,
+       * not the temporary inode's pre-exchange timestamp. */
+      *out_published_stat = st;
     }
     if (unlinkat(parent_fd, temporary, 0) != 0) {
       saved_errno = errno;

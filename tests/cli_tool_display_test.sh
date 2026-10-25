@@ -2,6 +2,10 @@
 source "$(dirname "$0")/cli_test_common.sh"
 peer_start
 base=("$cli" -p custom --endpoint "$endpoint" -m gpt-5.6-luna --no-image-generation -C "$work")
+mkdir -p "$root/toolbin"
+printf '#!/bin/sh\nprintf PATH_TOOL_OK\n' >"$root/toolbin/cai-path-probe"
+chmod 700 "$root/toolbin/cai-path-probe"
+export PATH="$root/toolbin:$PATH"
 printf 'before0\nbefore1\nold\nbetween0\nbetween1\nbetween2\nbetween3\nold2\nafter0\nafter1\n' >"$root/original"
 cat >"$root/patch" <<'PATCH'
 *** Begin Patch
@@ -93,6 +97,30 @@ contains "$term/feed" 'Added ./internal/toll/./calculator.go'
 for name in calculator vehicle; do
   [[ $(cat "$work/internal/toll/$name.go") == 'package toll' ]]
 done
+# Replacing a file by delete/add is one edit, even with another file between.
+cat >"$root/patch" <<'PATCH'
+*** Begin Patch
+*** Delete File: internal/toll/calculator.go
+*** Add File: module.txt
++module example
+*** Add File: ./internal/toll/calculator.go
++package replaced
+*** Update File: internal/toll/vehicle.go
+@@
+-package toll
++package changed
+*** End Patch
+PATCH
+patch_plan 'REPLACED PATCH DONE'
+prompt 'replace the calculator and update its neighbor' 'REPLACED PATCH DONE'
+[[ $(cat "$work/internal/toll/calculator.go") == 'package replaced' ]]
+[[ $(cat "$work/internal/toll/vehicle.go") == 'package changed' ]]
+contains "$term/feed" 'Deleted internal/toll/calculator.go'
+contains "$term/feed" 'Added ./internal/toll/calculator.go'
+contains "$term/feed" '+package changed'
+plan '{"plan":[{"tool":"exec_command","arguments":{"cmd":"cai-path-probe","yield_time_ms":1000}},{"tool":"write_stdin","arguments":{"session_id":"terminal-1","chars":"","yield_time_ms":1000}},"PATH CHECK DONE"]}'
+prompt 'check inherited toolchain search path' 'PATH CHECK DONE'
+contains "$term/feed" PATH_TOOL_OK
 cp "$root/full-patch" "$root/patch"
 printf "printf 'OUT01\\nOUT02\\nOUT03\\nOUT04\\nOUT05\\nOUT06\\nOUT07\\n'\nexit 3\n" >"$work/command.sh"
 # Output can arrive before the child exits. Collect completion before the mock

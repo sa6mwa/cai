@@ -33509,6 +33509,177 @@ static int test_patch_invoke(test_state *state,
   return rc;
 }
 
+static void test_patch_replacements(test_state *state) {
+  static const struct {
+    const char *before;
+    const char *fragment;
+    int valid;
+  } cases[] = {
+      {"old\n",
+       "*** Delete File: replace.txt\n*** Add File: added.txt\n+new\n"
+       "*** Add File: replace.txt\n+after\n",
+       1},
+      {"",
+       "*** Delete File: replace.txt\n*** Add File: ./replace.txt\n+after\n",
+       1},
+      {"old",
+       "*** Delete File: ./replace.txt\n*** Add File: replace.txt\n+after\n",
+       1},
+      {"old\n",
+       "*** Delete File: replace.txt\n*** Add File: replace.txt\n+after\n"
+       "*** Add File: replace.txt\n+again\n",
+       0},
+      {"old\n",
+       "*** Delete File: replace.txt\n*** Add File: replace.txt\n+after\n"
+       "*** Delete File: replace.txt\n",
+       0},
+      {"old\n", "*** Delete File: replace.txt\n*** Delete File: replace.txt\n",
+       0},
+      {"old\n",
+       "*** Add File: replace.txt\n+after\n*** Delete File: replace.txt\n", 0},
+      {"old\n",
+       "*** Update File: replace.txt\n@@\n-old\n+after\n"
+       "*** Update File: replace.txt\n@@\n-after\n+again\n",
+       0},
+      {"old\n",
+       "*** Delete File: replace.txt\n*** Add File: replace.txt\n+after\n"
+       "*** Update File: missing.txt\n@@\n-old\n+after\n",
+       0}};
+  static const char replacement[] =
+      "*** Begin Patch\n*** Delete File: replace.txt\n"
+      "*** Add File: replace.txt\n+after\n*** End Patch\n";
+  char root[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-patch-replace-XXXXXX";
+  char path[PATH_MAX], added[PATH_MAX], patch[2048], contents[64];
+  cai_patch_tool_config config;
+  cai_tool_registry *registry = NULL;
+  cai_sink_callbacks callbacks;
+  cai_sink *sink = NULL;
+  cai_error error;
+  write_state writer;
+  struct stat st;
+  size_t i;
+  int mode, rc, variant;
+  if (mkdtemp(root) == NULL) {
+    test_fail(state, "patch_replace_setup", "mkdtemp failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  config.root_path = root;
+  snprintf(path, sizeof(path), "%s/replace.txt", root);
+  snprintf(added, sizeof(added), "%s/added.txt", root);
+  cai_error_init(&error);
+  memset(&writer, 0, sizeof(writer));
+  callbacks.write = test_write;
+  callbacks.close = test_write_close;
+  callbacks.context = &writer;
+  expect_int(state, "patch_replace_sink",
+             cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  expect_int(state, "patch_replace_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  if (registry != NULL)
+    expect_int(state, "patch_replace_register",
+               cai_tool_registry_register_patch_tool(registry, &config, &error),
+               CAI_OK);
+  for (mode = 0; mode < 2 && sink != NULL && registry != NULL; mode++) {
+    for (i = 0U; i < sizeof(cases) / sizeof(cases[0]); i++) {
+      write_file_or_die(path, cases[i].before);
+      expect_int(state, "patch_replace_mode_setup", chmod(path, 0710), 0L);
+      snprintf(patch, sizeof(patch), "*** Begin Patch\n%s*** End Patch\n",
+               cases[i].fragment);
+      writer.length = 0U;
+      writer.buffer[0] = '\0';
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+      rc = test_patch_invoke(state, &config, mode == 0 ? NULL : registry, patch,
+                             sink, &error);
+      expect_int(state, "patch_replace_result", rc,
+                 cases[i].valid ? CAI_OK : CAI_ERR_INVALID);
+      contents[0] = '\0';
+      expect_int(state, "patch_replace_read",
+                 read_text_file(path, contents, sizeof(contents)), 1L);
+      expect_str(state, "patch_replace_contents", contents,
+                 cases[i].valid ? "after\n" : cases[i].before);
+      expect_int(state, "patch_replace_mode",
+                 stat(path, &st) == 0 && (st.st_mode & 0777) == 0710, 1L);
+      if (cases[i].valid)
+        expect_substr(state, "patch_replace_single_edit_receipt", writer.buffer,
+                      i == 2U ? "M ./replace.txt\n" : "M replace.txt\n");
+      else {
+        expect_int(state, "patch_replace_no_receipt", (long)writer.length, 0L);
+        if (i == 3U || i == 4U || i == 5U || i == 7U) {
+          expect_substr(state, "patch_duplicate_identifies_path", error.message,
+                        "replace.txt");
+          expect_substr(state, "patch_duplicate_recovery_hint", error.message,
+                        "multiple @@ hunks");
+        }
+      }
+      unlink(added);
+    }
+    /* A later publication failure must roll back the replacement too. */
+    write_file_or_die(path, "old\n");
+    for (variant = 0; variant < 2; variant++) {
+      pid_t child = fork();
+      int status = 0;
+      if (child == 0) {
+        struct rlimit limit;
+        if (getrlimit(RLIMIT_FSIZE, &limit) != 0 ||
+            signal(SIGXFSZ, SIG_IGN) == SIG_ERR)
+          _exit(2);
+        limit.rlim_cur = 6U;
+        if (setrlimit(RLIMIT_FSIZE, &limit) != 0)
+          _exit(2);
+        rc = test_patch_invoke(
+            state, &config, mode == 0 ? NULL : registry,
+            variant == 0 ? "*** Begin Patch\n*** Delete File: replace.txt\n"
+                           "*** Add File: replace.txt\n+after\n"
+                           "*** Add File: added.txt\n+too long for limit\n*** "
+                           "End Patch\n"
+                         : "*** Begin Patch\n*** Update File: "
+                           "replace.txt\n@@\n-old\n+after\n"
+                           "*** Add File: added.txt\n+too long for limit\n*** "
+                           "End Patch\n",
+            sink, &error);
+        _exit(rc == CAI_ERR_INVALID && error.message != NULL &&
+                      strcmp(error.message, "failed to write patch file") == 0
+                  ? 0
+                  : 1);
+      }
+      expect_int(state, "patch_replace_rollback_child",
+                 child > 0 && waitpid(child, &status, 0) == child &&
+                     WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                 1L);
+      contents[0] = '\0';
+      expect_int(state, "patch_replace_rollback_read",
+                 read_text_file(path, contents, sizeof(contents)), 1L);
+      expect_str(state, "patch_replace_rollback_contents", contents, "old\n");
+      expect_int(state, "patch_replace_rollback_no_add", access(added, F_OK),
+                 -1L);
+    }
+    config.max_file_bytes = 5U;
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "patch_replace_limit",
+               cai_apply_patch(&config, replacement, NULL, &error),
+               CAI_ERR_INVALID);
+    config.max_file_bytes = 0U;
+    unlink(path);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "patch_replace_requires_source",
+               test_patch_invoke(state, &config, mode == 0 ? NULL : registry,
+                                 replacement, sink, &error),
+               CAI_ERR_INVALID);
+    expect_int(state, "patch_replace_missing_untouched", access(path, F_OK),
+               -1L);
+  }
+  cai_tool_registry_destroy(registry);
+  cai_sink_close(sink);
+  cai_error_cleanup(&error);
+  unlink(path);
+  unlink(added);
+  expect_int(state, "patch_replace_cleanup", rmdir(root), 0L);
+}
+
 static void test_patch_size_limits(test_state *state,
                                    const cai_patch_tool_config *config,
                                    cai_sink *sink, write_state *writer) {
@@ -34060,6 +34231,7 @@ static void test_patch_tool(test_state *state) {
   mode_t original_umask;
 
   test_patch_nested_paths(state);
+  test_patch_replacements(state);
   test_patch_failure_modes(state);
   if (mkdtemp(dir_template) == NULL) {
     test_fail(state, "patch_tempdir", "mkdtemp failed");
@@ -37358,6 +37530,92 @@ static void test_terminal_registration_rollback(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_terminal_path(test_state *state) {
+  char root[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-terminal-path-XXXXXX";
+  char tool[PATH_MAX], search_path[PATH_MAX];
+  const char *inherited = getenv("PATH");
+  char *saved = inherited != NULL ? strdup(inherited) : NULL;
+  int mode;
+  if (mkdtemp(root) == NULL || (inherited != NULL && saved == NULL)) {
+    test_fail(state, "terminal_path_setup", "cannot create PATH fixture");
+    free(saved);
+    return;
+  }
+  snprintf(tool, sizeof(tool), "%s/path_probe", root);
+  snprintf(search_path, sizeof(search_path), "%s:/usr/bin:/bin", root);
+  write_file_or_die(tool, "#!/bin/sh\nprintf PATH_TOOL_OK\n");
+  expect_int(state, "terminal_path_executable", chmod(tool, 0700), 0L);
+  for (mode = 0; mode < 3; mode++) {
+    cai_terminal_tool_config config;
+    cai_tool_registry *registry = NULL;
+    cai_sink_callbacks callbacks;
+    cai_sink *sink = NULL;
+    cai_error error;
+    write_state writer;
+    int i;
+    memset(&config, 0, sizeof(config));
+    memset(&writer, 0, sizeof(writer));
+    config.root_path = root;
+    cai_error_init(&error);
+    if (mode == 2)
+      unsetenv("PATH");
+    else
+      setenv("PATH", mode == 0 ? search_path : "", 1);
+    callbacks.write = test_write;
+    callbacks.close = test_write_close;
+    callbacks.context = &writer;
+    expect_int(state, "terminal_path_registry",
+               cai_tool_registry_new(&registry, &error), CAI_OK);
+    expect_int(
+        state, "terminal_path_register",
+        cai_tool_registry_register_terminal_tools(registry, &config, &error),
+        CAI_OK);
+    expect_int(state, "terminal_path_sink",
+               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+    /* The manager owns its snapshot rather than borrowing getenv storage. */
+    setenv("PATH", "/changed-after-registration", 1);
+    expect_int(state, "terminal_path_run",
+               cai_tool_registry_run(
+                   registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+                   mode == 0 ? "{\"cmd\":\"path_probe; printf '<%s>' "
+                               "\\\"$PATH\\\"\",\"yield_time_ms\":100}"
+                             : "{\"cmd\":\"printf '<%s>' "
+                               "\\\"$PATH\\\"\",\"yield_time_ms\":100}",
+                   sink, &error),
+               CAI_OK);
+    for (i = 0; i < 5 && strstr(writer.buffer, "\"completed\":true") == NULL;
+         i++) {
+      expect_int(state, "terminal_path_finish",
+                 cai_tool_registry_run(
+                     registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                     "{\"session_id\":\"terminal-1\",\"yield_time_ms\":100}",
+                     sink, &error),
+                 CAI_OK);
+    }
+    expect_substr(state, "terminal_path_completed", writer.buffer,
+                  "\"completed\":true");
+    expect_substr(
+        state, "terminal_path_value", writer.buffer,
+        mode == 0 ? search_path
+        : mode == 1
+            ? "<>"
+            : "</usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin>");
+    if (mode == 0)
+      expect_substr(state, "terminal_path_tool_found", writer.buffer,
+                    "PATH_TOOL_OK");
+    cai_tool_registry_destroy(registry);
+    cai_sink_close(sink);
+    cai_error_cleanup(&error);
+  }
+  if (saved != NULL) {
+    setenv("PATH", saved, 1);
+    free(saved);
+  } else
+    unsetenv("PATH");
+  unlink(tool);
+  expect_int(state, "terminal_path_cleanup", rmdir(root), 0L);
+}
+
 static void test_terminal_tools(test_state *state) {
   char dir_template[] =
       CAI_TEST_BINARY_DIR "/test-tmp/cai-terminal-test-XXXXXX";
@@ -37381,6 +37639,7 @@ static void test_terminal_tools(test_state *state) {
   struct timespec terminate_grace_finished;
   struct timespec terminate_grace_started;
 
+  test_terminal_path(state);
   if (mkdtemp(dir_template) == NULL) {
     test_fail(state, "terminal_mkdtemp", "mkdtemp failed");
     return;

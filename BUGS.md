@@ -5,6 +5,40 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-024: apply_patch rejects delete/add replacements
+
+- **Status:** fixed.
+- **Evidence:** the rejected call deleted `internal/toll/calculator.go`, added
+  unrelated files, then added its replacement at the original path. A private
+  copy of the session store confirmed the submitted patch; the live store and
+  workspace were not modified during diagnosis.
+- **Resolution:** coalesce delete-then-add into one update before preflight,
+  preserving permissions, size limits, path validation and atomic publication.
+  Other repeated operations remain rejected. The duplicate-file-section
+  diagnostic now names the path and suggests merging hunks.
+- **Related defect:** rollback retained the temporary file's pre-exchange
+  ctime, causing restoration to fail after a later write error. Retain the
+  verified post-publication stat instead, while preserving concurrent-file
+  checks.
+- **Verification:** direct and spooled APIs cover non-adjacent replacements,
+  normalized aliases, empty/no-final-newline sources, duplicate rejection,
+  missing sources, size limits, permissions and later partial-write rollback
+  for both replacement and ordinary update. A real CLI preview includes a
+  replacement followed by a neighboring update.
+
+## BUG-025: Managed terminal drops installed toolchains from PATH
+
+- **Status:** fixed.
+- **Cause:** the terminal's minimal environment replaced the inherited `PATH`
+  with system directories, excluding `/usr/local/go/bin` and user toolchains.
+- **Resolution:** capture an owned `PATH` at tool registration. Preserve an
+  explicit empty value; use the system default only when unset. Other host
+  environment variables, including credentials, remain filtered.
+- **Verification:** native tests execute a fixture tool through a custom path,
+  change the parent environment after registration, and check empty/unset
+  paths. Existing credential-filtering checks remain active. The CLI executes
+  a fixture executable outside the standard search directories.
+
 ## BUG-023: Model-created active goals stop after the first turn
 
 - **Status:** fixed.

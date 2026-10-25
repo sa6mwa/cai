@@ -76,6 +76,12 @@ those APIs, review lifecycle calls, and runtime Markdown export.
 `libcai_app` supplies the terminal application, including its slash commands;
 the standalone `cai` executable is its embedding example.
 
+Managed terminal commands preserve the executable `PATH` inherited when their
+tools are registered, so toolchains installed outside the system directories
+remain available. An unset `PATH` uses the system default; an explicitly empty
+value stays empty. Other environment filtering remains in effect: `HOME` is
+the workspace, and host credentials are not inherited.
+
 At an idle runtime boundary, hosts can select the next-turn model with
 `cai_agent_runtime_set_model` (or Lua `runtime:set_model`). For ChatGPT
 subscription clients, `cai_client_list_models` retrieves Codex's authoritative
@@ -879,6 +885,12 @@ blocks; outer context is trimmed without an ellipsis. Full mode retains all
 supplied context. `NO_COLOR` disables these colors. Non-interactive invocations
 log the full patch preview and tool activity as pslog records on stderr,
 regardless of the preview setting; stdout still contains only the final reply.
+
+A `Delete File` followed by `Add File` for the same path replaces that file
+atomically, including when other file sections separate the two. It preserves
+the original file permissions and participates in whole-patch rollback. Other
+repeated operations on a path are rejected; combine update hunks into one
+`Update File` section or use separate calls.
 
 SDK hosts can use `<cai/display.h>` without softline or libmdf. Create a
 `cai_tool_display` with a borrowed sink and zero-initialized
