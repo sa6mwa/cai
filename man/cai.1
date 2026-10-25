@@ -28,6 +28,32 @@ Use
 to start a new session.
 .SH OPTIONS
 .TP
+.B \-\-temp
+Start a new conversation in cache_dir/temp/chat-XXXXXX/workspace. Private
+conversation storage, key, prompt history, clipboard, exports and managed logs
+live in the sibling private directory and are deleted during normal teardown.
+Reads the normal config.ini or explicit --config without rewriting it. Auth
+and messaging retain their configured stores. After softline closes, asks
+whether to delete workspace files, default No. EOF, errors, host STOP and
+non-interactive runs preserve the workspace unless --yes or --force is given.
+Also [ui] temporary or CAI_TEMP; --no-temp disables configured temporary mode.
+Supplied loggers and explicit LOG_OUTPUT retain their configured sinks.
+.TP
+.BR \-\-yes , " " \-\-force
+Equivalent explicit approval flags. Delete a temporary workspace without
+asking, including on failure; with --install-skill replace an existing package.
+Requires --temp or --install-skill. Replaces the former --replace spelling.
+.TP
+.BR \-\-sessions-store " NAME, " \-\-auth-store " NAME, " \-\-messaging-store " NAME"
+Select named stores independently (default default). INI keys are
+[storage] sessions_store, auth_store and messaging_store; environment aliases
+are CAI_SESSIONS_STORE, CAI_AUTH_STORE and CAI_MESSAGING_STORE.
+[store.NAME] defines endpoint, key_file for Pouch, and optional HTTP client_pem.
+--lockd and --pouch-key-file override store.default. Different roots select
+their own keys; existing encrypted roots require the original key. Store
+handles live for the app run and nested contexts. Equal physical pouch roots
+share one process client; conflicting connection settings are rejected.
+.TP
 .B \-\-list-themes
 List softline themes and their default pairings, then all libmdf themes.
 Exits before configuration, authentication or storage startup.
@@ -468,11 +494,8 @@ Defaults to $XDG_CONFIG_HOME/cai/skills or ~/.config/cai/skills; --config-dir
 selects DIR/skills and --skills-dir overrides that root. The package is named
 from YAML metadata. Preserves executable files and rejects links/devices/FIFOs.
 No authentication, model requests or artifact execution occurs.
-.TP
-.B \-\-replace
-With --install-skill, explicitly replace an existing skill package. Publication
-is atomic; copy/validation failure preserves the previous package. Without this
-flag, an existing package is an error.
+An existing package requires --force or --yes. Publication is atomic;
+copy/validation failure preserves the previous package.
 .TP
 .BI \-\-identity " TEXT"
 Set the visible agent identity.

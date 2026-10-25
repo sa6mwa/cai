@@ -6,6 +6,8 @@
 #include <pthread.h>
 
 typedef struct cai_cli_log {
+  struct cai_cli_log *next_owned;
+  size_t references;
   pslog_logger *root;
   pslog_logger *logger;
   pthread_mutex_t lock;
@@ -25,6 +27,13 @@ typedef struct cai_cli_log {
   size_t count;
   unsigned long dropped;
 } cai_cli_log;
+
+/* Heap-owned sink state can outlive its opening app when a shared SDK client
+ * still borrows it. Explicit host loggers and their outputs remain borrowed. */
+int cai_cli_log_new(cai_cli_log **out, pslog_level level, int interactive,
+                    pslog_logger *logger, cai_error *error);
+cai_cli_log *cai_cli_log_retain(pslog_logger *logger);
+int cai_cli_log_release(cai_cli_log *log);
 
 /* Create and verify cai's private XDG cache root. */
 int cai_cli_cache_directory(char *directory, size_t capacity, cai_error *error);

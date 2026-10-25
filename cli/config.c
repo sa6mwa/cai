@@ -42,7 +42,7 @@ static const cli_field fields[] = {
       "Pasted images; empty uses cache_dir/clipboard."),
     S("paths", "log_dir", log_dir, CAI_CONFIG_PATH,
       "Interactive logs; empty uses cache_dir."),
-    S("paths", "pouch_key_file", pouch_key_file, CAI_CONFIG_PATH,
+    S("store.default", "key_file", pouch_key_file, CAI_CONFIG_PATH,
       "Encryption key; empty uses state_dir/pouch.key."),
     S("storage", "namespace_prefix", namespace_prefix, 0U,
       "Namespace prefix; empty uses program_name."),
@@ -105,12 +105,22 @@ static const cli_field fields[] = {
     S("paths", "export_dir", export_dir, CAI_CONFIG_PATH,
       "Export root; empty uses "
       "${XDG_DATA_HOME:-$HOME/.local/share}/program_name/exports."),
-    S("paths", "lockd_client_pem", lockd_client_pem, CAI_CONFIG_PATH,
+    S("store.default", "client_pem", lockd_client_pem, CAI_CONFIG_PATH,
       "Remote lockd mTLS client PEM; empty supplies no client certificate."),
-    S("storage", "lockd", lockd, 0U,
+    S("store.default", "endpoint", lockd, 0U,
       "Empty opens a pouch under "
       "state_dir/pouch; "
       "explicit values are lockd endpoint URLs."),
+    S("storage", "sessions_store", sessions_store, 0U,
+      "Named store for conversations. --temp uses its own private store."),
+    S("storage", "auth_store", auth_store, 0U,
+      "Named authentication store; retained in --temp runs."),
+    S("storage", "messaging_store", messaging_store, 0U,
+      "Named messaging store; retained in --temp runs."),
+    B("ui", "temporary", temporary,
+      "Start in a unique cache workspace; histories are deleted on exit. "
+      "Workspace deletion asks [y/N]. --yes/--force also deletes the "
+      "workspace."),
     B("ui", "shell_context", shell_context,
       "Share sanitized !COMMAND output; /shell and !sh always stay local."),
     S("ui", "theme", theme, 0U,
@@ -197,7 +207,9 @@ static int default_string(cai_config *cfg, const char *section, const char *key,
   if (document)
     return cai_config_set_default(cfg, section, key, value, error);
   rc = cfg->set(cfg, section, key, value, error);
-  if (rc == CAI_OK && strcmp(section, "paths") == 0)
+  if (rc == CAI_OK &&
+      (strcmp(section, "paths") == 0 ||
+       (strcmp(section, "store.default") == 0 && strcmp(key, "key_file") == 0)))
     rc = cfg->resolve_path(cfg, section, key, &resolved, error);
   else
     resolved = cfg->get(cfg, section, key);
@@ -297,7 +309,9 @@ static int application_defaults(cai_config *cfg, cai_cli_options *o,
         return fail(error, NULL, "application path too long");
       v = path;
     }
-    rc = default_string(cfg, "paths", keys[i], v, children[i], document, error);
+    rc = default_string(cfg, i == 3U ? "store.default" : "paths",
+                        i == 3U ? "key_file" : keys[i], v, children[i],
+                        document, error);
     if (rc != CAI_OK)
       return rc;
   }
@@ -367,6 +381,18 @@ static int application_defaults(cai_config *cfg, cai_cli_options *o,
   return CAI_OK;
 }
 int cai_cli_app_schema(cai_config **out, cai_error *error) {
+  static const cai_config_field stores[] = {
+      {"store.*", "endpoint", CAI_CONFIG_STRING, "",
+       "pouch:// root or HTTP(S) lockd endpoint. Each selected store opens "
+       "once per app context; equal pouch roots share one process client.",
+       NULL, 0U},
+      {"store.*", "key_file", CAI_CONFIG_STRING, "",
+       "Encryption key for this pouch root. Required for named pouch stores; "
+       "a new root generates the key, an existing root requires its key.",
+       NULL, CAI_CONFIG_PATH},
+      {"store.*", "client_pem", CAI_CONFIG_STRING, "",
+       "Optional mTLS client PEM for this HTTP(S) endpoint.", NULL,
+       CAI_CONFIG_PATH}};
   cai_config_field extension[sizeof(fields) / sizeof(fields[0])];
   cai_config *sdk = NULL;
   cai_config_field *selected;
@@ -392,7 +418,8 @@ int cai_cli_app_schema(cai_config **out, cai_error *error) {
                        &sdk, error);
   if (rc != CAI_OK)
     return -1;
-  selected = calloc(sdk->field_count(sdk), sizeof(*selected));
+  selected = calloc(sdk->field_count(sdk) + sizeof(stores) / sizeof(stores[0]),
+                    sizeof(*selected));
   if (selected == NULL) {
     cai_config_close(sdk);
     return fail(error, NULL,
@@ -420,6 +447,8 @@ int cai_cli_app_schema(cai_config **out, cai_error *error) {
     }
     count++;
   }
+  for (i = 0U; i < sizeof(stores) / sizeof(stores[0]); i++)
+    selected[count++] = stores[i];
   rc = cai_config_open_schema(selected, count, out, error);
   free(selected);
   cai_config_close(sdk);
@@ -541,13 +570,17 @@ static int tool_environment(cai_config *cfg, const char *prefix,
         {"HISTORY_DIR", "paths", "history_dir"},
         {"CLIPBOARD_DIR", "paths", "clipboard_dir"},
         {"LOG_DIR", "paths", "log_dir"},
-        {"POUCH_KEY_FILE", "paths", "pouch_key_file"},
+        {"POUCH_KEY_FILE", "store.default", "key_file"},
         {"EXPORT_DIR", "paths", "export_dir"},
         {"AGENTS_MD", "paths", "agents_md"},
         {"SKILLS_DIR", "paths", "skills_dir"},
         {"MODEL_METADATA", "paths", "model_metadata"},
         {"AUTH_JSON", "paths", "auth_json"},
-        {"LOCKD", "storage", "lockd"},
+        {"LOCKD", "store.default", "endpoint"},
+        {"SESSIONS_STORE", "storage", "sessions_store"},
+        {"AUTH_STORE", "storage", "auth_store"},
+        {"MESSAGING_STORE", "storage", "messaging_store"},
+        {"TEMP", "ui", "temporary"},
         {"NAMESPACE_PREFIX", "storage", "namespace_prefix"},
         {"QUEUE_PREFIX", "messaging", "queue_prefix"},
         {"TODO_LAYOUT", "ui", "todo_layout"}};

@@ -9,6 +9,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+unsigned int cai_test_storage_open_count(void);
+
 typedef struct bytes {
   char text[131072];
   size_t used, position;
@@ -143,9 +145,14 @@ int main(int argc, char **argv) {
     cai_error_cleanup(&error);
     return 0;
   }
-  assert(cai_app_kanban_open(&config, &a, &error) == CAI_OK);
+  if (cai_app_kanban_open(&config, &a, &error) != CAI_OK) {
+    fprintf(stderr, "open shared kanban: %s (%s)\n", error.message,
+            error.detail != NULL ? error.detail : "");
+    abort();
+  }
   config.default_board = "other";
   assert(cai_app_kanban_open(&config, &b, &error) == CAI_OK);
+  assert(cai_test_storage_open_count() == 1U);
   assert(request(a,
                  "{\"operation\":\"add_item\",\"title\":\"FIRST SHARED CARD\"}",
                  &out, &error) == CAI_OK);
@@ -222,6 +229,10 @@ int main(int argc, char **argv) {
   assert(request(a, "{broken", &out, &error) != CAI_OK);
   reset(&error);
   a->close(a);
+  /* The first store and its app-owned logger may close before another view
+   * finishes using the shared SDK client. */
+  assert(request(b, "{\"operation\":\"snapshot_board\"}", &out, &error) ==
+         CAI_OK);
   b->close(b);
   /* Standalone core receiver, bounded results, shared registry ownership. */
   memset(&core, 0, sizeof(core));

@@ -93,8 +93,8 @@ int main(int argc, char **argv) {
   logging.output.owned = 1;
   logger = pslog_new(&logging);
   assert(logger != NULL);
-  settings[0].section = "storage";
-  settings[0].key = "lockd";
+  settings[0].section = "store.default";
+  settings[0].key = "endpoint";
   settings[0].value = pouch;
   settings[1].section = "env";
   settings[1].key = "CAI_APP_NEW_VARIABLE";

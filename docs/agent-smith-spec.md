@@ -664,7 +664,7 @@ cpktmisc's `CpktYaml` package;
 catalog descriptions are normalized to one line. Discovery stops at a package
 boundary so nested artifact examples do not add skills to developer instructions.
 The CAI `--install-skill DIR` utility copies a validated package without executing
-artifacts; `--replace` authorizes atomic replacement of an existing package.
+artifacts; `--force` authorizes atomic replacement of an existing package.
 A selected package/resource that later cannot be read is
 a normal actionable tool error. The catalog and `read_skill` capability apply
 to ordinary, custom, and isolated review presets when their corresponding tool

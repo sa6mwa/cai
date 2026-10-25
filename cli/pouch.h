@@ -26,6 +26,7 @@ typedef struct cai_cli_session {
 
 typedef struct cai_cli_pouch {
   lc_client *sessions;
+  struct cai_cli_pouch_client *connection;
   char program_name[33], queue_prefix[33];
   char sessions_namespace[129], auth_namespace[129], scopes_namespace[129];
   char todo_namespace[129], messages_namespace[129];

@@ -11,7 +11,11 @@ dependency.
 
 For a standalone send, use `cai --queue NAME --message TEXT` or
 `cai -q NAME -M TEXT`. (`-m` continues to select a model.) This utility uses
-the configured `--lockd` endpoint, without provider authentication or inference.
+the selected `storage.messaging_store` (`--messaging-store` or
+`CAI_MESSAGING_STORE`), without provider authentication or inference. The default
+is the `default` named store configured by `--lockd`; it can instead use a
+separate `[store.NAME] endpoint` and `key_file`. Temporary conversations retain
+this shared messaging selection while isolating their conversation history.
 It creates no conversation, mailbox claim or receipt listener. The sender is
 `cai.cli.<unique-id>`; incoming text is labelled as a CLI message.
 Success means liblockdc accepted the enqueue: stdout contains JSON with

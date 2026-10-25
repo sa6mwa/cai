@@ -2,11 +2,14 @@
 #include "../cli/config.h"
 #include "../cli/identity.h"
 #include "../cli/pouch.h"
+#include "../cli/stores.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+unsigned int cai_test_storage_open_count(void);
 
 static void ends(const char *value, const char *suffix) {
   assert(value != NULL && strlen(value) >= strlen(suffix));
@@ -81,6 +84,7 @@ int main(void) {
   ends(o.pouch_key_file, "/state/smith/pouch.key");
   ends(cfg->get(cfg, "chrome", "socket_directory"), "/cache/smith/chrome");
   assert(cai_cli_pouch_open_options(&first, &o, NULL, &error) == CAI_OK);
+  assert(cai_test_storage_open_count() == 1U);
   input = source(&error, &position);
   assert(first.credentials.replace(first.credentials.context, "probe", input,
                                    &error) == CAI_OK);
@@ -99,7 +103,13 @@ int main(void) {
   configure(&app, &other, &second, &error);
   other.lockd = endpoint;
   other.pouch_key_file = key;
-  assert(cai_cli_pouch_open_options(&isolated, &other, NULL, &error) == CAI_OK);
+  if (cai_cli_pouch_open_options(&isolated, &other, NULL, &error) != CAI_OK) {
+    fprintf(stderr, "shared root open: %s (%s)\n", error.message,
+            error.detail != NULL ? error.detail : "");
+    abort();
+  }
+  assert(first.sessions == isolated.sessions &&
+         cai_test_storage_open_count() == 1U);
   assert(isolated.credentials.load(isolated.credentials.context, "probe",
                                    &loaded, &error) == CAI_OK &&
          loaded == NULL);
@@ -107,10 +117,26 @@ int main(void) {
                                     &loaded, &sequence, &error) == CAI_OK &&
          loaded == NULL);
   cai_cli_pouch_close(&isolated);
+  /* Lexical aliases of the same physical directory must not open another
+   * SDK client, and an absent key cannot silently generate a replacement. */
+  snprintf(endpoint, sizeof(endpoint), "pouch://%s/./pouch",
+           first.state_directory);
+  assert(cai_cli_pouch_open_options(&isolated, &other, NULL, &error) == CAI_OK);
+  assert(first.sessions == isolated.sessions &&
+         cai_test_storage_open_count() == 1U);
+  cai_cli_pouch_close(&isolated);
+  snprintf(path, sizeof(path), "%s/missing.key", other.state_dir);
+  other.pouch_key_file = path;
+  assert(cai_cli_pouch_open_options(&isolated, &other, NULL, &error) != CAI_OK);
+  assert(access(path, F_OK) != 0 && cai_test_storage_open_count() == 1U);
+  cai_error_cleanup(&error);
+  other.pouch_key_file = key;
   other.auth_namespace = o.auth_namespace;
   other.sessions_namespace = o.sessions_namespace;
   other.scopes_namespace = o.scopes_namespace;
   assert(cai_cli_pouch_open_options(&shared, &other, NULL, &error) == CAI_OK);
+  assert(first.sessions == shared.sessions &&
+         cai_test_storage_open_count() == 1U);
   assert(shared.credentials.load(shared.credentials.context, "probe", &loaded,
                                  &error) == CAI_OK &&
          loaded != NULL);
@@ -121,7 +147,17 @@ int main(void) {
          loaded != NULL);
   assert(strcmp(id, "first") == 0);
   cai_source_close(loaded);
+  cai_cli_pouch_close(&first);
+  /* The first context exiting cannot close the remaining borrower's client. */
+  assert(shared.credentials.load(shared.credentials.context, "probe", &loaded,
+                                 &error) == CAI_OK &&
+         loaded != NULL);
+  cai_source_close(loaded);
   cai_cli_pouch_close(&shared);
+  assert(cai_test_storage_open_count() == 1U);
+  /* Re-entering after the last context closes explicitly opens a new client. */
+  assert(cai_cli_pouch_open_options(&first, &o, NULL, &error) == CAI_OK);
+  assert(cai_test_storage_open_count() == 2U);
   cai_cli_pouch_close(&first);
   cai_config_close(second);
   cai_config_close(cfg);
@@ -136,6 +172,9 @@ int main(void) {
   app.queue_prefix = "team";
   assert(setenv("BOT_MODEL", "bot-model", 1) == 0);
   assert(setenv("BOT_CACHE_DIR", getenv("XDG_CACHE_HOME"), 1) == 0);
+  assert(setenv("BOT_SESSIONS_STORE", "team", 1) == 0);
+  assert(setenv("BOT_AUTH_STORE", "team", 1) == 0);
+  assert(setenv("BOT_MESSAGING_STORE", "team", 1) == 0);
   settings[0].section = "storage";
   settings[0].key = "auth_namespace";
   settings[0].value = "shared.auth";
@@ -148,12 +187,28 @@ int main(void) {
   assert(access(path, F_OK) == 0 && strcmp(o.state_dir, state) == 0);
   assert(strcmp(o.model, "bot-model") == 0 &&
          strcmp(o.queue_prefix, "team") == 0);
+  assert(strcmp(o.sessions_store, "team") == 0 &&
+         strcmp(o.auth_store, "team") == 0 &&
+         strcmp(o.messaging_store, "team") == 0);
   assert(strcmp(o.sessions_namespace, "vectis.smith.sessions") == 0);
   assert(strcmp(o.auth_namespace, "shared.auth") == 0);
   assert(strcmp(o.log_dir, state) == 0 &&
          strcmp(o.cache_dir, getenv("XDG_CACHE_HOME")) == 0);
   ends(o.clipboard_dir, "/cache/clipboard");
   ends(o.history_dir, "/state/other/history");
+  assert(cfg->set(cfg, "store.team", "endpoint", endpoint, &error) == CAI_OK);
+  assert(cfg->set(cfg, "store.team", "key_file", key, &error) == CAI_OK);
+  assert(cai_cli_stores_resolve(cfg, &error) == CAI_OK);
+  assert(cai_cli_store_options(cfg, &o, "team", &other, &error) == CAI_OK);
+  assert(strcmp(other.lockd, endpoint) == 0 &&
+         strcmp(other.pouch_key_file, key) == 0);
+  assert(cai_cli_store_options(cfg, &o, "missing", &other, &error) ==
+         CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  assert(cfg->set(cfg, "store.team", "key_file", "", &error) == CAI_OK);
+  assert(cai_cli_store_options(cfg, &o, "team", &other, &error) ==
+         CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
   cai_config_close(cfg);
   /* Reject unusable identities before creating any configuration or store. */
   app.program_name = "../outside";

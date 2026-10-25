@@ -50,6 +50,8 @@ void cai_cli_options_init(cai_cli_options *options) {
   options->reasoning_summary = "concise";
   options->todo_layout = "board";
   options->theme = "default";
+  options->sessions_store = options->auth_store = options->messaging_store =
+      "default";
   options->image_generation = 1;
   options->terminal = 1;
   options->shell_context = 1;
@@ -131,8 +133,16 @@ int cai_cli_read_options(int argc, char *const *argv,
       options->no_config = 1;
       continue;
     }
-    if (strcmp(flag, "--replace") == 0) {
-      options->replace_skill = 1;
+    if (strcmp(flag, "--yes") == 0 || strcmp(flag, "--force") == 0) {
+      options->force = 1;
+      continue;
+    }
+    if (strcmp(flag, "--temp") == 0) {
+      options->temporary = 1;
+      continue;
+    }
+    if (strcmp(flag, "--no-temp") == 0) {
+      options->temporary = 0;
       continue;
     }
     if (strcmp(flag, "--chrome") == 0) {
@@ -384,6 +394,12 @@ int cai_cli_read_options(int argc, char *const *argv,
       field = &options->import_file;
     else if (strcmp(flag, "--lockd") == 0)
       field = &options->lockd;
+    else if (strcmp(flag, "--sessions-store") == 0)
+      field = &options->sessions_store;
+    else if (strcmp(flag, "--auth-store") == 0)
+      field = &options->auth_store;
+    else if (strcmp(flag, "--messaging-store") == 0)
+      field = &options->messaging_store;
     else if (strcmp(flag, "--lockd-client-pem") == 0)
       field = &options->lockd_client_pem;
     else if (strcmp(flag, "-g") == 0 || strcmp(flag, "--goal") == 0)
@@ -511,8 +527,19 @@ int cai_cli_read_options(int argc, char *const *argv,
 int cai_cli_validate_options(cai_cli_options *options) {
   static const char *const providers[] = {"chatgpt", "openai", "openrouter",
                                           "berget",  "custom", NULL};
-  if (options->replace_skill && options->install_skill == NULL) {
-    cai_cli_option_error(options, "%s", "--replace requires --install-skill");
+  if (options->force && !options->temporary && options->install_skill == NULL) {
+    cai_cli_option_error(options, "%s",
+                         "--yes/--force requires --temp or --install-skill");
+    return -1;
+  }
+  if (options->temporary &&
+      (options->resume_id != NULL || options->resume_list || options->list ||
+       options->login || options->chrome_setup || options->chrome_remove ||
+       options->export_id != NULL || options->import_file != NULL ||
+       options->install_skill != NULL || options->message != NULL)) {
+    cai_cli_option_error(options, "%s",
+                         "--temp starts a new conversation; it cannot be "
+                         "combined with resume or utility commands");
     return -1;
   }
 
@@ -731,6 +758,9 @@ const char *cai_cli_instruction_at(const cai_cli_options *options,
         instruction || short_value == 'g' || short_value == 't' ||
         strcmp(flag, "--resume") == 0 || strcmp(flag, "--lockd") == 0 ||
         strcmp(flag, "--lockd-client-pem") == 0 ||
+        strcmp(flag, "--sessions-store") == 0 ||
+        strcmp(flag, "--auth-store") == 0 ||
+        strcmp(flag, "--messaging-store") == 0 ||
         strcmp(flag, "--export") == 0 || strcmp(flag, "--export-dir") == 0 ||
         strcmp(flag, "--import") == 0 || strcmp(flag, "--goal") == 0 ||
         strcmp(flag, "--base") == 0 || strcmp(flag, "-o") == 0 ||

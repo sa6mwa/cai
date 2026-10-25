@@ -128,6 +128,11 @@ if(CAI_BUILD_TESTS)
       "$<TARGET_FILE:cai_app_host>" host)
     set_tests_properties(cai_app_themes PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
       ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
+    add_test(NAME cai_app_temp COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_temp_test.sh"
+      "$<TARGET_FILE:cai_app_host>" "$<TARGET_FILE:cai_app_controls_host>" host)
+    set_tests_properties(cai_app_temp PROPERTIES LABELS "cli;local;offline" TIMEOUT 30
+      ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
   endif()
   if(TARGET cai_app_shared)
     add_test(NAME cai_app_exports COMMAND bash

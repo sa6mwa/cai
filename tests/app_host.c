@@ -47,7 +47,7 @@ static int register_host_tools(void *context, cai_agent *agent,
 }
 int main(int argc, char **argv) {
   cai_app_config config;
-  cai_app_setting settings[2];
+  cai_app_setting settings[3];
   cai_app *app = NULL;
   cai_error error;
   pslog_config logging;
@@ -111,6 +111,11 @@ int main(int argc, char **argv) {
     settings[config.setting_count].section = "ui";
     settings[config.setting_count].key = "theme";
     settings[config.setting_count++].value = getenv("CAI_TEST_APP_THEME");
+  }
+  if (getenv("CAI_TEST_APP_TEMPORARY") != NULL) {
+    settings[config.setting_count].section = "ui";
+    settings[config.setting_count].key = "temporary";
+    settings[config.setting_count++].value = getenv("CAI_TEST_APP_TEMPORARY");
   }
   config.settings = settings;
   cai_error_init(&error);

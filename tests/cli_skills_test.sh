@@ -25,14 +25,16 @@ cmp "$source_dir/references/binary.dat" "$installed/references/binary.dat"
 [[ $(stat -c %a "$installed/scripts/run.sh") == 700 ]]
 run --install-skill "$source_dir"; bad
 printf 'changed\n' >>"$source_dir/SKILL.md"
-run --install-skill "$source_dir" --replace; ok
-cmp "$source_dir/SKILL.md" "$installed/SKILL.md"
+for option in --force --yes; do
+  run --install-skill "$source_dir" "$option"; ok
+  cmp "$source_dir/SKILL.md" "$installed/SKILL.md"
+done
 ln -s /etc/passwd "$source_dir/unsafe"
-run --install-skill "$source_dir" --replace; bad
+run --install-skill "$source_dir" --force; bad
 rm "$source_dir/unsafe"
 cmp "$source_dir/SKILL.md" "$installed/SKILL.md"
 mkfifo "$source_dir/unsafe"
-run --install-skill "$source_dir" --replace; bad
+run --install-skill "$source_dir" --force; bad
 rm "$source_dir/unsafe"
 run --install-skill "$source_dir" --skills-dir "$source_dir/nested"; bad; [[ ! -e "$source_dir/nested" ]]
 mkdir -p "$root/physical/child"
@@ -43,7 +45,7 @@ ln -s "$source_dir" "$root/into-source"
 run --install-skill "$source_dir" --skills-dir "$root/into-source/new-root"; bad
 [[ ! -e "$source_dir/new-root" ]]
 ln -s "$root/physical/skills" "$root/final-link"
-run --install-skill "$source_dir" --skills-dir "$root/final-link" --replace; bad
+run --install-skill "$source_dir" --skills-dir "$root/final-link" --force; bad
 run --install-skill "$source_dir" --config-dir "$root/alternate-config"; ok
 [[ -f "$root/alternate-config/skills/installed-example/SKILL.md" ]]
 mkdir -p "$(dirname "$installed")/invalid-package"

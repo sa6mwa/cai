@@ -89,9 +89,14 @@ static int test_event_logging(void) {
   config.output.close = NULL;
   config.output.isatty = NULL;
   config.output.owned = 0;
-  state.log.logger = pslog_new(&config);
-  if (state.log.logger == NULL)
+  state.log = calloc(1U, sizeof(*state.log));
+  if (state.log == NULL)
     return 1;
+  state.log->logger = pslog_new(&config);
+  if (state.log->logger == NULL) {
+    free(state.log);
+    return 1;
+  }
   cai_error_init(&error);
   event.type = CAI_AGENT_EVENT_RUN_STARTED;
   event.data = "normal prompt";
@@ -141,7 +146,8 @@ static int test_event_logging(void) {
                          : 0U;
   cai_source_close(source);
   cai_cli_response_close(&state.final_response);
-  state.log.logger->destroy(state.log.logger);
+  state.log->logger->destroy(state.log->logger);
+  free(state.log);
   cai_error_cleanup(&error);
   if (rc != CAI_OK || count != strlen("parent answer continues") ||
       memcmp(bytes, "parent answer continues", count) != 0 ||

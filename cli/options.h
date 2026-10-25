@@ -12,6 +12,7 @@ typedef struct cai_cli_options {
   const char *namespace_prefix, *queue_prefix;
   const char *sessions_namespace, *auth_namespace, *scopes_namespace;
   const char *todo_namespace, *messages_namespace;
+  const char *sessions_store, *auth_store, *messaging_store;
   const char *state_dir, *cache_dir, *data_dir, *history_dir;
   const char *clipboard_dir, *log_dir, *pouch_key_file;
   int help, version;
@@ -64,7 +65,7 @@ typedef struct cai_cli_options {
   const char *config_dir;
   const char *skills_dir;
   const char *install_skill;
-  int replace_skill;
+  int force, temporary;
   const char *identity;
   const char *developer_instructions;
   const char *goal;

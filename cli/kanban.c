@@ -6,13 +6,13 @@
 
 typedef struct app_kanban_store {
   cai_cli_pouch pouch;
-  cai_cli_log log;
+  cai_cli_log *log;
 } app_kanban_store;
 
 static void kanban_store_close(void *context) {
   app_kanban_store *store = context;
   cai_cli_pouch_close(&store->pouch);
-  cai_cli_log_close(&store->log);
+  cai_cli_log_release(store->log);
   free(store);
 }
 
@@ -41,9 +41,8 @@ int cai_app_kanban_open(const cai_app_kanban_config *config, cai_todo **out,
   store = calloc(1U, sizeof(*store));
   if (store == NULL)
     return cai_cli_error(error, CAI_ERR_NOMEM, "allocate kanban store");
-  store->log.fd = store->log.wakeup_fd = -1;
-  rc = cai_cli_log_open_with_logger(&store->log, PSLOG_LEVEL_WARN, 0,
-                                    config->logger, error);
+
+  rc = cai_cli_log_new(&store->log, PSLOG_LEVEL_WARN, 0, config->logger, error);
   memset(&options, 0, sizeof(options));
   options.program_name = config->program_name;
   options.namespace_prefix = config->namespace_prefix;
@@ -53,7 +52,7 @@ int cai_app_kanban_open(const cai_app_kanban_config *config, cai_todo **out,
   options.lockd = config->lockd;
   options.lockd_client_pem = config->lockd_client_pem;
   if (rc == CAI_OK)
-    rc = cai_cli_pouch_open_options(&store->pouch, &options, store->log.logger,
+    rc = cai_cli_pouch_open_options(&store->pouch, &options, store->log->logger,
                                     error);
   if (rc == CAI_OK) {
     memset(&todo, 0, sizeof(todo));
@@ -63,7 +62,7 @@ int cai_app_kanban_open(const cai_app_kanban_config *config, cai_todo **out,
     todo.store_context = store;
     todo.default_board = config->default_board;
     todo.max_result_items = config->max_result_items;
-    todo.logger = store->log.logger;
+    todo.logger = store->log->logger;
     rc = cai_todo_open(&todo, out, error);
   }
   if (rc != CAI_OK)

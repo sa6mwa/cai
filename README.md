@@ -443,6 +443,57 @@ Markdown styling regardless of the selected theme. The gray reasoning message
 remains plain text styled by softline, and pslog retains its separate `LOG_`
 configuration. Host-supplied raw banners are printed verbatim.
 
+`cai --temp` starts a new conversation in a unique
+`cache_dir/temp/chat-XXXXXX/workspace` directory. Its sibling `private/`
+contains the encrypted conversation pouch and key, prompt history, clipboard,
+exports, and app-owned logs. The normal global or explicit `--config` file is
+loaded unchanged; path isolation is applied only in memory. On normal teardown,
+workers and softline close first, and private history/state is deleted. The
+plain terminal question `Remove temporary workspace …? [y/N]` controls whether
+the workspace files are also deleted. No, empty input, EOF, interruption, host
+STOP, and non-interactive runs preserve the workspace and report its location.
+`--yes` / `--force` are equivalent and delete it without asking, including on
+failure. Crashes can leave the cache directory behind. `-T` still selects review
+output type. `[ui] temporary` / `CAI_TEMP` also select this mode; `--no-temp`
+overrides them. A supplied logger or explicit `LOG_OUTPUT` keeps its own sink.
+
+Named stores separate conversation, authentication, and messaging backends:
+
+```ini
+[store.default]
+## Empty endpoint derives state_dir/pouch; key_file defaults to state_dir/pouch.key.
+endpoint = ""
+
+[store.team]
+endpoint = "pouch:///srv/agents/pouch"
+key_file = "/srv/agents/pouch.key"
+
+[storage]
+sessions_store = default
+auth_store = default
+messaging_store = team
+```
+
+All role selections default to `default`. The matching flags are
+`--sessions-store`, `--auth-store`, and `--messaging-store`; environment aliases
+are `CAI_SESSIONS_STORE`, `CAI_AUTH_STORE`, and `CAI_MESSAGING_STORE`.
+`--lockd` / `CAI_LOCKD` and `--pouch-key-file` / `CAI_POUCH_KEY_FILE` override
+the default store. Each named pouch store requires its own explicit `key_file`;
+new roots generate it, while existing roots require their existing key.
+HTTP(S) stores accept `client_pem` and do not use a local pouch key.
+INI endpoint/key/TLS settings live under `store.NAME` (`endpoint`, `key_file`,
+`client_pem`), replacing `storage.lockd`, `paths.pouch_key_file`, and
+`paths.lockd_client_pem`. Existing configuration files are never rewritten.
+
+Store handles remain open for the app run, including turns, `/new`, `/resume`,
+messaging toggles, and nested runtime contexts. Pouch roots are identified by
+their filesystem identity: aliases share one process client, references keep
+it alive, and the final owning context closes it. Conflicting keys or endpoint
+options for the same open root are rejected. Reconnection remains liblockdc's
+responsibility. `--temp` substitutes only the conversation store; configured
+auth and messaging stores remain available, including communication with normal
+runs. Its kanban data stays with the private conversation store.
+
 Berget uses its OpenAI-compatible Chat Completions endpoint. The CLI streams
 text, image URLs, and function tools, including `apply_patch` and MCP tools,
 through libcai's normal agent and session runtime. It resumes conversations
@@ -589,8 +640,8 @@ Its relocatable layout includes `bin/cai`, `share/man/man1/cai.1`, and
 `share/doc/libcai/{README.md,LICENSE}` plus the SDK's model metadata guide.
 Install under `/usr` to place the man page at `/usr/share/man/man1/cai.1`.
 
-The cai binary stores sessions and ChatGPT credentials in one encrypted
-liblockdc Pouch root at `$XDG_STATE_HOME/cai/pouch`, or
+By default, the cai binary stores sessions and ChatGPT credentials in one
+encrypted liblockdc Pouch root at `$XDG_STATE_HOME/cai/pouch`, or
 `~/.local/state/cai/pouch`. Session metadata is indexed in `cai.sessions`;
 checkpoints and journal events are immutable attachments streamed into and
 out of that namespace. Credentials are stored separately in `cai.auth`.
@@ -601,8 +652,8 @@ warning while direct session replay remains available. Indexed queries such
 as `--list` or `/resume` can retry recovery. Index-cache recovery does not
 replace the encryption key or discard conversation history. An unreadable
 index warning alone does not identify the cause of a preceding process crash.
-One lockd client serves all namespaces. A derived `cai.scopes` index records the
-newest published session per directory, so normal auto-resume loads one session
+One lockd client per selected root serves its namespaces. A derived `cai.scopes`
+index records the newest published session per directory, so normal auto-resume loads one session
 without enumerating the directory's conversations. Missing or dirty directory
 indexes are rebuilt from authoritative session metadata. Resume falls back to
 metadata when a writer holds the directory guard, rather than waiting for it.
@@ -762,15 +813,15 @@ task matches the description. Global skill files do not become workspace files.
 
 ```sh
 cai --install-skill ./my-skill
-cai --install-skill ./my-skill --replace
+cai --install-skill ./my-skill --force
 cai --skills-dir ./skills --install-skill ./my-skill
 ```
 
 Installation validates the YAML front matter and copies the complete package,
 including nested/hidden regular files and executable scripts, without running
 them. The installed directory is named from skill metadata. Existing skills
-require explicit `--replace`; publication is atomic and a failed copy preserves
-the previous package. Links, devices and FIFOs are rejected. Examples containing
+require explicit `--force` or `--yes`; publication is atomic and a failed copy
+preserves the previous package. Links, devices and FIFOs are rejected. Examples containing
 their own `SKILL.md` inside a package remain artifacts, not additional catalog
 entries. Skill changes are discovered when the runtime is opened again.
 

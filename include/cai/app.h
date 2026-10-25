@@ -139,9 +139,11 @@ typedef struct cai_app_config {
   int no_config;
   const cai_app_setting *settings;
   size_t setting_count;
-  /** Optional already-initialized, thread-safe logger. Borrowed until close;
-   * CAI neither closes nor reconfigures it and creates no default log files.
-   * Its output must be compatible with terminal ownership during a run. */
+  /** Optional already-initialized, thread-safe logger. Borrowed; it and its
+   * output must outlive the app and other store contexts sharing its SDK
+   * client. CAI neither closes nor reconfigures it and creates no default log
+   * files. Its output must be compatible with terminal ownership during a run.
+   */
   struct pslog_logger *logger;
   /** Optional native tool registration hook, using the same contract as
    * cai_agent_runtime_config.register_agent_tools. Called on the run thread

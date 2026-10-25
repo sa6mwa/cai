@@ -371,10 +371,9 @@ int cai_cli_install_skill(const cai_cli_options *options,
   }
   if (fstatat(parent, name, &st, AT_SYMLINK_NOFOLLOW) == 0) {
     exists = 1;
-    if (!options->replace_skill) {
-      rc = invalid(
-          &error,
-          "skill already exists; use --replace to replace it explicitly");
+    if (!options->force) {
+      rc = invalid(&error,
+                   "skill already exists; use --force or --yes to replace it");
       goto done;
     }
     if (!S_ISDIR(st.st_mode)) {

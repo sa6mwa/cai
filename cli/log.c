@@ -12,6 +12,66 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+static pthread_mutex_t owned_logs_lock = PTHREAD_MUTEX_INITIALIZER;
+static cai_cli_log *owned_logs;
+
+int cai_cli_log_new(cai_cli_log **out, pslog_level level, int interactive,
+                    pslog_logger *logger, cai_error *error) {
+  cai_cli_log *log = calloc(1U, sizeof(*log));
+  int rc;
+  *out = NULL;
+  if (log == NULL)
+    return cai_cli_error(error, CAI_ERR_NOMEM, "allocate logging context");
+  rc = cai_cli_log_open_with_logger(log, level, interactive, logger, error);
+  if (rc != CAI_OK) {
+    cai_cli_log_close(log);
+    free(log);
+    return rc;
+  }
+  pthread_mutex_lock(&owned_logs_lock);
+  log->references = 1U;
+  log->next_owned = owned_logs;
+  owned_logs = log;
+  pthread_mutex_unlock(&owned_logs_lock);
+  *out = log;
+  return CAI_OK;
+}
+cai_cli_log *cai_cli_log_retain(pslog_logger *logger) {
+  cai_cli_log *log;
+  pthread_mutex_lock(&owned_logs_lock);
+  for (log = owned_logs; log != NULL; log = log->next_owned)
+    if (log->logger == logger) {
+      log->references++;
+      break;
+    }
+  pthread_mutex_unlock(&owned_logs_lock);
+  return log;
+}
+int cai_cli_log_release(cai_cli_log *log) {
+  cai_cli_log **link;
+  int final = 0, rc = 0;
+  if (log == NULL)
+    return 0;
+  pthread_mutex_lock(&owned_logs_lock);
+  if (log->initialized)
+    pthread_mutex_lock(&log->lock);
+  rc = log->failed;
+  if (log->initialized)
+    pthread_mutex_unlock(&log->lock);
+  if (--log->references == 0U) {
+    for (link = &owned_logs; *link != log; link = &(*link)->next_owned)
+      ;
+    *link = log->next_owned;
+    final = 1;
+  }
+  pthread_mutex_unlock(&owned_logs_lock);
+  if (final) {
+    rc = cai_cli_log_close(log);
+    free(log);
+  }
+  return rc;
+}
+
 typedef struct notice_record {
   char level[16];
   char message[1024];
@@ -457,7 +517,7 @@ int cai_cli_log_notices(cai_cli_log *log, int (*visit)(void *, const char *),
                         void *context) {
   char text[1200];
   uint64_t signal;
-  if (!log->initialized)
+  if (log == NULL || !log->initialized)
     return 0;
   if (log->wakeup_fd >= 0)
     (void)read(log->wakeup_fd, &signal, sizeof(signal));

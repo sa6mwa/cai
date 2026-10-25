@@ -20,6 +20,8 @@
 #include "shell.h"
 #include "skills.h"
 #include "status.h"
+#include "stores.h"
+#include "temp.h"
 #include "theme.h"
 #include "todo.h"
 #include <cai/chrome.h>
@@ -76,11 +78,14 @@ typedef struct cli_state {
   int host_stopped;
   size_t batch_pending_turns;
   cai_cli_options options;
+  cai_cli_options normal_options;
+  cai_cli_temp temporary;
   cai_cli_theme theme;
   char *normal_reasoning_override, *high_reasoning_override;
   cai_config *configuration;
   cai_agent_session_store store;
   cai_cli_pouch pouch;
+  cai_cli_pouch auth_pouch, messaging_pouch;
   cai_chatgpt_auth *auth;
   cai_chatgpt_auth shared_auth;
   pthread_mutex_t auth_lock;
@@ -105,7 +110,7 @@ typedef struct cli_state {
   mdf *notice_renderer;
   cai_tool_display *tool_display;
   cai_sink *tool_sink;
-  cai_cli_log log;
+  cai_cli_log *log;
   cai_cli_response final_response;
   int batch;
   sl_watch_id_t log_watch_id;
@@ -162,6 +167,10 @@ typedef struct cli_state {
   char message_queue_override[129];
   char clipboard_directory[PATH_MAX];
 } cli_state;
+
+static pslog_logger *cli_logger(const cli_state *state) {
+  return state->log != NULL ? state->log->logger : NULL;
+}
 
 static int cli_advance_automation(cli_state *state, cai_error *error);
 static int cli_messages_process(cli_state *state, cai_error *error);
@@ -238,12 +247,12 @@ static int cli_load_model_metadata(const cai_cli_options *options, char **out,
 static void cli_print_error(cli_state *state, const char *operation,
                             const cai_error *error) {
   cai_app_bridge_error(state->bridge, error);
-  cai_cli_log_error(state->log.logger, operation, error);
+  cai_cli_log_error(cli_logger(state), operation, error);
 }
 
 static void cli_diagnostic(cli_state *state, pslog_level level,
                            const char *text) {
-  cai_cli_log_message(state->log.logger, level, "diagnostic", "diagnostic",
+  cai_cli_log_message(cli_logger(state), level, "diagnostic", "diagnostic",
                       text, strlen(text), NULL, 0U);
 }
 
@@ -659,7 +668,7 @@ static int cli_prompt(cli_state *state, const char *text) {
 static void cli_command_input(cli_state *state, const char *text) {
   pslog_field field =
       pslog_str("prompt_kind", text[0] == '!' ? "shell_command" : "command");
-  cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, "command_input",
+  cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO, "command_input",
                       "user", text, strlen(text), &field, 1U);
   state->pending_command = text;
 }
@@ -936,7 +945,7 @@ static int cli_terminal_shell(cli_state *state, int share, cai_error *error) {
                          "release terminal for interactive shell");
   }
   fields[0] = pslog_str("shell", shell);
-  cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO,
+  cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO,
                       "terminal_shell_started", "user", "Interactive shell",
                       strlen("Interactive shell"), fields, 1U);
   cai_error_init(&shell_error);
@@ -949,7 +958,7 @@ static int cli_terminal_shell(cli_state *state, int share, cai_error *error) {
   fields[1] =
       pslog_i64("exit_code", WIFEXITED(status) ? WEXITSTATUS(status) : -1);
   fields[2] = pslog_i64("signal", WIFSIGNALED(status) ? WTERMSIG(status) : 0);
-  cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO,
+  cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO,
                       "terminal_shell_completed", "user", "Interactive shell",
                       strlen("Interactive shell"), fields, 3U);
   if (sl_output_stream_begin(state->sl) != SL_OK || cli_geometry(state) != 0) {
@@ -1109,14 +1118,14 @@ static void cli_log_event(cli_state *state,
   }
   text = event->data != NULL ? event->data : name;
   length = event->data != NULL ? event->data_length : strlen(name);
-  cai_cli_log_message(state->log.logger, level, name, role, text, length,
+  cai_cli_log_message(cli_logger(state), level, name, role, text, length,
                       fields, count);
   if (event->subagent_instruction != NULL) {
     if (kind != NULL)
       fields[2] = pslog_str("prompt_kind", "delegated");
     else
       fields[count++] = pslog_str("prompt_kind", "delegated");
-    cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO,
+    cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO,
                         "subagent_instruction", "user",
                         event->subagent_instruction,
                         strlen(event->subagent_instruction), fields, count);
@@ -1334,8 +1343,8 @@ static int cli_log_wakeup(sl_t *sl, const sl_watch_event_t *event,
   cli_state *state = (cli_state *)context;
   (void)sl;
   (void)event;
-  return cai_cli_log_notices(&state->log, cli_notice, state) == 0 ? SL_OK
-                                                                  : SL_ERROR_IO;
+  return cai_cli_log_notices(state->log, cli_notice, state) == 0 ? SL_OK
+                                                                 : SL_ERROR_IO;
 }
 
 static int cli_sync_status(cli_state *state, cai_error *error) {
@@ -1576,7 +1585,7 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
     pslog_field fields[2];
     fields[0] = pslog_bool("replay", 1);
     fields[1] = pslog_str("prompt_kind", "shell_output");
-    cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO,
+    cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO,
                         "user_shell_output_tail", "user", event->data,
                         strlen(event->data), fields, 2U);
     return state->batch ? CAI_OK
@@ -1618,7 +1627,7 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
     }
     fields[0] = pslog_bool("replay", 1);
     fields[1] = pslog_str("prompt_kind", "shell_output");
-    cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO,
+    cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO,
                         "user_shell_output", "user", bytes, n / 2U, fields, 2U);
     return state->batch ? CAI_OK
                         : cai_cli_shell_plain(&state->shell, bytes, n / 2U, 0,
@@ -1648,7 +1657,7 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
         : strcmp(event->type, "steering_queued") == 0 ? "steering"
         : strcmp(event->type, "turn_queued") == 0     ? "queued"
                                                       : "normal");
-    cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, event->type,
+    cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO, event->type,
                         assistant ? "assistant" : "user", event->data,
                         strlen(event->data), fields, 2U);
   }
@@ -1674,7 +1683,7 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
 
 static int cli_replay_begin(void *context, const char *id, cai_error *error) {
   cli_state *state = context;
-  return cai_cli_log_session(&state->log, id, error);
+  return cai_cli_log_session(state->log, id, error);
 }
 
 static int cli_quota_wakeup(sl_t *sl, const sl_watch_event_t *event,
@@ -1708,6 +1717,29 @@ static int cli_register_agent_tools(void *context, cai_agent *agent,
   return rc;
 }
 
+/* Handles belong to the app run, not a turn or reopened runtime. */
+static cai_cli_pouch *cli_named_store(cli_state *state, const char *name,
+                                      int authentication, cai_error *error) {
+  cai_cli_options selected;
+  cai_cli_pouch *store;
+  if (!state->options.temporary &&
+      strcmp(name, state->normal_options.sessions_store) == 0)
+    return &state->pouch;
+  if (state->auth_pouch.sessions != NULL &&
+      strcmp(name, state->normal_options.auth_store) == 0)
+    return &state->auth_pouch;
+  if (state->messaging_pouch.sessions != NULL &&
+      strcmp(name, state->normal_options.messaging_store) == 0)
+    return &state->messaging_pouch;
+  store = authentication ? &state->auth_pouch : &state->messaging_pouch;
+  if (cai_cli_store_options(state->configuration, &state->normal_options, name,
+                            &selected, error) != CAI_OK ||
+      cai_cli_pouch_open_options(store, &selected, cli_logger(state), error) !=
+          CAI_OK)
+    return NULL;
+  return store;
+}
+
 static int cli_open_runtime(cli_state *state, const char *resume_id,
                             int new_session, cai_error *error) {
   cai_agent_runtime_config config;
@@ -1732,6 +1764,12 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
                                            error) != CAI_OK)
     return error->code;
   config.terminal_tool_config = &terminal;
+  if (state->options.temporary) {
+    terminal.root_path = state->workspace;
+    terminal.default_workdir = state->workspace;
+    config.searxng.response_spool_dir = state->temporary.private_dir;
+    config.revgeo.response_spool_dir = state->temporary.private_dir;
+  }
   cai_cli_apply_runtime_options(&state->options, &config, &preset, &skills);
   if (state->suppress_replay) {
     /* A live catalog change must restore the current checkpoint settings,
@@ -1742,8 +1780,11 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
     config.service_tier = NULL;
   }
   if (state->options.messaging && !state->options.review) {
-    rc = cai_cli_messages_new(&state->pouch,
-                              state->options.message_ack_timeout_ms,
+    cai_cli_pouch *messaging =
+        cli_named_store(state, state->normal_options.messaging_store, 0, error);
+    if (messaging == NULL)
+      return error->code;
+    rc = cai_cli_messages_new(messaging, state->options.message_ack_timeout_ms,
                               &state->messages, error);
     if (rc != CAI_OK)
       return rc;
@@ -1758,7 +1799,7 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
     config.todo.store = cai_cli_pouch_todo_callbacks();
     config.todo.store_context = &state->pouch;
   }
-  config.logger = state->log.logger;
+  config.logger = cli_logger(state);
   config.workspace_directory = state->workspace;
   config.image_directory =
       state->clipboard_directory[0] != '\0' ? state->clipboard_directory : NULL;
@@ -1781,7 +1822,7 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   if (!state->mcp_initialized) {
     rc = cai_cli_mcp_open(
         &state->mcp, state->configuration, state->options.program_name,
-        state->options.mcp && !state->options.review, state->log.logger, error);
+        state->options.mcp && !state->options.review, cli_logger(state), error);
     if (rc != CAI_OK)
       return rc;
     state->mcp_initialized = 1;
@@ -1823,14 +1864,14 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
       state->has_message_watch = 1;
     }
   }
-  rc = cai_cli_log_session(&state->log,
+  rc = cai_cli_log_session(state->log,
                            cai_agent_runtime_session_id(state->runtime), error);
   if (rc != CAI_OK)
     return rc;
   if (state->options.developer_instructions != NULL) {
     pslog_field kind = pslog_str("prompt_kind", "developer_instructions");
     cai_cli_log_message(
-        state->log.logger, PSLOG_LEVEL_INFO, "developer_instructions",
+        cli_logger(state), PSLOG_LEVEL_INFO, "developer_instructions",
         "developer", state->options.developer_instructions,
         strlen(state->options.developer_instructions), &kind, 1U);
   }
@@ -2305,7 +2346,7 @@ static int cli_goal_command(cli_state *state, const char *arg,
     state->goal_starts_pending++;
   fields[0] = pslog_str("command", action);
   fields[1] = pslog_str("prompt_kind", "goal_control");
-  cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, "goal_control",
+  cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO, "goal_control",
                       "user", arg, strlen(arg), fields, 2U);
   if (cli_markdown(state,
                    "**Goal control queued** for the next safe model/tool "
@@ -2420,7 +2461,7 @@ static int cli_host_process(cli_state *state, cai_error *error) {
       fields[1] = pslog_i64("control", command->type);
       fields[2] = pslog_i64("code", rc);
       cai_cli_log_message(
-          state->log.logger, rc == CAI_OK ? PSLOG_LEVEL_INFO : PSLOG_LEVEL_WARN,
+          cli_logger(state), rc == CAI_OK ? PSLOG_LEVEL_INFO : PSLOG_LEVEL_WARN,
           "host_control", "user", message, strlen(message), fields, 3U);
       cai_app_bridge_ack(state->bridge, command, rc, &applied);
       if (published != CAI_OK) {
@@ -2604,7 +2645,7 @@ static int cli_tier_command(cli_state *state, const char *arguments, int fast,
   if (rc == CAI_OK) {
     fields[0] = pslog_str("service_tier", selected);
     fields[1] = pslog_bool("applied", result.applied);
-    state->log.logger->info(state->log.logger, "cai.service_tier.selected",
+    cli_logger(state)->info(cli_logger(state), "cai.service_tier.selected",
                             fields, 2U);
     snprintf(message, sizeof(message), "Service tier %s: `%s`.\n",
              result.applied ? "selected" : "queued for the next safe boundary",
@@ -2845,7 +2886,7 @@ static int cli_settings_command(cli_state *state, const char *arguments,
       pslog_str("reasoning_effort",
                 effort != NULL ? effort : result.effective.reasoning_effort);
   fields[2] = pslog_bool("applied", result.applied);
-  cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO,
+  cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO,
                       requested.model != NULL ? "model_selection"
                                               : "reasoning_selection",
                       "user", message, strlen(message), fields, 3U);
@@ -2961,7 +3002,7 @@ static int cli_theme_command(cli_state *state, const char *arguments,
                ? "`NO_COLOR` keeps the prompt plain and Markdown ANSI "
                  "styling disabled.\n"
                : "");
-  cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, "theme_selection",
+  cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO, "theme_selection",
                       "user", message, strlen(message), NULL, 0U);
   return cli_markdown(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
 }
@@ -3867,7 +3908,7 @@ static int cli_run_review(cli_state *state, cai_error *error) {
     rc = CAI_ERR_TRANSPORT;
   if (rc == CAI_OK) {
     pslog_field kind = pslog_str("prompt_kind", "review_findings");
-    cai_cli_log_message(state->log.logger, PSLOG_LEVEL_INFO, "final_response",
+    cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO, "final_response",
                         "assistant", formatted, strlen(formatted), &kind, 1U);
   }
   free(formatted);
@@ -3901,11 +3942,30 @@ static int cli_output_final(cli_state *state, cai_error *error) {
   return rc;
 }
 
+static int cli_temp_stop(void *context) {
+  cli_state *state = context;
+  cai_app_command *command;
+  while ((command = cai_app_bridge_take(state->bridge)) != NULL) {
+    cai_error error;
+    int rc = CAI_OK;
+    cai_error_init(&error);
+    if (command->type == CAI_APP_STOP) {
+      state->host_stopped = 1;
+      cai_app_bridge_outcome(state->bridge, CAI_APP_STOPPED);
+    } else
+      rc = cai_cli_error(&error, CAI_ERR_INVALID, "application is stopping");
+    cai_app_bridge_ack(state->bridge, command, rc, &error);
+    cai_error_cleanup(&error);
+  }
+  return state->host_stopped;
+}
+
 int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
                     cai_app_bridge *bridge) {
   cli_state state;
   cai_client_config client_config;
   cai_chatgpt_auth_config auth_config;
+  cai_cli_pouch *auth_store = NULL;
   sl_config_t prompt_config;
   cai_error error;
   sl_readline_status_t prompt_status;
@@ -3921,12 +3981,11 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   int result;
 
   memset(&state, 0, sizeof(state));
+  cai_cli_temp_init(&state.temporary);
   state.application = application;
   state.bridge = bridge;
   state.timer_fd = -1;
   cai_cli_shell_init(&state.shell);
-  state.log.fd = -1;
-  state.log.wakeup_fd = -1;
   result = 1;
   metadata_json = NULL;
   cai_error_init(&error);
@@ -3936,9 +3995,9 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     /* Native messaging owns stdout; LOG_OUTPUT cannot redirect diagnostics
      * there. */
     (void)unsetenv("LOG_OUTPUT");
-    if (cai_cli_log_open_with_logger(
-            &state.log, PSLOG_LEVEL_WARN, 0,
-            application != NULL ? application->logger : NULL, &error) != CAI_OK)
+    if (cai_cli_log_new(&state.log, PSLOG_LEVEL_WARN, 0,
+                        application != NULL ? application->logger : NULL,
+                        &error) != CAI_OK)
       goto cleanup;
     if (argc != (explicit_mode ? 3 : 2))
       rc = cai_cli_error(&error, CAI_ERR_INVALID,
@@ -3953,13 +4012,14 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
             state.configuration, "chrome", "socket_directory");
         rc = cai_cli_private_directory(directory, &error);
         if (rc == CAI_OK)
-          rc = cai_chrome_native_host_run_at(
-              argv[explicit_mode ? 2 : 1], directory, state.log.logger, &error);
+          rc = cai_chrome_native_host_run_at(argv[explicit_mode ? 2 : 1],
+                                             directory, state.log->logger,
+                                             &error);
       } else
         rc = CAI_ERR_INVALID;
     }
     if (rc != CAI_OK)
-      cai_cli_log_error(state.log.logger, "Chrome native host", &error);
+      cai_cli_log_error(state.log->logger, "Chrome native host", &error);
     result = rc == CAI_OK ? 0 : 1;
     goto cleanup;
   }
@@ -3972,11 +4032,20 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
       parsed = -1;
     }
   }
+  if (parsed > 0 &&
+      cai_cli_stores_resolve(state.configuration, &error) != CAI_OK)
+    parsed = -1;
+  if (parsed > 0) {
+    state.normal_options = state.options;
+    if (state.options.temporary &&
+        cai_cli_temp_open(&state.temporary, &state.options, &error) != CAI_OK)
+      parsed = -1;
+  }
   if (parsed <= 0) {
     if (parsed < 0 &&
-        cai_cli_log_open_with_logger(
-            &state.log, PSLOG_LEVEL_WARN, 0,
-            application != NULL ? application->logger : NULL, &error) == CAI_OK)
+        cai_cli_log_new(&state.log, PSLOG_LEVEL_WARN, 0,
+                        application != NULL ? application->logger : NULL,
+                        &error) == CAI_OK)
       cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
                      error.message != NULL ? error.message
                                            : state.options.diagnostic);
@@ -3994,7 +4063,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
       state.options.export_id != NULL || state.options.import_file != NULL ||
       state.options.install_skill != NULL || state.options.message != NULL;
   default_log_level = utility_mode ? PSLOG_LEVEL_WARN : PSLOG_LEVEL_TRACE;
-  if (cai_cli_log_open_with_logger(
+  if (cai_cli_log_new(
           &state.log, default_log_level, !state.batch && !utility_mode,
           application != NULL ? application->logger : NULL, &error) != CAI_OK)
     goto cleanup;
@@ -4006,27 +4075,45 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     goto cleanup;
   }
   if (state.options.install_skill != NULL) {
-    result = cai_cli_install_skill(&state.options, state.log.logger);
+    result = cai_cli_install_skill(&state.options, state.log->logger);
     goto cleanup;
   }
   if (!state.batch && !utility_mode) {
-    rc = cai_cli_log_interactive_at(&state.log, state.options.log_dir, &error);
+    rc = cai_cli_log_interactive_at(state.log, state.options.log_dir, &error);
     if (rc != CAI_OK) {
       cli_print_error(&state, "open interactive log", &error);
       goto cleanup;
     }
   }
+  if (state.options.temporary) {
+    pslog_field field = pslog_str("workspace", state.temporary.workspace);
+    cai_cli_log_message(state.log->logger, PSLOG_LEVEL_INFO,
+                        "temp_workspace_opened", "diagnostic",
+                        "Temporary workspace created", 27U, &field, 1U);
+  }
   if (state.options.chrome_setup || state.options.chrome_remove) {
     rc = cai_chrome_native_host_setup_named(
         state.options.program_name, state.options.chrome_manifest,
-        state.options.chrome_remove, state.log.logger, &error);
+        state.options.chrome_remove, state.log->logger, &error);
     if (rc != CAI_OK)
       cli_print_error(&state, "Chrome registration", &error);
     result = rc == CAI_OK ? 0 : 1;
     goto cleanup;
   }
-  rc = cai_cli_pouch_open_options(&state.pouch, &state.options,
-                                  state.log.logger, &error);
+  {
+    cai_cli_options selected;
+    const char *name = state.options.login ? state.normal_options.auth_store
+                       : state.options.message != NULL
+                           ? state.normal_options.messaging_store
+                           : state.normal_options.sessions_store;
+    rc = state.options.temporary
+             ? (selected = state.options, CAI_OK)
+             : cai_cli_store_options(state.configuration, &state.normal_options,
+                                     name, &selected, &error);
+    if (rc == CAI_OK)
+      rc = cai_cli_pouch_open_options(&state.pouch, &selected,
+                                      state.log->logger, &error);
+  }
   if (rc != CAI_OK) {
     cli_print_error(&state, "open lockd store", &error);
     goto cleanup;
@@ -4055,7 +4142,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     goto cleanup;
   }
   if (state.options.login) {
-    result = cai_cli_login(&state.pouch.credentials, state.log.logger,
+    result = cai_cli_login(&state.pouch.credentials, state.log->logger,
                            bridge != NULL ? bridge->fd : -1,
                            cli_terminal_shell_stop, &state);
     if (cli_host_process(&state, &error) != CAI_OK)
@@ -4108,6 +4195,12 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   }
   auth_file = state.options.auth_json;
   if (strcmp(state.options.provider, "chatgpt") == 0) {
+    auth_store =
+        cli_named_store(&state, state.normal_options.auth_store, 1, &error);
+    if (auth_store == NULL) {
+      cli_print_error(&state, "open authentication store", &error);
+      goto cleanup;
+    }
     if (auth_file == NULL && getenv("HOME") != NULL) {
       rc = snprintf(auth_path, sizeof(auth_path), "%s/.codex/auth.json",
                     getenv("HOME"));
@@ -4116,7 +4209,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
         auth_file = auth_path;
     }
     if (auth_file != NULL) {
-      rc = cai_cli_pouch_seed_auth(&state.pouch, auth_file, &error);
+      rc = cai_cli_pouch_seed_auth(auth_store, auth_file, &error);
       if (rc != CAI_OK) {
         cli_print_error(&state, "import ChatGPT auth", &error);
         goto cleanup;
@@ -4217,18 +4310,18 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
       goto cleanup;
     }
     state.has_timer_watch = 1;
-    if (state.log.wakeup_fd >= 0 &&
-        sl_watch_add(state.sl, state.log.wakeup_fd,
+    if (state.log->wakeup_fd >= 0 &&
+        sl_watch_add(state.sl, state.log->wakeup_fd,
                      SL_WATCH_READ | SL_WATCH_ERROR | SL_WATCH_HANGUP,
                      cli_log_wakeup, &state, &state.log_watch_id) != SL_OK) {
       cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
                      "watch interactive log notices");
       goto cleanup;
     }
-    state.has_log_watch = state.log.wakeup_fd >= 0;
+    state.has_log_watch = state.log->wakeup_fd >= 0;
   }
   cai_client_config_init(&client_config);
-  client_config.logger = state.log.logger;
+  client_config.logger = state.log->logger;
   rc = cli_load_model_metadata(&state.options, &metadata_json, &error);
   if (rc != CAI_OK) {
     cli_print_error(&state, "load model metadata", &error);
@@ -4237,8 +4330,8 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   client_config.model_metadata_json = metadata_json;
   if (strcmp(state.options.provider, "chatgpt") == 0) {
     cai_chatgpt_auth_config_init(&auth_config);
-    auth_config.logger = state.log.logger;
-    auth_config.storage = &state.pouch.credentials;
+    auth_config.logger = state.log->logger;
+    auth_config.storage = &auth_store->credentials;
     rc = cai_chatgpt_auth_open(&auth_config, &state.auth, &error);
     if (rc != CAI_OK) {
       char hint[640];
@@ -4288,7 +4381,8 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
    * are independent of the short, opportunistic quota-refresh timeout. */
   {
     pslog_field operation = pslog_str("operation", "model catalog");
-    state.model_log = state.log.logger->with(state.log.logger, &operation, 1U);
+    state.model_log =
+        state.log->logger->with(state.log->logger, &operation, 1U);
     if (state.model_log == NULL) {
       cai_cli_error(&error, CAI_ERR_NOMEM, "create model catalog logger");
       cli_print_error(&state, "open model catalog client", &error);
@@ -4306,7 +4400,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     cai_client_config quota_config;
     cai_error_init(&quota_error);
     cai_client_config_init(&quota_config);
-    quota_config.logger = state.log.logger;
+    quota_config.logger = state.log->logger;
     quota_config.chatgpt_auth = &state.shared_auth;
     quota_config.timeout_ms = 1500L;
     if (cai_client_open(&quota_config, &state.quota_client, &quota_error) ==
@@ -4327,7 +4421,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
       }
     }
     if (quota_error.code != CAI_OK)
-      cai_cli_log_error(state.log.logger, "initialize quota updates",
+      cai_cli_log_error(state.log->logger, "initialize quota updates",
                         &quota_error);
     cai_error_cleanup(&quota_error);
   }
@@ -4386,7 +4480,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     goto cleanup;
   }
   while (!state.exit_requested) {
-    if (cai_cli_log_notices(&state.log, cli_notice, &state) != 0)
+    if (cai_cli_log_notices(state.log, cli_notice, &state) != 0)
       goto cleanup;
     line = sl_next_prompt(state.sl, "> ", NULL);
     if (state.exit_requested) {
@@ -4531,8 +4625,10 @@ cleanup:
   if (state.has_auth_lock)
     pthread_mutex_destroy(&state.auth_lock);
   cai_cli_pouch_close(&state.pouch);
+  cai_cli_pouch_close(&state.auth_pouch);
+  cai_cli_pouch_close(&state.messaging_pouch);
   if (state.sl != NULL)
-    (void)cai_cli_log_notices(&state.log, cli_notice, &state);
+    (void)cai_cli_log_notices(state.log, cli_notice, &state);
   if (state.renderer != NULL) {
     (void)cli_finish_response(&state);
     (void)cli_finish_reasoning(&state);
@@ -4546,8 +4642,38 @@ cleanup:
     (void)sl_output_stream_end(state.sl);
     sl_destroy(state.sl);
   }
+  if (state.temporary.root[0] != '\0' || state.temporary.cwd_fd >= 0 ||
+      state.temporary.parent_fd >= 0) {
+    cai_error cleanup_error;
+    int kept = 0;
+    cai_error_init(&cleanup_error);
+    rc = cai_cli_temp_close(&state.temporary, state.options.force,
+                            state.interactive && result == 0 &&
+                                !state.host_stopped,
+                            bridge != NULL ? bridge->fd : -1, cli_temp_stop,
+                            &state, &kept, &cleanup_error);
+    if (kept) {
+      pslog_field field = pslog_str("workspace", state.temporary.workspace);
+      cai_cli_log_message(state.log != NULL ? state.log->logger : NULL,
+                          PSLOG_LEVEL_INFO, "temp_workspace_kept", "diagnostic",
+                          "Temporary workspace kept", 24U, &field, 1U);
+      if (state.interactive)
+        fprintf(stdout, "\nKept temporary workspace: %s\n",
+                state.temporary.workspace);
+    }
+    if (rc != CAI_OK) {
+      cai_cli_log_error(state.log != NULL ? state.log->logger : NULL,
+                        "clean temporary workspace", &cleanup_error);
+      fprintf(stderr, "Cannot clean temporary workspace %s: %s\n",
+              state.temporary.root,
+              cleanup_error.message != NULL ? cleanup_error.message
+                                            : "cleanup failed");
+      result = 1;
+    }
+    cai_error_cleanup(&cleanup_error);
+  }
   if (state.sl == NULL)
-    (void)cai_cli_log_notices(&state.log, cli_startup_notice, &state);
+    (void)cai_cli_log_notices(state.log, cli_startup_notice, &state);
   free(state.sessions);
   free(state.normal_reasoning_override);
   free(state.high_reasoning_override);
@@ -4555,7 +4681,7 @@ cleanup:
   free(metadata_json);
   cai_config_close(state.configuration);
   cai_error_cleanup(&error);
-  if (cai_cli_log_close(&state.log) != 0)
+  if (cai_cli_log_release(state.log) != 0)
     result = 1;
   return result;
 }

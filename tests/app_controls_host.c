@@ -22,6 +22,7 @@ typedef struct host {
 } host;
 
 static host *delivery_host;
+unsigned int cai_test_storage_open_count(void);
 
 static void send_control(host *h, cai_app_control_type type, const char *text) {
   cai_error error;
@@ -67,6 +68,18 @@ static void *worker(void *context) {
   cai_error error;
   cai_app_status_init(&status);
   cai_error_init(&error);
+  if (strcmp(h->mode, "stores") == 0) {
+    cai_error_cleanup(&error);
+    return NULL;
+  }
+  if (strcmp(h->mode, "temp_stop") == 0) {
+    char signal;
+    int fd = open(getenv("CAI_TEST_APP_TEMP_SIGNAL"), O_RDONLY);
+    assert(fd >= 0 && read(fd, &signal, 1U) == 1);
+    close(fd);
+    send_control(h, CAI_APP_STOP, NULL);
+    return NULL;
+  }
   if (strcmp(h->mode, "shell_stop") == 0) {
     char signal;
     FILE *queued;
@@ -303,7 +316,11 @@ int main(int argc, char **argv) {
   assert(!snapshot.running && !snapshot.runtime_ready &&
          snapshot.exit_code == code);
   assert(h.app->get_status(h.app, &retained, &error) == CAI_OK);
-  if (strcmp(h.mode, "queue") == 0) {
+  if (strcmp(h.mode, "stores") == 0) {
+    assert(code == 0 && h.starts == 0 && h.acks == 0);
+    assert(cai_test_storage_open_count() ==
+           (unsigned int)atoi(getenv("CAI_TEST_APP_STORE_OPENS")));
+  } else if (strcmp(h.mode, "queue") == 0) {
     assert(code == 0 && h.starts == 3 && h.acks == 2 && h.rejected == 0);
     assert(snapshot.outcome == CAI_APP_COMPLETED &&
            snapshot.metrics.has_last_turn);
@@ -342,7 +359,8 @@ int main(int argc, char **argv) {
            h.rejected == 0);
     if (strcmp(h.mode, "message_cancel") == 0)
       assert(code == 1 && h.deliveries == 1 && h.starts == 1);
-  } else if (strcmp(h.mode, "startup_stop") == 0) {
+  } else if (strcmp(h.mode, "startup_stop") == 0 ||
+             strcmp(h.mode, "temp_stop") == 0) {
     assert(code == 0 && snapshot.outcome == CAI_APP_STOPPED && h.acks == 1 &&
            h.starts == 0);
   } else if (strcmp(h.mode, "cancelqueued") == 0) {

@@ -101,7 +101,7 @@ config.state_directory = host_state_directory;
 These fields seed defaults. Explicit INI values, environment, `settings`, and
 argv take precedence in that order. Paths are also configurable through
 `[paths]` (`config_dir`, `state_dir`, `cache_dir`, `data_dir`, `history_dir`,
-`clipboard_dir`, `log_dir`, `pouch_key_file`, and the existing individual file
+`clipboard_dir`, `log_dir`, and the existing individual file
 settings), and matching `--...-dir` / `--pouch-key-file` flags. Each namespace
 has its own `[storage] ..._namespace` key and matching flag, alongside
 `namespace_prefix`. `[messaging] queue_prefix` / `--queue-prefix` controls
@@ -448,6 +448,32 @@ named mailbox; old delivered messages stay in their original conversation.
 same conversation. `/queue NAME` overrides the full name; `/queue` shows it.
 `/status` includes the queue and approval mode. These live settings survive
 `/new` and `/resume`, without changing config.ini.
+`storage.messaging_store` selects a named `store.NAME` backend independently
+of `storage.sessions_store` and `storage.auth_store` (all default to `default`).
+Each store defines `endpoint`, pouch `key_file`, and optional HTTP `client_pem`.
+In C these are ordinary `cai_app_setting` section/key/value entries. In Lua use,
+for example, `settings = {["store.team"] = {endpoint = "pouch:///srv/agents/pouch",
+key_file = "/srv/agents/pouch.key"}, storage = {messaging_store = "team"}}`.
+Default-store key configuration is `[store.default] key_file`; the C
+`pouch_key_file` field still seeds that default.
+
+Clients live for the app run and its nested contexts, not individual turns or
+reopened sessions. The process shares one client per physical pouch root, and
+the final owning context closes it. App-owned logging state is retained with
+the client. Externally supplied loggers and outputs remain borrowed and must
+outlive the store contexts using them. SDK diagnostics retain the opening
+context's sink until that client closes; supply the same host logger when
+independent contexts need a common destination. Liblockdc owns reconnect behavior.
+
+`--temp` (or `settings = {ui = {temporary = true}}` in Lua) creates a private
+cache workspace and conversation store without rewriting the normal config.
+Auth and messaging retain their selected stores. Teardown closes workers,
+clients and softline, restores the preceding working directory, and deletes
+private history, prompt history and managed cache data. The workspace deletion
+question defaults to No. Non-interactive runs, EOF, errors, and host STOP
+preserve the workspace unless `--yes` / `--force` is passed. STOP also interrupts
+the final question. See the [temporary workspace and store configuration](../README.md).
+
 See [messaging](agent-messaging.md) for delivery,
 editing, ACK deadlines, and core C/Lua next-turn integration APIs.
 

@@ -193,6 +193,18 @@
       "${CAI_PUBLIC_INCLUDE_DIR}" "${CAI_GENERATED_INCLUDE_DIR}")
     cai_configure_cli_target(cai_cli_options_test)
     add_test(NAME cai_cli_options COMMAND cai_cli_options_test)
+    add_executable(cai_cli_temp_unit_test tests/cli_temp_unit_test.c)
+    target_link_libraries(cai_cli_temp_unit_test PRIVATE cai_cli_support)
+    cai_configure_cli_target(cai_cli_temp_unit_test)
+    target_compile_options(cai_cli_temp_unit_test PRIVATE -UNDEBUG)
+    add_test(NAME cai_cli_temp_unit COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_temp_unit_test.sh"
+      "$<TARGET_FILE:cai_cli_temp_unit_test>" "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(cai_cli_temp_unit PROPERTIES TIMEOUT 5)
+    add_test(NAME cai_cli_temp COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_temp_test.sh"
+      "$<TARGET_FILE:cai_cli_mock_fixture>" "$<TARGET_FILE:cai_app_controls_host>")
+    set_tests_properties(cai_cli_temp PROPERTIES TIMEOUT 30)
     add_executable(cai_cli_runtime_options_test tests/cli_runtime_options_test.c)
     target_link_libraries(cai_cli_runtime_options_test PRIVATE cai_cli_support)
     cai_configure_cli_target(cai_cli_runtime_options_test)
@@ -229,7 +241,7 @@
     add_test(NAME cai_cli_quota_refresh COMMAND cai_cli_quota_refresh_test)
     set_tests_properties(cai_cli_quota_refresh PROPERTIES TIMEOUT 30)
     add_executable(cai_cli_pouch_startup_test tests/cli_pouch_startup_test.c
-      cli/identity.c cli/pouch_stream.c)
+      cli/identity.c cli/pouch_stream.c cli/log.c)
     target_link_libraries(cai_cli_pouch_startup_test PRIVATE cai_static lockdc::static)
     cai_configure_cli_target(cai_cli_pouch_startup_test)
     target_compile_options(cai_cli_pouch_startup_test PRIVATE -UNDEBUG)
@@ -242,7 +254,7 @@
         "$<TARGET_FILE:cai_cli_mock_fixture>" "$<TARGET_FILE:cai_cli_pouch_startup_test>")
     set_tests_properties(cai_cli_replay_limits PROPERTIES TIMEOUT 30)
     add_executable(cai_cli_pouch_compaction_test tests/cli_pouch_compaction_test.c
-      cli/identity.c cli/pouch_stream.c)
+      cli/identity.c cli/pouch_stream.c cli/log.c)
     target_link_libraries(cai_cli_pouch_compaction_test PRIVATE cai_static lockdc::static)
     cai_configure_cli_target(cai_cli_pouch_compaction_test)
     target_compile_options(cai_cli_pouch_compaction_test PRIVATE -UNDEBUG)

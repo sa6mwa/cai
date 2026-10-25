@@ -2,6 +2,7 @@
 #define _XOPEN_SOURCE 700
 #include "pouch.h"
 #include "identity.h"
+#include "log.h"
 #include <cai/auth.h>
 
 #include <curl/curl.h>
@@ -17,6 +18,121 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+
+/* Store contexts retain these handles through teardown. SDK clients and
+ * their app-owned logging state close only when the final borrower exits. */
+typedef struct cai_cli_pouch_client {
+  struct cai_cli_pouch_client *next;
+  lc_client *client;
+  cai_cli_log *logging;
+  size_t references;
+  int local;
+  dev_t device, key_device;
+  ino_t inode, key_inode;
+  char *endpoint, *client_pem;
+} cai_cli_pouch_client;
+static pthread_mutex_t clients_lock = PTHREAD_MUTEX_INITIALIZER;
+static cai_cli_pouch_client *clients;
+
+static int same_pouch_options(const char *a, const char *b) {
+  size_t na, nb;
+  a += 8U + strcspn(a + 8U, "?#");
+  b += 8U + strcspn(b + 8U, "?#");
+  na = *a == '?' ? strcspn(++a, "#") : 0U;
+  nb = *b == '?' ? strcspn(++b, "#") : 0U;
+  return na == nb && memcmp(a, b, na) == 0;
+}
+
+static int shared_client_open(cai_cli_pouch *pouch,
+                              const lc_client_config *config, const char *root,
+                              int local, const char *client_pem,
+                              cai_error *error) {
+  cai_cli_pouch_client *entry;
+  struct stat directory, key;
+  lc_error detail;
+  int exists, rc;
+  pthread_mutex_lock(&clients_lock);
+  exists = local && stat(root, &directory) == 0;
+  for (entry = clients; entry != NULL; entry = entry->next) {
+    if (entry->local != local ||
+        (local ? !exists || entry->device != directory.st_dev ||
+                     entry->inode != directory.st_ino
+               : strcmp(entry->endpoint, config->endpoints[0]) != 0))
+      continue;
+    if ((local &&
+         (stat(pouch->key_path, &key) != 0 || key.st_dev != entry->key_device ||
+          key.st_ino != entry->key_inode ||
+          !same_pouch_options(entry->endpoint, config->endpoints[0]))) ||
+        (!local && strcmp(entry->client_pem,
+                          client_pem != NULL ? client_pem : "") != 0)) {
+      pthread_mutex_unlock(&clients_lock);
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "conflicting key or TLS configuration for an "
+                           "already open store; select the same key file");
+    }
+    entry->references++;
+    pouch->connection = entry;
+    pouch->sessions = entry->client;
+    pthread_mutex_unlock(&clients_lock);
+    return CAI_OK;
+  }
+  if (local && exists && stat(pouch->key_path, &key) != 0) {
+    pthread_mutex_unlock(&clients_lock);
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "pouch.key is missing for the existing encrypted "
+                         "store; restore the original key");
+  }
+  entry = calloc(1U, sizeof(*entry));
+  if (entry != NULL) {
+    entry->endpoint = strdup(config->endpoints[0]);
+    entry->client_pem = strdup(client_pem != NULL ? client_pem : "");
+  }
+  if (entry == NULL || entry->endpoint == NULL || entry->client_pem == NULL) {
+    if (entry != NULL) {
+      free(entry->endpoint);
+      free(entry->client_pem);
+      free(entry);
+    }
+    pthread_mutex_unlock(&clients_lock);
+    return cai_cli_error(error, CAI_ERR_NOMEM, "retain store connection");
+  }
+  lc_error_init(&detail);
+  rc = lc_client_open(config, &entry->client, &detail);
+  rc = rc == LC_OK ? CAI_OK : cai_cli_lc_error(error, &detail);
+  lc_error_cleanup(&detail);
+  if (rc == CAI_OK && local &&
+      (stat(root, &directory) != 0 || stat(pouch->key_path, &key) != 0)) {
+    char message[1200];
+    snprintf(message, sizeof(message),
+             "identify opened pouch root %s and key %s: %s", root,
+             pouch->key_path, strerror(errno));
+    rc = cai_cli_error(error, CAI_ERR_TRANSPORT, message);
+  }
+  if (rc != CAI_OK) {
+    if (entry->client != NULL)
+      entry->client->close(entry->client);
+    free(entry->endpoint);
+    free(entry->client_pem);
+    free(entry);
+    pthread_mutex_unlock(&clients_lock);
+    return rc;
+  }
+  entry->local = local;
+  if (local) {
+    entry->device = directory.st_dev;
+    entry->inode = directory.st_ino;
+    entry->key_device = key.st_dev;
+    entry->key_inode = key.st_ino;
+  }
+  entry->references = 1U;
+  entry->logging = cai_cli_log_retain(config->logger);
+  entry->next = clients;
+  clients = entry;
+  pouch->connection = entry;
+  pouch->sessions = entry->client;
+  pthread_mutex_unlock(&clients_lock);
+  return CAI_OK;
+}
 
 static const lonejson_field session_fields[] = {
     LONEJSON_FIELD_STRING_FIXED_REQ(cai_cli_session, id, "id",
@@ -1414,7 +1530,6 @@ int cai_cli_pouch_open_options(cai_cli_pouch *pouch,
   int lock_fd;
   int root_exists;
   int local_pouch;
-  CURLU *url;
   char *decoded_root;
   int rc;
   memset(pouch, 0, sizeof(*pouch));
@@ -1485,21 +1600,33 @@ int cai_cli_pouch_open_options(cai_cli_pouch *pouch,
   local_pouch = selected_endpoint == NULL ||
                 strncmp(selected_endpoint, "pouch://", 8U) == 0;
   if (selected_endpoint != NULL && local_pouch) {
-    url = curl_url();
-    decoded_root = NULL;
-    if (url == NULL ||
-        curl_url_set(url, CURLUPART_URL, selected_endpoint,
-                     CURLU_NON_SUPPORT_SCHEME) != CURLUE_OK ||
-        curl_url_get(url, CURLUPART_PATH, &decoded_root, CURLU_URLDECODE) !=
-            CURLUE_OK ||
-        decoded_root[0] != '/' || strlen(decoded_root) >= sizeof(root)) {
+    /* Unlike HTTP, pouch:// has no authority component. Match the SDK's
+     * documented root syntax and use libcurl only for percent-decoding. */
+    const char *encoded = selected_endpoint + 8U;
+    size_t length = strcspn(encoded, "?#"), i;
+    int decoded_length = 0;
+    if (length == 0U || length > INT_MAX)
+      return cai_cli_error(error, CAI_ERR_INVALID, "invalid pouch root URL");
+    for (i = 0U; i < length; i++) {
+      if (encoded[i] == '%') {
+        if (length - i < 3U ||
+            strchr("0123456789abcdefABCDEF", encoded[i + 1U]) == NULL ||
+            strchr("0123456789abcdefABCDEF", encoded[i + 2U]) == NULL)
+          return cai_cli_error(error, CAI_ERR_INVALID,
+                               "invalid pouch root percent escape");
+        i += 2U;
+      }
+    }
+    decoded_root =
+        curl_easy_unescape(NULL, encoded, (int)length, &decoded_length);
+    if (decoded_root == NULL || decoded_length <= 0 || decoded_root[0] != '/' ||
+        (size_t)decoded_length >= sizeof(root) ||
+        memchr(decoded_root, '\0', (size_t)decoded_length) != NULL) {
       curl_free(decoded_root);
-      curl_url_cleanup(url);
       return cai_cli_error(error, CAI_ERR_INVALID, "invalid pouch root URL");
     }
     strcpy(root, decoded_root);
     curl_free(decoded_root);
-    curl_url_cleanup(url);
   }
   lock_fd = open(init_path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
   if (lock_fd < 0 || flock(lock_fd, LOCK_EX) != 0) {
@@ -1508,12 +1635,6 @@ int cai_cli_pouch_open_options(cai_cli_pouch *pouch,
     return cai_cli_error(error, CAI_ERR_TRANSPORT, "lock pouch initialization");
   }
   root_exists = lstat(root, &status) == 0;
-  if (local_pouch && lstat(pouch->key_path, &status) != 0 && root_exists) {
-    close(lock_fd);
-    return cai_cli_error(error, CAI_ERR_INVALID,
-                         "pouch.key is missing for the existing encrypted "
-                         "store; restore the original key");
-  }
   lc_error_init(&local);
   endpoint = NULL;
   if (selected_endpoint != NULL) {
@@ -1545,10 +1666,11 @@ int cai_cli_pouch_open_options(cai_cli_pouch *pouch,
   config.client_bundle_path = client_pem;
   config.disable_mtls = client_pem == NULL;
   if (rc == LC_OK)
-    rc = lc_client_open(&config, &pouch->sessions, &local);
-  lc_pouch_endpoint_free(endpoint);
-  if (rc != LC_OK)
+    rc = shared_client_open(pouch, &config, root, local_pouch, client_pem,
+                            error);
+  else
     rc = cai_cli_lc_error(error, &local);
+  lc_pouch_endpoint_free(endpoint);
   lc_error_cleanup(&local);
   close(lock_fd);
   if (rc != CAI_OK) {
@@ -1571,8 +1693,21 @@ int cai_cli_pouch_open_options(cai_cli_pouch *pouch,
 }
 
 void cai_cli_pouch_close(cai_cli_pouch *pouch) {
-  if (pouch->sessions != NULL)
-    pouch->sessions->close(pouch->sessions);
+  cai_cli_pouch_client **link, *entry;
+  pthread_mutex_lock(&clients_lock);
+  entry = pouch->connection;
+  if (entry != NULL && --entry->references == 0U) {
+    for (link = &clients; *link != entry; link = &(*link)->next)
+      ;
+    *link = entry->next;
+    entry->client->close(entry->client);
+    (void)cai_cli_log_release(entry->logging);
+    free(entry->endpoint);
+    free(entry->client_pem);
+    free(entry);
+  }
+  pthread_mutex_unlock(&clients_lock);
+  pouch->connection = NULL;
   pouch->sessions = NULL;
 }
 
