@@ -88,7 +88,18 @@ awk '/^\* (Running|Ran|Edited|Added|Deleted)/ {if (NR>1 && previous!="") exit 1;
 plan '{"plan":[{"tool":"exec_command","arguments":{"cmd":"printf PARTIAL","yield_time_ms":1000},"text":"Assistant before a command"},{"tool":"exec_command","arguments":{"cmd":"true","yield_time_ms":1000}},"SPACING DONE"]}'
 prompt 'check spacing' 'SPACING DONE'
 sed -E $'s/\033\[[0-?]*[ -/]*[@-~]//g' "$term/feed" >"$root/feed"
-awk '/^\* (Running|Ran|Edited|Added|Deleted)/ {if (NR>1 && previous!="") exit 1; seen++} {previous=$0} END {if (seen<8) exit 1}' "$root/feed"
+awk '
+  /^\* (Running|Ran|Edited|Added|Deleted)/ {
+    if (NR>1 && previous!="") exit 1
+    seen++
+  }
+  /^  (PATCH DONE|FULL PATCH DONE|CONTEXT .* DONE|COMMAND DONE|SPACING DONE)$/ {
+    if (previous!="") exit 1
+    answers++
+  }
+  {previous=$0}
+  END {if (seen<8 || answers<9) exit 1}
+' "$root/feed"
 contains "$root/feed" PARTIAL
 terminal_close
 cp "$root/original" "$work/file.c"; patch_plan 'FINAL ONLY'

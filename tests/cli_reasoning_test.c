@@ -297,9 +297,11 @@ static int test_output_failure(int operation) {
   }
   close(pipe_fd[1]);
   pipe_fd[1] = -1;
+  if (operation == 8)
+    state.tool_output_pending = 1;
   event.data = "Output unavailable.\n\n";
   event.data_length = strlen(event.data);
-  if (operation == 0) {
+  if (operation == 0 || operation == 8) {
     event.type = CAI_AGENT_EVENT_TEXT_DELTA;
     rc = cli_event(&state, &event, NULL);
   } else if (operation == 1) {
@@ -544,12 +546,16 @@ int main(void) {
   char output[4096];
   const char *title;
   ssize_t count;
-  int rc;
+  int rc, scenario;
+  size_t offset;
+  static const char *tool_results[] = {"{\"ok\":true}", "failed output\n",
+                                       "already separated\n\n",
+                                       "before reasoning"};
   struct timespec start = {100, 500000000L};
   struct timespec before = {400, 499999999L};
   struct timespec boundary = {400, 500000000L};
 
-  for (rc = 0; rc < 8; rc++)
+  for (rc = 0; rc < 9; rc++)
     if (test_output_failure(rc) != 0)
       return 1;
   if (test_goal_handoff() != 0 || test_shared_auth() != 0 ||
@@ -669,6 +675,46 @@ int main(void) {
   event.data_length = 0U;
   if (rc == CAI_OK)
     rc = cli_event(&state, &event, NULL);
+  /* Real tool events must leave a blank row before the next model block,
+   * including failures, pre-separated output and streamed reasoning bodies. */
+  if (cli_tool_display_init(&state, NULL) != CAI_OK)
+    return 1;
+  for (scenario = 0; scenario < 4; scenario++) {
+    const char *answer = "Answer after tool.\n";
+    memset(&event, 0, sizeof(event));
+    event.type = CAI_AGENT_EVENT_TOOL_CALL_STARTED;
+    event.tool_name = "todo_kanban";
+    event.tool_call_id = "spacing-call";
+    event.tool_action = CAI_AGENT_TOOL_ACTION_EXTERNAL;
+    if (rc == CAI_OK)
+      rc = cli_event(&state, &event, NULL);
+    event.type = scenario == 1 ? CAI_AGENT_EVENT_TOOL_CALL_FAILED
+                               : CAI_AGENT_EVENT_TOOL_CALL_COMPLETED;
+    event.data = tool_results[scenario];
+    event.data_length = strlen(event.data);
+    if (rc == CAI_OK)
+      rc = cli_event(&state, &event, NULL);
+    if (scenario == 3) {
+      event.type = CAI_AGENT_EVENT_REASONING_SUMMARY;
+      event.data = "**Tool follow-up**\n\nReasoning after tool\n";
+      event.data_length = strlen(event.data);
+      if (rc == CAI_OK)
+        rc = cli_event(&state, &event, NULL);
+    }
+    event.type = CAI_AGENT_EVENT_TEXT_DELTA;
+    event.data_length = 1U;
+    for (offset = 0U; answer[offset] != '\0' && rc == CAI_OK; offset++) {
+      event.data = answer + offset;
+      rc = cli_event(&state, &event, NULL);
+    }
+    event.type = CAI_AGENT_EVENT_RESPONSE_COMPLETED;
+    event.data = NULL;
+    event.data_length = 0U;
+    if (rc == CAI_OK)
+      rc = cli_event(&state, &event, NULL);
+  }
+  cai_tool_display_close(state.tool_display);
+  cai_sink_close(state.tool_sink);
   /* A split SGR sequence and a reset-only blank row never receive markers. */
   state.row_line_start = 1;
   state.row_ansi = 0;
@@ -699,12 +745,19 @@ int main(void) {
   close(pipe_fd[0]);
   if (count < 0 || rc != CAI_OK || state.reasoning_open ||
       cai_cli_reasoning_title(&state.reasoning, &title) != 0 ||
-      strcmp(title, "Next header") != 0) {
+      strcmp(title, "Tool follow-up") != 0) {
     fprintf(stderr, "finished reasoning: rc=%d title=%s open=%d\n", rc, title,
             state.reasoning_open);
     return 1;
   }
   output[count] = '\0';
+  if (strstr(output, "{\"ok\":true}\n\n  Answer after tool.\n") == NULL ||
+      strstr(output, "failed output\n\n  Answer after tool.\n") == NULL ||
+      strstr(output, "already separated\n\n  Answer after tool.\n") == NULL ||
+      strstr(output, "before reasoning\n\n? Reasoning after tool\n") == NULL) {
+    fprintf(stderr, "missing tool/model block spacing: %s\n", output);
+    return 1;
+  }
   if (strstr(output, "\033[91m*\033[0m WARN: colored diagnostic") == NULL ||
       strstr(output, "\n\n* ERROR: no color\n\n") == NULL) {
     fprintf(stderr, "interactive warning star/spacing mismatch: %s\n", output);
