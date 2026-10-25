@@ -16,6 +16,9 @@ send '/queue on\r'; expect 'Message queue: toggle-recovery'
 send '/queue\r'; expect 'Message queue: toggle-recovery'
 tail -c +$((send_feed_offset+1)) "$term/feed" >"$root/queue"
 absent "$root/queue" '`toggle-recovery`'
+# The label is normal text; only the following queue name has code styling.
+grep -Fq $'\033[0mMessage\033[0m' "$term/raw"
+grep -Fq $'\033[0mqueue:\033[0m' "$term/raw"
 # A code span must have a non-default style, independent of the theme color.
 grep -Eq $'\033\\[[0-9;]*[1-9][0-9;]*mtoggle-recovery\033\\[0m' "$term/raw"
 send '/tools\r'; expect 'agent_message'

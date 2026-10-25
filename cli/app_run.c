@@ -3111,7 +3111,7 @@ static int cli_handle_command(cli_state *state, const char *line,
       if (rc != CAI_OK)
         return rc;
     }
-    snprintf(message, sizeof(message), "**Message queue:** `%s`\n",
+    snprintf(message, sizeof(message), "Message queue: `%s`\n",
              cai_cli_messages_name(state->messages));
     return cli_markdown(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
   }
