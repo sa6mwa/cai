@@ -113,6 +113,8 @@ static const cai_app_option options[] = {
      "Hosted Responses search (default on)", 0, 1},
     {"--todo", '\0', CAI_APP_FLAG, NULL, "Encrypted kanban tool (default off)",
      0, 1},
+    {"--todo-layout", '\0', CAI_APP_STRING, "board|list",
+     "Kanban display layout (default board)", 0, 0},
     {"--board", '\0', CAI_APP_STRING, "NAME",
      "Kanban board (default: default; requires --todo)", 0, 0},
     {"--searxng", '\0', CAI_APP_FLAG, NULL, "Local search tool (default off)",

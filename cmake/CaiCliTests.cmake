@@ -183,6 +183,11 @@
     add_test(NAME cai_cli_shell_runner COMMAND cai_cli_shell_runner_test "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(cai_cli_shell_runner PROPERTIES TIMEOUT 15)
     add_executable(cai_cli_options_test tests/cli_options_test.c cli/options.c cli/help.c)
+    add_executable(cai_cli_todo_view_test tests/cli_todo_view_test.c)
+    target_link_libraries(cai_cli_todo_view_test PRIVATE cai_app_static)
+    cai_configure_cli_target(cai_cli_todo_view_test)
+    target_compile_options(cai_cli_todo_view_test PRIVATE -UNDEBUG)
+    add_test(NAME cai_cli_todo_view COMMAND cai_cli_todo_view_test)
     target_link_libraries(cai_cli_options_test PRIVATE cai_static)
     target_include_directories(cai_cli_options_test PRIVATE
       "${CAI_PUBLIC_INCLUDE_DIR}" "${CAI_GENERATED_INCLUDE_DIR}")

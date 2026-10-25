@@ -112,6 +112,11 @@ static const cli_field fields[] = {
       "explicit values are lockd endpoint URLs."),
     B("ui", "shell_context", shell_context,
       "Share sanitized !COMMAND output; /shell and !sh always stay local."),
+    {"ui", "todo_layout", offsetof(cai_cli_options, todo_layout),
+     CAI_CONFIG_STRING, 0U, "board|list",
+     "Kanban presentation; board groups cards by column with titles capped at "
+     "28 characters. List shows full titles. /todo layout changes this "
+     "invocation only."},
     {"ui", "tool_output", offsetof(cai_cli_options, tool_output),
      CAI_CONFIG_STRING, 0U, "compact|full",
      "Tool previews; empty selects compact."}};
@@ -536,12 +541,13 @@ static int tool_environment(cai_config *cfg, const char *prefix,
         {"AUTH_JSON", "paths", "auth_json"},
         {"LOCKD", "storage", "lockd"},
         {"NAMESPACE_PREFIX", "storage", "namespace_prefix"},
-        {"QUEUE_PREFIX", "messaging", "queue_prefix"}};
+        {"QUEUE_PREFIX", "messaging", "queue_prefix"},
+        {"TODO_LAYOUT", "ui", "todo_layout"}};
     for (i = 0U; i < sizeof(aliases) / sizeof(aliases[0]); i++) {
       const char *v = app_environment(prefix, aliases[i][0]);
       if (v != NULL &&
           cfg->set(cfg, aliases[i][1], aliases[i][2], v, error) != CAI_OK)
-        return -1;
+        return environment_error(prefix, aliases[i][0], error);
     }
   }
   for (i = 0U; i < cfg->field_count(cfg); i++) {

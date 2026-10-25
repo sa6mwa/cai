@@ -3051,8 +3051,9 @@ static int cli_handle_command(cli_state *state, const char *line,
     return cli_review_command(state, line + 7U, error);
   if (strcmp(line, "/todo") == 0 || strncmp(line, "/todo ", 6U) == 0 ||
       strncmp(line, "/todo\t", 6U) == 0) {
-    rc = cai_cli_todo_command(state->runtime, line + 5U, cli_tools_write, state,
-                              error);
+    rc = cai_cli_todo_command(state->runtime, line + 5U,
+                              &state->options.todo_layout, cli_tools_write,
+                              state, error);
     if (rc == CAI_OK && cli_finish_response(state) != 0)
       rc = CAI_ERR_TRANSPORT;
     return rc;
@@ -3246,7 +3247,7 @@ static int cli_handle_command(cli_state *state, const char *line,
         "goal with review, fix, and verification until clean; stay in this "
         "conversation. No argument uses the Git default branch. |\n",
         "| `/todo [COMMAND]` | Show the selected board; list, use NAME, "
-        "new NAME, or help. Requires --todo. |\n",
+        "new NAME, layout board/list, or help. Requires --todo. |\n",
         "| `/queue [on\\|off\\|NAME]` | Show the mailbox, enable/disable "
         "messaging, or replace its full name between turns. Applies to this "
         "app, including /new and /resume; leaves config.ini unchanged. |\n",

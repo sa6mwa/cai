@@ -1076,6 +1076,10 @@ if(CAI_BUILD_LUA)
         add_test(NAME cai_app_lua_embedding COMMAND bash
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_embedding_test.sh"
           "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host")
+        add_test(NAME cai_app_lua_todo_layout COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_kanban_test.sh" "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host")
+        set_tests_properties(cai_app_lua_todo_layout PROPERTIES LABELS "cli;local;offline" TIMEOUT 30
+          ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
         set_tests_properties(cai_app_lua_embedding PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
           ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
         add_test(NAME cai_app_lua_messages COMMAND bash

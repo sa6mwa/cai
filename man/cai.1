@@ -75,6 +75,11 @@ Chat Completions has no hosted search; SearXNG is available separately.
 Enable/disable todo_kanban (default off). CAI uses a shared encrypted cai.todo
 document, with streamed transactional updates, rather than a todo.json file.
 .TP
+.BI \-\-todo-layout " board|list"
+Kanban display layout (default board). Board columns contain bold IDs above
+italic titles capped at 28 Unicode characters, including an ellipsis when
+truncated. List retains full titles. Also CAI_TODO_LAYOUT or [ui] todo_layout.
+.TP
 .BI \-\-board " NAME"
 Initial kanban board (CAI_BOARD or [todo] default_board; default "default").
 The flag selects or creates a board and overrides the resumed selection once.
@@ -510,9 +515,14 @@ completes or stops. Use /goal pause or /goal clear to control pursuit.
 Unlike the startup flag, this command does not create a new session or select
 non-interactive mode.
 .TP
-.BR "/todo" " [list|use NAME|new NAME|help]"
+.BR "/todo" " [list|use NAME|new NAME|layout board|list|help]"
 Show the selected kanban board, list shared boards, select an existing board,
 or create/select a board. Changes require a stable boundary between turns.
+The default board layout groups cards into TODO, DOING and DONE columns.
+/todo layout list selects the full-title item list; /todo layout board restores
+the board. /todo layout reports the current setting. Layout changes apply only
+to future output in this invocation, including across /new and /resume, without
+changing stored cards or past output. Layout changes are allowed during turns.
 The selected board is included in /status and restored with the conversation.
 .TP
 .B /help

@@ -34,6 +34,29 @@ Explicit board selectors target a board without selecting it. WIP denials and
 missing boards are structured results (`ok=false`); transport/storage failures
 return errors. Item IDs such as `DEF-001` are assigned by the store.
 
+## Terminal view
+
+In the terminal application, `/todo` defaults to a kanban table with TODO,
+DOING (`in_process`) and DONE columns. Each card has a bold ID on its own row
+and an italic title below it. Titles are limited to 28 Unicode characters,
+including the ellipsis, with Markdown punctuation preserved literally. The
+stored title remains complete. Libmdf wraps cells to fit the terminal.
+
+`/todo layout list` switches to the item/status/full-title table;
+`/todo layout board` restores the board view. `/todo layout` reports the current
+setting. These settings affect future output in this application invocation,
+including after `/new` or `/resume`; they do not rewrite past output or save a
+conversation preference. Board selection still belongs to the conversation.
+`/todo list` continues to list boards, independently of card layout.
+
+Startup defaults can be set with `[ui] todo_layout = board|list`,
+`CAI_TODO_LAYOUT` (or the configured application prefix), and
+`--todo-layout board|list`. Forwarded flags take precedence. Embedders use
+the same setting through C `cai_app_setting` or Lua
+`settings = {ui = {todo_layout = "list"}}`. Layout selection does not enable the
+optional todo tool. Structured tool results and non-interactive logs keep
+their existing JSON representation.
+
 ## C receiver and Pouch adapter
 
 Core libcai exposes `cai_todo` in `<cai/tools/todo.h>`. `cai_todo_open` accepts

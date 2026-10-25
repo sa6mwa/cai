@@ -15,6 +15,7 @@ contains "$config" "# agents_md = \"$root/config/cai/AGENTS.md\""
 contains "$config" "# skills_dir = \"$root/config/cai/skills\""
 contains "$config" "# export_dir = \"$root/data/cai/exports\""
 contains "$config" '# tool_output = "compact"'
+contains "$config" '# todo_layout = "board"'
 contains "$config" '[messaging]'
 contains "$config" '# default_board = "default"'
 contains "$config" '# enabled = false'

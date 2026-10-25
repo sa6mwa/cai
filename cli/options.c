@@ -48,6 +48,7 @@ void cai_cli_options_init(cai_cli_options *options) {
   options->normal_reasoning_effort = "medium";
   options->high_reasoning_effort = "high";
   options->reasoning_summary = "concise";
+  options->todo_layout = "board";
   options->image_generation = 1;
   options->terminal = 1;
   options->shell_context = 1;
@@ -369,6 +370,8 @@ int cai_cli_read_options(int argc, char *const *argv,
       field = &options->output_type;
     else if (strcmp(flag, "--tool-output") == 0)
       field = &options->tool_output;
+    else if (strcmp(flag, "--todo-layout") == 0)
+      field = &options->todo_layout;
     else if (strcmp(flag, "-p") == 0 || strcmp(flag, "--provider") == 0)
       field = &options->provider;
     else if (strcmp(flag, "--chrome-socket") == 0) {
@@ -443,6 +446,11 @@ int cai_cli_read_options(int argc, char *const *argv,
     }
     value = argv[i];
     *field = value;
+    if (field == &options->todo_layout && strcmp(value, "board") != 0 &&
+        strcmp(value, "list") != 0) {
+      cai_cli_option_error(options, "--todo-layout must be board or list");
+      return -1;
+    }
     if (field == &options->tool_output && strcmp(value, "compact") != 0 &&
         strcmp(value, "full") != 0) {
       cai_cli_option_error(options, "--tool-output must be compact or full\n");
