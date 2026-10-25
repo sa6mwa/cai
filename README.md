@@ -1447,6 +1447,9 @@ handling, and session state save/restore. See
   context-overflow errors also trigger one compaction and retry. A streamed
   `finish_reason=length` near the known context limit triggers compaction and
   continuation; an output-only cutoff continues without compaction.
+  Reported cutoff usage is counted even when only reasoning or incomplete tool
+  arguments were emitted. Session/client limits and goal token budgets apply
+  before continuation; incomplete calls are never executed or added to history.
 - Local spooled session history is opt-in with `enable_local_history`; default
   sessions rely on OpenAI server-side context through `previous_response_id` or
   Conversations. When enabled, `cai_session_export_history_source` streams the

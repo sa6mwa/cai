@@ -5590,6 +5590,23 @@ static void *cai_runtime_worker(void *context) {
             cai_runtime_cancel_requested(runtime)) {
           break;
         }
+        if (cai_runtime_chat_context_overflow(&error) ||
+            (error.server_code != NULL &&
+             strcmp(error.server_code, "output_length") == 0)) {
+          int account_rc;
+          /* A cutoff can consume a whole goal budget without producing text
+           * or a completed call. Account even on the last retry attempt. */
+          account_rc =
+              cai_runtime_account_goal(runtime, &budget_limited, &error);
+          if (account_rc != CAI_OK || budget_limited) {
+            rc = account_rc;
+            if (account_rc == CAI_OK)
+              rc = cai_set_error(
+                  &error, CAI_ERR_LIMIT,
+                  "goal token budget exhausted before another model request");
+            break;
+          }
+        }
         if (cai_runtime_chat_context_overflow(&error) &&
             overflow_retried == 0) {
           overflow_retried = 1;

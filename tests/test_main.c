@@ -42515,6 +42515,8 @@ static void test_chat_length_unfinished_tool(test_state *state) {
                     &server.child_status);
 }
 
+#include "chat_cutoff_usage_test.inc"
+
 static void test_chat_runtime_case(test_state *state, const char *name,
                                    const mock_http_expectation *script,
                                    size_t script_count, const char *prompt,
@@ -53700,6 +53702,7 @@ static const test_entry test_entries[] = {
     {"chat_length_continuation", test_chat_length_continuation},
     {"chat_tool_length_continuation", test_chat_tool_length_continuation},
     {"chat_length_unfinished_tool", test_chat_length_unfinished_tool},
+    {"chat_length_empty_usage", test_chat_length_empty_usage},
     {"chat_runtime_overflow_recovery", test_chat_runtime_overflow_recovery},
     {"chat_runtime_recovery_failure_modes",
      test_chat_runtime_recovery_failure_modes},

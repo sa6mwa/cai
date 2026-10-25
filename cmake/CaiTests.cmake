@@ -566,6 +566,7 @@ if(CAI_BUILD_TESTS)
     chat_length_continuation
     chat_tool_length_continuation
     chat_length_unfinished_tool
+    chat_length_empty_usage
     chat_runtime_overflow_recovery
     chat_runtime_recovery_failure_modes
     chat_runtime_overflow_variants

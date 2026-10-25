@@ -6260,9 +6260,10 @@ int cai_session_run_auto_output(cai_session *session,
   return rc;
 }
 
-/* Preserve a cutoff answer before its caller asks for continuation. Completed
- * calls/items are handled by the success path; incomplete calls are never
- * committed or executed here. Keep the original provider limit diagnostic. */
+/* Account for a cutoff response and preserve any partial answer before its
+ * caller asks for continuation. Reasoning-only and incomplete-call responses
+ * still consume tokens. Incomplete calls are never committed or executed here.
+ * Keep the original provider limit diagnostic unless recording fails. */
 static int cai_session_retain_partial_stream(
     cai_session *session, const cai_stream_tool_capture *capture,
     const lonejson_spooled *pending_items, int has_pending_items,
@@ -6276,8 +6277,7 @@ static int cai_session_retain_partial_stream(
        strcmp(error->server_code, "context_length_exceeded") != 0) ||
       CAI_SESSION_AGENT_IMPL(session)->session_continuity !=
           CAI_SESSION_CONTINUITY_CLIENT_HISTORY ||
-      capture->output_items_count != 0U || capture->output_text == NULL ||
-      capture->output_text->size_fn(capture->output_text) == 0U)
+      capture->output_items_count != 0U)
     return CAI_ERR_LIMIT;
   cai_error_init(&record_error);
   rc = cai_session_after_stream_tool_calls(
