@@ -56,7 +56,7 @@ static const cai_app_option options[] = {
     {"--force", '\0', CAI_APP_FLAG, NULL, "Alias for --yes", 0, 0},
     {"--non-interactive", 'n', CAI_APP_FLAG, NULL, "Run supplied work and exit",
      0, 0},
-    {"--resume", '\0', CAI_APP_OPTIONAL_STRING, "ID",
+    {"--resume", 'R', CAI_APP_OPTIONAL_STRING, "ID",
      "List directory sessions or resume ID", 0, 0},
     {"--list", 'l', CAI_APP_FLAG, NULL, "List conversations in all directories",
      0, 0},

@@ -87,6 +87,7 @@ static int cai_cli_short_value_option(const char *flag) {
   case 'i':
   case 'g':
   case 't':
+  case 'R':
     return flag[length - 1U];
   default:
     return 0;
@@ -324,7 +325,7 @@ static int cli_read_options(int argc, char *const *argv,
       options->list = 1;
       continue;
     }
-    if (strcmp(flag, "--resume") == 0 &&
+    if ((strcmp(flag, "--resume") == 0 || strcmp(flag, "-R") == 0) &&
         (i + 1 >= argc || argv[i + 1][0] == '-')) {
       options->resume_list = 1;
       continue;
@@ -381,7 +382,7 @@ static int cli_read_options(int argc, char *const *argv,
     }
     if (strcmp(flag, "-t") == 0 || strcmp(flag, "--theme") == 0)
       field = &options->theme;
-    else if (strcmp(flag, "--resume") == 0)
+    else if (strcmp(flag, "--resume") == 0 || strcmp(flag, "-R") == 0)
       field = &options->resume_id;
     else if (strcmp(flag, "--export") == 0)
       field = &options->export_id;

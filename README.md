@@ -702,11 +702,11 @@ Starting `cai` resumes the newest session for the canonical current directory.
 `-N`/`--new` starts fresh; `/new` does the same inside the prompt and confirms
 the new session ID and workspace in a Markdown summary after opening it
 successfully. When messaging is enabled, the summary includes its active queue.
-`-l`/`--list` shows all conversations across directories. `--resume` without
+`-l`/`--list` shows all conversations across directories. `-R`/`--resume` without
 an ID and `/resume` show a numbered list for the current directory only;
 `/resume <number>` loads an entry. Rows show ID, directory, and a first-prompt
 preview, clipped to the terminal width or 80 columns without a terminal.
-`--resume ID` addresses a saved session in the current directory directly.
+`-R ID`/`--resume ID` addresses a saved session in the current directory directly.
 Saved prompts and assistant text replay without repeating tool side effects.
 
 `--export ID` and `/export [ID]` write paired `ID.jsonl` and `ID.md` files

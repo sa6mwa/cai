@@ -174,6 +174,53 @@ static int replay_options(void) {
   return 0;
 }
 
+static int resume_alias_options(void) {
+  char cases[][6][32] = {{"cai", "-R"},
+                         {"cai", "-vR"},
+                         {"cai", "-R", "session-id", "-i", "actual prompt"},
+                         {"cai", "-vnR", "session-id", "-i", "actual prompt"},
+                         {"cai", "-R", "-i", "actual prompt"},
+                         {"cai", "-vR", "-i", "actual prompt"},
+                         {"cai", "-R", "--directory", "/tmp/project"},
+                         {"cai", "-NR", "session-id"},
+                         {"cai", "--new", "-R"},
+                         {"cai", "-R", "--list"}};
+  int lengths[] = {2, 2, 5, 5, 4, 4, 4, 3, 3, 3};
+  cai_cli_options options;
+  char *args[6];
+  size_t i, j;
+  int with_id, with_prompt;
+  for (i = 0U; i < sizeof(lengths) / sizeof(lengths[0]); i++) {
+    for (j = 0U; j < (size_t)lengths[i]; j++)
+      args[j] = cases[i][j];
+    if (cai_cli_read_options(lengths[i], args, NULL, &options) != 1) {
+      fprintf(stderr, "resume alias case %lu failed to parse: %s\n",
+              (unsigned long)i, options.diagnostic);
+      return 1;
+    }
+    with_id = i == 2U || i == 3U;
+    with_prompt = i >= 2U && i <= 5U;
+    if (i < 7U && (options.resume_list != !with_id ||
+                   (with_id ? options.resume_id == NULL ||
+                                  strcmp(options.resume_id, "session-id") != 0
+                            : options.resume_id != NULL) ||
+                   options.instruction_count != (with_prompt ? 1U : 0U) ||
+                   (with_prompt && strcmp(cai_cli_instruction_at(&options, 0U),
+                                          "actual prompt") != 0))) {
+      fprintf(stderr, "resume alias case %lu has incorrect values\n",
+              (unsigned long)i);
+      return 1;
+    }
+    /* Listing cannot submit work, but parsing must still leave -i intact. */
+    if (cai_cli_validate_options(&options) != (i < 4U || i == 6U ? 1 : -1)) {
+      fprintf(stderr, "resume alias case %lu has incorrect validation: %s\n",
+              (unsigned long)i, options.diagnostic);
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static int storage_options(void) {
   cai_cli_options options;
   char arguments[][64] = {"cai",
@@ -644,8 +691,8 @@ int main(void) {
       cai_cli_parse_options(3, invalid_legacy_workspace, &options) != -1)
     return 1;
   return value_option_instructions() || config_option_precedence() ||
-         replay_options() || short_argument_options() ||
-         grouped_value_options() || help_columns() || shell_options() ||
-         storage_options() || tool_options() || capture_options() ||
-         messaging_options();
+         replay_options() || resume_alias_options() ||
+         short_argument_options() || grouped_value_options() ||
+         help_columns() || shell_options() || storage_options() ||
+         tool_options() || capture_options() || messaging_options();
 }
