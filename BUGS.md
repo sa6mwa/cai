@@ -297,6 +297,9 @@ commit and verification evidence.
 - **Remaining boundary:** physical resizes can race a terminal write, and
   softline still documents Unicode/tab reflow limitations. These tests prove
   the controlled settled-resize repair, not every possible XFCE resize sequence.
+- **Dependency update (2026-10-26):** CAI now pins softline 0.13.0, including
+  its additional resize tracking and retained-cursor fixes. Alt-S uses native
+  draft suspension across the existing local terminal handoff.
 
 ## BUG-002: Missing blank row before some tool activity blocks
 

@@ -695,6 +695,13 @@ relay is used. Terminal output is never journaled, logged or shared with the mod
 regardless of shell-context settings. Logs record only the executable and exit
 metadata.
 Launch failures and nonzero exits report details and return to CAI.
+.PP
+Alt-S opens this same local shell between turns while preserving the current
+draft, cursor and editing state, including undo. It does not submit the draft
+or add it to prompt history. Editing resumes after shell exit, including a
+failed launch or nonzero exit. The command forms return to an empty prompt.
+Ctrl-L refreshes terminal layout while preserving the draft, queues and
+transcript.
 .TP
 .BR /shellshare , " " !sh+
 Open the same interactive shell, explicitly sharing its newest sanitized output

@@ -884,8 +884,25 @@ static int cli_goodbye(cli_state *state) {
   return SL_OK;
 }
 
-/* Render exit status before next_prompt releases the active editor. Terminal
- * handoff still runs in the owner loop, outside every editor callback. */
+/* Let softline retain the complete editor state. The owner loop performs the
+ * terminal handoff only after next_prompt returns SL_READLINE_SUSPENDED. */
+static int cli_shell_editor_key(sl_t *sl, sl_key_t key, void *context,
+                                sl_key_action_t *action) {
+  cli_state *state = context;
+  cai_error error;
+  int rc = SL_OK;
+  (void)key;
+  *action = SL_KEY_ACTION_HANDLED;
+  cai_error_init(&error);
+  if (cli_terminal_shell_ready(state, &error) == CAI_OK)
+    *action = SL_KEY_ACTION_SUSPEND;
+  else
+    rc = sl_set_status_message(sl, error.message);
+  cai_error_cleanup(&error);
+  return rc;
+}
+
+/* Render exit status before next_prompt releases the active editor. */
 static int cli_editor_key(sl_t *sl, sl_key_t key, void *context,
                           sl_key_action_t *action) {
   cli_state *state = context;
@@ -3601,7 +3618,10 @@ static int cli_handle_command(cli_state *state, const char *line,
         "model, or keep them local. |\n"
         "| Up / Down | Recall prompts for this directory. |\n"
         "| Ctrl-R | Search history; Enter selects for editing, Enter again "
-        "sends. |\n"
+        "sends. |\n",
+        "| Alt-S | Open a local shell between turns; retain your draft, "
+        "cursor and undo state when it exits. |\n"
+        "| Ctrl-L | Refresh terminal layout while retaining the draft. |\n"
         "| Ctrl-V | Paste a PNG or JPEG image from the X11 clipboard. |\n"
         "| Escape / Ctrl-C | Cancel the active turn. |\n"
         "| Ctrl-D (empty prompt) | Exit. |\n\n",
@@ -4399,7 +4419,9 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     if (sl_bind_key(state.sl, SL_KEY_ENTER, cli_editor_key, &state) != SL_OK ||
         sl_bind_key(state.sl, SL_KEY_ALT_ENTER, cli_editor_key, &state) !=
             SL_OK ||
-        sl_bind_key(state.sl, SL_KEY_TAB, cli_editor_key, &state) != SL_OK) {
+        sl_bind_key(state.sl, SL_KEY_TAB, cli_editor_key, &state) != SL_OK ||
+        sl_bind_key(state.sl, SL_KEY_ALT_BASE + 's', cli_shell_editor_key,
+                    &state) != SL_OK) {
       cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
                      "bind interactive submission guards");
       goto cleanup;
@@ -4596,6 +4618,22 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     }
     if (line == NULL) {
       prompt_status = sl_last_readline_status(state.sl);
+      if (prompt_status == SL_READLINE_SUSPENDED) {
+        rc = cli_terminal_shell(&state, 0, &error);
+        if (rc != CAI_OK) {
+          cli_print_error(&state, "interactive shell", &error);
+          if (state.exit_requested)
+            goto cleanup;
+          cai_error_cleanup(&error);
+          cai_error_init(&error);
+        }
+        if (!state.exit_requested &&
+            cli_sync_status(&state, &error) != CAI_OK) {
+          cli_print_error(&state, "status", &error);
+          goto cleanup;
+        }
+        continue;
+      }
       if (prompt_status == SL_READLINE_CANCELLED ||
           prompt_status == SL_READLINE_INTERRUPTED) {
         if (state.shell.pid > 0) {

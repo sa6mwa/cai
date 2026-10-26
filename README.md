@@ -121,7 +121,7 @@ runtime, review, storage, and presentation contracts.
 
 The musl SDK presets build the terminal coding agent as a statically linked
 Linux x86_64, aarch64 or armhf executable. The `cai` convenience preset selects
-the same x86_64 musl producer. It adds pinned softline 0.12.0 for the prompt and
+the same x86_64 musl producer. It adds pinned softline 0.13.0 for the prompt and
 libmdf 0.15.0 for streamed Markdown rendering, and liblockdc 0.21.0 with
 liblql 0.3.0 for durable storage. It uses libpslog 0.12.0 for logging.
 The native dependency SDK is cpkt 0.5.0 from
@@ -175,6 +175,12 @@ with native window changes and foreground-job control. Terminal output stays
 local: it is neither journaled, logged nor sent to the model, including with
 `--shell-context` enabled. Logs retain only shell start/exit metadata.
 A failed launch or nonzero shell exit reports details and returns to CAI.
+
+**Alt-S** opens that same local shell between turns while retaining the current
+draft, cursor and native editing state, including undo. Exit the shell to resume
+editing; the shortcut does not submit the draft or add it to prompt history.
+The command forms return to an empty prompt. **Ctrl-L** refreshes terminal layout
+without discarding the draft, queues or transcript.
 
 `/shellshare` and `!sh+` explicitly share the shell's newest sanitized output
 when it exits. These shared variants use a PTY relay for capture. This applies

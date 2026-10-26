@@ -186,6 +186,10 @@
     target_link_options(cai_cli_shell_runner_test PRIVATE "-Wl,--wrap=read")
     add_test(NAME cai_cli_shell_runner COMMAND cai_cli_shell_runner_test "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(cai_cli_shell_runner PROPERTIES TIMEOUT 15)
+    add_test(NAME cai_cli_shell_draft COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_shell_draft_test.sh"
+      "$<TARGET_FILE:cai_cli_mock_fixture>")
+    set_tests_properties(cai_cli_shell_draft PROPERTIES TIMEOUT 15)
     add_executable(cai_cli_options_test tests/cli_options_test.c cli/options.c cli/help.c)
     add_executable(cai_cli_todo_view_test tests/cli_todo_view_test.c)
     target_link_libraries(cai_cli_todo_view_test PRIVATE cai_app_static)

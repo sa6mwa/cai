@@ -17,11 +17,12 @@ printf 'HOST_SHELL_READY\n'
 exec /bin/sh -i
 SH
 chmod 700 "$SHELL"
-for command in /shell '!sh' /shellshare '!sh+'; do
+for command in /shell '!sh' /shellshare '!sh+' alt-s; do
   case "$command" in *share|*+) export CAI_TEST_APP_SHELL_SHARED=1 ;; *) export CAI_TEST_APP_SHELL_SHARED=0 ;; esac
   rm -f "$CAI_TEST_APP_SHELL_QUEUED" "$CAI_TEST_APP_RELEASE"
   terminal_start -N
-  send "$command\r"; expect HOST_SHELL_READY
+  if [[ "$command" == alt-s ]]; then send 'retained draft\033s'; else send "$command\r"; fi
+  expect HOST_SHELL_READY
   wait_for test -f "$CAI_TEST_APP_SHELL_QUEUED"
   # Non-STOP controls stay queued during handoff. The shell remains usable.
   send "printf 'SHELL_%s\\n' STILL_USABLE\r"; expect SHELL_STILL_USABLE

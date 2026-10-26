@@ -2,11 +2,12 @@
 
 ## Status
 
-**Resolved for the controlled sequence (2026-10-19):** CAI consumes softline
-0.12.0, retaining the reconciliation API introduced in 0.11.0, and calls
+**Resolved for the controlled sequence (2026-10-19):** CAI calls
 `sl_output_stream_reconcile()` on the owner thread before
 resuming output after changed terminal dimensions. The retained/shrink regression
 is enabled and passes, alongside the other seven terminal resize scenarios.
+CAI now pins softline 0.13.0, which retains the 0.11.0 reconciliation API and
+adds further growth/shrink and retained-cursor corrections.
 The historical diagnosis and captures below describe the 0.10.0 baseline.
 
 Reproduced twice with a softline-only C program on 2026-10-16, Linux x86_64,
