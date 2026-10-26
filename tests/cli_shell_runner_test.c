@@ -60,6 +60,50 @@ static void drain(cai_cli_shell *shell, capture *c, cai_error *error) {
     assert(cai_cli_shell_elapsed(shell) - started < 5000U);
   }
 }
+static void c1_literal(void) {
+  cai_cli_shell shell;
+  capture c;
+  cai_error error;
+  char input[1024], expected[2048];
+  static const char unicode[] = "\nUTF8: \xc2\xa0Ü€🛫";
+  size_t length = 507U, used = 507U, split, i;
+  cai_error_init(&error);
+  /* Exercise output-buffer flushes as well as every input split. C1 bytes
+   * inside genuine non-control UTF-8 scalars must remain untouched. */
+  memset(input, 'a', length);
+  memset(expected, 'a', used);
+  for (i = 128U; i <= 159U; i++) {
+    input[length++] = (char)194U;
+    input[length++] = (char)i;
+    used += (size_t)snprintf(expected + used, sizeof(expected) - used,
+                             "\\xc2\\x%02x", (unsigned int)i);
+  }
+  memcpy(input + length, unicode, sizeof(unicode) - 1U);
+  length += sizeof(unicode) - 1U;
+  memcpy(expected + used, unicode, sizeof(unicode) - 1U);
+  used += sizeof(unicode) - 1U;
+  for (i = 128U; i <= 159U; i++) {
+    input[length++] = (char)i;
+    used += (size_t)snprintf(expected + used, sizeof(expected) - used,
+                             "\\x%02x", (unsigned int)i);
+  }
+  input[length++] = (char)194U; /* Incomplete final scalar. */
+  memcpy(expected + used, "\\xc2", 5U);
+  for (split = 0U; split <= length; split++) {
+    cai_cli_shell_init(&shell);
+    memset(&c, 0, sizeof(c));
+    c.shell = &shell;
+    assert(cai_cli_shell_plain(&shell, input, split, 0, output, &c, &error) ==
+           CAI_OK);
+    assert(cai_cli_shell_plain(&shell, input + split, length - split, 0, output,
+                               &c, &error) == CAI_OK);
+    assert(cai_cli_shell_plain(&shell, NULL, 0U, 1, output, &c, &error) ==
+           CAI_OK);
+    assert(strcmp(c.data, expected) == 0);
+    assert(shell.pending_length == 0U);
+  }
+  cai_error_cleanup(&error);
+}
 int main(int argc, char **argv) {
   cai_cli_shell shell;
   capture c;
@@ -69,6 +113,7 @@ int main(int argc, char **argv) {
       "**plain** #text & <tag>\n\xe2\x82\xac\xf0\x9f\x9a\x80\0\033\377\342";
   size_t split, i;
   assert(argc == 2);
+  c1_literal();
   cai_error_init(&error);
   cai_cli_shell_init(&shell);
   /* Uneven, continuously readable chunks must yield after 64 KiB. The next

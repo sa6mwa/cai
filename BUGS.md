@@ -5,6 +5,21 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-029: UTF-8 C1 shell output aborts rendering and replay
+
+- **Status:** fixed.
+- **Cause:** the literal shell renderer rejected single-byte controls but
+  passed decoded U+0080–U+009F through to softline, which rejects them. The
+  same rendering path could then prevent a stored conversation from reopening.
+- **Resolution:** escape C1 controls byte-for-byte after UTF-8 decoding,
+  retaining split-scalar state and preserving non-control Unicode. Stored
+  events and model context are unchanged; live output and replay share the fix.
+- **Verification:** the native shell-runner regression covers every C1 scalar,
+  raw C1 bytes, every two-chunk split, output-buffer flushes, neighboring Unicode
+  and an incomplete final scalar. The TUI regression checks live output and
+  automatic resume, plus imported raw-tail/hex records (including a split
+  scalar) rendered during startup without executing the recorded commands.
+
 ## BUG-028: get_goal rejects result-shaped arguments tolerated by Codex
 
 - **Status:** fixed.

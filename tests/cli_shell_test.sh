@@ -39,6 +39,9 @@ send '\003'; expect 'Shell command exited 137'
 send '!kill -TERM $$\r'; expect 'Shell command exited 143'
 send '!\r'; expect 'shell command must contain'
 send '!printf "\\000\\033\\377\\342\\202\\254"\r'; expect 'Shell command exited 0'; contains "$term/text" '\x00\x1b\xff€'
+send '!printf "C1-live: \\302\\200\\302\\205\\302\\233\\302\\237 UTF8: \\302\\240\\303\\234\\342\\202\\254\\360\\237\\233\\253\\n"\r'
+expect 'Shell command exited 0'
+contains "$term/feed" 'C1-live: \xc2\x80\xc2\x85\xc2\x9b\xc2\x9f UTF8:  Ü€🛫'
 send '!printf replay-once >> executions; cat executions\r'; expect 'Shell command exited 0'; contains "$term/text" replay-once
 # Large output comes from a shell data producer, not a Python test driver.
 send '!awk "BEGIN {for (i=0;i<70000;i++) printf \"L\"; print \"\\nRAW-END\"}"\r'; expect 'Shell command exited 0'; contains "$term/text" RAW-END
@@ -51,7 +54,28 @@ jq -se 'any(.[]; .msg == "cai.user_shell.completed" and (.duration_ms|type) == "
 absent "$term/text" 'invalid kvfmt'
 count=$(requests)
 terminal_start; expect RAW-END; expect secret-local-result
+expect 'C1-live:'; expect 'Ü€🛫'
 [[ $(cat "$work/executions") == replay-once && $(requests) == "$count" ]]
+terminal_close
+# Exercise raw saved output too: current shell tails are sanitized before
+# storage, but imported/native-host records can contain encoded C1 controls.
+# The hex form splits one scalar across events; the tail form flushes at once.
+cat >"$root/c1-replay.jsonl" <<'JSON'
+{"record_type":"checkpoint","checkpoint_created_at_ns":1,"applied_event_sequence":7,"state":{"version":1}}
+{"record_type":"event","sequence":1,"type":"user_shell_started","data":"touch c1-replay-must-not-run"}
+{"record_type":"event","sequence":2,"type":"user_shell_output_hex","data":"5245504c41592d43313a20c2"}
+{"record_type":"event","sequence":3,"type":"user_shell_output_hex","data":"9b0a"}
+{"record_type":"event","sequence":4,"type":"user_shell_completed","data":"0"}
+{"record_type":"event","sequence":5,"type":"user_shell_started","data":"touch c1-tail-must-not-run"}
+{"record_type":"event","sequence":6,"type":"user_shell_output_tail","data":"REPLAY-TAIL: \u0080\u009f Ü€🛫\n"}
+{"record_type":"event","sequence":7,"type":"user_shell_completed","data":"0"}
+JSON
+run --import "$root/c1-replay.jsonl"; ok
+imported=$(stdout_text)
+terminal_start --resume "$imported"
+expect 'REPLAY-C1: \xc2\x9b'
+expect 'REPLAY-TAIL: \xc2\x80\xc2\x9f Ü€🛫'
+[[ ! -e "$work/c1-replay-must-not-run" && ! -e "$work/c1-tail-must-not-run" && $(requests) == "$count" ]]
 terminal_close
 export SHELL="$root/missing-shell"
 terminal_start -N --no-shell-context

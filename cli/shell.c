@@ -600,6 +600,7 @@ int cai_cli_shell_plain(cai_cli_shell *shell, const char *bytes, size_t length,
     if ((count == 2U && scalar < 128UL) || (count == 3U && scalar < 2048UL) ||
         (count == 4U && scalar < 65536UL) || scalar > 1114111UL ||
         (scalar >= 55296UL && scalar <= 57343UL) ||
+        (scalar >= 128UL && scalar <= 159UL) ||
         (count == 1U && ((ch < 32U && ch != '\n' && ch != '\t') || ch == 127U)))
       count = 0U;
     if (sizeof(rendered) - used < 4U) {

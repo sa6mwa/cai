@@ -35,8 +35,9 @@ int cai_cli_shell_pump(cai_cli_shell *shell, cai_cli_shell_output_fn output,
 void cai_cli_shell_cancel(cai_cli_shell *shell);
 unsigned long long cai_cli_shell_elapsed(const cai_cli_shell *shell);
 void cai_cli_shell_close(cai_cli_shell *shell);
-/* Literal terminal text: preserve UTF-8, LF and tabs, escape other controls
- * and invalid bytes. Retains at most one incomplete UTF-8 scalar. */
+/* Literal terminal text: preserve non-control UTF-8, LF and tabs. Escape other
+ * controls (including UTF-8-encoded U+0080..U+009F) and invalid bytes as \xNN.
+ * Retains at most one incomplete UTF-8 scalar between input chunks. */
 int cai_cli_shell_plain(cai_cli_shell *shell, const char *bytes, size_t length,
                         int final, cai_cli_shell_output_fn output,
                         void *context, cai_error *error);
