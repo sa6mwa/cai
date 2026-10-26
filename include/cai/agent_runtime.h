@@ -1085,6 +1085,15 @@ typedef int (*cai_agent_tool_visitor)(void *context,
 int cai_agent_runtime_visit_tools(cai_agent_runtime *runtime,
                                   cai_agent_tool_visitor visitor, void *context,
                                   cai_error *error);
+/** Visit the skills actually loaded into this runtime's developer catalog.
+ * Owner-thread-only, including during a turn. Does no discovery, resource
+ * reads or model requests; unavailable/disabled skills yield no entries.
+ * Return CAI_OK to continue or an error to stop. The visitor must not mutate,
+ * close or re-enter the runtime. Reopen the runtime to discover file changes.
+ */
+int cai_agent_runtime_visit_skills(cai_agent_runtime *runtime,
+                                   cai_skill_visitor visitor, void *context,
+                                   cai_error *error);
 /** Copy the instruction-file status for the current agent on the owner
  * thread. Available while idle or running. This describes the captured
  * developer context, not current filesystem existence; restart/reopen reads

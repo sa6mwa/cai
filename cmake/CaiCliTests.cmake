@@ -120,6 +120,10 @@
     add_test(NAME cai_cli_skills
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_skills_test.sh" "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_skills PROPERTIES TIMEOUT 45)
+    add_test(NAME cai_cli_skills_inventory COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_skills_inventory_test.sh"
+      "$<TARGET_FILE:cai_cli_mock_fixture>")
+    set_tests_properties(cai_cli_skills_inventory PROPERTIES TIMEOUT 15)
     add_test(NAME cai_cli_review_defaults COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_review_defaults_test.sh"
       "$<TARGET_FILE:cai_cli_mock_fixture>")
@@ -432,7 +436,7 @@
     # Stateful cases retain real encrypted checkpoint/replay/export coverage.
     set_property(TEST cai_cli_mcp_inventory_responses
       cai_cli_mcp_inventory_chat_completions cai_cli_tool_policy_responses
-      cai_cli_tool_policy_chat_completions cai_cli_skills cai_cli_commands
+      cai_cli_tool_policy_chat_completions cai_cli_skills cai_cli_skills_inventory cai_cli_commands
       cai_cli_tool_display cai_cli_reasoning_presentation cai_cli_terminal_handoff
       APPEND PROPERTY ENVIRONMENT "CAI_TEST_VOLATILE_SESSION=1")
     foreach(_cai_cli_test IN LISTS _cai_cli_tests)

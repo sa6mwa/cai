@@ -780,6 +780,12 @@ Show the installed tool inventory, descriptions, input formats and MCP server
 ownership, including disabled servers and discovery failures. Available during
 a turn; inspecting cached metadata does not trigger more network discovery.
 .TP
+.B /skills
+List loaded skill names and descriptions in a Markdown table. Name a listed
+skill in your prompt to request it. Available during a turn without rescanning
+files or making model requests. Disabled and empty catalogs are reported
+explicitly; restart to discover installed or changed skills.
+.TP
 .BR /quit , " " /exit
 Exit the agent.
 .SH STATUS LINE

@@ -700,6 +700,24 @@ static int cai_skill_callback(void *context, const void *params, void *result,
   return CAI_OK;
 }
 
+int cai_agent_visit_skills_internal(cai_agent *agent, cai_skill_visitor visitor,
+                                    void *context, cai_error *error) {
+  const cai_skill_catalog *catalog = cai_tool_registry_lonejson_context(
+      CAI_AGENT_IMPL(agent)->tools, CAI_SKILL_READ_TOOL_NAME,
+      cai_skill_callback);
+  cai_skill_info info;
+  size_t i;
+  int rc = CAI_OK;
+  /* Catalog entries are immutable after construction. Resource reads by the
+   * worker do not modify their names/descriptions or re-run discovery. */
+  for (i = 0U; catalog != NULL && rc == CAI_OK && i < catalog->count; i++) {
+    info.name = catalog->entries[i].name;
+    info.description = catalog->entries[i].description;
+    rc = visitor(context, &info, error);
+  }
+  return rc;
+}
+
 int cai_agent_register_skill_tool_owned(cai_agent *agent,
                                         cai_skill_catalog *catalog,
                                         cai_error *error) {

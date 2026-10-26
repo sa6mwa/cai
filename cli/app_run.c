@@ -3581,6 +3581,7 @@ static int cli_handle_command(cli_state *state, const char *line,
         "immediately. |\n"
         "| `/tools` | List installed tools, MCP servers, discovery errors and "
         "tool descriptions. |\n"
+        "| `/skills` | List loaded skill names and descriptions. |\n"
         "| `/resume` | List conversations for the current directory. |\n",
         "| `/resume NUMBER` | Resume a listed conversation and replay prompts "
         "and assistant text. |\n"
@@ -3642,6 +3643,15 @@ static int cli_handle_command(cli_state *state, const char *line,
       return CAI_ERR_TRANSPORT;
     rc = cai_cli_tools_markdown(&state->mcp, state->runtime, 1, cli_tools_write,
                                 state, error);
+    if (rc == CAI_OK && cli_finish_response(state) != 0)
+      rc = CAI_ERR_TRANSPORT;
+    return rc;
+  }
+  if (strcmp(line, "/skills") == 0) {
+    if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
+      return CAI_ERR_TRANSPORT;
+    rc = cai_cli_skills_markdown(state->runtime, state->options.skills,
+                                 cli_tools_write, state, error);
     if (rc == CAI_OK && cli_finish_response(state) != 0)
       rc = CAI_ERR_TRANSPORT;
     return rc;

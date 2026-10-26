@@ -5599,6 +5599,63 @@ static int cai_lua_agent_runtime_tools(lua_State *L) {
   return 1;
 }
 
+typedef struct cai_lua_skill_inventory {
+  lua_State *L;
+  lua_Integer count;
+  const cai_skill_info *skill;
+} cai_lua_skill_inventory;
+static int cai_lua_skill_inventory_build(lua_State *L) {
+  const cai_lua_skill_inventory *out = lua_touserdata(L, 2);
+  lua_newtable(L);
+  lua_pushstring(L, out->skill->name);
+  lua_setfield(L, -2, "name");
+  lua_pushstring(L, out->skill->description);
+  lua_setfield(L, -2, "description");
+  lua_rawseti(L, 1, lua_tointeger(L, 3));
+  return 0;
+}
+static int cai_lua_skill_inventory_row(void *context,
+                                       const cai_skill_info *skill,
+                                       cai_error *error) {
+  cai_lua_skill_inventory *out = context;
+  lua_State *L = out->L;
+  int rc;
+  lua_pushcfunction(L, cai_lua_skill_inventory_build);
+  lua_pushvalue(L, -2);
+  out->skill = skill;
+  lua_pushlightuserdata(L, out);
+  lua_pushinteger(L, ++out->count);
+  /* Lua allocation errors must not jump across the runtime busy guard. */
+  rc = lua_pcall(L, 3, 0, 0);
+  if (rc != LUA_OK) {
+    rc = cai_lua_set_error(error,
+                           rc == LUA_ERRMEM ? CAI_ERR_NOMEM : CAI_ERR_INVALID,
+                           "cannot construct Lua skill inventory");
+    lua_pop(L, 1);
+    return rc;
+  }
+  return CAI_OK;
+}
+/* Return copied names/descriptions from the loaded catalog, without I/O. */
+static int cai_lua_agent_runtime_skills(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  cai_lua_skill_inventory out;
+  cai_error error;
+  int rc;
+  out.L = L;
+  out.count = 0;
+  lua_newtable(L);
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_visit_skills(self->ptr, cai_lua_skill_inventory_row,
+                                      &out, &error);
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK)
+    return cai_lua_fail(L, rc, &error);
+  cai_lua_error_cleanup(&error);
+  return 1;
+}
+
 static int cai_lua_agent_runtime_metrics(lua_State *L) {
   cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
   cai_agent_runtime_metrics metrics;
@@ -12040,6 +12097,7 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"metrics", cai_lua_agent_runtime_metrics},
     {"ids", cai_lua_agent_runtime_ids},
     {"tools", cai_lua_agent_runtime_tools},
+    {"skills", cai_lua_agent_runtime_skills},
     {"session_id", cai_lua_agent_runtime_session_id},
     {"model", cai_lua_agent_runtime_model},
     {"export_markdown", cai_lua_agent_runtime_export_markdown},

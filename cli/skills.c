@@ -459,3 +459,81 @@ done:
   cai_error_cleanup(&error);
   return rc == CAI_OK ? 0 : 1;
 }
+
+typedef struct skill_inventory {
+  int (*write)(void *, const char *, size_t);
+  void *context;
+  size_t count;
+} skill_inventory;
+static int skill_text(skill_inventory *out, const char *text,
+                      cai_error *error) {
+  return out->write(out->context, text, strlen(text)) == 0
+             ? CAI_OK
+             : cai_cli_error(error, CAI_ERR_TRANSPORT, "write skill inventory");
+}
+static int skill_cell(skill_inventory *out, const char *text,
+                      cai_error *error) {
+  char bytes[256];
+  size_t used = 0U;
+  const unsigned char *p = (const unsigned char *)text;
+  for (; *p; p++) {
+    if (used + 2U > sizeof(bytes)) {
+      if (out->write(out->context, bytes, used) != 0)
+        return cai_cli_error(error, CAI_ERR_TRANSPORT, "write skill inventory");
+      used = 0U;
+    }
+    if (strchr("\\|`*_~[]<>!#", *p) != NULL)
+      bytes[used++] = '\\';
+    bytes[used++] = *p < 32U || *p == 127U ? ' ' : (char)*p;
+  }
+  if (used != 0U && out->write(out->context, bytes, used) != 0)
+    return cai_cli_error(error, CAI_ERR_TRANSPORT, "write skill inventory");
+  return CAI_OK;
+}
+static int skill_row(void *context, const cai_skill_info *skill,
+                     cai_error *error) {
+  skill_inventory *out = context;
+  int rc = CAI_OK;
+  if (out->count++ == 0U)
+    rc = skill_text(out, "| Skill | Description |\n| --- | --- |\n", error);
+  if (rc == CAI_OK)
+    rc = skill_text(out, "| **", error);
+  if (rc == CAI_OK)
+    rc = skill_cell(out, skill->name, error);
+  if (rc == CAI_OK)
+    rc = skill_text(out, "** | ", error);
+  if (rc == CAI_OK)
+    rc = skill_cell(out, skill->description, error);
+  return rc == CAI_OK ? skill_text(out, " |\n", error) : rc;
+}
+int cai_cli_skills_markdown(cai_agent_runtime *runtime, int enabled,
+                            int (*write)(void *, const char *, size_t),
+                            void *context, cai_error *error) {
+  skill_inventory out;
+  int rc;
+  if (write == NULL)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "skill inventory writer is required");
+  out.write = write;
+  out.context = context;
+  out.count = 0U;
+  rc = skill_text(&out, "## Skills\n\n", error);
+  if (rc == CAI_OK && !enabled)
+    return skill_text(
+        &out,
+        "Skills are disabled. Start with `--skills` to enable discovery.\n",
+        error);
+  if (rc == CAI_OK)
+    rc = cai_agent_runtime_visit_skills(runtime, skill_row, &out, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (out.count == 0U)
+    return skill_text(&out,
+                      "No skills loaded. Install a package with "
+                      "`--install-skill DIR`, then restart.\n",
+                      error);
+  return skill_text(&out,
+                    "\nName a listed skill in your prompt, for example: "
+                    "`Use the SKILL-NAME skill for this task.`\n",
+                    error);
+}

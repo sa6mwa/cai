@@ -1251,6 +1251,7 @@ do
   }))
   assert_eq(custom_runtime:state(), "idle", "Lua custom preset initial state")
   local initial_metrics = assert_ok(custom_runtime:metrics())
+  assert_eq(#assert_ok(custom_runtime:skills()), 0, "no loaded skills in custom runtime")
   local initial_ids = assert_ok(custom_runtime:ids())
   assert(initial_ids.session_id == custom_runtime:session_id())
   assert(initial_ids.response_id == nil and initial_ids.conversation_id == nil)

@@ -1837,6 +1837,18 @@ void *cai_tool_registry_custom_context(cai_tool_registry *registry,
              : NULL;
 }
 
+void *cai_tool_registry_lonejson_context(cai_tool_registry *registry,
+                                         const char *name,
+                                         cai_tool_fn callback) {
+  cai_tool_entry *entry = registry != NULL && name != NULL
+                              ? cai_tool_registry_find(registry, name)
+                              : NULL;
+  return entry != NULL && entry->kind == CAI_TOOL_LONEJSON &&
+                 entry->lonejson_callback == callback
+             ? entry->context
+             : NULL;
+}
+
 int cai_tool_registry_set_result_delivery(cai_tool_registry *registry,
                                           const char *name,
                                           cai_tool_result_delivery_fn callback,

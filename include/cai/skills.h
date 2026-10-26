@@ -61,6 +61,13 @@ typedef struct cai_skill_config {
 } cai_skill_config;
 
 typedef struct cai_skill_metadata cai_skill_metadata;
+/** One loaded skill. Strings are borrowed only during a catalog visit. */
+typedef struct cai_skill_info {
+  const char *name;
+  const char *description;
+} cai_skill_info;
+typedef int (*cai_skill_visitor)(void *context, const cai_skill_info *skill,
+                                 cai_error *error);
 /** Owned, immutable skill identity with borrowed string getters. */
 struct cai_skill_metadata {
   /** Borrow the parsed name until close. */

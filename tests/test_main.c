@@ -27784,6 +27784,149 @@ static size_t test_inventory_empty_transport(const cai_mcp_client *client) {
   return 0U;
 }
 
+typedef struct skill_inventory_test {
+  cai_agent_runtime *runtime;
+  int count, fail, rc;
+  char name[65], description[1025];
+} skill_inventory_test;
+static int test_skill_inventory_row(void *context, const cai_skill_info *skill,
+                                    cai_error *error) {
+  skill_inventory_test *out = context;
+  out->count++;
+  snprintf(out->name, sizeof(out->name), "%s", skill->name);
+  snprintf(out->description, sizeof(out->description), "%s",
+           skill->description);
+  return out->fail
+             ? cai_set_error(error, CAI_ERR_TRANSPORT, "inventory test failure")
+             : CAI_OK;
+}
+static void *test_skill_inventory_wrong_thread(void *context) {
+  skill_inventory_test *out = context;
+  cai_error error;
+  cai_error_init(&error);
+  out->rc = cai_agent_runtime_visit_skills(
+      out->runtime, test_skill_inventory_row, out, &error);
+  cai_error_cleanup(&error);
+  return NULL;
+}
+static int test_skill_inventory_empty_list(void *context,
+                                           cai_skill_provider_visit_fn visit,
+                                           void *visit_context,
+                                           cai_error *error) {
+  opaque_skill_provider_state *provider = context;
+  (void)visit;
+  (void)visit_context;
+  (void)error;
+  provider->list_calls++;
+  return CAI_OK;
+}
+static void test_agent_runtime_skills(test_state *state) {
+  cai_client_config cc;
+  cai_client *client = NULL;
+  cai_agent_runtime *runtime = NULL;
+  cai_agent_runtime_config config;
+  cai_agent_session_store store;
+  runtime_session_store_state storage;
+  cai_skill_config skills;
+  cai_skill_provider provider;
+  opaque_skill_provider_state provider_state;
+  skill_inventory_test out;
+  pthread_t thread;
+  cai_error error;
+  int i, expected;
+  cai_error_init(&error);
+  cai_client_config_init(&cc);
+  cc.api_key = "fixture";
+  cc.logger_disabled = 1;
+  expect_int(state, "skill_inventory_client",
+             cai_client_open(&cc, &client, &error), CAI_OK);
+  memset(&out, 0, sizeof(out));
+  expect_int(state, "skill_inventory_null_runtime",
+             cai_agent_runtime_visit_skills(NULL, test_skill_inventory_row,
+                                            &out, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  for (i = 0; client != NULL && i < 3; i++) {
+    memset(&provider_state, 0, sizeof(provider_state));
+    provider_state.skill_id = "opaque://catalog/skill";
+    memset(&provider, 0, sizeof(provider));
+    provider.context = &provider_state;
+    provider.list = i == 2 ? test_skill_inventory_empty_list
+                           : test_opaque_skill_provider_list;
+    provider.read = test_opaque_skill_provider_read;
+    cai_skill_config_init(&skills);
+    skills.skill_provider = &provider;
+    memset(&storage, 0, sizeof(storage));
+    memset(&store, 0, sizeof(store));
+    store.context = &storage;
+    store.checkpoint = test_runtime_session_store_checkpoint;
+    store.load_latest = test_runtime_session_store_load;
+    store.append_event = test_runtime_session_store_append_event;
+    store.load_events_after = test_runtime_session_store_load_events_after;
+    cai_agent_runtime_config_init(&config);
+    config.workspace_directory = CAI_TEST_BINARY_DIR;
+    config.session_store = &store;
+    config.skills = &skills;
+    config.disable_skills = i == 1;
+    config.logger_disabled = 1;
+    expect_int(state, "skill_inventory_open",
+               cai_agent_runtime_open(client, &config, &runtime, &error),
+               CAI_OK);
+    if (runtime == NULL)
+      continue;
+    memset(&out, 0, sizeof(out));
+    out.runtime = runtime;
+    expected = i == 0;
+    expect_int(state, "skill_inventory_visit",
+               cai_agent_runtime_visit_skills(runtime, test_skill_inventory_row,
+                                              &out, &error),
+               CAI_OK);
+    expect_int(state, "skill_inventory_count", out.count, expected);
+    if (expected) {
+      expect_str(state, "skill_inventory_name", out.name, "opaque-provider");
+      expect_str(state, "skill_inventory_description", out.description,
+                 "Read an opaque skill.");
+      out.fail = 1;
+      expect_int(state, "skill_inventory_callback_failure",
+                 cai_agent_runtime_visit_skills(
+                     runtime, test_skill_inventory_row, &out, &error),
+                 CAI_ERR_TRANSPORT);
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+      out.fail = 0;
+    }
+    out.count = 0;
+    expect_int(state, "skill_inventory_repeat",
+               cai_agent_runtime_visit_skills(runtime, test_skill_inventory_row,
+                                              &out, &error),
+               CAI_OK);
+    expect_int(state, "skill_inventory_repeat_count", out.count, expected);
+    expect_int(state, "skill_inventory_no_rediscovery",
+               provider_state.list_calls, i == 1 ? 0L : 1L);
+    expect_int(state, "skill_inventory_no_resource_reads",
+               provider_state.read_calls, expected);
+    expect_int(state, "skill_inventory_null_visitor",
+               cai_agent_runtime_visit_skills(runtime, NULL, &out, &error),
+               CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    out.count = 0;
+    if (pthread_create(&thread, NULL, test_skill_inventory_wrong_thread,
+                       &out) == 0) {
+      pthread_join(thread, NULL);
+      expect_int(state, "skill_inventory_owner_thread", out.rc,
+                 CAI_ERR_INVALID);
+      expect_int(state, "skill_inventory_owner_thread_no_visit", out.count, 0L);
+    } else
+      test_fail(state, "skill_inventory_thread", "pthread_create failed");
+    cai_agent_runtime_close(runtime);
+    runtime = NULL;
+  }
+  cai_client_close(client);
+  cai_error_cleanup(&error);
+}
+
 static void test_agent_runtime_ids(test_state *state) {
   static const char *const checkpoints[] = {
       "{\"version\":1}",
@@ -54086,6 +54229,7 @@ static const test_entry test_entries[] = {
      test_smith_review_pause_checkpoint_failure},
     {"agent_runtime_lifecycle", test_agent_runtime_lifecycle},
     {"agent_runtime_ids", test_agent_runtime_ids},
+    {"agent_runtime_skills", test_agent_runtime_skills},
     {"agent_runtime_model_switch", test_agent_runtime_model_switch},
     {"agent_runtime_controls", test_agent_runtime_controls},
     {"agent_runtime_cancel_terminal", test_agent_runtime_cancel_terminal},

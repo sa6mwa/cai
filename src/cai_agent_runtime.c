@@ -12167,6 +12167,18 @@ static const lonejson_field cai_runtime_hosted_fields[] = {
 LONEJSON_MAP_DEFINE(cai_runtime_hosted_map, cai_runtime_hosted_info,
                     cai_runtime_hosted_fields);
 
+int cai_agent_runtime_visit_skills(cai_agent_runtime *runtime,
+                                   cai_skill_visitor visitor, void *context,
+                                   cai_error *error) {
+  int rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (visitor == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID, "skill visitor is required");
+  return cai_agent_visit_skills_internal(runtime->agent, visitor, context,
+                                         error);
+}
+
 int cai_agent_runtime_visit_tools(cai_agent_runtime *runtime,
                                   cai_agent_tool_visitor visitor, void *context,
                                   cai_error *error) {

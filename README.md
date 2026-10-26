@@ -828,6 +828,13 @@ the model calls `read_skill` to load a selected `SKILL.md` and its referenced
 text resources. Skill selection happens when requested by name or when the
 task matches the description. Global skill files do not become workspace files.
 
+`/skills` shows the active runtime's loaded skill names and descriptions in a
+Markdown table. Name one in your prompt, for example `Use the my-skill skill
+for this task.` The command also works during a turn and does not rescan files
+or make model requests. It reports disabled or empty catalogs explicitly.
+SDK hosts can visit the same catalog with `cai_agent_runtime_visit_skills`;
+Lua exposes copied `{name, description}` entries through `runtime:skills()`.
+
 ```sh
 cai --install-skill ./my-skill
 cai --install-skill ./my-skill --force

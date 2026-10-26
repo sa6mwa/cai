@@ -589,6 +589,9 @@ int cai_tool_registry_register_custom_spooled_owned(
 void *cai_tool_registry_custom_context(cai_tool_registry *registry,
                                        const char *name,
                                        cai_tool_custom_spooled_fn callback);
+void *cai_tool_registry_lonejson_context(cai_tool_registry *registry,
+                                         const char *name,
+                                         cai_tool_fn callback);
 int cai_patch_tool_write_locations(cai_tool_registry *registry,
                                    const char *name, cai_sink *sink,
                                    cai_error *error);
@@ -606,6 +609,8 @@ int cai_skills_prepare(const cai_skill_config *config,
                        cai_error *error);
 void cai_skills_catalog_cleanup(cai_skill_catalog *catalog);
 int cai_skills_catalog_has_entries(const cai_skill_catalog *catalog);
+int cai_agent_visit_skills_internal(cai_agent *agent, cai_skill_visitor visitor,
+                                    void *context, cai_error *error);
 int cai_agent_register_skill_tool_owned(cai_agent *agent,
                                         cai_skill_catalog *catalog,
                                         cai_error *error);

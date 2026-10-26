@@ -656,6 +656,13 @@ required nor parsed by CAI. `read_skill` also reads package-relative supporting
 resources, rejects absolute paths, traversal, symlinks, and non-private files,
 and is bounded to 1 MiB per resource.
 
+`/skills` renders the active runtime's catalog as a Markdown table of skill
+names and descriptions. `cai_agent_runtime_visit_skills` exposes this immutable
+catalog on the owner thread, including during a turn, without provider calls
+or filesystem discovery. Lua's `runtime:skills()` returns copied name/description
+entries. Only loaded entries are listed; disabled and empty catalogs produce
+explicit messages in the TUI.
+
 Malformed, inaccessible, duplicate, or excessively large packages are skipped
 without preventing agent startup. If configured, `warning_callback` receives a
 non-fatal diagnostic; otherwise Smith routes it through the client's logger.
