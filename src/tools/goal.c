@@ -77,7 +77,8 @@ LONEJSON_MAP_DEFINE(cai_goal_result_map, cai_goal_result,
                     cai_goal_result_fields);
 
 static const char cai_goal_get_schema[] =
-    "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}";
+    "{\"type\":\"object\",\"properties\":{},\"required\":[],"
+    "\"additionalProperties\":false}";
 static const char cai_goal_create_schema[] =
     "{\"type\":\"object\",\"properties\":{\"objective\":{\"type\":\"string\","
     "\"description\":\"Concrete user-requested objective.\"},\"token_budget\":{"
@@ -342,6 +343,12 @@ int cai_agent_register_goal_tools(cai_agent *agent, cai_session *session,
                          "Get the current durable goal and its accounting.",
                          cai_goal_get_schema, &cai_goal_get_args_map,
                          cai_goal_get, error);
+  if (rc == CAI_OK) {
+    /* Codex advertises no parameters but ignores argument contents for this
+     * read-only tool. In particular, result-shaped fields cannot set a goal. */
+    rc = cai_tool_registry_ignore_arguments(impl->tools, CAI_GOAL_GET_TOOL_NAME,
+                                            error);
+  }
   if (rc == CAI_OK) {
     rc = cai_goal_register(
         impl->tools, session, CAI_GOAL_CREATE_TOOL_NAME,

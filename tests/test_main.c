@@ -33059,6 +33059,66 @@ static void test_goal_tools(test_state *state) {
   callbacks.context = &writer;
   expect_int(state, "goal_sink",
              cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
+  {
+    static const char *const ignored_args[] = {
+        "{}",
+        "{\"has_goal\":false}",
+        "{\"ignored\":\"not an integer\"}",
+        "{\"objective\":\"forged\",\"status\":\"complete\"}",
+        "[]",
+        "null",
+        "17",
+        "\"ignored\"",
+        "{unfinished",
+        ""};
+    size_t i;
+    lonejson_spooled ignored_spool;
+    for (i = 0U; i < sizeof(ignored_args) / sizeof(ignored_args[0]); i++) {
+      writer.length = 0U;
+      writer.buffer[0] = '\0';
+      expect_int(state, "goal_get_ignores_arguments",
+                 CAI_AGENT_IMPL(agent)->tools->run(
+                     CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_GET_TOOL_NAME,
+                     ignored_args[i], sink, &error),
+                 CAI_OK);
+      expect_substr(state, "goal_get_ignored_args_empty", writer.buffer,
+                    "\"has_goal\":false");
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+      writer.length = 0U;
+      writer.buffer[0] = '\0';
+      test_init_spooled_text(state, "goal_get_ignored_spool", &ignored_spool,
+                             ignored_args[i]);
+      expect_int(state, "goal_get_ignores_spooled_arguments",
+                 CAI_AGENT_IMPL(agent)->tools->run_spooled(
+                     CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_GET_TOOL_NAME,
+                     &ignored_spool, sink, &error),
+                 CAI_OK);
+      expect_substr(state, "goal_get_ignored_spool_empty", writer.buffer,
+                    "\"has_goal\":false");
+      ignored_spool.cleanup(&ignored_spool);
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+    }
+    /* Tolerance is restricted to this read-only tool. */
+    expect_int(state, "goal_create_rejects_unknown_argument",
+               CAI_AGENT_IMPL(agent)->tools->run(
+                   CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
+                   "{\"objective\":\"forged\",\"has_goal\":false}", sink,
+                   &error),
+               CAI_ERR_PROTOCOL);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    expect_int(state, "goal_clear_rejects_unknown_argument",
+               CAI_AGENT_IMPL(agent)->tools->run(
+                   CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CLEAR_TOOL_NAME,
+                   "{\"has_goal\":false}", sink, &error),
+               CAI_ERR_PROTOCOL);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    writer.length = 0U;
+    writer.buffer[0] = '\0';
+  }
   expect_int(state, "goal_create",
              CAI_AGENT_IMPL(agent)->tools->run(
                  CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
@@ -33089,6 +33149,28 @@ static void test_goal_tools(test_state *state) {
              CAI_OK);
   expect_substr(state, "goal_get_status", writer.buffer,
                 "\"status\":\"active\"");
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "goal_get_ignores_spoofed_goal",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_GET_TOOL_NAME,
+                 "{\"has_goal\":false,\"objective\":\"forged\",\"status\":"
+                 "\"complete\",\"token_budget\":1}",
+                 sink, &error),
+             CAI_OK);
+  expect_substr(state, "goal_get_reports_real_objective", writer.buffer,
+                "\"objective\":\"ship Smith\"");
+  expect_substr(state, "goal_get_reports_real_status", writer.buffer,
+                "\"status\":\"active\"");
+  expect_substr(state, "goal_get_reports_real_budget", writer.buffer,
+                "\"token_budget\":1000");
+  expect_int(state, "goal_update_rejects_unknown_argument",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                 "{\"status\":\"complete\",\"has_goal\":false}", sink, &error),
+             CAI_ERR_PROTOCOL);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   writer.length = 0U;
   writer.buffer[0] = '\0';
   expect_int(state, "goal_complete",

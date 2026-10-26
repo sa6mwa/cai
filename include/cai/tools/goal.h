@@ -10,7 +10,9 @@
 extern "C" {
 #endif
 
-/** Stable model-facing name for reading the current goal. */
+/** Stable model-facing name for reading the current goal. Like Codex, this
+ * argument-free reader ignores supplied argument contents and always returns
+ * actual session state. It never treats argument fields as goal updates. */
 #define CAI_GOAL_GET_TOOL_NAME "get_goal"
 /** Stable model-facing name for creating an explicitly requested goal. */
 #define CAI_GOAL_CREATE_TOOL_NAME "create_goal"

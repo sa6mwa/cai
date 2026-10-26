@@ -12,11 +12,11 @@ release; expect 'ONE LINE DONE'; expect 'Worked for'
 terminal_close
 # A failed tool and its diagnostic must begin outside the reasoning quote,
 # including when the final reasoning fragment has no terminating newline.
-plan '{"plan":[{"reasoning":["**Checking goal**\n\nREASONING ENDS HERE"],"tool":"get_goal","arguments":{"unexpected":true}},"AFTER TOOL FAILURE"]}'
+plan '{"plan":[{"reasoning":["**Checking goal**\n\nREASONING ENDS HERE"],"tool":"create_goal","arguments":{"unexpected":true}},"AFTER TOOL FAILURE"]}'
 terminal_start -N
 prompt 'check reasoning-to-tool boundary' 'AFTER TOOL FAILURE'
 sed -E $'s/\033\[[0-?]*[ -/]*[@-~]//g' "$term/feed" >"$root/failed-tool"
-grep -q '^\* Failed get_goal' "$root/failed-tool"
+grep -q '^\* Failed create_goal' "$root/failed-tool"
 grep -q '^\* WARN:' "$root/failed-tool"
 if grep -Eq '^.*[>│].*\* (Failed|WARN:)' "$root/failed-tool"; then fail 'tool output retained a reasoning quote'; fi
 terminal_close

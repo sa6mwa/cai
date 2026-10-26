@@ -563,6 +563,10 @@ int cai_tool_registry_set_result_commit(cai_tool_registry *registry,
                                         const char *name,
                                         cai_tool_result_commit_fn callback,
                                         cai_error *error);
+/* Argument-free readers may ignore the supplied payload entirely. The
+ * advertised schema and validation of all other tools remain unchanged. */
+int cai_tool_registry_ignore_arguments(cai_tool_registry *registry,
+                                       const char *name, cai_error *error);
 int cai_agent_register_lonejson_tool_schema_internal(
     cai_agent *agent, const char *name, const char *description,
     const char *schema_json, int strict, const lonejson_map *params_map,

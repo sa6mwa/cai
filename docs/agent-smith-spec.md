@@ -1307,7 +1307,11 @@ Goals are per-session durable state. Smith adopts Codex’s constrained public
 contract:
 
 - `get_goal` returns current status, objective, optional token budget, elapsed
-  time, token use, remaining budget, and progress accounting;
+  time, token use, remaining budget, and progress accounting. As in Codex, its
+  schema advertises no parameters but the handler ignores supplied argument
+  contents. Reading an absent goal succeeds with `has_goal: false`; fields
+  such as `has_goal` in the input cannot change session state. Validation of
+  the mutating goal tools is unchanged;
 - `create_goal` requires an explicit user/system/developer request and is
   insert-only: it fails unless no goal exists or the existing goal is
   `complete`; `blocked`, `budget_limited`, and `usage_limited` goals require

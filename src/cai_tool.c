@@ -17,6 +17,7 @@ typedef struct cai_tool_entry {
   char *schema_json;
   cai_tool_raw_input raw_input;
   int strict;
+  int ignore_arguments;
   cai_tool_kind kind;
   const lonejson_map *params_map;
   const lonejson_map *result_map;
@@ -1544,6 +1545,18 @@ int cai_tool_registry_set_result_commit(cai_tool_registry *registry,
   return CAI_OK;
 }
 
+int cai_tool_registry_ignore_arguments(cai_tool_registry *registry,
+                                       const char *name, cai_error *error) {
+  cai_tool_entry *entry = registry != NULL && name != NULL
+                              ? cai_tool_registry_find(registry, name)
+                              : NULL;
+  if (entry == NULL || entry->kind != CAI_TOOL_LONEJSON)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "argument-free lonejson tool is not registered");
+  entry->ignore_arguments = 1;
+  return CAI_OK;
+}
+
 int cai_tool_registry_register_raw(cai_tool_registry *registry,
                                    const char *name, const char *description,
                                    const char *schema_json, int strict,
@@ -2000,6 +2013,8 @@ int cai_tool_registry_run(cai_tool_registry *registry, const char *name,
   if (entry == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "tool is not registered");
   }
+  if (entry->ignore_arguments)
+    arguments_json = "{}";
   if (entry->kind == CAI_TOOL_RAW) {
     rc = cai_tool_validate_json_value(
         arguments_json, "tool arguments must be valid JSON", error);
@@ -2126,6 +2141,8 @@ int cai_tool_registry_run_spooled(cai_tool_registry *registry, const char *name,
   if (entry == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "tool is not registered");
   }
+  if (entry->ignore_arguments)
+    return cai_tool_registry_run(registry, name, "{}", output, error);
   if (entry->kind == CAI_TOOL_RAW) {
     raw_len = arguments_json->size_fn(arguments_json);
     raw_json = (char *)cai_alloc(NULL, raw_len + 1U);

@@ -5,6 +5,20 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-028: get_goal rejects result-shaped arguments tolerated by Codex
+
+- **Status:** fixed.
+- **Evidence:** the saved failing call supplied `{"has_goal":false}`. CAI's
+  typed argument validator rejected that unknown field before the read handler.
+  Codex advertises an empty-object schema but ignores argument contents.
+- **Resolution:** ignore inputs only for `get_goal`, including for spooled
+  dispatch, while returning actual goal state. Keep validation for mutating
+  tools unchanged. No global relaxation or public API/ABI change is involved.
+- **Verification:** native tests cover empty, extra, result-shaped, scalar,
+  malformed and spooled arguments, state preservation and mutating-tool
+  rejection. Mock Responses/Chat Completions and Lua application checks verify
+  successful dispatch, unchanged schema and absent-goal results without errors.
+
 ## BUG-027: Command previews print terminal escapes as unreadable text
 
 - **Status:** fixed.

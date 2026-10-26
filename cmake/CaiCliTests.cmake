@@ -352,6 +352,12 @@
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_goal_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_goal PROPERTIES TIMEOUT 45)
+    foreach(_get_goal_protocol responses chat_completions)
+      add_test(NAME cai_cli_get_goal_${_get_goal_protocol} COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_get_goal_test.sh"
+        "$<TARGET_FILE:cai_cli_mock_fixture>" "${_get_goal_protocol}")
+      set_tests_properties(cai_cli_get_goal_${_get_goal_protocol} PROPERTIES TIMEOUT 10)
+    endforeach()
     foreach(_goal_protocol responses chat_completions)
       foreach(_goal_mode interactive batch)
         add_test(NAME cai_cli_goal_pursuit_${_goal_protocol}_${_goal_mode}
