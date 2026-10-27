@@ -172,10 +172,14 @@ typedef struct cai_agent_preset_config {
   size_t file_content_max_bytes;
   /** Optional spill directory for file-reader content. */
   const char *file_content_spool_dir;
-  /** Optional terminal policy/limit override; root remains the workspace. */
+  /** Optional terminal policy/limit override; workspace remains the path base.
+   * yolo controls confinement and bypasses the terminal policy callback. */
   const cai_terminal_tool_config *terminal_tool_config;
   /** Non-zero disables the preset's one-slot terminal tools. */
   int disable_terminal;
+  /** Non-zero runs local tools with ordinary host filesystem/environment
+   * access, including delegated agents. Disabled tools stay disabled. */
+  int yolo;
   /** Optional additional directory allowed only by view_image, alongside the
    * workspace. Must already exist; NULL keeps workspace-only access.
    */

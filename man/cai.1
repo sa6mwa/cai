@@ -868,6 +868,18 @@ followed by its duration and a local
 date-time group (day of month, 24-hour clock, minute). Durations show minutes
 and seconds below an hour, hours and minutes below a day, and days, hours, and
 minutes thereafter.
+.SH EXECUTION POLICY
+.B --yolo
+disables local workspace confinement, command environment filtering, and OS
+sandboxing in tools that provide it. Set CAI_YOLO=true or [agent] yolo=true in
+config.ini for the same behavior. The default is false;
+.B --no-yolo
+overrides configuration back to restricted mode. Reviewers and subagents
+inherit the policy. HOME and all XDG_* variables are preserved in both modes.
+YOLO inherits the complete environment and ordinary user permissions. Disabled
+tools, output retention, timeouts and cancellation still apply. Smith's PTY runner
+has no OS sandbox; restricted mode scopes local tools/workdirs and filters the
+environment. Startup warns about this policy; /status shows the selected mode.
 .SH EXECUTION HISTORY
 Conversation exports include a structured execution timeline: tool inputs,
 outputs, partial output and complete errors, together with agent/harness

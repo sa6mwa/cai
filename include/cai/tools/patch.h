@@ -19,12 +19,15 @@ typedef struct cai_patch_tool_config {
   const char *name;
   /** Optional model-facing tool-description override. */
   const char *description;
-  /** Required workspace root; every changed path must remain below it. */
+  /** Required workspace base; confines changed paths unless yolo is set. */
   const char *root_path;
   /** Largest accepted patch body in bytes; zero uses the secure default. */
   size_t max_patch_bytes;
   /** Largest regular file read or written by a patch; zero uses the default. */
   size_t max_file_bytes;
+  /** Non-zero permits ordinary host paths, including outside root_path.
+   * root_path remains the base for relative patch paths. */
+  int yolo;
 } cai_patch_tool_config;
 
 /**

@@ -28,6 +28,7 @@
 extern char *realpath(const char *path, char *resolved_path);
 
 typedef struct cai_view_image_context {
+  int yolo;
   char *root_path;
   char *additional_root_path;
   char *default_workdir;
@@ -171,8 +172,9 @@ static int cai_view_image_context_new(const cai_view_image_tool_config *config,
                          "failed to allocate view_image context");
   }
   memset(context, 0, sizeof(*context));
-  rc = cai_view_image_realpath_copy(config->root_path, &context->root_path,
-                                    error);
+  context->yolo = config->yolo;
+  rc = cai_view_image_realpath_copy(config->yolo ? "/" : config->root_path,
+                                    &context->root_path, error);
   if (rc == CAI_OK) {
     rc = cai_view_image_require_directory(
         context->root_path, "view_image sandbox root must be a directory",
@@ -194,7 +196,7 @@ static int cai_view_image_context_new(const cai_view_image_tool_config *config,
     rc = cai_set_error(error, CAI_ERR_INVALID,
                        "view_image working directory escapes configured root");
   }
-  if (rc == CAI_OK && config->additional_root_path != NULL) {
+  if (rc == CAI_OK && !config->yolo && config->additional_root_path != NULL) {
     rc = cai_view_image_realpath_copy(config->additional_root_path,
                                       &context->additional_root_path, error);
     if (rc == CAI_OK) {
@@ -310,7 +312,8 @@ static int cai_view_image_open(const cai_view_image_context *context,
     return cai_set_error_detail(error, CAI_ERR_INVALID,
                                 "failed to open image file", strerror(errno));
   }
-  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1) {
+  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+      (!context->yolo && st.st_nlink != 1)) {
     close(fd);
     cai_free_mem(NULL, resolved);
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -610,6 +613,10 @@ int cai_tool_registry_register_view_image_tool(
              : CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME;
   description = config->description != NULL && config->description[0] != '\0'
                     ? config->description
+                : config->yolo
+                    ? "View a local image using ordinary host permissions. "
+                      "Relative paths use the configured working directory; "
+                      "the image is delivered as typed image content."
                     : cai_view_image_default_description;
   rc = cai_tool_registry_register_lonejson_schema_owned(
       registry, name, description, cai_view_image_schema_json, 0,

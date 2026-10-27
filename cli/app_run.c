@@ -3901,6 +3901,15 @@ static int cli_handle_command(cli_state *state, const char *line,
             effort, state->options.provider, &metrics,
             state->auth != NULL ? &state->quota : NULL, &instructions) != 0 ||
         cli_text(state, markdown, strlen(markdown)) != 0 ||
+        cli_tools_write(
+            state,
+            state->options.yolo ? "| Execution mode | YOLO (unrestricted) |\n"
+                                : "| Execution mode | Restricted (terminal has "
+                                  "no OS sandbox) |\n",
+            strlen(state->options.yolo
+                       ? "| Execution mode | YOLO (unrestricted) |\n"
+                       : "| Execution mode | Restricted (terminal has no OS "
+                         "sandbox) |\n")) != 0 ||
         cai_cli_status_ids_markdown(&ids, cli_tools_write, state) != 0 ||
         cli_text(state, mailbox_row, strlen(mailbox_row)) != 0 ||
         cai_cli_todo_status(state->runtime, cli_tools_write, state, error) !=
@@ -4765,6 +4774,15 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   rc = cai_app_bridge_publish(bridge, state.runtime, &error);
   if (rc != CAI_OK)
     goto cleanup;
+  cli_diagnostic(
+      &state, PSLOG_LEVEL_WARN,
+      state.options.yolo
+          ? "YOLO enabled: local sandbox restrictions are disabled; commands "
+            "inherit the full environment and run with your user permissions."
+          : "Sandbox restrictions enabled: local file tools are "
+            "workspace-scoped and command environments are filtered. HOME and "
+            "XDG_* are preserved. Managed terminal commands are not "
+            "OS-sandboxed. Use --yolo to disable these restrictions.");
   rc = cli_host_process(&state, &error);
   if (rc != CAI_OK)
     goto cleanup;

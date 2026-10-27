@@ -688,6 +688,7 @@ struct cai_agent_runtime {
   char *smith_terminal_shell_path;
   int smith_has_terminal_config;
   int smith_disable_terminal;
+  int smith_yolo;
   char *smith_image_directory;
   int smith_disable_default_session_store;
   cai_agent_runtime_event_fn review_event_callback;
@@ -2307,6 +2308,7 @@ static int cai_runtime_capture_preset_profile(
   }
   if (rc == CAI_OK) {
     runtime->smith_disable_terminal = config->disable_terminal ? 1 : 0;
+    runtime->smith_yolo = config->yolo;
     runtime->smith_disable_default_session_store =
         config->disable_default_session_store;
     runtime->smith_codex_compat_agents_md =
@@ -7626,6 +7628,7 @@ int cai_agent_runtime_open(cai_client *client,
   terminal_config.event_context = runtime;
   smith.terminal_tool_config = &terminal_config;
   smith.disable_terminal = runtime->terminal_enabled ? 0 : 1;
+  smith.yolo = config->yolo;
   smith.image_directory = runtime->smith_image_directory;
   if (combined_instructions != NULL) {
     smith.developer_instructions_extension = combined_instructions;
@@ -9672,6 +9675,7 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
    * the host's explicit terminal policy; the child selects its own terminal
    * capability from the review profile when it opens. */
   config.disable_terminal = parent->smith_disable_terminal;
+  config.yolo = parent->smith_yolo;
   config.image_directory = parent->smith_image_directory;
   config.session_store =
       parent->owns_local_store ? NULL : parent->session_store;
@@ -10247,6 +10251,7 @@ static int cai_runtime_open_tool_subagent(
   config.terminal_tool_config =
       parent->smith_has_terminal_config ? &parent->smith_terminal_config : NULL;
   config.disable_terminal = parent->smith_disable_terminal;
+  config.yolo = parent->smith_yolo;
   /* A child never shares its parent's browser connection. */
   config.disable_chrome = 1;
   config.disable_web_search = parent->disable_web_search;

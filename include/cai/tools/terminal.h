@@ -85,13 +85,14 @@ typedef int (*cai_terminal_policy_fn)(void *context, const char *command,
 
 /**
  * Configuration for CAI's one-slot PTY terminal tool pair. Child commands
- * receive a minimal environment: HOME is the configured workspace; PATH is
- * captured from the caller when tools are registered (a system default is used
- * if unset). LANG, LC_ALL, TERM, TMPDIR, and LESSHISTFILE are CAI-controlled.
- * Other host environment variables, including credentials, are not inherited.
+ * receive a filtered environment by default: HOME and all XDG_* variables are
+ * copied unchanged, including empty/unset values. PATH is copied, with a system
+ * fallback only when unset. LANG, LC_ALL, TERM, TMPDIR and LESSHISTFILE have
+ * controlled defaults. YOLO snapshots the complete host environment instead.
+ * This PTY runner does not provide an OS sandbox in either mode.
  */
 typedef struct cai_terminal_tool_config {
-  /** Required workspace root. Command working directories stay below it. */
+  /** Required workspace base. Workdirs are confined here unless yolo is set. */
   const char *root_path;
   /** Initial working directory below root; NULL selects root. */
   const char *default_workdir;
@@ -104,7 +105,8 @@ typedef struct cai_terminal_tool_config {
   /** Maximum retained terminal output per command; zero selects 3 MiB. */
   size_t output_max_bytes;
   /**
-   * Optional host authorization callback, invoked before every command. The
+   * Optional host authorization callback, invoked before restricted commands.
+   * YOLO bypasses this callback. The
    * callback/context remain borrowed for the registered tools' lifetime.
    */
   cai_terminal_policy_fn policy;
@@ -135,6 +137,9 @@ typedef struct cai_terminal_tool_config {
    * Values below 5000 select the 5000 millisecond minimum.
    */
   long max_poll_yield_time_ms;
+  /** Ordinary host filesystem/environment access; bypass policy callback.
+   * Zero confines workdirs and filters environment, preserving HOME/XDG_*. */
+  int yolo;
 } cai_terminal_tool_config;
 
 /**

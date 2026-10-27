@@ -154,6 +154,9 @@ F("agent", "image_generation", BOOL, RUNTIME, enable_image_generation, 0, NULL,
   "Enable provider image generation.")
 F("agent", "terminal", NOTBOOL, RUNTIME, disable_terminal, 0, NULL,
   "Enable managed terminal tools.")
+F("agent", "yolo", BOOL, RUNTIME, yolo, 0, NULL,
+  "Disable local tool confinement and command environment filtering. "
+  "Default false; applies to reviewers and subagents too.")
 F("agent", "review_subagent", NOTBOOL, RUNTIME, disable_review_subagent, 0,
   NULL, "Enable the built-in reviewer.")
 F("agent", "subagent_steering", NOTBOOL, RUNTIME, disable_subagent_steering, 0,

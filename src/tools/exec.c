@@ -1,4 +1,5 @@
 #include "../cai_internal.h"
+#include "../cai_process_environment.h"
 
 #include <cai/tools/exec.h>
 
@@ -34,6 +35,8 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_EXEC_DEFAULT_CGROUP_PARENT "/sys/fs/cgroup"
 
 typedef struct cai_exec_context {
+  int yolo;
+  char **environment;
   char *root_path;
   char *default_workdir;
   char *shell_path;
@@ -261,6 +264,7 @@ static void cai_exec_context_cleanup(void *context) {
   cai_free_mem(NULL, ctx->cgroup_parent_path);
   cai_lonejson_runtime_close(&ctx->runtime);
   cai_free_mem(NULL, ctx->output_spool_dir);
+  cai_process_environment_free(ctx->environment);
   cai_free_mem(NULL, ctx);
 }
 
@@ -330,9 +334,10 @@ static int cai_exec_context_new(const cai_exec_tool_config *config,
                          "failed to allocate exec tool context");
   }
   memset(ctx, 0, sizeof(*ctx));
-  rc = cai_exec_realpath_dup(root, &ctx->root_path, error);
+  ctx->yolo = config->yolo;
+  rc = cai_exec_realpath_dup(config->yolo ? "/" : root, &ctx->root_path, error);
   workdir = cai_exec_default_string(
-      config != NULL ? config->default_workdir : NULL, ctx->root_path);
+      config != NULL ? config->default_workdir : NULL, root);
   if (rc == CAI_OK) {
     rc = cai_exec_realpath_dup(workdir, &ctx->default_workdir, error);
   }
@@ -365,15 +370,22 @@ static int cai_exec_context_new(const cai_exec_tool_config *config,
         config != NULL ? config->cgroup_parent_path : NULL,
         "failed to allocate exec cgroup parent path", error);
   }
+  if (rc == CAI_OK) {
+    static const char *const defaults[] = {"PATH=/usr/local/bin:/usr/bin:/bin",
+                                           "TMPDIR=/tmp", "LANG=C", NULL};
+    rc = cai_process_environment_new(ctx->yolo, defaults, &ctx->environment,
+                                     error);
+  }
   if (rc != CAI_OK) {
     cai_exec_context_cleanup(ctx);
     return rc;
   }
   ctx->allow_network = config != NULL && config->allow_network ? 1 : 0;
-  ctx->allow_pty = config != NULL && config->allow_pty ? 1 : 0;
-  ctx->allow_login_shell = config != NULL && config->allow_login_shell ? 1 : 0;
+  ctx->allow_pty = ctx->yolo || (config != NULL && config->allow_pty);
+  ctx->allow_login_shell =
+      ctx->yolo || (config != NULL && config->allow_login_shell);
   ctx->enable_cgroup_limits =
-      config != NULL && config->enable_cgroup_limits ? 1 : 0;
+      !ctx->yolo && config != NULL && config->enable_cgroup_limits ? 1 : 0;
   ctx->timeout_ms = config != NULL && config->timeout_ms > 0L
                         ? config->timeout_ms
                         : CAI_EXEC_DEFAULT_TIMEOUT_MS;
@@ -957,14 +969,10 @@ static int cai_exec_build_bwrap_argv(
   if (!ctx->allow_network) {
     CAI_EXEC_BWRAP_ADD("--unshare-net");
   }
-  CAI_EXEC_BWRAP_ADD("--clearenv");
   CAI_EXEC_BWRAP_ADD("--setenv");
   CAI_EXEC_BWRAP_ADD("PATH");
   CAI_EXEC_BWRAP_ADD(
       cai_exec_bwrap_path_env(ctx, shell_path, dirs, dir_count, dir_cap));
-  CAI_EXEC_BWRAP_ADD("--setenv");
-  CAI_EXEC_BWRAP_ADD("HOME");
-  CAI_EXEC_BWRAP_ADD(ctx->root_path);
   CAI_EXEC_BWRAP_ADD("--setenv");
   CAI_EXEC_BWRAP_ADD("TMPDIR");
   CAI_EXEC_BWRAP_ADD("/tmp");
@@ -1203,7 +1211,7 @@ static void cai_exec_child_exec(const cai_exec_context *ctx,
             sizeof(dirs) / sizeof(dirs[0])) != 0) {
       _exit(127);
     }
-    execv(sandbox_path, (char *const *)(void *)argv);
+    execve(sandbox_path, (char *const *)(void *)argv, ctx->environment);
     _exit(127);
 #elif defined(__APPLE__)
     (void)dirs;
@@ -1215,7 +1223,7 @@ static void cai_exec_child_exec(const cai_exec_context *ctx,
       _exit(127);
     }
     (void)dir_count;
-    execv(sandbox_path, (char *const *)(void *)argv);
+    execve(sandbox_path, (char *const *)(void *)argv, ctx->environment);
     _exit(127);
 #else
     (void)argv;
@@ -1224,10 +1232,14 @@ static void cai_exec_child_exec(const cai_exec_context *ctx,
     _exit(127);
 #endif
   }
-  if (args->has_login && args->login && ctx->allow_login_shell) {
-    execl(shell_path, shell_path, "-lc", args->cmd, (char *)NULL);
-  } else {
-    execl(shell_path, shell_path, "-c", args->cmd, (char *)NULL);
+  {
+    const char *plain_argv[4];
+    plain_argv[0] = shell_path;
+    plain_argv[1] =
+        args->has_login && args->login && ctx->allow_login_shell ? "-lc" : "-c";
+    plain_argv[2] = args->cmd;
+    plain_argv[3] = NULL;
+    execve(shell_path, (char *const *)(void *)plain_argv, ctx->environment);
   }
   _exit(127);
 }
@@ -1805,7 +1817,7 @@ static int cai_exec_callback(void *context, const void *params, void *result,
   }
   effective_args = *args;
   effective_args.cmd = (char *)cmd;
-  if (!cai_exec_shell_allowed(ctx, effective_args.shell)) {
+  if (!ctx->yolo && !cai_exec_shell_allowed(ctx, effective_args.shell)) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "exec shell must be /bin/sh or bash");
   }
@@ -1816,8 +1828,10 @@ static int cai_exec_callback(void *context, const void *params, void *result,
   }
   use_sandbox = 0;
   sandbox_path[0] = '\0';
-  rc = cai_exec_prepare_sandbox(ctx, sandbox_path, sizeof(sandbox_path),
-                                &use_sandbox, error);
+  rc = ctx->yolo
+           ? CAI_OK
+           : cai_exec_prepare_sandbox(ctx, sandbox_path, sizeof(sandbox_path),
+                                      &use_sandbox, error);
   if (rc != CAI_OK) {
     cai_free_mem(NULL, workdir);
     return rc;
@@ -1856,7 +1870,7 @@ static int cai_exec_callback(void *context, const void *params, void *result,
         (long long)(capture.stdout_bytes + capture.stderr_bytes);
     out->cwd = cai_strdup(NULL, workdir);
     out->sandbox =
-        cai_strdup(NULL, use_sandbox ? cai_exec_sandbox_name() : "unavailable");
+        cai_strdup(NULL, use_sandbox ? cai_exec_sandbox_name() : "disabled");
     if (out->cwd == NULL || out->sandbox == NULL) {
       rc = cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to allocate exec result metadata");
@@ -1921,9 +1935,13 @@ int cai_tool_registry_register_exec_tool(cai_tool_registry *registry,
   }
   name = cai_exec_default_string(config != NULL ? config->name : NULL,
                                  CAI_EXEC_DEFAULT_TOOL_NAME);
-  description =
-      cai_exec_default_string(config != NULL ? config->description : NULL,
-                              cai_exec_default_description);
+  description = cai_exec_default_string(
+      config != NULL ? config->description : NULL,
+      config != NULL && config->yolo
+          ? "Run a shell command with ordinary user permissions and the "
+            "inherited host environment, without an OS sandbox. Relative "
+            "workdirs use the configured working directory."
+          : cai_exec_default_description);
   rc = cai_exec_join_strings(cai_exec_schema_json_parts, &schema_json,
                              "failed to allocate exec tool schema", error);
   if (rc != CAI_OK) {

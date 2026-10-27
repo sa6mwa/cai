@@ -1182,6 +1182,7 @@ int cai_client_new_preset_agent(cai_client *client,
       goto agent_tools_finished;
     }
     terminal_config.root_path = config->workspace_directory;
+    terminal_config.yolo = config->yolo;
     if (terminal_config.default_workdir == NULL) {
       terminal_config.default_workdir = config->workspace_directory;
     }
@@ -1192,6 +1193,7 @@ int cai_client_new_preset_agent(cai_client *client,
   }
   memset(&read_config, 0, sizeof(read_config));
   read_config.root_path = config->workspace_directory;
+  read_config.yolo = config->yolo;
   read_config.default_workdir = config->workspace_directory;
   read_config.content_memory_limit = config->file_content_memory_limit;
   read_config.content_max_bytes = config->file_content_max_bytes;
@@ -1207,6 +1209,7 @@ int cai_client_new_preset_agent(cai_client *client,
       (preset->tool_capabilities & CAI_AGENT_PRESET_TOOL_APPLY_PATCH) != 0UL) {
     memset(&patch_config, 0, sizeof(patch_config));
     patch_config.root_path = config->workspace_directory;
+    patch_config.yolo = config->yolo;
     rc = cai_agent_register_patch_tool(*out, &patch_config, error);
   }
   if (rc == CAI_OK &&
@@ -1214,6 +1217,7 @@ int cai_client_new_preset_agent(cai_client *client,
       cai_model_supports(agent_config.model, CAI_MODEL_CAP_IMAGE_INPUT)) {
     memset(&view_image_config, 0, sizeof(view_image_config));
     view_image_config.root_path = config->workspace_directory;
+    view_image_config.yolo = config->yolo;
     view_image_config.default_workdir = config->workspace_directory;
     view_image_config.additional_root_path = config->image_directory;
     rc = cai_agent_register_view_image_tool(*out, &view_image_config, error);
@@ -1557,6 +1561,7 @@ review_instructions_ready:
   CAI_AGENT_IMPL(*out)->instruction_status = instruction_status;
   memset(&read_config, 0, sizeof(read_config));
   read_config.root_path = config->workspace_directory;
+  read_config.yolo = config->yolo;
   read_config.default_workdir = config->workspace_directory;
   read_config.content_memory_limit = config->file_content_memory_limit;
   read_config.content_max_bytes = config->file_content_max_bytes;
@@ -1585,6 +1590,7 @@ review_instructions_ready:
     if (rc == CAI_OK && terminal_config.default_workdir == NULL) {
       terminal_config.default_workdir = config->workspace_directory;
     }
+    terminal_config.yolo = config->yolo;
     if (rc == CAI_OK) {
       rc = cai_agent_register_terminal_tools(*out, &terminal_config, error);
     }
@@ -1595,6 +1601,7 @@ review_instructions_ready:
       cai_model_supports(agent_config.model, CAI_MODEL_CAP_IMAGE_INPUT)) {
     memset(&view_image_config, 0, sizeof(view_image_config));
     view_image_config.root_path = config->workspace_directory;
+    view_image_config.yolo = config->yolo;
     view_image_config.default_workdir = config->workspace_directory;
     view_image_config.additional_root_path = config->image_directory;
     rc = cai_agent_register_view_image_tool(*out, &view_image_config, error);

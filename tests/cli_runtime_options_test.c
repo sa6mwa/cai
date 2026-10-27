@@ -385,6 +385,75 @@ static int chrome_directory_settings(const char *file, const char *workspace) {
   return failed;
 }
 
+static int yolo_settings(const char *path) {
+  char *args[5];
+  cai_cli_options options;
+  cai_agent_runtime_config runtime;
+  cai_agent_preset preset;
+  cai_skill_config skills;
+  cai_config *configuration = NULL;
+  cai_error error;
+  FILE *stream;
+  int i, failed = 0;
+  stream = fopen(path, "w");
+  if (stream == NULL)
+    return 1;
+  fputs("[agent]\nyolo = true\n", stream);
+  if (fclose(stream) != 0)
+    return 1;
+  args[0] = strdup("cai");
+  args[1] = strdup("--config");
+  args[2] = strdup(path);
+  args[3] = strdup("--yolo");
+  args[4] = NULL;
+  cai_error_init(&error);
+  unsetenv("CAI_YOLO");
+  for (i = 0; i < 3; i++) {
+    if (i == 1)
+      setenv("CAI_YOLO", "false", 1);
+    if (cai_cli_configure(i == 2 ? 4 : 3, args, &options, &configuration, NULL,
+                          &error) != 1) {
+      fprintf(stderr, "yolo settings case %d: %s\n", i,
+              error.message != NULL ? error.message : "configuration failed");
+      failed = 1;
+    } else {
+      cai_agent_runtime_config_init(&runtime);
+      cai_cli_apply_runtime_options(&options, &runtime, &preset, &skills);
+      if (runtime.yolo != (i != 1)) {
+        fprintf(stderr, "yolo settings case %d: expected %d got %d\n", i,
+                i != 1, runtime.yolo);
+        failed = 1;
+      }
+    }
+    cai_config_close(configuration);
+    configuration = NULL;
+  }
+  setenv("CAI_YOLO", "invalid", 1);
+  if (cai_cli_configure(3, args, &options, &configuration, NULL, &error) !=
+      -1) {
+    fprintf(stderr, "invalid YOLO environment accepted\n");
+    failed = 1;
+  }
+  cai_config_close(configuration);
+  configuration = NULL;
+  unsetenv("CAI_YOLO");
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
+  free(args[3]);
+  args[3] = strdup("--no-yolo");
+  if (cai_cli_configure(4, args, &options, &configuration, NULL, &error) != 1 ||
+      options.yolo) {
+    fprintf(stderr, "--no-yolo failed: %s\n",
+            error.message != NULL ? error.message : "value mismatch");
+    failed = 1;
+  }
+  cai_config_close(configuration);
+  cai_error_cleanup(&error);
+  for (i = 0; i < 4; i++)
+    free(args[i]);
+  return failed;
+}
+
 int main(int argc, char **argv) {
   static const char *const env[] = {"CAI_TODO",       "CAI_CHROME",
                                     "CAI_WEB_SEARCH", "CAI_SEARXNG",
@@ -429,6 +498,7 @@ int main(int argc, char **argv) {
   failed |= replay_settings(path);
   failed |= retained_paths(path, argv[1]);
   failed |= chrome_directory_settings(path, argv[1]);
+  failed |= yolo_settings(path);
   unlink(path);
   return failed != 0;
 }

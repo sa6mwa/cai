@@ -22,8 +22,8 @@ typedef struct cai_read_tool_config {
   /** Optional override for the model-facing tool description. */
   const char *description;
   /**
-   * Required sandbox root; all resolved paths must remain under this path and
-   * read_file rejects regular files with multiple hard links.
+   * Required workspace base. Unless yolo is set, paths must remain under it
+   * and read_file rejects regular files with multiple hard links.
    */
   const char *root_path;
   /** Optional default working directory inside `root_path`. */
@@ -34,6 +34,9 @@ typedef struct cai_read_tool_config {
   size_t content_max_bytes;
   /** Optional directory for read content spool spill files. */
   const char *content_spool_dir;
+  /** Non-zero permits host paths and hard-linked files outside root_path.
+   * Relative paths still use default_workdir (or root_path). */
+  int yolo;
 } cai_read_tool_config;
 
 /**

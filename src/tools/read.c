@@ -30,6 +30,7 @@ extern char *realpath(const char *path, char *resolved_path);
 #define CAI_LIST_FILES_TEXT_SCAN_BYTES 4096U
 
 typedef struct cai_read_context {
+  int yolo;
   char *root_path;
   char *default_workdir;
   size_t content_memory_limit;
@@ -393,7 +394,7 @@ static int cai_read_open_file_under_root(const cai_read_context *ctx,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "read path must be a regular file");
   }
-  if (st.st_nlink > 1) {
+  if (!ctx->yolo && st.st_nlink > 1) {
     cai_free_mem(NULL, resolved);
     close(fd);
     return cai_set_error(
@@ -474,6 +475,7 @@ static int cai_read_context_new(const cai_read_tool_config *config,
   cai_read_context *ctx;
   char *root;
   char *workdir;
+  struct stat workspace_stat;
   int rc;
 
   if (out == NULL) {
@@ -486,6 +488,10 @@ static int cai_read_context_new(const cai_read_tool_config *config,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "read tool root_path is required");
   }
+  if (stat(config->root_path, &workspace_stat) != 0 ||
+      !S_ISDIR(workspace_stat.st_mode))
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "read tool root_path must be a directory");
   ctx = (cai_read_context *)cai_alloc(NULL, sizeof(*ctx));
   if (ctx == NULL) {
     return cai_set_error(error, CAI_ERR_NOMEM,
@@ -494,13 +500,14 @@ static int cai_read_context_new(const cai_read_tool_config *config,
   memset(ctx, 0, sizeof(*ctx));
   root = NULL;
   workdir = NULL;
-  rc = cai_read_realpath_dup(config->root_path, &root, error);
+  ctx->yolo = config->yolo;
+  rc = cai_read_realpath_dup(config->yolo ? "/" : config->root_path, &root,
+                             error);
   if (rc == CAI_OK) {
     if (config->default_workdir != NULL && config->default_workdir[0] != '\0') {
       rc = cai_read_realpath_dup(config->default_workdir, &workdir, error);
     } else {
-      rc = cai_read_strdup_field(
-          &workdir, root, "failed to allocate read default workdir", error);
+      rc = cai_read_realpath_dup(config->root_path, &workdir, error);
     }
   }
   if (rc == CAI_OK && !cai_read_path_is_under_root(root, workdir)) {
@@ -1397,9 +1404,13 @@ int cai_tool_registry_register_read_tool(cai_tool_registry *registry,
   }
   name = cai_read_default_string(config != NULL ? config->name : NULL,
                                  CAI_READ_DEFAULT_TOOL_NAME);
-  description =
-      cai_read_default_string(config != NULL ? config->description : NULL,
-                              cai_read_default_description);
+  description = cai_read_default_string(
+      config != NULL ? config->description : NULL,
+      config != NULL && config->yolo
+          ? "Read a UTF-8 host file. Relative paths use the configured working "
+            "directory; ordinary user permissions apply. Use start_line and "
+            "end_line for large files."
+          : cai_read_default_description);
   rc = cai_tool_registry_register_lonejson_schema_owned(
       registry, name, description, cai_read_schema_json, 0, &cai_read_args_map,
       &cai_read_result_map, cai_read_callback, ctx, cai_read_context_cleanup,
@@ -1425,9 +1436,13 @@ int cai_tool_registry_register_list_files_tool(
   }
   name = cai_read_default_string(config != NULL ? config->name : NULL,
                                  CAI_LIST_FILES_DEFAULT_TOOL_NAME);
-  description =
-      cai_read_default_string(config != NULL ? config->description : NULL,
-                              cai_list_files_default_description);
+  description = cai_read_default_string(
+      config != NULL ? config->description : NULL,
+      config != NULL && config->yolo
+          ? "List host files and directories. Relative paths use the "
+            "configured working directory; recursive output is bounded by "
+            "max_entries."
+          : cai_list_files_default_description);
   rc = cai_tool_registry_register_lonejson_schema_owned(
       registry, name, description, cai_list_files_schema_json, 0,
       &cai_list_files_args_map, &cai_list_files_result_map,

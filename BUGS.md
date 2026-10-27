@@ -5,6 +5,19 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-041: Command tools replace HOME and silently filter XDG configuration
+
+- **Evidence:** Lingon notifications look under the workspace's `.lingon`:
+  both command implementations substituted workspace HOME; Smith also removed
+  all XDG settings. Its PTY runner is not an OS sandbox.
+- **Resolution:** retain actual HOME/XDG values in both modes. Explicit YOLO
+  opts out of local confinement, environment filtering, terminal policy gates
+  and the synchronous exec tool's OS sandbox. Startup and `/status` expose the
+  effective mode; defaults remain restricted, inherited by child runtimes.
+- **Verification:** native tool/environment probes and local mock-provider
+  CLI/Lua checks cover filtered/full environments, outside-workspace access,
+  reviewer inheritance, configuration precedence and unavailable Bubblewrap.
+
 ## BUG-040: Tool failures cannot be reproduced from conversation exports
 
 - **Evidence:** runtime tool-start notifications omitted arguments, failures

@@ -37066,6 +37066,22 @@ static void test_view_image_tool(test_state *state) {
              CAI_OK);
   expect_substr(state, "view_image_extra_metadata", writer.buffer,
                 "\"mime_type\":\"image/png\"");
+  cai_tool_registry_destroy(registry);
+  registry = NULL;
+  config.yolo = 1;
+  config.additional_root_path = NULL;
+  expect_int(state, "view_image_yolo_registry",
+             cai_tool_registry_new(&registry, &error), CAI_OK);
+  expect_int(
+      state, "view_image_yolo_register",
+      cai_tool_registry_register_view_image_tool(registry, &config, &error),
+      CAI_OK);
+  writer.length = 0U;
+  writer.buffer[0] = '\0';
+  expect_int(state, "view_image_yolo_outside",
+             cai_tool_registry_run(registry, CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME,
+                                   extra_args, sink, &error),
+             CAI_OK);
   cai_sink_close(sink);
   cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
@@ -37439,7 +37455,8 @@ static void test_exec_tool(test_state *state) {
                          "unset}:$HOME:$TMPDIR:$LANG\"}",
                          CAI_OK, &writer, &error) == CAI_OK) {
     expect_substr(state, "exec_env_cleared", writer.buffer, "env:unset:");
-    expect_substr(state, "exec_env_home", writer.buffer, dir_template);
+    if (getenv("HOME") != NULL)
+      expect_substr(state, "exec_env_home", writer.buffer, getenv("HOME"));
     expect_substr(state, "exec_env_tmpdir", writer.buffer, ":/tmp:");
     expect_substr(state, "exec_env_lang", writer.buffer, ":C");
     if (strstr(writer.buffer, "leaked") != NULL) {
@@ -38015,8 +38032,8 @@ static void test_terminal_tools(test_state *state) {
   char dir_template[] =
       CAI_TEST_BINARY_DIR "/test-tmp/cai-terminal-test-XXXXXX";
   static const cai_terminal_tool_config legacy_config = {
-      NULL, NULL, NULL, 20L, 300L, 32768U, NULL,
-      NULL, NULL, NULL, 0L,  0L,   0L,     0L};
+      NULL, NULL, NULL, 20L, 300L, 32768U, NULL, NULL,
+      NULL, NULL, 0L,   0L,  0L,   0L,     0};
   terminal_event_state events;
   int policy_calls;
   cai_terminal_tool_config config;
@@ -38086,8 +38103,9 @@ static void test_terminal_tools(test_state *state) {
         CAI_OK);
     expect_int(state, "terminal_sanitized_environment_secret",
                strstr(writer.buffer, "must-not-reach-model") == NULL, 1L);
-    expect_substr(state, "terminal_sanitized_environment_home", writer.buffer,
-                  dir_template);
+    if (getenv("HOME") != NULL)
+      expect_substr(state, "terminal_sanitized_environment_home", writer.buffer,
+                    getenv("HOME"));
     expect_substr(state, "terminal_sanitized_environment_less_history",
                   writer.buffer, "/dev/null");
     unsetenv("CAI_TEST_TERMINAL_SECRET");
@@ -53709,8 +53727,11 @@ static void test_mcp_raw_input_transport_failures(test_state *state) {
 #include "chat_stream_callbacks_test.inc"
 #include "chat_tool_images_test.inc"
 #include "reasoning_pending_test.inc"
+#include "yolo_test.inc"
 
 static const test_entry test_entries[] = {
+    {"yolo_environment", test_yolo_environment},
+    {"yolo_tools", test_yolo_tools},
     {"chat_image_tool_roundtrip", test_chat_image_tool_roundtrip},
     {"chat_custom_deltas", test_chat_custom_deltas},
     {"chat_reasoning_transitions", test_chat_reasoning_transitions},

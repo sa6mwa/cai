@@ -3059,6 +3059,7 @@ static int cai_lua_client_new_smith_agent(lua_State *L) {
   config.developer_instructions_extension =
       cai_lua_opt_string_field(L, 2, "developer_instructions_extension", NULL);
   config.disable_terminal = cai_lua_opt_int_field(L, 2, "disable_terminal", 0);
+  config.yolo = cai_lua_opt_bool_field(L, 2, "yolo", 0);
   config.image_directory =
       cai_lua_opt_string_field(L, 2, "image_directory", NULL);
   if (config.workspace_directory == NULL ||
@@ -3766,6 +3767,7 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   config.enable_image_generation =
       cai_lua_opt_bool_field(L, 2, "enable_image_generation", 0);
   config.disable_terminal = cai_lua_opt_bool_field(L, 2, "disable_terminal", 0);
+  config.yolo = cai_lua_opt_bool_field(L, 2, "yolo", 0);
   config.disable_web_search =
       cai_lua_opt_bool_field(L, 2, "disable_web_search", 0);
   config.disable_chrome = cai_lua_opt_bool_field(L, 2, "disable_chrome", 0);
@@ -7381,6 +7383,7 @@ static void cai_lua_exec_config(lua_State *L, int index,
       cai_lua_opt_string_field(L, index, "default_workdir", NULL);
   config->shell_path = cai_lua_opt_string_field(L, index, "shell_path", NULL);
   config->bwrap_path = cai_lua_opt_string_field(L, index, "bwrap_path", NULL);
+  config->yolo = cai_lua_opt_bool_field(L, index, "yolo", 0);
   config->sandbox_exec_path =
       cai_lua_opt_string_field(L, index, "sandbox_exec_path", NULL);
   config->allow_network = cai_lua_opt_bool_field(L, index, "allow_network", 0);
@@ -7422,6 +7425,7 @@ static void cai_lua_read_config(lua_State *L, int index,
       cai_lua_opt_size_field(L, index, "content_max_bytes", 0u);
   config->content_spool_dir =
       cai_lua_opt_string_field(L, index, "content_spool_dir", NULL);
+  config->yolo = cai_lua_opt_bool_field(L, index, "yolo", 0);
 }
 
 static int cai_lua_agent_register_revgeo(lua_State *L) {

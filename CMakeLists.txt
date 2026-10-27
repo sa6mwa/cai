@@ -707,6 +707,7 @@ set(CAI_SOURCES
   src/cai_client.c
   src/cai_conversation.c
   src/cai_env.c
+  src/cai_process_environment.c
   src/cai_config.c
   src/cai_display.c
   src/cai_error.c
@@ -1083,6 +1084,11 @@ if(CAI_BUILD_LUA)
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_execution_test.sh"
           "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host" responses lua)
         set_tests_properties(cai_app_lua_execution PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
+          ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
+        add_test(NAME cai_app_lua_yolo COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_yolo_test.sh"
+          "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host")
+        set_tests_properties(cai_app_lua_yolo PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
           ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
         add_test(NAME cai_app_lua_get_goal COMMAND bash
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_get_goal_test.sh"

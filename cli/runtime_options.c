@@ -56,6 +56,7 @@ void cai_cli_apply_runtime_options(const cai_cli_options *options,
   config->enable_image_generation =
       !options->review && options->image_generation;
   config->disable_terminal = !options->terminal;
+  config->yolo = options->yolo;
   config->disable_review_subagent = !options->review_subagent;
   config->disable_subagent_steering = !options->subagent_steering;
 }

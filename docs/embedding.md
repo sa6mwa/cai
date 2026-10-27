@@ -264,6 +264,17 @@ shows all. This affects console output only: C `replay_callback` and Lua
 `on_replay` still receive each retained journal event once, including omitted
 console turns. Logs, exports, and the full restored agent context are unchanged.
 
+Local execution policy is configured with `[agent] yolo`, `CAI_YOLO`, or
+`--yolo`/`--no-yolo`, defaulting to false. An embedded application supplies
+`{ "agent", "yolo", "true" }` as an application setting; its program-specific
+environment prefix applies normally. C runtime/preset configurations and Lua
+runtime/Smith tables expose `yolo`. Standalone C tool configurations and Lua's
+exec/read/list registration tables expose the same opt-out. It is inherited by
+reviewers and other child runtimes. `HOME` and every `XDG_*` value are preserved
+in both modes; YOLO inherits all remaining environment variables too. Ordinary
+user permissions, disabled tools, output retention, timeouts and cancellation
+still apply.
+
 Execution history is enabled by the application and is independent of pslog
 levels or host logger configuration. `event_callback` / Lua `on_event` receives
 `CAI_AGENT_EVENT_EXECUTION_RECORD` / `cai.AGENT_EVENT_EXECUTION_RECORD` with a

@@ -486,6 +486,8 @@ if(CAI_BUILD_TESTS)
     execution_record
     execution_compaction
     execution_poll_review
+    yolo_environment
+    yolo_tools
     agent_runtime_subagent
     agent_runtime_subagent_mcp_snapshot
     agent_runtime_failed_subagent_resume
@@ -1181,6 +1183,10 @@ if(CAI_BUILD_TESTS)
       "${CMAKE_CURRENT_BINARY_DIR}")
     set_tests_properties(cai_lua_reasoning_tool PROPERTIES
       LABELS "unit;local;offline" ENVIRONMENT "${CAI_LUA_TEST_ENV}" TIMEOUT 3)
+    add_test(NAME cai_lua_yolo COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_yolo_test.sh" "${CAI_LUA_EXECUTABLE}")
+    set_tests_properties(cai_lua_yolo PROPERTIES
+      LABELS "unit;local;offline" ENVIRONMENT "${CAI_LUA_TEST_ENV}" TIMEOUT 10)
     foreach(_cai_lua_context_protocol responses chat_completions)
       add_test(NAME cai_lua_context_instructions_${_cai_lua_context_protocol}
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_context_instructions_test.sh"

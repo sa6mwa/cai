@@ -644,6 +644,9 @@ typedef struct cai_agent_runtime_config {
   const cai_terminal_tool_config *terminal_tool_config;
   /** Non-zero disables Smith's one-slot terminal tools. */
   int disable_terminal;
+  /** Opt out of local tool confinement and command environment filtering.
+   * Inherited by all children; zero preserves restricted defaults. */
+  int yolo;
   /** Optional existing image-only directory for view_image, in addition to
    * the workspace. Copied for the runtime and inherited by its subagents.
    * NULL grants no additional image access.

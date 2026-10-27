@@ -16,7 +16,7 @@ typedef struct cai_exec_tool_config {
   const char *name;
   /** Optional override for the model-facing tool description. */
   const char *description;
-  /** Required sandbox root path; commands cannot operate outside it. */
+  /** Required workspace base; used as the sandbox root unless yolo is set. */
   const char *root_path;
   /** Optional initial working directory inside `root_path`. */
   const char *default_workdir;
@@ -52,6 +52,9 @@ typedef struct cai_exec_tool_config {
   size_t output_max_bytes;
   /** Optional directory for output spool spill files. */
   const char *output_spool_dir;
+  /** Non-zero bypasses OS sandbox, environment filtering, workspace and shell
+   * restrictions and cgroup policy. Ordinary user permissions still apply. */
+  int yolo;
 } cai_exec_tool_config;
 
 /** Register the sandboxed `exec_command` preset on a tool registry. */

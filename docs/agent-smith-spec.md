@@ -1230,10 +1230,16 @@ interfaces reserve a policy profile and must make a denial model-visible.
 
 No model-provided shell executable, environment mutation, path root, or
 terminal count is accepted in Smith v1. The delivered terminal constructs a
-a minimal environment: `HOME` is the scoped workspace; `PATH` is captured from
-the caller at registration, with a system default when unset. CAI supplies
-`LANG`, `LC_ALL`, `TERM`, `TMPDIR`, and `LESSHISTFILE`; other host variables
-and credentials are not inherited. The terminal stops on runtime close; it cannot
+a filtered environment by default: `HOME` and all `XDG_*` variables are copied
+unchanged, including empty/unset values; `PATH` is captured at registration,
+with a system default when unset. CAI supplies `LANG`, `LC_ALL`, `TERM`,
+`TMPDIR`, and `LESSHISTFILE`; other host variables are not inherited. The
+explicit `yolo` policy disables environment filtering, local file/workdir
+confinement and terminal policy callbacks throughout a runtime and its children.
+It also bypasses the separate synchronous exec tool's OS sandbox. Smith's
+managed PTY runner does not provide an OS sandbox. Disabled tools remain
+disabled and output retention, timeout and cancellation mechanisms remain active. The terminal
+stops on runtime close; it cannot
 continue as a hidden detached CAI thread.
 
 ## 9. Agent turn, tool loop, and steering

@@ -79,8 +79,24 @@ the standalone `cai` executable is its embedding example.
 Managed terminal commands preserve the executable `PATH` inherited when their
 tools are registered, so toolchains installed outside the system directories
 remain available. An unset `PATH` uses the system default; an explicitly empty
-value stays empty. Other environment filtering remains in effect: `HOME` is
-the workspace, and host credentials are not inherited.
+value stays empty. `HOME` and every `XDG_*` variable are preserved exactly,
+including empty and unset values. Other host variables are filtered by default.
+
+`--yolo` disables local tool confinement and command environment filtering;
+`--no-yolo` restores the default restricted mode. Set `CAI_YOLO=true` or
+`[agent] yolo = true` in config.ini for the same behavior. Precedence is CLI,
+environment, configuration, then the built-in default `false`. Embedded apps
+use their configured environment prefix (for example, `SMITH_YOLO`).
+
+YOLO commands inherit the complete environment and ordinary user filesystem
+permissions. Local read/list/patch/image tools may access paths outside the
+workspace, and reviewers/subagents inherit the selected mode. Explicitly
+disabled tools remain disabled; output retention, timeout and cancellation
+mechanisms still apply. The legacy synchronous exec preset bypasses Bubblewrap
+or sandbox-exec in YOLO mode. Smith's managed PTY runner has no OS sandbox in
+either mode: restricted mode scopes file tools and working directories and
+filters command environments. Startup warns about the effective policy and
+`/status` reports it. `!COMMAND` and `/shell` already use ordinary user access.
 
 At an idle runtime boundary, hosts can select the next-turn model with
 `cai_agent_runtime_set_model` (or Lua `runtime:set_model`). For ChatGPT

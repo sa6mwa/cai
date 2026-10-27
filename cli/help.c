@@ -210,6 +210,8 @@ static const cai_app_option options[] = {
      "Hosted image generation (default on)", 0, 1},
     {"--terminal", '\0', CAI_APP_FLAG, NULL, "Terminal tools (default on)", 0,
      1},
+    {"--yolo", '\0', CAI_APP_FLAG, NULL,
+     "Disable local sandbox restrictions (default off)", 0, 1},
     {"--review-subagent", '\0', CAI_APP_FLAG, NULL,
      "Built-in reviewer (default on)", 0, 1},
     {"--subagent-steering", '\0', CAI_APP_FLAG, NULL,

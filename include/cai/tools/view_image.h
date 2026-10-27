@@ -19,7 +19,7 @@ typedef struct cai_view_image_tool_config {
   const char *name;
   /** Optional model-facing tool-description override. */
   const char *description;
-  /** Required workspace root; image paths remain below an allowed root. */
+  /** Required workspace base; confines image paths unless yolo is set. */
   const char *root_path;
   /** Optional default working directory inside root_path; must be a directory.
    */
@@ -31,6 +31,9 @@ typedef struct cai_view_image_tool_config {
    * Relative paths still resolve against default_workdir inside root_path.
    */
   const char *additional_root_path;
+  /** Non-zero permits ordinary host image paths, including hard links.
+   * Relative paths still use default_workdir (or root_path). */
+  int yolo;
 } cai_view_image_tool_config;
 
 /**
