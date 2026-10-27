@@ -556,6 +556,10 @@ subagent. Child steering is enabled by default; CAI_SUBAGENT_STEERING and
 [agent] subagent_steering configure the same policy. Steering appears in the
 feed at its delivery boundary after a response or tool round, including on
 replay, rather than in the middle of streamed text.
+Softline owns pending input: Enter queues a normal next turn while busy,
+Alt-Enter queues steering (or marks the newest entry when the draft is empty),
+and Alt-E edits pending input. Steering stays editable until the next runtime
+response/tool boundary; ordinary queued turns follow Softline's idle delivery.
 .TP
 .BI \-\-tool-output " MODE"
 Select interactive tool previews: compact (default) or full.

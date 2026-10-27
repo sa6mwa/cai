@@ -24,7 +24,8 @@ int main(int argc, char **argv) {
   config.introduction_markdown =
       "`cai` is an example of embedding `libcai_app`: "
       "<https://github.com/sa6mwa/libcai/>.  \n"
-      "**Enter** sends your task. `/help` for commands; `cai -h` for "
+      "**Enter** sends or queues; **Alt-Enter** steers. `/help` or `cai -h` "
+      "for "
       "options.\n";
   cai_error_init(&error);
   rc = cai_app_open(&config, &app, &error);

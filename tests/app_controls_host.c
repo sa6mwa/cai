@@ -160,10 +160,13 @@ static int event(void *context, const cai_agent_runtime_event *e,
     h->starts++;
   if (e->type == CAI_AGENT_EVENT_TEXT_DELTA)
     h->text++;
-  if ((strcmp(h->mode, "observer_error") == 0 ||
-       strcmp(h->mode, "observer_interactive") == 0 ||
-       strcmp(h->mode, "close_ack") == 0) &&
-      e->type == CAI_AGENT_EVENT_TEXT_DELTA) {
+  if (((strcmp(h->mode, "observer_error") == 0 ||
+        strcmp(h->mode, "observer_interactive") == 0 ||
+        strcmp(h->mode, "close_ack") == 0) &&
+       e->type == CAI_AGENT_EVENT_TEXT_DELTA) ||
+      (strstr(h->mode, "boundary") != NULL &&
+       strstr(h->mode, "observer") != NULL &&
+       e->type == CAI_AGENT_EVENT_INPUT_BOUNDARY)) {
     send_control(h, CAI_APP_QUEUE_PROMPT, "ABANDON THIS PROMPT");
     error->code = CAI_ERR_PROTOCOL;
     error->http_status = 418;
@@ -192,14 +195,18 @@ static int event(void *context, const cai_agent_runtime_event *e,
       strcmp(h->mode, "observer_interactive") != 0 &&
       strcmp(h->mode, "close_ack") != 0 &&
       strcmp(h->mode, "replay_error") != 0 && strcmp(h->mode, "failure") != 0 &&
-      ((strcmp(h->mode, "queue") == 0 &&
+      ((strstr(h->mode, "boundary") != NULL &&
+        strstr(h->mode, "stop") != NULL &&
+        e->type == CAI_AGENT_EVENT_INPUT_BOUNDARY) ||
+       (strcmp(h->mode, "queue") == 0 &&
         e->type == CAI_AGENT_EVENT_RUN_STARTED) ||
        ((strcmp(h->mode, "interactive") == 0 ||
          strcmp(h->mode, "interactive_stop") == 0 ||
          strcmp(h->mode, "queue_goal") == 0 ||
          strcmp(h->mode, "reject") == 0) &&
         e->type == CAI_AGENT_EVENT_RUN_COMPLETED) ||
-       (strcmp(h->mode, "queue") != 0 && strcmp(h->mode, "interactive") != 0 &&
+       (strstr(h->mode, "boundary") == NULL && strcmp(h->mode, "queue") != 0 &&
+        strcmp(h->mode, "interactive") != 0 &&
         strcmp(h->mode, "interactive_stop") != 0 &&
         strcmp(h->mode, "queue_goal") != 0 && strcmp(h->mode, "reject") != 0 &&
         e->type == CAI_AGENT_EVENT_TEXT_DELTA))) {
@@ -366,7 +373,13 @@ int main(int argc, char **argv) {
   } else if (strcmp(h.mode, "cancelqueued") == 0) {
     assert(code == 0 && snapshot.outcome == CAI_APP_COMPLETED &&
            h.starts == 2 && h.acks == 2 && h.rejected == 0);
-  } else if (strcmp(h.mode, "observer_error") == 0 ||
+  } else if (strstr(h.mode, "boundary") != NULL &&
+             strstr(h.mode, "stop") != NULL) {
+    assert(code == 0 && snapshot.outcome == CAI_APP_STOPPED && h.acks == 2 &&
+           h.rejected == 1);
+  } else if ((strstr(h.mode, "boundary") != NULL &&
+              strstr(h.mode, "observer") != NULL) ||
+             strcmp(h.mode, "observer_error") == 0 ||
              strcmp(h.mode, "observer_interactive") == 0 ||
              strcmp(h.mode, "close_ack") == 0) {
     assert(code == 1 && snapshot.outcome == CAI_APP_FAILED);

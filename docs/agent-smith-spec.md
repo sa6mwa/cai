@@ -196,6 +196,15 @@ softline/libmdf event loop without timer polling. With no event receiver, CAI
 is poll-only: it queues no runtime events and the host observes only runtime
 state, so an undrained event queue cannot stall the worker.
 
+An event-driven host can opt into `synchronize_input_boundaries` to collect
+owner-thread input before the next request. The worker emits `INPUT_BOUNDARY`
+after a response/tool round and waits for its callback to return. Foreground
+children inherit this setting and forward their boundaries to the owner. Close
+and turn cancellation interrupt the wait; callback failure ends that operation.
+This option requires an event callback and a host that keeps pumping. It is off
+by default for autonomous SDK consumers. `libcai_app` enables it interactively
+so pending steering remains in Softline's editable queue until a safe seam.
+
 CAI MAY use an internal reader thread only for a blocking POSIX terminal or
 network transport. Such a thread may append bytes to CAI-owned bounded buffers
 and signal a wakeup fd; it MUST NOT call an application callback. The portable
@@ -706,9 +715,10 @@ terminal examples map `/review` to the default branch and `/review uncommitted`
 to uncommitted work. `/review base <revision>` selects the
 structured base target, `/review commit <sha>` selects the commit target, and
 any other `/review <message>` becomes the reviewer’s exact custom instruction.
-A review runtime accepts exactly one `submit_review` request; generic, queued, and
-steering inputs are rejected so its local history cannot become a second
-review's hidden context. `smith-review` rejects both `session_id` and
+A review runtime accepts exactly one `submit_review` request; generic and queued
+inputs are rejected so its local history cannot become a second review's hidden
+context. Steering can refine the active review at a response/tool boundary;
+`disable_subagent_steering` queues parent input instead. `smith-review` rejects both `session_id` and
 `resume_latest`; it generates a fresh ID, never imports or overwrites a
 caller-selected session checkpoint, and persists under a reserved namespace
 derived from its requested scope. A normal Smith runtime therefore cannot
@@ -943,8 +953,10 @@ concise descriptions. CAI does not parse slash commands: a host UI may map
 `run_review`.
 
 Starting a child journals and checkpoints the parent pause before the tool
-reports success. Parent immediate and steering submissions are rejected while
-the child is active; queued turns remain durable but cannot begin. Parent
+reports success. Parent immediate submissions are rejected while the child is
+active; steering targets that foreground child by default, or becomes queued
+parent work with `disable_subagent_steering`. Queued turns remain durable but
+cannot begin until handoff. Parent
 cancellation cancels the child. A child terminal failure or cancellation does
 not strand the parent: it yields a durable failed/cancelled handover and then
 releases the parent. The runtime emits correlated start, streamed child-event,

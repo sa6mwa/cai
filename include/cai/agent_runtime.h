@@ -195,7 +195,11 @@ typedef enum cai_agent_runtime_event_type {
    */
   CAI_AGENT_EVENT_POLICY_DIAGNOSTIC_STARTED = 32,
   /** A new provider reasoning-summary section begins before its first delta. */
-  CAI_AGENT_EVENT_REASONING_SUMMARY_STARTED = 33
+  CAI_AGENT_EVENT_REASONING_SUMMARY_STARTED = 33,
+  /** With synchronize_input_boundaries, the worker waits for this owner's
+   * callback before consuming steering and continuing. No model stream is
+   * active. The callback may submit steering using the normal runtime API. */
+  CAI_AGENT_EVENT_INPUT_BOUNDARY = 34
 } cai_agent_runtime_event_type;
 
 /**
@@ -680,6 +684,13 @@ typedef struct cai_agent_runtime_config {
   cai_agent_runtime_event_fn event_callback;
   /** Context passed to event_callback. */
   void *event_context;
+  /** Opt into owner-thread input collection at response/tool boundaries.
+   * Requires event_callback. INPUT_BOUNDARY holds the worker until pump has
+   * dispatched that callback, including through foreground subagents. Close
+   * and turn cancellation interrupt the wait. Default off for autonomous SDK
+   * consumers. Hosts must keep pumping; callbacks must not wait for inference.
+   */
+  int synchronize_input_boundaries;
   /** Optional synchronous owner-thread observer for retained journal events
    * during resume. Trimmed events are excluded. No tools are executed by this
    * observer. The event and strings are borrowed only during the callback. */

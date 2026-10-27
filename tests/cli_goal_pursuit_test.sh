@@ -72,7 +72,7 @@ plan "$(jq -n --argjson chat "$chat" '{chat:$chat,plan:[
 ]}')"
 terminal_start -N
 send 'Create a goal for queue ordering\r'; expect 'STREAM in flight'
-send 'QUEUED USER INPUT\tZ'; expect_prompt Z
+send 'QUEUED USER INPUT\rZ'; expect_prompt Z
 send '\025'; release; goal_finished 'QUEUE GOAL DONE'
 [[ $(requests) == "$((count+5))" ]]
 sed -n "$((count+3))p" "$root/peer/requests.jsonl" >"$root/queued-request"

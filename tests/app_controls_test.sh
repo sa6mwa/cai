@@ -33,6 +33,7 @@ modes=(stop stopqueued startup_stop cancel cancelqueued steer overflow goals)
 if [[ "$only" != all ]]; then modes=("$only"); fi
 if [[ "$only" == edges ]]; then modes=(review_stop queue_goal close_ack); fi
 if [[ "$only" == interactive_stop || "$only" == observer_interactive ]]; then modes=(); fi
+if [[ "$only" == boundaries ]]; then modes=(); fi
 for mode in "${modes[@]}"; do
   export CAI_TEST_APP_CONTROL="$mode" CAI_TEST_APP_RELEASE="$root/peer/release"
   plan '{"plan":[{"pause":true,"text":"First reply"},"After control"]}'
@@ -58,26 +59,34 @@ for mode in "${modes[@]}"; do
   if [[ "$mode" == cancelqueued ]]; then contains "$root/stdout" 'After control'; fi
   if [[ "$mode" == review_stop ]]; then [[ $(requests) == "$((count+1))" && ! -s "$root/stdout" ]]; fi
 done
-if [[ "$only" == edges || "$only" == interactive_stop || "$only" == observer_interactive ]]; then
+if [[ "$only" == edges || "$only" == interactive_stop || "$only" == observer_interactive || "$only" == boundaries ]]; then
   modes=(interactive_stop observer_interactive)
-  if [[ "$only" != edges ]]; then modes=("$only"); fi
+  if [[ "$only" == boundaries ]]; then
+    modes=(boundary_stop boundary_child_stop boundary_observer boundary_child_observer)
+  elif [[ "$only" != edges ]]; then modes=("$only"); fi
   unset CAI_TEST_APP_RELEASE
   for mode in "${modes[@]}"; do
     export CAI_TEST_APP_CONTROL="$mode"
     plan '{"plan":["Interactive reply","Must not request this"]}'
+    extra_requests=1
+    if [[ "$mode" == boundary_child_* ]]; then
+      report=$(jq -c . "$support/fixtures/review.json")
+      plan "$(jq -n --arg report "$report" '{plan:[{tool:"run_review",arguments:{target:"uncommitted"}},$report,"MUST NOT REQUEST"]}')"
+      extra_requests=2
+    fi
     count=$(requests)
     terminal_start -N --autoqueue
     send 'initial\r'
     wait_for test -s "$term/status"
     wait "$terminal_pid" || :
     terminal_pid=
-    if [[ "$mode" == interactive_stop ]]; then
+    if [[ "$mode" == interactive_stop || "$mode" == *boundary*stop ]]; then
       [[ $(cat "$term/status") == 0 ]]
     else
       [[ $(cat "$term/status") == 1 ]]
       absent "$term/text" 'prompt input failed'
     fi
-    [[ $(requests) == "$((count+1))" ]]
+    [[ $(requests) == "$((count+extra_requests))" ]]
     exec 7>&-
     exec {terminal_event_fd}>&-
     terminal_events=

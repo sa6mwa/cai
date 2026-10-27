@@ -2790,6 +2790,23 @@ do
   assert(cai.AGENT_PRESET_TOOL_CHROME == 2048)
 end
 
+-- Owner-thread input collection uses the same public runtime boundary in Lua.
+do
+  assert_eq(cai.AGENT_EVENT_INPUT_BOUNDARY, 34, "owner input boundary event")
+  local client = assert_ok(cai.open {api_key = "fixture", logger_disabled = true})
+  local runtime = client:new_smith_runtime {
+    workspace_directory = ".", disable_default_session_store = true,
+    synchronize_input_boundaries = true,
+  }
+  assert_not_ok(runtime, "input synchronization requires an owner callback")
+  runtime = assert_ok(client:new_smith_runtime {
+    workspace_directory = ".", disable_default_session_store = true,
+    synchronize_input_boundaries = true, event_callback = function() return true end,
+  })
+  runtime:close()
+  client:close()
+end
+
 -- The facade delegates INI parsing/environment policy to the shared C receiver.
 do
   local config = assert_ok(cai.config())

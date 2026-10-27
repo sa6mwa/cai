@@ -6,9 +6,9 @@ plan '{"plan":["STARTUP ANSWER"]}'
 run -Nni 'STARTUP USER'; ok
 [[ $(stdout_text) == 'STARTUP ANSWER' ]]
 banner='CAI Smith (C) 2026 C89 Systems AB https://c89.systems'
-introduction='Enter sends your task.'
+introduction='Enter sends or queues; Alt-Enter steers.'
 repo='https://github.com/sa6mwa/libcai/'
-cai_intro=$'cai is an example of embedding libcai_app: https://github.com/sa6mwa/libcai/.\nEnter sends your task. /help for commands; cai -h for options.'
+cai_intro=$'cai is an example of embedding libcai_app: https://github.com/sa6mwa/libcai/.\nEnter sends or queues; Alt-Enter steers. /help or cai -h for options.'
 layout() {
   awk -v banner="$1" -v intro="$2" '
     BEGIN {count=split(intro,lines,"\n")}

@@ -5,6 +5,24 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-039: Steering disappears from Softline before its delivery boundary
+
+- **Reported:** pending steering does not remain in the native editable queue;
+  CAI overrides Softline behavior instead of using its conversation profile.
+- **Evidence:** a paused-stream regression fails against the previous static
+  executable: the pending `S` entry is gone before the response finishes. The
+  earlier BUG-038 checks proved feed order but missed pending queue ownership.
+- **Resolution:** use Softline's `QUEUED_TURNS` profile and automatic normal
+  delivery. Enter queues the next turn while busy; Alt-Enter steers or promotes
+  the newest entry; Alt-E edits it. The runtime synchronizes input collection
+  with its owner at response/tool boundaries, including foreground children.
+  Pending steering stays in Softline until admission succeeds. No competing UI
+  queue or ordinary-input key handling remains.
+- **Verification:** offline real-terminal checks cover editing, promotion,
+  cancellation, queue saturation, review/worker routing and replay order. Core
+  and embedded-host checks cover callback failure, close/cancel and STOP at
+  root and child boundaries. See the task commit for the final verification.
+
 ## BUG-038: Submitted steering splits streamed assistant output
 
 - **Reported:** a user steer appears between two fragments of the same streamed
@@ -17,8 +35,8 @@ commit and verification evidence.
   assistant deltas continue directly through libmdf and Softline.
 - **Verification:** paused Responses and Chat Completions streams verify that
   trailing text/tool results precede steering. Selected-tail and replay-all
-  checks preserve that order. Queue saturation and history-write failure keep
-  input available. The native CLI, Lua application and rebuilt x86_64 musl
+  checks preserve that order. BUG-039 separately covers native pending queue
+  ownership, editing and saturation. The native CLI, Lua application and x86_64 musl
   executable pass their applicable offline regressions.
 
 ## BUG-037: Parent request after review advertises unsupported image generation
@@ -53,8 +71,9 @@ commit and verification evidence.
 - **Verification:** request captures distinguish manual review, model-launched
   review, and ordinary worker steering from parent turns. Disabled delivery
   stays in Softline's editable queue, including Alt-E/requeue; CLI overrides
-  inherited INI/environment policy. Manual queue delivery is initialized for
-  every interactive invocation, including the standalone test scaffold.
+  inherited INI/environment policy. The native Softline queue profile and
+  delivery policy are initialized for every interactive invocation, including
+  the standalone test scaffold.
 
 ## BUG-034: Reported ambiguous patch requires its actual input
 

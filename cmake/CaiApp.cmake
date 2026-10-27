@@ -121,6 +121,11 @@ if(CAI_BUILD_TESTS)
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_controls_test.sh" "$<TARGET_FILE:cai_app_controls_host>" edges)
     set_tests_properties(cai_app_control_edges PROPERTIES LABELS "cli;local;offline" TIMEOUT 10
       ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
+    add_test(NAME cai_app_input_boundaries COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_controls_test.sh"
+      "$<TARGET_FILE:cai_app_controls_host>" boundaries)
+    set_tests_properties(cai_app_input_boundaries PROPERTIES LABELS "cli;local;offline" TIMEOUT 10
+      ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
     add_test(NAME cai_app_shell_stop COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_shell_stop_test.sh"
       "$<TARGET_FILE:cai_app_controls_host>")

@@ -26835,6 +26835,114 @@ static void test_smith_review_parent_handoff(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+typedef struct runtime_boundary_test_state {
+  cai_agent_runtime *runtime;
+  pthread_t owner;
+  int mode, calls, wrong_thread;
+} runtime_boundary_test_state;
+
+static int test_runtime_input_boundary(void *context,
+                                       const cai_agent_runtime_event *event,
+                                       cai_error *error) {
+  runtime_boundary_test_state *test = context;
+  if (!pthread_equal(test->owner, pthread_self()))
+    test->wrong_thread = 1;
+  if (event->type != CAI_AGENT_EVENT_INPUT_BOUNDARY)
+    return CAI_OK;
+  test->calls++;
+  if (test->mode == 1) {
+    cai_agent_runtime_close(test->runtime);
+    test->runtime = NULL;
+    return CAI_OK;
+  }
+  if (test->mode == 2)
+    return CAI_ERR_TRANSPORT;
+  if (test->mode == 3)
+    return cai_agent_runtime_cancel_turn(test->runtime, error);
+  if (test->calls == 1)
+    return cai_agent_runtime_submit_steering(test->runtime,
+                                             "from owner boundary", error);
+  return CAI_OK;
+}
+
+static void test_agent_runtime_input_boundary(test_state *state) {
+  static const char response[] =
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n"
+      "data: "
+      "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_boundary\"}"
+      "}\n\n";
+  static const char *continuation[] = {"from owner boundary"};
+  static const mock_http_expectation script[] = {
+      {"POST /v1/responses HTTP/", NULL, 0U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, response},
+      {"POST /v1/responses HTTP/", continuation, 1U, NULL, 0U, 200, "OK",
+       "text/event-stream", NULL, response}};
+  cai_agent_runtime_config config;
+  runtime_boundary_test_state test;
+  cai_agent_run_state run_state;
+  http_mock_client mock;
+  cai_error error;
+  int mode, i, rc;
+  for (mode = 0; mode < 4; mode++) {
+    if (http_mock_client_open_script(state, "runtime_boundary", script,
+                                     mode == 0 ? 2U : 1U, &mock) != 0)
+      return;
+    memset(&test, 0, sizeof(test));
+    test.owner = pthread_self();
+    test.mode = mode;
+    cai_error_init(&error);
+    cai_agent_runtime_config_init(&config);
+    config.workspace_directory = "/tmp";
+    config.disable_default_session_store = 1;
+    config.disable_chrome = config.disable_terminal =
+        config.disable_web_search = 1;
+    config.synchronize_input_boundaries = 1;
+    expect_int(
+        state, "boundary_requires_receiver",
+        cai_agent_runtime_open(mock.client, &config, &test.runtime, &error),
+        CAI_ERR_INVALID);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    config.event_callback = test_runtime_input_boundary;
+    config.event_context = &test;
+    expect_int(
+        state, "boundary_open",
+        cai_agent_runtime_open(mock.client, &config, &test.runtime, &error),
+        CAI_OK);
+    if (test.runtime != NULL) {
+      expect_int(state, "boundary_submit",
+                 cai_agent_runtime_submit(test.runtime, "start", &error),
+                 CAI_OK);
+      run_state = CAI_AGENT_SAMPLING;
+      for (i = 0;
+           i < 30 && test.runtime != NULL && run_state == CAI_AGENT_SAMPLING;
+           i++) {
+        rc = cai_agent_runtime_pump(test.runtime, 100L, &error);
+        if (mode == 2 && rc == CAI_ERR_TRANSPORT)
+          break;
+        expect_int(state, "boundary_pump", rc, CAI_OK);
+        if (test.runtime != NULL)
+          expect_int(state, "boundary_state",
+                     cai_agent_runtime_state(test.runtime, &run_state, &error),
+                     CAI_OK);
+      }
+      expect_int(state, "boundary_called", test.calls, mode == 0 ? 2L : 1L);
+      expect_int(state, "boundary_owner_thread", test.wrong_thread, 0L);
+      if (mode == 0)
+        expect_int(state, "boundary_continued", run_state, CAI_AGENT_COMPLETED);
+      if (mode == 1)
+        expect_int(state, "boundary_callback_closed", test.runtime == NULL, 1L);
+      if (mode == 2)
+        expect_int(state, "boundary_callback_error", rc, CAI_ERR_TRANSPORT);
+      if (mode == 3)
+        expect_int(state, "boundary_cancelled", run_state, CAI_AGENT_CANCELLED);
+      cai_agent_runtime_close(test.runtime);
+    }
+    http_mock_client_close(state, "runtime_boundary", &mock);
+    cai_error_cleanup(&error);
+  }
+}
+
 static void test_agent_runtime_subagent(test_state *state) {
   static const char parent_tool_response[] =
       "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
@@ -54209,6 +54317,7 @@ static const test_entry test_entries[] = {
     {"smith_compaction_instructions", test_smith_compaction_instructions},
     {"smith_review_runtime", test_smith_review_runtime},
     {"smith_review_parent_handoff", test_smith_review_parent_handoff},
+    {"agent_runtime_input_boundary", test_agent_runtime_input_boundary},
     {"agent_runtime_subagent", test_agent_runtime_subagent},
     {"agent_runtime_subagent_mcp_snapshot",
      test_agent_runtime_subagent_mcp_snapshot},

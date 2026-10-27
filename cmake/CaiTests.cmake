@@ -481,6 +481,7 @@ if(CAI_BUILD_TESTS)
     smith_model_prompts
     smith_review_runtime
     smith_review_parent_handoff
+    agent_runtime_input_boundary
     agent_runtime_subagent
     agent_runtime_subagent_mcp_snapshot
     agent_runtime_failed_subagent_resume

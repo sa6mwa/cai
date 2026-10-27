@@ -10,7 +10,7 @@ printf 'history unicode λ\\nsecond \\\\ tab\\t\n' >"$root/expected"
 cmp "$history" "$root/expected"
 [[ $(stat -c %a "$history") == 600 && $(stat -c %a "$(dirname "$history")") == 700 ]]
 [[ ! -e "$root/state/softline" ]]
-send 'history-steering\r'; wait_for has "$history" history-steering
+send 'history-steering\033\r'; wait_for has "$history" history-steering
 release; expect_turn "$offset" HistorySteerDone
 [[ $(grep -c '^history-steering$' "$history") == 1 ]]
 send '/new\r'; expect 'New session'; expect 'ID:'; expect 'Workspace:'; expect '$ /new'

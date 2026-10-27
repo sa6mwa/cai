@@ -3758,6 +3758,8 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
       cai_lua_opt_bool_field(L, 2, "disable_review_subagent", 0);
   config.disable_subagent_steering =
       cai_lua_opt_bool_field(L, 2, "disable_subagent_steering", 0);
+  config.synchronize_input_boundaries =
+      cai_lua_opt_bool_field(L, 2, "synchronize_input_boundaries", 0);
   config.developer_instructions_extension =
       cai_lua_opt_string_field(L, 2, "developer_instructions_extension", NULL);
   config.enable_image_generation =
@@ -12566,6 +12568,8 @@ int luaopen_cai(lua_State *L) {
                       CAI_AGENT_EVENT_POLICY_DIAGNOSTIC_STARTED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_REASONING_SUMMARY_STARTED",
                       CAI_AGENT_EVENT_REASONING_SUMMARY_STARTED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_INPUT_BOUNDARY",
+                      CAI_AGENT_EVENT_INPUT_BOUNDARY);
   CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_MCP", CAI_AGENT_TOOL_ACTION_MCP);
   CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_CHROME", CAI_AGENT_TOOL_ACTION_CHROME);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_COMPACTION_STARTED",

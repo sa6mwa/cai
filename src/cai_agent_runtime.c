@@ -596,6 +596,9 @@ struct cai_agent_runtime {
   /* Inline compaction is a distinct non-steerable task, as in Codex. */
   int compacting;
   int accepting_steering;
+  int synchronize_input_boundaries;
+  unsigned long long input_boundary_sequence;
+  int input_boundary_result;
   cai_agent_run_state state;
   /* A terminal lifecycle event is queued but has not reached the host yet.
    * Public state stays non-terminal until pump dispatches it, so consumers
@@ -753,6 +756,23 @@ static unsigned int cai_runtime_session_id_counter = 0U;
 static int cai_runtime_session_id_initialized = 0;
 
 static void cai_agent_runtime_destroy(cai_agent_runtime *runtime);
+static int cai_runtime_wait_input_boundary_locked(cai_agent_runtime *runtime,
+                                                  int observe_turn_cancel,
+                                                  cai_error *error) {
+  while (runtime->input_boundary_sequence != 0U && !runtime->stopping &&
+         !(observe_turn_cancel && runtime->turn_cancel_requested))
+    pthread_cond_wait(&runtime->condition, &runtime->lock);
+  if (runtime->stopping ||
+      (observe_turn_cancel && runtime->turn_cancel_requested)) {
+    runtime->input_boundary_sequence = 0U;
+    return cai_set_error(error, CAI_ERR_CANCELLED,
+                         "input boundary was cancelled");
+  }
+  return runtime->input_boundary_result == CAI_OK
+             ? CAI_OK
+             : cai_set_error(error, runtime->input_boundary_result,
+                             "input boundary observer failed");
+}
 
 static int cai_runtime_refresh_goal_projection(cai_agent_runtime *runtime,
                                                cai_error *error);
@@ -1418,6 +1438,11 @@ static int cai_runtime_forward_subagent_event(
   }
   if (rc == CAI_OK) {
     cai_runtime_append_event_node_locked(parent, node);
+    if (event->type == CAI_AGENT_EVENT_INPUT_BOUNDARY) {
+      parent->input_boundary_result = CAI_OK;
+      parent->input_boundary_sequence = node->event.sequence;
+      rc = cai_runtime_wait_input_boundary_locked(parent, 0, error);
+    }
   } else {
     cai_runtime_event_node_free(node);
   }
@@ -4522,9 +4547,25 @@ static int cai_runtime_terminal_event(void *context,
   return rc;
 }
 
-static int cai_runtime_deliver_steering_after_tool_round(void *context,
-                                                         cai_session *session,
-                                                         cai_error *error) {
+static int cai_runtime_collect_owner_input(cai_agent_runtime *runtime,
+                                           cai_error *error) {
+  int rc;
+  if (!runtime->synchronize_input_boundaries)
+    return CAI_OK;
+  pthread_mutex_lock(&runtime->lock);
+  rc = cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_INPUT_BOUNDARY, NULL,
+                                  0U, NULL, NULL, runtime->state, error);
+  if (rc == CAI_OK) {
+    runtime->input_boundary_result = CAI_OK;
+    runtime->input_boundary_sequence = runtime->next_sequence;
+    rc = cai_runtime_wait_input_boundary_locked(runtime, 1, error);
+  }
+  pthread_mutex_unlock(&runtime->lock);
+  return rc;
+}
+
+static int cai_runtime_deliver_steering(void *context, cai_session *session,
+                                        cai_error *error) {
   cai_agent_runtime *runtime;
   cai_runtime_input_node *input;
   unsigned long long consumed_sequence;
@@ -4612,6 +4653,15 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
   return rc;
 }
 
+static int cai_runtime_deliver_steering_after_tool_round(void *context,
+                                                         cai_session *session,
+                                                         cai_error *error) {
+  cai_agent_runtime *runtime = context;
+  int rc = cai_runtime_collect_owner_input(runtime, error);
+  return rc != CAI_OK ? rc
+                      : cai_runtime_deliver_steering(runtime, session, error);
+}
+
 static int cai_runtime_checkpoint_durable_tool_round(void *context,
                                                      cai_session *session,
                                                      cai_error *error) {
@@ -4678,8 +4728,7 @@ cai_runtime_deliver_steering_after_response(cai_agent_runtime *runtime,
   int has_pending;
   int rc;
 
-  rc = cai_runtime_deliver_steering_after_tool_round(runtime, runtime->session,
-                                                     error);
+  rc = cai_runtime_deliver_steering(runtime, runtime->session, error);
   if (rc == CAI_OK ||
       (rc == CAI_ERR_LIMIT && cai_runtime_goal_budget_limited(runtime))) {
     int commit_rc;
@@ -5679,6 +5728,9 @@ static void *cai_runtime_worker(void *context) {
                            "agent turn was cancelled");
         break;
       }
+      rc = cai_runtime_collect_owner_input(runtime, &error);
+      if (rc != CAI_OK)
+        break;
       pthread_mutex_lock(&runtime->lock);
       if (runtime->steering_head == NULL &&
           runtime->goal_control_head == NULL) {
@@ -7323,6 +7375,9 @@ int cai_agent_runtime_open(cai_client *client,
     effective_preset.review_tool_capabilities &= ~disabled;
   }
   preset = &effective_preset;
+  if (config->synchronize_input_boundaries && config->event_callback == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "synchronized input requires an event callback");
   review_mode = config->preset != NULL &&
                 strcmp(config->preset, CAI_SMITH_REVIEW_PRESET) == 0;
   resumed_checkpoint = 0;
@@ -7395,6 +7450,7 @@ int cai_agent_runtime_open(cai_client *client,
   runtime->replay_context = config->replay_context;
   runtime->record_transcript = config->record_transcript ? 1 : 0;
   runtime->event_context = config->event_context;
+  runtime->synchronize_input_boundaries = config->synchronize_input_boundaries;
   if (config->logger != NULL) {
     runtime->logger = config->logger;
     runtime->logger_disabled = config->logger_disabled;
@@ -8055,9 +8111,9 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
                          "review launch has not reached a durable boundary");
   }
   if (kind == CAI_RUNTIME_INPUT_STEERING &&
-      (runtime->subagent_active || runtime->active_review != NULL ||
-       runtime->review_launching || runtime->review_pause_pending ||
-       runtime->compacting ||
+      (runtime->turn_cancel_requested || runtime->subagent_active ||
+       runtime->active_review != NULL || runtime->review_launching ||
+       runtime->review_pause_pending || runtime->compacting ||
        (runtime->state != CAI_AGENT_SAMPLING &&
         runtime->state != CAI_AGENT_DISPATCHING_TOOL) ||
        !runtime->accepting_steering)) {
@@ -8837,6 +8893,17 @@ int cai_agent_runtime_cancel_turn(cai_agent_runtime *runtime,
                          "cancel_turn requires an active agent turn");
   }
   runtime->turn_cancel_requested = 1;
+  {
+    cai_agent_runtime *child = runtime->active_subagent != NULL
+                                   ? runtime->active_subagent
+                                   : runtime->active_review;
+    if (child != NULL) {
+      pthread_mutex_lock(&child->lock);
+      child->turn_cancel_requested = 1;
+      pthread_cond_broadcast(&child->condition);
+      pthread_mutex_unlock(&child->lock);
+    }
+  }
   pthread_cond_broadcast(&runtime->condition);
   pthread_mutex_unlock(&runtime->lock);
   return CAI_OK;
@@ -9523,6 +9590,7 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
   config.steering_queue_limit = parent->steering_limit;
   config.turn_queue_limit = parent->turn_limit;
   config.event_callback = parent->review_event_callback;
+  config.synchronize_input_boundaries = parent->synchronize_input_boundaries;
   config.event_context = parent->review_event_context;
   config.logger = parent->logger;
   config.logger_disabled = parent->logger_disabled;
@@ -10108,6 +10176,7 @@ static int cai_runtime_open_tool_subagent(
             : 0;
   }
   config.disable_review_subagent = 1;
+  config.synchronize_input_boundaries = parent->synchronize_input_boundaries;
   return cai_agent_runtime_open(parent->client, &config, out, error);
 }
 
@@ -12045,6 +12114,7 @@ int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
   cai_runtime_event_node *node;
   int close_deferred;
   int terminal_event;
+  int input_boundary;
   int rc;
 
   rc = cai_runtime_owner(runtime, error);
@@ -12079,6 +12149,8 @@ int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
                                  &deadline);
   }
   while ((node = runtime->event_head) != NULL) {
+    input_boundary = node->event.type == CAI_AGENT_EVENT_INPUT_BOUNDARY &&
+                     node->event.sequence == runtime->input_boundary_sequence;
     terminal_event = node->event.type == CAI_AGENT_EVENT_RUN_COMPLETED ||
                      node->event.type == CAI_AGENT_EVENT_RUN_FAILED ||
                      node->event.type == CAI_AGENT_EVENT_RUN_CANCELLED;
@@ -12094,6 +12166,11 @@ int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
       if (rc != CAI_OK) {
         cai_runtime_event_node_free(node);
         pthread_mutex_lock(&runtime->lock);
+        if (input_boundary) {
+          runtime->input_boundary_result = rc;
+          runtime->input_boundary_sequence = 0U;
+          pthread_cond_broadcast(&runtime->condition);
+        }
         if (terminal_event) {
           runtime->terminal_event_pending = 0;
           pthread_cond_broadcast(&runtime->condition);
@@ -12103,6 +12180,11 @@ int cai_agent_runtime_pump(cai_agent_runtime *runtime, long timeout_ms,
     }
     cai_runtime_event_node_free(node);
     pthread_mutex_lock(&runtime->lock);
+    if (input_boundary) {
+      runtime->input_boundary_result = CAI_OK;
+      runtime->input_boundary_sequence = 0U;
+      pthread_cond_broadcast(&runtime->condition);
+    }
     if (terminal_event) {
       runtime->terminal_event_pending = 0;
       pthread_cond_broadcast(&runtime->condition);

@@ -154,15 +154,23 @@ hardlinked image files are rejected.
 Slash commands echo as plain `$ /command` input rows. The reasoning title is
 rendered through libmdf with ANSI disabled; Softline owns the gray `! ` line.
 
-Enter starts an idle turn or steers active work. Tab queues a normal next turn.
-Pending input uses Softline's native queue; a steering prompt appears in the
+Softline's queued-turns profile handles conversation input: Enter starts an
+idle turn or queues the next turn while busy. Alt-Enter queues steering, or
+marks the newest pending entry as steering when the editor is empty. Alt-E
+edits pending input. Entries remain in Softline until the runtime's next
+response/tool boundary; no duplicate UI queue or key remapping is used.
+A steering prompt appears in the
 conversation feed only when the runtime inserts it after the current response
 or tool round. It never interrupts streamed assistant text. Resume uses those
 same delivery boundaries. Foreground reviewers and other subagents receive
 steering by default. `--no-subagent-steering` leaves it queued for the parent
 instead; `CAI_SUBAGENT_STEERING` and `[agent] subagent_steering` configure the
 same policy. The C runtime field is `disable_subagent_steering`, also accepted
-by Lua runtime constructors.
+by Lua runtime constructors. SDK hosts that collect input on the owner thread
+can set `synchronize_input_boundaries` and handle `INPUT_BOUNDARY` in their
+event callback; the worker resumes after that callback returns. The setting is
+inherited by children and requires an event callback. Lua exports the same
+setting and `AGENT_EVENT_INPUT_BOUNDARY` constant.
 
 Interactive prompt recall uses Softline's native store under
 `$XDG_STATE_HOME/cai/history/`, falling back to
