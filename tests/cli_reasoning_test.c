@@ -340,8 +340,9 @@ static int test_output_failure(int operation) {
     replay.data = event.data;
     if (operation == 5)
       state.options.replay_turns = -1L;
-    rc = operation == 9 ? cli_replay_render(&state, &replay, NULL)
-                        : cli_replay_event(&state, &replay, NULL);
+    rc = operation == 9 || operation == 5
+             ? cli_replay_render(&state, &replay, NULL)
+             : cli_replay_event(&state, &replay, NULL);
   }
 cleanup:
   if (state.notice_renderer != NULL)

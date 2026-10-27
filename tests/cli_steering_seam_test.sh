@@ -181,6 +181,10 @@ if [[ "$protocol" == responses ]]; then
   contains "$root/request" ', a code reviewer'
   ordered_feed '> REVIEWER_STEER' '# Review findings'
   terminal_close
+  terminal_start
+  expect '> REVIEWER_STEER'; expect 'Fix parser'
+  ordered_feed '> REVIEWER_STEER' '# Review handoff' "$term/text"
+  terminal_close
 
   # Model-launched reviewer uses the same foreground-child routing.
   terminal_start -N

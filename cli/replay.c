@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "replay.h"
 #include "pouch_stream.h"
+#include <cai/execution.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,13 +19,74 @@ typedef struct replay_input {
   unsigned long long sequence;
   int turn;
 } replay_input;
+typedef struct replay_child {
+  struct replay_child *next;
+  char *id;
+  unsigned long long first_text, first_markdown, hidden_first, hidden_last;
+} replay_child;
 struct cai_cli_replay {
   replay_entry *first, *last;
   replay_input *inputs, *inputs_last;
+  replay_child *children;
   size_t limit, count, omitted;
   unsigned long long through;
   int journal_v2, merge_shell;
 };
+
+static int child_feed(cai_cli_replay *r, const cai_agent_session_event *event,
+                      cai_error *error) {
+  replay_child *child;
+  cai_execution_record record;
+  cai_error ignored;
+  int rc = CAI_OK;
+  if (strcmp(event->type, "subagent") != 0 &&
+      strcmp(event->type, "execution") != 0)
+    return CAI_OK;
+  cai_execution_record_init(&record);
+  cai_error_init(&ignored);
+  /* Corrupt presentation records are diagnosed by the renderer, without
+   * preventing restoration of the rest of the conversation. */
+  if (cai_execution_record_parse(event->data, &record, &ignored) != CAI_OK ||
+      record.subagent == NULL || strcmp(record.subagent, "review") != 0)
+    goto done;
+  for (child = r->children; child != NULL; child = child->next)
+    if (strcmp(child->id, record.session_id) == 0)
+      break;
+  if (child == NULL) {
+    child = calloc(1U, sizeof(*child));
+    if (child == NULL || (child->id = strdup(record.session_id)) == NULL) {
+      free(child);
+      rc = cai_cli_error(error, CAI_ERR_NOMEM, "index reviewer output range");
+      goto done;
+    }
+    child->next = r->children;
+    r->children = child;
+  }
+  if ((strcmp(event->type, "execution") == 0 &&
+       strcmp(record.kind, "tool.started") == 0) ||
+      (strcmp(event->type, "subagent") == 0 &&
+       strcmp(record.kind, "input_consumed") == 0))
+    child->first_text = 0U;
+  else if (strcmp(event->type, "subagent") == 0 &&
+           strcmp(record.kind, "assistant_text_delta") == 0 &&
+           child->first_text == 0U)
+    child->first_text = record.source_sequence;
+  else if (strcmp(event->type, "subagent") == 0 &&
+           strcmp(record.kind, "review_markdown_delta") == 0 &&
+           child->first_markdown == 0U)
+    child->first_markdown = record.source_sequence;
+  else if (strcmp(event->type, "subagent") == 0 &&
+           strcmp(record.kind, "review_markdown_end") == 0 &&
+           child->first_text != 0U &&
+           child->first_markdown > child->first_text) {
+    child->hidden_first = child->first_text;
+    child->hidden_last = child->first_markdown - 1U;
+  }
+done:
+  cai_execution_record_cleanup(&record);
+  cai_error_cleanup(&ignored);
+  return rc;
+}
 
 static void entry_free(replay_entry *entry) {
   free(entry->ranges);
@@ -91,6 +153,9 @@ int cai_cli_replay_feed(cai_cli_replay *r, const cai_agent_session_event *event,
   int steering = strcmp(type, "steering_queued") == 0;
   int rc = CAI_OK;
   r->through = event->sequence;
+  rc = child_feed(r, event, error);
+  if (rc != CAI_OK)
+    return rc;
   if (strcmp(type, "replay_event_omitted") == 0)
     return CAI_OK;
   if (strcmp(type, "input_journal_v2") == 0)
@@ -150,7 +215,7 @@ int cai_cli_replay_feed(cai_cli_replay *r, const cai_agent_session_event *event,
   if (rc == CAI_OK && r->last == NULL &&
       (strcmp(type, "assistant_text_delta") == 0 ||
        strcmp(type, "policy_diagnostic") == 0 ||
-       strcmp(type, "execution") == 0))
+       strcmp(type, "subagent") == 0 || strcmp(type, "execution") == 0))
     rc = entry_begin(r, error);
   return rc == CAI_OK ? entry_add(r, event->sequence, error) : rc;
 }
@@ -193,9 +258,20 @@ unsigned long long cai_cli_replay_last(const cai_cli_replay *r) {
   return r->through;
 }
 size_t cai_cli_replay_omitted(const cai_cli_replay *r) { return r->omitted; }
+int cai_cli_replay_child_text_visible(const cai_cli_replay *r, const char *id,
+                                      unsigned long long sequence) {
+  const replay_child *child;
+  if (r == NULL || id == NULL)
+    return 1;
+  for (child = r->children; child != NULL; child = child->next)
+    if (strcmp(child->id, id) == 0 && child->hidden_first != 0U)
+      return sequence < child->hidden_first || sequence > child->hidden_last;
+  return 1;
+}
 void cai_cli_replay_close(cai_cli_replay *r) {
   replay_entry *entry;
   replay_input *input;
+  replay_child *child;
   if (r == NULL)
     return;
   while ((entry = r->first) != NULL) {
@@ -205,6 +281,11 @@ void cai_cli_replay_close(cai_cli_replay *r) {
   while ((input = r->inputs) != NULL) {
     r->inputs = input->next;
     free(input);
+  }
+  while ((child = r->children) != NULL) {
+    r->children = child->next;
+    free(child->id);
+    free(child);
   }
   free(r);
 }

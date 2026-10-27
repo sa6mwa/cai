@@ -380,6 +380,11 @@
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_execution_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>" "${_steering_protocol}")
       set_tests_properties(cai_cli_execution_${_steering_protocol} PROPERTIES TIMEOUT 15)
+      add_test(NAME cai_cli_subagent_replay_${_steering_protocol} COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_subagent_replay_test.sh"
+        "$<TARGET_FILE:cai_cli_mock_fixture>" "${_steering_protocol}")
+      set_tests_properties(cai_cli_subagent_replay_${_steering_protocol}
+        PROPERTIES TIMEOUT 20)
       add_test(NAME cai_cli_steering_seam_${_steering_protocol} COMMAND bash
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_steering_seam_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>" "${_steering_protocol}" worker)

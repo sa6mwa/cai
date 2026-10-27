@@ -6,6 +6,8 @@ typedef struct cai_runtime_execution_stream {
   char bytes[CAI_EXECUTION_CHUNK_BYTES + 4U];
   size_t length;
   int next_line_start;
+  const char *journal_type;
+  int journal_only;
 } cai_runtime_execution_stream;
 
 static void cai_runtime_execution_init(cai_runtime_execution_stream *s,
@@ -44,26 +46,17 @@ static int cai_runtime_execution_emit_locked(cai_runtime_execution_stream *s,
   s->record.data[count] = '\0';
   s->record.final = final;
   s->record.line_start = s->next_line_start;
-  s->record.source_sequence = s->runtime->session_store != NULL
-                                  ? s->runtime->next_event_sequence + 1U
-                                  : 0U;
+  if (!s->journal_only)
+    s->record.source_sequence = s->runtime->session_store != NULL
+                                    ? s->runtime->next_event_sequence + 1U
+                                    : 0U;
   rc = cai_execution_record_json(&s->record, &json, error);
   if (rc == CAI_OK)
-    rc = cai_runtime_append_journal_event_locked(s->runtime, "execution", json,
-                                                 NULL, error);
-  if (rc == CAI_OK && s->runtime->execution_direct_parent != NULL) {
-    cai_agent_runtime *parent = s->runtime->execution_direct_parent;
-    /* Respect parent-before-child lock ordering used by cancellation. The
-     * source record is already durable, so input admission may interleave.
-     * No source store operation is active while appending the parent copy. */
-    pthread_mutex_unlock(&s->runtime->lock);
-    pthread_mutex_lock(&parent->lock);
-    rc = cai_runtime_append_journal_event_locked(parent, "execution", json,
-                                                 NULL, error);
-    pthread_mutex_unlock(&parent->lock);
-    pthread_mutex_lock(&s->runtime->lock);
-  }
-  if (rc == CAI_OK && pthread_equal(s->runtime->owner_thread, pthread_self())) {
+    rc = cai_runtime_append_journal_event_locked(
+        s->runtime, s->journal_type != NULL ? s->journal_type : "execution",
+        json, NULL, error);
+  if (rc == CAI_OK && !s->journal_only &&
+      pthread_equal(s->runtime->owner_thread, pthread_self())) {
     cai_error notice;
     cai_error_init(&notice);
     /* Synchronous owner operations cannot wait for their own event pump.
@@ -72,7 +65,7 @@ static int cai_runtime_execution_emit_locked(cai_runtime_execution_stream *s,
         s->runtime, CAI_AGENT_EVENT_EXECUTION_RECORD, json, strlen(json),
         s->record.tool_name, s->record.call_id, s->runtime->state, &notice);
     cai_error_cleanup(&notice);
-  } else if (rc == CAI_OK)
+  } else if (rc == CAI_OK && !s->journal_only)
     rc = cai_runtime_enqueue_locked(
         s->runtime, CAI_AGENT_EVENT_EXECUTION_RECORD, json, strlen(json),
         s->record.tool_name, s->record.call_id, s->runtime->state, error);
@@ -349,12 +342,113 @@ static int cai_runtime_execution_parent(cai_agent_runtime *child,
   child->execution_parent_session = cai_strdup(NULL, parent->session_id);
   child->execution_parent_call = cai_strdup(NULL, call);
   child->execution_subagent = cai_strdup(NULL, profile);
-  return child->execution_parent_session != NULL &&
-                 child->execution_parent_call != NULL &&
-                 child->execution_subagent != NULL
-             ? CAI_OK
-             : cai_set_error(error, CAI_ERR_NOMEM,
-                             "retain execution parent identity");
+  if (child->execution_parent_session != NULL &&
+      child->execution_parent_call != NULL &&
+      child->execution_subagent != NULL) {
+    if (parent->record_transcript)
+      child->journal_parent = parent;
+    return CAI_OK;
+  }
+  return cai_set_error(error, CAI_ERR_NOMEM,
+                       "retain execution parent identity");
+}
+
+/* Copy the child's durable journal, rather than whichever live observations
+ * a host happens to pump. Parent sequence numbers order delivery; the bounded
+ * envelope retains the child sequence and delegation identity. Each forwarder
+ * retains only a bounded source chunk; no additional worker or whole journal
+ * is staged. Source and destination locks are never held together. */
+static int
+cai_runtime_mirror_journal_locked(cai_agent_runtime *child,
+                                  const cai_agent_session_event *event,
+                                  cai_error *error) {
+  cai_agent_runtime *parent = child->journal_parent;
+  cai_runtime_execution_stream s;
+  struct timespec now;
+  int rc;
+  /* Admission can run concurrently with inference. Envelope identity is
+   * immutable; unlike worker-generated execution records it must not inspect
+   * the child's model or last-response pointers while its session changes. */
+  memset(&s, 0, sizeof(s));
+  s.record.kind = event->type;
+  s.record.session_id = child->session_id;
+  s.record.parent_session_id = child->execution_parent_session;
+  s.record.parent_call_id = child->execution_parent_call;
+  s.record.subagent = child->execution_subagent;
+  s.next_line_start = 1;
+  if (clock_gettime(CLOCK_REALTIME, &now) == 0)
+    s.record.timestamp_ns = (unsigned long long)now.tv_sec * 1000000000ULL +
+                            (unsigned long long)now.tv_nsec;
+  s.runtime = parent;
+  s.record.source_sequence = event->sequence;
+  s.journal_type = "subagent";
+  s.journal_only = 1;
+  pthread_mutex_unlock(&child->lock);
+  if (strcmp(event->type, "execution") == 0 ||
+      strcmp(event->type, "subagent") == 0) {
+    pthread_mutex_lock(&parent->lock);
+    rc = cai_runtime_append_journal_event_locked(parent, event->type,
+                                                 event->data, NULL, error);
+    pthread_mutex_unlock(&parent->lock);
+  } else {
+    rc = event->data != NULL ? cai_runtime_execution_write(
+                                   &s, event->data, strlen(event->data), error)
+                             : CAI_OK;
+    if (rc == CAI_OK)
+      rc = cai_runtime_execution_emit(&s, s.length, 1, error);
+  }
+  pthread_mutex_lock(&child->lock);
+  return rc;
+}
+
+/* A delivered prompt has the same full-string presentation contract as a
+ * normal user prompt. Preserve that projection at its actual seam, including
+ * poll-only/manual reviews. Attributed source queue/receipt events above
+ * remain the complete inspection record; this projection is never model input.
+ */
+static int cai_runtime_child_input_projection_locked(cai_agent_runtime *child,
+                                                     const char *text,
+                                                     cai_error *error) {
+  cai_agent_runtime *parent = child->journal_parent;
+  int rc;
+  if (parent == NULL)
+    return CAI_OK;
+  pthread_mutex_unlock(&child->lock);
+  pthread_mutex_lock(&parent->lock);
+  rc = cai_runtime_append_journal_event_locked(parent, "subagent_input", text,
+                                               NULL, error);
+  pthread_mutex_unlock(&parent->lock);
+  pthread_mutex_lock(&child->lock);
+  return rc;
+}
+
+/* Validation already owns a bounded complete report. Persist its readable
+ * projection in bounded UTF-8 chunks, so parent replay does not depend on
+ * reconstructing a child runtime or accepting raw JSON as findings. */
+static int cai_runtime_review_markdown_locked(cai_agent_runtime *runtime,
+                                              const char *markdown,
+                                              cai_error *error) {
+  char chunk[CAI_EXECUTION_CHUNK_BYTES + 1U];
+  size_t remaining = strlen(markdown), n;
+  int rc = CAI_OK;
+  while (remaining != 0U && rc == CAI_OK) {
+    n = remaining < CAI_EXECUTION_CHUNK_BYTES ? remaining
+                                              : CAI_EXECUTION_CHUNK_BYTES;
+    n = cai_runtime_execution_utf8_prefix(markdown, n);
+    if (n == 0U)
+      return cai_set_error(error, CAI_ERR_PROTOCOL,
+                           "invalid review Markdown UTF-8");
+    memcpy(chunk, markdown, n);
+    chunk[n] = '\0';
+    rc = cai_runtime_append_journal_event_locked(
+        runtime, "review_markdown_delta", chunk, NULL, error);
+    markdown += n;
+    remaining -= n;
+  }
+  if (rc == CAI_OK)
+    rc = cai_runtime_append_journal_event_locked(runtime, "review_markdown_end",
+                                                 NULL, NULL, error);
+  return rc;
 }
 
 /* Standalone reviews are pumped by the UI, rather than the parent worker. */
@@ -362,18 +456,10 @@ static int cai_runtime_manual_review_event(void *context,
                                            const cai_agent_runtime_event *event,
                                            cai_error *error) {
   cai_agent_runtime *parent = context;
-  int rc = CAI_OK;
-  if (parent->record_transcript &&
-      event->type == CAI_AGENT_EVENT_EXECUTION_RECORD) {
-    pthread_mutex_lock(&parent->lock);
-    rc = cai_runtime_append_journal_event_locked(parent, "execution",
-                                                 event->data, NULL, error);
-    pthread_mutex_unlock(&parent->lock);
-  }
-  if (rc == CAI_OK && parent->review_event_callback != NULL)
-    rc = parent->review_event_callback(parent->review_event_context, event,
-                                       error);
-  return rc;
+  return parent->review_event_callback != NULL
+             ? parent->review_event_callback(parent->review_event_context,
+                                             event, error)
+             : CAI_OK;
 }
 
 typedef struct cai_runtime_execution_export {
@@ -387,7 +473,8 @@ static int cai_runtime_execution_export_event(
   cai_runtime_execution_export *out = context;
   cai_execution_record record;
   int rc;
-  if (strcmp(event->type, "execution") != 0 ||
+  if ((strcmp(event->type, "execution") != 0 &&
+       strcmp(event->type, "subagent") != 0) ||
       !cai_session_history_visible(out->runtime->session, event->sequence))
     return CAI_OK;
   if (!out->started) {

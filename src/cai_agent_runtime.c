@@ -559,9 +559,9 @@ struct cai_agent_runtime {
   char *execution_parent_session;
   char *execution_parent_call;
   char *execution_subagent;
-  /* Unobserved manual reviews remain poll-only; mirror their records directly
-   * without introducing an event consumer. Parent outlives the child. */
-  struct cai_agent_runtime *execution_direct_parent;
+  /* Mirror child journal records independently of live callbacks. Parent
+   * outlives the child; unobserved runtimes remain poll-only. */
+  struct cai_agent_runtime *journal_parent;
   cai_agent_session_event_fn replay_callback;
   void *replay_context;
   int history_summary_started;
@@ -724,8 +724,9 @@ struct cai_agent_runtime {
   char *resumed_subagent_parent_tool_call_id;
   struct cai_agent_runtime *active_review;
   struct cai_agent_runtime *active_subagent;
+  size_t child_input_users;
   /* Borrowed until handoff/child destruction. The parent outlives its child;
-   * parent->lock protects published child pointers and steering admission. */
+   * parent->lock protects published child pointers and admission pins. */
   struct cai_agent_runtime *parent_runtime;
   int review_launching;
   /* A review pause is journaled and checkpointed independently of the live
@@ -811,6 +812,9 @@ static int cai_runtime_apply_pending_settings(cai_agent_runtime *runtime,
 static int cai_runtime_append_journal_event_locked(
     cai_agent_runtime *runtime, const char *type, const char *data,
     unsigned long long *out_sequence, cai_error *error);
+static int cai_runtime_mirror_journal_locked(cai_agent_runtime *,
+                                             const cai_agent_session_event *,
+                                             cai_error *);
 static int cai_runtime_execution_error_locked(cai_agent_runtime *, const char *,
                                               const char *, const char *,
                                               const cai_error *, cai_error *);
@@ -1396,21 +1400,10 @@ static int cai_runtime_forward_subagent_event(
   /* Preserve the child handover above, but a poll-only parent deliberately
    * has no event consumer. Forwarding child observations into its bounded
    * queue would otherwise block the child and deadlock the parent turn. */
-  if (parent->event_callback == NULL &&
-      !(parent->record_transcript &&
-        event->type == CAI_AGENT_EVENT_EXECUTION_RECORD)) {
+  if (parent->event_callback == NULL) {
     return CAI_OK;
   }
   pthread_mutex_lock(&parent->lock);
-  if (event->type == CAI_AGENT_EVENT_EXECUTION_RECORD &&
-      parent->record_transcript) {
-    rc = cai_runtime_append_journal_event_locked(parent, "execution",
-                                                 event->data, NULL, error);
-    if (rc != CAI_OK || parent->event_callback == NULL) {
-      pthread_mutex_unlock(&parent->lock);
-      return rc;
-    }
-  }
   rc = cai_runtime_wait_event_capacity_locked(parent, error);
   if (rc == CAI_OK) {
     rc = cai_runtime_event_node_new(
@@ -1456,24 +1449,6 @@ static int cai_runtime_forward_subagent_event(
     node->event.terminal_output_truncated = event->terminal_output_truncated;
     node->event.terminal_detached_processes_possible =
         event->terminal_detached_processes_possible;
-    if (parent->record_transcript &&
-        event->type == CAI_AGENT_EVENT_TEXT_DELTA && event->data_length > 0U) {
-      if (memchr(event->data, '\0', event->data_length) != NULL) {
-        rc = cai_set_error(error, CAI_ERR_INVALID,
-                           "subagent text contains an unsupported NUL byte");
-      } else {
-        rc = cai_runtime_append_journal_event_locked(
-            parent, "assistant_text_delta", event->data, NULL, error);
-      }
-    } else if (parent->record_transcript &&
-               event->type == CAI_AGENT_EVENT_STEERING_DELIVERED) {
-      rc = cai_runtime_append_journal_event_locked(parent, "subagent_input",
-                                                   event->data, NULL, error);
-    } else if (parent->record_transcript &&
-               event->type == CAI_AGENT_EVENT_RESPONSE_COMPLETED) {
-      rc = cai_runtime_append_journal_event_locked(parent, "assistant_text_end",
-                                                   NULL, NULL, error);
-    }
   }
   if (rc == CAI_OK) {
     cai_runtime_append_event_node_locked(parent, node);
@@ -1549,6 +1524,7 @@ static int cai_runtime_enqueue_locked(cai_agent_runtime *runtime, int type,
 static int cai_runtime_enqueue_failure_locked(cai_agent_runtime *runtime,
                                               const cai_error *failure,
                                               const char *fallback,
+                                              cai_agent_run_state state,
                                               cai_error *event_error) {
   cai_buffer_builder description;
   cai_error format_error;
@@ -1597,7 +1573,7 @@ static int cai_runtime_enqueue_failure_locked(cai_agent_runtime *runtime,
   }
   message = rc == CAI_OK ? description.data : message;
   rc = cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_FAILED, message,
-                                  strlen(message), NULL, NULL, runtime->state,
+                                  strlen(message), NULL, NULL, state,
                                   event_error);
   cai_free_mem(NULL, description.data);
   cai_error_cleanup(&format_error);
@@ -2685,6 +2661,8 @@ static int cai_runtime_append_journal_event_locked(
     if (out_sequence != NULL) {
       *out_sequence = event.sequence;
     }
+    if (runtime->journal_parent != NULL)
+      rc = cai_runtime_mirror_journal_locked(runtime, &event, error);
   }
   return rc;
 }
@@ -3899,11 +3877,25 @@ static int cai_runtime_reasoning_summary_write(void *context, const void *bytes,
   pthread_mutex_lock(&runtime->lock);
   rc = CAI_OK;
   if (runtime->reasoning_summary_start_pending) {
-    rc = cai_runtime_enqueue_locked(
-        runtime, CAI_AGENT_EVENT_REASONING_SUMMARY_STARTED, NULL, 0U, NULL,
-        NULL, runtime->state, error);
+    if (runtime->record_transcript && runtime->journal_parent != NULL)
+      rc = cai_runtime_append_journal_event_locked(
+          runtime, "reasoning_summary_started", NULL, NULL, error);
+    if (rc == CAI_OK)
+      rc = cai_runtime_enqueue_locked(
+          runtime, CAI_AGENT_EVENT_REASONING_SUMMARY_STARTED, NULL, 0U, NULL,
+          NULL, runtime->state, error);
     if (rc == CAI_OK)
       runtime->reasoning_summary_start_pending = 0;
+  }
+  if (rc == CAI_OK && runtime->record_transcript &&
+      runtime->journal_parent != NULL) {
+    char *summary = cai_strndup(NULL, bytes, count);
+    if (summary == NULL)
+      rc = cai_set_error(error, CAI_ERR_NOMEM, "retain subagent summary chunk");
+    else
+      rc = cai_runtime_append_journal_event_locked(runtime, "reasoning_summary",
+                                                   summary, NULL, error);
+    cai_free_mem(NULL, summary);
   }
   if (rc == CAI_OK)
     rc = cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_REASONING_SUMMARY,
@@ -4665,6 +4657,10 @@ static int cai_runtime_deliver_steering(void *context, cai_session *session,
         cai_runtime_mark_checkpoint_event_locked(runtime, consumed_sequence);
       }
       if (rc == CAI_OK) {
+        rc = cai_runtime_child_input_projection_locked(runtime, input->text,
+                                                       error);
+      }
+      if (rc == CAI_OK) {
         rc = cai_runtime_enqueue_locked(
             runtime, CAI_AGENT_EVENT_STEERING_DELIVERED, input->text,
             strlen(input->text), NULL, NULL, CAI_AGENT_SAMPLING, error);
@@ -5003,7 +4999,8 @@ static int cai_runtime_replay_journal_event(
   }
   if (!cai_session_history_visible(runtime->session, event->sequence))
     return CAI_OK;
-  if (strcmp(event->type, "execution") == 0) {
+  if (strcmp(event->type, "execution") == 0 ||
+      strcmp(event->type, "subagent") == 0) {
     return runtime->replay_callback != NULL
                ? runtime->replay_callback(runtime->replay_context, event, error)
                : CAI_OK;
@@ -5413,6 +5410,7 @@ static void cai_runtime_policy_diagnostic(cai_agent_runtime *runtime,
 }
 
 static void *cai_runtime_worker(void *context) {
+  cai_agent_run_state final_state;
   cai_agent_runtime *runtime;
   cai_stream_sinks sinks;
   cai_sink_callbacks reasoning_callbacks;
@@ -5450,7 +5448,7 @@ static void *cai_runtime_worker(void *context) {
     if (runtime->event_callback != NULL &&
         cai_runtime_enqueue_failure_locked(
             runtime, &error, "failed to initialize reasoning summary stream",
-            &error) == CAI_OK) {
+            runtime->state, &error) == CAI_OK) {
       runtime->terminal_event_pending = 1;
     }
     pthread_cond_broadcast(&runtime->condition);
@@ -5511,8 +5509,8 @@ static void *cai_runtime_worker(void *context) {
         runtime->state = CAI_AGENT_FAILED;
         if (runtime->event_callback != NULL &&
             cai_runtime_enqueue_failure_locked(
-                runtime, &error, "failed to save user shell context", &error) ==
-                CAI_OK)
+                runtime, &error, "failed to save user shell context",
+                runtime->state, &error) == CAI_OK)
           runtime->terminal_event_pending = 1;
       }
       pthread_cond_broadcast(&runtime->condition);
@@ -5535,7 +5533,7 @@ static void *cai_runtime_worker(void *context) {
       if (runtime->event_callback != NULL &&
           cai_runtime_enqueue_failure_locked(
               runtime, &error, "pending settings could not be applied",
-              &error) == CAI_OK) {
+              runtime->state, &error) == CAI_OK) {
         runtime->terminal_event_pending = 1;
       }
       pthread_mutex_unlock(&runtime->lock);
@@ -5548,8 +5546,8 @@ static void *cai_runtime_worker(void *context) {
       runtime->state = CAI_AGENT_FAILED;
       if (runtime->event_callback != NULL &&
           cai_runtime_enqueue_failure_locked(
-              runtime, &error, "goal control could not be applied", &error) ==
-              CAI_OK)
+              runtime, &error, "goal control could not be applied",
+              runtime->state, &error) == CAI_OK)
         runtime->terminal_event_pending = 1;
       pthread_mutex_unlock(&runtime->lock);
       cai_error_cleanup(&error);
@@ -5922,9 +5920,16 @@ static void *cai_runtime_worker(void *context) {
       rc = cai_runtime_checkpoint(runtime, 1, &error);
     }
     if (rc == CAI_OK && runtime->review_mode) {
+      char *markdown = NULL;
       pthread_mutex_lock(&runtime->lock);
       rc = cai_runtime_validate_review_report(runtime->review_report, &error);
+      if (rc == CAI_OK && runtime->record_transcript)
+        rc = cai_runtime_render_review_markdown(runtime->review_report,
+                                                &markdown, &error);
+      if (rc == CAI_OK && markdown != NULL)
+        rc = cai_runtime_review_markdown_locked(runtime, markdown, &error);
       pthread_mutex_unlock(&runtime->lock);
+      cai_free_mem(NULL, markdown);
     }
     cai_error_init(&settings_error);
     settings_rc = cai_runtime_apply_pending_settings(runtime, &settings_error);
@@ -5994,10 +5999,10 @@ static void *cai_runtime_worker(void *context) {
       cai_error_cleanup(&observed);
     }
     if (runtime->turn_cancel_requested && rc == CAI_ERR_CANCELLED) {
-      runtime->state = CAI_AGENT_CANCELLED;
+      final_state = CAI_AGENT_CANCELLED;
       if (runtime->event_callback != NULL &&
           cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_CANCELLED,
-                                     NULL, 0U, NULL, NULL, runtime->state,
+                                     NULL, 0U, NULL, NULL, final_state,
                                      &error) == CAI_OK) {
         runtime->terminal_event_pending = 1;
       }
@@ -6005,27 +6010,34 @@ static void *cai_runtime_worker(void *context) {
                (rc == CAI_ERR_LIMIT &&
                 cai_runtime_goal_budget_limited(runtime)) ||
                (rc == CAI_ERR_CANCELLED && cai_runtime_goal_paused(runtime))) {
-      runtime->state = CAI_AGENT_COMPLETED;
+      final_state = CAI_AGENT_COMPLETED;
       if (runtime->review_mode && runtime->review_report_length > 0U) {
         (void)cai_runtime_enqueue_locked(
             runtime, CAI_AGENT_EVENT_REVIEW_REPORT, runtime->review_report,
-            runtime->review_report_length, NULL, NULL, runtime->state, &error);
+            runtime->review_report_length, NULL, NULL, final_state, &error);
       }
       if (runtime->event_callback != NULL &&
           cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_COMPLETED,
-                                     NULL, 0U, NULL, NULL, runtime->state,
+                                     NULL, 0U, NULL, NULL, final_state,
                                      &error) == CAI_OK) {
         runtime->terminal_event_pending = 1;
       }
     } else {
-      runtime->state =
+      final_state =
           rc == CAI_ERR_CANCELLED ? CAI_AGENT_CANCELLED : CAI_AGENT_FAILED;
       if (runtime->event_callback != NULL &&
-          cai_runtime_enqueue_failure_locked(
-              runtime, &error, "agent run failed", &error) == CAI_OK) {
+          cai_runtime_enqueue_failure_locked(runtime, &error,
+                                             "agent run failed", final_state,
+                                             &error) == CAI_OK) {
         runtime->terminal_event_pending = 1;
       }
     }
+    /* Journal forwarding may release the child lock to respect parent/child
+     * lock order. Publish quiescence only after final records and observations
+     * exist, so an owner cannot close the child midway through publication. */
+    runtime->state = final_state;
+    if (runtime->event_callback != NULL)
+      cai_runtime_wakeup_notify_locked(runtime);
     pthread_cond_broadcast(&runtime->condition);
     runtime->turn_cancel_requested = 0;
     pthread_mutex_unlock(&runtime->lock);
@@ -8216,10 +8228,15 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
                                    ? runtime->active_subagent
                                    : runtime->active_review;
     if (!runtime->disable_subagent_steering) {
-      /* Keep the borrowed child alive through admission. Child event callbacks
-       * run outside its lock, and cannot recursively launch another child. */
+      /* Admission may mirror a child journal write back to this parent. Pin
+       * the borrowed child, but do not keep the parent mutex across it. */
+      runtime->child_input_users++;
+      pthread_mutex_unlock(&runtime->lock);
       rc = cai_runtime_enqueue_input(child, text, CAI_RUNTIME_INPUT_STEERING,
                                      started, error);
+      pthread_mutex_lock(&runtime->lock);
+      runtime->child_input_users--;
+      pthread_cond_broadcast(&runtime->condition);
       pthread_mutex_unlock(&runtime->lock);
       cai_runtime_input_node_free(node);
       return rc;
@@ -9815,9 +9832,6 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
   if (rc == CAI_OK)
     rc = cai_runtime_execution_parent(review, parent, "/review", "review",
                                       error);
-  if (rc == CAI_OK && parent->record_transcript &&
-      parent->review_event_callback == NULL)
-    review->execution_direct_parent = parent;
   if (rc == CAI_OK) {
     rc = cai_agent_runtime_submit_review(review, request, error);
   }
@@ -10095,6 +10109,8 @@ static int cai_runtime_finish_review_internal(cai_agent_runtime *parent,
     }
     cai_error_cleanup(&event_error);
     parent->active_review = NULL;
+    while (parent->child_input_users != 0U)
+      pthread_cond_wait(&parent->condition, &parent->lock);
     if (require_parent_owner)
       review->parent_runtime = NULL;
     parent->review_pause_pending = 0;
@@ -10694,11 +10710,13 @@ static int cai_runtime_run_subagent(void *context, const void *params,
   }
   pthread_mutex_lock(&parent->lock);
   parent->active_subagent = NULL;
+  if (parent->active_review == child)
+    parent->active_review = NULL;
+  while (parent->child_input_users != 0U)
+    pthread_cond_wait(&parent->condition, &parent->lock);
   if (child != NULL)
     child->parent_runtime = NULL;
   parent->subagent_active = 0;
-  if (parent->active_review == child)
-    parent->active_review = NULL;
   parent->review_pause_pending = 0;
   pthread_cond_broadcast(&parent->condition);
   pthread_mutex_unlock(&parent->lock);
@@ -12882,6 +12900,8 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
       parent->active_review = NULL;
     if (parent->active_subagent == runtime)
       parent->active_subagent = NULL;
+    while (parent->child_input_users != 0U)
+      pthread_cond_wait(&parent->condition, &parent->lock);
     runtime->parent_runtime = NULL;
     pthread_mutex_unlock(&parent->lock);
   }

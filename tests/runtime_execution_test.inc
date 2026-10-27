@@ -67,6 +67,9 @@ static void test_execution_record(test_state *state) {
     expect_int(state, "execution_invalid",
                cai_execution_record_parse(invalid[i], &record, &error),
                CAI_ERR_PROTOCOL);
+    if (i >= 5U)
+      expect_substr(state, "execution_invalid_text_detail", error.detail,
+                    "invalid UTF-8 or embedded NUL");
     cai_execution_record_cleanup(&record);
     cai_error_cleanup(&error);
     cai_error_init(&error);
@@ -99,7 +102,7 @@ typedef struct execution_review_state {
   pthread_mutex_t lock;
   pthread_cond_t ready;
   char parent_id[CAI_AGENT_SESSION_ID_MAX];
-  int done, parent_records, child_records;
+  int done, parent_records, child_records, child_text, child_markdown;
 } execution_review_state;
 static int execution_review_append(void *context, const char *scope,
                                    const char *id,
@@ -109,10 +112,24 @@ static int execution_review_append(void *context, const char *scope,
   cai_execution_record record;
   int rc;
   (void)scope;
-  if (strcmp(event->type, "execution") != 0)
+  if (strcmp(event->type, "execution") != 0 &&
+      strcmp(event->type, "subagent") != 0)
     return CAI_OK;
   cai_execution_record_init(&record);
   rc = cai_execution_record_parse(event->data, &record, error);
+  if (rc == CAI_OK && strcmp(event->type, "subagent") == 0) {
+    pthread_mutex_lock(&s->lock);
+    if (strcmp(id, s->parent_id) == 0 && record.subagent != NULL &&
+        strcmp(record.subagent, "review") == 0 && record.source_sequence > 0U) {
+      if (strcmp(record.kind, "assistant_text_delta") == 0)
+        s->child_text++;
+      if (strcmp(record.kind, "review_markdown_delta") == 0)
+        s->child_markdown++;
+    }
+    pthread_mutex_unlock(&s->lock);
+    cai_execution_record_cleanup(&record);
+    return rc;
+  }
   if (rc == CAI_OK && record.parent_session_id != NULL) {
     pthread_mutex_lock(&s->lock);
     if (strcmp(id, s->parent_id) == 0)
@@ -214,6 +231,9 @@ static void test_execution_poll_review(test_state *state) {
                  1L);
       expect_int(state, "execution_poll_complete_mirror", s.parent_records,
                  s.child_records);
+      expect_int(state, "execution_poll_child_text", s.child_text > 0, 1L);
+      expect_int(state, "execution_poll_child_markdown", s.child_markdown > 0,
+                 1L);
       pthread_mutex_unlock(&s.lock);
       expect_int(state, "execution_poll_handoff",
                  cai_agent_runtime_finish_review(parent, review, &error),

@@ -91,6 +91,45 @@ static void feed(cai_cli_replay *r, unsigned long long sequence,
   event.data = data;
   assert(cai_cli_replay_feed(r, &event, error) == CAI_OK);
 }
+static void child_event(cai_cli_replay *r, unsigned long long sequence,
+                        const char *type, const char *kind, const char *id,
+                        unsigned long long source, cai_error *error) {
+  char json[1024];
+  snprintf(json, sizeof(json),
+           "{\"kind\":\"%s\",\"session_id\":\"%s\",\"subagent\":\"review\","
+           "\"timestamp_ns\":1,\"source_sequence\":%llu,\"offset\":0,"
+           "\"final\":true,\"line_start\":true,\"data\":\"x\"}",
+           kind, id, source);
+  feed(r, sequence, type, json, error);
+}
+static void test_review_ranges(cai_error *error) {
+  cai_cli_replay *r = NULL;
+  assert(cai_cli_replay_open(20U, &r, error) == CAI_OK);
+  child_event(r, 1U, "subagent", "assistant_text_delta", "review", 10U, error);
+  child_event(r, 2U, "execution", "tool.started", "review", 11U, error);
+  child_event(r, 3U, "subagent", "assistant_text_delta", "review", 12U, error);
+  child_event(r, 4U, "subagent", "review_markdown_delta", "review", 14U, error);
+  child_event(r, 5U, "subagent", "assistant_text_delta", "invalid", 12U, error);
+  child_event(r, 6U, "subagent", "assistant_text_delta", "steered", 20U, error);
+  child_event(r, 7U, "subagent", "input_consumed", "steered", 21U, error);
+  child_event(r, 8U, "subagent", "assistant_text_delta", "steered", 22U, error);
+  child_event(r, 9U, "subagent", "review_markdown_delta", "steered", 24U,
+              error);
+  /* A projection interrupted before its end marker must not hide the raw
+   * report that is still available for inspection. */
+  assert(cai_cli_replay_child_text_visible(r, "review", 12U));
+  assert(cai_cli_replay_child_text_visible(r, "steered", 22U));
+  child_event(r, 10U, "subagent", "review_markdown_end", "review", 15U, error);
+  child_event(r, 11U, "subagent", "review_markdown_end", "steered", 25U, error);
+  assert(cai_cli_replay_child_text_visible(r, "review", 10U));
+  assert(!cai_cli_replay_child_text_visible(r, "review", 12U));
+  assert(cai_cli_replay_child_text_visible(r, "review", 14U));
+  assert(cai_cli_replay_child_text_visible(r, "invalid", 12U));
+  assert(cai_cli_replay_child_text_visible(r, "unknown", 12U));
+  assert(cai_cli_replay_child_text_visible(r, "steered", 20U));
+  assert(!cai_cli_replay_child_text_visible(r, "steered", 22U));
+  cai_cli_replay_close(r);
+}
 int main(void) {
   cai_cli_replay *r = NULL;
   cai_error error;
@@ -98,6 +137,7 @@ int main(void) {
   int i;
   cai_error_init(&error);
   test_order(&error);
+  test_review_ranges(&error);
   assert(cai_cli_replay_open(0U, &r, &error) == CAI_ERR_INVALID && r == NULL);
   cai_error_cleanup(&error);
   assert(cai_cli_replay_open((size_t)LONG_MAX, &r, &error) == CAI_OK);
@@ -177,6 +217,21 @@ int main(void) {
   assert(cai_cli_replay_finish(r, &error) == CAI_OK);
   assert(cai_cli_replay_omitted(r) == 0U);
   assert(cai_cli_replay_contains(r, 2U) && cai_cli_replay_contains(r, 3U));
+  cai_cli_replay_close(r);
+  /* A child's turn/input markers are presentation inside its parent entry,
+   * not independent parent inputs that can evict the parent's reply. */
+  assert(cai_cli_replay_open(1U, &r, &error) == CAI_OK);
+  feed(r, 1U, "input_journal_v2", NULL, &error);
+  feed(r, 2U, "turn_submitted", "parent", &error);
+  feed(r, 3U, "input_consumed", "2", &error);
+  feed(r, 4U, "assistant_text_delta", "parent answer", &error);
+  feed(r, 5U, "subagent", "child turn_submitted", &error);
+  feed(r, 6U, "subagent", "child input_consumed", &error);
+  feed(r, 7U, "subagent", "child assistant text", &error);
+  assert(cai_cli_replay_finish(r, &error) == CAI_OK);
+  assert(cai_cli_replay_omitted(r) == 0U);
+  assert(cai_cli_replay_contains(r, 2U) && cai_cli_replay_contains(r, 4U));
+  assert(cai_cli_replay_contains(r, 5U) && cai_cli_replay_contains(r, 7U));
   cai_cli_replay_close(r);
   cai_error_cleanup(&error);
   return 0;

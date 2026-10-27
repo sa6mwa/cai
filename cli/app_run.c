@@ -147,6 +147,9 @@ typedef struct cli_state {
   cai_cli_replay *replay;
   cai_cli_replay_order *replay_order;
   int replay_journal_v2;
+  char replay_child[CAI_AGENT_SESSION_ID_MAX];
+  int replay_seen;
+  int sandbox_notice_emitted;
   int automation_done;
   int automation_failed;
   size_t goal_starts_pending;
@@ -1773,16 +1776,61 @@ static int cli_execution_markdown_write(void *context, const void *bytes,
   return cai_cli_error(error, CAI_ERR_TRANSPORT, "render execution history");
 }
 
+static int cli_replay_child_heading(cli_state *state,
+                                    const cai_execution_record *record) {
+  if (record->subagent == NULL || record->session_id == NULL ||
+      strcmp(state->replay_child, record->session_id) == 0)
+    return 0;
+  snprintf(state->replay_child, sizeof(state->replay_child), "%s",
+           record->session_id);
+  return cli_markdown(state, strcmp(record->subagent, "review") == 0
+                                 ? "### Review subagent\n"
+                                 : "### Subagent\n");
+}
+
 static int cli_replay_output_raw(cli_state *state,
                                  const cai_agent_session_event *event,
                                  int render, int logging, cai_error *error) {
-  if (render && strcmp(event->type, "execution") == 0) {
+  if (logging && strcmp(event->type, "subagent") == 0) {
+    cai_execution_record record;
+    cai_error ignored;
+    cai_execution_record_init(&record);
+    cai_error_init(&ignored);
+    if (cai_execution_record_parse(event->data, &record, &ignored) == CAI_OK &&
+        (strcmp(record.kind, "assistant_text_delta") == 0 ||
+         strcmp(record.kind, "reasoning_summary") == 0)) {
+      pslog_field fields[6];
+      fields[0] = pslog_bool("replay", 1);
+      fields[1] =
+          pslog_str("subagent", record.subagent != NULL ? record.subagent : "");
+      fields[2] = pslog_str("session_id", record.session_id);
+      fields[3] = pslog_str(
+          "parent_session_id",
+          record.parent_session_id != NULL ? record.parent_session_id : "");
+      fields[4] =
+          pslog_str("parent_tool_call_id",
+                    record.parent_call_id != NULL ? record.parent_call_id : "");
+      fields[5] = pslog_u64("sequence", record.source_sequence);
+      cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO, record.kind,
+                          "assistant", record.data, strlen(record.data), fields,
+                          6U);
+    }
+    cai_execution_record_cleanup(&record);
+    cai_error_cleanup(&ignored);
+  }
+  if (render && (strcmp(event->type, "execution") == 0 ||
+                 strcmp(event->type, "subagent") == 0)) {
     cai_execution_record record;
     cai_sink_callbacks callbacks;
     cai_sink *sink = NULL;
     int rc;
     cai_execution_record_init(&record);
     rc = cai_execution_record_parse(event->data, &record, error);
+    if (rc == CAI_OK && strcmp(event->type, "subagent") == 0 &&
+        (record.subagent == NULL || record.parent_session_id == NULL ||
+         record.parent_call_id == NULL || record.source_sequence == 0U))
+      rc = cai_cli_error(error, CAI_ERR_PROTOCOL,
+                         "subagent journal record has no source identity");
     if (rc != CAI_OK) {
       char notice[256];
       cai_cli_log_error(cli_logger(state), "decode execution history", error);
@@ -1799,6 +1847,45 @@ static int cli_replay_output_raw(cli_state *state,
                  : cai_cli_error(error, CAI_ERR_TRANSPORT,
                                  "render execution warning");
     }
+    if (cli_replay_child_heading(state, &record) != 0)
+      rc = CAI_ERR_TRANSPORT;
+    if (rc == CAI_OK && strcmp(event->type, "subagent") == 0) {
+      if (strcmp(record.kind, "assistant_text_delta") == 0) {
+        if (cai_cli_replay_child_text_visible(state->replay, record.session_id,
+                                              record.source_sequence) &&
+            record.data[0] != '\0' &&
+            cli_text(state, record.data, strlen(record.data)) != 0)
+          rc = CAI_ERR_TRANSPORT;
+      } else if (strcmp(record.kind, "review_markdown_delta") == 0) {
+        if (record.data[0] != '\0' &&
+            cli_text(state, record.data, strlen(record.data)) != 0)
+          rc = CAI_ERR_TRANSPORT;
+      } else if (strcmp(record.kind, "assistant_text_end") == 0 ||
+                 strcmp(record.kind, "review_markdown_end") == 0) {
+        if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
+          rc = CAI_ERR_TRANSPORT;
+      } else if (strcmp(record.kind, "reasoning_summary_started") == 0) {
+        if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
+          rc = CAI_ERR_TRANSPORT;
+        cai_cli_reasoning_reset(&state->reasoning);
+      } else if (strcmp(record.kind, "reasoning_summary") == 0 &&
+                 cai_cli_reasoning_feed(&state->reasoning, record.data,
+                                        strlen(record.data), cli_reasoning_body,
+                                        state) != 0)
+        rc = CAI_ERR_TRANSPORT;
+      if (rc != CAI_OK && error != NULL && error->code == CAI_OK) {
+        char detail[256];
+        snprintf(
+            detail, sizeof(detail),
+            "cannot render subagent history at event %llu (child %s; kind %s)",
+            event->sequence, record.session_id, record.kind);
+        cai_cli_error(error, rc, detail);
+      }
+      cai_execution_record_cleanup(&record);
+      return rc;
+    }
+    if (rc == CAI_OK && cli_finish_response(state) != 0)
+      rc = CAI_ERR_TRANSPORT;
     memset(&callbacks, 0, sizeof(callbacks));
     callbacks.write = cli_execution_markdown_write;
     callbacks.context = state;
@@ -1806,6 +1893,8 @@ static int cli_replay_output_raw(cli_state *state,
       rc = cai_sink_from_callbacks(&callbacks, &sink, error);
     if (rc == CAI_OK)
       rc = cai_execution_record_write_markdown(&record, 1, sink, error);
+    if (rc == CAI_OK && record.final && cli_finish_response(state) != 0)
+      rc = CAI_ERR_TRANSPORT;
     cai_sink_close(sink);
     cai_execution_record_cleanup(&record);
     return rc;
@@ -1910,6 +1999,23 @@ static int cli_replay_output_raw(cli_state *state,
   }
   if (!render)
     return CAI_OK;
+  if (strcmp(event->type, "review_pending") == 0) {
+    if (event->data != NULL && strcmp(state->replay_child, event->data) == 0)
+      return CAI_OK;
+    snprintf(state->replay_child, sizeof(state->replay_child), "%s",
+             event->data != NULL ? event->data : "");
+    return cli_markdown(state, "## Review\n") == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+  }
+  if (strcmp(event->type, "review_handoff_committed") == 0) {
+    state->replay_child[0] = '\0';
+    return cli_markdown(state, "*Review ended.*\n") == 0 ? CAI_OK
+                                                         : CAI_ERR_TRANSPORT;
+  }
+  if (strcmp(event->type, "subagent_handoff_committed") == 0) {
+    state->replay_child[0] = '\0';
+    return cli_markdown(state, "*Subagent ended.*\n") == 0 ? CAI_OK
+                                                           : CAI_ERR_TRANSPORT;
+  }
   if ((strcmp(event->type, "goal_continuation") == 0 ||
        strcmp(event->type, "policy_diagnostic") == 0 ||
        strcmp(event->type, "subagent_input") == 0 ||
@@ -1920,6 +2026,7 @@ static int cli_replay_output_raw(cli_state *state,
     return cli_prompt(state, event->data) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
   }
   if (strcmp(event->type, "assistant_text_delta") == 0 && event->data != NULL) {
+    state->replay_child[0] = '\0';
     return cli_text(state, event->data, strlen(event->data)) == 0
                ? CAI_OK
                : CAI_ERR_TRANSPORT;
@@ -1962,6 +2069,10 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
                             cai_error *error) {
   cli_state *state = context;
   int rc;
+  if (strcmp(event->type, "assistant_text_delta") == 0 ||
+      strcmp(event->type, "subagent") == 0 ||
+      strcmp(event->type, "turn_submitted") == 0)
+    state->replay_seen = 1;
   if (state->application != NULL &&
       state->application->replay_callback != NULL) {
     rc = state->application->replay_callback(state->application->replay_context,
@@ -1973,9 +2084,7 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
       return rc;
     }
   }
-  rc = cli_replay_output(state, event,
-                         !state->batch && state->options.replay_turns < 0L, 1,
-                         error);
+  rc = cli_replay_output(state, event, 0, 1, error);
   if (rc == CAI_OK && state->replay != NULL)
     rc = cai_cli_replay_feed(state->replay, event, error);
   return rc;
@@ -2022,9 +2131,30 @@ static int cli_replay_finish(cli_state *state, cai_error *error) {
   return rc;
 }
 
+static int cli_sandbox_notice(cli_state *state) {
+  if (state->sandbox_notice_emitted)
+    return 0;
+  state->sandbox_notice_emitted = 1;
+  cli_diagnostic(
+      state, PSLOG_LEVEL_WARN,
+      state->options.yolo
+          ? "YOLO enabled: local sandbox restrictions are disabled; commands "
+            "inherit the full environment and run with your user permissions."
+          : "Sandbox restrictions enabled: local file tools are "
+            "workspace-scoped and command environments are filtered. HOME and "
+            "XDG_* are preserved. Managed terminal commands are not "
+            "OS-sandboxed. Use --yolo to disable these restrictions.");
+  return state->interactive ? cai_cli_log_notices(state->log, cli_notice, state)
+                            : 0;
+}
+
 static int cli_replay_begin(void *context, const char *id, cai_error *error) {
   cli_state *state = context;
-  return cai_cli_log_session(state->log, id, error);
+  int rc = cai_cli_log_session(state->log, id, error);
+  if (rc == CAI_OK && cli_sandbox_notice(state) != 0)
+    rc =
+        cai_cli_error(error, CAI_ERR_TRANSPORT, "render startup policy notice");
+  return rc;
 }
 
 static int cli_quota_wakeup(sl_t *sl, const sl_watch_event_t *event,
@@ -2104,6 +2234,11 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   if (!state->suppress_replay) {
     state->show_welcome = 1;
     state->has_review_metrics = 0;
+    state->replay_seen = 0;
+    state->replay_child[0] = '\0';
+    snprintf(state->welcome, sizeof(state->welcome),
+             "Welcome to %s. Send /help for usage.",
+             state->options.program_name);
   }
   cai_agent_runtime_config_init(&config);
   if (state->configuration != NULL &&
@@ -2183,9 +2318,11 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   config.mcp_clients = state->mcp.clients;
   config.mcp_client_count = state->mcp.client_count;
   if (config.replay_callback != NULL && !state->batch &&
-      state->options.replay_turns > 0L &&
-      cai_cli_replay_open((size_t)state->options.replay_turns, &state->replay,
-                          error) != CAI_OK)
+      state->options.replay_turns != 0L &&
+      cai_cli_replay_open(state->options.replay_turns < 0L
+                              ? (size_t)LONG_MAX
+                              : (size_t)state->options.replay_turns,
+                          &state->replay, error) != CAI_OK)
     return error->code;
   rc = cai_agent_runtime_open(state->client, &config, &state->runtime, error);
   state->pouch.replay_begin = NULL;
@@ -2203,6 +2340,9 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   rc = cli_replay_finish(state, error);
   if (rc != CAI_OK)
     return rc;
+  if (!state->suppress_replay && state->replay_seen)
+    snprintf(state->welcome, sizeof(state->welcome),
+             "Conversation resumed. Send /help for usage.");
   if (state->options.board_explicit && state->options.todo) {
     rc = cai_agent_runtime_select_board(state->runtime, state->options.board, 1,
                                         error);
@@ -3454,8 +3594,13 @@ static int cli_review_wakeup(sl_t *sl, const sl_watch_event_t *event,
   if (rc == CAI_OK && !metrics.turn_active &&
       (run_state == CAI_AGENT_COMPLETED || run_state == CAI_AGENT_FAILED ||
        run_state == CAI_AGENT_CANCELLED)) {
-    rc = cai_agent_runtime_finish_review(state->runtime, state->review_runtime,
-                                         &error);
+    /* The worker can finish while the previous pump is delivering its last
+     * snapshot. Drain terminal observations before closing the child, or its
+     * final error/report can disappear despite being durable in the journal. */
+    rc = cai_agent_runtime_pump(state->review_runtime, 0L, &error);
+    if (rc == CAI_OK)
+      rc = cai_agent_runtime_finish_review(state->runtime,
+                                           state->review_runtime, &error);
     if (rc == CAI_OK) {
       state->last_review_metrics = metrics;
       state->has_review_metrics = 1;
@@ -4881,15 +5026,10 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   rc = cai_app_bridge_publish(bridge, state.runtime, &error);
   if (rc != CAI_OK)
     goto cleanup;
-  cli_diagnostic(
-      &state, PSLOG_LEVEL_WARN,
-      state.options.yolo
-          ? "YOLO enabled: local sandbox restrictions are disabled; commands "
-            "inherit the full environment and run with your user permissions."
-          : "Sandbox restrictions enabled: local file tools are "
-            "workspace-scoped and command environments are filtered. HOME and "
-            "XDG_* are preserved. Managed terminal commands are not "
-            "OS-sandboxed. Use --yolo to disable these restrictions.");
+  if (cli_sandbox_notice(&state) != 0) {
+    cai_cli_error(&error, CAI_ERR_TRANSPORT, "render startup policy notice");
+    goto cleanup;
+  }
   rc = cli_host_process(&state, &error);
   if (rc != CAI_OK)
     goto cleanup;

@@ -754,9 +754,11 @@ also count); steering and tools stay with their turn. `--replay-turns N`,
 `CAI_REPLAY_TURNS`, or `[ui] replay_turns` selects the limit. Use `0` to hide
 console replay and `-1` to display all history. Older omitted turns remain in
 the restored agent context, exports, logs, and host replay callbacks.
-Limited replay retains only sequence ranges, then streams the selected journal
-records to libmdf without buffering conversation text or repeating tool effects.
-Unlimited replay renders during the recovery pass. Auto-resume, explicit
+Replay indexes sequence ranges and validated-review source ranges, then streams
+the selected journal records to libmdf without buffering conversation text or
+repeating tool effects. The same two-pass path handles unlimited replay, so a
+validated Markdown report can replace its raw JSON without guessing from text.
+Auto-resume, explicit
 `--resume ID`, and `/resume NUMBER` use the same limit. An omission notice is
 shown only when the positive limit actually excludes earlier entries.
 The root uses shared writer mode so cai can run in multiple directories.
@@ -822,7 +824,25 @@ when a record is forwarded to a parent. This adds no per-record threads,
 attachments or full-payload staging. The tool API's existing captured output
 is read incrementally into the journal when it becomes available.
 
-Execution records never enter model context, recovery actions or compaction
+Subagents also copy their durable journal events into the parent journal,
+independently of live event callbacks. `subagent` events contain bounded
+`cai_execution_record` envelopes: `kind` names the original event, and
+`session_id`, `subagent`, `parent_session_id`, `parent_call_id` and
+`source_sequence` identify its origin. Outer sequence numbers order the parent
+timeline; `offset` and `final` describe chunks of one child event. Existing
+child `execution` records retain their type and attribution, without duplicate
+copies from the UI pump. This adds no worker threads or attachments.
+
+Replay labels delegated activity, preserves assistant progress and reasoning
+summaries, and shows validated review findings as Markdown. Raw review JSON
+remains in the inspection timeline, not the normal findings display. Failed
+review prose and failure details remain available without a logfile. Successful
+tool calls use one completion summary rather than separate called/completed
+headings. Startup policy notices precede replay; the idle message distinguishes
+a resumed conversation from a new conversation. Previously unrecorded child
+output cannot be recreated by this change.
+
+Execution records and subagent envelopes never enter model context, recovery actions or compaction
 prompts. Context compaction preserves them; explicit history trimming excludes
 the corresponding entries from replay/export. JSONL preserves the complete
 records, while console replay uses concise summaries and failures. Invalid
@@ -832,9 +852,11 @@ ordinary application warnings remain in the pslog file.
 
 Core SDK hosts enable this together with `record_transcript` and can inspect
 live `CAI_AGENT_EVENT_EXECUTION_RECORD` events or replay events of type
-`execution`. `<cai/execution.h>` provides decoding, cleanup and Markdown
+`execution` or `subagent`. `<cai/execution.h>` provides decoding, cleanup and Markdown
 rendering. `libcai_app` enables recording by default. Lua exposes the same
 event constant and `cai.execution_record(json)` decoder.
+Lua `on_replay` receives `subagent` envelopes through the same callback; decode
+`event.data` with `cai.execution_record` to inspect child identity and content.
 SDK hosts can stream a human-inspection timeline using
 `cai_agent_runtime_export_execution_markdown` or Lua's
 `runtime:export_execution_markdown(sink)`. Core agent-handover exporters exclude

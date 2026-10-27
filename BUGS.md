@@ -5,6 +5,39 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-049: Review replay loses child output and obscures conversation text
+
+- **Status:** fixed.
+- **Evidence:** the reported session retains 2,351 parent assistant text
+  fragments. Isolated replay reproduces a long trailing sequence of generic
+  tool headings from three unlabelled reviews. The old binary fails a focused
+  assertion that reviewer progress was retained in the parent journal. Validated
+  findings were also absent from its replayable presentation data.
+- **Resolution:** copy child journal events into attributed, bounded `subagent`
+  envelopes in the parent journal; mirror execution records once. Preserve
+  progress, reasoning summaries and validated Markdown findings without feeding
+  them into parent model context. Label review/subagent boundaries, remove
+  duplicate successful-tool start headings and place startup policy notices
+  before replay. Resumed conversations have an explicit resumed idle message.
+- **Completion race:** terminal state could become visible while a child was
+  still persisting its final error. Publish terminal state only after final
+  records/observations, notify the owner and drain remaining observations before
+  closing a manual reviewer.
+- **Ownership:** steering pins the child while releasing the parent mutex;
+  handoff waits for admitted users before closing it. Envelopes copy immutable
+  identity, without reading the worker-owned model/response pointers.
+- **Malformed records:** initialize validation diagnostics even when a UTF-8
+  visitor rejects text without setting its own error. Decoder and replay-index
+  memory checks have no Valgrind errors or leaks. The HTTP poll-only fixture
+  passes natively; its 500 ms/1 s deadlines do not accommodate instrumentation.
+- **Verification:** deterministic local-provider regressions cover both wire
+  protocols, normal parent text, review progress, multi-chunk UTF-8 findings,
+  invalid reports, cancellation, generic subagents, selected/unlimited replay,
+  source identity and exclusion from model context. Native poll-only and Lua
+  replay checks cover embedding without dependence on a terminal event pump.
+- **Limit:** historical child output not previously copied into the parent
+  journal is not backfilled or synthesized.
+
 ## BUG-047: Local commands bypass Softline's editable delivery queue
 
 - **Evidence:** the Enter/Alt-Enter callback forced every slash and pipe command

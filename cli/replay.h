@@ -14,6 +14,11 @@ int cai_cli_replay_contains(void *replay, unsigned long long sequence);
 unsigned long long cai_cli_replay_first(const cai_cli_replay *replay);
 unsigned long long cai_cli_replay_last(const cai_cli_replay *replay);
 size_t cai_cli_replay_omitted(const cai_cli_replay *replay);
+/* A validated review's Markdown replaces only its final raw JSON text. The
+ * recovery pass indexes source ranges, never buffers reviewer output. */
+int cai_cli_replay_child_text_visible(const cai_cli_replay *replay,
+                                      const char *child,
+                                      unsigned long long source_sequence);
 void cai_cli_replay_close(cai_cli_replay *replay);
 
 /* Presentation order for durable input journals. Only pending prompt text is

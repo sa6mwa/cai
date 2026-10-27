@@ -14,7 +14,14 @@ extern "C" {
 typedef struct cai_agent_session_event {
   /** Monotonic identifier assigned by CAI for this session. */
   unsigned long long sequence;
-  /** Stable event type, for example steering_queued. */
+  /** Stable event type, for example steering_queued. "subagent" contains a
+   * bounded cai_execution_record envelope: kind is the child's journal event
+   * type; session_id, subagent, parent_session_id, parent_call_id and
+   * source_sequence identify its origin. The outer sequence orders it in the
+   * parent. Chunk offset/final refer to the original child event's data.
+   * These observations are replayable presentation, never parent model input.
+   * Child execution records retain type "execution" and their own identity.
+   */
   const char *type;
   /** Optional UTF-8 payload; borrowed for the callback duration. */
   const char *data;

@@ -38,6 +38,11 @@ local app = assert(require("cai.app").open {
     end
   end or nil,
   on_replay = replay_file and function(event)
+    if event.type == "subagent" then
+      local record = assert(require("cai").execution_record(event.data))
+      assert(record.subagent and record.parent_session_id and record.parent_call_id)
+      assert(record.source_sequence > 0 and record.session_id ~= record.parent_session_id)
+    end
     replay_file:write(event.sequence, " ", event.type, "\n")
   end or nil,
   settings = {agent = {model = os.getenv("CAI_TEST_APP_MODEL")},

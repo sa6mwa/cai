@@ -105,6 +105,7 @@ static lonejson_status execution_validate_json(const char *json, size_t length,
                                                lonejson_error *error) {
   lonejson_value_visitor visitor = lonejson_default_value_visitor();
   execution_utf8 text;
+  lonejson_error_init(error);
   memset(&text, 0, sizeof(text));
   visitor.string_begin = execution_text_begin;
   visitor.string_chunk = execution_text_chunk;
@@ -134,7 +135,9 @@ int cai_execution_record_parse(const char *json, cai_execution_record *record,
     return cai_set_error_detail(
         error, CAI_ERR_PROTOCOL,
         "execution record must contain valid JSON text without NUL bytes",
-        local.message);
+        local.message[0] != '\0'
+            ? local.message
+            : "invalid UTF-8 or embedded NUL in execution text");
   cai_execution_record_init(&parsed);
   if (CAI_LJ->parse_cstr(CAI_LJ, &execution_map, &parsed, json, &local) !=
       LONEJSON_STATUS_OK) {
@@ -235,10 +238,12 @@ int cai_execution_record_write_markdown(const cai_execution_record *r,
     return cai_set_error(error, CAI_ERR_INVALID,
                          "execution record and sink are required");
   failed = strstr(r->kind, "failed") != NULL;
+  if (compact && strcmp(r->kind, "tool.started") == 0)
+    return CAI_OK;
   if (compact &&
       (strncmp(r->kind, "turn.", 5U) == 0 ||
        strncmp(r->kind, "response.", 9U) == 0) &&
-      !failed)
+      !failed && strcmp(r->kind, "turn.cancelled") != 0)
     return CAI_OK;
   if (compact && !failed && r->field != NULL &&
       strcmp(r->kind, "hosted.tool") != 0)
@@ -281,10 +286,22 @@ int cai_execution_record_write_markdown(const cai_execution_record *r,
       if (rc == CAI_OK)
         rc = execution_text(sink, "`", error);
     }
+    if (rc == CAI_OK && !compact && r->subagent != NULL) {
+      rc = execution_text(sink, " — subagent `", error);
+      if (rc == CAI_OK)
+        rc = execution_label(sink, r->subagent, error);
+      if (rc == CAI_OK)
+        rc = execution_text(sink, "`", error);
+    }
     if (rc == CAI_OK && r->field == NULL &&
         (r->code != 0LL || r->http_status != 0LL)) {
-      snprintf(status, sizeof(status), " (code %lld; HTTP %lld)", r->code,
-               r->http_status);
+      if (r->code != 0LL && r->http_status != 0LL)
+        snprintf(status, sizeof(status), " (code %lld; HTTP %lld)", r->code,
+                 r->http_status);
+      else if (r->code != 0LL)
+        snprintf(status, sizeof(status), " (code %lld)", r->code);
+      else
+        snprintf(status, sizeof(status), " (HTTP %lld)", r->http_status);
       rc = execution_text(sink, status, error);
     }
     if (rc == CAI_OK && r->field != NULL) {

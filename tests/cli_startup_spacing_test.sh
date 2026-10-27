@@ -3,6 +3,9 @@
 source "$(dirname "$0")/cli_test_common.sh"
 host=$(realpath "$1")
 peer_start
+# This fixture isolates banner/prompt spacing. Policy-notice placement is
+# covered by the replay regression, and should not add another block here.
+export LOG_LEVEL=error
 plan '{"plan":["REPLAY READY"]}'
 run -Nni STARTUP_USER; ok
 run --list; ok
@@ -36,7 +39,7 @@ for mode in shell banner; do
   tmux_run respawn-pane -k -t spacing:0.0 "exec bash '$root/runner'"
   ready() {
     tmux_run capture-pane -p -t spacing:0.0 >"$root/screen"
-    grep -Fq 'Welcome to cai' "$root/screen"
+    grep -Fq 'Conversation resumed.' "$root/screen"
   }
   wait_for ready
   awk -v marker="$marker" '
