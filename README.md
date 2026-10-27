@@ -387,8 +387,10 @@ libraries in `build/<target>-release/`. No separate `build/cai/` producer is use
 `ctest --preset cai` checks terminal feeds without cursor replies, failed-output
 propagation, recovery after provider errors, truncated and malformed streams,
 Ctrl-C/Escape cancellation, and clipboard failures. Cancellation keeps the
-interactive session open so another turn can start. Responses stream errors
-preserve the provider message, code, and request ID in both libcai streaming
+interactive session open so another turn can start. A confirmed stop produces
+a warning notice (`Turn stopped.`, or `Review stopped.` for `/review`);
+Escape at an idle prompt does not claim that a turn stopped. Responses stream
+errors preserve the provider message, code, and request ID in both libcai streaming
 APIs and CAI diagnostics; diagnostic messages are bounded to 1023 bytes.
 Responses provider failures, including cybersecurity policy errors, produce an error-level
 `cai.response.provider_error` log with the provider code, message, HTTP status,

@@ -115,6 +115,7 @@ last_request; contains "$root/request" 'Fix parser'
 plan "$(jq -n --arg report "$report" '{plan:[{pause:true,pause_text:"",reasoning:["REVIEW CANCEL BARRIER"],text:$report}]}')"
 send '/review\r'; expect 'REVIEW CANCEL BARRIER'
 send '\033'; expect 'Worked for'
+expect 'WARN: Review stopped.'
 plan '{"plan":["AFTER CANCELLED REVIEW"]}'
 prompt 'Continue after cancellation' 'AFTER CANCELLED REVIEW'
 # Invalid reviewer reports are handed back as failure context, without killing the UI.

@@ -2,6 +2,14 @@
 source "$(dirname "$0")/cli_test_common.sh"
 peer_start
 export CAI_TEST_VOLATILE_SESSION=1
+terminal_start -N
+send 'IDLE_CANCEL_DRAFT'; expect_prompt 'IDLE_CANCEL_DRAFT'
+send '\033'
+idle_editor_cleared() { [[ $(cat "$term/prompt") == '>' ]]; }
+wait_for idle_editor_cleared
+send '/status\r'; expect 'Metric'
+absent "$term/text" 'Turn stopped.'
+terminal_close
 for mode in malformed truncated provider_error cyber_policy cyber_notice cancel escape; do
   terminal_start -N
   case "$mode" in
@@ -23,6 +31,7 @@ for mode in malformed truncated provider_error cyber_policy cyber_notice cancel 
     expect 'STREAM in flight'
     if [[ "$mode" == cancel ]]; then send '\003'; else send '\033'; fi
     expect 'Worked for'
+    expect 'WARN: Turn stopped.'
     release
   fi
   expect 'Worked for'
@@ -82,6 +91,7 @@ expect_assistant 'Manual resumed followup finished'
 terminal_close
 logs
 jq -se '[.[]|select(.event == "run_cancelled")]|length == 2' "$root/logs.jsonl" >/dev/null
+jq -se 'all(.[]|select(.event == "run_cancelled"); .lvl == "warn" and .msg == "Turn stopped.")' "$root/logs.jsonl" >/dev/null
 
 # Headless invocations report provider failures through pslog on stderr and
 # exit unsuccessfully even when the automatic diagnostic succeeds.

@@ -1155,7 +1155,8 @@ static void cli_log_event(cli_state *state,
   }
   if (event->type == CAI_AGENT_EVENT_RUN_FAILED)
     level = PSLOG_LEVEL_ERROR;
-  else if (event->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED)
+  else if (event->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED ||
+           event->type == CAI_AGENT_EVENT_RUN_CANCELLED)
     level = PSLOG_LEVEL_WARN;
   count = 0U;
   fields[count++] = pslog_i64("state", event->state);
@@ -1185,6 +1186,13 @@ static void cli_log_event(cli_state *state,
   }
   text = event->data != NULL ? event->data : name;
   length = event->data != NULL ? event->data_length : strlen(name);
+  if (event->type == CAI_AGENT_EVENT_RUN_CANCELLED) {
+    text = event->parent_tool_call_id == NULL ? "Turn stopped."
+           : strcmp(event->parent_tool_call_id, "/review") == 0
+               ? "Review stopped."
+               : "Subagent stopped.";
+    length = strlen(text);
+  }
   cai_cli_log_message(cli_logger(state), level, name, role, text, length,
                       fields, count);
   if (event->subagent_instruction != NULL) {
