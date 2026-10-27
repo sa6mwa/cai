@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
   unsigned int length;
   if (argc != 2)
     return 2;
-  for (mode = 0; mode < 4; mode++) {
+  for (mode = 0; mode < 5; mode++) {
     assert(pipe(input) == 0 && pipe(output) == 0);
     child = fork();
     assert(child >= 0);
@@ -87,11 +87,14 @@ int main(int argc, char **argv) {
              (ssize_t)sizeof(length));
     } else if (mode == 2) {
       message(input[1], "{{", 0);
-    } else {
+    } else if (mode == 3) {
       length = 10U;
       assert(write(input[1], &length, sizeof(length)) ==
              (ssize_t)sizeof(length));
       assert(write(input[1], "short", 5U) == 5);
+    } else {
+      /* No pending method: an unsolicited ID-only frame is not a void reply. */
+      message(input[1], "{\"jsonrpc\":\"2.0\",\"id\":\"unsolicited\"}", 0);
     }
     close(input[1]);
     while (waitpid(child, &status, 0) < 0)

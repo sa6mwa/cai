@@ -72,6 +72,10 @@ int cai_chrome_open_lazy(const cai_chrome_config *config, cai_chrome **out,
  * invalidate the connection; calls are never automatically retried. Extension
  * errors include their message and numeric code. Cancellation follows the
  * runtime's worker cancellation scope, when present.
+ * Known void-capable methods (attach/detach, tab marking/finalization, session
+ * naming, turnEnded and executeCdp) return JSON "null" if the extension omits
+ * the result member. Identity and tab-data replies still require a result;
+ * screenshot handlers separately require image data.
  */
 int cai_chrome_request(cai_chrome *chrome, const char *method,
                        const char *params_json, char **out_json,
@@ -85,7 +89,9 @@ int cai_chrome_begin_turn(cai_chrome *chrome, const char *session_id,
                           const char *turn_id, cai_error *error);
 /** Release tab leases/debuggers using turnEnded, when browser tools ran.
  * No-op for an unused turn. Works after cancellation with a bounded cleanup
- * deadline. Agent-created tabs close unless marked deliverable or handoff.
+ * deadline of five seconds. The CAI native host detaches tracked tabs before
+ * forwarding turnEnded. Agent-created tabs close unless marked deliverable
+ * or handoff; detaching alone does not close them.
  */
 int cai_chrome_end_turn(cai_chrome *chrome, cai_error *error);
 /** Close; attempts bounded turn cleanup. NULL is accepted. */

@@ -6,6 +6,7 @@
 #include <stdint.h>
 #define CAI_CHROME_REQUEST_LIMIT (1024U * 1024U)
 #define CAI_CHROME_RESPONSE_LIMIT (16U * 1024U * 1024U)
+#define CAI_CHROME_CLEANUP_TIMEOUT_MS 5000L
 /* A mapped, bounded JSON-RPC frame. The values preserve JSON null/results. */
 typedef struct cai_chrome_rpc_error {
   int has_code;
@@ -41,7 +42,10 @@ extern const lonejson_map cai_chrome_rpc_map;
 extern const lonejson_map cai_chrome_request_map;
 extern const lonejson_map cai_chrome_success_map;
 extern const lonejson_map cai_chrome_failure_map;
-int cai_chrome_parse(const char *json, cai_chrome_rpc *rpc, cai_error *error);
+/* reply_method is the outstanding request method, or NULL for a request or
+ * unsolicited frame. Extension void successes may omit the result member. */
+int cai_chrome_parse(const char *json, const char *reply_method,
+                     cai_chrome_rpc *rpc, cai_error *error);
 char *cai_chrome_serialize(const lonejson_map *map, const void *doc,
                            cai_error *error);
 char *cai_chrome_value(const lonejson_json_value *value, cai_error *error);

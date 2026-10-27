@@ -40,6 +40,37 @@ static int runtime_event(void *context, const cai_agent_runtime_event *event,
   }
   return CAI_OK;
 }
+static int cleanup_tabs(cai_chrome *chrome, int explicit_detach,
+                        cai_error *error) {
+  const int tabs[] = {7, 8, 7};
+  const char *session = explicit_detach ? "explicit" : "multi";
+  char params[160], *reply = NULL;
+  size_t i;
+  int rc = CAI_OK;
+  for (i = 0U; rc == CAI_OK && i < sizeof(tabs) / sizeof(tabs[0]); i++) {
+    snprintf(params, sizeof(params),
+             "{\"session_id\":\"%s\",\"turn_id\":\"1\","
+             "\"session_context\":\"live\",\"tabId\":%d}",
+             session, tabs[i]);
+    rc = cai_chrome_request(chrome, "attach", params, &reply, error);
+    cai_chrome_result_free(reply);
+    reply = NULL;
+  }
+  if (rc == CAI_OK && explicit_detach) {
+    rc = cai_chrome_request(chrome, "detach", params, &reply, error);
+    cai_chrome_result_free(reply);
+    reply = NULL;
+  }
+  if (rc == CAI_OK) {
+    snprintf(params, sizeof(params),
+             "{\"session_id\":\"%s\",\"turn_id\":\"1\","
+             "\"session_context\":\"cached\"}",
+             session);
+    rc = cai_chrome_request(chrome, "turnEnded", params, &reply, error);
+    cai_chrome_result_free(reply);
+  }
+  return rc;
+}
 static int run_runtime(cai_chrome *chrome, const char *endpoint,
                        const char *workspace, const char *mode,
                        cai_error *error) {
@@ -121,7 +152,20 @@ int main(int argc, char **argv) {
            : cai_chrome_open(&config, &chrome, &error);
   if (rc == CAI_OK && argc > 4 && strncmp(argv[2], "runtime-", 8U) == 0)
     rc = run_runtime(chrome, argv[3], argv[4], argv[2], &error);
-  else if (rc == CAI_OK && argc > 3) {
+  else if (rc == CAI_OK && (strcmp(argv[2], "cleanup-multi") == 0 ||
+                            strcmp(argv[2], "cleanup-explicit") == 0))
+    rc = cleanup_tabs(chrome, strcmp(argv[2], "cleanup-explicit") == 0, &error);
+  else if (rc == CAI_OK && strcmp(argv[2], "abandon") == 0) {
+    /* A raw API caller vanishes without turnEnded: the host owns cleanup. */
+    rc = cai_chrome_request(chrome, "attach",
+                            "{\"session_id\":\"abandoned\",\"turn_id\":\"1\","
+                            "\"session_context\":\"live\",\"tabId\":7}",
+                            &result, &error);
+  } else if (rc == CAI_OK && argc == 4 && strcmp(argv[2], "method") == 0) {
+    rc = cai_chrome_request(chrome, argv[3], "{}", &result, &error);
+    if (rc == CAI_OK)
+      printf("%s\n", result);
+  } else if (rc == CAI_OK && argc > 3) {
     rc = cai_chrome_begin_turn(chrome, "fixture", "1", &error);
     cai_client_config_init(&client_config);
     client_config.api_key = "fixture";

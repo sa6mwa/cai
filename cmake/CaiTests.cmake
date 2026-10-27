@@ -133,6 +133,10 @@ if(CAI_BUILD_TESTS)
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/chrome_test.sh"
         host "$<TARGET_FILE:cai_chrome_host_fixture>" "${CMAKE_CURRENT_BINARY_DIR}" "$<TARGET_FILE:cai_chrome_client_fixture>")
     set_tests_properties(cai_chrome_host PROPERTIES LABELS "unit;local;offline" TIMEOUT 30)
+    add_test(NAME cai_chrome_host_manual_detach
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/chrome_test.sh"
+        host "$<TARGET_FILE:cai_chrome_host_fixture>" "${CMAKE_CURRENT_BINARY_DIR}" "$<TARGET_FILE:cai_chrome_client_fixture>" manual-detach)
+    set_tests_properties(cai_chrome_host_manual_detach PROPERTIES LABELS "unit;local;offline" TIMEOUT 10)
   endif()
   add_executable(cai_user_shell_test tests/user_shell_test.c)
   cai_link_internal_consumer(cai_user_shell_test)

@@ -5,6 +5,46 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-031: Browser control remains visible after turn completion
+
+- **Status:** explicit detach cleanup implemented; real-browser confirmation
+  pending.
+- **Reported:** the extension's cursor remains visible after CAI finishes,
+  including after the user cancels browser debugging.
+- **Evidence:** the supplied OpenAI browser client calls detachAllTabs before
+  turnEnded. CAI previously sent only turnEnded, including its orphan-client
+  cleanup path. The fixture exposed retained tab attachments at turnEnded.
+- **Resolution:** the native host tracks successful attaches, deduplicates tab
+  IDs and detaches those tabs before forwarding turnEnded. Normal completion,
+  failure/cancellation and disconnected clients share that cleanup path.
+  Already-detached errors cannot skip other tabs or final ownership release.
+  Only CAI's tracked tabs are targeted; keep/deliverable handling remains with
+  the extension. The whole sequence has one five-second budget.
+- **Verification:** fixture coverage includes several tabs, repeated attaches,
+  explicit detachment, client abandonment and user-detach notifications with
+  detach errors. Physical extension cursor behavior still requires confirmation
+  on the user's Chrome installation.
+
+## BUG-030: Chrome attachment disconnects on omitted void results
+
+- **Status:** compatibility fix implemented; real-browser confirmation pending.
+- **Reported:** tab listing/opening and the extension's control arrow work,
+  but attachment fails with `Chrome native host disconnected during a frame`
+  and `EOF`, preventing screenshot retrieval.
+- **Reproduction:** the production native-host fixture produces the same EOF
+  after successful tab listing when an attachment success reply omits `result`.
+  The supplied OpenAI browser transport accepts such replies as JavaScript
+  `undefined`; the prior fixture always emitted explicit `result: null`.
+- **Resolution:** normalize omitted success results to JSON null only for
+  pending void-capable methods, in both host and client. Preserve ID checking,
+  result requirements for identity/tab data, and error validation. CDP replies
+  may be void, but screenshots must still contain image data.
+- **Verification:** exercise omitted results, failures and malformed replies,
+  notifications and reverse heartbeats, plus the native-host/CLI screenshot
+  flow and Lua runtime. The reported browser's actual reply has not been
+  captured; this proves the reproduced failure mode rather than every possible
+  cause of a native-host disconnect. A running host must restart to use the fix.
+
 ## BUG-029: UTF-8 C1 shell output aborts rendering and replay
 
 - **Status:** fixed.

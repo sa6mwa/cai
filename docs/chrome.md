@@ -79,6 +79,16 @@ Native messaging stdout is reserved for framed JSON; host diagnostics always
 use stderr (`LOG_OUTPUT` is ignored in this dedicated host process).
 The agent keeps the usual interactive log-file or non-interactive pslog policy.
 
+Some extension operations return JavaScript `undefined`, so their serialized
+success replies contain an ID but no `result` member. CAI accepts this for
+known void-capable methods: `attach`, `detach`, `markTab`, `finalizeTabs`,
+`nameSession`, `turnEnded` and `executeCdp`. Native and Lua callers receive JSON
+`null`. Identity and tab-data methods still require their result member;
+screenshots still require actual image data. Reply IDs, protocol versions,
+notifications and error objects retain their validation.
+After replacing the registered executable, reload the ChatGPT extension or
+restart Chrome so its native-host process runs the new code.
+
 The model receives a `chrome` function tool:
 
 | Action | Parameters and behavior |
@@ -104,10 +114,15 @@ rejects tabs owned by another browser session. Browser actions use CAI's
 normal tool execution behavior; enabling Chrome grants the agent access to
 that browser session. CAI does not introduce per-origin flags or approval UI.
 
-The runtime issues `turnEnded` after success, failure, or cancellation. This
-releases debugger/tab leases; agent-created tabs close unless marked to keep.
-The host also releases leases if a client disconnects, waiting for an in-flight
-operation to return before cleanup. If the extension disappears, CAI reports
+The runtime issues `turnEnded` after success, failure, or cancellation. The
+native host first detaches the tabs successfully attached for that session,
+then forwards `turnEnded` to release ownership. Agent-created tabs close unless
+marked to keep; detaching a kept tab does not close it. A user-cancelled debugger
+may already be detached: cleanup still attempts the remaining tabs and sends
+`turnEnded`, logging any detach failures. The host uses the same sequence if a
+client disconnects, waiting for an in-flight operation to return first.
+The cleanup sequence has one five-second budget, not a separate budget per tab.
+If the extension disappears, CAI reports
 that failure; it cannot confirm browser-side cleanup after losing the extension.
 Review runtimes reject browser access, and subagents do not inherit it.
 Replaying a saved session never re-executes browser actions.

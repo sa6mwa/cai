@@ -31,11 +31,22 @@ typedef struct host_queue {
   size_t sent;
   long long deadline;
 } host_queue;
+typedef struct host_tab {
+  struct host_tab *next;
+  int64_t id;
+} host_tab;
 typedef struct chrome_host {
   int client;
   host_frame extension_frame, client_frame;
   host_queue extension_queue, client_queue;
   char *session, *turn, *pending_id;
+  const char *pending_method;
+  int pending_has_tab;
+  int64_t pending_tab;
+  host_tab *tabs;
+  char *end_request, *end_id;
+  int finalizing;
+  long long cleanup_deadline;
   int pending_end;
   int abandoned;
   long long pending_deadline;
@@ -46,22 +57,25 @@ typedef struct host_identity {
   const char *session;
   const char *turn;
   const char *context;
+  int has_tab;
+  int64_t tab;
 } host_identity;
 static const lonejson_field identity_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(host_identity, session, "session_id"),
     LONEJSON_FIELD_STRING_ALLOC(host_identity, turn, "turn_id"),
-    LONEJSON_FIELD_STRING_ALLOC(host_identity, context, "session_context")};
+    LONEJSON_FIELD_STRING_ALLOC(host_identity, context, "session_context"),
+    LONEJSON_FIELD_I64_PRESENT(host_identity, tab, has_tab, "tabId")};
 LONEJSON_MAP_DEFINE(identity_map, host_identity, identity_fields);
 static const char *const browser_methods[] = {
     "getInfo",     "getUserTabs", "getTabs",    "createTab", "claimUserTab",
     "attach",      "detach",      "executeCdp", "markTab",   "finalizeTabs",
     "nameSession", "turnEnded",   NULL};
-static int allowed_method(const char *method) {
+static const char *allowed_method(const char *method) {
   size_t i;
   for (i = 0U; browser_methods[i] != NULL; i++)
     if (strcmp(method, browser_methods[i]) == 0)
-      return 1;
-  return 0;
+      return browser_methods[i];
+  return NULL;
 }
 static void frame_clear(host_frame *f) {
   free(f->data);
@@ -159,11 +173,44 @@ static int read_frame(host_frame *f, int fd, size_t limit, int *ready,
   }
   return CAI_OK;
 }
+static void remove_tab(chrome_host *h, int64_t id) {
+  host_tab **link = &h->tabs, *tab;
+  while (*link != NULL) {
+    tab = *link;
+    if (tab->id == id) {
+      *link = tab->next;
+      free(tab);
+      return;
+    }
+    link = &tab->next;
+  }
+}
+static int remember_tab(chrome_host *h, int64_t id, cai_error *error) {
+  host_tab *tab;
+  for (tab = h->tabs; tab != NULL; tab = tab->next)
+    if (tab->id == id)
+      return CAI_OK;
+  tab = calloc(1U, sizeof(*tab));
+  if (tab == NULL)
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "Cannot track attached Chrome tab");
+  tab->id = id;
+  tab->next = h->tabs;
+  h->tabs = tab;
+  return CAI_OK;
+}
 static void clear_identity(chrome_host *h) {
   free(h->session);
   free(h->turn);
   h->session = NULL;
   h->turn = NULL;
+  while (h->tabs != NULL)
+    remove_tab(h, h->tabs->id);
+  free(h->end_request);
+  free(h->end_id);
+  h->end_request = h->end_id = NULL;
+  h->finalizing = 0;
+  h->cleanup_deadline = 0LL;
 }
 static void drop_client(chrome_host *h) {
   if (h->client >= 0)
@@ -190,17 +237,42 @@ static int host_cleanup(chrome_host *h, cai_error *error) {
   host_identity identity;
   char *params;
   int rc;
-  if (!h->abandoned || h->pending_id != NULL || h->session == NULL)
+  if ((!h->abandoned && !h->finalizing) || h->pending_id != NULL ||
+      h->session == NULL)
     return CAI_OK;
+  if (!h->finalizing) {
+    h->finalizing = 1;
+    h->cleanup_deadline = cai_chrome_now_ms() + CAI_CHROME_CLEANUP_TIMEOUT_MS;
+  }
+  /* Explicit turn completion and orphan cleanup share one detach sequence.
+   * Preserve the caller's original request/ID until all tabs are released. */
+  if (h->tabs == NULL && h->end_request != NULL) {
+    rc = enqueue(&h->extension_queue, h->end_request, error);
+    if (rc == CAI_OK) {
+      free(h->end_request);
+      h->end_request = NULL;
+      h->pending_id = h->end_id;
+      h->end_id = NULL;
+      h->pending_method = "turnEnded";
+      h->pending_deadline = h->cleanup_deadline;
+      h->pending_end = 1;
+    }
+    return rc;
+  }
   memset(&rpc, 0, sizeof(rpc));
+  memset(&identity, 0, sizeof(identity));
   identity.session = h->session;
   identity.turn = h->turn;
   identity.context = "cached";
+  if (h->tabs != NULL) {
+    identity.has_tab = 1;
+    identity.tab = h->tabs->id;
+  }
   params = cai_chrome_serialize(&identity_map, &identity, error);
   if (params == NULL)
     return CAI_ERR_NOMEM;
   rpc.jsonrpc = "2.0";
-  rpc.method = "turnEnded";
+  rpc.method = h->tabs != NULL ? "detach" : "turnEnded";
   rc = cai_chrome_value_buffer(&rpc.id, "\"cai-cleanup\"", error);
   if (rc == CAI_OK)
     rc = cai_chrome_value_buffer(&rpc.params, params, error);
@@ -220,7 +292,11 @@ static int host_cleanup(chrome_host *h, cai_error *error) {
     h->pending_id = cai_strdup(NULL, "\"cai-cleanup\"");
     if (h->pending_id == NULL)
       return cai_set_error(error, CAI_ERR_NOMEM, "Cannot track Chrome cleanup");
-    h->pending_deadline = cai_chrome_now_ms() + 5000LL;
+    h->pending_deadline = h->cleanup_deadline;
+    h->pending_method = rpc.method;
+    h->pending_has_tab = identity.has_tab;
+    h->pending_tab = identity.tab;
+    h->pending_end = h->tabs == NULL;
     h->cleanup_pending = 1;
   }
   return rc;
@@ -229,20 +305,23 @@ static int dispatch_client(chrome_host *h, const char *json, cai_error *error) {
   cai_chrome_rpc rpc;
   host_identity identity;
   char *params = NULL, *id = NULL;
+  const char *method;
   lonejson_error je;
   int rc;
   memset(&identity, 0, sizeof(identity));
   lonejson_error_init(&je);
-  rc = cai_chrome_parse(json, &rpc, error);
+  rc = cai_chrome_parse(json, NULL, &rpc, error);
   if (rc != CAI_OK)
     goto done;
-  if (rpc.method == NULL || !rpc.has_id || h->pending_id != NULL) {
+  if (rpc.method == NULL || !rpc.has_id || h->pending_id != NULL ||
+      h->finalizing) {
     rc = cai_set_error(
         error, CAI_ERR_PROTOCOL,
         "Chrome client must send one identified request at a time");
     goto done;
   }
-  if (!allowed_method(rpc.method)) {
+  method = allowed_method(rpc.method);
+  if (method == NULL) {
     cai_chrome_rpc response;
     memset(&response, 0, sizeof(response));
     response.jsonrpc = "2.0";
@@ -263,6 +342,13 @@ static int dispatch_client(chrome_host *h, const char *json, cai_error *error) {
                                 &je) != LONEJSON_STATUS_OK) {
     rc = cai_set_error_detail(error, CAI_ERR_PROTOCOL,
                               "Invalid Chrome session identity", je.message);
+    goto done;
+  }
+  if ((strcmp(method, "attach") == 0 || strcmp(method, "detach") == 0) &&
+      (!identity.has_tab || identity.tab < 0LL ||
+       identity.tab > 2147483647LL)) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "Chrome attach/detach requires a valid tabId");
     goto done;
   }
   if (strcmp(rpc.method, "getInfo") != 0 &&
@@ -293,11 +379,27 @@ static int dispatch_client(chrome_host *h, const char *json, cai_error *error) {
                        "Chrome request ID must be a string or number");
     goto done;
   }
+  if (strcmp(method, "turnEnded") == 0) {
+    h->end_request = cai_strdup(NULL, json);
+    if (h->end_request == NULL) {
+      rc = cai_set_error(error, CAI_ERR_NOMEM,
+                         "Cannot retain Chrome turn cleanup request");
+      goto done;
+    }
+    h->end_id = id;
+    id = NULL;
+    h->finalizing = 1;
+    h->cleanup_deadline = cai_chrome_now_ms() + CAI_CHROME_CLEANUP_TIMEOUT_MS;
+    goto done;
+  }
   rc = enqueue(&h->extension_queue, json, error);
   if (rc == CAI_OK) {
     h->pending_id = id;
+    h->pending_method = method;
+    h->pending_has_tab = identity.has_tab;
+    h->pending_tab = identity.tab;
     id = NULL;
-    h->pending_end = strcmp(rpc.method, "turnEnded") == 0;
+    h->pending_end = 0;
     h->pending_deadline = cai_chrome_now_ms() + 60000LL;
   }
 done:
@@ -310,7 +412,7 @@ done:
 static int dispatch_extension(chrome_host *h, const char *json,
                               cai_error *error) {
   cai_chrome_rpc rpc;
-  int rc = cai_chrome_parse(json, &rpc, error);
+  int rc = cai_chrome_parse(json, h->pending_method, &rpc, error);
   if (rc != CAI_OK)
     goto done;
   if (rpc.method != NULL && rpc.has_id) {
@@ -339,9 +441,22 @@ static int dispatch_extension(chrome_host *h, const char *json,
       rc = cai_set_error(error, CAI_ERR_PROTOCOL,
                          "Chrome extension returned an unexpected request ID");
     else {
-      if (h->client >= 0 && !h->cleanup_pending)
+      if (h->pending_has_tab && strcmp(h->pending_method, "attach") == 0 &&
+          !rpc.error.has_code)
+        rc = remember_tab(h, h->pending_tab, error);
+      if (rc == CAI_OK && h->client >= 0 && !h->cleanup_pending)
         rc = enqueue(&h->client_queue, json, error);
-      if (h->pending_end || h->cleanup_pending) {
+      if (h->pending_has_tab && strcmp(h->pending_method, "detach") == 0 &&
+          (!rpc.error.has_code || h->cleanup_pending)) {
+        /* A user may already have cancelled debugging. Do not let one stale
+         * tab prevent the remaining detaches or the final turnEnded call. */
+        remove_tab(h, h->pending_tab);
+        if (rpc.error.has_code && h->logger != NULL)
+          h->logger->warnf(h->logger, "Chrome tab detach failed during cleanup",
+                           "tab_id=%lld error=%s", (long long)h->pending_tab,
+                           rpc.error.message);
+      }
+      if (h->pending_end) {
         if (rpc.error.has_code) {
           rc = cai_set_error_detail(error, CAI_ERR_SERVER,
                                     "Chrome could not release browser control",
@@ -351,6 +466,8 @@ static int dispatch_extension(chrome_host *h, const char *json,
       }
       free(h->pending_id);
       h->pending_id = NULL;
+      h->pending_method = NULL;
+      h->pending_has_tab = 0;
       h->pending_end = 0;
       h->cleanup_pending = 0;
       if (h->session == NULL)
@@ -521,7 +638,7 @@ int cai_chrome_native_host_run_at(const char *origin,
       if (accept_fd >= 0) {
         struct ucred peer;
         socklen_t size = sizeof(peer);
-        if (h.client >= 0 || h.abandoned ||
+        if (h.client >= 0 || h.abandoned || h.finalizing ||
             getsockopt(accept_fd, SOL_SOCKET, SO_PEERCRED, &peer, &size) != 0 ||
             peer.uid != geteuid())
           close(accept_fd);

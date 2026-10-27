@@ -98,7 +98,19 @@ static lonejson_status presence_end(void *context,
   p->seen |= bit;
   return LONEJSON_STATUS_OK;
 }
-int cai_chrome_parse(const char *json, cai_chrome_rpc *rpc, cai_error *error) {
+static int void_reply_method(const char *method) {
+  static const char *const methods[] = {
+      "attach",      "detach",    "markTab",    "finalizeTabs",
+      "nameSession", "turnEnded", "executeCdp", NULL};
+  size_t i;
+  for (i = 0U; method != NULL && methods[i] != NULL; i++)
+    if (strcmp(method, methods[i]) == 0)
+      return 1;
+  return 0;
+}
+
+int cai_chrome_parse(const char *json, const char *reply_method,
+                     cai_chrome_rpc *rpc, cai_error *error) {
   lonejson_error je;
   rpc_presence presence;
   lonejson_path_value_visitor visitor;
@@ -136,6 +148,17 @@ int cai_chrome_parse(const char *json, cai_chrome_rpc *rpc, cai_error *error) {
   if (rpc->jsonrpc == NULL || strcmp(rpc->jsonrpc, "2.0") != 0)
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "Chrome JSON-RPC version must be 2.0");
+  /* JavaScript drops result: undefined while serializing a void success.
+   * Normalize only replies to an outstanding void-capable browser method;
+   * tab/identity data, errors and unsolicited frames retain strict validation.
+   * Both callers still validate the reply ID against their pending request. */
+  if (rpc->method == NULL && rpc->has_id && !rpc->has_result &&
+      !rpc->has_error && void_reply_method(reply_method)) {
+    int rc = cai_chrome_value_buffer(&rpc->result, "null", error);
+    if (rc != CAI_OK)
+      return rc;
+    rpc->has_result = 1;
+  }
   if (rpc->method != NULL) {
     if (rpc->method[0] == '\0' || rpc->has_result || rpc->has_error)
       return cai_set_error(

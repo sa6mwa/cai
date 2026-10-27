@@ -9,6 +9,7 @@ import time
 
 PNG='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aAn8AAAAASUVORK5CYII='
 identity={'type':'extension','family':'chrome','name':'Chrome'}
+void_methods={'attach','detach','markTab','finalizeTabs','nameSession','turnEnded','executeCdp'}
 mode=sys.argv[1]
 root=Path(sys.argv[2])
 
@@ -44,12 +45,42 @@ if mode=='wire':
     sys.stdout.buffer.write(wire(json.loads(sys.argv[3])))
     sys.exit(0)
 if mode=='extension':
+    scenario=sys.argv[3] if len(sys.argv)>3 else 'success'
+    void_scenario=scenario in ('void','manual-detach')
+    attached=set()
     while True:
         try: request=receive(sys.stdin.buffer)
         except EOFError: break
+        if 'method' not in request:
+            with (root/'host-replies.jsonl').open('a') as output:
+                output.write(json.dumps(request)+'\n')
+            continue
         record(request)
         value={'jsonrpc':'2.0','id':request.get('id'),'result':result(request,'success')}
+        if request.get('method')=='attach':
+            attached.add(request['params']['tabId'])
+        if request.get('method')=='detach':
+            attached.discard(request['params']['tabId'])
+        if request.get('method')=='turnEnded':
+            with (root/'active-tabs.jsonl').open('a') as output:
+                output.write(json.dumps({'session_id':request['params']['session_id'],'tabs':sorted(attached)})+'\n')
+        if void_scenario and request.get('method') in void_methods and value['result'] is None:
+            value.pop('result')
+        if scenario=='manual-detach' and request.get('method')=='detach':
+            value['error']={'code':-32000,'message':'Debugger is not attached'}
+            with (root/'cleanup-errors.jsonl').open('a') as output:
+                output.write(json.dumps(value)+'\n')
+        if void_scenario and request.get('method')=='attach':
+            sys.stdout.buffer.write(wire({'jsonrpc':'2.0','id':'extension-ping','method':'ping','params':{}}))
+            sys.stdout.buffer.write(wire({'jsonrpc':'2.0','method':'onCDPEvent','params':{'source':{'tabId':7},'method':'Page.loadEventFired','params':{}}}))
         sys.stdout.buffer.write(wire(value)); sys.stdout.buffer.flush()
+        if scenario=='manual-detach' and request.get('method')=='attach':
+            attached.discard(request['params']['tabId'])
+            sys.stdout.buffer.write(wire({'jsonrpc':'2.0','method':'onCDPDetach','params':{'tabId':request['params']['tabId'],'reason':'canceled_by_user'}}))
+            sys.stdout.buffer.flush()
+        if void_scenario and request.get('method')=='turnEnded' and request.get('params',{}).get('session_id')=='abandoned':
+            sys.stdout.buffer.write(wire({'jsonrpc':'2.0','id':'cleanup-ping','method':'ping','params':{}}))
+            sys.stdout.buffer.flush()
 else:
     scenario=sys.argv[3]
     path=root/'mock.sock'
@@ -64,6 +95,19 @@ else:
                 request=receive(connection); record(request)
                 method=request.get('method')
                 value={'jsonrpc':'2.0','id':request.get('id'),'result':result(request,scenario)}
+                if scenario=='identity-missing-result' and method=='getInfo':
+                    value.pop('result')
+                if scenario=='void-cdp-missing-image' and method=='executeCdp':
+                    value['result']=None
+                if scenario.startswith('void') and method in void_methods and value['result'] is None:
+                    value.pop('result')
+                    if method=='attach':
+                        if scenario=='void-wrong-id': value['id']='wrong'
+                        elif scenario=='void-no-id': value.pop('id')
+                        elif scenario=='void-error': value['error']={'code':-32000,'message':'Debugger unattached'}
+                        elif scenario=='void-malformed-error': value['error']={'code':-32000}
+                        elif scenario=='void-both': value.update(result=None,error={'code':-32000,'message':'Debugger unattached'})
+                        elif scenario=='void-version': value['jsonrpc']='1.0'
                 if method!='getInfo':
                     if scenario=='failure': value={'jsonrpc':'2.0','id':request['id'],'error':{'code':-32000,'message':'Debugger unattached'}}
                     elif scenario=='wrong-id': value['id']='wrong'

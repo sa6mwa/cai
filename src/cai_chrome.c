@@ -161,7 +161,8 @@ int cai_chrome_request(cai_chrome *c, const char *method, const char *params,
   if (c->logger != NULL)
     c->logger->debugf(c->logger, "Chrome extension request", "method=%s",
                       method);
-  deadline = cai_chrome_now_ms() + (c->cleanup ? 2000L : c->timeout_ms);
+  deadline = cai_chrome_now_ms() +
+             (c->cleanup ? CAI_CHROME_CLEANUP_TIMEOUT_MS : c->timeout_ms);
   length = (uint32_t)strlen(json);
   rc = chrome_bytes(c, &length, sizeof(length), 1, deadline, error);
   if (rc == CAI_OK)
@@ -171,7 +172,7 @@ int cai_chrome_request(cai_chrome *c, const char *method, const char *params,
     rc = chrome_frame(c, &frame, deadline, error);
     if (rc != CAI_OK)
       break;
-    rc = cai_chrome_parse(frame, &reply, error);
+    rc = cai_chrome_parse(frame, method, &reply, error);
     cai_free_mem(NULL, frame);
     frame = NULL;
     if (rc == CAI_OK && reply.method != NULL) {
