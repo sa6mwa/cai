@@ -772,8 +772,12 @@ Prefer asking the agent to create and manage goals.
 Goals created by model tools, commands, startup options or host controls use
 the same pursuit loop. An active goal continues after a completed turn and
 when resumed from storage. Approved queued prompts take priority.
-Cancellation or provider failure stops automatic pursuit for the current
-invocation until another user turn; pause also prevents pursuit on restart.
+Escape/Ctrl-C cancels the active turn and durably pauses its goal, including
+across restart. Ordinary user turns still work while paused. The model may
+resume a paused goal with update_goal(status=active) when the user asks to
+continue; it must not undo a pause without a new user request. Provider failure
+stops automatic pursuit for the current invocation until another user turn,
+leaving goal state unchanged.
 .TP
 .BI /goal " new TEXT"
 Start and pursue a fresh, unbudgeted goal, replacing any current goal without

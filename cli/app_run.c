@@ -1236,6 +1236,8 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     state->foreground_subagent = 0;
   if (event->parent_tool_call_id != NULL &&
       strcmp(event->parent_tool_call_id, "/review") == 0) {
+    if (event->type == CAI_AGENT_EVENT_RUN_CANCELLED)
+      state->automation_failed = 1;
     if (event->type == CAI_AGENT_EVENT_TEXT_DELTA)
       return CAI_OK; /* Render the validated findings rather than JSON deltas.
                       */
@@ -3814,7 +3816,8 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| Alt-Q | Save the draft to prompt history and quit without sending "
         "it. Up recalls it after restarting. |\n"
         "| Ctrl-V | Paste a PNG or JPEG image from the X11 clipboard. |\n"
-        "| Escape / Ctrl-C | Cancel the active turn. |\n"
+        "| Escape / Ctrl-C | Cancel the active turn and pause an active goal. "
+        "|\n"
         "| Ctrl-D (empty prompt) | Exit. |\n\n",
         "## Startup options\n\n"};
     char example[4096];
@@ -4869,6 +4872,8 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
             state.review_runtime != NULL ? state.review_runtime : state.runtime,
             &error);
         if (rc != CAI_OK) {
+          if (rc != CAI_ERR_INVALID)
+            cli_print_error(&state, "cancel turn", &error);
           cai_error_cleanup(&error);
           cai_error_init(&error);
         }

@@ -335,7 +335,7 @@ the app reaches its control boundary.
 | --- | --- | --- |
 | `CAI_APP_QUEUE_PROMPT` | Required | Interactive: inject into softline's editable approval queue, using the existing autoqueue setting. Batch: enqueue the next turn. |
 | `CAI_APP_STEER` | Required | Submit steering to the active turn at the next runtime safe boundary. Reject if no turn can accept it. |
-| `CAI_APP_CANCEL_TURN` | None | Cooperatively cancel the current turn. This leaves an interactive app open. |
+| `CAI_APP_CANCEL_TURN` | None | Cooperatively cancel the current turn and durably pause an active goal. This leaves an interactive app open; ordinary user turns work while paused. |
 | `CAI_APP_STOP` | None | Stop the application, discard unstarted work, and wait for worker shutdown before returning. The host process stays alive. |
 | `CAI_APP_REPLACE_GOAL` | Required | Replace the goal with an unbudgeted objective and pursue it, as `/goal new TEXT` does. |
 | `CAI_APP_PAUSE_GOAL` | None | Pause an active goal at a safe boundary. |

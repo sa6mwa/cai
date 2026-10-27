@@ -313,6 +313,9 @@ static int cai_smith_build_tool_contract(const cai_allocator *allocator,
       "after the same "
       "external blocker recurs for three consecutive goal turns. Use "
       "clear_goal to remove a goal without claiming completion. ";
+  static const char *const goal_resume =
+      "A paused goal does not prevent answering user questions. Resume it "
+      "with update_goal(status=active) only when the user asks to continue. ";
   static const char *const mcp = "The host may expose configured MCP tools. ";
   static const char *const image_generation =
       "The host may expose image_generation when it enables that capability. ";
@@ -328,7 +331,7 @@ static int cai_smith_build_tool_contract(const cai_allocator *allocator,
   static const char *const serial =
       "Tool calls are serial: complete and assess one call before issuing "
       "another.";
-  const char *parts[18];
+  const char *parts[19];
   size_t count;
   size_t length;
   size_t i;
@@ -359,6 +362,7 @@ static int cai_smith_build_tool_contract(const cai_allocator *allocator,
   }
   if ((capabilities & CAI_AGENT_PRESET_TOOL_GOAL) != 0UL) {
     parts[count++] = goal;
+    parts[count++] = goal_resume;
   }
   if ((capabilities & CAI_AGENT_PRESET_TOOL_MCP) != 0UL) {
     parts[count++] = mcp;

@@ -646,9 +646,13 @@ during a turn, and goal state survives session replay. Goals created by model
 tools, slash commands, startup options or host controls use the same pursuit
 loop: an active goal continues after each completed turn and when resumed from
 storage. Approved queued prompts take priority over generated continuations.
-Cancellation or a provider failure stops automatic pursuit for the current
-invocation until another user turn; pausing the goal also prevents pursuit on
-restart. Completed or stopped pursuit leaves the interactive prompt open.
+Escape/Ctrl-C cancels the active turn and durably pauses its goal, including
+across restart. `/goal resume` restarts pursuit. Ordinary user turns still work
+while paused; when asked to continue, the model can resume the paused goal with
+`update_goal(status="active")`. It must not undo a pause without a new user
+request. Provider failure stops automatic pursuit for the current invocation
+until another user turn, leaving goal state unchanged. Completed or stopped
+pursuit leaves the interactive prompt open.
 
 `/model [MODEL [EFFORT]]` shows the current and pending settings and the
 provider catalog, or changes model and optionally reasoning effort.

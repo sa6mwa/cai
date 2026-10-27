@@ -482,6 +482,7 @@ if(CAI_BUILD_TESTS)
     smith_review_runtime
     smith_review_parent_handoff
     agent_runtime_input_boundary
+    agent_runtime_goal_cancel
     agent_runtime_execution
     execution_record
     execution_compaction

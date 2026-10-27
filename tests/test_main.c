@@ -26867,6 +26867,7 @@ static int test_runtime_input_boundary(void *context,
 }
 
 #include "runtime_execution_test.inc"
+#include "runtime_goal_cancel_test.inc"
 
 static void test_agent_runtime_input_boundary(test_state *state) {
   static const char response[] =
@@ -28475,6 +28476,21 @@ static void test_agent_runtime_controls(test_state *state) {
   }
   expect_int(state, "runtime_control_idle_cancel_rejected",
              cai_agent_runtime_cancel_turn(runtime, &error), CAI_ERR_INVALID);
+  expect_int(
+      state, "runtime_control_goal_create",
+      cai_agent_runtime_replace_goal(runtime, "cancel pauses pursuit", &error),
+      CAI_OK);
+  for (i = 0; i < 100; i++) {
+    expect_int(state, "runtime_control_goal_get",
+               cai_agent_runtime_get_goal(runtime, &goal_snapshot, &error),
+               CAI_OK);
+    if (goal_snapshot.has_goal)
+      break;
+    expect_int(state, "runtime_control_goal_pump",
+               cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
+  }
+  expect_str(state, "runtime_control_goal_active", goal_snapshot.status,
+             "active");
   expect_int(state, "runtime_control_submit_A",
              cai_agent_runtime_submit(runtime, "turn A", &error), CAI_OK);
   for (i = 0; i < 100 && events.text_delta_count == 0; i++) {
@@ -28552,6 +28568,13 @@ static void test_agent_runtime_controls(test_state *state) {
              1L);
   expect_int(state, "runtime_control_two_followups", events.completed_count,
              2L);
+  expect_int(state, "runtime_control_cancel_goal_get",
+             cai_agent_runtime_get_goal(runtime, &goal_snapshot, &error),
+             CAI_OK);
+  expect_str(state, "runtime_control_cancel_goal_paused", goal_snapshot.status,
+             "paused");
+  expect_substr(state, "runtime_control_cancel_pause_saved",
+                store_state.saved_checkpoint, "\"goal_status\":\"paused\"");
   expect_int(state, "runtime_control_cancel_before_next_start",
              events.next_started_sequence > events.cancel_sequence, 1L);
   expect_int(
@@ -28642,6 +28665,11 @@ static void test_agent_runtime_controls(test_state *state) {
   if (runtime != NULL) {
     expect_str(state, "runtime_control_resume_session_id",
                cai_agent_runtime_session_id(runtime), session_id);
+    expect_int(state, "runtime_control_resume_goal_get",
+               cai_agent_runtime_get_goal(runtime, &goal_snapshot, &error),
+               CAI_OK);
+    expect_str(state, "runtime_control_resume_goal_stays_paused",
+               goal_snapshot.status, "paused");
     expect_substr(state, "runtime_control_resume_history",
                   store_state.saved_checkpoint, "turn B");
     expect_int(
@@ -33409,6 +33437,64 @@ static void test_goal_tools(test_state *state) {
                 "\"status\":\"active\"");
   expect_substr(state, "goal_get_reports_real_budget", writer.buffer,
                 "\"token_budget\":1000");
+  {
+    cai_session_impl *impl = CAI_SESSION_IMPL(session);
+    const char *const stopped[] = {"complete", "blocked", "budget_limited",
+                                   "usage_limited"};
+    size_t i;
+    long long started;
+    /* Fixture setup models a persisted user pause, without waiting for time. */
+    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, impl->goal_status);
+    impl->goal_status =
+        cai_strdup(&CAI_CLIENT_IMPL(client)->allocator, "paused");
+    impl->goal_elapsed_seconds = 17LL;
+    impl->goal_active_started_at = 0LL;
+    impl->goal_tokens_used = 19LL;
+    impl->usage.usage.total_tokens = 100LL;
+    writer.length = 0U;
+    writer.buffer[0] = '\0';
+    expect_int(state, "goal_model_resume_paused",
+               CAI_AGENT_IMPL(agent)->tools->run(
+                   CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                   "{\"status\":\"active\"}", sink, &error),
+               CAI_OK);
+    expect_substr(state, "goal_model_resume_result", writer.buffer,
+                  "\"status\":\"active\"");
+    expect_int(state, "goal_model_resume_retains_elapsed",
+               impl->goal_elapsed_seconds, 17L);
+    expect_int(state, "goal_model_resume_retains_usage", impl->goal_tokens_used,
+               19L);
+    expect_int(state, "goal_model_resume_retains_budget",
+               impl->goal_token_budget, 1000L);
+    expect_int(state, "goal_model_resume_rebases_usage",
+               impl->goal_token_usage_baseline, 100L);
+    started = impl->goal_active_started_at;
+    expect_int(state, "goal_model_resume_timer_running", started > 0LL, 1L);
+    expect_int(state, "goal_model_resume_active_noop",
+               CAI_AGENT_IMPL(agent)->tools->run(
+                   CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                   "{\"status\":\"active\"}", sink, &error),
+               CAI_OK);
+    expect_int(state, "goal_model_resume_active_timer_unchanged",
+               impl->goal_active_started_at == started, 1L);
+    for (i = 0U; i < sizeof(stopped) / sizeof(stopped[0]); i++) {
+      cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, impl->goal_status);
+      impl->goal_status =
+          cai_strdup(&CAI_CLIENT_IMPL(client)->allocator, stopped[i]);
+      expect_int(state, "goal_model_resume_stopped_rejected",
+                 CAI_AGENT_IMPL(agent)->tools->run(
+                     CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                     "{\"status\":\"active\"}", sink, &error),
+                 CAI_ERR_INVALID);
+      expect_str(state, "goal_model_resume_stopped_unchanged",
+                 impl->goal_status, stopped[i]);
+      cai_error_cleanup(&error);
+      cai_error_init(&error);
+    }
+    cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, impl->goal_status);
+    impl->goal_status =
+        cai_strdup(&CAI_CLIENT_IMPL(client)->allocator, "active");
+  }
   expect_int(state, "goal_update_rejects_unknown_argument",
              CAI_AGENT_IMPL(agent)->tools->run(
                  CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
@@ -33599,6 +33685,13 @@ static void test_goal_tools(test_state *state) {
              CAI_OK);
   expect_substr(state, "goal_clear_idempotent_confirmed", writer.buffer,
                 "\"cleared\":true");
+  expect_int(state, "goal_model_resume_missing_rejected",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                 "{\"status\":\"active\"}", sink, &error),
+             CAI_ERR_INVALID);
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   expect_int(state, "goal_state_export",
              cai_session_export_state_source(session, &state_source, &error),
              CAI_OK);
@@ -54342,6 +54435,7 @@ static const test_entry test_entries[] = {
     {"smith_review_runtime", test_smith_review_runtime},
     {"smith_review_parent_handoff", test_smith_review_parent_handoff},
     {"agent_runtime_input_boundary", test_agent_runtime_input_boundary},
+    {"agent_runtime_goal_cancel", test_agent_runtime_goal_cancel},
     {"agent_runtime_execution", test_agent_runtime_execution},
     {"execution_record", test_execution_record},
     {"execution_compaction", test_execution_compaction},

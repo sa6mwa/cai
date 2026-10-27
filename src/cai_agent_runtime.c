@@ -432,7 +432,8 @@ typedef enum cai_runtime_goal_control_kind {
   CAI_RUNTIME_GOAL_SET_BUDGET = 5,
   CAI_RUNTIME_GOAL_CLEAR_BUDGET = 6,
   CAI_RUNTIME_GOAL_CLEAR = 7,
-  CAI_RUNTIME_GOAL_REPLACE = 8
+  CAI_RUNTIME_GOAL_REPLACE = 8,
+  CAI_RUNTIME_GOAL_CANCEL_PAUSE = 9
 } cai_runtime_goal_control_kind;
 
 typedef struct cai_runtime_goal_control_node {
@@ -523,6 +524,7 @@ struct cai_agent_runtime {
   int stopping;
   int turn_cancel_requested;
   int turn_cancel_armed;
+  int goal_paused_during_turn;
   int model_switching;
   int settings_applying;
   int pending_settings_failed;
@@ -807,6 +809,9 @@ static int cai_runtime_execution_error_locked(cai_agent_runtime *, const char *,
                                               const cai_error *, cai_error *);
 static int cai_runtime_execution_lifecycle_locked(cai_agent_runtime *, int,
                                                   const char *, cai_error *);
+static int cai_runtime_enqueue_goal_control(cai_agent_runtime *, int,
+                                            const char *, int, long long,
+                                            cai_error *);
 
 static int cai_runtime_export_session_id_valid(const char *session_id) {
   const unsigned char *cursor;
@@ -3105,6 +3110,10 @@ static int cai_runtime_account_goal(cai_agent_runtime *runtime,
     return CAI_OK;
   }
   total_tokens = session->usage.usage.total_tokens;
+  if (strcmp(session->goal_status, "paused") == 0) {
+    session->goal_token_usage_baseline = total_tokens;
+    return CAI_OK;
+  }
   if (total_tokens >= session->goal_token_usage_baseline) {
     delta = total_tokens - session->goal_token_usage_baseline;
     if (delta > 0LL) {
@@ -3424,6 +3433,14 @@ cai_runtime_apply_goal_control(cai_agent_runtime *runtime,
   now = (long long)time(NULL);
   event_data = "updated";
   rc = CAI_OK;
+  if (control->kind == CAI_RUNTIME_GOAL_CANCEL_PAUSE &&
+      (goal->goal_status == NULL || strcmp(goal->goal_status, "active") != 0)) {
+    pthread_mutex_lock(&runtime->lock);
+    cai_runtime_mark_checkpoint_event_locked(runtime,
+                                             control->journal_sequence);
+    pthread_mutex_unlock(&runtime->lock);
+    return CAI_OK;
+  }
   if (control->kind == CAI_RUNTIME_GOAL_CREATE ||
       control->kind == CAI_RUNTIME_GOAL_REPLACE) {
     if (control->kind == CAI_RUNTIME_GOAL_CREATE &&
@@ -3469,13 +3486,15 @@ cai_runtime_apply_goal_control(cai_agent_runtime *runtime,
   } else if (goal->goal_status == NULL &&
              control->kind != CAI_RUNTIME_GOAL_CLEAR) {
     return cai_set_error(error, CAI_ERR_INVALID, "no goal exists");
-  } else if (control->kind == CAI_RUNTIME_GOAL_PAUSE) {
+  } else if (control->kind == CAI_RUNTIME_GOAL_PAUSE ||
+             control->kind == CAI_RUNTIME_GOAL_CANCEL_PAUSE) {
     if (strcmp(goal->goal_status, "active") != 0) {
       return cai_set_error(error, CAI_ERR_INVALID,
                            "only an active goal can pause");
     }
     rc = cai_runtime_goal_replace_status(runtime->session, "paused", error);
     if (rc == CAI_OK) {
+      runtime->goal_paused_during_turn = 1;
       cai_session_goal_stop_elapsed(runtime->session, now);
       goal->goal_updated_at = now;
       event_data = "paused";
@@ -4698,7 +4717,8 @@ static int cai_runtime_deliver_steering(void *context, cai_session *session,
         error, CAI_ERR_LIMIT,
         "goal token budget exhausted before another model request");
   }
-  if (rc == CAI_OK && cai_runtime_goal_paused(runtime)) {
+  if (rc == CAI_OK && runtime->goal_paused_during_turn &&
+      cai_runtime_goal_paused(runtime)) {
     return cai_set_error(error, CAI_ERR_CANCELLED,
                          "goal paused at a safe model boundary");
   }
@@ -5090,7 +5110,9 @@ static int cai_runtime_replay_journal_event(
           ? CAI_RUNTIME_GOAL_CREATE
       : strcmp(event->type, "goal_replace") == 0 ? CAI_RUNTIME_GOAL_REPLACE
       : strcmp(event->type, "goal_pause") == 0   ? CAI_RUNTIME_GOAL_PAUSE
-      : strcmp(event->type, "goal_resume") == 0  ? CAI_RUNTIME_GOAL_RESUME
+      : strcmp(event->type, "goal_cancel_pause") == 0
+          ? CAI_RUNTIME_GOAL_CANCEL_PAUSE
+      : strcmp(event->type, "goal_resume") == 0 ? CAI_RUNTIME_GOAL_RESUME
       : strcmp(event->type, "goal_objective_set") == 0
           ? CAI_RUNTIME_GOAL_SET_OBJECTIVE
       : strcmp(event->type, "goal_budget_set") == 0
@@ -5421,7 +5443,6 @@ static void *cai_runtime_worker(void *context) {
   cai_error settings_error;
   unsigned long long consumed_sequence;
   int budget_limited;
-  int cancelled_turn;
   int apply_pending_before_turn;
   int settings_rc;
   int rc;
@@ -5490,9 +5511,8 @@ static void *cai_runtime_worker(void *context) {
             (runtime->shell_context_head == NULL &&
              runtime->goal_control_head == NULL &&
              (runtime->goal_control_failed || runtime->turn_head == NULL ||
-              cai_runtime_goal_paused(runtime) || runtime->subagent_active ||
-              runtime->active_review != NULL || runtime->review_launching ||
-              runtime->review_pause_pending)))) {
+              runtime->subagent_active || runtime->active_review != NULL ||
+              runtime->review_launching || runtime->review_pause_pending)))) {
       pthread_cond_wait(&runtime->condition, &runtime->lock);
     }
     if (runtime->stopping) {
@@ -5554,13 +5574,11 @@ static void *cai_runtime_worker(void *context) {
       cai_error_cleanup(&error);
       continue;
     }
-    if (cai_runtime_goal_paused(runtime)) {
-      cai_error_cleanup(&error);
-      continue;
-    }
     pthread_mutex_lock(&runtime->lock);
     input =
         cai_runtime_take_input_locked(&runtime->turn_head, &runtime->turn_tail);
+    if (input != NULL)
+      runtime->goal_paused_during_turn = 0;
     if (input != NULL && input->counts_toward_turn_limit &&
         runtime->turn_count > 0U) {
       runtime->turn_count--;
@@ -5843,31 +5861,12 @@ static void *cai_runtime_worker(void *context) {
     }
     if (rc != CAI_OK)
       cai_runtime_policy_diagnostic(runtime, &error, &sinks);
-    cancelled_turn = 0;
     pthread_mutex_lock(&runtime->lock);
     if (runtime->turn_cancel_requested && rc == CAI_OK) {
       rc = cai_set_error(&error, CAI_ERR_CANCELLED, "agent turn was cancelled");
     }
-    if (runtime->turn_cancel_requested && rc == CAI_ERR_CANCELLED) {
-      cai_runtime_promote_resumed_steering(runtime);
-      cancelled_turn = 1;
-    }
     runtime->turn_cancel_armed = 0;
     pthread_mutex_unlock(&runtime->lock);
-    if (cancelled_turn) {
-      cai_error checkpoint_error;
-      int checkpoint_rc;
-
-      cai_error_init(&checkpoint_error);
-      checkpoint_rc = cai_runtime_checkpoint(runtime, 1, &checkpoint_error);
-      if (checkpoint_rc != CAI_OK) {
-        cai_error_cleanup(&error);
-        error = checkpoint_error;
-        cai_error_init(&checkpoint_error);
-        rc = checkpoint_rc;
-      }
-      cai_error_cleanup(&checkpoint_error);
-    }
     if (rc == CAI_ERR_LIMIT && cai_runtime_goal_budget_limited(runtime)) {
       /* The completed tool round has committed client history; make that
        * exact state durable before reporting the next-request boundary. */
@@ -5920,6 +5919,47 @@ static void *cai_runtime_worker(void *context) {
     cai_error_cleanup(&settings_error);
     pthread_mutex_lock(&runtime->lock);
     runtime->accepting_steering = 0;
+    /* Keep cancellation admission and terminal publication under the same
+     * lock: a request accepted during the final checkpoint must settle too. */
+    if (runtime->turn_cancel_requested) {
+      cai_error checkpoint_error;
+      int checkpoint_rc;
+
+      if (rc == CAI_OK)
+        rc = cai_set_error(&error, CAI_ERR_CANCELLED,
+                           "agent turn was cancelled");
+      if (rc == CAI_ERR_CANCELLED)
+        cai_runtime_promote_resumed_steering(runtime);
+      pthread_mutex_unlock(&runtime->lock);
+      cai_error_init(&checkpoint_error);
+      checkpoint_rc =
+          cai_runtime_apply_queued_goal_controls(runtime, &checkpoint_error);
+      if (checkpoint_rc == CAI_OK &&
+          CAI_SESSION_IMPL(runtime->session)->goal_status != NULL &&
+          strcmp(CAI_SESSION_IMPL(runtime->session)->goal_status, "active") ==
+              0) {
+        int ignored_limit;
+        checkpoint_rc = cai_runtime_account_goal(runtime, &ignored_limit,
+                                                 &checkpoint_error);
+        if (checkpoint_rc == CAI_OK)
+          checkpoint_rc = cai_runtime_enqueue_goal_control(
+              runtime, CAI_RUNTIME_GOAL_CANCEL_PAUSE, NULL, 0, 0LL,
+              &checkpoint_error);
+        if (checkpoint_rc == CAI_OK)
+          checkpoint_rc = cai_runtime_apply_queued_goal_controls(
+              runtime, &checkpoint_error);
+      }
+      if (checkpoint_rc == CAI_OK)
+        checkpoint_rc = cai_runtime_checkpoint(runtime, 1, &checkpoint_error);
+      if (checkpoint_rc != CAI_OK) {
+        cai_error_cleanup(&error);
+        error = checkpoint_error;
+        cai_error_init(&checkpoint_error);
+        rc = checkpoint_rc;
+      }
+      cai_error_cleanup(&checkpoint_error);
+      pthread_mutex_lock(&runtime->lock);
+    }
     cai_runtime_turn_finish_locked(runtime);
     if (runtime->event_callback == NULL) {
       cai_error observed;
@@ -8019,6 +8059,12 @@ int cai_agent_runtime_open(cai_client *client,
       rc = cai_runtime_checkpoint(runtime, 0, error);
     }
   }
+  /* Settle replayed controls before hosts inspect the goal and decide whether
+   * to start pursuit. In particular, a journaled cancellation must not expose
+   * the older active checkpoint as a resumable goal. */
+  if (rc == CAI_OK) {
+    rc = cai_runtime_apply_queued_goal_controls(runtime, error);
+  }
   if (rc == CAI_OK) {
     rc = cai_runtime_refresh_goal_projection(runtime, error);
   }
@@ -9002,6 +9048,16 @@ int cai_agent_runtime_cancel_turn(cai_agent_runtime *runtime,
   }
   pthread_cond_broadcast(&runtime->condition);
   pthread_mutex_unlock(&runtime->lock);
+  if (runtime->parent_runtime != NULL && runtime->review_mode) {
+    cai_agent_runtime *parent = runtime->parent_runtime;
+    int manual;
+    pthread_mutex_lock(&parent->lock);
+    manual = parent->active_review == runtime;
+    pthread_mutex_unlock(&parent->lock);
+    if (manual)
+      return cai_runtime_enqueue_goal_control(
+          parent, CAI_RUNTIME_GOAL_CANCEL_PAUSE, NULL, 0, 0LL, error);
+  }
   return CAI_OK;
 }
 
@@ -12074,6 +12130,7 @@ static int cai_runtime_enqueue_goal_control(cai_agent_runtime *runtime,
                      ? (has_token_budget ? "goal_create_budget" : "goal_create")
                  : kind == CAI_RUNTIME_GOAL_REPLACE       ? "goal_replace"
                  : kind == CAI_RUNTIME_GOAL_PAUSE         ? "goal_pause"
+                 : kind == CAI_RUNTIME_GOAL_CANCEL_PAUSE  ? "goal_cancel_pause"
                  : kind == CAI_RUNTIME_GOAL_RESUME        ? "goal_resume"
                  : kind == CAI_RUNTIME_GOAL_SET_OBJECTIVE ? "goal_objective_set"
                  : kind == CAI_RUNTIME_GOAL_SET_BUDGET    ? "goal_budget_set"

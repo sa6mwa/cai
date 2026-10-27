@@ -98,7 +98,8 @@ plan "$(jq -n --argjson chat "$chat" '{chat:$chat,plan:[
 send '/goal resume\r'; goal_finished 'PAUSED GOAL RESUMED'
 terminal_close
 
-# Cancelling a model-created active goal must not immediately restart it.
+# Escape and Ctrl-C durably pause pursuit, while ordinary user turns still work.
+for key in '\033' '\003'; do
 count=$(requests)
 plan "$(jq -n --argjson chat "$chat" '{chat:$chat,plan:[
   {tool:"create_goal",arguments:{objective:"Cancellable model goal"}},
@@ -106,18 +107,39 @@ plan "$(jq -n --argjson chat "$chat" '{chat:$chat,plan:[
 ]}')"
 terminal_start -N
 send 'Create the cancellable goal\r'; expect 'STREAM in flight'
-send '\033'
-cancelled_goal() { logs; jq -se 'any(.[]; .event == "run_cancelled")' "$root/logs.jsonl" >/dev/null; }
-wait_for cancelled_goal
+send "$key"
+expect 'WARN: Turn stopped.'
+expect 'goal=paused'
 release
-send '/goal\r'; expect 'Status: active'
+send '/goal\r'; expect 'Status: paused'
+[[ $(requests) == "$((count+2))" ]]
+terminal_close
+terminal_start
+send '/goal\r'; expect 'Status: paused'
 [[ $(requests) == "$((count+2))" ]]
 plan "$(jq -n --argjson chat "$chat" '{chat:$chat,plan:[
+  {tool:"get_goal",arguments:{}},"ANSWER WHILE PAUSED"
+]}')"
+send 'What is the current goal? Do not resume it.\r'
+goal_finished 'ANSWER WHILE PAUSED'
+send '/goal\r'; expect 'Status: paused'
+[[ $(requests) == "$((count+4))" ]]
+if [[ "$key" == '\033' ]]; then
+plan "$(jq -n --argjson chat "$chat" '{chat:$chat,plan:[
+  {tool:"update_goal",arguments:{status:"active"}},"MODEL RESUMED GOAL",
   {tool:"update_goal",arguments:{status:"complete"}},"CANCELLED GOAL CONTINUED"
 ]}')"
 send 'Continue the interrupted goal\r'; goal_finished 'CANCELLED GOAL CONTINUED'
-[[ $(requests) == "$((count+4))" ]]
+[[ $(requests) == "$((count+8))" ]]
+else
+plan "$(jq -n --argjson chat "$chat" '{chat:$chat,plan:[
+  {tool:"update_goal",arguments:{status:"complete"}},"COMMAND RESUMED GOAL"
+]}')"
+send '/goal resume\r'; goal_finished 'COMMAND RESUMED GOAL'
+[[ $(requests) == "$((count+6))" ]]
+fi
 terminal_close
+done
 
 # Failure stops pursuit in this invocation. An active durable goal is pursued
 # on restart or explicit /resume, without requiring --goal or /goal resume.

@@ -871,7 +871,10 @@ int cai_agent_runtime_get_reasoning_tool(cai_agent_runtime *runtime,
  * Owner-thread-only and idempotent while cancellation is pending. Returns an
  * invalid-state error when no turn is active. Completion is signalled by one
  * CAI_AGENT_EVENT_RUN_CANCELLED after durable state has been settled; accepted
- * queued input runs afterward. A non-cooperative host tool may delay it.
+ * queued user input runs afterward. An active goal is durably paused before
+ * completion is reported; explicit host resume or a later user-authorized
+ * update_goal(status=active) may resume pursuit. Ordinary user turns still
+ * run while the goal is paused. A non-cooperative host tool may delay it.
  */
 int cai_agent_runtime_cancel_turn(cai_agent_runtime *runtime, cai_error *error);
 /**

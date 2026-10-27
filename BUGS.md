@@ -5,6 +5,21 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-042: Escape stops pursuit while leaving the goal active
+
+- **Evidence:** turn cancellation left an active durable goal behind while the
+  application stopped generating continuations. Explicitly paused goals also
+  blocked ordinary user turns, preventing a model-requested resume.
+- **Resolution:** settle cancellation by durably pausing an active goal before
+  reporting the stop, including cancellation during the final checkpoint and
+  an isolated review. Recover pending goal controls before exposing the startup
+  snapshot. Paused goals permit user turns; `/goal resume` or a user-requested
+  `update_goal(status="active")` resumes pursuit without resetting accounting.
+- **Verification:** deterministic native checks cover journal/status/checkpoint
+  failures, crash recovery and the final-checkpoint race. Mock Responses and
+  Chat Completions terminal checks cover Escape/Ctrl-C, restart, ordinary paused
+  turns and both resume paths. Parent goals pause when `/review` is cancelled.
+
 ## BUG-041: Command tools replace HOME and silently filter XDG configuration
 
 - **Evidence:** Lingon notifications look under the workspace's `.lingon`:
