@@ -450,7 +450,7 @@ static int cli_renderer_create(cli_state *state, const cai_cli_theme *theme,
   if (getenv("NO_COLOR") != NULL)
     options.ansi_mode = MDF_ANSI_OFF;
   options.width = width;
-  options.margin_left = width >= 5 ? 2 : 0;
+  options.margin_left = state->interactive && width >= 5 ? 2 : 0;
   options.boring = !state->interactive;
   status = mdf_create(MDF_FORMAT_ANSI, &options, out);
   if (status != MDF_OK)

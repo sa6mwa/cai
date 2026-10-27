@@ -227,8 +227,9 @@ with `\n\n` to separate the introduction. The optional Markdown introduction
 has independent `introduction_margin_left` and `introduction_margin_right`
 fields in both C and Lua, passed directly to its own libmdf renderer. Both
 default to zero and must be nonnegative, leaving at least three content columns
-at the current terminal width. Conversation text retains its normal margin
-and a blank line before content starts. The introduction goes through
+at the current terminal width. Interactive conversation text retains its normal
+margin and a blank line before content starts. Non-interactive final responses
+have no added left margin. The introduction goes through
 libmdf's output feed before the first session opens or replays; it is
 not added to model context or session history. Help, version, utilities, native
 messaging, reviews and non-interactive runs print neither. The CAI scaffold

@@ -6,6 +6,11 @@ chat=false
 [[ "$protocol" != chat_completions ]] || chat=true
 printf '[client]\napi_protocol = %s\n' "$protocol" >"$root/protocol.ini"
 base+=(--config "$root/protocol.ini")
+plan "{\"chat\":$chat,\"plan\":[\"First paragraph.\\n\\nSecond paragraph.\"]}"
+run -Nni 'Print two paragraphs'; ok
+printf 'First paragraph.\n\nSecond paragraph.\n' >"$root/expected"
+cmp "$root/expected" "$root/stdout"
+
 for final in '""' '{"reasoning":["Reasoning without a final reply"]}' '{"error":"Final turn failed"}'; do
   plan "{\"chat\":$chat,\"plan\":[\"STALE FIRST REPLY\",$final]}"
   run -Nni first -i second
@@ -15,7 +20,7 @@ for final in '""' '{"reasoning":["Reasoning without a final reply"]}' '{"error":
 done
 plan "{\"chat\":$chat,\"plan\":[\"STALE FIRST REPLY\",{\"text\":\"Current partial reply\",\"error\":\"Failure after partial reply\"}]}"
 run -Nni first -i second; bad
-[[ $(stdout_text) == 'Current partial reply' ]]
+[[ $(cat "$root/stdout") == 'Current partial reply' ]]
 absent "$root/stdout" 'STALE FIRST REPLY'
 
 # A tool continuation is a new response within the same turn, even when it
@@ -27,3 +32,10 @@ for final in '""' '{"reasoning":["Reasoning-only tool continuation"]}'; do
   [[ ! -s "$root/stdout" ]]
   contains "$root/stderr" 'STALE TOOL PREAMBLE'
 done
+
+# The conversation margin belongs to interactive output only.
+plan "{\"chat\":$chat,\"plan\":[\"Interactive paragraph.\"]}"
+terminal_start -N
+prompt 'Print one paragraph' 'Interactive paragraph.'
+grep -Fxq '  Interactive paragraph.' "$term/feed"
+terminal_close
