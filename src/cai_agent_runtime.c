@@ -4889,7 +4889,8 @@ cai_runtime_replay_consumed_input(cai_agent_runtime *runtime,
   }
   end = NULL;
   if (cai_parse_unsigned_decimal(event->data, &end, &input_sequence) != 0 ||
-      end == event->data || *end != '\0' || input_sequence == 0U) {
+      end == event->data || *end != '\0' || input_sequence == 0U ||
+      input_sequence >= event->sequence) {
     return cai_set_error(
         error, CAI_ERR_INVALID,
         "input-consumed journal event has an invalid input sequence");
@@ -4914,10 +4915,10 @@ cai_runtime_replay_consumed_input(cai_agent_runtime *runtime,
         &runtime->turn_head, &runtime->turn_tail, &runtime->turn_count,
         input_sequence);
   }
-  if (!removed) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "input-consumed journal event has no queued input");
-  }
+  /* Replaying an input after an interrupted checkpoint writes a fresh marker.
+   * A later checkpoint can cover both markers. The second acknowledgement is
+   * then a no-op, just like user_shell_context_consumed; the checkpoint is
+   * authoritative and no model input should be injected a second time. */
   return CAI_OK;
 }
 

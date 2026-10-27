@@ -527,6 +527,7 @@ if(CAI_BUILD_TESTS)
     agent_local_session_store_rejects_insecure_root
     agent_local_session_store_rejects_unsafe_scope
     agent_runtime_resume
+    agent_runtime_input_ack
     agent_runtime_markdown_export
     goal_tools
     goal_create_allocation_failure

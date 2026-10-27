@@ -26869,6 +26869,7 @@ static int test_runtime_input_boundary(void *context,
 #include "runtime_execution_test.inc"
 #include "runtime_goal_cancel_test.inc"
 #include "runtime_goal_continuation_test.inc"
+#include "runtime_input_ack_test.inc"
 
 static void test_agent_runtime_input_boundary(test_state *state) {
   static const char response[] =
@@ -54547,6 +54548,7 @@ static const test_entry test_entries[] = {
     {"agent_local_session_store_rejects_unsafe_scope",
      test_agent_local_session_store_rejects_unsafe_scope},
     {"agent_runtime_resume", test_agent_runtime_resume},
+    {"agent_runtime_input_ack", test_agent_runtime_input_ack},
     {"agent_runtime_markdown_export", test_agent_runtime_markdown_export},
     {"goal_tools", test_goal_tools},
     {"goal_create_allocation_failure", test_goal_create_allocation_failure},

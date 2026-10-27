@@ -5,6 +5,20 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-044: Cancelled conversations fail to reopen on repeated input acknowledgements
+
+- **Evidence:** the supplied session log records cancellation followed by repeated
+  `input-consumed journal event has no queued input` startup errors. A native
+  regression reproduces the rejection for normal/queued prompts, steering and
+  goal continuations with repeated checkpoint-covered acknowledgements.
+- **Resolution:** covered acknowledgements are idempotent, matching shell-context
+  acknowledgements. The checkpoint remains authoritative; duplicate markers do
+  not inject input again or discard saved context. Malformed, zero and forward
+  references still fail validation. No stored conversation rewrite is required.
+- **Verification:** native checks retain and export the saved question/answer,
+  without starting inference. The terminal regression cancels, quits with Alt-Q,
+  reopens the Pouch-backed conversation and completes another mocked turn.
+
 ## BUG-043: Goal continuations omit Codex's objective and completion audits
 
 - **Evidence:** the application sent one short continuation sentence. The
