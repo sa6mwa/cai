@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Indexed lockd and mutual TLS wire data for CLI tests."""
+"""Remote lockd queue and mutual TLS wire data for CLI tests."""
+from email.parser import BytesParser
+from email.policy import default
 import http.server
 import json
 from pathlib import Path
@@ -25,11 +27,23 @@ class Peer(http.server.BaseHTTPRequestHandler):
                 self.rfile.read(2)
         else:
             data = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+        content_type = self.headers.get('Content-Type', '')
+        if content_type.startswith('multipart/'):
+            message = BytesParser(policy=default).parsebytes(
+                ('Content-Type: '+content_type+'\r\n\r\n').encode()+data)
+            body = {part.get_param('name', header='content-disposition'):
+                    json.loads(part.get_payload(decode=True))
+                    for part in message.iter_parts()}
+        else:
+            body = json.loads(data)
         with (root/'requests.jsonl').open('a') as output:
-            output.write(json.dumps({'path':self.path, 'body':json.loads(data)})+'\n')
+            output.write(json.dumps({'path':self.path, 'body':body})+'\n')
         mode = (root/'mode').read_text().strip() if (root/'mode').exists() else 'success'
         self.reply(503 if mode == 'failure' else 200, {'error':'fixture unavailable'} if mode == 'failure' else
-                   {'namespace':'cai.sessions','keys':['fixture'] if mode == 'metadata' else [],'index_seq':1}, 'fixture-lockd')
+                   {'namespace':'cai.messages','queue':'cai.fixture',
+                    'message_id':'fixture-message','attempts':0,'max_attempts':3,
+                    'failure_attempts':0,'not_visible_until_unix':0,
+                    'visibility_timeout_seconds':30,'payload_bytes':0}, 'fixture-lockd')
     def do_GET(self):
         self.reply(503, {'error':'metadata unavailable'}, 'fixture-metadata')
     def reply(self, status, value, correlation):

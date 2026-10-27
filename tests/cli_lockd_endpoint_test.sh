@@ -12,18 +12,20 @@ start_lockd() {
 }
 start_lockd
 for option in --list --resume; do
-  run "$option"; ok; [[ $(stdout_text) == 'No conversations.' && ! -s "$root/stderr" ]]
-  tail -1 "$lockd/requests.jsonl" >"$root/request"
-  json "$root/request" '.path == "/v1/query?engine=index&refresh=wait_for" and .body.namespace == "cai.sessions" and .body.return == "keys"'
-  field=/published; [[ "$option" != --resume ]] || field=/workspace
-  json "$root/request" ".body.selector.eq.field == \"$field\""
+  run "$option"; bad
+  contains "$root/stderr" 'Session history requires a Pouch endpoint'
 done
+[[ ! -e "$lockd/requests.jsonl" ]]
 [[ ! -e "$root/state/cai/pouch.key" && ! -e "$root/state/cai/pouch" ]]
-for mode in failure metadata; do
-  printf '%s\n' "$mode" >"$lockd/mode"
-  run --list; bad; contains "$root/stderr" 503
-  contains "$root/stderr" "fixture-$([[ "$mode" == failure ]] && printf lockd || printf metadata)"
-done
+# Standalone messaging still reaches remote lockd and retains transport errors.
+run -q cai.fixture -M 'remote message'; ok
+json "$root/stdout" '.status == "queued" and .recipient == "cai.fixture"'
+tail -1 "$lockd/requests.jsonl" >"$root/request"
+json "$root/request" '.path == "/v1/queue/enqueue" and .body.meta.namespace == "cai.messages" and .body.meta.queue == "cai.fixture" and .body.payload.text == "remote message"'
+printf failure >"$lockd/mode"
+run -q cai.fixture -M 'failed remote message'; bad
+contains "$root/stderr" 503
+contains "$root/stderr" fixture-lockd
 kill "$peer_pid"; wait "$peer_pid" 2>/dev/null || true; peer_pid=
 printf success >"$lockd/mode"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 -subj '/CN=CAI test CA' -keyout "$lockd/ca.key" -out "$lockd/ca.crt" >"$lockd/openssl.log" 2>&1
@@ -35,5 +37,7 @@ for name in server client; do
 done
 cat "$lockd/client.crt" "$lockd/client.key" "$lockd/ca.crt" >"$lockd/client.pem"; chmod 600 "$lockd/client.pem"
 start_lockd tls
-run --lockd-client-pem "$lockd/client.pem" --list; ok
-[[ $(stdout_text) == 'No conversations.' && ! -s "$root/stderr" ]]
+run --lockd-client-pem "$lockd/client.pem" -q cai.fixture -M 'secure message'; ok
+json "$root/stdout" '.status == "queued" and .recipient == "cai.fixture"'
+tail -1 "$lockd/requests.jsonl" >"$root/request"
+json "$root/request" '.path == "/v1/queue/enqueue" and .body.payload.text == "secure message"'

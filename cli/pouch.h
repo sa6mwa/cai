@@ -18,7 +18,8 @@ typedef struct cai_cli_session {
   char id[CAI_AGENT_SESSION_ID_MAX];
   char workspace[PATH_MAX];
   char first_prompt[512];
-  char checkpoint_name[96];
+  char history_backend[16];
+  lonejson_uint64 checkpoint_position;
   lonejson_uint64 checkpoint_ns;
   lonejson_uint64 applied_sequence;
   lonejson_int64 published;
@@ -27,6 +28,10 @@ typedef struct cai_cli_session {
 typedef struct cai_cli_pouch {
   lc_client *sessions;
   struct cai_cli_pouch_client *connection;
+  /* Anchors keep active partitions open; operation receivers are owned. */
+  lc_collection *history_anchors[2];
+  pthread_mutex_t history_lock;
+  int history_lock_initialized;
   char program_name[33], queue_prefix[33];
   char sessions_namespace[129], auth_namespace[129], scopes_namespace[129];
   char todo_namespace[129], messages_namespace[129];
@@ -54,7 +59,7 @@ int cai_cli_pouch_open_at(cai_cli_pouch *pouch, const char *state_directory,
                           const char *endpoint, const char *client_pem,
                           pslog_logger *logger, cai_error *error);
 void cai_cli_pouch_close(cai_cli_pouch *pouch);
-/* Console tail only: bounded journal range, selection before downloading,
+/* Console tail only: bounded collection range, selection before rendering,
  * without invoking recovery or startup observers a second time. */
 int cai_cli_pouch_replay(cai_cli_pouch *pouch, const char *scope,
                          const char *id, unsigned long long after,

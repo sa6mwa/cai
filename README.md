@@ -122,9 +122,9 @@ runtime, review, storage, and presentation contracts.
 The musl SDK presets build the terminal coding agent as a statically linked
 Linux x86_64, aarch64 or armhf executable. The `cai` convenience preset selects
 the same x86_64 musl producer. It adds pinned softline 0.13.0 for the prompt and
-libmdf 0.15.0 for streamed Markdown rendering, and liblockdc 0.21.0 with
+libmdf 0.15.0 for streamed Markdown rendering, and liblockdc 0.22.0 with
 liblql 0.3.0 for durable storage. It uses libpslog 0.12.0 for logging.
-The native dependency SDK is cpkt 0.5.0 from
+The native dependency SDK is cpkt 0.5.2 from
 [c89systems/cpkt](https://github.com/c89systems/cpkt). CAI consumes liblockdc's
 core archive; its separate PostgreSQL provider is excluded. cpktmisc 0.2.0
 supplies libyaml; cpktdb is not required. Dependency prefixes remain separate,
@@ -656,10 +656,14 @@ Install under `/usr` to place the man page at `/usr/share/man/man1/cai.1`.
 By default, the cai binary stores sessions and ChatGPT credentials in one
 encrypted liblockdc Pouch root at `$XDG_STATE_HOME/cai/pouch`, or
 `~/.local/state/cai/pouch`. Session metadata is indexed in `cai.sessions`;
-checkpoints and journal events are immutable attachments streamed into and
-out of that namespace. Credentials are stored separately in `cai.auth`.
-Pouch's query indexes are derived caches. Local startup prepares the session
-index through liblockdc's wait flush, repairing missing or invalid manifests
+checkpoints and journal events are immutable entries in separate ordered
+collections per conversation, streamed through the native collections API.
+Session history requires Pouch; remote lockd collections are not available yet.
+Attachment-backed development sessions are no longer supported; use `--new`
+to start a conversation. No migration or compatibility backend is included.
+Credentials are stored separately in `cai.auth`.
+Pouch's query indexes are derived caches. Local startup prepares the session and workspace
+indexes through liblockdc's wait flush, repairing missing or invalid manifests
 without requiring a prompt or a session listing. A repair failure reports a
 warning while direct session replay remains available. Indexed queries such
 as `--list` or `/resume` can retry recovery. Index-cache recovery does not
@@ -1219,7 +1223,7 @@ Linux compiler collections are pinned to Bootlin stable 2026.08-1 (GCC 15.3.0)
 for all six Linux targets. The AFL++ GCC plugin uses that same collection.
 Local tests, examples, fuzzers, and e2e helpers use the selected x86_64 GNU
 collection's loader and runtime directly; no shell-level library-path override
-is needed. cpkt 0.5.0 shared dependencies require glibc 2.43 or
+is needed. cpkt 0.5.2 shared dependencies require glibc 2.43 or
 newer on Linux. Deployments on older glibc must upgrade their runtime or use a
 fully static musl application and validate it.
 CLI test builds require `tmux`, alongside the existing Bash/Python fixture and

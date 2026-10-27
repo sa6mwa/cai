@@ -248,7 +248,7 @@ static int mailbox_claim_selected(cai_cli_messages *m, const char *name,
       strcpy(doc->workspace, m->workspace);
       strcpy(doc->hostname, m->hostname);
       strcpy(doc->host_id, m->host_id);
-      rc = lc_lease_save(lease, &message_map, doc, &local);
+      rc = lc_lease_save(lease, &message_map, doc, NULL, &local);
     }
     rc = lease_finish(lease, rc, &local);
   }
@@ -333,7 +333,7 @@ static void mailbox_release(cai_cli_messages *m, const char *name) {
     rc = mailbox_load(lease, doc, &error);
     if (rc == LC_OK && strcmp(doc->instance, m->instance) == 0) {
       doc->instance[0] = '\0';
-      rc = lc_lease_save(lease, &message_map, doc, &error);
+      rc = lc_lease_save(lease, &message_map, doc, NULL, &error);
     }
     rc = lease_finish(lease, rc, &error);
   }
@@ -362,7 +362,7 @@ static int save_doc(cai_cli_messages *m, message_doc *doc, cai_error *error) {
   lc_error_init(&local);
   rc = lease_open(m, key, &lease, &local);
   if (rc == LC_OK) {
-    rc = lc_lease_save(lease, &message_map, doc, &local);
+    rc = lc_lease_save(lease, &message_map, doc, NULL, &local);
     rc = lease_finish(lease, rc, &local);
   }
   if (rc != LC_OK)
@@ -516,7 +516,7 @@ static int consume(void *context, lc_consumer_message *delivery,
     if (fresh && (doc.deadline_ms == 0 || doc.deadline_ms > realtime_ms())) {
       strcpy(doc.kind, "pending");
       strcpy(doc.pending_for, m->session);
-      rc = lc_lease_save(lease, &message_map, &doc, error);
+      rc = lc_lease_save(lease, &message_map, &doc, NULL, error);
     } else if (fresh) {
       rc = lease_finish(lease, rc, error);
       lease = NULL;

@@ -95,7 +95,9 @@ typedef struct cai_app_option {
  * including providers, models, instructions, tools, MCP and storage. Order:
  * CAI defaults < INI/environment < settings < forwarded arguments.
  * [env] retains its normal config_env_has_precedence policy.
- * Runtime defaults match cai; startup text is empty unless the host sets it. */
+ * Runtime defaults match cai; startup text is empty unless the host sets it.
+ * Conversation history requires Pouch collections. Remote lockd stores remain
+ * available for separately selected authentication, messaging and kanban. */
 #define CAI_APP_DEFAULT_PROGRAM_NAME "cai"
 typedef struct cai_app_config {
   /** Application identity: lowercase letter followed by lowercase letters,
@@ -269,7 +271,7 @@ typedef struct cai_app_kanban_config {
   const char *pouch_key_file;
   /** Absolute state directory containing pouch.key; NULL derives XDG/name. */
   const char *state_directory;
-  /** Same lockd endpoint as sessions; NULL selects state_directory/pouch. */
+  /** Pouch or remote lockd endpoint; NULL selects state_directory/pouch. */
   const char *lockd;
   /** Optional client PEM for remote lockd mutual TLS. */
   const char *lockd_client_pem;

@@ -34,12 +34,15 @@ static void save(cai_cli_pouch *pouch, const char *scope, const char *id,
   cai_source *source = NULL;
   size_t offset = 0U;
   cai_source_callbacks callbacks;
+  int rc;
   memset(&callbacks, 0, sizeof(callbacks));
   callbacks.read = read_state;
   callbacks.context = &offset;
   assert(cai_source_from_callbacks(&callbacks, &source, error) == CAI_OK);
-  assert(pouch->store.checkpoint(pouch, scope, id, source, 1U, error) ==
-         CAI_OK);
+  rc = pouch->store.checkpoint(pouch, scope, id, source, 1U, error);
+  if (rc != CAI_OK)
+    fprintf(stderr, "save %s: %s\n", id, error->message);
+  assert(rc == CAI_OK);
   cai_source_close(source);
 }
 
@@ -321,10 +324,13 @@ static void replay_limits(cai_cli_pouch *pouch, cai_error *error) {
   assert(cai_cli_mapped_source(&event_map, &original, &source, error) ==
          CAI_OK);
   {
-    lc_lease *lease = NULL;
-    assert(acquire(pouch, "oversized", &lease, error) == CAI_OK);
-    rc = attach(lease, "event-00000000000001000004", source, error);
-    assert(release(lease, rc, error) == CAI_OK);
+    lc_collection *collection = NULL;
+    assert(history_collection(pouch, "oversized", "events", 0, &collection,
+                              error) == CAI_OK);
+    rc = collection_append_source(collection, "event-00000000000001000004",
+                                  source, NULL, error);
+    collection->close(collection);
+    assert(rc == CAI_OK);
   }
   cai_source_close(source);
   assert(load_events(pouch, "/work/oversized", "oversized", last,
@@ -332,6 +338,163 @@ static void replay_limits(cai_cli_pouch *pouch, cai_error *error) {
   assert(strstr(error->message, "invalid stored event identity") != NULL);
   cai_error_cleanup(error);
   cai_error_init(error);
+}
+
+static int collection_range_event(void *context,
+                                  const cai_agent_session_event *event,
+                                  cai_error *error) {
+  unsigned long long *last = context;
+  (void)error;
+  assert(event->sequence > *last);
+  assert(event->sequence == 30U || event->sequence == 90U);
+  assert(strcmp(event->data, "collection event") == 0);
+  *last = event->sequence;
+  return CAI_OK;
+}
+static size_t broken_checkpoint(void *context, void *bytes, size_t capacity,
+                                cai_error *error) {
+  (void)context;
+  (void)bytes;
+  (void)capacity;
+  cai_cli_error(error, CAI_ERR_TRANSPORT, "checkpoint source failed");
+  return 0U;
+}
+static int unavailable_collections(lc_client *client,
+                                   lc_collection_capabilities *caps,
+                                   lc_error *error) {
+  (void)client;
+  (void)error;
+  memset(caps, 0, sizeof(*caps));
+  return LC_OK;
+}
+static void collection_regressions(cai_cli_pouch *pouch, cai_error *error) {
+  cai_agent_session_event event;
+  cai_cli_session before, after;
+  cai_source_callbacks callbacks;
+  cai_source *source = NULL;
+  lc_attachment_list_req request;
+  lc_attachment_list attachments;
+  lc_collection *collection = NULL;
+  lc_collection_info info;
+  lc_error local;
+  lc_lease *lease = NULL;
+  unsigned long long last, sequence;
+  unsigned long long numbers[3];
+  size_t i, used, count;
+  char bytes[8];
+  int (*capabilities)(lc_client *, lc_collection_capabilities *, lc_error *);
+  save(pouch, "/work/collections", "collection-test", error);
+  assert(cai_cli_pouch_session(pouch, "collection-test", &before, error) ==
+         CAI_OK);
+  numbers[0] = 10U;
+  numbers[1] = 30U;
+  numbers[2] = 90U;
+  event.type = "assistant_text_delta";
+  event.data = "collection event";
+  for (i = 0U; i < 3U; i++) {
+    event.sequence = numbers[i];
+    assert(append_event(pouch, "/work/collections", "collection-test", &event,
+                        error) == CAI_OK);
+    /* Exact retries commit only once, even when positions differ from event
+     * sequence numbers. */
+    assert(append_event(pouch, "/work/collections", "collection-test", &event,
+                        error) == CAI_OK);
+  }
+  event.data = "conflicting retry";
+  assert(append_event(pouch, "/work/collections", "collection-test", &event,
+                      error) != CAI_OK);
+  cai_error_cleanup(error);
+  cai_error_init(error);
+  last = 10U;
+  assert(cai_cli_pouch_replay(pouch, "/work/collections", "collection-test",
+                              10U, 30U, NULL, collection_range_event, &last,
+                              error) == CAI_OK);
+  assert(last == 30U);
+  assert(load_events(pouch, "/work/collections", "collection-test", last,
+                     collection_range_event, &last, error) == CAI_OK);
+  assert(last == 90U);
+  assert(load_events(pouch, "/wrong-directory", "collection-test", 0U, reject,
+                     NULL, error) == CAI_ERR_INVALID);
+  cai_error_cleanup(error);
+  cai_error_init(error);
+  lc_error_init(&local);
+  assert(history_collection(pouch, "collection-test", "events", 0, &collection,
+                            error) == CAI_OK);
+  assert(collection->describe(collection, &info, &local) == LC_OK);
+  assert(info.live_count == 3U);
+  collection->close(collection);
+  lc_attachment_list_req_init(&request);
+  memset(&attachments, 0, sizeof(attachments));
+  request.lease.ns = pouch->sessions_namespace;
+  request.lease.key = "collection-test";
+  request.public_read = 1;
+  assert(lc_list_attachments(pouch->sessions, &request, &attachments, &local) ==
+         LC_OK);
+  assert(attachments.count == 0U);
+  lc_attachment_list_cleanup(&attachments);
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.read = broken_checkpoint;
+  assert(cai_source_from_callbacks(&callbacks, &source, error) == CAI_OK);
+  assert(checkpoint(pouch, "/work/collections", "collection-test", source, 90U,
+                    error) != CAI_OK);
+  cai_source_close(source);
+  source = NULL;
+  cai_error_cleanup(error);
+  cai_error_init(error);
+  assert(cai_cli_pouch_session(pouch, "collection-test", &after, error) ==
+         CAI_OK);
+  assert(before.checkpoint_position == after.checkpoint_position);
+  assert(before.applied_sequence == after.applied_sequence);
+  assert(load_id(pouch, "/work/collections", "collection-test", &source,
+                 &sequence, error) == CAI_OK);
+  used = 0U;
+  while ((count = cai_source_read(source, bytes + used, sizeof(bytes) - used,
+                                  error)) != 0U)
+    used += count;
+  assert(used == 3U && error->code == CAI_OK);
+  assert(memcmp(bytes, "{}\n", 3U) == 0);
+  cai_source_close(source);
+  /* A retired metadata record is rejected, never silently treated as a
+   * usable checkpoint or converted during resume. */
+  assert(acquire(pouch, "retired-session", &lease, error) == CAI_OK);
+  memset(&after, 0, sizeof(after));
+  strcpy(after.id, "retired-session");
+  strcpy(after.workspace, "/work/retired");
+  assert(update_session(lease, &after, error) == CAI_OK);
+  assert(release(lease, CAI_OK, error) == CAI_OK);
+  source = NULL;
+  assert(load_id(pouch, "/work/retired", "retired-session", &source, &sequence,
+                 error) == CAI_ERR_INVALID);
+  assert(strstr(error->message, "retired attachment-backed") != NULL);
+  assert(source == NULL);
+  cai_error_cleanup(error);
+  cai_error_init(error);
+  /* Remote history rejects locally, before attempting leases/network I/O.
+   * Other store operations retain their own capabilities. */
+  capabilities = pouch->sessions->collection_capabilities;
+  pouch->sessions->collection_capabilities = unavailable_collections;
+  assert(append_event(pouch, "/work/collections", "collection-test", &event,
+                      error) == CAI_ERR_INVALID);
+  assert(strstr(error->message, "requires a Pouch endpoint") != NULL);
+  cai_error_cleanup(error);
+  cai_error_init(error);
+  source = NULL;
+  assert(load_id(pouch, "/work/collections", "collection-test", &source,
+                 &sequence, error) == CAI_ERR_INVALID);
+  assert(source == NULL);
+  cai_error_cleanup(error);
+  cai_error_init(error);
+  pouch->sessions->collection_capabilities = capabilities;
+  /* A missing collection is corruption, not an empty recovered journal. */
+  assert(history_collection(pouch, "collection-test", "events", 0, &collection,
+                            error) == CAI_OK);
+  assert(collection->drop(collection, &local) == LC_OK);
+  collection->close(collection);
+  assert(load_events(pouch, "/work/collections", "collection-test", 0U, reject,
+                     NULL, error) != CAI_OK);
+  cai_error_cleanup(error);
+  cai_error_init(error);
+  lc_error_cleanup(&local);
 }
 
 int main(int argc, char **argv) {
@@ -527,6 +690,7 @@ int main(int argc, char **argv) {
   assert(observed == 0);
   cai_error_cleanup(&error);
   cai_error_init(&error);
+  collection_regressions(&pouch, &error);
   todo_transactions(&pouch, &error);
   replay_limits(&pouch, &error);
   cai_cli_pouch_close(&pouch);

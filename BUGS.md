@@ -650,6 +650,9 @@ commit and verification evidence.
   index path that must not prevent direct replay.
   The expanded recovery regression and ten related startup, storage, auth,
   idle, endpoint and package checks pass with liblockdc 0.21.0.
+  The collections cutover with liblockdc 0.22.0 also prepares the `cai.scopes`
+  index at open. The recovery regression now corrupts that workspace index and
+  verifies repeated resume/quit without inference or a recurring warning.
 - **Crash coverage:** an idle writer killed without closing its pouch can be
   reopened and resumed. The static musl CAI also survives two real ten-second
   background index-publication cycles while interactive and idle. Neither test

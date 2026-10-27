@@ -352,6 +352,8 @@ directory, and first prompt, truncated to terminal width or 80 columns.
 .BI \-\-lockd " ENDPOINT"
 Select an absolute pouch:///path/to/root or remote http:// or https:// lockd
 endpoint. Default: the Pouch root under cai's XDG state directory.
+Conversation history requires Pouch collections. Remote lockd stores remain
+available for separately selected authentication, messaging and kanban storage.
 Selected Pouch roots use cai's key, durable sync, indexing, and shared writer
 settings. Remote encryption and access policy are managed by the server.
 .TP
@@ -941,6 +943,9 @@ Preferred ChatGPT authentication file when present.
 Encrypted default Pouch root containing cai.sessions and cai.auth namespaces,
 plus a derived cai.scopes index for newest-session lookup. Missing or interrupted
 directory indexes are rebuilt from session metadata.
+Conversation checkpoints and journal events are immutable entries in separate
+ordered collections. Attachment-backed development sessions are unsupported;
+start a new conversation with --new. No automatic migration is performed.
 Uses ~/.local/state/cai/pouch when XDG_STATE_HOME is unset.
 .TP
 .I $XDG_STATE_HOME/cai/pouch.key

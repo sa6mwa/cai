@@ -76,3 +76,17 @@ terminal_close
 run --list; ok
 absent "$root/stderr" cache.load.index.error
 cmp "$key" "$root/original-key"
+# Auto-resume reads the workspace lookup directly too. Repair its derived
+# index during open rather than waiting for a later indexed query or prompt.
+manifest="$root/state/cai/pouch/namespaces/cai.scopes/index/query.manifest"
+[[ -s "$manifest" ]]
+printf 'interrupted workspace index\n' >"$manifest"
+terminal_start
+expect 'RESUMED AFTER INDEX RECOVERY'
+terminal_close
+terminal_start
+expect 'RESUMED AFTER INDEX RECOVERY'
+absent "$term/text" 'Search index cache unavailable'
+terminal_close
+[[ $(requests) == "$count" ]]
+cmp "$key" "$root/original-key"
