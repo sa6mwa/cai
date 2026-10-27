@@ -786,7 +786,7 @@ instruction, skills and export paths are shown as resolved at template creation.
 Leaving them commented retains automatic lookup on subsequent starts; an empty
 value has the field-specific discovery, inheritance or unset meaning documented
 beside that setting. Existing files are
-never rewritten. `--config FILE` selects another file; `--no-config` skips
+never rewritten. `-c FILE`/`--config FILE` selects another file; `--no-config` skips
 creation and loading. `--config-dir DIR` also selects `DIR/config.ini`.
 Startup configuration is read from these files and CLI/environment inputs,
 not from pouch storage. Restart CAI after editing the configuration. Global
@@ -801,6 +801,32 @@ variables, including empty ones, win unless the global
 are applied before authentication, logging and worker startup; templates do
 not copy credentials or environment assignments. Path defaults may reflect the
 current XDG roots, HOME or explicit `--config-dir`.
+
+`--home DIR` or `CAI_HOME=DIR` places the application's default directories
+under one root: `DIR/config`, `DIR/state`, `DIR/cache`, `DIR/data` and `DIR/run`.
+The default config becomes `DIR/config/config.ini`; Pouch and its key live
+under `DIR/state`, logs and clipboard files under `DIR/cache`, exports under
+`DIR/data/exports`, and Chrome sockets under `DIR/run/chrome`.
+Explicit individual paths always win over these derived defaults, even when
+the home is supplied on the command line. For example:
+
+```sh
+cai --home ./agent-home
+cai --home ./agent-home --cache-dir /fast/cai-cache
+cai --home ./agent-home -c ./policies/cai.ini
+```
+
+`[paths] home_dir` selects the same root from an INI file. CLI/environment/home
+embedding fields can select the root before config discovery; a home value
+read from INI affects derived paths without moving, rewriting or loading
+another config file. `-c FILE` and `CAI_CONFIG` keep their explicit selection.
+`--no-config` still honors `--home` while skipping config creation/loading.
+`--runtime-dir`, `CAI_RUNTIME_DIR` or `[paths] runtime_dir` overrides the runtime
+root. Without a unified home, existing XDG defaults apply. Relative CLI home
+paths are anchored to the workspace selected by `-C`; INI paths remain relative
+to their config file. The process `HOME`, workspace, external Codex auth and
+explicit lockd endpoints are unchanged. An embedding app named `smith` uses
+`SMITH_HOME` and the same directory layout, without an extra `smith` suffix.
 
 The shared `<cai/config.h>` receiver provides incremental INI loading,
 schema validation, typed access, explicit environment/path handling, and

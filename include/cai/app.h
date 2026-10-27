@@ -111,12 +111,22 @@ typedef struct cai_app_config {
    * [storage]; queue_name in [messaging] overrides the complete queue name. */
   const char *namespace_prefix;
   const char *queue_prefix;
-  /** Independent root/child defaults. NULL derives the XDG roots from
-   * program_name, history/key from state, and clipboard/logs from cache.
+  /** Optional unified application home. Unset individual roots derive as
+   * home/config, home/state, home/cache, home/data and home/run. Individual
+   * path settings take precedence. NULL retains the normal XDG defaults.
+   * --home and the application-prefixed HOME variable also select this root
+   * before config-file discovery. The process HOME is never changed. */
+  const char *home_directory;
+  /** Independent root/child defaults. NULL derives roots from home_directory
+   * or the XDG roots and program_name, history/key from state, and
+   * clipboard/logs from cache.
    * Explicit INI/environment, settings and argv override these defaults. */
   const char *state_directory;
   const char *cache_directory;
   const char *data_directory;
+  /** Runtime files; NULL derives home/run, otherwise XDG_RUNTIME_DIR/name,
+   * falling back to cache_directory when no runtime directory is available. */
+  const char *runtime_directory;
   const char *history_directory;
   const char *clipboard_directory;
   const char *log_directory;

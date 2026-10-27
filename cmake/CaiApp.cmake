@@ -27,6 +27,13 @@ if(CAI_BUILD_SHARED)
   cai_configure_c_target(cai_app_shared)
 endif()
 if(CAI_BUILD_TESTS)
+  add_executable(cai_app_home_test tests/app_home_test.c)
+  target_link_libraries(cai_app_home_test PRIVATE cai_cli_support cai_app_static)
+  cai_configure_cli_target(cai_app_home_test)
+  target_compile_options(cai_app_home_test PRIVATE -UNDEBUG)
+  add_test(NAME cai_app_home COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_home_test.sh"
+    "$<TARGET_FILE:cai_app_home_test>" "${CMAKE_CURRENT_BINARY_DIR}")
+  set_tests_properties(cai_app_home PROPERTIES LABELS "cli;local;offline" TIMEOUT 10)
   add_executable(cai_app_identity_test tests/app_identity_test.c)
   target_sources(cai_app_identity_test PRIVATE tests/cli_storage_fixture.c)
   target_link_options(cai_app_identity_test PRIVATE "-Wl,--wrap=lc_client_open")
@@ -98,6 +105,10 @@ if(CAI_BUILD_TESTS)
     "$<TARGET_FILE:cai_app_utility_stop_test>")
   set_tests_properties(cai_app_utility_stop PROPERTIES LABELS "cli;local;offline" TIMEOUT 5)
   if(CAI_BUILD_CLI)
+    add_test(NAME cai_app_home_host COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_home_test.sh" "$<TARGET_FILE:cai_app_host>" host)
+    set_tests_properties(cai_app_home_host PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
+      ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
     add_test(NAME cai_app_identity_cli COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_identity_cli_test.sh" "$<TARGET_FILE:cai_app_host>")
     set_tests_properties(cai_app_identity_cli PROPERTIES LABELS "cli;local;offline" TIMEOUT 15

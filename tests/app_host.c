@@ -87,6 +87,8 @@ int main(int argc, char **argv) {
   config.namespace_prefix = getenv("CAI_TEST_APP_NAMESPACE_PREFIX");
   config.queue_prefix = getenv("CAI_TEST_APP_QUEUE_PREFIX");
   config.config_file = getenv("CAI_TEST_APP_CONFIG_FILE");
+  config.home_directory = getenv("CAI_TEST_APP_HOME_DIRECTORY");
+  config.runtime_directory = getenv("CAI_TEST_APP_RUNTIME_DIRECTORY");
   config.config_directory = getenv("CAI_TEST_APP_CONFIG_DIRECTORY");
   config.state_directory = getenv("CAI_TEST_APP_STATE_DIRECTORY");
   config.cache_directory = getenv("CAI_TEST_APP_CACHE_DIRECTORY");

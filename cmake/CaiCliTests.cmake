@@ -93,6 +93,10 @@
     add_test(NAME cai_cli_config
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_config_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>")
+    add_test(NAME cai_cli_home COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_home_test.sh"
+      "$<TARGET_FILE:cai_cli_mock_fixture>")
+    set_tests_properties(cai_cli_home PROPERTIES TIMEOUT 15)
     set_tests_properties(cai_cli_config PROPERTIES TIMEOUT 45)
     foreach(_final_protocol responses chat_completions)
       add_test(NAME cai_cli_final_output_${_final_protocol} COMMAND bash
@@ -428,7 +432,7 @@
     get_property(_cai_cli_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
     list(FILTER _cai_cli_targets INCLUDE REGEX "^cai_cli($|_)|^cai_terminal_peer$")
     add_custom_target(cai_cli_tests DEPENDS ${_cai_cli_targets})
-    add_dependencies(cai_cli_tests cai_app_test cai_app_status_test cai_app_host cai_app_controls_host cai_app_startup_goal_test cai_app_utility_stop_test cai_kanban_test cai_chrome_client_fixture)
+    add_dependencies(cai_cli_tests cai_app_test cai_app_home_test cai_app_status_test cai_app_host cai_app_controls_host cai_app_startup_goal_test cai_app_utility_stop_test cai_kanban_test cai_chrome_client_fixture)
     add_test(NAME cai_cli_kanban COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_kanban_test.sh"
       "$<TARGET_FILE:cai_cli_mock_fixture>")

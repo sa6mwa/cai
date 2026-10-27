@@ -3,12 +3,17 @@
 #include <string.h>
 
 static const cai_app_option options[] = {
+    {"--home", '\0', CAI_APP_STRING, "DIR",
+     "Unified application home; individual path overrides take precedence", 0,
+     0},
     {"--state-dir", '\0', CAI_APP_STRING, "VALUE",
      "Override state-dir (otherwise derived from application defaults)", 0, 0},
     {"--cache-dir", '\0', CAI_APP_STRING, "VALUE",
      "Override cache-dir (otherwise derived from application defaults)", 0, 0},
     {"--data-dir", '\0', CAI_APP_STRING, "VALUE",
      "Override data-dir (otherwise derived from application defaults)", 0, 0},
+    {"--runtime-dir", '\0', CAI_APP_STRING, "DIR",
+     "Override runtime files directory (including Chrome sockets)", 0, 0},
     {"--history-dir", '\0', CAI_APP_STRING, "VALUE",
      "Override history-dir (otherwise derived from application defaults)", 0,
      0},
@@ -68,7 +73,7 @@ static const cai_app_option options[] = {
      "Export root (default application data/exports)", 0, 0},
     {"--directory", 'C', CAI_APP_STRING, "DIR", "Change to DIR before starting",
      0, 0},
-    {"--config", '\0', CAI_APP_STRING, "FILE", "Select config.ini", 0, 0},
+    {"--config", 'c', CAI_APP_STRING, "FILE", "Select config.ini", 0, 0},
     {"--no-config", '\0', CAI_APP_FLAG, NULL, "Skip configuration and creation",
      0, 0},
     {"--list-themes", '\0', CAI_APP_FLAG, NULL,

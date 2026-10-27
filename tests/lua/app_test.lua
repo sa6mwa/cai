@@ -5,7 +5,7 @@ assert(not application.open {on_replay = "not a callback"})
 assert(not application.open {introduction_markdown = true})
 for _, field in ipairs {
   "program_name", "invocation_name", "environment_prefix", "namespace_prefix", "queue_prefix",
-  "state_directory", "cache_directory", "data_directory", "history_directory", "clipboard_directory",
+  "home_directory", "runtime_directory", "state_directory", "cache_directory", "data_directory", "history_directory", "clipboard_directory",
   "log_directory", "pouch_key_file", "banner", "config_file", "config_directory", "introduction_markdown",
 } do
   assert(not application.open {[field] = true})
@@ -52,15 +52,19 @@ for _, limit in ipairs {-1, 0, 20} do
 end
 assert(not application.open {no_config = true, settings = {ui = {replay_turns = "invalid"}}})
 assert(not application.open {no_config = true, settings = {ui = {todo_layout = 'invalid'}}})
-local options, model, resume = app:options()
+local options, model, resume, config_option, home_option = app:options()
 assert(#options > 50)
 for _, option in ipairs(options) do
   assert(option.long_flag:match("^%-%-") and option.description)
   if option.long_flag == "--model" then model = option end
   if option.long_flag == "--resume" then resume = option end
+  if option.long_flag == "--config" then config_option = option end
+  if option.long_flag == "--home" then home_option = option end
 end
 assert(model.short_flag == "m" and model.type == "string")
-assert(resume.type == "optional_string")
+assert(resume.type == "optional_string" and resume.short_flag == "R")
+assert(config_option.type == "string" and config_option.short_flag == "c")
+assert(home_option.type == "string")
 local text = assert(app:help())
 assert(text:find("Usage: vectis -a smith -- [options]", 1, true))
 assert(not text:find("HIDDEN_BANNER", 1, true))

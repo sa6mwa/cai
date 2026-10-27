@@ -116,8 +116,8 @@ static int short_argument_options(void) {
 }
 
 static int grouped_value_options(void) {
-  char flags[][16] = {"-g", "-Ng", "-Nng", "-vng",   "--goal",
-                      "-t", "-Nt", "-Nnt", "--theme"};
+  char flags[][16] = {"-g",  "-Ng",  "-Nng",    "-vng", "--goal", "-t",
+                      "-Nt", "-Nnt", "--theme", "-c",   "-nc",    "-vc"};
   char values[][16] = {"-i", "--instruction", "-Nni", "-g", "-Nng", "-"};
   char program[] = "cai", instruction[] = "-i";
   char first[] = "actual prompt", second_flag[] = "--instruction";
@@ -135,7 +135,9 @@ static int grouped_value_options(void) {
     for (j = 0U; j < sizeof(values) / sizeof(values[0]); j++) {
       args[2] = values[j];
       if (cai_cli_parse_options(7, args, &options) != 1 ||
-          (i < 5U ? options.goal : options.theme) != args[2] ||
+          (i < 5U   ? options.goal
+           : i < 9U ? options.theme
+                    : options.config_file) != args[2] ||
           options.instruction_count != 2U ||
           cai_cli_instruction_at(&options, 0U) != first ||
           cai_cli_instruction_at(&options, 1U) != second ||

@@ -28,14 +28,26 @@ typedef struct cli_field {
 #define B(s, k, m, d)                                                          \
   {s, k, offsetof(cai_cli_options, m), CAI_CONFIG_BOOL, 0U, NULL, d}
 static const cli_field fields[] = {
+    S("paths", "home_dir", home_dir, CAI_CONFIG_PATH,
+      "Unified application home; unset roots use its config, state, cache, "
+      "data and run subdirectories. Individual paths take precedence. "
+      "Use --home or the application-prefixed HOME variable to select it "
+      "before config discovery; an INI value never reloads configuration."),
     S("paths", "state_dir", state_dir, CAI_CONFIG_PATH,
-      "Private state root; empty derives from the application name and "
-      "XDG_STATE_HOME."),
+      "Private state root; empty uses home_dir/state, otherwise the "
+      "application "
+      "name under XDG_STATE_HOME."),
     S("paths", "cache_dir", cache_dir, CAI_CONFIG_PATH,
-      "Private cache root; empty derives from the application name and "
-      "XDG_CACHE_HOME."),
+      "Private cache root; empty uses home_dir/cache, otherwise the "
+      "application "
+      "name under XDG_CACHE_HOME."),
     S("paths", "data_dir", data_dir, CAI_CONFIG_PATH,
-      "Data root; empty derives from the application name and XDG_DATA_HOME."),
+      "Data root; empty uses home_dir/data, otherwise the application name "
+      "under XDG_DATA_HOME."),
+    S("paths", "runtime_dir", runtime_dir, CAI_CONFIG_PATH,
+      "Runtime files; empty uses home_dir/run, then "
+      "XDG_RUNTIME_DIR/program_name, "
+      "otherwise cache_dir. Chrome sockets default to runtime_dir/chrome."),
     S("paths", "history_dir", history_dir, CAI_CONFIG_PATH,
       "Prompt history; empty uses state_dir/history."),
     S("paths", "clipboard_dir", clipboard_dir, CAI_CONFIG_PATH,
@@ -91,7 +103,7 @@ static const cli_field fields[] = {
       "Global AGENTS.md; empty uses config_dir/AGENTS.md, loaded if it "
       "exists."),
     S("paths", "config_dir", config_dir, CAI_CONFIG_PATH,
-      "Global instructions root; empty uses "
+      "Global instructions root; empty uses home_dir/config, otherwise "
       "${XDG_CONFIG_HOME:-$HOME/.config}/program_name. "
       "Path defaults shown here are resolved at generation; empty keeps "
       "automatic lookup."),
@@ -103,8 +115,7 @@ static const cli_field fields[] = {
       "metadata "
       "still applies. An explicit file must exist."),
     S("paths", "export_dir", export_dir, CAI_CONFIG_PATH,
-      "Export root; empty uses "
-      "${XDG_DATA_HOME:-$HOME/.local/share}/program_name/exports."),
+      "Export root; empty uses data_dir/exports."),
     S("store.default", "client_pem", lockd_client_pem, CAI_CONFIG_PATH,
       "Remote lockd mTLS client PEM; empty supplies no client certificate."),
     S("store.default", "endpoint", lockd, 0U,
@@ -172,7 +183,12 @@ static int absolute_path(char *out, size_t size, const char *path,
                          cai_error *error) {
   char cwd[PATH_MAX];
   int n;
-  if (path[0] == '/')
+  if (path[0] == '~' && path[1] == '/') {
+    const char *home = getenv("HOME");
+    if (home == NULL || home[0] != '/')
+      return fail(error, path, "set an absolute HOME to expand this path");
+    n = snprintf(out, size, "%s/%s", home, path + 2U);
+  } else if (path[0] == '/')
     n = snprintf(out, size, "%s", path);
   else {
     if (getcwd(cwd, sizeof(cwd)) == NULL)
@@ -180,7 +196,7 @@ static int absolute_path(char *out, size_t size, const char *path,
     n = snprintf(out, size, "%s/%s", cwd, path);
   }
   return n < 0 || (size_t)n >= size
-             ? fail(error, path, "configuration filename too long")
+             ? fail(error, path, "application path is too long")
              : 1;
 }
 /* Store every derived value in the owned config: consumers never borrow a
@@ -194,15 +210,7 @@ static int default_string(cai_config *cfg, const char *section, const char *key,
   if (is_path) {
     if (value == NULL || value[0] == '\0')
       return fail(error, key, "path must not be empty");
-    if (value[0] == '~' && value[1] == '/') {
-      const char *home = getenv("HOME");
-      int n = home != NULL ? snprintf(absolute, sizeof(absolute), "%s/%s", home,
-                                      value + 2)
-                           : -1;
-      if (n < 0 || (size_t)n >= sizeof(absolute))
-        return fail(error, key, "cannot expand path");
-      value = absolute;
-    } else if (value[0] != '/') {
+    if (value[0] != '/') {
       if (absolute_path(absolute, sizeof(absolute), value, error) < 0)
         return -1;
       value = absolute;
@@ -228,6 +236,8 @@ static int application_defaults(cai_config *cfg, cai_cli_options *o,
                                           "XDG_CACHE_HOME", "XDG_DATA_HOME"};
   static const char *const fallbacks[] = {".config", ".local/state", ".cache",
                                           ".local/share"};
+  static const char *const home_children[] = {"config", "state", "cache",
+                                              "data"};
   const char **roots[4];
   const char *host_roots[4];
   const char **children[8];
@@ -250,8 +260,24 @@ static int application_defaults(cai_config *cfg, cai_cli_options *o,
   static const char *const ns_suffixes[] = {"sessions", "auth", "scopes",
                                             "todo", "messages"};
   char path[PATH_MAX];
+  char home_path[PATH_MAX];
   size_t i;
   int rc, n;
+  const char *home = o->home_dir != NULL ? o->home_dir
+                     : app != NULL       ? app->home_directory
+                                         : NULL;
+  if (home != NULL) {
+    if (home[0] == '\0')
+      return fail(error, "home_dir",
+                  "application home must be a nonempty path");
+    if (absolute_path(home_path, sizeof(home_path), home, error) < 0)
+      return -1;
+    rc = default_string(cfg, "paths", "home_dir", home_path, &o->home_dir,
+                        document, 1, error);
+    if (rc != CAI_OK)
+      return rc;
+    home = home_path;
+  }
   roots[0] = &o->config_dir;
   roots[1] = &o->state_dir;
   roots[2] = &o->cache_dir;
@@ -263,8 +289,14 @@ static int application_defaults(cai_config *cfg, cai_cli_options *o,
   for (i = 0U; i < 4U; i++) {
     const char *v = *roots[i] != NULL ? *roots[i] : host_roots[i];
     if (v == NULL) {
-      rc = cai_cli_xdg_path(path, sizeof(path), variables[i], fallbacks[i],
-                            o->program_name, error);
+      if (home != NULL) {
+        n = snprintf(path, sizeof(path), "%s/%s", home, home_children[i]);
+        rc = n < 0 || (size_t)n >= sizeof(path)
+                 ? fail(error, NULL, "application home path too long")
+                 : CAI_OK;
+      } else
+        rc = cai_cli_xdg_path(path, sizeof(path), variables[i], fallbacks[i],
+                              o->program_name, error);
       if (rc != CAI_OK)
         return rc;
       v = path;
@@ -285,6 +317,33 @@ static int application_defaults(cai_config *cfg, cai_cli_options *o,
             strcmp(f->key, root_keys[j]) == 0)
           *roots[j] = f->default_value;
     }
+  }
+  {
+    const char *v = o->runtime_dir != NULL ? o->runtime_dir
+                    : app != NULL          ? app->runtime_directory
+                                           : NULL;
+    const char *runtime = getenv("XDG_RUNTIME_DIR");
+    const char *chrome = cfg->get(cfg, "chrome", "socket_directory");
+    if (v == NULL) {
+      if (home != NULL)
+        n = snprintf(path, sizeof(path), "%s/run", home);
+      else if (runtime != NULL && runtime[0] == '/')
+        n = snprintf(path, sizeof(path), "%s/%s", runtime, o->program_name);
+      else {
+        if (!document && runtime != NULL && runtime[0] != '\0' &&
+            (chrome == NULL || chrome[0] == '\0'))
+          return fail(error, "XDG_RUNTIME_DIR",
+                      "Chrome requires an absolute runtime directory");
+        n = snprintf(path, sizeof(path), "%s", o->cache_dir);
+      }
+      if (n < 0 || (size_t)n >= sizeof(path))
+        return fail(error, NULL, "application runtime path too long");
+      v = path;
+    }
+    rc = default_string(cfg, "paths", "runtime_dir", v, &o->runtime_dir,
+                        document, 1, error);
+    if (rc != CAI_OK)
+      return rc;
   }
   children[0] = &o->history_dir;
   children[1] = &o->clipboard_dir;
@@ -389,15 +448,7 @@ static int application_defaults(cai_config *cfg, cai_cli_options *o,
   if (!document) {
     const char *v = cfg->get(cfg, "chrome", "socket_directory");
     if (v == NULL || v[0] == '\0') {
-      const char *runtime = getenv("XDG_RUNTIME_DIR");
-      if (runtime != NULL && runtime[0] != '\0') {
-        if (runtime[0] != '/')
-          return fail(error, "XDG_RUNTIME_DIR",
-                      "Chrome requires an absolute runtime directory");
-        n = snprintf(path, sizeof(path), "%s/%s/chrome", runtime,
-                     o->program_name);
-      } else
-        n = snprintf(path, sizeof(path), "%s/chrome", o->cache_dir);
+      n = snprintf(path, sizeof(path), "%s/chrome", o->runtime_dir);
       if (n < 0 || (size_t)n >= sizeof(path))
         return fail(error, NULL, "Chrome path too long");
       if (cfg->set(cfg, "chrome", "socket_directory", path, error) != CAI_OK)
@@ -593,10 +644,12 @@ static int tool_environment(cai_config *cfg, const char *prefix,
         {"REASONING_EFFORT", "agent", "reasoning_effort"},
         {"API_KEY_ENV", "client", "api_key_env"},
         {"ENDPOINT", "client", "base_url"},
+        {"HOME", "paths", "home_dir"},
         {"CONFIG_DIR", "paths", "config_dir"},
         {"STATE_DIR", "paths", "state_dir"},
         {"CACHE_DIR", "paths", "cache_dir"},
         {"DATA_DIR", "paths", "data_dir"},
+        {"RUNTIME_DIR", "paths", "runtime_dir"},
         {"HISTORY_DIR", "paths", "history_dir"},
         {"CLIPBOARD_DIR", "paths", "clipboard_dir"},
         {"LOG_DIR", "paths", "log_dir"},
@@ -617,6 +670,12 @@ static int tool_environment(cai_config *cfg, const char *prefix,
         {"TODO_LAYOUT", "ui", "todo_layout"}};
     for (i = 0U; i < sizeof(aliases) / sizeof(aliases[0]); i++) {
       const char *v = app_environment(prefix, aliases[i][0]);
+      char home[PATH_MAX];
+      if (v != NULL && strcmp(aliases[i][0], "HOME") == 0) {
+        if (absolute_path(home, sizeof(home), v, error) < 0)
+          return environment_error(prefix, aliases[i][0], error);
+        v = home;
+      }
       if (v != NULL &&
           cfg->set(cfg, aliases[i][1], aliases[i][2], v, error) != CAI_OK)
         return environment_error(prefix, aliases[i][0], error);
@@ -625,6 +684,7 @@ static int tool_environment(cai_config *cfg, const char *prefix,
   for (i = 0U; i < cfg->field_count(cfg); i++) {
     const cai_config_field *f = cfg->field_at(cfg, i);
     char key[256];
+    char home[PATH_MAX];
     size_t j;
     const char *v;
     if (f->section[0] == '\0' || strcmp(f->section, "env") == 0 ||
@@ -637,6 +697,11 @@ static int tool_environment(cai_config *cfg, const char *prefix,
       if (key[j] >= 'a' && key[j] <= 'z')
         key[j] = (char)(key[j] - 'a' + 'A');
     v = app_environment(prefix, key);
+    if (v != NULL && strcmp(key, "PATHS_HOME_DIR") == 0) {
+      if (absolute_path(home, sizeof(home), v, error) < 0)
+        return environment_error(prefix, key, error);
+      v = home;
+    }
     if (v != NULL && cfg->set(cfg, f->section, f->key, v, error) != CAI_OK)
       return -1;
   }
@@ -686,8 +751,9 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   const char *value, *resolved;
   char selected[PATH_MAX];
   char config_root[PATH_MAX];
+  char home_root[PATH_MAX];
   size_t i;
-  int rc, n, config_dir_flag;
+  int rc, n, config_dir_flag, home_flag;
   *configuration = NULL;
   cai_cli_options_init(&defaults);
   defaults.program_name =
@@ -704,10 +770,15 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   snprintf(defaults.default_api_key_env, sizeof(defaults.default_api_key_env),
            "%sAPI_KEY", defaults.environment_prefix);
   defaults.config_file = app_environment(defaults.environment_prefix, "CONFIG");
+  defaults.home_dir =
+      app_environment(defaults.environment_prefix, "PATHS_HOME_DIR");
+  if (defaults.home_dir == NULL)
+    defaults.home_dir = app_environment(defaults.environment_prefix, "HOME");
   defaults.config_dir =
       app_environment(defaults.environment_prefix, "CONFIG_DIR");
   rc = cai_cli_read_options(argc, argv, &defaults, &early);
   config_dir_flag = early.config_dir != defaults.config_dir;
+  home_flag = early.home_dir != defaults.home_dir;
   if (rc <= 0) {
     *options = early;
     if (early.help)
@@ -734,18 +805,35 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
     }
     if (early.config_dir == NULL)
       early.config_dir = application->config_directory;
+    if (early.home_dir == NULL)
+      early.home_dir = application->home_directory;
   }
   if (early.directory != NULL && chdir(early.directory) != 0)
     return fail(error, early.directory, "cannot change workspace");
   config_root[0] = '\0';
+  if (early.home_dir != NULL) {
+    if (early.home_dir[0] == '\0')
+      return fail(error, "home_dir",
+                  "application home must be a nonempty path");
+    if (absolute_path(home_root, sizeof(home_root), early.home_dir, error) < 0)
+      return -1;
+    early.home_dir = home_root;
+  }
   if (early.config_dir != NULL &&
       absolute_path(config_root, sizeof(config_root), early.config_dir, error) <
           0)
     return -1;
-  if (early.config_dir == NULL &&
-      cai_cli_xdg_path(config_root, sizeof(config_root), "XDG_CONFIG_HOME",
-                       ".config", defaults.program_name, error) != CAI_OK)
-    return -1;
+  if (early.config_dir == NULL) {
+    if (early.home_dir != NULL) {
+      n = snprintf(config_root, sizeof(config_root), "%s/config",
+                   early.home_dir);
+      if (n < 0 || (size_t)n >= sizeof(config_root))
+        return fail(error, NULL, "application home path too long");
+    } else if (cai_cli_xdg_path(config_root, sizeof(config_root),
+                                "XDG_CONFIG_HOME", ".config",
+                                defaults.program_name, error) != CAI_OK)
+      return -1;
+  }
   rc = cai_cli_app_schema(&cfg, error);
   if (rc < 0) {
     cai_config_close(cfg);
@@ -913,6 +1001,11 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   rc = cai_cli_read_options(argc, argv, &defaults, options);
   if (rc <= 0)
     return rc;
+  if (home_flag || (options->home_dir == NULL && early.home_dir != NULL)) {
+    if (default_string(cfg, "paths", "home_dir", early.home_dir,
+                       &options->home_dir, 0, 1, error) != CAI_OK)
+      return -1;
+  }
   if (config_dir_flag ||
       (options->config_dir == NULL && early.config_dir != NULL)) {
     if (cfg->set(cfg, "paths", "config_dir", config_root, error) != CAI_OK)

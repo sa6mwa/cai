@@ -88,6 +88,7 @@ static int cai_cli_short_value_option(const char *flag) {
   case 'g':
   case 't':
   case 'R':
+  case 'c':
     return flag[length - 1U];
   default:
     return 0;
@@ -390,6 +391,10 @@ static int cli_read_options(int argc, char *const *argv,
       field = &options->export_dir;
     else if (strcmp(flag, "--state-dir") == 0)
       field = &options->state_dir;
+    else if (strcmp(flag, "--home") == 0)
+      field = &options->home_dir;
+    else if (strcmp(flag, "--runtime-dir") == 0)
+      field = &options->runtime_dir;
     else if (strcmp(flag, "--cache-dir") == 0)
       field = &options->cache_dir;
     else if (strcmp(flag, "--data-dir") == 0)
@@ -491,7 +496,7 @@ static int cli_read_options(int argc, char *const *argv,
       field = &options->review_reasoning_summary;
     else if (strcmp(flag, "--agents-md") == 0)
       field = &options->agents_md;
-    else if (strcmp(flag, "--config") == 0)
+    else if (strcmp(flag, "--config") == 0 || strcmp(flag, "-c") == 0)
       field = &options->config_file;
     else if (strcmp(flag, "--config-dir") == 0)
       field = &options->config_dir;

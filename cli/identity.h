@@ -12,9 +12,11 @@
   X(environment_prefix) \
   X(namespace_prefix) \
   X(queue_prefix) \
+  X(home_directory) \
   X(state_directory) \
   X(cache_directory) \
   X(data_directory) \
+  X(runtime_directory) \
   X(history_directory) \
   X(clipboard_directory) \
   X(log_directory) \

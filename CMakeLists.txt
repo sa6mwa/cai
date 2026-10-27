@@ -1052,6 +1052,11 @@ if(CAI_BUILD_LUA)
         "${CMAKE_CURRENT_SOURCE_DIR}/lua/cai_app.exports" linux)
       set_tests_properties(cai_app_lua_exports PROPERTIES LABELS "cli;local;offline" TIMEOUT 5)
       if(CAI_BUILD_CLI)
+        add_test(NAME cai_app_lua_home COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_home_test.sh"
+          "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host" host)
+        set_tests_properties(cai_app_lua_home PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
+          ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
         file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/app-lua-controls"
           CONTENT "#!/usr/bin/env bash\nexec \"${CAI_LUA_EXECUTABLE}\" \"${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/app_controls_host.lua\" \"\$@\"\n"
           FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)

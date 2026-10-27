@@ -83,6 +83,7 @@ With `program_name = "smith"`, automatic defaults are:
 
 Unset XDG variables use the standard HOME fallbacks. The C and Lua open configs
 both accept `environment_prefix`, `namespace_prefix`, `queue_prefix`,
+`home_directory`, `runtime_directory`,
 `config_file`, `config_directory`, `state_directory`, `cache_directory`,
 `data_directory`, `history_directory`, `clipboard_directory`, `log_directory`,
 and `pouch_key_file`. Roots are independent: moving the config file does not
@@ -98,9 +99,38 @@ config.cache_directory = host_cache_directory;
 config.state_directory = host_state_directory;
 ```
 
+Set `home_directory` to derive all unset roots below one directory: `config`,
+`state`, `cache`, `data` and `run`. Explicit individual fields, INI settings,
+environment variables and flags take precedence over home-derived paths.
+No application-name suffix is added. Both receivers copy the home string at
+open, just like the other path fields:
+
+```c
+config.home_directory = "/srv/vectis/smith";
+config.config_file = "/etc/vectis/smith.ini";
+```
+
+```lua
+local app = assert(require("cai.app").open {
+  program_name = "smith",
+  home_directory = "/srv/vectis/smith",
+  config_file = "/etc/vectis/smith.ini",
+})
+```
+
+The equivalent invocation settings are `--home DIR`, `SMITH_HOME`, or
+`[paths] home_dir`. The field, flag or environment variable can select
+`home/config/config.ini` before startup configuration is read. An INI home
+value changes derived defaults without reopening configuration elsewhere.
+`-c FILE`/`--config FILE` remains authoritative. `--no-config` suppresses only
+configuration creation/loading; it does not disable home-derived paths.
+`runtime_directory`, `--runtime-dir`, `SMITH_RUNTIME_DIR`, or `[paths] runtime_dir`
+can override the runtime root independently. These settings never change the
+host process's `HOME` or relocate explicit external inputs or endpoints.
+
 These fields seed defaults. Explicit INI values, environment, `settings`, and
 argv take precedence in that order. Paths are also configurable through
-`[paths]` (`config_dir`, `state_dir`, `cache_dir`, `data_dir`, `history_dir`,
+`[paths]` (`home_dir`, `runtime_dir`, `config_dir`, `state_dir`, `cache_dir`, `data_dir`, `history_dir`,
 `clipboard_dir`, `log_dir`, and the existing individual file
 settings), and matching `--...-dir` / `--pouch-key-file` flags. Each namespace
 has its own `[storage] ..._namespace` key and matching flag, alongside
@@ -111,7 +141,7 @@ automatic names; `queue_name` / `--message-queue` replaces the full public name.
 Environment keys use the selected prefix plus uppercased section and key,
 for example `SMITH_PATHS_STATE_DIR` and `SMITH_STORAGE_AUTH_NAMESPACE`.
 Convenience aliases include `SMITH_MODEL`, `SMITH_PROVIDER`,
-`SMITH_REASONING_EFFORT`, `SMITH_STATE_DIR`, `SMITH_CACHE_DIR`, `SMITH_DATA_DIR`,
+`SMITH_REASONING_EFFORT`, `SMITH_HOME`, `SMITH_RUNTIME_DIR`, `SMITH_STATE_DIR`, `SMITH_CACHE_DIR`, `SMITH_DATA_DIR`,
 `SMITH_LOCKD`, `SMITH_NAMESPACE_PREFIX`, `SMITH_QUEUE_PREFIX`, and the existing
 tool/messaging names with the new prefix. `SMITH_CONFIG` and `SMITH_CONFIG_DIR`
 select the startup config file/root before loading INI. An explicitly supplied

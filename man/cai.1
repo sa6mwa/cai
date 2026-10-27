@@ -28,6 +28,21 @@ Use
 to start a new session.
 .SH OPTIONS
 .TP
+.BI \-\-home " DIR"
+Derive unset application directories as DIR/config, DIR/state, DIR/cache,
+DIR/data and DIR/run. Individual path settings take precedence over these
+defaults. Also CAI_HOME or [paths] home_dir; the embedding field is
+home_directory. The selected home is used before configuration discovery
+when supplied by flag, environment or the embedding field. A value loaded
+from INI affects derived paths without loading a second config file.
+The process HOME, workspace, external authentication sources and explicit
+storage endpoints are unchanged. Without a unified home, XDG defaults apply.
+.TP
+.BI \-\-runtime-dir " DIR"
+Override the runtime files root. Chrome sockets default to DIR/chrome.
+Also CAI_RUNTIME_DIR or [paths] runtime_dir. The default is home_dir/run;
+without a home it uses XDG_RUNTIME_DIR/cai, falling back to cache_dir.
+.TP
 .BI \-\-replay-turns " N"
 Limit console replay to the newest N whole turns or standalone shell entries
 (default 20). Steering and tools do not count separately. Zero suppresses
@@ -102,10 +117,12 @@ Prefix for automatic mailbox and receipt queue names (default cai). A single
 lowercase identifier, at most 32 bytes. --message-queue overrides the complete
 public mailbox name instead. Also [messaging] queue_prefix or CAI_QUEUE_PREFIX.
 .TP
-.BI \-\-config " FILE"
+.BR \-c , " " \-\-config " " FILE
 Load another INI configuration file, creating a documented, commented template
-if it is missing. Defaults to $XDG_CONFIG_HOME/cai/config.ini, or
-~/.config/cai/config.ini. Existing files are never rewritten.
+if it is missing. Defaults to home_dir/config/config.ini with --home;
+otherwise $XDG_CONFIG_HOME/cai/config.ini, or ~/.config/cai/config.ini.
+An explicit selection is retained even if that file configures home_dir.
+Existing files are never rewritten.
 .TP
 .B \-\-no-config
 Skip configuration loading and template creation. Incompatible with --config.
@@ -913,6 +930,9 @@ conversation and authentication storage. Directories use mode 0700; files and
 lock files use 0600. The native store appends without per-entry fsync or an
 exit-time save. Persistence failures stop acceptance and report native errors.
 .SH FILES
+The following paths describe the XDG defaults. With --home DIR, unset roots
+instead use DIR/config, DIR/state, DIR/cache, DIR/data and DIR/run. Explicit
+individual paths and --config FILE retain their selections.
 .TP
 .I ~/.codex/auth.json
 Preferred ChatGPT authentication file when present.
