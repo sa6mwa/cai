@@ -884,6 +884,31 @@ static int cli_goodbye(cli_state *state) {
   return SL_OK;
 }
 
+/* Save without submitting, promoting a queue entry or recording /quit after
+ * the draft. Suspend only to return ownership to the normal shutdown path. */
+static int cli_draft_quit_key(sl_t *sl, sl_key_t key, void *context,
+                              sl_key_action_t *action) {
+  cli_state *state = context;
+  char message[512];
+  int rc;
+  (void)key;
+  *action = SL_KEY_ACTION_HANDLED;
+  rc = sl_history_add(sl, sl_buffer(sl));
+  if (rc != SL_OK) {
+    snprintf(message, sizeof(message), "Draft not saved; staying open: %s",
+             sl_last_error(sl));
+    if (cli_logger(state) != NULL)
+      cli_logger(state)->warn(cli_logger(state), message, NULL, 0U);
+    return sl_set_status_message(sl, message);
+  }
+  rc = cli_goodbye(state);
+  if (rc == SL_OK) {
+    state->exit_requested = 1;
+    *action = SL_KEY_ACTION_SUSPEND;
+  }
+  return rc;
+}
+
 /* Let softline retain the complete editor state. The owner loop performs the
  * terminal handoff only after next_prompt returns SL_READLINE_SUSPENDED. */
 static int cli_shell_editor_key(sl_t *sl, sl_key_t key, void *context,
@@ -3631,6 +3656,8 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| Alt-S | Open a local shell between turns; retain your draft, "
         "cursor and undo state when it exits. |\n"
         "| Ctrl-L | Refresh terminal layout while retaining the draft. |\n"
+        "| Alt-Q | Save the draft to prompt history and quit without sending "
+        "it. Up recalls it after restarting. |\n"
         "| Ctrl-V | Paste a PNG or JPEG image from the X11 clipboard. |\n"
         "| Escape / Ctrl-C | Cancel the active turn. |\n"
         "| Ctrl-D (empty prompt) | Exit. |\n\n",
@@ -4430,6 +4457,8 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
             SL_OK ||
         sl_bind_key(state.sl, SL_KEY_TAB, cli_editor_key, &state) != SL_OK ||
         sl_bind_key(state.sl, SL_KEY_ALT_BASE + 's', cli_shell_editor_key,
+                    &state) != SL_OK ||
+        sl_bind_key(state.sl, SL_KEY_ALT_BASE + 'q', cli_draft_quit_key,
                     &state) != SL_OK) {
       cli_diagnostic(&state, PSLOG_LEVEL_ERROR,
                      "bind interactive submission guards");

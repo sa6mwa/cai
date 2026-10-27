@@ -359,6 +359,10 @@
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_history_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_history PROPERTIES TIMEOUT 45)
+    add_test(NAME cai_cli_draft_quit COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_draft_quit_test.sh"
+      "$<TARGET_FILE:cai_cli_mock_fixture>")
+    set_tests_properties(cai_cli_draft_quit PROPERTIES TIMEOUT 15)
     add_test(NAME cai_cli_reasoning_presentation
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_reasoning_presentation_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>")

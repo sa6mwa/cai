@@ -929,6 +929,11 @@ appends immediately, including steering; replay and Ctrl-R selection do not
 append. /new preserves recall. Ctrl-R Enter selects a match for editing;
 a subsequent Enter submits it.
 .PP
+Alt-Q saves the active draft as the newest prompt-history entry and exits
+without submitting it. Restart in the same directory and press Up to recall it.
+Empty drafts and consecutive duplicates do not add history entries. If saving
+fails, CAI remains open with the draft intact and reports the error.
+.PP
 Prompt history is stored in private plaintext files, separately from encrypted
 conversation and authentication storage. Directories use mode 0700; files and
 lock files use 0600. The native store appends without per-entry fsync or an

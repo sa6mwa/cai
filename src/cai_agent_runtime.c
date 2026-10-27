@@ -849,7 +849,8 @@ static int cai_runtime_cancel_requested(void *context) {
   int requested;
 
   pthread_mutex_lock(&runtime->lock);
-  requested = runtime->turn_cancel_requested && runtime->turn_cancel_armed;
+  requested = runtime->stopping ||
+              (runtime->turn_cancel_requested && runtime->turn_cancel_armed);
   pthread_mutex_unlock(&runtime->lock);
   return requested;
 }

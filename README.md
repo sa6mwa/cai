@@ -164,6 +164,10 @@ selection do not append. `/new` preserves recall. These owner-only plaintext
 files are separate from encrypted conversation/auth storage: directories are
 0700, files and locks 0600. The store is append-only, without an exit-time save
 or per-prompt fsync. Ctrl-R Enter selects a match for editing; Enter again sends.
+**Alt-Q** saves the active draft as the newest prompt-history entry and exits
+without submitting it. After restarting in the same workspace, press Up to
+recall it. Empty drafts add nothing; an identical last entry is not duplicated.
+If saving fails, CAI stays open with the draft intact and reports the error.
 
 Exact `!sh` and `/shell` commands hand the real terminal to `$SHELL -i`
 (`/bin/sh -i` when unset or empty) between turns. They require terminal input

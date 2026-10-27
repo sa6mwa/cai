@@ -30100,25 +30100,16 @@ static void test_agent_runtime_terminal_callback_close(test_state *state) {
       "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
       "\"resp_terminal_close_1\",\"usage\":{\"input_tokens\":1,"
       "\"output_tokens\":1,\"total_tokens\":2}}}\n\n";
-  static const char final_response[] =
-      "data: {\"type\":\"response.output_text.delta\",\"delta\":"
-      "\"terminal close complete\"}\n\n"
-      "data: {\"type\":\"response.completed\",\"response\":{\"id\":"
-      "\"resp_terminal_close_2\",\"usage\":{\"input_tokens\":2,"
-      "\"output_tokens\":1,\"total_tokens\":3}}}\n\n";
   static const char *first_required[] = {
       "\"stream\":true", "\"name\":\"exec_command\"",
       "close from terminal lifecycle callback"};
-  static const char *second_required[] = {
-      "\"type\":\"function_call_output\"",
-      "\"call_id\":\"call_terminal_close\""};
+  /* Closing in the lifecycle callback requests shutdown. Do not require a
+   * second inference after close; deferred destruction still has to wait for
+   * the worker callback to unwind. */
   static const mock_http_expectation script[] = {
       {"POST /v1/responses HTTP/", first_required,
        sizeof(first_required) / sizeof(first_required[0]), NULL, 0U, 200, "OK",
-       "text/event-stream", NULL, tool_response},
-      {"POST /v1/responses HTTP/", second_required,
-       sizeof(second_required) / sizeof(second_required[0]), NULL, 0U, 200,
-       "OK", "text/event-stream", NULL, final_response}};
+       "text/event-stream", NULL, tool_response}};
   http_mock_client mock;
   cai_agent_runtime_config config;
   cai_terminal_tool_config terminal_config;

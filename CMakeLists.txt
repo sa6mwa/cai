@@ -1094,6 +1094,11 @@ if(CAI_BUILD_LUA)
           "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host")
         set_tests_properties(cai_app_lua_shell_draft PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
           ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
+        add_test(NAME cai_app_lua_draft_quit COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_draft_quit_test.sh"
+          "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host")
+        set_tests_properties(cai_app_lua_draft_quit PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
+          ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
         add_test(NAME cai_app_lua_themes COMMAND bash
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_themes_test.sh"
           "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host" host)
