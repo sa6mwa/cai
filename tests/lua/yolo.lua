@@ -18,11 +18,20 @@ local client = assert(cai.open {api_key="fixture", base_url=endpoint,
 local runtime = assert(client:new_smith_runtime {workspace_directory=work,
   yolo=true, disable_default_session_store=true, disable_terminal=true,
   disable_chrome=true, disable_web_search=true, model="gpt-6-luna"})
+local policy = assert(runtime:yolo())
+assert(policy.enabled and policy.can_change)
+assert(runtime:try_set_yolo(false))
+assert(not runtime:yolo().enabled)
+assert(runtime:try_set_yolo(true))
 assert(runtime:submit("Exercise Lua runtime execution policy"))
+assert(not runtime:try_set_yolo(false))
+assert(runtime:yolo().enabled and not runtime:yolo().can_change)
 for _=1,100 do
   local state = assert(runtime:pump(100))
   assert(state ~= "failed", "YOLO runtime failed")
   if state == "completed" then break end
 end
 assert(runtime:state() == "completed")
+assert(runtime:try_set_yolo(false))
+assert(not runtime:yolo().enabled)
 runtime:close(); client:close()

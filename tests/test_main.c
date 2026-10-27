@@ -53876,6 +53876,7 @@ static void test_mcp_raw_input_transport_failures(test_state *state) {
 #include "yolo_test.inc"
 
 static const test_entry test_entries[] = {
+    {"runtime_yolo", test_runtime_yolo},
     {"yolo_environment", test_yolo_environment},
     {"yolo_tools", test_yolo_tools},
     {"chat_image_tool_roundtrip", test_chat_image_tool_roundtrip},

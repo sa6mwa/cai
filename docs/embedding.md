@@ -275,6 +275,24 @@ in both modes; YOLO inherits all remaining environment variables too. Ordinary
 user permissions, disabled tools, output retention, timeouts and cancellation
 still apply.
 
+`/yolo` inspects the live policy; `/yolo on` and `/yolo off` change it without
+reopening the conversation or writing config.ini. `/status` shows the effective
+mode and any queued change. Changes remain editable in Softline until the
+runtime is idle: the active turn, child runtimes, shell capture and managed
+terminal processes must finish first. Esc preserves Softline's stopped queue.
+The selected mode applies to later tools and new children; it is not stored in
+the conversation checkpoint. Restarting the application uses startup settings.
+
+C hosts use the owner-thread `cai_agent_runtime_get_yolo(runtime, &enabled,
+&can_change, error)` and `cai_agent_runtime_try_set_yolo(runtime, enabled,
+&applied, error)` APIs. Busy changes return `CAI_OK` with `applied == 0`; the host
+retains the request and retries at an idle boundary. A no-op succeeds immediately.
+An error preserves the complete previous policy. Tool registrations, terminal
+handles/output, callbacks, goals and session identity are retained. Lua exposes
+`runtime:yolo()` returning `{enabled=boolean, can_change=boolean}` and
+`runtime:try_set_yolo(boolean)` returning whether the request applied. A false
+result means busy; an error returns `nil, error`.
+
 Execution history is enabled by the application and is independent of pslog
 levels or host logger configuration. `event_callback` / Lua `on_event` receives
 `CAI_AGENT_EVENT_EXECUTION_RECORD` / `cai.AGENT_EVENT_EXECUTION_RECORD` with a

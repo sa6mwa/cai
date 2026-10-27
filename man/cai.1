@@ -711,6 +711,14 @@ Show or change model sharing for future explicit shell commands. Each command
 captures the setting at start. Disabling sharing does not disable execution,
 erase history or remove earlier model context.
 .TP
+.BI /yolo " [on|off]"
+Show or change live local execution policy. Changes wait until active turns,
+child runtimes, shell capture and managed terminal commands finish. Pending
+changes remain editable in Softline; Esc pauses ordinary queue delivery.
+/status shows the effective and pending policy. Does not reopen the session
+or modify config.ini. Restart uses startup settings; conversation checkpoints
+do not restore this policy.
+.TP
 .BR /trim " [COUNT]"
 Without COUNT, list the newest 20 whole conversation entries, newest first.
 Row 0 means keep current history. COUNT removes exactly that many newest entries;

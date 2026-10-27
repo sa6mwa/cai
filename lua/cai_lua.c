@@ -5002,6 +5002,46 @@ static int cai_lua_agent_runtime_reasoning_tool(lua_State *L) {
   return 1;
 }
 
+/* runtime:yolo() -> {enabled=boolean, can_change=boolean}.
+ * Policy belongs to this runtime, not to persisted conversation settings. */
+static int cai_lua_agent_runtime_yolo(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  cai_error error;
+  int enabled, ready, rc;
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_get_yolo(self->ptr, &enabled, &ready, &error);
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK)
+    return cai_lua_fail(L, rc, &error);
+  lua_newtable(L);
+  lua_pushboolean(L, enabled);
+  lua_setfield(L, -2, "enabled");
+  lua_pushboolean(L, ready);
+  lua_setfield(L, -2, "can_change");
+  cai_error_cleanup(&error);
+  return 1;
+}
+
+/* runtime:try_set_yolo(boolean) -> applied, or nil,error. False is a busy
+ * boundary, not a failure; the owner retains and retries its request. */
+static int cai_lua_agent_runtime_try_set_yolo(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  cai_error error;
+  int applied, rc;
+  luaL_checktype(L, 2, LUA_TBOOLEAN);
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_try_set_yolo(self->ptr, lua_toboolean(L, 2), &applied,
+                                      &error);
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK)
+    return cai_lua_fail(L, rc, &error);
+  lua_pushboolean(L, applied);
+  cai_error_cleanup(&error);
+  return 1;
+}
+
 static int cai_lua_agent_runtime_settings(lua_State *L) {
   cai_lua_agent_runtime *self;
   cai_agent_runtime_settings effective;
@@ -12108,6 +12148,8 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"submit_interactive", cai_lua_agent_runtime_submit_interactive},
     {"set_model", cai_lua_agent_runtime_set_model},
     {"settings", cai_lua_agent_runtime_settings},
+    {"yolo", cai_lua_agent_runtime_yolo},
+    {"try_set_yolo", cai_lua_agent_runtime_try_set_yolo},
     {"reasoning_tool", cai_lua_agent_runtime_reasoning_tool},
     {"select_board", cai_lua_agent_runtime_select_board},
     {"todo_board", cai_lua_agent_runtime_todo_board},

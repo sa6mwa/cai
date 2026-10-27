@@ -1704,6 +1704,65 @@ static int cai_terminal_binding_new(cai_terminal_manager *manager,
   return CAI_OK;
 }
 
+int cai_terminal_tools_busy_internal(cai_tool_registry *registry) {
+  cai_terminal_binding *binding = cai_tool_registry_context_internal(
+      registry, CAI_TERMINAL_EXEC_TOOL_NAME, cai_terminal_binding_cleanup);
+  int busy;
+  if (binding == NULL)
+    return 0;
+  pthread_mutex_lock(&binding->manager->lock);
+  busy = binding->manager->running || binding->manager->starting ||
+         binding->manager->operation_active;
+  pthread_mutex_unlock(&binding->manager->lock);
+  return busy;
+}
+
+int cai_terminal_tools_yolo_internal(cai_tool_registry *registry,
+                                     const char *workspace, int enabled,
+                                     cai_error *error) {
+  cai_terminal_binding *binding = cai_tool_registry_context_internal(
+      registry, CAI_TERMINAL_EXEC_TOOL_NAME, cai_terminal_binding_cleanup);
+  cai_terminal_manager *manager;
+  char *root;
+  char **environment = NULL;
+  int fd, rc;
+  if (binding == NULL)
+    return CAI_OK;
+  manager = binding->manager;
+  root = cai_strdup(NULL, enabled ? "/" : workspace);
+  if (root == NULL)
+    return cai_set_error(error, CAI_ERR_NOMEM, "allocate terminal policy root");
+  fd = open(root, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  rc = fd < 0 ? cai_set_error(error, CAI_ERR_INVALID,
+                              "cannot open terminal policy root")
+              : cai_process_environment_new(enabled,
+                                            cai_terminal_environment_defaults,
+                                            &environment, error);
+  if (rc == CAI_OK) {
+    pthread_mutex_lock(&manager->lock);
+    if (manager->running || manager->starting || manager->operation_active)
+      rc = cai_set_error(error, CAI_ERR_INVALID, "terminal process is active");
+    else {
+      char *old_root = manager->root_path;
+      char **old_environment = manager->environment;
+      int old_fd = manager->root_fd;
+      manager->root_path = root;
+      manager->root_fd = fd;
+      manager->environment = environment;
+      manager->yolo = enabled;
+      root = old_root;
+      fd = old_fd;
+      environment = old_environment;
+    }
+    pthread_mutex_unlock(&manager->lock);
+  }
+  if (fd >= 0)
+    close(fd);
+  cai_free_mem(NULL, root);
+  cai_process_environment_free(environment);
+  return rc;
+}
+
 int cai_tool_registry_register_terminal_tools(
     cai_tool_registry *registry, const cai_terminal_tool_config *config,
     cai_error *error) {

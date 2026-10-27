@@ -866,6 +866,20 @@ int cai_agent_runtime_set_reasoning_tool(
 int cai_agent_runtime_get_reasoning_tool(cai_agent_runtime *runtime,
                                          cai_reasoning_tool_config *out,
                                          cai_error *error);
+/** Owner-thread query of the effective local execution policy. Either output
+ * may be NULL. can_change is false during a turn, pending runtime work, shell
+ * capture, child runtime or live managed terminal process. No I/O occurs. */
+int cai_agent_runtime_get_yolo(cai_agent_runtime *runtime, int *enabled,
+                               int *can_change, cai_error *error);
+/** Try to change local execution policy atomically, without reopening the
+ * conversation. enabled must be 0 or 1. Returns CAI_OK with *applied=0 when
+ * busy; the host retains the request and retries at a later idle boundary.
+ * A no-op is immediately applied. On error the previous policy is retained.
+ * Terminal handles/output and unrelated tools are preserved. New children
+ * inherit the policy; it is neither checkpointed nor restored on resume.
+ * Owner-thread-only. applied is required and cleared before validation. */
+int cai_agent_runtime_try_set_yolo(cai_agent_runtime *runtime, int enabled,
+                                   int *applied, cai_error *error);
 /**
  * Request cancellation of the active turn without closing the runtime.
  * Owner-thread-only and idempotent while cancellation is pending. Returns an

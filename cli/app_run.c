@@ -141,6 +141,8 @@ typedef struct cli_state {
   int feed_ansi;
   int exit_requested;
   int was_busy;
+  int yolo_delivery_held;
+  int queue_delivery_manual;
   int awaiting_turn;
   int show_welcome;
   int suppress_replay;
@@ -194,6 +196,7 @@ static int cli_submit_automation(cli_state *state, const char *instruction,
 static int cli_continue_goal(cli_state *state, cai_error *error);
 static int cli_host_process(cli_state *state, cai_error *error);
 static int cli_pump(cli_state *state, long timeout, cai_error *error);
+static int cli_yolo_delivery(cli_state *state, cai_error *error);
 static int cli_review_event(void *context, const cai_agent_runtime_event *event,
                             cai_error *error);
 
@@ -942,9 +945,9 @@ static int cli_shell_editor_key(sl_t *sl, sl_key_t key, void *context,
  * running agent. Keep them available without consuming an unrelated queue. */
 static int cli_command_at_feed_boundary(const char *line) {
   static const char *const queries[] = {
-      "/help",  "/status", "/tools",          "/skills",
-      "/goal",  "/model",  "/reasoning",      "/theme",
-      "/queue", "/todo",   "/reasoning-tool", "/resume"};
+      "/help",           "/status",    "/tools", "/skills", "/goal",
+      "/model",          "/reasoning", "/theme", "/queue",  "/todo",
+      "/reasoning-tool", "/resume",    "/yolo"};
   const char *arg = line + strcspn(line, " \t");
   size_t length = (size_t)(arg - line), i;
   arg += strspn(arg, " \t");
@@ -965,6 +968,86 @@ static int cli_command_at_feed_boundary(const char *line) {
   return (length == 7U && strncmp(line, "/output", length) == 0) ||
          (length == 10U && strncmp(line, "/autoqueue", length) == 0) ||
          (length == 14U && strncmp(line, "/shell-context", length) == 0);
+}
+
+static int cli_is_yolo(const char *line) {
+  return strncmp(line, "/yolo", 5U) == 0 &&
+         (line[5] == '\0' || line[5] == ' ' || line[5] == '\t');
+}
+
+static int cli_yolo_value(const char *line, int *enabled) {
+  const char *arg;
+  size_t length;
+  if (!cli_is_yolo(line))
+    return 0;
+  arg = line + 5U;
+  arg += strspn(arg, " \t");
+  length = strlen(arg);
+  while (length > 0U && strchr(" \t", arg[length - 1U]) != NULL)
+    length--;
+  if (length == 2U && strncmp(arg, "on", length) == 0)
+    *enabled = 1;
+  else if (length == 3U && strncmp(arg, "off", length) == 0)
+    *enabled = 0;
+  else
+    return 0;
+  return 1;
+}
+
+static int cli_yolo_pending(cli_state *state, int *enabled) {
+  size_t i;
+  for (i = 0U; i < sl_prompt_queue_count(state->sl); i++) {
+    sl_prompt_queue_entry_info_t info;
+    char *text = NULL;
+    int found;
+    if (sl_prompt_queue_info(state->sl, i, &info) != SL_OK || info.held)
+      continue;
+    if (sl_prompt_queue_peek(state->sl, i, &text) != SL_OK)
+      continue;
+    found = cli_yolo_value(text, enabled);
+    sl_free_string(state->sl, text);
+    if (found)
+      return 1;
+  }
+  return 0;
+}
+
+/* A running terminal can outlive its turn. Prevent native FIFO release of
+ * an ineligible YOLO head, without removing it or hiding it in a second queue.
+ * Native Esc/approval/edit state is preserved when automatic delivery returns.
+ */
+static int cli_yolo_delivery(cli_state *state, cai_error *error) {
+  size_t i;
+  int hold = 0, effective, ready, requested, rc;
+  if (!state->interactive || state->runtime == NULL)
+    return CAI_OK;
+  if (!state->yolo_delivery_held && sl_prompt_queue_count(state->sl) == 0U)
+    return CAI_OK;
+  rc = cai_agent_runtime_get_yolo(state->runtime, &effective, &ready, error);
+  if (rc != CAI_OK)
+    return rc;
+  for (i = 0U; i < sl_prompt_queue_count(state->sl); i++) {
+    sl_prompt_queue_entry_info_t info;
+    char *text = NULL;
+    if (sl_prompt_queue_info(state->sl, i, &info) != SL_OK)
+      return CAI_ERR_TRANSPORT;
+    if (info.held || info.mode != SL_PROMPT_QUEUE_MODE_QUEUED)
+      continue;
+    if (sl_prompt_queue_peek(state->sl, i, &text) != SL_OK)
+      return CAI_ERR_TRANSPORT;
+    hold = cli_yolo_value(text, &requested) && requested != effective && !ready;
+    sl_free_string(state->sl, text);
+    break;
+  }
+  /* enqueue_draft retains the editor but does not schedule idle delivery.
+   * Let Softline resynchronize its FIFO, including its native Esc stop. */
+  if (sl_set_prompt_queue_delivery(
+          state->sl, hold || state->queue_delivery_manual
+                         ? SL_PROMPT_QUEUE_DELIVERY_MANUAL
+                         : SL_PROMPT_QUEUE_DELIVERY_AUTO) != SL_OK)
+    return CAI_ERR_TRANSPORT;
+  state->yolo_delivery_held = hold;
+  return CAI_OK;
 }
 
 /* Keep local inspections in Softline too. Enqueueing the native draft avoids
@@ -992,9 +1075,34 @@ static int cli_editor_key(sl_t *sl, sl_key_t key, void *context,
     return SL_OK;
   }
   if ((key == SL_KEY_ENTER || key == SL_KEY_ALT_ENTER) &&
-      cli_command_at_feed_boundary(text)) {
+      (cli_command_at_feed_boundary(text) || cli_is_yolo(text))) {
+    sl_prompt_queue_entry_info_t draft;
+    size_t index;
+    if (sl_prompt_queue_draft_info(sl, &draft) != SL_OK)
+      return SL_ERROR_IO;
     *action = SL_KEY_ACTION_HANDLED;
     rc = sl_prompt_queue_enqueue_draft(sl);
+    if (rc == SL_OK) {
+      if (key == SL_KEY_ALT_ENTER) {
+        index = sl_prompt_queue_count(sl) - 1U;
+        if (draft.id != 0) {
+          sl_prompt_queue_entry_info_t info;
+          for (index = 0U; index < sl_prompt_queue_count(sl); index++) {
+            if (sl_prompt_queue_info(sl, index, &info) != SL_OK)
+              return SL_ERROR_IO;
+            if (info.id == draft.id)
+              break;
+          }
+        }
+        if (sl_prompt_queue_set_mode(sl, index, SL_PROMPT_QUEUE_MODE_STEER) !=
+            SL_OK)
+          return SL_ERROR_IO;
+      }
+      cai_error_init(&error);
+      rc = cli_yolo_delivery(state, &error);
+      cai_error_cleanup(&error);
+      return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
+    }
     return rc == SL_ERROR_FULL
                ? sl_set_status_message(sl,
                                        "Prompt queue is full; draft retained.")
@@ -1543,6 +1651,9 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
     return rc;
   busy = metrics.turn_active || run_state == CAI_AGENT_SAMPLING ||
          run_state == CAI_AGENT_DISPATCHING_TOOL;
+  rc = cli_yolo_delivery(state, error);
+  if (rc != CAI_OK)
+    return rc;
   /* Softline resets its animation clock/frame on every setter call, even
    * when the value is unchanged. Only a turn boundary changes this state. */
   if (state->was_busy != busy) {
@@ -1645,7 +1756,30 @@ static int cli_messages_process(cli_state *state, int at_boundary,
     if (sl_prompt_queue_peek(state->sl, index, &text) != SL_OK)
       return cai_cli_error(error, CAI_ERR_TRANSPORT,
                            "read approved queued prompt");
-    local = cli_command_at_feed_boundary(text);
+    local = cli_command_at_feed_boundary(text) || cli_is_yolo(text);
+    if (cli_is_yolo(text)) {
+      int requested, effective, ready;
+      if (cli_yolo_value(text, &requested)) {
+        /* Ordinary changes use native FIFO release, including its stopped
+         * state after Esc. Only explicit steers are taken by this consumer. */
+        if (info.mode == SL_PROMPT_QUEUE_MODE_QUEUED) {
+          sl_free_string(state->sl, text);
+          index++;
+          continue;
+        }
+        rc = cai_agent_runtime_get_yolo(state->runtime, &effective, &ready,
+                                        error);
+        if (rc == CAI_OK && requested != effective && !ready) {
+          sl_free_string(state->sl, text);
+          index++;
+          continue;
+        }
+        if (rc != CAI_OK) {
+          sl_free_string(state->sl, text);
+          return rc;
+        }
+      }
+    }
     if (!local && info.mode == SL_PROMPT_QUEUE_MODE_STEER &&
         !state->options.subagent_steering &&
         (state->review_runtime != NULL || state->foreground_subagent)) {
@@ -1725,7 +1859,7 @@ static int cli_messages_process(cli_state *state, int at_boundary,
     if (rc != CAI_OK)
       return rc;
   }
-  return CAI_OK;
+  return cli_yolo_delivery(state, error);
 }
 static int cli_message_wakeup(sl_t *sl, const sl_watch_event_t *event,
                               void *context) {
@@ -2396,6 +2530,7 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
     rc = cli_sync_status(state, error);
   }
   if (rc == CAI_OK && state->interactive) {
+    state->queue_delivery_manual = state->yolo_delivery_held = 0;
     if (sl_set_auto_approval(state->sl, state->options.enable_auto_enqueue) !=
             SL_OK ||
         sl_set_prompt_queue_delivery(state->sl,
@@ -3756,6 +3891,46 @@ static int cli_handle_command(cli_state *state, const char *line,
   unsigned long number;
   int rc;
   *handled = 1;
+  if (cli_is_yolo(line)) {
+    int enabled, requested, applied, pending;
+    char message[512];
+    rc = cai_agent_runtime_get_yolo(state->runtime, &enabled, NULL, error);
+    if (rc != CAI_OK)
+      return rc;
+    if (cli_yolo_value(line, &requested)) {
+      rc = cai_agent_runtime_try_set_yolo(state->runtime, requested, &applied,
+                                          error);
+      if (rc != CAI_OK)
+        return rc;
+      if (!applied)
+        return cai_cli_error(error, CAI_ERR_INVALID,
+                             "YOLO change waits for an idle runtime and tools");
+      state->options.yolo = enabled = requested;
+      snprintf(
+          message, sizeof(message),
+          "**YOLO %s.** %s\n\nThis runtime only; configuration is unchanged.\n",
+          enabled ? "enabled" : "disabled",
+          enabled ? "Local tools use ordinary host filesystem and environment "
+                    "access."
+                  : "Local tool confinement and environment filtering are "
+                    "restored.");
+    } else {
+      arg = line + 5U;
+      arg += strspn(arg, " \t");
+      if (*arg != '\0')
+        return cai_cli_error(error, CAI_ERR_INVALID, "Use /yolo [on|off]");
+      pending = cli_yolo_pending(state, &requested);
+      snprintf(
+          message, sizeof(message),
+          "## Execution policy\n\nYOLO: **%s**.\n\n%s%s%s\n"
+          "Use `/yolo on` or `/yolo off`. Changes wait until active turns, "
+          "tools and subagents finish; pending entries stay editable.\n",
+          enabled ? "on (unrestricted)" : "off (restricted)",
+          pending ? "Pending: **" : "",
+          pending ? (requested ? "on" : "off") : "", pending ? "**.\n\n" : "");
+    }
+    return cli_markdown(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+  }
   if (strcmp(line, "/theme") == 0 || strncmp(line, "/theme ", 7U) == 0 ||
       strncmp(line, "/theme\t", 7U) == 0)
     return cli_theme_command(state, line + 6U, error);
@@ -3960,6 +4135,8 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| Command | Action |\n"
         "| --- | --- |\n"
         "| `/help` | Show this help. |\n",
+        "| `/yolo [on\\|off]` | Show or change the runtime's local execution "
+        "policy; changes wait for idle tools and subagents. |\n",
         "| `/theme [NAME or SOFTLINE:LIBMDF]` | Show the current pair and all "
         "themes, or change themes between turns for this app invocation. "
         "|\n",
@@ -4099,7 +4276,8 @@ static int cli_handle_command(cli_state *state, const char *line,
     cai_agent_runtime_settings settings;
     cai_agent_runtime_metrics metrics;
     cai_error optional_error;
-    char markdown[2048], mailbox_row[320];
+    char markdown[2048], mailbox_row[320], policy_row[256];
+    int yolo, pending_yolo, has_pending_yolo;
     const char *model = state->options.model;
     const char *effort = state->options.reasoning_effort;
     memset(&settings, 0, sizeof(settings));
@@ -4122,6 +4300,16 @@ static int cli_handle_command(cli_state *state, const char *line,
                                                   error);
     if (rc != CAI_OK)
       return rc;
+    rc = cai_agent_runtime_get_yolo(state->runtime, &yolo, NULL, error);
+    if (rc != CAI_OK)
+      return rc;
+    has_pending_yolo = cli_yolo_pending(state, &pending_yolo);
+    snprintf(policy_row, sizeof(policy_row), "| Execution mode | %s |\n%s%s%s",
+             yolo ? "YOLO (unrestricted)"
+                  : "Restricted (terminal has no OS sandbox)",
+             has_pending_yolo ? "| Pending execution mode | " : "",
+             has_pending_yolo ? (pending_yolo ? "YOLO" : "Restricted") : "",
+             has_pending_yolo ? " (queued) |\n" : "");
     cli_refresh_quota(state, 1);
     snprintf(mailbox_row, sizeof(mailbox_row),
              "| Message queue | `%s` |\n| Autoqueue | %s |\n",
@@ -4135,15 +4323,7 @@ static int cli_handle_command(cli_state *state, const char *line,
             effort, state->options.provider, &metrics,
             state->auth != NULL ? &state->quota : NULL, &instructions) != 0 ||
         cli_text(state, markdown, strlen(markdown)) != 0 ||
-        cli_tools_write(
-            state,
-            state->options.yolo ? "| Execution mode | YOLO (unrestricted) |\n"
-                                : "| Execution mode | Restricted (terminal has "
-                                  "no OS sandbox) |\n",
-            strlen(state->options.yolo
-                       ? "| Execution mode | YOLO (unrestricted) |\n"
-                       : "| Execution mode | Restricted (terminal has no OS "
-                         "sandbox) |\n")) != 0 ||
+        cli_tools_write(state, policy_row, strlen(policy_row)) != 0 ||
         cai_cli_status_ids_markdown(&ids, cli_tools_write, state) != 0 ||
         cli_text(state, mailbox_row, strlen(mailbox_row)) != 0 ||
         cai_cli_todo_status(state->runtime, cli_tools_write, state, error) !=
@@ -5150,6 +5330,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
             cai_cli_messages_rebind(state.messages, previous, replacement);
           (void)sl_set_prompt_queue_delivery(state.sl,
                                              SL_PROMPT_QUEUE_DELIVERY_MANUAL);
+          state.queue_delivery_manual = 1;
         }
         cli_print_error(&state, "input", &error);
         if (state.runtime == NULL || state.exit_requested) {

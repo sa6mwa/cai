@@ -8892,6 +8892,7 @@ static int cai_runtime_settings_value_valid(unsigned int field,
 }
 
 #include "cai_runtime_reasoning.inc"
+#include "cai_runtime_yolo.inc"
 
 int cai_agent_runtime_get_settings(cai_agent_runtime *runtime,
                                    cai_agent_runtime_settings *effective,

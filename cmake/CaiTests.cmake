@@ -492,6 +492,7 @@ if(CAI_BUILD_TESTS)
     execution_poll_review
     yolo_environment
     yolo_tools
+    runtime_yolo
     agent_runtime_subagent
     agent_runtime_subagent_mcp_snapshot
     agent_runtime_failed_subagent_resume

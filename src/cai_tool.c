@@ -1453,6 +1453,37 @@ int cai_tool_registry_remove_internal(cai_tool_registry *registry,
   return cai_set_error(error, CAI_ERR_INVALID, "tool is not registered");
 }
 
+void *cai_tool_registry_context_internal(cai_tool_registry *registry,
+                                         const char *name,
+                                         void (*cleanup)(void *)) {
+  cai_tool_entry *entry = cai_tool_registry_find(registry, name);
+  return entry != NULL && entry->context_cleanup == cleanup ? entry->context
+                                                            : NULL;
+}
+
+int cai_tool_registry_exchange_internal(cai_tool_registry *registry,
+                                        cai_tool_registry *replacement,
+                                        cai_error *error) {
+  cai_tool_registry_impl *next =
+      cai_tool_registry_impl_from_public(replacement);
+  size_t i;
+  if (registry == NULL || next == NULL || registry == replacement)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "two tool registries required");
+  for (i = 0U; i < next->count; i++)
+    if (cai_tool_registry_find(registry, next->entries[i].name) == NULL)
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "replacement tool is not registered");
+  for (i = 0U; i < next->count; i++) {
+    cai_tool_entry *current =
+        cai_tool_registry_find(registry, next->entries[i].name);
+    cai_tool_entry saved = *current;
+    *current = next->entries[i];
+    next->entries[i] = saved;
+  }
+  return CAI_OK;
+}
+
 void cai_tool_registry_destroy(cai_tool_registry *registry) {
   cai_tool_registry_impl *impl;
   size_t i;

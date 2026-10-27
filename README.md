@@ -87,6 +87,10 @@ including empty and unset values. Other host variables are filtered by default.
 `[agent] yolo = true` in config.ini for the same behavior. Precedence is CLI,
 environment, configuration, then the built-in default `false`. Embedded apps
 use their configured environment prefix (for example, `SMITH_YOLO`).
+In the TUI, `/yolo` reports the current policy and `/yolo on` or `/yolo off`
+changes it once active turns, subagents and terminal commands finish. Pending
+changes remain editable in Softline and appear in `/status`. This does not
+write configuration or save the policy in conversation history.
 
 YOLO commands inherit the complete environment and ordinary user filesystem
 permissions. Local read/list/patch/image tools may access paths outside the

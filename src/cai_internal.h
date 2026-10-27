@@ -547,6 +547,19 @@ int cai_stream_fuzz_sse(const unsigned char *data, size_t size);
 /* Mutate only while the registry is quiescent. */
 int cai_tool_registry_remove_internal(cai_tool_registry *registry,
                                       const char *name, cai_error *error);
+/* Quiescent registry operations. Exchange preserves tool order and ownership.
+ */
+int cai_tool_registry_exchange_internal(cai_tool_registry *registry,
+                                        cai_tool_registry *replacement,
+                                        cai_error *error);
+void *cai_tool_registry_context_internal(cai_tool_registry *registry,
+                                         const char *name,
+                                         void (*cleanup)(void *));
+int cai_terminal_tools_busy_internal(cai_tool_registry *registry);
+int cai_view_image_builtin_internal(cai_tool_registry *registry);
+int cai_terminal_tools_yolo_internal(cai_tool_registry *registry,
+                                     const char *workspace, int enabled,
+                                     cai_error *error);
 int cai_tool_registry_register_lonejson_owned(
     cai_tool_registry *registry, const char *name, const char *description,
     const lonejson_map *params_map, const lonejson_map *result_map,

@@ -234,6 +234,12 @@ static void cai_view_image_context_cleanup(void *value) {
   cai_free_mem(NULL, context);
 }
 
+int cai_view_image_builtin_internal(cai_tool_registry *registry) {
+  return cai_tool_registry_context_internal(
+             registry, CAI_VIEW_IMAGE_DEFAULT_TOOL_NAME,
+             cai_view_image_context_cleanup) != NULL;
+}
+
 static int cai_view_image_opened_path(int fd, char **out, cai_error *error) {
   char path[PATH_MAX];
 
