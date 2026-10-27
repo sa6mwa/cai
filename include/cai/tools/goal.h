@@ -16,8 +16,10 @@ extern "C" {
 #define CAI_GOAL_GET_TOOL_NAME "get_goal"
 /** Stable model-facing name for creating an explicitly requested goal. */
 #define CAI_GOAL_CREATE_TOOL_NAME "create_goal"
-/** Change an active goal's terminal state, or resume a paused goal with active
- * following a new user request. Does not resume blocked/limited goals. */
+/** Change an active goal to complete/blocked/paused, or resume a paused goal
+ * with active when the model decides it can proceed. Questions/approvals may
+ * pause pursuit. Completed, blocked and limited goals cannot be resumed here.
+ */
 #define CAI_GOAL_UPDATE_TOOL_NAME "update_goal"
 /** Stable model-facing name for clearing a goal. */
 #define CAI_GOAL_CLEAR_TOOL_NAME "clear_goal"

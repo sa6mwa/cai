@@ -18,7 +18,7 @@ for mode in clear replace pause stop replace_clear clear_replace same pause_resu
       sed -n "$((before+1))p" "$root/peer/requests.jsonl" >"$root/request"
       expected='INITIAL STARTUP GOAL'
       if [[ "$mode" == replace || "$mode" == clear_replace ]]; then expected='HOST REPLACEMENT'; fi
-      jq -e --arg expected "$expected" '[.input[]? | select(.role == "user") | .content[]? | .text?] | last == $expected' "$root/request" >/dev/null
+      jq -e --arg expected "$expected" '[.input[]? | select(.role == "user") | .content[]? | .text?] | last | startswith("Continue working toward the active thread goal.") and contains("<objective>\n" + $expected + "\n</objective>") and contains("Completion audit:")' "$root/request" >/dev/null
       ;;
     *) [[ $(requests) == "$before" && ! -s "$root/stdout" ]] ;;
   esac

@@ -346,10 +346,20 @@ The application pursues the runtime's active durable goal regardless of whether
 it was created by a model tool, a slash command, startup options or host control.
 Successful turns generate further goal continuations until the goal completes
 or stops; approved queued prompts run first. Resuming an active goal from storage
-also starts pursuit. Cancellation or a provider failure stops automatic pursuit
-for the current invocation until another user turn. Pause the goal to suppress
-pursuit across restarts. This behavior is shared by the C receiver, Lua facade
-and CAI executable.
+also starts pursuit. Cancellation durably pauses the goal, including across
+restart; provider failure stops automatic pursuit for the current invocation.
+The model may pause for a user answer/approval and decide to resume a paused
+goal in a later turn, respecting outstanding approvals and instructions to
+remain paused. Completed goals cannot resume. Three consecutive empty automatic
+turns without text, reasoning, tool or compaction activity block the goal.
+This behavior is shared by the C receiver, Lua facade and CAI executable.
+
+Hosts using libcai directly can call
+`cai_agent_runtime_continue_goal(runtime, &started, &error)` or Lua
+`runtime:continue_goal()`. These admit an idle active goal and render the compiled
+Codex-derived objective/budget/audit prompt. They report whether work started;
+pending user input or goal controls take priority. Ordinary user submissions
+are separate from automatic continuations and reset the empty-turn streak.
 
 Acceptance into the app FIFO is distinct from acceptance by the runtime or
 softline. `control_callback(context, id, status, error)` acknowledges each

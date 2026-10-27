@@ -648,11 +648,24 @@ loop: an active goal continues after each completed turn and when resumed from
 storage. Approved queued prompts take priority over generated continuations.
 Escape/Ctrl-C cancels the active turn and durably pauses its goal, including
 across restart. `/goal resume` restarts pursuit. Ordinary user turns still work
-while paused; when asked to continue, the model can resume the paused goal with
-`update_goal(status="active")`. It must not undo a pause without a new user
-request. Provider failure stops automatic pursuit for the current invocation
+while paused. The model may pause with `update_goal(status="paused")` when
+requested or when it needs a user answer or approval, then ask and finish the
+turn. In a later turn it may decide to resume with `update_goal(status="active")`
+without an explicit resume request, respecting outstanding approvals and
+instructions to remain paused. Completed goals cannot be resumed.
+Provider failure stops automatic pursuit for the current invocation
 until another user turn, leaving goal state unchanged. Completed or stopped
 pursuit leaves the interactive prompt open.
+
+Automatic continuations use the embedded Codex goal prompt, including the current
+objective, budget, progress checks, and completion/blocked audits. CAI omits
+unavailable planning-tool guidance and adapts pause/resume policy. Three consecutive
+empty automatic turns with no text, reasoning, tool or compaction activity block
+the goal; user turns and activity reset the streak. `/goal resume` can restart a
+blocked goal. No runtime template file is required. C hosts use
+`cai_agent_runtime_continue_goal(runtime, &started, &error)`; Lua hosts use
+`runtime:continue_goal()`, returning whether a continuation started. Pending user
+work or goal controls take priority, and completed goals never start continuations.
 
 `/model [MODEL [EFFORT]]` shows the current and pending settings and the
 provider catalog, or changes model and optionally reasoning effort.

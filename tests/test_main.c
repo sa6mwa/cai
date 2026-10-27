@@ -26868,6 +26868,7 @@ static int test_runtime_input_boundary(void *context,
 
 #include "runtime_execution_test.inc"
 #include "runtime_goal_cancel_test.inc"
+#include "runtime_goal_continuation_test.inc"
 
 static void test_agent_runtime_input_boundary(test_state *state) {
   static const char response[] =
@@ -33477,6 +33478,24 @@ static void test_goal_tools(test_state *state) {
                CAI_OK);
     expect_int(state, "goal_model_resume_active_timer_unchanged",
                impl->goal_active_started_at == started, 1L);
+    impl->usage.usage.total_tokens = 107LL;
+    expect_int(state, "goal_model_pause_for_question",
+               CAI_AGENT_IMPL(agent)->tools->run(
+                   CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                   "{\"status\":\"paused\"}", sink, &error),
+               CAI_OK);
+    expect_str(state, "goal_model_paused", impl->goal_status, "paused");
+    expect_int(state, "goal_model_pause_accounts_its_request",
+               impl->goal_tokens_used, 26L);
+    expect_int(state, "goal_model_pause_stops_timer",
+               impl->goal_active_started_at, 0L);
+    expect_int(state, "goal_model_resume_without_user_request",
+               CAI_AGENT_IMPL(agent)->tools->run(
+                   CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                   "{\"status\":\"active\"}", sink, &error),
+               CAI_OK);
+    expect_str(state, "goal_model_resume_decision", impl->goal_status,
+               "active");
     for (i = 0U; i < sizeof(stopped) / sizeof(stopped[0]); i++) {
       cai_free_mem(&CAI_CLIENT_IMPL(client)->allocator, impl->goal_status);
       impl->goal_status =
@@ -33488,6 +33507,17 @@ static void test_goal_tools(test_state *state) {
                  CAI_ERR_INVALID);
       expect_str(state, "goal_model_resume_stopped_unchanged",
                  impl->goal_status, stopped[i]);
+      if (i == 0U) {
+        cai_error_cleanup(&error);
+        cai_error_init(&error);
+        expect_int(state, "goal_model_cannot_pause_completed",
+                   CAI_AGENT_IMPL(agent)->tools->run(
+                       CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                       "{\"status\":\"paused\"}", sink, &error),
+                   CAI_ERR_INVALID);
+        expect_str(state, "goal_model_completed_immutable", impl->goal_status,
+                   "complete");
+      }
       cai_error_cleanup(&error);
       cai_error_init(&error);
     }
@@ -33692,6 +33722,27 @@ static void test_goal_tools(test_state *state) {
              CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
+  expect_int(state, "goal_pause_budget_create",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_CREATE_TOOL_NAME,
+                 "{\"objective\":\"pause at budget\",\"token_budget\":1}", sink,
+                 &error),
+             CAI_OK);
+  CAI_SESSION_IMPL(session)->usage.usage.total_tokens++;
+  expect_int(state, "goal_pause_budget_priority",
+             CAI_AGENT_IMPL(agent)->tools->run(
+                 CAI_AGENT_IMPL(agent)->tools, CAI_GOAL_UPDATE_TOOL_NAME,
+                 "{\"status\":\"paused\"}", sink, &error),
+             CAI_OK);
+  expect_str(state, "goal_pause_budget_limited",
+             CAI_SESSION_IMPL(session)->goal_status, "budget_limited");
+  expect_int(state, "goal_pause_budget_usage",
+             CAI_SESSION_IMPL(session)->goal_tokens_used, 1L);
+  expect_int(state, "goal_pause_budget_clear",
+             CAI_AGENT_IMPL(agent)->tools->run(CAI_AGENT_IMPL(agent)->tools,
+                                               CAI_GOAL_CLEAR_TOOL_NAME, "{}",
+                                               sink, &error),
+             CAI_OK);
   expect_int(state, "goal_state_export",
              cai_session_export_state_source(session, &state_source, &error),
              CAI_OK);
@@ -54436,6 +54487,7 @@ static const test_entry test_entries[] = {
     {"smith_review_parent_handoff", test_smith_review_parent_handoff},
     {"agent_runtime_input_boundary", test_agent_runtime_input_boundary},
     {"agent_runtime_goal_cancel", test_agent_runtime_goal_cancel},
+    {"agent_runtime_goal_continuation", test_agent_runtime_goal_continuation},
     {"agent_runtime_execution", test_agent_runtime_execution},
     {"execution_record", test_execution_record},
     {"execution_compaction", test_execution_compaction},

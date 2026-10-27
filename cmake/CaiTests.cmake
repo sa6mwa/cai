@@ -483,6 +483,7 @@ if(CAI_BUILD_TESTS)
     smith_review_parent_handoff
     agent_runtime_input_boundary
     agent_runtime_goal_cancel
+    agent_runtime_goal_continuation
     agent_runtime_execution
     execution_record
     execution_compaction
@@ -786,6 +787,12 @@ if(CAI_BUILD_TESTS)
       "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
       "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/smith_prompt_asset_test.cmake")
+  add_test(NAME cai_goal_prompt_asset_test
+    COMMAND "${CMAKE_COMMAND}"
+      "-DCAI_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+      "-DCAI_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/goal_prompt_asset_test.cmake")
+  set_tests_properties(cai_goal_prompt_asset_test PROPERTIES LABELS "unit;local" TIMEOUT 3)
   set_tests_properties(cai_smith_prompt_asset_test PROPERTIES
     LABELS "unit;local"
     TIMEOUT 3)
@@ -1188,6 +1195,10 @@ if(CAI_BUILD_TESTS)
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_yolo_test.sh" "${CAI_LUA_EXECUTABLE}")
     set_tests_properties(cai_lua_yolo PROPERTIES
       LABELS "unit;local;offline" ENVIRONMENT "${CAI_LUA_TEST_ENV}" TIMEOUT 10)
+    add_test(NAME cai_lua_goal_continuation COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_goal_continuation_test.sh" "${CAI_LUA_EXECUTABLE}")
+    set_tests_properties(cai_lua_goal_continuation PROPERTIES
+      LABELS "unit;local;offline" ENVIRONMENT "${CAI_LUA_TEST_ENV}" TIMEOUT 5)
     foreach(_cai_lua_context_protocol responses chat_completions)
       add_test(NAME cai_lua_context_instructions_${_cai_lua_context_protocol}
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_context_instructions_test.sh"

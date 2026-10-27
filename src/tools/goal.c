@@ -87,9 +87,8 @@ static const char cai_goal_create_schema[] =
     "\"required\":[\"objective\"],\"additionalProperties\":false}";
 static const char cai_goal_update_schema[] =
     "{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"string\","
-    "\"enum\":[\"active\",\"complete\",\"blocked\"]}},\"required\":[\"status\"]"
-    ","
-    "\"additionalProperties\":false}";
+    "\"enum\":[\"active\",\"complete\",\"blocked\",\"paused\"]}},"
+    "\"required\":[\"status\"],\"additionalProperties\":false}";
 static const char cai_goal_clear_schema[] =
     "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}";
 
@@ -248,9 +247,11 @@ static int cai_goal_update(void *value, const void *params, void *out,
   }
   if (strcmp(args->status, "active") != 0 &&
       strcmp(args->status, "complete") != 0 &&
+      strcmp(args->status, "paused") != 0 &&
       strcmp(args->status, "blocked") != 0) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "goal status must be active, complete or blocked");
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "goal status must be active, paused, complete or blocked");
   }
   session = CAI_SESSION_IMPL(context->session);
   if (strcmp(args->status, "active") == 0) {
@@ -261,10 +262,24 @@ static int cai_goal_update(void *value, const void *params, void *out,
         strcmp(session->goal_status, "paused") != 0)
       return cai_set_error(error, CAI_ERR_INVALID,
                            "only a paused goal may be resumed by the model");
+  } else if (strcmp(args->status, "paused") == 0 &&
+             session->goal_status != NULL &&
+             (strcmp(session->goal_status, "paused") == 0 ||
+              strcmp(session->goal_status, "budget_limited") == 0 ||
+              strcmp(session->goal_status, "usage_limited") == 0)) {
+    return cai_goal_fill_result(context, (cai_goal_result *)out, error);
   } else if (session->goal_status == NULL ||
              strcmp(session->goal_status, "active") != 0) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "only an active goal may be updated");
+  }
+  if (strcmp(args->status, "paused") == 0) {
+    int limited = 0;
+    int rc = cai_session_account_goal_usage(context->session, &limited, error);
+    if (rc != CAI_OK)
+      return rc;
+    if (limited)
+      return cai_goal_fill_result(context, (cai_goal_result *)out, error);
   }
   status = cai_strdup(&CAI_SESSION_CLIENT_IMPL(context->session)->allocator,
                       args->status);
@@ -374,10 +389,14 @@ int cai_agent_register_goal_tools(cai_agent *agent, cai_session *session,
   if (rc == CAI_OK) {
     rc = cai_goal_register(
         impl->tools, session, CAI_GOAL_UPDATE_TOOL_NAME,
-        "Mark an active goal complete or blocked when true. Set status to "
-        "active to resume a paused goal only when the user asks to continue; "
-        "never undo a user pause without a new user request. This cannot "
-        "resume blocked or limited goals.",
+        "Update an active goal to complete only when verified, blocked after "
+        "three turns with the same genuine blocker, or paused when requested "
+        "or needing user input/approval; then ask and finish the turn. In a "
+        "later turn you may resume a paused goal with active when ready, "
+        "without an explicit resume request. Respect outstanding approvals "
+        "and instructions to remain paused. Completed/blocked/limited goals "
+        "cannot resume here. Limits override pause. Report final usage for "
+        "budgeted completion.",
         cai_goal_update_schema, &cai_goal_update_args_map, cai_goal_update,
         error);
   }

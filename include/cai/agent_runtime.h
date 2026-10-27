@@ -872,7 +872,7 @@ int cai_agent_runtime_get_reasoning_tool(cai_agent_runtime *runtime,
  * invalid-state error when no turn is active. Completion is signalled by one
  * CAI_AGENT_EVENT_RUN_CANCELLED after durable state has been settled; accepted
  * queued user input runs afterward. An active goal is durably paused before
- * completion is reported; explicit host resume or a later user-authorized
+ * completion is reported; explicit host resume or a later model decision via
  * update_goal(status=active) may resume pursuit. Ordinary user turns still
  * run while the goal is paused. A non-cooperative host tool may delay it.
  */
@@ -885,6 +885,17 @@ int cai_agent_runtime_cancel_turn(cai_agent_runtime *runtime, cai_error *error);
  */
 int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
                              cai_error *error);
+/** Start an automatic continuation of an active goal, using libcai's embedded
+ * objective/budget/audit prompt. Owner-thread-only. Returns CAI_OK and sets
+ * *started to zero when goal tools are disabled, no active goal exists, or
+ * other work/controls are pending; otherwise journals admission and sets it to
+ * one. The started output is required. User inputs take priority. Three
+ * consecutive empty automatic turns with no text, reasoning, tool or compaction
+ * activity durably block the goal.
+ * This does not resume paused/complete goals. Paused goals may be resumed by
+ * the model through update_goal(active), or through the host resume API. */
+int cai_agent_runtime_continue_goal(cai_agent_runtime *runtime, int *started,
+                                    cai_error *error);
 /**
  * Submit interactive user input using Codex's StartOrSteer policy. When the
  * ordinary runtime is idle or terminal this starts a new turn; while it has

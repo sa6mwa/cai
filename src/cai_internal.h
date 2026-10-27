@@ -270,6 +270,8 @@ long long cai_session_goal_elapsed_seconds(const cai_session *session,
                                            long long now);
 void cai_session_goal_start_elapsed(cai_session *session, long long now);
 void cai_session_goal_stop_elapsed(cai_session *session, long long now);
+int cai_session_account_goal_usage(cai_session *session, int *limited,
+                                   cai_error *error);
 
 int cai_resolve_api_key(const cai_allocator *allocator,
                         const char *explicit_key, const char *env_name,

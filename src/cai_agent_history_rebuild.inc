@@ -84,7 +84,9 @@ int cai_history_rebuild_feed(cai_history_rebuild *r,
     r->shell_group = event->data != NULL && strcmp(event->data, "turn") == 0;
     return CAI_OK;
   }
-  kind = strcmp(type, "turn_submitted") == 0 || strcmp(type, "turn_queued") == 0
+  kind = strcmp(type, "goal_continuation") == 0 ||
+                 strcmp(type, "turn_submitted") == 0 ||
+                 strcmp(type, "turn_queued") == 0
              ? 1
          : strcmp(type, "steering_queued") == 0    ? 0
          : strcmp(type, "user_shell_started") == 0 ? 2

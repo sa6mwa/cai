@@ -186,6 +186,7 @@ static int cli_messages_process(cli_state *state, int at_boundary,
 static int cli_flush_command(cli_state *state, int ok);
 static int cli_submit_automation(cli_state *state, const char *instruction,
                                  cai_error *error);
+static int cli_continue_goal(cli_state *state, cai_error *error);
 static int cli_host_process(cli_state *state, cai_error *error);
 static int cli_pump(cli_state *state, long timeout, cai_error *error);
 static int cli_review_event(void *context, const cai_agent_runtime_event *event,
@@ -1809,7 +1810,8 @@ static int cli_replay_output_raw(cli_state *state,
                : CAI_ERR_TRANSPORT;
   }
   if (logging && event->data != NULL &&
-      (strcmp(event->type, "policy_diagnostic") == 0 ||
+      (strcmp(event->type, "goal_continuation") == 0 ||
+       strcmp(event->type, "policy_diagnostic") == 0 ||
        strcmp(event->type, "subagent_input") == 0 ||
        strcmp(event->type, "turn_submitted") == 0 ||
        strcmp(event->type, "turn_queued") == 0 ||
@@ -1818,21 +1820,23 @@ static int cli_replay_output_raw(cli_state *state,
     pslog_field fields[2];
     int assistant = strcmp(event->type, "assistant_text_delta") == 0;
     fields[0] = pslog_bool("replay", 1);
-    fields[1] = pslog_str("prompt_kind",
-                          strcmp(event->type, "policy_diagnostic") == 0
-                              ? "policy_diagnostic"
-                          : strcmp(event->type, "steering_queued") == 0 ||
-                                  strcmp(event->type, "subagent_input") == 0
-                              ? "steering"
-                          : strcmp(event->type, "turn_queued") == 0 ? "queued"
-                                                                    : "normal");
+    fields[1] = pslog_str(
+        "prompt_kind",
+        strcmp(event->type, "policy_diagnostic") == 0   ? "policy_diagnostic"
+        : strcmp(event->type, "goal_continuation") == 0 ? "goal_continuation"
+        : strcmp(event->type, "steering_queued") == 0 ||
+                strcmp(event->type, "subagent_input") == 0
+            ? "steering"
+        : strcmp(event->type, "turn_queued") == 0 ? "queued"
+                                                  : "normal");
     cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO, event->type,
                         assistant ? "assistant" : "user", event->data,
                         strlen(event->data), fields, 2U);
   }
   if (!render)
     return CAI_OK;
-  if ((strcmp(event->type, "policy_diagnostic") == 0 ||
+  if ((strcmp(event->type, "goal_continuation") == 0 ||
+       strcmp(event->type, "policy_diagnostic") == 0 ||
        strcmp(event->type, "subagent_input") == 0 ||
        strcmp(event->type, "turn_submitted") == 0 ||
        strcmp(event->type, "turn_queued") == 0 ||
@@ -2654,10 +2658,7 @@ static int cli_goal_command(cli_state *state, const char *arg,
     state->awaiting_turn = 1;
     return CAI_OK;
   }
-  return cli_submit_automation(
-      state,
-      objective != NULL ? objective : "Resume pursuing the current goal.",
-      error);
+  return cli_advance_automation(state, error);
 }
 
 static int cli_host_process(cli_state *state, cai_error *error) {
@@ -4007,6 +4008,18 @@ static int cli_submit_automation(cli_state *state, const char *instruction,
   return rc;
 }
 
+static int cli_continue_goal(cli_state *state, cai_error *error) {
+  int started = 0;
+  int rc = cai_agent_runtime_continue_goal(state->runtime, &started, error);
+  if (rc == CAI_OK && started) {
+    state->awaiting_turn = 1;
+    state->automation_done = 0;
+    if (state->batch)
+      state->batch_pending_turns++;
+  }
+  return rc;
+}
+
 static int cli_start_goal(cli_state *state, const char *objective,
                           cai_error *error) {
   int rc;
@@ -4032,7 +4045,6 @@ static int cli_start_goal(cli_state *state, const char *objective,
 }
 
 static int cli_start_automation(cli_state *state, cai_error *error) {
-  cai_agent_goal_snapshot goal;
   const char *objective;
   const char *instruction;
   int rc;
@@ -4052,20 +4064,12 @@ static int cli_start_automation(cli_state *state, cai_error *error) {
       return rc;
     if (state->exit_requested)
       return CAI_OK;
-    rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
-    if (rc != CAI_OK)
-      return rc;
-    /* Host controls may have cleared, paused or replaced the initial goal.
-     * Seed the settled goal, never the superseded startup objective. */
-    objective = goal.has_goal && strcmp(goal.status, "active") == 0
-                    ? goal.objective
-                    : NULL;
   }
   if (state->options.instruction_count > 0U) {
     instruction = cai_cli_instruction_at(&state->options, 0U);
     state->next_instruction = 1U;
   } else {
-    instruction = objective;
+    instruction = NULL;
   }
   if (instruction == NULL) {
     state->automation_done = 1;
@@ -4122,12 +4126,7 @@ static int cli_advance_automation(cli_state *state, cai_error *error) {
     if (goal.has_goal && goal.status != NULL &&
         strcmp(goal.status, "active") == 0) {
       state->automation_done = 0;
-      return cli_submit_automation(
-          state,
-          "Continue pursuing the active goal. Finish the remaining "
-          "work, verify the result, and update the goal status when "
-          "appropriate.",
-          error);
+      return cli_continue_goal(state, error);
     }
     if (!state->automation_done && goal.has_goal && goal.status != NULL &&
         strcmp(goal.status, "complete") != 0) {

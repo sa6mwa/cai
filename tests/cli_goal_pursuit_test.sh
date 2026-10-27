@@ -35,8 +35,11 @@ else
   terminal_close
 fi
 sed -n '3p' "$root/peer/requests.jsonl" >"$root/request"
-contains "$root/request" 'Continue pursuing the active goal'
+contains "$root/request" 'Continue working toward the active thread goal'
 contains "$root/request" 'Build the service and verify it'
+contains "$root/request" 'Completion audit:'
+contains "$root/request" 'Blocked audit:'
+contains "$root/request" 'Tokens remaining:'
 [[ "$scope" != basic ]] || exit 0
 if [[ "$mode" == batch ]]; then
   count=$(requests)
@@ -129,7 +132,7 @@ plan "$(jq -n --argjson chat "$chat" '{chat:$chat,plan:[
   {tool:"update_goal",arguments:{status:"active"}},"MODEL RESUMED GOAL",
   {tool:"update_goal",arguments:{status:"complete"}},"CANCELLED GOAL CONTINUED"
 ]}')"
-send 'Continue the interrupted goal\r'; goal_finished 'CANCELLED GOAL CONTINUED'
+send 'The answer to your question is yes.\r'; goal_finished 'CANCELLED GOAL CONTINUED'
 [[ $(requests) == "$((count+8))" ]]
 else
 plan "$(jq -n --argjson chat "$chat" '{chat:$chat,plan:[
@@ -140,6 +143,36 @@ send '/goal resume\r'; goal_finished 'COMMAND RESUMED GOAL'
 fi
 terminal_close
 done
+
+# The model may pause for a question; the reply need not explicitly say resume.
+plan "$(jq -n --argjson chat "$chat" '{chat:$chat,plan:[
+  {tool:"create_goal",arguments:{objective:"Choose the API contract"}},
+  {tool:"update_goal",arguments:{status:"paused"}},"WHICH API VERSION?"
+]}')"
+terminal_start -N
+send 'Create a goal and ask if you need a decision\r'; goal_finished 'WHICH API VERSION?'
+send '/goal\r'; expect 'Status: paused'
+before=$(requests)
+plan "$(jq -n --argjson chat "$chat" '{chat:$chat,plan:[
+  {tool:"update_goal",arguments:{status:"active"}},
+  {tool:"update_goal",arguments:{status:"complete"}},"QUESTION ANSWERED AND DONE"
+]}')"
+send 'Version two.\r'; goal_finished 'QUESTION ANSWERED AND DONE'
+[[ $(requests) == "$((before+3))" ]]
+send '/goal resume\r'; expect 'goal is not resumable'
+[[ $(requests) == "$((before+3))" ]]
+terminal_close
+
+# Only automatic continuations count: the initial user turn is not one of three.
+count=$(requests)
+plan "$(jq -n --argjson chat "$chat" '{chat:$chat,plan:[
+  {tool:"create_goal",arguments:{objective:"Stop after three empty continuations"}},
+  "", "", "", "", {error:"MUST NOT REQUEST A FOURTH EMPTY TURN"}
+]}')"
+run -Nni 'Create a goal, then continue'; bad
+[[ $(requests) == "$((count+5))" ]]
+contains "$root/stderr" 'three consecutive empty automatic continuations'
+absent "$root/stderr" 'MUST NOT REQUEST A FOURTH EMPTY TURN'
 
 # Failure stops pursuit in this invocation. An active durable goal is pursued
 # on restart or explicit /resume, without requiring --goal or /goal resume.

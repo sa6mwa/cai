@@ -5,6 +5,23 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-043: Goal continuations omit Codex's objective and completion audits
+
+- **Evidence:** the application sent one short continuation sentence. The
+  model could not pause to ask a question, and successful empty turns could
+  generate unlimited automatic requests.
+- **Resolution:** libcai embeds the Codex continuation template, retaining its
+  objective, budget, evidence, fidelity, completion and blocked audits. CAI
+  permits model pauses for questions/approvals and model-decided resume of
+  paused goals, respecting outstanding approval or stay-paused instructions.
+  Completed goals are technically non-resumable. Three consecutive empty
+  automatic continuations durably block the goal. Activity and user turns reset
+  the streak. C/Lua hosts and libcai_app share continuation admission and policy.
+- **Verification:** prompt-source and compiled-byte checks prevent loss of the
+  upstream audits. Mock wire tests exercise usage, Unicode whitespace, text,
+  reasoning, local/hosted tools, compaction, user input and completed-goal
+  rejection. CLI protocols and the Lua facade cover pause/resume and stopping.
+
 ## BUG-042: Escape stops pursuit while leaving the goal active
 
 - **Evidence:** turn cancellation left an active durable goal behind while the

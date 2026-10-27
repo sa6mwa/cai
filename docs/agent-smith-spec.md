@@ -1040,7 +1040,7 @@ to the host as events before they are returned to the model.
 | `imagegen` | namespace/function | Generate or edit an image through a configured image backend; save an artifact and return its path/metadata. |
 | `get_goal` | function | Read the session’s current goal and accounting. |
 | `create_goal` | function | Create an explicit user-requested goal. |
-| `update_goal` | function | Mark an active goal complete or blocked, or resume a paused goal on user request. |
+| `update_goal` | function | Complete, block or pause an active goal; resume a paused goal when the model decides it can proceed. |
 | `run_review` | function | Synchronously run the isolated built-in reviewer against the Git default branch when scope is omitted, or use explicit `uncommitted`, `base`, `commit`, or `custom` scope, then inject its durable handover. Smith enables it by default. |
 | `run_<profile>` | function | One generated typed schema for each host-defined profile; run it synchronously and durably inject its handover. |
 | MCP tools/resources | dynamic | Register configured remote MCP capabilities as CAI tools with server-qualified names. |
@@ -1344,9 +1344,12 @@ contract:
   insert-only: it fails unless no goal exists or the existing goal is
   `complete`; `blocked`, `budget_limited`, and `usage_limited` goals require
   an explicit clear or resume decision;
-- `update_goal` accepts `complete` or `blocked` for an active goal, or `active`
-  to resume a paused goal following a new user request. It cannot resume a
-  blocked or limited goal;
+- `update_goal` accepts `complete`, `blocked` or `paused` for an active goal,
+  or `active` to resume a paused goal. Pause may be requested by the user or
+  chosen by the model when a user answer/approval is needed. The model can
+  decide to resume in a later turn, respecting outstanding approvals and
+  instructions to remain paused. It cannot resume completed, blocked or
+  limited goals;
 - `clear_goal` is Smith's idempotent equivalent of Codex's `/goal clear`:
   it removes the current goal without asserting completion, so a subsequent
   `create_goal` starts fresh;
@@ -1357,7 +1360,7 @@ contract:
 - a budgeted completed goal reports its final usage.
 
 Goal statuses are `active`, `paused`, `complete`, `blocked`, `usage_limited`,
-and `budget_limited`. Creation sets `active`; the model can complete or block
+and `budget_limited`. Creation sets `active`; the model can complete, pause or block
 an active goal and resume a paused one. Hosts can create, pause, resume,
 replace an objective, set or remove a token budget, and clear a goal through
 the runtime.
@@ -1372,8 +1375,19 @@ subcommands are errors, rather than implicit objective text.
 
 Turn cancellation durably pauses an active goal before reporting completion.
 Paused goals allow ordinary user turns but no automatic pursuit. `/goal resume`
-or a user-requested model resume starts pursuit again; unrelated paused turns do
+or a model decision to resume starts pursuit again; unrelated paused turns do
 not consume the goal's token budget or advance its active elapsed time.
+
+`cai_agent_runtime_continue_goal` (`runtime:continue_goal()` in Lua) admits only
+idle active goals without pending user work or controls. It marks durable
+`goal_continuation` input separately from ordinary user submissions. At execution,
+libcai renders its compiled Codex-derived continuation template with the current
+objective and budget, XML-escaping objective data. The fidelity, progress,
+completion and blocked audits are preserved; CAI adapts pause/resume policy and
+omits the unavailable plan tool. Three consecutive empty automatic turns without
+text, reasoning, tool or compaction activity durably mark the goal blocked.
+Activity, ordinary user turns and goal controls reset that in-memory streak.
+Pause, completion and budget limits take precedence over the empty-turn guard.
 
 Those controls are accepted during sampling, journaled before success, and
 applied at the next model/tool safe boundary. `cai_agent_runtime_get_goal`

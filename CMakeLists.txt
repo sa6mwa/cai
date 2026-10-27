@@ -632,6 +632,15 @@ set(CAI_SMITH_PRIVATE_INCLUDE_DIR
 set(CAI_SMITH_PROMPT_GENERATOR
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/generate_byte_asset.cmake")
 include(cmake/CaiSmithPrompts.cmake)
+set(_cai_goal_prompt_inc "${CAI_SMITH_PRIVATE_INCLUDE_DIR}/cai_goal_continuation.inc")
+add_custom_command(OUTPUT "${_cai_goal_prompt_inc}"
+  COMMAND "${CMAKE_COMMAND}"
+    "-DCAI_ASSET_INPUT=${CMAKE_CURRENT_SOURCE_DIR}/prompts/goal/continuation.md"
+    "-DCAI_ASSET_OUTPUT=${_cai_goal_prompt_inc}" -DCAI_ASSET_MODE=c-string
+    -P "${CAI_SMITH_PROMPT_GENERATOR}"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/prompts/goal/continuation.md"
+    "${CAI_SMITH_PROMPT_GENERATOR}" VERBATIM)
+list(APPEND CAI_SMITH_PROMPT_INC_PATHS "${_cai_goal_prompt_inc}")
 add_custom_target(cai_smith_prompt_asset
   DEPENDS ${CAI_SMITH_PROMPT_INC_PATHS})
 foreach(_kanban_asset html js css)
@@ -917,6 +926,11 @@ if(CAI_BUILD_CLI)
       COMPONENT cai-cli EXCLUDE_FROM_ALL)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/man/cai.1"
       DESTINATION "${CMAKE_INSTALL_MANDIR}/man1"
+      COMPONENT cai-cli EXCLUDE_FROM_ALL)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/prompts/goal/LICENSE"
+      "${CMAKE_CURRENT_SOURCE_DIR}/prompts/goal/NOTICE"
+      "${CMAKE_CURRENT_SOURCE_DIR}/prompts/goal/README.md"
+      DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/third_party/codex"
       COMPONENT cai-cli EXCLUDE_FROM_ALL)
     install(FILES "${CAI_LIBYAML_LICENSE}"
       DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/third_party/libyaml"
@@ -1384,6 +1398,10 @@ if(CAI_INSTALL)
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/docs")
   install(FILES "${CMAKE_CURRENT_BINARY_DIR}/dependencies.json"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/cai")
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/prompts/goal/LICENSE"
+    "${CMAKE_CURRENT_SOURCE_DIR}/prompts/goal/NOTICE"
+    "${CMAKE_CURRENT_SOURCE_DIR}/prompts/goal/README.md"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/third_party/codex")
 
   set(_cai_package_deps "")
   if(TARGET cai_static)

@@ -314,8 +314,12 @@ static int cai_smith_build_tool_contract(const cai_allocator *allocator,
       "external blocker recurs for three consecutive goal turns. Use "
       "clear_goal to remove a goal without claiming completion. ";
   static const char *const goal_resume =
-      "A paused goal does not prevent answering user questions. Resume it "
-      "with update_goal(status=active) only when the user asks to continue. ";
+      "A paused goal does not prevent answering user questions. Use "
+      "update_goal(status=paused) when requested or before asking for a needed "
+      "user answer or approval, then finish the turn. In a later turn, resume "
+      "a paused goal with update_goal(status=active) when you decide it is "
+      "ready to proceed. Respect outstanding approvals and explicit requests "
+      "to remain paused. Completed goals cannot be resumed. ";
   static const char *const mcp = "The host may expose configured MCP tools. ";
   static const char *const image_generation =
       "The host may expose image_generation when it enables that capability. ";

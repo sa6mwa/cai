@@ -4739,6 +4739,22 @@ static int cai_lua_agent_runtime_submit(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
+static int cai_lua_agent_runtime_continue_goal(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  cai_error error;
+  int started = 0;
+  int rc;
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_continue_goal(self->ptr, &started, &error);
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK)
+    return cai_lua_fail(L, rc, &error);
+  cai_error_cleanup(&error);
+  lua_pushboolean(L, started);
+  return 1;
+}
+
 static int cai_lua_agent_runtime_user_shell_begin(lua_State *L) {
   cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
   cai_error error;
@@ -12085,6 +12101,7 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"history", cai_lua_agent_runtime_history},
     {"trim_history", cai_lua_agent_runtime_trim_history},
     {"submit", cai_lua_agent_runtime_submit},
+    {"continue_goal", cai_lua_agent_runtime_continue_goal},
     {"user_shell_begin", cai_lua_agent_runtime_user_shell_begin},
     {"user_shell_write", cai_lua_agent_runtime_user_shell_write},
     {"user_shell_finish", cai_lua_agent_runtime_user_shell_finish},

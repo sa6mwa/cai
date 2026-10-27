@@ -4238,6 +4238,65 @@ static int cai_session_refresh_history_input_preserving_transient(
   return rc;
 }
 
+int cai_session_account_goal_usage(cai_session *value, int *out_budget_limited,
+                                   cai_error *error) {
+  cai_session_impl *session;
+  long long total_tokens;
+  long long delta;
+  char *status;
+
+  if (out_budget_limited != NULL) {
+    *out_budget_limited = 0;
+  }
+
+  session = CAI_SESSION_IMPL(value);
+  if (session->goal_status == NULL) {
+    return CAI_OK;
+  }
+  if (strcmp(session->goal_status, "budget_limited") == 0) {
+    if (out_budget_limited != NULL) {
+      *out_budget_limited = 1;
+    }
+    return CAI_OK;
+  }
+  total_tokens = session->usage.usage.total_tokens;
+  if (strcmp(session->goal_status, "paused") == 0) {
+    session->goal_token_usage_baseline = total_tokens;
+    return CAI_OK;
+  }
+  if (total_tokens >= session->goal_token_usage_baseline) {
+    delta = total_tokens - session->goal_token_usage_baseline;
+    if (delta > 0LL) {
+      if (session->goal_tokens_used > LLONG_MAX - delta) {
+        session->goal_tokens_used = LLONG_MAX;
+      } else {
+        session->goal_tokens_used += delta;
+      }
+    }
+  }
+  session->goal_token_usage_baseline = total_tokens;
+  session->goal_updated_at = (long long)time(NULL);
+  if (strcmp(session->goal_status, "active") != 0 ||
+      !session->goal_has_token_budget ||
+      session->goal_tokens_used < session->goal_token_budget) {
+    return CAI_OK;
+  }
+  status =
+      cai_strdup(&CAI_SESSION_CLIENT_IMPL(value)->allocator, "budget_limited");
+  if (status == NULL) {
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "failed to record exhausted goal token budget");
+  }
+  cai_free_mem(&CAI_SESSION_CLIENT_IMPL(value)->allocator,
+               session->goal_status);
+  session->goal_status = status;
+  cai_session_goal_stop_elapsed(value, session->goal_updated_at);
+  if (out_budget_limited != NULL) {
+    *out_budget_limited = 1;
+  }
+  return CAI_OK;
+}
+
 long long cai_session_goal_elapsed_seconds(const cai_session *session,
                                            long long now) {
   const cai_session_impl *impl;

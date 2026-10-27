@@ -64,7 +64,7 @@ run --lockd "pouch://$root/other-store" --list; ok; contains "$root/stdout" 'No 
 export CAI_TEST_VOLATILE_SESSION=1
 plan '{"plan":["working on goal","__complete_goal__","goal done"]}'
 run -Nng 'finish fixture'; ok; [[ $(stdout_text) == 'goal done' ]]; contains "$root/stderr" 'working on goal'
-contains "$root/peer/requests.jsonl" 'Continue pursuing the active goal'
+contains "$root/peer/requests.jsonl" 'Continue working toward the active thread goal'
 plan '{"plan":["__complete_goal__","review loop done"]}'
 run --review-and-fix; ok; [[ $(stdout_text) == 'review loop done' ]]
 contains "$root/peer/requests.jsonl" run_review; contains "$root/peer/requests.jsonl" 'no actionable findings'

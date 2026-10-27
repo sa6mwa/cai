@@ -315,12 +315,17 @@ static int cai_runtime_execution_hosted(void *context, const char *id,
   int rc;
   size_t length;
   (void)index;
-  if (!runtime->record_transcript || type == NULL)
+  if (type == NULL)
     return CAI_OK;
   length = strlen(type);
   if (length < 5U || strcmp(type + length - 5U, "_call") != 0 ||
       strcmp(type, "function_call") == 0 ||
       strcmp(type, "custom_tool_call") == 0)
+    return CAI_OK;
+  pthread_mutex_lock(&runtime->lock);
+  runtime->goal_turn_has_activity = 1;
+  pthread_mutex_unlock(&runtime->lock);
+  if (!runtime->record_transcript)
     return CAI_OK;
   cai_runtime_execution_init(&s, runtime, "hosted.tool", type, id, "item");
   memset(&source, 0, sizeof(source));

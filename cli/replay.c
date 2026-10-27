@@ -85,8 +85,9 @@ int cai_cli_replay_feed(cai_cli_replay *r, const cai_agent_session_event *event,
                         cai_error *error) {
   const char *type = event->type;
   replay_input *input, **link;
-  int turn =
-      strcmp(type, "turn_submitted") == 0 || strcmp(type, "turn_queued") == 0;
+  int turn = strcmp(type, "turn_submitted") == 0 ||
+             strcmp(type, "turn_queued") == 0 ||
+             strcmp(type, "goal_continuation") == 0;
   int steering = strcmp(type, "steering_queued") == 0;
   int rc = CAI_OK;
   r->through = event->sequence;
@@ -237,6 +238,7 @@ int cai_cli_replay_order_feed(cai_cli_replay_order *order,
     order->journal_v2 = 1;
   if (order->journal_v2 && event->data != NULL &&
       (strcmp(type, "turn_submitted") == 0 ||
+       strcmp(type, "goal_continuation") == 0 ||
        strcmp(type, "turn_queued") == 0 ||
        strcmp(type, "steering_queued") == 0)) {
     input = calloc(1U, sizeof(*input));
@@ -248,9 +250,10 @@ int cai_cli_replay_order_feed(cai_cli_replay_order *order,
       free(input);
       return cai_cli_error(error, CAI_ERR_NOMEM, "copy pending replay prompt");
     }
-    input->type = strcmp(type, "turn_submitted") == 0 ? "turn_submitted"
-                  : strcmp(type, "turn_queued") == 0  ? "turn_queued"
-                                                      : "steering_queued";
+    input->type = strcmp(type, "goal_continuation") == 0 ? "goal_continuation"
+                  : strcmp(type, "turn_submitted") == 0  ? "turn_submitted"
+                  : strcmp(type, "turn_queued") == 0     ? "turn_queued"
+                                                         : "steering_queued";
     input->sequence = event->sequence;
     input->next = order->inputs;
     order->inputs = input;
