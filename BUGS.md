@@ -5,6 +5,54 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-038: Submitted steering splits streamed assistant output
+
+- **Reported:** a user steer appears between two fragments of the same streamed
+  assistant paragraph, with the response continuing beneath it.
+- **Evidence:** the application calls `cli_prompt()` before runtime admission;
+  it finishes the renderer and inserts the prompt while sampling can continue.
+- **Required:** use Softline's queued/steering paths and render user input only
+  at the runtime event that inserts it into conversation history. Preserve
+  streaming output; never buffer a whole response to hide the ordering defect.
+
+## BUG-037: Parent request after review advertises unsupported image generation
+
+- **Reported:** after `/review`, a ChatGPT WebSocket request fails with HTTP 400,
+  `unsupported_parameter`: `image_generation` requires authorization/metering
+  unavailable on the `rustponsesapi` route.
+- **Pending:** inspect parent restoration and provider/model tool capabilities.
+  Do not assume the review caused the capability mismatch without a request
+  capture. Session: `dbgat2ip0pfreu3puj5g`.
+
+## BUG-036: Delegated reviewer executes workflow notifications
+
+- **Reported:** the reviewer ran `ping_engineer.sh` before reporting findings;
+  that invoked Lingon and failed authentication. Review should hand its report
+  back without running the parent workflow's notification commands.
+- **Pending:** inspect the review role and inherited global instructions while
+  preserving applicable project constraints.
+
+## BUG-035: Reviewer steering is presented but routes to the parent
+
+- **Evidence:** the application queues normal input to the parent while
+  `review_runtime` is present; the core explicitly rejects steering an isolated
+  review. Native Softline STEER entries are not drained by the application.
+- **Decision:** enable steering the foreground reviewer/subagent by default,
+  with an explicit disable setting that leaves the input queued for the parent.
+  Apply and display steering only at safe conversation boundaries.
+
+## BUG-034: Reported ambiguous patch requires its actual input
+
+- **Reported:** `update patch context is ambiguous`, session
+  `dbgat2ip0pfreu3puj5g`, call `call_WRPoqB6VLPXOwXHEMxhl95tv`.
+- **Pending evidence:** the rejected patch and matching target-file snapshot.
+  The provided `/status` identifies the session but contains neither; its log
+  is absent from this machine's CAI cache.
+- **Existing contract:** repeated unanchored context is rejected without
+  modifying the file. The native patch regression covers this and successful
+  disambiguation with a context anchor. Do not weaken that guard based only on
+  the error message.
+
 ## BUG-033: CLI resume treats a listed number as a literal ID
 
 - **Reported:** `cai --resume` lists numbered conversations, but `--resume 2`
