@@ -371,6 +371,11 @@
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_yolo_test.sh" "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_yolo PROPERTIES TIMEOUT 15)
     foreach(_steering_protocol responses chat_completions)
+      add_test(NAME cai_cli_command_queue_${_steering_protocol} COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_command_queue_test.sh"
+        "$<TARGET_FILE:cai_cli_mock_fixture>" "${_steering_protocol}")
+      set_tests_properties(cai_cli_command_queue_${_steering_protocol}
+        PROPERTIES TIMEOUT 20)
       add_test(NAME cai_cli_execution_${_steering_protocol} COMMAND bash
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_execution_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>" "${_steering_protocol}")

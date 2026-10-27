@@ -20,8 +20,8 @@ for chat in false true; do
   printf 'TIER_TOOL_RESULT\n' >"$work/input"
   before=$(requests)
   send 'run tool\r'; expect 'STREAM in flight'
-  send '/fast\r'; expect 'queued for the next safe boundary: priority'
-  send '/tier list\r'; expect 'Pending: priority'
+  send '/fast\033\r'; expect 'S 1. /fast'
+  send '/tier list\r'; expect 'Selected: default'
   release; expect_assistant CONTINUED; expect 'Worked for'
   jq -s --argjson before "$before" '.[ $before: ]' "$root/peer/requests.jsonl" >"$root/turn"
   json "$root/turn" 'length == 2 and .[0].service_tier == "default" and .[1].service_tier == "priority"'

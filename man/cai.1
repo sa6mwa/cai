@@ -564,6 +564,15 @@ Softline owns pending input: Enter queues a normal next turn while busy,
 Alt-Enter queues steering (or marks the newest entry when the draft is empty),
 and Alt-E edits pending input. Steering stays editable until the next runtime
 response/tool boundary; ordinary queued turns follow Softline's idle delivery.
+Read-only local commands, including /goal, /status, /model and /tier list,
+use the same prompt queue but may run between feed writes while inference is
+pending. Approval and active edits remain under Softline's control. Inspecting
+state does not restart FIFO delivery stopped by Escape.
+Agent changes such as /goal pause or /model MODEL use the native input keys:
+Enter queues them after the current turn, and Alt-Enter keeps them editable
+until the next response/tool boundary. Commands execute locally and never
+become model steering text. /quit follows the same queue; Alt-Q saves the
+draft and exits directly.
 .TP
 .BI \-\-tool-output " MODE"
 Select interactive tool previews: compact (default) or full.

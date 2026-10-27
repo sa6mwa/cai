@@ -56,7 +56,7 @@ plan "$(jq -n --argjson chat "$chat" '{chat:$chat,plan:[
 ]}')"
 terminal_start -N
 send 'Create and pursue the goal\r'; expect 'STREAM in flight'
-send '/goal resume\r'; expect 'Goal control queued'
+send '/goal resume\033\r'; expect 'S 1. /goal resume'
 release
 expect_turn "$send_offset" 'BUSY GOAL FINISHED'
 [[ $(requests) == "$((count+4))" ]]

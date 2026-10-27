@@ -12,7 +12,7 @@ send '/goal resume\r'; expect 'goal is not resumable'
 plan '{"plan":[{"text":"FIRST pass","pause":true},{"tool":"update_goal","arguments":{"status":"complete"}},"REPLACEMENT done"]}'
 send '/goal new Initial objective\r'; expect 'STREAM in flight'
 send '/goal status\r'; expect 'Initial objective'; expect 'unbounded'
-send '/goal new Replacement objective\r'
+send '/goal new Replacement objective\033\r'; expect 'S 1. /goal new'
 [[ $(requests) == 1 ]]
 release; expect_assistant 'REPLACEMENT done'; expect 'Worked for'
 [[ $(requests) == 3 ]]
@@ -33,9 +33,12 @@ plan '{"plan":[{"tool":"update_goal","arguments":{"status":"complete"}},"RESUMED
 send '/goal resume\r'; expect_assistant 'RESUMED done'
 send '/goal status\r'; expect complete
 plan '{"plan":[{"text":"CLEARED partial response","pause":true},"CLEARED turn completed"]}'
+count=$(requests)
 send '/goal new Clear objective\r'; expect 'STREAM in flight'
-send '/goal clear\r'; release; expect_assistant 'CLEARED turn completed'
+send '/goal clear\r'; expect 'Q 1. /goal clear'
+release; expect_assistant 'CLEARED partial response'; expect 'Goal control queued'
 send '/goal\r'; expect 'No goal.'
+[[ $(requests) == $((count+1)) ]]
 terminal_close
 logs
 jq -se '[.[]|select(.event == "goal_control")]| all(.lvl == "info" and .role == "user")' "$root/logs.jsonl" >/dev/null

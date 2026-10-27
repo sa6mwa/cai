@@ -5,6 +5,25 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-047: Local commands bypass Softline's editable delivery queue
+
+- **Evidence:** the Enter/Alt-Enter callback forced every slash and pipe command
+  to submit immediately, even while sampling. `/goal pause` disappeared from
+  Softline before the runtime could apply it. The queued-input consumer understood
+  only model steering and whole-turn delivery, without a between-feed delivery
+  policy for local inspectors.
+- **Resolution:** one Softline queue supports three delivery boundaries. Local
+  queries and display controls run between feed writes; agent changes retain
+  Softline's ordinary-turn or steering intent until their
+  delivery boundary. Commands taken at a model/tool seam use the normal local
+  dispatcher. Queue edits retain their identity, position and mode. Goal/model
+  changes remain editable until consumed, including when inference is pending.
+- **Verification:** deterministic paused-provider regressions cover both wire
+  protocols, inspection before first-token output with another command queued,
+  Alt-E changes to both queries and agent controls, native turn and steering
+  delivery, local validation errors, pipe commands, stopped-queue preservation,
+  command exclusion from model input, and queued exit/status rendering.
+
 ## BUG-046: Goal becomes active on resume but no continuation starts
 
 - **Evidence:** the reported log has `resumed` with runtime state 5 (cancelled),

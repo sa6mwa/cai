@@ -173,8 +173,20 @@ rendered through libmdf with ANSI disabled; Softline owns the gray `! ` line.
 Softline's queued-turns profile handles conversation input: Enter starts an
 idle turn or queues the next turn while busy. Alt-Enter queues steering, or
 marks the newest pending entry as steering when the editor is empty. Alt-E
-edits pending input. Entries remain in Softline until the runtime's next
-response/tool boundary; no duplicate UI queue or key remapping is used.
+edits pending input. Steering entries remain in Softline until the runtime's next
+response/tool boundary. The application does not keep a second UI queue.
+Read-only local commands such as `/goal`, `/status`, `/model` and `/tier list`
+use the same Softline queue but can run between feed writes, even while
+inference is pending. Approval and active edits remain under Softline's control;
+inspecting state does not restart FIFO delivery stopped by Escape. Agent changes
+such as `/goal pause` and `/model MODEL` follow the native input keys: Enter
+queues them after the current turn; Alt-Enter keeps them editable until the
+next response/tool boundary, where CAI applies them locally. Commands never
+become model steering text. `/quit` follows the same queue; Alt-Q saves the
+draft and exits directly.
+Explicit `!COMMAND` execution remains a direct local operation; its results
+enter model context at the runtime's next safe boundary. Editing a queued entry
+into a pipe command retains that entry's native delivery intent.
 A steering prompt appears in the
 conversation feed only when the runtime inserts it after the current response
 or tool round. It never interrupts streamed assistant text. Resume uses those

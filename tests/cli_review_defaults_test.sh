@@ -101,8 +101,8 @@ last_request; contains "$root/request" 'staged, unstaged, and untracked'
 plan "$(jq -n --arg report "$report" '{plan:[{pause:true,pause_text:"",reasoning:["REVIEW QUEUE BARRIER"],text:$report},"QUEUED AFTER REVIEW"]}')"
 before=$(requests)
 send '/review\r'; expect 'REVIEW QUEUE BARRIER'
-send '/review uncommitted\r'; expect 'finish the active review'
-send '/review-and-fix\r'; expect 'finish the active review'
+send '/review uncommitted\033\r'; expect 'S 1. /review uncommitted'
+send '/review-and-fix\033\r'; expect 'S 2. /review-and-fix'
 send '/shell\r'; expect 'Shell is available only between turns.'
 send '\025'
 send '/status\r'; expect 'Metric'
@@ -110,6 +110,7 @@ send 'Use the queued review findings\r'
 [[ $(requests) == $((before+1)) ]]
 release
 expect 'QUEUED AFTER REVIEW'
+contains "$term/feed" 'finish the active review'
 last_request; contains "$root/request" 'Fix parser'
 # Cancelling an active child releases its parent for subsequent normal work.
 plan '{"plan":[{"tool":"create_goal","arguments":{"objective":"Parent goal"}},{"error":"PARENT GOAL WAIT"}]}'
@@ -133,4 +134,4 @@ terminal_close
 plan "$(jq -n --arg report "$report" '{plan:[{pause:true,pause_text:"",reasoning:["REVIEW QUIT BARRIER"],text:$report}]}')"
 terminal_start -N
 send '/review\r'; expect 'REVIEW QUIT BARRIER'
-terminal_close
+terminal_close '\033q'

@@ -101,10 +101,11 @@ tui_themes() {
   offset=$(wc -c <"$term/text")
   send 'read while checking theme guard\r'; expect 'STREAM in flight'
   count=$(requests)
-  send '/theme synthwave\r'; expect 'Change themes between turns'
+  send '/theme synthwave\033\r'; expect 'S 1. /theme synthwave'
   send '/theme\r'; expect 'Current: dracula:dracula'
   [[ $(requests) == "$count" ]]
   release; expect_turn "$offset" 'THEME BOUNDARY DONE'
+  contains "$term/feed" 'Change themes between turns'
   contains "$root/peer/requests.jsonl" 'THEME TOOL CONTENT'
   send '/new\r'; expect 'New session'
   send '/theme\r'; expect 'Current: dracula:dracula'

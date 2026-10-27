@@ -16,9 +16,10 @@ for chat in false true; do
   send '!printf KEEP_SHELL\r'; expect 'Shell command exited 0'
   plan "{\"chat\":$chat,\"plan\":[{\"pause\":true,\"tool\":\"read_file\",\"arguments\":{\"path\":\"drop.txt\"}},\"DROPRESPONSE\"]}"
   send 'DROP_PROMPT\r'; expect 'STREAM in flight'
-  send '/trim 1\r'; expect 'require an idle runtime'
+  send '/trim 1\033\r'; expect 'S 1. /trim 1'
   send 'DROP_STEERING\033\r'
   release; expect_assistant 'DROPRESPONSE'; expect 'Worked for'
+  contains "$term/feed" 'require an idle runtime'
   send '/trim\r'; expect '1. DROPRESPONSE'; expect '2. Shell: printf KEEP_SHELL'; expect '3. KEEPRESPONSE'
   send '/trim 0\r'; expect 'Trimmed 0 newest history entries'
   send '/trim -1\r'; expect 'Usage: /trim'
