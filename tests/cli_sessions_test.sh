@@ -63,3 +63,28 @@ fi
 [[ "$created" != *'**ID:'* && "$created" != *'Message queue:'* ]]
 [[ "$created" == *'$ /new'* && "$created" != *'--- session ---'* ]]
 [[ "$selected" != *'--- session ---'* ]]
+
+# Resolve CLI numbers from the current directory's numbered listing.
+for option in --resume -R; do
+  rows=$("$cli" --resume -C "$fixture/work-a")
+  row=$(awk -v id="$imported_id" '$2 == id {print $1}' <<<"$rows")
+  [[ -n "$row" ]]
+  resumed=$(printf '/quit\n' | "$cli" -p openai "$option" "$row" -C "$fixture/work-a")
+  [[ "$resumed" == *'Saved assistant answer'* ]]
+done
+mkdir "$fixture/work-empty"
+for choice in 0 999999999999999999999999999999999999 missing-session-id; do
+  if printf '/quit\n' | "$cli" -p openai --resume "$choice" -C "$fixture/work-a" >"$fixture/error" 2>&1; then
+    echo 'invalid resume selection was accepted' >&2; exit 1
+  fi
+  if [[ "$choice" == missing-session-id ]]; then
+    grep -q 'was not found' "$fixture/error"
+  else
+    grep -q 'No conversation with that number' "$fixture/error"
+  fi
+  ! grep -q 'incomplete JSON document' "$fixture/error"
+done
+if printf '/quit\n' | "$cli" -p openai --resume 1 -C "$fixture/work-empty" >"$fixture/error" 2>&1; then
+  echo 'numeric resume escaped its directory' >&2; exit 1
+fi
+grep -q 'No conversation with that number' "$fixture/error"

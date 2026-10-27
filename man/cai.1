@@ -263,9 +263,11 @@ from the terminal. Requires at least one
 .BR \-g ,
 or a review mode.
 .TP
-.BR \-R , " " \-\-resume " [ID]"
+.BR \-R , " " \-\-resume " [ID|NUMBER]"
 With no ID, list numbered conversations for the current directory and exit.
 With an ID, resume that saved session in the current directory.
+With a number, select that row from the current directory's numbered listing.
+An exact numeric ID takes precedence over interpreting it as a row number.
 Cannot be combined with
 .BR \-\-new .
 .TP

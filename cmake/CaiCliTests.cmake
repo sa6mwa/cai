@@ -321,6 +321,13 @@
     add_test(NAME cai_cli_sessions
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_sessions_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>" "${CMAKE_CURRENT_BINARY_DIR}")
+    add_executable(cai_cli_resume_selection_test tests/cli_resume_selection_test.c)
+    target_link_libraries(cai_cli_resume_selection_test PRIVATE cai_cli_support)
+    target_link_options(cai_cli_resume_selection_test PRIVATE
+      "-Wl,--wrap=cai_cli_pouch_list")
+    cai_configure_cli_target(cai_cli_resume_selection_test)
+    target_compile_options(cai_cli_resume_selection_test PRIVATE -UNDEBUG)
+    add_test(NAME cai_cli_resume_selection COMMAND cai_cli_resume_selection_test)
     add_test(NAME cai_cli_providers
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_providers_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>" "${CMAKE_CURRENT_BINARY_DIR}")

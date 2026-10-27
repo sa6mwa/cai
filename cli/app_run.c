@@ -1829,8 +1829,17 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   cai_agent_preset preset;
   cai_skill_config skills;
   cai_terminal_tool_config terminal;
+  char selected_id[CAI_AGENT_SESSION_ID_MAX];
   int wakeup_fd;
   int rc;
+
+  if (resume_id != NULL) {
+    rc = cai_cli_session_select(&state->pouch, state->workspace, resume_id,
+                                selected_id, error);
+    if (rc != CAI_OK)
+      return rc;
+    resume_id = selected_id;
+  }
 
   if (!state->suppress_replay) {
     state->show_welcome = 1;

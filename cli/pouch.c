@@ -661,13 +661,20 @@ static int checkpoint_source(cai_cli_pouch *pouch, const char *id,
 static int session_read(cai_cli_pouch *pouch, const char *id,
                         cai_cli_session *out, int *has_body, cai_error *error) {
   cai_source *source;
-  int rc;
+  int rc, found = 0;
   memset(out, 0, sizeof(*out));
   source = NULL;
   rc = download_source(pouch, id, NULL, &source, error);
   if (rc == CAI_OK)
-    rc =
-        parse_source_optional(source, &session_map, out, has_body, NULL, error);
+    rc = parse_source_optional(source, &session_map, out, &found, NULL, error);
+  if (has_body != NULL)
+    *has_body = found;
+  if (has_body == NULL && ((rc == CAI_OK && !found) ||
+                           (rc != CAI_OK && error->http_status == 404))) {
+    char message[256];
+    snprintf(message, sizeof(message), "Conversation '%s' was not found.", id);
+    rc = cai_cli_error(error, CAI_ERR_INVALID, message);
+  }
   if (rc != CAI_OK) {
     char message[640];
     long http_status;

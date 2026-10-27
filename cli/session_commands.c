@@ -11,6 +11,47 @@
 #include <unistd.h>
 #include <wchar.h>
 
+int cai_cli_session_select(cai_cli_pouch *pouch, const char *workspace,
+                           const char *choice,
+                           char out[CAI_AGENT_SESSION_ID_MAX],
+                           cai_error *error) {
+  cai_cli_session *sessions = NULL;
+  unsigned long long number;
+  size_t count = 0U, i;
+  char *end;
+  int rc;
+  if (choice == NULL || choice[0] == '\0')
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "resume requires a conversation ID or list number");
+  if (strspn(choice, "0123456789") != strlen(choice)) {
+    if (strlen(choice) >= CAI_AGENT_SESSION_ID_MAX)
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "conversation ID is too long");
+    strcpy(out, choice);
+    return CAI_OK;
+  }
+  rc = cai_cli_pouch_list(pouch, workspace, &sessions, &count, error);
+  if (rc != CAI_OK)
+    return rc;
+  for (i = 0U; i < count; i++) {
+    if (strcmp(choice, sessions[i].id) == 0) {
+      strcpy(out, sessions[i].id);
+      free(sessions);
+      return CAI_OK;
+    }
+  }
+  errno = 0;
+  number = strtoull(choice, &end, 10);
+  if (errno != 0 || *end != '\0' || number == 0U || number > count)
+    rc = cai_cli_error(error, CAI_ERR_INVALID,
+                       "No conversation with that number in this directory. "
+                       "Run --resume to list available conversations.");
+  else
+    strcpy(out, sessions[(size_t)number - 1U].id);
+  free(sessions);
+  return rc;
+}
+
 /* Sanitize and clip a UTF-8 field by displayed cells, preserving codepoints. */
 static void row_field(char *out, size_t capacity, const char *text, int width) {
   mbstate_t state;

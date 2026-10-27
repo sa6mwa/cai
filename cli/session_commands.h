@@ -4,6 +4,13 @@
 #include "pouch.h"
 #include <cai/agent_runtime.h>
 
+/* Resolve an exact ID or a numbered current-directory listing entry. An exact
+ * numeric ID takes precedence over its interpretation as a row number. */
+int cai_cli_session_select(cai_cli_pouch *pouch, const char *workspace,
+                           const char *choice,
+                           char out[CAI_AGENT_SESSION_ID_MAX],
+                           cai_error *error);
+
 /* Plain session rows, numbered for resume; width is measured in terminal cells.
  */
 int cai_cli_sessions_print(cai_sink *destination,

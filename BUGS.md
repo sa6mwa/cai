@@ -5,6 +5,17 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-033: CLI resume treats a listed number as a literal ID
+
+- **Reported:** `cai --resume` lists numbered conversations, but `--resume 2`
+  attempts to load ID `2` and reports an incomplete JSON document.
+- **Resolution:** resolve positive numeric selections against the current
+  directory's numbered listing, retaining exact numeric-ID precedence. Missing
+  IDs report not-found rather than a parser failure.
+- **Verification:** CLI checks cover both flag spellings, IDs, invalid numbers,
+  empty directories and directory isolation. A native selection check covers
+  numeric-ID precedence, overflow and storage-query failure without inference.
+
 ## BUG-032: Chrome CDP commands pass undefined command arguments
 
 - **Reported:** snapshots and clicks fail with `Invalid parameters` and

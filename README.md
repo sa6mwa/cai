@@ -711,6 +711,9 @@ an ID and `/resume` show a numbered list for the current directory only;
 `/resume <number>` loads an entry. Rows show ID, directory, and a first-prompt
 preview, clipped to the terminal width or 80 columns without a terminal.
 `-R ID`/`--resume ID` addresses a saved session in the current directory directly.
+`-R NUMBER`/`--resume NUMBER` selects the corresponding row from that directory's
+numbered list, with the same ordering as `/resume`. An exact numeric ID, if
+present in the directory, takes precedence over a row number.
 Saved prompts and assistant text replay without repeating tool side effects.
 
 `--export ID` and `/export [ID]` write paired `ID.jsonl` and `ID.md` files
