@@ -595,6 +595,8 @@ and available credit balance through
 bar requests quota in the background after session startup and after completed
 turns, at most once every five minutes automatically. Quota retrieval does not
 block prompt readiness, and idle sessions make no periodic quota requests.
+Quota requests have a 10-second default deadline. An explicitly configured
+`[client] timeout_ms` overrides it, independently of the five-minute debounce.
 
 `/goal` or `/goal status` shows the current durable goal and accounting.
 Prefer asking the agent to create and manage goals. For explicit control,

@@ -2,6 +2,8 @@
 #define _XOPEN_SOURCE 700
 #include "../cli/log.h"
 #include "../src/cai_chrome_host.h"
+#include "../src/cai_internal.h"
+#include <assert.h>
 #include <cai/quota.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -14,7 +16,9 @@ static int blocked_quota(cai_client *client, cai_chatgpt_quota *out,
   int started = atoi(getenv("CAI_TEST_QUOTA_STARTED"));
   int release = atoi(getenv("CAI_TEST_QUOTA_RELEASE"));
   char signal = 'Q';
-  (void)client;
+  const char *expected = getenv("CAI_TEST_QUOTA_TIMEOUT_MS");
+  assert(CAI_CLIENT_IMPL(client)->timeout_ms ==
+         (expected != NULL ? strtol(expected, NULL, 10) : 10000L));
   (void)error;
   if (write(started, &signal, 1U) != 1 || read(release, &signal, 1U) != 1)
     return CAI_ERR_TRANSPORT;

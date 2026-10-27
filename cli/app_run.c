@@ -4568,7 +4568,8 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     cai_client_config_init(&quota_config);
     quota_config.logger = state.log->logger;
     quota_config.chatgpt_auth = &state.shared_auth;
-    quota_config.timeout_ms = 1500L;
+    quota_config.timeout_ms =
+        client_config.timeout_ms > 0L ? client_config.timeout_ms : 10000L;
     if (cai_client_open(&quota_config, &state.quota_client, &quota_error) ==
         CAI_OK) {
       if (state.interactive &&
