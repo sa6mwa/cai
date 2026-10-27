@@ -7,6 +7,33 @@ its own native-messaging host in the same statically linked `cai` executable;
 no OpenAI executable, Node runtime, Playwright, or remote debugging port is
 required. Nothing from OpenAI's proprietary browser bundle is distributed.
 
+## Protocol evidence
+
+The CDP request contract was checked against the bundled OpenAI Chrome client
+`26.928.21956` and the official extension `1.26.1020.11845`, downloaded from
+Google's extension update service on 2026-10-27. In the extension's
+`background.js`, the CDP bridge calls `chrome.debugger.sendCommand` with
+`target`, `method`, and **`commandParams`**. The bundle uses that same field.
+The outer JSON-RPC object still uses `params`; CAI's raw `cdp` tool argument
+also remains `params`. CAI translates that argument into the extension's
+`commandParams` field rather than nesting another `params` field.
+
+```json
+{"jsonrpc":"2.0","id":"example","method":"executeCdp","params":{"session_id":"example","turn_id":"1","session_context":"live","target":{"tabId":7},"method":"Runtime.evaluate","commandParams":{"expression":"document.title","returnByValue":true}}}
+```
+
+The inspected extension accepts `claimUserTab` and `attach` with `tabId` and
+session/turn identity. Claiming owns a tab; attaching enables its debugger.
+CAI claims or creates a tab before attaching it. The extension enforces tab
+ownership before executing CDP commands. Void handlers may omit `result` from
+their serialized reply; CAI handles that only for pending void-capable methods.
+
+The native-host fixtures enforce the CDP argument key and check command values,
+paired mouse/key events, empty argument objects, escaped text, errors, cleanup,
+and screenshot delivery through C, Lua and the CLI. These checks do not replace
+acceptance with an installed Chrome instance. An unexplained attach EOF still
+requires the native-host error and installed extension version.
+
 ## Setup
 
 Install the ChatGPT extension from the Chrome Web Store. Install the CAI

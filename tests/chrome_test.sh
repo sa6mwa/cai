@@ -43,6 +43,23 @@ if [[ "$mode" == client ]]; then
   for args in '{"action":"open","url":"https://example.test/"}' '{"action":"claim","tab_id":7}' '{"action":"tabs"}' '{"action":"snapshot","tab_id":7}' '{"action":"click","tab_id":7,"x":12,"y":20}' '{"action":"key","tab_id":7,"text":"Enter"}' '{"action":"scroll","tab_id":7,"x":1,"y":2,"delta_y":-10}' '{"action":"type","tab_id":7,"text":"quote\"\nline"}' '{"action":"evaluate","tab_id":7,"text":"document.title"}' '{"action":"keep","tab_id":7}' '{"action":"close","tab_id":7}' '{"action":"navigate","tab_id":7,"url":"https://example.test/?a=b"}' '{"action":"cdp","tab_id":7,"method":"Runtime.evaluate","params":{"expression":"1","returnByValue":true}}' '{"action":"screenshot","tab_id":7}'; do
     scenario success; client_run tool "$args"; ok
     jq -se '.[0].method == "getInfo" and .[-1].method == "turnEnded" and all(.[1:][]; .params.session_id == "fixture" and .params.turn_id == "1")' "$chrome/calls.jsonl" >/dev/null
+    jq -se 'all(.[] | select(.method == "executeCdp");
+      (.params.target.tabId == 7) and (.params.commandParams | type == "object") and
+      (.params | has("params") | not))' "$chrome/calls.jsonl" >/dev/null
+    action=$(jq -r .action <<<"$args")
+    case "$action" in
+      snapshot|evaluate|cdp)
+        contains "$root/stdout" 'Fixture page text'
+        jq -se 'any(.[]; .method == "executeCdp" and .params.method == "Runtime.evaluate" and (.params.commandParams.expression | type == "string"))' "$chrome/calls.jsonl" >/dev/null ;;
+      click)
+        jq -se '[.[] | select(.method == "executeCdp") | .params.commandParams] | map(.type) == ["mousePressed","mouseReleased"] and all(.[]; .x == 12 and .y == 20 and .button == "left" and .clickCount == 1)' "$chrome/calls.jsonl" >/dev/null ;;
+      key)
+        jq -se '[.[] | select(.method == "executeCdp") | .params.commandParams] | map(.type) == ["keyDown","keyUp"] and all(.[]; .key == "Enter" and .windowsVirtualKeyCode == 13)' "$chrome/calls.jsonl" >/dev/null ;;
+      type)
+        jq -se 'any(.[]; .params.method == "Input.insertText" and .params.commandParams.text == "quote\"\nline")' "$chrome/calls.jsonl" >/dev/null ;;
+      screenshot|close)
+        jq -se 'any(.[]; .method == "executeCdp" and .params.commandParams == {})' "$chrome/calls.jsonl" >/dev/null ;;
+    esac
   done
   for args in '{"action":"click","tab_id":1}' '{"action":"open","url":"file:///etc/passwd"}' '{"action":"navigate","tab_id":1,"url":"file:///etc/passwd"}' '{"action":"nonsense"}' '{"action":null}' '{}' '[]' 'null' '{"action":"key","tab_id":7,"text":null}' '{"action":"cdp","tab_id":7,"method":"Runtime.evaluate","params":null}'; do
     scenario success; client_run tool "$args"; bad
@@ -116,6 +133,7 @@ if [[ "$mode" == host || "$mode" == cli ]]; then
     run -Nni 'Inspect the browser' --chrome; ok
     [[ $(stdout_text) == 'Chrome final response' ]]
     jq -se '[.[].method] == ["getInfo","getUserTabs","getInfo","createTab","attach","executeCdp","executeCdp","markTab","detach","turnEnded"]' "$chrome/calls.jsonl" >/dev/null
+    jq -se 'all(.[] | select(.method == "executeCdp"); .params.commandParams | type == "object")' "$chrome/calls.jsonl" >/dev/null
     sed -n '3p' "$root/peer/requests.jsonl" >"$root/image-request"; contains "$root/image-request" 'data:image/png;base64,'
     sed -n '4p' "$root/peer/requests.jsonl" >"$root/durable-request"; absent "$root/durable-request" 'data:image/png;base64,'
   fi

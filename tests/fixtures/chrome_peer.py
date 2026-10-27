@@ -33,8 +33,22 @@ def result(request, scenario):
         return {'type':'iab','family':'chrome'} if scenario=='identity' else identity
     if method in ('createTab','claimUserTab'): return {'id':7,'title':'Fixture'}
     if method=='getUserTabs': return None if scenario=='null' else [{'id':7,'title':'Fixture'}]
+    if method=='executeCdp' and request['params'].get('method')=='Runtime.evaluate':
+        return {'result':{'type':'string','value':'Fixture page text'}}
     if method=='executeCdp' and request['params'].get('method')=='Page.captureScreenshot':
         return {'data': 'invalid' if scenario=='image-invalid' else None if scenario=='image-null' else PNG}
+    return None
+
+# Contract inspected in the official Chrome extension 1.26.1020.11845:
+# its CDP bridge passes executeCdp.commandParams to debugger.sendCommand.
+# JSON-RPC params is the envelope; it is not the nested command argument key.
+def command_error(request):
+    if request.get('method') != 'executeCdp': return None
+    params=request.get('params', {})
+    if not isinstance(params.get('commandParams'), dict) or 'params' in params:
+        return {'code':1,'message':json.dumps({'code':-32602,
+                'data':'Failed to deserialize params - CBOR: map start expected at position 0',
+                'message':'Invalid parameters'})}
     return None
 
 def record(request):
@@ -57,6 +71,9 @@ if mode=='extension':
             continue
         record(request)
         value={'jsonrpc':'2.0','id':request.get('id'),'result':result(request,'success')}
+        failure=command_error(request)
+        if failure is not None:
+            value.pop('result'); value['error']=failure
         if request.get('method')=='attach':
             attached.add(request['params']['tabId'])
         if request.get('method')=='detach':
@@ -64,7 +81,7 @@ if mode=='extension':
         if request.get('method')=='turnEnded':
             with (root/'active-tabs.jsonl').open('a') as output:
                 output.write(json.dumps({'session_id':request['params']['session_id'],'tabs':sorted(attached)})+'\n')
-        if void_scenario and request.get('method') in void_methods and value['result'] is None:
+        if void_scenario and 'error' not in value and request.get('method') in void_methods and value['result'] is None:
             value.pop('result')
         if scenario=='manual-detach' and request.get('method')=='detach':
             value['error']={'code':-32000,'message':'Debugger is not attached'}
@@ -95,6 +112,9 @@ else:
                 request=receive(connection); record(request)
                 method=request.get('method')
                 value={'jsonrpc':'2.0','id':request.get('id'),'result':result(request,scenario)}
+                failure=command_error(request)
+                if failure is not None and scenario=='success':
+                    value.pop('result'); value['error']=failure
                 if scenario=='identity-missing-result' and method=='getInfo':
                     value.pop('result')
                 if scenario=='void-cdp-missing-image' and method=='executeCdp':

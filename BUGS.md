@@ -5,6 +5,22 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-032: Chrome CDP commands pass undefined command arguments
+
+- **Reported:** snapshots and clicks fail with `Invalid parameters` and
+  `CBOR: map start expected at position 0` after tab discovery/claim.
+- **Cause:** CAI serialized the nested CDP arguments as `params`. Both the
+  supplied OpenAI browser bundle and official extension 1.26.1020.11845 use
+  `commandParams`; the extension forwards that field to Chrome's debugger API.
+  Earlier fixtures accepted either shape without checking the arguments.
+- **Resolution:** serialize `commandParams` on the extension wire while keeping
+  the CAI tool's public `params` argument. Require the actual wire shape in the
+  fixture and inspect values for each high-level action.
+- **Evidence:** the stricter peer reproduced the reported CBOR error with the
+  previous binary; the corrected native client passes it. Real browser
+  acceptance remains to be confirmed. This does not establish the cause of
+  the separately reported attach EOF (BUG-030).
+
 ## BUG-031: Browser control remains visible after turn completion
 
 - **Status:** explicit detach cleanup implemented; real-browser confirmation

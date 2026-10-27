@@ -86,7 +86,9 @@ static const lonejson_field cdp_fields[] = {
                                     "session_context"),
     LONEJSON_FIELD_OBJECT(chrome_operation, target, "target", &target_map),
     LONEJSON_FIELD_STRING_ALLOC_REQ(chrome_operation, method, "method"),
-    CAI_CHROME_JSON_FIELD(chrome_operation, params, "params")};
+    /* The extension passes commandParams to chrome.debugger.sendCommand.
+     * "params" here would be ignored; it belongs to the JSON-RPC envelope. */
+    CAI_CHROME_JSON_FIELD(chrome_operation, params, "commandParams")};
 LONEJSON_MAP_DEFINE(cdp_map, chrome_operation, cdp_fields);
 typedef struct chrome_cdp_params {
   const char *url, *expression, *text, *type, *button, *key;
