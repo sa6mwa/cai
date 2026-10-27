@@ -2543,7 +2543,8 @@ static int cli_goal_command(cli_state *state, const char *arg,
         "current goal without confirmation, and pursue it. |\n",
         "| `/goal pause` | Pause pursuit after the current request/tool round. "
         "|\n"
-        "| `/goal resume` | Resume pursuit of a paused or limited goal. |\n"
+        "| `/goal resume` | Continue any unfinished goal, including an active "
+        "goal whose pursuit stopped. |\n"
         "| `/goal clear` | Remove goal tracking; the current user turn "
         "continues. |\n"
         "| `/goal help` | Show this help. |\n"};
@@ -2613,10 +2614,7 @@ static int cli_goal_command(cli_state *state, const char *arg,
     rc = cai_agent_runtime_get_goal(state->runtime, &goal, error);
     if (rc != CAI_OK)
       return rc;
-    if (!goal.has_goal || (strcmp(goal.status, "paused") != 0 &&
-                           strcmp(goal.status, "blocked") != 0 &&
-                           strcmp(goal.status, "budget_limited") != 0 &&
-                           strcmp(goal.status, "usage_limited") != 0))
+    if (!goal.has_goal || strcmp(goal.status, "complete") == 0)
       return cai_cli_error(error, CAI_ERR_INVALID, "goal is not resumable");
     action = "resume";
     rc = cai_agent_runtime_resume_goal(state->runtime, error);
@@ -4099,7 +4097,8 @@ static int cli_advance_automation(cli_state *state, cai_error *error) {
   rc = cai_agent_runtime_state(state->runtime, &run_state, error);
   if (rc != CAI_OK)
     return rc;
-  if (run_state != CAI_AGENT_IDLE && run_state != CAI_AGENT_COMPLETED)
+  if (run_state == CAI_AGENT_SAMPLING ||
+      run_state == CAI_AGENT_DISPATCHING_TOOL)
     return CAI_OK;
   if (!state->batch) {
     size_t index;

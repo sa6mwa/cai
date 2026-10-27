@@ -1389,6 +1389,16 @@ text, reasoning, tool or compaction activity durably mark the goal blocked.
 Activity, ordinary user turns and goal controls reset that in-memory streak.
 Pause, completion and budget limits take precedence over the empty-turn guard.
 
+Normal input, queued turns and automatic continuations share the core admission
+rule: idle, completed, failed and cancelled runtime outcomes can accept work
+once live work and pending controls have settled. The application must not
+confuse the previous outcome with an in-flight turn. Host resume accepts every
+unfinished goal, including active goals, without resetting active accounting;
+completed goals cannot resume. This follows Codex's `apply_external_goal_set`
+active-status path through `continue_if_idle` and `start_turn_if_idle` in local
+Codex commit `0c329ad2c9`. CAI's explicitly supported model pause/resume policy
+remains its own extension.
+
 Those controls are accepted during sampling, journaled before success, and
 applied at the next model/tool safe boundary. `cai_agent_runtime_get_goal`
 returns the UI-facing snapshot, including elapsed active seconds and a

@@ -5,6 +5,24 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-046: Goal becomes active on resume but no continuation starts
+
+- **Evidence:** the reported log has `resumed` with runtime state 5 (cancelled),
+  followed by no new turn. App/core continuation guards accepted only idle or
+  successful outcomes, unlike normal input. Earlier cancellation tests sent an
+  intervening ordinary turn and therefore missed immediate resume. Host resume
+  also incorrectly rejected an already-active unfinished goal.
+- **Resolution:** normal, queued and automatic inputs share terminal-state
+  admission. The application distinguishes live work from the last outcome.
+  Resume accepts any unfinished goal and preserves active accounting/timing;
+  completed goals remain non-resumable. Codex's external-active goal path was
+  checked through `continue_if_idle` into `start_turn_if_idle`.
+- **Verification:** mock wire tests directly resume/replace cancelled and
+  failed runtimes, asserting that another request runs and completes. TUI
+  checks cover both protocols, no intervening prompt/restart, busy active resume
+  without duplicate turns, and completed-goal rejection. C and Lua embedding
+  controls resume directly from their cancellation event.
+
 ## BUG-045: Removing Chrome registration leaves its native hosts running
 
 - **Evidence:** removal only unlinked the manifest. Chrome owns each native

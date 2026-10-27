@@ -3472,20 +3472,21 @@ cai_runtime_apply_goal_control(cai_agent_runtime *runtime,
                                         error);
     }
   } else if (control->kind == CAI_RUNTIME_GOAL_RESUME) {
-    if (strcmp(goal->goal_status, "paused") != 0 &&
-        strcmp(goal->goal_status, "budget_limited") != 0 &&
-        strcmp(goal->goal_status, "usage_limited") != 0 &&
-        strcmp(goal->goal_status, "blocked") != 0) {
+    if (strcmp(goal->goal_status, "complete") == 0) {
       return cai_set_error(error, CAI_ERR_INVALID, "goal is not resumable");
     }
-    rc = cai_runtime_goal_replace_status(runtime->session, "active", error);
-    if (rc == CAI_OK) {
-      goal->goal_updated_at = now;
-      goal->goal_token_usage_baseline = goal->usage.usage.total_tokens;
-      cai_session_goal_start_elapsed(runtime->session, now);
-      event_data = "resumed";
-      rc = cai_runtime_goal_add_context(runtime, "The host resumed this goal.",
-                                        error);
+    event_data = "resumed";
+    /* An active goal can be idle after a failed turn. Reaffirm pursuit without
+     * discarding unaccounted usage or restarting its active elapsed timer. */
+    if (strcmp(goal->goal_status, "active") != 0) {
+      rc = cai_runtime_goal_replace_status(runtime->session, "active", error);
+      if (rc == CAI_OK) {
+        goal->goal_updated_at = now;
+        goal->goal_token_usage_baseline = goal->usage.usage.total_tokens;
+        cai_session_goal_start_elapsed(runtime->session, now);
+        rc = cai_runtime_goal_add_context(runtime,
+                                          "The host resumed this goal.", error);
+      }
     }
   } else if (control->kind == CAI_RUNTIME_GOAL_SET_OBJECTIVE) {
     copy = cai_strdup(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
@@ -8139,6 +8140,13 @@ int cai_agent_runtime_open(cai_client *client,
   return CAI_OK;
 }
 
+/* A previous outcome is not an in-flight turn. All input paths share this
+ * predicate; goal continuation must not strand cancelled/failed runtimes. */
+static int cai_runtime_accepts_turn(cai_agent_run_state state) {
+  return state == CAI_AGENT_IDLE || state == CAI_AGENT_COMPLETED ||
+         state == CAI_AGENT_FAILED || state == CAI_AGENT_CANCELLED;
+}
+
 static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
                                      const char *text,
                                      cai_runtime_input_kind kind, int *started,
@@ -8193,8 +8201,7 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
         runtime->model_switching || runtime->settings_applying ||
         runtime->subagent_active || runtime->active_review != NULL ||
         runtime->review_launching || runtime->review_pause_pending ||
-        (runtime->state != CAI_AGENT_IDLE &&
-         runtime->state != CAI_AGENT_COMPLETED)) {
+        !cai_runtime_accepts_turn(runtime->state)) {
       pthread_mutex_unlock(&runtime->lock);
       cai_runtime_input_node_free(node);
       return CAI_OK;
@@ -8265,10 +8272,7 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
       (runtime->subagent_active || runtime->active_review != NULL ||
        runtime->review_launching || runtime->review_pause_pending ||
        runtime->turn_head != NULL ||
-       (runtime->state != CAI_AGENT_IDLE &&
-        runtime->state != CAI_AGENT_COMPLETED &&
-        runtime->state != CAI_AGENT_FAILED &&
-        runtime->state != CAI_AGENT_CANCELLED))) {
+       !cai_runtime_accepts_turn(runtime->state))) {
     pthread_mutex_unlock(&runtime->lock);
     cai_runtime_input_node_free(node);
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -8322,10 +8326,7 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
       (kind == CAI_RUNTIME_INPUT_QUEUED_TURN && !runtime->subagent_active &&
        runtime->active_review == NULL && !runtime->review_launching &&
        !runtime->review_pause_pending &&
-       (runtime->state == CAI_AGENT_IDLE ||
-        runtime->state == CAI_AGENT_COMPLETED ||
-        runtime->state == CAI_AGENT_FAILED ||
-        runtime->state == CAI_AGENT_CANCELLED))) {
+       cai_runtime_accepts_turn(runtime->state))) {
     previous_state = runtime->state;
     runtime->state = CAI_AGENT_SAMPLING;
     runtime->accepting_steering = 0;

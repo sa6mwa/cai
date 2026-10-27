@@ -485,6 +485,7 @@ if(CAI_BUILD_TESTS)
     agent_runtime_input_boundary
     agent_runtime_goal_cancel
     agent_runtime_goal_continuation
+    agent_runtime_goal_restart
     agent_runtime_execution
     execution_record
     execution_compaction

@@ -777,7 +777,10 @@ Goals created by model tools, commands, startup options or host controls use
 the same pursuit loop. An active goal continues after a completed turn and
 when resumed from storage. Approved queued prompts take priority.
 Escape/Ctrl-C cancels the active turn and durably pauses its goal, including
-across restart. Ordinary user turns still work while paused. The model may
+across restart. /goal resume restarts pursuit immediately after a cancelled or
+failed turn, and can reaffirm pursuit of an already-active unfinished goal
+without resetting accounting. Achieved goals cannot resume. Ordinary user
+turns still work while paused. The model may
 pause a goal when an answer or approval is needed, then ask and finish the turn.
 It may decide to resume a paused goal with update_goal(status=active) in a later
 turn, respecting outstanding approvals and instructions to remain paused.
@@ -785,7 +788,7 @@ Completed goals cannot be resumed. Three consecutive empty automatic
 continuations without text, reasoning, tool or compaction activity block the
 goal; user turns and activity reset that streak. Continuations use a compiled
 Codex-derived objective, budget and audit prompt. Provider failure
-stops automatic pursuit for the current invocation until another user turn,
+stops automatic pursuit until another user turn or /goal resume,
 leaving goal state unchanged.
 .TP
 .BI /goal " new TEXT"

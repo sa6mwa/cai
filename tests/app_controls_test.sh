@@ -29,7 +29,7 @@ export CAI_TEST_APP_CONTROL=reject
 plan '{"plan":["Completed turn"]}'
 run -Nni initial; ok
 fi
-modes=(stop stopqueued startup_stop cancel cancelqueued steer overflow goals)
+modes=(stop stopqueued startup_stop cancel cancelqueued steer overflow goals resume_cancel)
 if [[ "$only" != all ]]; then modes=("$only"); fi
 if [[ "$only" == edges ]]; then modes=(review_stop queue_goal close_ack); fi
 if [[ "$only" == interactive_stop || "$only" == observer_interactive ]]; then modes=(); fi
@@ -47,6 +47,9 @@ for mode in "${modes[@]}"; do
     plan '{"plan":["Initial reply","__complete_goal__","Host goal done","__complete_goal__","Host goal done","__complete_goal__","Host goal done"]}'
   elif [[ "$mode" == close_ack ]]; then
     plan '{"plan":["Close acknowledgement probe"]}'
+  elif [[ "$mode" == resume_cancel ]]; then
+    plan '{"plan":[{"pause":true,"text":"Cancel host pursuit"},"__complete_goal__","HOST RESUMED GOAL"]}'
+    flags=(-Nn --goal 'Continue after host cancellation')
   elif [[ "$mode" == message_cancel || "$mode" == message_stop ]]; then
     plan '{"plan":[{"tool":"agent_message","arguments":{"operation":"send","recipient":"cai.cancel-target","text":"Cancel this pending delivery"}}]}'
     flags+=(--messaging)
@@ -57,6 +60,10 @@ for mode in "${modes[@]}"; do
   if [[ "$mode" == stopqueued ]]; then [[ $(requests) == "$((count+1))" ]]; fi
   if [[ "$mode" == startup_stop ]]; then [[ $(requests) == "$count" ]]; fi
   if [[ "$mode" == cancelqueued ]]; then contains "$root/stdout" 'After control'; fi
+  if [[ "$mode" == resume_cancel ]]; then
+    [[ $(requests) == "$((count+3))" ]]
+    contains "$root/stdout" 'HOST RESUMED GOAL'
+  fi
   if [[ "$mode" == review_stop ]]; then [[ $(requests) == "$((count+1))" && ! -s "$root/stdout" ]]; fi
 done
 if [[ "$only" == edges || "$only" == interactive_stop || "$only" == observer_interactive || "$only" == boundaries ]]; then

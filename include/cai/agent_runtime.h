@@ -69,7 +69,7 @@ typedef enum cai_agent_run_state {
   CAI_AGENT_COMPLETED = 3,
   /** The current turn failed. Inspect the terminal event/error for detail. */
   CAI_AGENT_FAILED = 4,
-  /** The current turn was cancelled during runtime shutdown. */
+  /** The current turn was cancelled; the runtime can accept another turn. */
   CAI_AGENT_CANCELLED = 5
 } cai_agent_run_state;
 
@@ -886,14 +886,15 @@ int cai_agent_runtime_cancel_turn(cai_agent_runtime *runtime, cai_error *error);
 int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
                              cai_error *error);
 /** Start an automatic continuation of an active goal, using libcai's embedded
- * objective/budget/audit prompt. Owner-thread-only. Returns CAI_OK and sets
- * *started to zero when goal tools are disabled, no active goal exists, or
- * other work/controls are pending; otherwise journals admission and sets it to
- * one. The started output is required. User inputs take priority. Three
- * consecutive empty automatic turns with no text, reasoning, tool or compaction
- * activity durably block the goal.
- * This does not resume paused/complete goals. Paused goals may be resumed by
- * the model through update_goal(active), or through the host resume API. */
+ * objective/budget/audit prompt. Failed/cancelled turn outcomes are eligible
+ * once settled, just like ordinary user input. Owner-thread-only. Returns
+ * CAI_OK and sets *started to zero when goal tools are disabled, no active goal
+ * exists, or other work/controls are pending; otherwise journals admission and
+ * sets it to one. The started output is required. User inputs take priority.
+ * Three consecutive empty automatic turns with no text, reasoning, tool or
+ * compaction activity durably block the goal. This does not resume
+ * paused/complete goals. Paused goals may be resumed by the model through
+ * update_goal(active), or through the host resume API. */
 int cai_agent_runtime_continue_goal(cai_agent_runtime *runtime, int *started,
                                     cai_error *error);
 /**
@@ -1036,7 +1037,10 @@ int cai_agent_runtime_replace_goal(cai_agent_runtime *runtime,
 /** Pause an active durable goal. */
 int cai_agent_runtime_pause_goal(cai_agent_runtime *runtime, cai_error *error);
 /**
- * Resume a paused, blocked, budget-limited, or usage-limited durable goal.
+ * Resume any unfinished durable goal, including an already-active goal whose
+ * pursuit stopped. Active goals retain their accounting and elapsed timer.
+ * Completed goals cannot resume. This queues the control; direct core hosts
+ * use continue_goal once it has settled to start a turn if none is running.
  * Raise or clear the applicable usage limit before resuming a usage-limited
  * goal, otherwise its next model request returns CAI_ERR_LIMIT again.
  */

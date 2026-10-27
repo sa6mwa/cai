@@ -26869,6 +26869,7 @@ static int test_runtime_input_boundary(void *context,
 #include "runtime_execution_test.inc"
 #include "runtime_goal_cancel_test.inc"
 #include "runtime_goal_continuation_test.inc"
+#include "runtime_goal_restart_test.inc"
 #include "runtime_input_ack_test.inc"
 
 static void test_agent_runtime_input_boundary(test_state *state) {
@@ -54489,6 +54490,7 @@ static const test_entry test_entries[] = {
     {"agent_runtime_input_boundary", test_agent_runtime_input_boundary},
     {"agent_runtime_goal_cancel", test_agent_runtime_goal_cancel},
     {"agent_runtime_goal_continuation", test_agent_runtime_goal_continuation},
+    {"agent_runtime_goal_restart", test_agent_runtime_goal_restart},
     {"agent_runtime_execution", test_agent_runtime_execution},
     {"execution_record", test_execution_record},
     {"execution_compaction", test_execution_compaction},

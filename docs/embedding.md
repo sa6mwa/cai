@@ -354,6 +354,13 @@ remain paused. Completed goals cannot resume. Three consecutive empty automatic
 turns without text, reasoning, tool or compaction activity block the goal.
 This behavior is shared by the C receiver, Lua facade and CAI executable.
 
+Goal status and the last turn's outcome are independent. Host resume/replacement
+controls can start pursuit immediately after cancellation or failure; no ordinary
+prompt or process restart is required. Resume also accepts an already-active
+unfinished goal without resetting its timer or accounting. Completed goals
+remain non-resumable. An in-flight turn continues through its safe boundary;
+resume does not create a duplicate turn. Existing usage/token caps still apply.
+
 Hosts using libcai directly can call
 `cai_agent_runtime_continue_goal(runtime, &started, &error)` or Lua
 `runtime:continue_goal()`. These admit an idle active goal and render the compiled

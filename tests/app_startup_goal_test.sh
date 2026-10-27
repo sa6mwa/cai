@@ -2,7 +2,7 @@
 source "$(dirname "$0")/cli_test_common.sh"
 peer_start
 export LOG_LEVEL=warn
-for mode in clear replace pause stop replace_clear clear_replace same pause_resume error reject; do
+for mode in clear replace pause stop replace_clear clear_replace same pause_resume error resume_active; do
   export CAI_TEST_STARTUP_GOAL_MODE="$mode"
   plan '{"plan":["__complete_goal__","HOST GOAL DONE"]}'
   before=$(requests)
@@ -12,7 +12,7 @@ for mode in clear replace pause stop replace_clear clear_replace same pause_resu
     contains "$root/stderr" 'HOST STARTUP GOAL OBSERVER FAILED'
   fi
   case "$mode" in
-    replace|clear_replace|same|pause_resume|reject)
+    replace|clear_replace|same|pause_resume|resume_active)
       [[ $(requests) == $((before+2)) ]]
       contains "$root/stdout" 'HOST GOAL DONE'
       sed -n "$((before+1))p" "$root/peer/requests.jsonl" >"$root/request"

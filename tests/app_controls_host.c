@@ -122,6 +122,7 @@ static void *worker(void *context) {
       send_control(h, CAI_APP_QUEUE_PROMPT, "HOST NEXT PROMPT");
       send_control(h, CAI_APP_REPLACE_GOAL, "HOST GOAL");
     } else if (strcmp(h->mode, "cancel") == 0 ||
+               strcmp(h->mode, "resume_cancel") == 0 ||
                strcmp(h->mode, "cancelqueued") == 0) {
       if (strcmp(h->mode, "cancelqueued") == 0)
         send_control(h, CAI_APP_QUEUE_PROMPT, "AFTER CANCEL");
@@ -160,6 +161,9 @@ static int event(void *context, const cai_agent_runtime_event *e,
     h->starts++;
   if (e->type == CAI_AGENT_EVENT_TEXT_DELTA)
     h->text++;
+  if (strcmp(h->mode, "resume_cancel") == 0 &&
+      e->type == CAI_AGENT_EVENT_RUN_CANCELLED)
+    send_control(h, CAI_APP_RESUME_GOAL, NULL);
   if (((strcmp(h->mode, "observer_error") == 0 ||
         strcmp(h->mode, "observer_interactive") == 0 ||
         strcmp(h->mode, "close_ack") == 0) &&
@@ -370,6 +374,11 @@ int main(int argc, char **argv) {
              strcmp(h.mode, "temp_stop") == 0) {
     assert(code == 0 && snapshot.outcome == CAI_APP_STOPPED && h.acks == 1 &&
            h.starts == 0);
+  } else if (strcmp(h.mode, "resume_cancel") == 0) {
+    assert(code == 0 && snapshot.outcome == CAI_APP_COMPLETED &&
+           h.starts == 2 && h.acks == 2 && h.rejected == 0);
+    assert(snapshot.goal.has_goal &&
+           strcmp(snapshot.goal.status, "complete") == 0);
   } else if (strcmp(h.mode, "cancelqueued") == 0) {
     assert(code == 0 && snapshot.outcome == CAI_APP_COMPLETED &&
            h.starts == 2 && h.acks == 2 && h.rejected == 0);

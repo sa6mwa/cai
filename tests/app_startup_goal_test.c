@@ -43,7 +43,7 @@ static int event(void *context, const cai_agent_runtime_event *e,
     control(host, CAI_APP_PAUSE_GOAL, NULL);
   else if (strcmp(host->mode, "stop") == 0)
     control(host, CAI_APP_STOP, NULL);
-  else if (strcmp(host->mode, "reject") == 0)
+  else if (strcmp(host->mode, "resume_active") == 0)
     control(host, CAI_APP_RESUME_GOAL, NULL);
   else {
     if (strcmp(host->mode, "clear_replace") == 0)
@@ -89,7 +89,7 @@ int main(int argc, char **argv) {
   work = strcmp(host.mode, "replace") == 0 || strcmp(host.mode, "same") == 0 ||
          strcmp(host.mode, "clear_replace") == 0 ||
          strcmp(host.mode, "pause_resume") == 0 ||
-         strcmp(host.mode, "reject") == 0;
+         strcmp(host.mode, "resume_active") == 0;
   if (strcmp(host.mode, "error") == 0) {
     assert(code == 1 && status.outcome == CAI_APP_FAILED && host.acks == 0);
   } else {
@@ -99,7 +99,7 @@ int main(int argc, char **argv) {
                           strcmp(host.mode, "pause_resume") == 0)
                              ? 2
                              : 1));
-    assert(host.rejected == (strcmp(host.mode, "reject") == 0 ? 1 : 0));
+    assert(host.rejected == 0);
   }
   assert(host.starts == (work ? 1 : 0));
   if (work) {

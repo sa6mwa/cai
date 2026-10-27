@@ -647,14 +647,16 @@ tools, slash commands, startup options or host controls use the same pursuit
 loop: an active goal continues after each completed turn and when resumed from
 storage. Approved queued prompts take priority over generated continuations.
 Escape/Ctrl-C cancels the active turn and durably pauses its goal, including
-across restart. `/goal resume` restarts pursuit. Ordinary user turns still work
-while paused. The model may pause with `update_goal(status="paused")` when
+across restart. `/goal resume` restarts pursuit immediately, including when the
+last turn was cancelled or failed. An already-active unfinished goal can also
+be resumed without resetting accounting; an achieved goal cannot. Ordinary user
+turns still work while paused. The model may pause with `update_goal(status="paused")` when
 requested or when it needs a user answer or approval, then ask and finish the
 turn. In a later turn it may decide to resume with `update_goal(status="active")`
 without an explicit resume request, respecting outstanding approvals and
 instructions to remain paused. Completed goals cannot be resumed.
 Provider failure stops automatic pursuit for the current invocation
-until another user turn, leaving goal state unchanged. Completed or stopped
+until another user turn or `/goal resume`, leaving goal state unchanged. Completed or stopped
 pursuit leaves the interactive prompt open.
 
 Automatic continuations use the embedded Codex goal prompt, including the current
