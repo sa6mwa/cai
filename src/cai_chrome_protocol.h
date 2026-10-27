@@ -54,6 +54,11 @@ int cai_chrome_value_buffer(lonejson_json_value *value, const char *json,
 long long cai_chrome_now_ms(void);
 int cai_chrome_private_directory(const char *path, cai_error *error);
 int cai_chrome_connect_socket(const char *path, int *out, cai_error *error);
+/* Private shutdown endpoint; never forwarded to the extension. */
+typedef struct cai_chrome_stop_request {
+  const char *executable;
+} cai_chrome_stop_request;
+extern const lonejson_map cai_chrome_stop_map;
 /* Tool state lives in the connection, borrowed by a registry. */
 struct cai_chrome {
   int fd;

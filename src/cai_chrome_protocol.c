@@ -11,6 +11,17 @@
 #include <time.h>
 #include <unistd.h>
 
+static const lonejson_field stop_fields[] = {LONEJSON_FIELD_STRING_ALLOC_REQ(
+    cai_chrome_stop_request, executable, "executable")};
+const lonejson_map cai_chrome_stop_map = {
+    "cai_chrome_stop_request",
+    sizeof(cai_chrome_stop_request),
+    stop_fields,
+    sizeof(stop_fields) / sizeof(stop_fields[0]),
+    &cai_chrome_stop_map,
+    LONEJSON__MAP_STATIC_COOKIE(__LINE__, sizeof(cai_chrome_stop_request),
+                                sizeof(stop_fields) / sizeof(stop_fields[0]))};
+
 static const lonejson_field rpc_error_fields[] = {
     LONEJSON_FIELD_I64_PRESENT(cai_chrome_rpc_error, code, has_code, "code"),
     LONEJSON_FIELD_STRING_ALLOC(cai_chrome_rpc_error, message, "message")};
@@ -299,10 +310,13 @@ int cai_chrome_connect_socket(const char *path, int *out, cai_error *error) {
       }
     }
     if (status != 0) {
+      int rc;
       close(fd);
-      return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                  "Cannot connect to Chrome host",
-                                  strerror(saved));
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "Cannot connect to Chrome host",
+                                strerror(saved));
+      errno = saved; /* Shutdown discovery distinguishes stale endpoints. */
+      return rc;
     }
   }
 #if defined(__linux__)

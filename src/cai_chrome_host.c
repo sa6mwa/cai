@@ -37,6 +37,12 @@ typedef struct host_tab {
 } host_tab;
 typedef struct chrome_host {
   int client;
+  int control;
+  host_frame control_frame;
+  host_queue control_queue;
+  char *control_id;
+  int stopping;
+  long long stop_deadline;
   host_frame extension_frame, client_frame;
   host_queue extension_queue, client_queue;
   char *session, *turn, *pending_id;
@@ -231,6 +237,120 @@ static int response_queue(host_queue *q, cai_chrome_rpc *rpc, int success,
   rc = enqueue(q, json, error);
   free(json);
   return rc;
+}
+static void control_close(chrome_host *h) {
+  if (h->control >= 0)
+    close(h->control);
+  h->control = -1;
+  frame_clear(&h->control_frame);
+  queue_clear(&h->control_queue);
+}
+static int control_reply(chrome_host *h, const char *result,
+                         const cai_error *failure, cai_error *error) {
+  cai_chrome_rpc reply;
+  char message[1536];
+  int rc;
+  memset(&reply, 0, sizeof(reply));
+  reply.jsonrpc = "2.0";
+  rc = cai_chrome_value_buffer(&reply.id, h->control_id, error);
+  if (rc == CAI_OK && failure == NULL)
+    rc = cai_chrome_value_buffer(&reply.result, result, error);
+  if (failure != NULL) {
+    snprintf(message, sizeof(message), "%s%s%s",
+             failure->message != NULL ? failure->message
+                                      : "Chrome cleanup failed",
+             failure->detail != NULL ? ": " : "",
+             failure->detail != NULL ? failure->detail : "");
+    reply.error.has_code = 1;
+    reply.error.code = -32000;
+    reply.error.message = message;
+  }
+  if (rc == CAI_OK)
+    rc = response_queue(&h->control_queue, &reply, failure == NULL, error);
+  CAI_LJ_CHROME->json_value_cleanup(CAI_LJ_CHROME, &reply.id);
+  CAI_LJ_CHROME->json_value_cleanup(CAI_LJ_CHROME, &reply.result);
+  return rc;
+}
+static int control_read(chrome_host *h, const char *executable,
+                        cai_error *error) {
+  cai_chrome_rpc rpc;
+  cai_chrome_stop_request request;
+  lonejson_error je;
+  char *params = NULL;
+  int ready, rc;
+  memset(&request, 0, sizeof(request));
+  rc = read_frame(&h->control_frame, h->control, 32768U, &ready, error);
+  if (rc != CAI_OK || !ready)
+    return rc;
+  rc = cai_chrome_parse(h->control_frame.data, NULL, &rpc, error);
+  if (rc != CAI_OK)
+    goto done;
+  if (rpc.method == NULL || strcmp(rpc.method, "shutdown") != 0 ||
+      !rpc.has_id || !rpc.has_params) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "Chrome control endpoint accepts shutdown only");
+    goto done;
+  }
+  params = cai_chrome_value(&rpc.params, error);
+  lonejson_error_init(&je);
+  if (params == NULL ||
+      CAI_LJ_CHROME->parse_cstr(CAI_LJ_CHROME, &cai_chrome_stop_map, &request,
+                                params, &je) != LONEJSON_STATUS_OK ||
+      request.executable == NULL) {
+    rc = cai_set_error(error, CAI_ERR_PROTOCOL,
+                       "Chrome shutdown requires an executable identity");
+    goto done;
+  }
+  free(h->control_id);
+  h->control_id = cai_chrome_value(&rpc.id, error);
+  if (h->control_id == NULL) {
+    rc = CAI_ERR_NOMEM;
+    goto done;
+  }
+  if (strcmp(request.executable, executable) != 0)
+    rc = control_reply(h, "\"different-executable\"", NULL, error);
+  else {
+    h->stopping = 1;
+    h->stop_deadline = cai_chrome_now_ms() + CAI_CHROME_CLEANUP_TIMEOUT_MS;
+    if (h->logger != NULL)
+      h->logger->infof(h->logger, "Chrome host shutdown requested",
+                       "session_id=%s", h->session != NULL ? h->session : "");
+    drop_client(h);
+  }
+done:
+  CAI_LJ_CHROME->cleanup(CAI_LJ_CHROME, &cai_chrome_stop_map, &request);
+  CAI_LJ_CHROME->cleanup(CAI_LJ_CHROME, &cai_chrome_rpc_map, &rpc);
+  free(params);
+  frame_clear(&h->control_frame);
+  return rc;
+}
+
+static int host_listener(const char *path, cai_error *error) {
+  struct sockaddr_un address;
+  mode_t mask;
+  int fd, rc, saved;
+  fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+  if (fd < 0) {
+    cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                         "Cannot create Chrome host listener", strerror(errno));
+    return -1;
+  }
+  memset(&address, 0, sizeof(address));
+  address.sun_family = AF_UNIX;
+  strcpy(address.sun_path, path);
+  mask = umask(0077);
+  rc = bind(fd, (struct sockaddr *)&address, sizeof(address));
+  umask(mask);
+  if (rc != 0 || listen(fd, 8) != 0) {
+    saved = errno;
+    if (rc == 0)
+      (void)unlink(path);
+    close(fd);
+    cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                         "Cannot bind Chrome host socket", strerror(saved));
+    return -1;
+  }
+  return fd;
 }
 static int host_cleanup(chrome_host *h, cai_error *error) {
   cai_chrome_rpc rpc;
@@ -487,16 +607,18 @@ int cai_chrome_native_host_run_at(const char *origin,
                                   const char *selected_directory,
                                   pslog_logger *logger, cai_error *error) {
   chrome_host h;
-  char directory[4096], path[4096];
+  char directory[4096], path[4096], control_path[4096], executable[4096];
   struct sockaddr_un address;
-  struct pollfd fds[4];
-  int listener = -1, rc, ready, accept_fd, old_in, old_out;
+  struct pollfd fds[6];
+  int listener = -1, control_listener = -1, rc, ready, accept_fd;
+  int old_in = -1, old_out = -1;
+  ssize_t executable_length;
   int pipe_changed = 0;
   struct sigaction old_pipe, ignore_pipe;
-  mode_t old_mask;
   long long now;
   memset(&h, 0, sizeof(h));
   h.client = -1;
+  h.control = -1;
   h.logger = logger;
   if (origin == NULL || strcmp(origin, EXTENSION_ORIGIN) != 0)
     return cai_set_error(error, CAI_ERR_INVALID,
@@ -512,31 +634,29 @@ int cai_chrome_native_host_run_at(const char *origin,
     rc = cai_cli_chrome_directory(directory, sizeof(directory), 1, error);
   if (rc != CAI_OK)
     return rc;
+  executable_length =
+      readlink("/proc/self/exe", executable, sizeof(executable) - 1U);
+  if (executable_length <= 0 ||
+      (size_t)executable_length >= sizeof(executable) - 1U)
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "Cannot identify Chrome host executable");
+  executable[executable_length] = '\0';
   if (snprintf(path, sizeof(path), "%s/%ld.sock", directory, (long)getpid()) >=
-      (int)sizeof(address.sun_path))
+          (int)sizeof(address.sun_path) ||
+      snprintf(control_path, sizeof(control_path), "%s/%ld.ctl", directory,
+               (long)getpid()) >= (int)sizeof(address.sun_path))
     return cai_set_error(
         error, CAI_ERR_INVALID,
         "Chrome socket path exceeds the Unix socket path limit");
-  listener = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-  if (listener < 0)
-    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                "Cannot create Chrome host listener",
-                                strerror(errno));
-  memset(&address, 0, sizeof(address));
-  address.sun_family = AF_UNIX;
-  strcpy(address.sun_path, path);
-  old_mask = umask(0077);
-  rc = bind(listener, (struct sockaddr *)&address, sizeof(address));
-  umask(old_mask);
-  if (rc != 0 || listen(listener, 8) != 0) {
-    int saved = errno;
-    if (rc == 0)
-      (void)unlink(path);
-    close(listener);
-    errno = saved;
-    return cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                                "Cannot bind Chrome host socket",
-                                strerror(errno));
+  control_listener = host_listener(control_path, error);
+  if (control_listener < 0)
+    return error != NULL ? error->code : CAI_ERR_TRANSPORT;
+  listener = host_listener(path, error);
+  if (listener < 0) {
+    rc = error != NULL ? error->code : CAI_ERR_TRANSPORT;
+    close(control_listener);
+    (void)unlink(control_path);
+    return rc;
   }
   old_in = fcntl(STDIN_FILENO, F_GETFL);
   old_out = fcntl(STDOUT_FILENO, F_GETFL);
@@ -568,9 +688,15 @@ int cai_chrome_native_host_run_at(const char *origin,
     fds[1].events = h.extension_queue.length != 0U ? POLLOUT : 0;
     fds[2].fd = h.client;
     fds[2].events = POLLIN | (h.client_queue.length != 0U ? POLLOUT : 0);
-    fds[3].fd = listener;
+    fds[3].fd = h.stopping ? -1 : listener;
     fds[3].events = POLLIN;
-    if (poll(fds, 4U, 100) < 0) {
+    fds[4].fd = h.stopping ? -1 : control_listener;
+    fds[4].events = POLLIN;
+    fds[5].fd = h.control;
+    fds[5].events = h.stopping ? 0 : POLLIN;
+    if (h.control_queue.length != 0U)
+      fds[5].events |= POLLOUT;
+    if (poll(fds, 6U, 100) < 0) {
       if (errno == EINTR)
         continue;
       rc = cai_set_error(error, CAI_ERR_TRANSPORT, "Chrome host poll failed");
@@ -646,10 +772,57 @@ int cai_chrome_native_host_run_at(const char *origin,
           h.client = accept_fd;
       }
     }
+    if (fds[4].revents & POLLIN) {
+      accept_fd =
+          accept4(control_listener, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+      if (accept_fd >= 0) {
+        struct ucred peer;
+        socklen_t size = sizeof(peer);
+        if (h.control >= 0 ||
+            getsockopt(accept_fd, SOL_SOCKET, SO_PEERCRED, &peer, &size) != 0 ||
+            peer.uid != geteuid())
+          close(accept_fd);
+        else {
+          h.control = accept_fd;
+          h.control_frame.deadline = cai_chrome_now_ms() + 1000LL;
+        }
+      }
+    }
+    if (h.control >= 0 && (fds[5].revents & POLLIN)) {
+      rc = control_read(&h, executable, error);
+      if (rc != CAI_OK) {
+        control_close(&h);
+        cai_error_cleanup(error);
+        cai_error_init(error);
+        rc = CAI_OK;
+      }
+    }
+    if (h.control >= 0 && (fds[5].revents & POLLOUT)) {
+      rc = flush_queue(&h.control_queue, h.control, 1, error);
+      if (rc != CAI_OK || h.control_queue.length == 0U) {
+        control_close(&h);
+        cai_error_cleanup(error);
+        cai_error_init(error);
+        rc = CAI_OK;
+      }
+    }
+    if (h.control >= 0 && (fds[5].revents & (POLLHUP | POLLERR | POLLNVAL)))
+      control_close(&h);
     rc = host_cleanup(&h, error);
     if (rc != CAI_OK)
       break;
     now = cai_chrome_now_ms();
+    if (h.stopping && h.session == NULL && h.extension_queue.length == 0U)
+      break;
+    if (h.stopping && now >= h.stop_deadline) {
+      rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "Chrome host cleanup timed out during shutdown");
+      break;
+    }
+    if (!h.stopping && h.control >= 0 &&
+        ((h.control_frame.deadline && now >= h.control_frame.deadline) ||
+         (h.control_queue.deadline && now >= h.control_queue.deadline)))
+      control_close(&h);
     if ((h.client_frame.deadline && now > h.client_frame.deadline) ||
         (h.client_queue.deadline && now > h.client_queue.deadline))
       drop_client(&h);
@@ -663,6 +836,33 @@ int cai_chrome_native_host_run_at(const char *origin,
     }
   }
 done:
+  if (h.stopping && h.session != NULL && rc == CAI_OK)
+    rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                       "Chrome disconnected before shutdown cleanup completed");
+  close(control_listener);
+  close(listener);
+  (void)unlink(control_path);
+  (void)unlink(path);
+  if (h.stopping && h.control >= 0) {
+    cai_error reply_error;
+    long long deadline = cai_chrome_now_ms() + 250LL;
+    int reply_rc;
+    cai_error_init(&reply_error);
+    reply_rc = control_reply(&h, "\"stopped\"", rc == CAI_OK ? NULL : error,
+                             &reply_error);
+    while (reply_rc == CAI_OK && h.control_queue.length != 0U &&
+           cai_chrome_now_ms() < deadline) {
+      struct pollfd output;
+      output.fd = h.control;
+      output.events = POLLOUT;
+      output.revents = 0;
+      if (poll(&output, 1U, 25) > 0)
+        reply_rc = flush_queue(&h.control_queue, h.control, 1, &reply_error);
+    }
+    cai_error_cleanup(&reply_error);
+  }
+  control_close(&h);
+  free(h.control_id);
   if (pipe_changed && sigaction(SIGPIPE, &old_pipe, NULL) != 0)
     rc = cai_set_error(error, CAI_ERR_TRANSPORT,
                        "Cannot restore Chrome native messaging signals");
@@ -675,7 +875,5 @@ done:
   queue_clear(&h.extension_queue);
   clear_identity(&h);
   free(h.pending_id);
-  close(listener);
-  (void)unlink(path);
   return rc;
 }

@@ -71,6 +71,8 @@ if mode=='extension':
             continue
         record(request)
         value={'jsonrpc':'2.0','id':request.get('id'),'result':result(request,'success')}
+        if scenario=='stop-cleanup-fail' and request.get('method')=='turnEnded':
+            value.pop('result'); value['error']={'code':-32000,'message':'Cleanup fixture rejected turnEnded'}
         failure=command_error(request)
         if failure is not None:
             value.pop('result'); value['error']=failure

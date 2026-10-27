@@ -163,7 +163,7 @@ static const cai_app_option options[] = {
     {"--chrome-setup", '\0', CAI_APP_FLAG, NULL,
      "Register this application as Chrome native host and exit", 0, 0},
     {"--chrome-remove", '\0', CAI_APP_FLAG, NULL,
-     "Remove this application's own registration and exit", 0, 0},
+     "Unregister and stop this application's Chrome native hosts", 0, 0},
     {"--chrome-manifest", '\0', CAI_APP_STRING, "FILE",
      "Alternate native-host registration path", 0, 0},
     {"--shell-context", '\0', CAI_APP_FLAG, NULL,

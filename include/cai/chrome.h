@@ -23,7 +23,12 @@ int cai_chrome_native_host_run_at(const char *origin, const char *directory,
 /** Explicitly install/remove a user native-host manifest for the current
  * executable on Linux. NULL selects the standard CAI registration filename.
  * Conflicting registrations are rejected. The executable must dispatch native
- * messaging to cai_chrome_native_host_run. Writes utility results to stdout;
+ * messaging to cai_chrome_native_host_run. Removal also requests shutdown of
+ * this executable's connected hosts in the standard private socket directory,
+ * after unregistering. Hosts detach tracked tabs and end their turn before
+ * acknowledging; failed cleanup is an error. Older hosts without a shutdown
+ * endpoint require one extension reload or browser restart. Writes utility
+ * results to stdout;
  * logger is borrowed for this call. Other platforms report unsupported. */
 int cai_chrome_native_host_setup(const char *manifest, int remove,
                                  struct pslog_logger *logger, cai_error *error);
@@ -34,6 +39,14 @@ int cai_chrome_native_host_setup_named(const char *program_name,
                                        const char *manifest, int remove,
                                        struct pslog_logger *logger,
                                        cai_error *error);
+/** As setup_named, selecting the private socket directory for shutdown.
+ * NULL uses core discovery defaults. Registration is removed first; matching
+ * connected hosts then receive a bounded shutdown request. */
+int cai_chrome_native_host_setup_at(const char *program_name,
+                                    const char *manifest, int remove,
+                                    const char *socket_directory,
+                                    struct pslog_logger *logger,
+                                    cai_error *error);
 /** Local browser connection settings; no Chrome configuration is changed. */
 typedef struct cai_chrome_config {
   /** Absolute socket path; NULL discovers exactly one host in directory. */

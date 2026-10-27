@@ -247,7 +247,11 @@ and exit. Never overwrites an existing foreign or unrecognized registration.
 No browser is launched and no provider authentication is required.
 .TP
 .B \-\-chrome-remove
-Remove only a registration verified to belong to this executable and exit.
+Remove a registration verified to belong to this executable, then stop matching
+native hosts in the configured socket directory. Hosts detach tracked tabs and
+end browser control before acknowledging. Cleanup is bounded to five seconds
+per host; failed cleanup returns nonzero. An older host without a control endpoint
+requires one extension reload or Chrome restart.
 .TP
 .BI \-\-chrome-manifest " FILE"
 Override the setup/removal manifest path, for another native-host location.

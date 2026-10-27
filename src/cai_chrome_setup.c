@@ -1,12 +1,15 @@
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
+#define _GNU_SOURCE
 #include "cai_chrome_host.h"
 #include "cai_chrome_protocol.h"
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -160,9 +163,9 @@ int cai_chrome_native_host_setup(const char *override, int remove,
   return cai_chrome_native_host_setup_named("cai", override, remove, logger,
                                             error);
 }
-int cai_chrome_native_host_setup_named(const char *program_name,
-                                       const char *override, int remove,
-                                       pslog_logger *logger, cai_error *error) {
+static int chrome_registration(const char *program_name, const char *override,
+                               int remove, pslog_logger *logger,
+                               cai_error *error) {
   char manifest_path[4096], executable[4096], leaf[200], temporary[200];
   char description[96];
   const char *root;
@@ -380,3 +383,6 @@ int cai_chrome_native_host_setup_named(const char *program_name,
                    "path=%s remove=%b result=%d", manifest_path, remove, rc);
   return rc;
 }
+
+/* The registration is removed before any shutdown request is sent. */
+#include "cai_chrome_stop.inc"

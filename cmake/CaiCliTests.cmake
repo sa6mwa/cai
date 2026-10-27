@@ -141,6 +141,10 @@
         cli "$<TARGET_FILE:cai_cli_mock_fixture>" "${CMAKE_CURRENT_BINARY_DIR}"
         "$<TARGET_FILE:cai_chrome_client_fixture>")
     set_tests_properties(cai_cli_chrome PROPERTIES LABELS "integration;local;offline" TIMEOUT 90)
+    add_test(NAME cai_cli_chrome_stop COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/chrome_stop_test.sh"
+      "$<TARGET_FILE:cai_cli_mock_fixture>" "$<TARGET_FILE:cai_chrome_client_fixture>")
+    set_tests_properties(cai_cli_chrome_stop PROPERTIES LABELS "cli;local;offline" TIMEOUT 15)
 
     add_executable(cai_cli_shell_fixture tests/cli_shell_fixture.c)
     target_link_libraries(cai_cli_shell_fixture PRIVATE cai_cli_support)

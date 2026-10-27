@@ -56,7 +56,28 @@ The extension fixes the host name to `com.openai.codexextension`. Setup
 **never overwrites another registration**, including OpenAI's own host, an
 unrecognized manifest, or a symlink. Removal (`cai --chrome-remove`) likewise
 only removes a manifest verified to belong to this executable. Repeating
-setup/removal is harmless. Registration is published atomically after writing
+setup/removal is harmless. After unregistering, removal also stops connected
+hosts belonging to this executable in the configured Chrome socket directory.
+Each host has a separate private `<pid>.ctl` control socket, ignored by browser
+discovery. The control connection verifies the user and expected executable;
+it remains available while the browser connection is occupied. Shutdown
+rejects new browser work, detaches tracked tabs, sends `turnEnded`, and removes
+both endpoints before acknowledging. Cleanup has a five-second bound per host;
+failure returns nonzero with the host error, rather than claiming success.
+Stale sockets and hosts belonging to other executables are left alone.
+
+An already-running host from a build without this control endpoint needs one
+ChatGPT extension reload or Chrome restart. Removal reports that case explicitly;
+it never finds or kills processes by executable name. Chrome launches the host
+when the extension connects and keeps it alive for the connection's lifetime;
+CAI does not run a host supervisor or restart loop.
+
+C embedders managing an explicit socket directory use
+`cai_chrome_native_host_setup_at(program_name, manifest, remove, directory,
+logger, error)`. `libcai_app` supplies its resolved directory automatically;
+the simpler core setup functions use standard discovery defaults.
+
+Registration is published atomically after writing
 and syncing, and a competing installer cannot be overwritten.
 Before publishing a new user registration, setup also refuses to shadow a
 host in Chrome's or Chromium's standard system-wide registration directory.

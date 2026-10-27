@@ -4435,9 +4435,12 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
                         "Temporary workspace created", 27U, &field, 1U);
   }
   if (state.options.chrome_setup || state.options.chrome_remove) {
-    rc = cai_chrome_native_host_setup_named(
+    rc = cai_chrome_native_host_setup_at(
         state.options.program_name, state.options.chrome_manifest,
-        state.options.chrome_remove, state.log->logger, &error);
+        state.options.chrome_remove,
+        state.configuration->get(state.configuration, "chrome",
+                                 "socket_directory"),
+        state.log->logger, &error);
     if (rc != CAI_OK)
       cli_print_error(&state, "Chrome registration", &error);
     result = rc == CAI_OK ? 0 : 1;

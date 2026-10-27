@@ -5,6 +5,24 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-045: Removing Chrome registration leaves its native hosts running
+
+- **Evidence:** removal only unlinked the manifest. Chrome owns each native
+  process through its extension connection; quitting the agent or unregistering
+  did not close an existing connection.
+- **Resolution:** unregister first, then use separate private control sockets
+  to stop matching executable/user hosts in the configured directory. Hosts
+  stop accepting browser work, detach tracked tabs and send `turnEnded` before
+  acknowledging. Cleanup is bounded and errors reach the utility caller.
+  Stale sockets and different executables are not stopped. Live hosts without
+  a control endpoint report the one-time extension reload/restart requirement.
+- **Verification:** real Unix sockets/native stdio fixtures cover multiple idle
+  hosts, an occupied browser connection, different executables, unsupported
+  controls, stale/missing endpoints, custom directories and cleanup rejection.
+  Existing browser protocol and Lua checks pass. The rebuilt static musl
+  executable passes the same shutdown scenarios. Real Chrome is not available
+  in this environment.
+
 ## BUG-044: Cancelled conversations fail to reopen on repeated input acknowledgements
 
 - **Evidence:** the supplied session log records cancellation followed by repeated
