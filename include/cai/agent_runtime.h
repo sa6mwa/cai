@@ -199,7 +199,14 @@ typedef enum cai_agent_runtime_event_type {
   /** With synchronize_input_boundaries, the worker waits for this owner's
    * callback before consuming steering and continuing. No model stream is
    * active. The callback may submit steering using the normal runtime API. */
-  CAI_AGENT_EVENT_INPUT_BOUNDARY = 34
+  CAI_AGENT_EVENT_INPUT_BOUNDARY = 34,
+  /** Structured execution record JSON; see cai/execution.h. These observations
+   * never become model context. Large fields arrive as bounded ordered chunks.
+   * Enabled with record_transcript, also persisted without an event callback.
+   * Synchronous owner operations retain the journal even when a live
+   * notification cannot fit the bounded event queue.
+   */
+  CAI_AGENT_EVENT_EXECUTION_RECORD = 35
 } cai_agent_runtime_event_type;
 
 /**
@@ -669,7 +676,9 @@ typedef struct cai_agent_runtime_config {
   /** Resume this exact session ID instead of the newest one. Mutually
    * exclusive with resume_latest and requires a store with load_id. */
   const char *resume_session_id;
-  /** Record visible assistant text in the session journal for UI replay. */
+  /** Record visible assistant text and structured agent execution activity in
+   * the journal for inspection/replay. Execution records are outside inference
+   * and survive context compaction. libcai_app enables this by default. */
   int record_transcript;
   /** Disable CAI's default local JSONL store when session_store is NULL. */
   int disable_default_session_store;
@@ -1127,6 +1136,7 @@ const char *cai_agent_runtime_session_id(const cai_agent_runtime *runtime);
  *
  * The versioned, non-resumable document includes durable conversation context,
  * active developer instructions, and current session/goal/runtime metadata.
+ * Execution-history observations are excluded from this agent handover.
  * The caller retains sink ownership. Export is owner-thread-only and is
  * available only at a stable runtime boundary; it returns CAI_ERR_INVALID
  * while a model/tool turn or queued host input is active. The sink must not
@@ -1134,6 +1144,15 @@ const char *cai_agent_runtime_session_id(const cai_agent_runtime *runtime);
  */
 int cai_agent_runtime_export_markdown(cai_agent_runtime *runtime,
                                       cai_sink *sink, cai_error *error);
+/** Stream stored execution records as a human-inspection Markdown timeline.
+ * Requires the same owner-thread stable boundary as export_markdown; the sink
+ * must not re-enter this runtime. No model requests or tool execution occur.
+ * With no session store this writes nothing. The normal export_markdown and
+ * export_markdown_file handover projections exclude this side-band data.
+ */
+int cai_agent_runtime_export_execution_markdown(cai_agent_runtime *runtime,
+                                                cai_sink *sink,
+                                                cai_error *error);
 /**
  * Stream the current agent handover projection to a newly created Markdown
  * file. The path is created without replacing an existing file.

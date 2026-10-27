@@ -144,6 +144,9 @@ class Peer(http.server.BaseHTTPRequestHandler):
                     tool.pop('arguments')
                     tool.update(type='custom_tool_call', input=arguments)
                 self.event('response.output_item.done', output_index=0, item=tool)
+        if not chat:
+            for index, output in enumerate(item.get('output_items', [])):
+                self.event('response.output_item.done', output_index=index, item=output)
         for text in item.get('deltas', [item['text']] if 'text' in item else []):
             if chat: delta({'role': 'assistant', 'content': text})
             else: self.event('response.output_text.delta', delta=text)

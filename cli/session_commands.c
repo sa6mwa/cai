@@ -209,21 +209,32 @@ static int export_latest(void *context, const char *scope, char *id,
   return CAI_OK;
 }
 
+typedef struct export_execution_visit {
+  cai_agent_session_event_fn callback;
+  void *context;
+} export_execution_visit;
+static int export_execution_event(void *context,
+                                  const cai_agent_session_event *event,
+                                  cai_error *error) {
+  export_execution_visit *visit = context;
+  return strcmp(event->type, "execution") == 0
+             ? visit->callback(visit->context, event, error)
+             : CAI_OK;
+}
 static int export_events(void *context, const char *scope, const char *id,
                          unsigned long long after,
                          cai_agent_session_event_fn callback, void *visitor,
                          cai_error *error) {
-  (void)context;
+  export_store *store = context;
+  export_execution_visit visit;
   (void)scope;
-  (void)id;
-  (void)after;
-  (void)callback;
-  (void)visitor;
-  (void)error;
   /* The Markdown exporter uses durable conversation history from the
    * checkpoint. Recovering pending journal inputs would start work and is
    * forbidden here. */
-  return CAI_OK;
+  visit.callback = callback;
+  visit.context = visitor;
+  return cai_cli_pouch_replay(store->pouch, store->scope, id, after, 0U, NULL,
+                              export_execution_event, &visit, error);
 }
 
 static int export_checkpoint(void *context, const char *scope, const char *id,
@@ -435,6 +446,8 @@ int cai_cli_session_export(cai_cli_pouch *pouch, const char *id,
     rc = cai_sink_file(file, 0, &sink, error);
   if (rc == CAI_OK)
     rc = cai_agent_runtime_export_markdown(runtime, sink, error);
+  if (rc == CAI_OK)
+    rc = cai_agent_runtime_export_execution_markdown(runtime, sink, error);
   cai_sink_close(sink);
   sink = NULL;
   if (file != NULL) {

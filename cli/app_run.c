@@ -31,6 +31,7 @@
 #include <cai/agent_runtime.h>
 #include <cai/auth.h>
 #include <cai/display.h>
+#include <cai/execution.h>
 #include <cai/quota.h>
 #include <cai/session_store.h>
 #include <libmdf/mdf.h>
@@ -1115,6 +1116,10 @@ static void cli_log_event(cli_state *state,
   const char *text;
   size_t length;
   pslog_level level;
+  /* Execution history has its own durable journal and inspection callbacks.
+   * Do not duplicate payload chunks into the ordinary diagnostic logger. */
+  if (event->type == CAI_AGENT_EVENT_EXECUTION_RECORD)
+    return;
   name =
       event->type > 0 && (size_t)event->type < sizeof(names) / sizeof(names[0])
           ? names[event->type]
@@ -1675,10 +1680,50 @@ static int cli_wakeup(sl_t *sl, const sl_watch_event_t *event, void *context) {
   return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
 }
 
+static int cli_execution_markdown_write(void *context, const void *bytes,
+                                        size_t count, cai_error *error) {
+  if (cli_text((cli_state *)context, bytes, count) == 0)
+    return CAI_OK;
+  return cai_cli_error(error, CAI_ERR_TRANSPORT, "render execution history");
+}
+
 static int cli_replay_output_raw(cli_state *state,
                                  const cai_agent_session_event *event,
                                  int render, int logging, cai_error *error) {
-  (void)error;
+  if (render && strcmp(event->type, "execution") == 0) {
+    cai_execution_record record;
+    cai_sink_callbacks callbacks;
+    cai_sink *sink = NULL;
+    int rc;
+    cai_execution_record_init(&record);
+    rc = cai_execution_record_parse(event->data, &record, error);
+    if (rc != CAI_OK) {
+      char notice[256];
+      cai_cli_log_error(cli_logger(state), "decode execution history", error);
+      snprintf(
+          notice, sizeof(notice),
+          "**Historical warning:** execution record %llu could not be decoded. "
+          "Its original data remains available in the JSONL export.",
+          event->sequence);
+      cai_execution_record_cleanup(&record);
+      cai_error_cleanup(error);
+      cai_error_init(error);
+      return cli_markdown(state, notice) == 0
+                 ? CAI_OK
+                 : cai_cli_error(error, CAI_ERR_TRANSPORT,
+                                 "render execution warning");
+    }
+    memset(&callbacks, 0, sizeof(callbacks));
+    callbacks.write = cli_execution_markdown_write;
+    callbacks.context = state;
+    if (rc == CAI_OK)
+      rc = cai_sink_from_callbacks(&callbacks, &sink, error);
+    if (rc == CAI_OK)
+      rc = cai_execution_record_write_markdown(&record, 1, sink, error);
+    cai_sink_close(sink);
+    cai_execution_record_cleanup(&record);
+    return rc;
+  }
   if (event->data != NULL &&
       strcmp(event->type, "user_shell_output_tail") == 0) {
     pslog_field fields[2];

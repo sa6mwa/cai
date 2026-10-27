@@ -738,7 +738,8 @@ preview, clipped to the terminal width or 80 columns without a terminal.
 `-R NUMBER`/`--resume NUMBER` selects the corresponding row from that directory's
 numbered list, with the same ordering as `/resume`. An exact numeric ID, if
 present in the directory, takes precedence over a row number.
-Saved prompts and assistant text replay without repeating tool side effects.
+Saved prompts, assistant text and concise execution summaries replay without
+repeating tool side effects.
 
 `--export ID` and `/export [ID]` write paired `ID.jsonl` and `ID.md` files
 under `$XDG_DATA_HOME/cai/exports/ID` by default (falling back to
@@ -746,12 +747,55 @@ under `$XDG_DATA_HOME/cai/exports/ID` by default (falling back to
 session. `--export-dir DIR` overrides the export root. JSONL contains the
 complete resumable checkpoint and journal; Markdown uses libcai's existing
 Markdown exporter, including its instructions, conversation, runtime, and
-goal sections. Export performs no model requests or tool execution. These
+goal sections, followed by a structured execution timeline. Export performs no
+model requests or tool execution. These
 exports are plaintext private files (mode 0600); exported state contains
 conversation and execution context, never the credential namespace.
 `--import FILE` validates a JSONL export, assigns a new session ID in the
 current directory, and exits. Failed imports never appear in the list.
 Existing cai JSONL files are not automatically migrated.
+
+Execution history records agent/harness activity directly; it does not copy
+pslog output. It retains tool names and call IDs, exact arguments or raw custom
+input, returned output, partial output on failure, and complete error fields
+(code, HTTP status, message, detail, provider code and request ID). It also
+records response/turn outcomes, request failures exposed to the agent loop,
+compaction outcomes, goal controls and provider-supplied hosted-tool call items.
+Delegated records retain their child session and originating parent call IDs;
+manual review includes the child's actual instruction input. Model, endpoint
+and last committed response IDs provide reproduction context without recording
+the HTTP client's authentication headers.
+
+These `execution` journal records share the session's collection and append
+order. Logical payloads use ordered UTF-8 chunks of at most 4096 bytes, with
+byte offsets and a final marker. Their source journal sequence is retained
+when a record is forwarded to a parent. This adds no per-record threads,
+attachments or full-payload staging. The tool API's existing captured output
+is read incrementally into the journal when it becomes available.
+
+Execution records never enter model context, recovery actions or compaction
+prompts. Context compaction preserves them; explicit history trimming excludes
+the corresponding entries from replay/export. JSONL preserves the complete
+records, while console replay uses concise summaries and failures. Invalid
+side-band payloads produce a historical warning rather than blocking context
+recovery; the original record remains in JSONL. Internal debug/trace logs and
+ordinary application warnings remain in the pslog file.
+
+Core SDK hosts enable this together with `record_transcript` and can inspect
+live `CAI_AGENT_EVENT_EXECUTION_RECORD` events or replay events of type
+`execution`. `<cai/execution.h>` provides decoding, cleanup and Markdown
+rendering. `libcai_app` enables recording by default. Lua exposes the same
+event constant and `cai.execution_record(json)` decoder.
+SDK hosts can stream a human-inspection timeline using
+`cai_agent_runtime_export_execution_markdown` or Lua's
+`runtime:export_execution_markdown(sink)`. Core agent-handover exporters exclude
+these records; the application's Markdown export combines both projections.
+
+For example, inspect tool failures without the log file:
+
+```sh
+jq 'select(.type == "execution") | .data | fromjson | select(.kind == "tool.failed")' ID.jsonl
+```
 
 ### Embedding the terminal application
 

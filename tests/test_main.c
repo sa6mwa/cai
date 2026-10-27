@@ -1,6 +1,7 @@
 #include <cai/agent_runtime.h>
 #include <cai/auth.h>
 #include <cai/cai.h>
+#include <cai/execution.h>
 #include <cai/mcp.h>
 #include <cai/quota.h>
 #include <cai/session_store.h>
@@ -262,9 +263,9 @@ typedef struct runtime_session_store_state {
   char replay_event_type[64];
   char replay_event_data[256];
   size_t replay_event_count;
-  unsigned long long replay_event_sequences[32];
-  char replay_event_types[32][64];
-  char replay_event_data_items[32][256];
+  unsigned long long replay_event_sequences[128];
+  char replay_event_types[128][64];
+  char replay_event_data_items[128][256];
   char scope[128];
   char session_id[CAI_AGENT_SESSION_ID_MAX];
   char loaded_session_id[CAI_AGENT_SESSION_ID_MAX];
@@ -26864,6 +26865,8 @@ static int test_runtime_input_boundary(void *context,
                                              "from owner boundary", error);
   return CAI_OK;
 }
+
+#include "runtime_execution_test.inc"
 
 static void test_agent_runtime_input_boundary(test_state *state) {
   static const char response[] =
@@ -54318,6 +54321,10 @@ static const test_entry test_entries[] = {
     {"smith_review_runtime", test_smith_review_runtime},
     {"smith_review_parent_handoff", test_smith_review_parent_handoff},
     {"agent_runtime_input_boundary", test_agent_runtime_input_boundary},
+    {"agent_runtime_execution", test_agent_runtime_execution},
+    {"execution_record", test_execution_record},
+    {"execution_compaction", test_execution_compaction},
+    {"execution_poll_review", test_execution_poll_review},
     {"agent_runtime_subagent", test_agent_runtime_subagent},
     {"agent_runtime_subagent_mcp_snapshot",
      test_agent_runtime_subagent_mcp_snapshot},

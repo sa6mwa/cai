@@ -168,6 +168,16 @@ int main(void) {
   assert(!cai_cli_replay_contains(r, 2U));
   assert(cai_cli_replay_contains(r, 3U));
   cai_cli_replay_close(r);
+  /* A conversation containing only a manual review still has an inspectable
+   * activity entry; individual tool records never become separate turns. */
+  assert(cai_cli_replay_open(1U, &r, &error) == CAI_OK);
+  feed(r, 1U, "input_journal_v2", NULL, &error);
+  feed(r, 2U, "execution", "first tool record", &error);
+  feed(r, 3U, "execution", "failure record", &error);
+  assert(cai_cli_replay_finish(r, &error) == CAI_OK);
+  assert(cai_cli_replay_omitted(r) == 0U);
+  assert(cai_cli_replay_contains(r, 2U) && cai_cli_replay_contains(r, 3U));
+  cai_cli_replay_close(r);
   cai_error_cleanup(&error);
   return 0;
 }

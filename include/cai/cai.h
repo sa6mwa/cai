@@ -492,7 +492,7 @@ typedef struct cai_hosted_mcp_tool_config {
 
 /** Observable tool execution event for auto-run sessions and agents. */
 typedef struct cai_tool_event {
-  /** Write output JSON to a sink for output events. */
+  /** Write captured output to a sink; on error it can be incomplete JSON. */
   int (*write_output)(const struct cai_tool_event *event, cai_sink *sink,
                       cai_error *error);
   /** Write argument JSON to a sink for start events. */
@@ -509,7 +509,8 @@ typedef struct cai_tool_event {
   const char *arguments_json;
   /** Tool arguments as a spooled JSON value when large. */
   const struct lonejson_spooled *arguments_json_spooled;
-  /** Tool output as a spooled JSON value for output events. */
+  /** Tool output for output events, or partial captured output on error.
+   * Partial output need not be a complete JSON value. */
   const struct lonejson_spooled *output_json;
   /** Tool error for error events. */
   const cai_error *tool_error;
@@ -1961,7 +1962,7 @@ int cai_output_write_json(cai_output *output, const struct lonejson_map *map,
                           void *value, cai_error *error);
 /** Destroy high-level output. */
 void cai_output_destroy(cai_output *output);
-/** Write a tool event's spooled output JSON to a sink. */
+/** Write captured tool output, including partial output on a failed call. */
 int cai_tool_event_write_output(const cai_tool_event *event, cai_sink *sink,
                                 cai_error *error);
 /** Write a tool event's arguments JSON to a sink. */

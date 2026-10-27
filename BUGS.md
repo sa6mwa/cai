@@ -5,6 +5,20 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-040: Tool failures cannot be reproduced from conversation exports
+
+- **Evidence:** runtime tool-start notifications omitted arguments, failures
+  kept only the short message, and the Markdown exporter used model context
+  without a durable execution timeline. Logs were required to inspect failures.
+- **Resolution:** append structured execution records through the runtime
+  journal: exact input/output, partial output and full errors, correlated with
+  source/parent sessions and calls. Replay/export do not execute these records
+  or add them to model context. Debug/application logs remain separate.
+- **Verification:** native runtime probes exercise Unicode chunk boundaries,
+  failed tools with partial output, poll-only recording and failed persistence
+  before execution. Offline CLI/Lua checks cover provider protocols, export,
+  import, replay without logs, provider errors and hosted-tool records.
+
 ## BUG-039: Steering disappears from Softline before its delivery boundary
 
 - **Reported:** pending steering does not remain in the native editable queue;

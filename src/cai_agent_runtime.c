@@ -7,6 +7,7 @@
 #include <cai/tools/view_image.h>
 
 #include "cai_decimal.h"
+#include "cai_execution.h"
 #include "cai_internal.h"
 #include "cai_terminal_text.h"
 
@@ -546,6 +547,12 @@ struct cai_agent_runtime {
   cai_agent_session_store local_store;
   const cai_agent_session_store *session_store;
   int record_transcript;
+  char *execution_parent_session;
+  char *execution_parent_call;
+  char *execution_subagent;
+  /* Unobserved manual reviews remain poll-only; mirror their records directly
+   * without introducing an event consumer. Parent outlives the child. */
+  struct cai_agent_runtime *execution_direct_parent;
   cai_agent_session_event_fn replay_callback;
   void *replay_context;
   int history_summary_started;
@@ -794,6 +801,11 @@ static int cai_runtime_apply_pending_settings(cai_agent_runtime *runtime,
 static int cai_runtime_append_journal_event_locked(
     cai_agent_runtime *runtime, const char *type, const char *data,
     unsigned long long *out_sequence, cai_error *error);
+static int cai_runtime_execution_error_locked(cai_agent_runtime *, const char *,
+                                              const char *, const char *,
+                                              const cai_error *, cai_error *);
+static int cai_runtime_execution_lifecycle_locked(cai_agent_runtime *, int,
+                                                  const char *, cai_error *);
 
 static int cai_runtime_export_session_id_valid(const char *session_id) {
   const unsigned char *cursor;
@@ -1368,10 +1380,21 @@ static int cai_runtime_forward_subagent_event(
   /* Preserve the child handover above, but a poll-only parent deliberately
    * has no event consumer. Forwarding child observations into its bounded
    * queue would otherwise block the child and deadlock the parent turn. */
-  if (parent->event_callback == NULL) {
+  if (parent->event_callback == NULL &&
+      !(parent->record_transcript &&
+        event->type == CAI_AGENT_EVENT_EXECUTION_RECORD)) {
     return CAI_OK;
   }
   pthread_mutex_lock(&parent->lock);
+  if (event->type == CAI_AGENT_EVENT_EXECUTION_RECORD &&
+      parent->record_transcript) {
+    rc = cai_runtime_append_journal_event_locked(parent, "execution",
+                                                 event->data, NULL, error);
+    if (rc != CAI_OK || parent->event_callback == NULL) {
+      pthread_mutex_unlock(&parent->lock);
+      return rc;
+    }
+  }
   rc = cai_runtime_wait_event_capacity_locked(parent, error);
   if (rc == CAI_OK) {
     rc = cai_runtime_event_node_new(
@@ -1479,6 +1502,11 @@ static int cai_runtime_enqueue_locked(cai_agent_runtime *runtime, int type,
   /* A poll-only runtime has no event consumer. Its observable state remains
    * available through cai_agent_runtime_state(), but observational events must
    * not accumulate and stall the worker. */
+  rc = type == CAI_AGENT_EVENT_RUN_STARTED
+           ? CAI_OK
+           : cai_runtime_execution_lifecycle_locked(runtime, type, data, error);
+  if (rc != CAI_OK)
+    return rc;
   if (runtime->event_callback == NULL) {
     return CAI_OK;
   }
@@ -1506,6 +1534,10 @@ static int cai_runtime_enqueue_failure_locked(cai_agent_runtime *runtime,
   int length;
   int rc;
 
+  rc = cai_runtime_execution_error_locked(runtime, "turn.failed", NULL, NULL,
+                                          failure, event_error);
+  if (rc != CAI_OK)
+    return rc;
   memset(&description, 0, sizeof(description));
   cai_error_init(&format_error);
   message =
@@ -2633,6 +2665,8 @@ static int cai_runtime_append_journal_event_locked(
   return rc;
 }
 
+#include "cai_runtime_execution.inc"
+
 static void
 cai_runtime_mark_checkpoint_event_locked(cai_agent_runtime *runtime,
                                          unsigned long long sequence) {
@@ -3540,7 +3574,8 @@ cai_runtime_apply_goal_control(cai_agent_runtime *runtime,
                                              control->journal_sequence);
     pthread_mutex_unlock(&runtime->lock);
   }
-  if (rc == CAI_OK && runtime->event_callback != NULL) {
+  if (rc == CAI_OK &&
+      (runtime->event_callback != NULL || runtime->record_transcript)) {
     pthread_mutex_lock(&runtime->lock);
     rc = cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_GOAL_CHANGED,
                                     event_data, strlen(event_data), NULL, NULL,
@@ -3907,28 +3942,31 @@ static int cai_runtime_response_completed(void *context, cai_error *error) {
   return rc;
 }
 
-static void cai_runtime_emit_compaction_event(cai_agent_runtime *runtime,
-                                              int type, const char *message) {
+static int cai_runtime_emit_compaction_event(cai_agent_runtime *runtime,
+                                             int type, const char *message,
+                                             cai_error *error) {
   cai_error ignored;
+  int rc;
 
-  if (runtime == NULL || runtime->event_callback == NULL) {
-    return;
+  if (runtime == NULL) {
+    return CAI_OK;
   }
   cai_error_init(&ignored);
   pthread_mutex_lock(&runtime->lock);
-  (void)cai_runtime_enqueue_nonblocking_locked(runtime, type, message,
-                                               strlen(message), NULL, NULL,
-                                               runtime->state, &ignored);
+  rc = cai_runtime_execution_lifecycle_locked(runtime, type, message, error);
+  if (rc == CAI_OK)
+    (void)cai_runtime_enqueue_nonblocking_locked(runtime, type, message,
+                                                 strlen(message), NULL, NULL,
+                                                 runtime->state, &ignored);
   pthread_mutex_unlock(&runtime->lock);
   cai_error_cleanup(&ignored);
+  return rc;
 }
 
 static int cai_runtime_compaction_progress(void *context, cai_error *error) {
-  (void)error;
-  cai_runtime_emit_compaction_event((cai_agent_runtime *)context,
-                                    CAI_AGENT_EVENT_COMPACTION_PROGRESS,
-                                    "Making room to continue");
-  return CAI_OK;
+  return cai_runtime_emit_compaction_event((cai_agent_runtime *)context,
+                                           CAI_AGENT_EVENT_COMPACTION_PROGRESS,
+                                           "Making room to continue", error);
 }
 
 static int cai_runtime_compact(cai_agent_runtime *runtime,
@@ -3976,9 +4014,11 @@ static int cai_runtime_compact(cai_agent_runtime *runtime,
   cai_stream_sinks_init(&sinks);
   sinks.compaction_progress = cai_runtime_compaction_progress;
   sinks.compaction_progress_context = runtime;
-  cai_runtime_emit_compaction_event(runtime, CAI_AGENT_EVENT_COMPACTION_STARTED,
-                                    "Making room to continue");
-  rc = cai_session_compact_with_sinks(runtime->session, &sinks, error);
+  rc = cai_runtime_emit_compaction_event(runtime,
+                                         CAI_AGENT_EVENT_COMPACTION_STARTED,
+                                         "Making room to continue", error);
+  if (rc == CAI_OK)
+    rc = cai_session_compact_with_sinks(runtime->session, &sinks, error);
   if (rc == CAI_OK) {
     compaction_committed = 1;
     /* Compaction replaces history and consumes usage as one durable state
@@ -4031,8 +4071,17 @@ static int cai_runtime_compact(cai_agent_runtime *runtime,
   pthread_cond_broadcast(&runtime->condition);
   pthread_mutex_unlock(&runtime->lock);
   if (rc == CAI_OK) {
-    cai_runtime_emit_compaction_event(
-        runtime, CAI_AGENT_EVENT_COMPACTION_COMPLETED, "Made room to continue");
+    rc = cai_runtime_emit_compaction_event(runtime,
+                                           CAI_AGENT_EVENT_COMPACTION_COMPLETED,
+                                           "Made room to continue", error);
+  } else {
+    cai_error observed;
+    cai_error_init(&observed);
+    pthread_mutex_lock(&runtime->lock);
+    (void)cai_runtime_execution_error_locked(runtime, "compaction.failed", NULL,
+                                             NULL, error, &observed);
+    pthread_mutex_unlock(&runtime->lock);
+    cai_error_cleanup(&observed);
   }
   cai_runtime_log_compaction(runtime, 0, rc, error);
   return rc;
@@ -4430,6 +4479,9 @@ static int cai_runtime_tool_event(void *context, const cai_tool_event *event,
              ? CAI_AGENT_EVENT_TOOL_CALL_COMPLETED
              : CAI_AGENT_EVENT_TOOL_CALL_FAILED;
   tool_action = cai_runtime_tool_action(runtime, event->name);
+  rc = cai_runtime_execution_tool(runtime, event, error);
+  if (rc != CAI_OK)
+    return rc;
   cai_runtime_log_tool_event(runtime, event, tool_action);
   tool_path = cai_runtime_tool_path_from_arguments(event);
   tool_path_count = 0U;
@@ -4951,6 +5003,11 @@ static int cai_runtime_replay_journal_event(
   }
   if (!cai_session_history_visible(runtime->session, event->sequence))
     return CAI_OK;
+  if (strcmp(event->type, "execution") == 0) {
+    return runtime->replay_callback != NULL
+               ? runtime->replay_callback(runtime->replay_context, event, error)
+               : CAI_OK;
+  }
   if (runtime->history_rebuild != NULL) {
     int rebuild_rc =
         cai_history_rebuild_feed(runtime->history_rebuild, event,
@@ -5405,6 +5462,8 @@ static void *cai_runtime_worker(void *context) {
   sinks.output_text_context = runtime;
   sinks.response_completed = cai_runtime_response_completed;
   sinks.response_completed_context = runtime;
+  sinks.output_item_done = cai_runtime_execution_hosted;
+  sinks.output_item_context = runtime;
   cai_run_options_init(&options);
   /* Agent turns follow Codex's unbounded continuation loop. A host may cancel
    * the runtime or deny a particular operation, but CAI must not silently
@@ -5642,6 +5701,10 @@ static void *cai_runtime_worker(void *context) {
     if (rc == CAI_OK) {
       pthread_mutex_lock(&runtime->lock);
       runtime->turn_cancel_armed = 1;
+      rc = cai_runtime_execution_lifecycle_locked(
+          runtime, CAI_AGENT_EVENT_RUN_STARTED, NULL, &error);
+      if (rc == CAI_OK)
+        rc = cai_runtime_execution_child_input_locked(runtime, &error);
       pthread_mutex_unlock(&runtime->lock);
     }
     while (rc == CAI_OK && !budget_limited) {
@@ -5659,6 +5722,22 @@ static void *cai_runtime_worker(void *context) {
       while (rc == CAI_OK) {
         rc =
             cai_session_stream_auto(runtime->session, &options, &sinks, &error);
+        if (rc != CAI_OK && runtime->record_transcript) {
+          cai_error observed;
+          int record_rc;
+          cai_error_init(&observed);
+          pthread_mutex_lock(&runtime->lock);
+          record_rc = cai_runtime_execution_error_locked(
+              runtime, "request.failed", NULL, NULL, &error, &observed);
+          pthread_mutex_unlock(&runtime->lock);
+          if (record_rc != CAI_OK) {
+            cai_error_cleanup(&error);
+            error = observed;
+            cai_error_init(&observed);
+            rc = record_rc;
+          }
+          cai_error_cleanup(&observed);
+        }
         if (rc == CAI_OK ||
             CAI_SESSION_CLIENT_IMPL(runtime->session)->api_protocol !=
                 CAI_API_PROTOCOL_CHAT_COMPLETIONS ||
@@ -5840,6 +5919,20 @@ static void *cai_runtime_worker(void *context) {
     pthread_mutex_lock(&runtime->lock);
     runtime->accepting_steering = 0;
     cai_runtime_turn_finish_locked(runtime);
+    if (runtime->event_callback == NULL) {
+      cai_error observed;
+      cai_error_init(&observed);
+      if (rc == CAI_OK)
+        (void)cai_runtime_execution_lifecycle_locked(
+            runtime, CAI_AGENT_EVENT_RUN_COMPLETED, NULL, &observed);
+      else if (rc == CAI_ERR_CANCELLED)
+        (void)cai_runtime_execution_lifecycle_locked(
+            runtime, CAI_AGENT_EVENT_RUN_CANCELLED, NULL, &observed);
+      else
+        (void)cai_runtime_execution_error_locked(runtime, "turn.failed", NULL,
+                                                 NULL, &error, &observed);
+      cai_error_cleanup(&observed);
+    }
     if (runtime->turn_cancel_requested && rc == CAI_ERR_CANCELLED) {
       runtime->state = CAI_AGENT_CANCELLED;
       if (runtime->event_callback != NULL &&
@@ -9589,13 +9682,22 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
   config.event_queue_limit = parent->event_limit;
   config.steering_queue_limit = parent->steering_limit;
   config.turn_queue_limit = parent->turn_limit;
-  config.event_callback = parent->review_event_callback;
+  config.event_callback = parent->review_event_callback != NULL
+                              ? cai_runtime_manual_review_event
+                              : NULL;
+  config.record_transcript = parent->record_transcript;
   config.synchronize_input_boundaries = parent->synchronize_input_boundaries;
-  config.event_context = parent->review_event_context;
+  config.event_context = parent;
   config.logger = parent->logger;
   config.logger_disabled = parent->logger_disabled;
   review = NULL;
   rc = cai_agent_runtime_open(parent->client, &config, &review, error);
+  if (rc == CAI_OK)
+    rc = cai_runtime_execution_parent(review, parent, "/review", "review",
+                                      error);
+  if (rc == CAI_OK && parent->record_transcript &&
+      parent->review_event_callback == NULL)
+    review->execution_direct_parent = parent;
   if (rc == CAI_OK) {
     rc = cai_agent_runtime_submit_review(review, request, error);
   }
@@ -10159,6 +10261,7 @@ static int cai_runtime_open_tool_subagent(
   config.steering_queue_limit = parent->steering_limit;
   config.turn_queue_limit = parent->turn_limit;
   config.event_callback = cai_runtime_forward_subagent_event;
+  config.record_transcript = parent->record_transcript;
   config.event_context = execution;
   if (!review) {
     if ((profile->preset.tool_capabilities & CAI_AGENT_PRESET_TOOL_MCP) !=
@@ -10346,6 +10449,9 @@ static int cai_runtime_run_subagent(void *context, const void *params,
   child = NULL;
   rc = cai_runtime_open_tool_subagent(parent, profile, review, args, &execution,
                                       &child, error);
+  if (rc == CAI_OK)
+    rc = cai_runtime_execution_parent(
+        child, parent, execution.parent_tool_call_id, args->profile, error);
   if (rc == CAI_OK) {
     execution.child_session_id = cai_strdup(NULL, child->session_id);
     if (execution.child_session_id == NULL) {
@@ -12445,6 +12551,24 @@ int cai_agent_runtime_export_markdown(cai_agent_runtime *runtime,
   return rc;
 }
 
+int cai_agent_runtime_export_execution_markdown(cai_agent_runtime *runtime,
+                                                cai_sink *sink,
+                                                cai_error *error) {
+  int rc;
+  if (sink == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "execution export sink is required");
+  rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK)
+    return rc;
+  pthread_mutex_lock(&runtime->lock);
+  rc = cai_runtime_export_idle_locked(runtime, error);
+  if (rc == CAI_OK)
+    rc = cai_runtime_export_execution_markdown(runtime, sink, error);
+  pthread_mutex_unlock(&runtime->lock);
+  return rc;
+}
+
 static int cai_runtime_export_app_name_valid(const char *app_name) {
   const unsigned char *cursor;
 
@@ -12698,6 +12822,9 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
   cai_free_mem(NULL, runtime->conversation_id_snapshot);
   cai_free_mem(NULL, runtime->terminal_origin_tool_call_id);
   cai_free_mem(NULL, runtime->active_subagent_parent_tool_call_id);
+  cai_free_mem(NULL, runtime->execution_parent_session);
+  cai_free_mem(NULL, runtime->execution_parent_call);
+  cai_free_mem(NULL, runtime->execution_subagent);
   cai_runtime_clear_resumed_subagent(runtime);
   cai_free_mem(NULL, runtime->active_user_turn);
   cai_runtime_clear_mcp_config(runtime);

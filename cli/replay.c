@@ -148,7 +148,8 @@ int cai_cli_replay_feed(cai_cli_replay *r, const cai_agent_session_event *event,
   }
   if (rc == CAI_OK && r->last == NULL &&
       (strcmp(type, "assistant_text_delta") == 0 ||
-       strcmp(type, "policy_diagnostic") == 0))
+       strcmp(type, "policy_diagnostic") == 0 ||
+       strcmp(type, "execution") == 0))
     rc = entry_begin(r, error);
   return rc == CAI_OK ? entry_add(r, event->sequence, error) : rc;
 }

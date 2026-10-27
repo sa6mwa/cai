@@ -695,6 +695,7 @@ endif()
 set(CAI_SOURCES
   src/cai_agent.c
   src/cai_agent_runtime.c
+  src/cai_execution.c
   src/cai_terminal_text.c
   src/cai_session_store.c
   src/cai_skills.c
@@ -1077,6 +1078,11 @@ if(CAI_BUILD_LUA)
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_goal_pursuit_test.sh"
           "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host" responses interactive basic)
         set_tests_properties(cai_app_lua_goal_pursuit PROPERTIES LABELS "cli;local;offline" TIMEOUT 30
+          ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
+        add_test(NAME cai_app_lua_execution COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_execution_test.sh"
+          "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host" responses lua)
+        set_tests_properties(cai_app_lua_execution PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
           ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
         add_test(NAME cai_app_lua_get_goal COMMAND bash
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_get_goal_test.sh"

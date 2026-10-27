@@ -1480,7 +1480,7 @@ schema and metadata. Callback stores consume the same state source and typed
 events without needing this file envelope.
 
 Journal event types include `steering_queued`, `turn_queued`,
-`input_journal_v2`, `input_consumed`, and transcript/review/shell records. They
+`input_journal_v2`, `input_consumed`, `execution`, and transcript/review/shell records. They
 are distinct from `CAI_AGENT_EVENT_*` presentation callbacks; not every UI event
 is a durable journal entry. Typed image artifacts use the configured artifact
 backend. The application's portable JSONL import/export has a separate envelope;
@@ -1491,6 +1491,20 @@ function calls and outputs, internal context inputs, model/preset information,
 and goal state. The durable input journal reconstructs pending steering and
 normal turns. It also stores a display transcript projection so hosts can resume
 UI history without re-parsing provider wire events.
+
+`execution` carries a bounded structured agent/harness observation defined in
+`<cai/execution.h>`. It is recorded with `record_transcript`, including in
+poll-only runtimes, and is returned through the ordinary replay observer before
+any state-recovery dispatch. It is explicitly excluded from inference and
+history reconstruction. Inputs, outputs and complete errors use UTF-8 chunks
+with offsets/final markers; parent copies retain source session/sequence and
+parent call correlation. The same collection order covers normal and execution
+records. No diagnostic logger is used as the source. Compaction preserves this
+history; explicit trim visibility also applies to its records. Application
+Markdown exports compose the existing handover exporter with the separate
+`export_execution_markdown` inspection exporter. Core agent-handover exports
+exclude execution records. JSONL preserves their exact structured data
+independently of pslog files.
 
 ### 11.3.1 Journal/checkpoint atomicity
 
@@ -1589,7 +1603,9 @@ calling the default-file helper with app name `cai`, which writes
 the same receiver to a menu, a file picker, or a clipboard sink without CAI
 depending on libmdf, softline, or a desktop clipboard implementation.
 `libcai_app` separately implements `/export [ID]` and `--export ID`, writing
-resumable JSONL plus this Markdown handover under its configured export root.
+resumable JSONL plus this Markdown handover and the separate execution timeline
+under its configured export root. The core handover remains free of side-band
+execution records intended for human inspection.
 
 The handover contract is `cai-agent-handover/1`, headed `# CAI agent handover`.
 It is deliberately **not** a serialization or resume format: the durable

@@ -2790,6 +2790,19 @@ do
   assert(cai.AGENT_PRESET_TOOL_CHROME == 2048)
 end
 
+-- Execution observations use the public decoder in the Lua facade.
+do
+  assert_eq(cai.AGENT_EVENT_EXECUTION_RECORD, 35)
+  local record = assert_ok(cai.execution_record([[{"kind":"tool.failed","session_id":"session","tool_name":"read_file","call_id":"call","field":"detail","model":"model","base_url":"http://fixture","timestamp_ns":1,"offset":0,"final":true,"line_start":true,"code":5,"http_status":422,"data":"actual failure λ"}]]))
+  assert_eq(record.tool_name, "read_file")
+  assert_eq(record.call_id, "call")
+  assert_eq(record.data, "actual failure λ")
+  assert_eq(record.http_status, 422)
+  assert_eq(record.model, "model")
+  assert(record.final and record.line_start)
+  assert_not_ok(cai.execution_record("{}"))
+end
+
 -- Owner-thread input collection uses the same public runtime boundary in Lua.
 do
   assert_eq(cai.AGENT_EVENT_INPUT_BOUNDARY, 34, "owner input boundary event")
@@ -2803,6 +2816,9 @@ do
     workspace_directory = ".", disable_default_session_store = true,
     synchronize_input_boundaries = true, event_callback = function() return true end,
   })
+  local execution_bytes = 0
+  assert_ok(runtime:export_execution_markdown(function(chunk) execution_bytes = execution_bytes + #chunk end))
+  assert_eq(execution_bytes, 0, "no execution store produces no inspection output")
   runtime:close()
   client:close()
 end

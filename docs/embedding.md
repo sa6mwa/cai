@@ -264,6 +264,55 @@ shows all. This affects console output only: C `replay_callback` and Lua
 `on_replay` still receive each retained journal event once, including omitted
 console turns. Logs, exports, and the full restored agent context are unchanged.
 
+Execution history is enabled by the application and is independent of pslog
+levels or host logger configuration. `event_callback` / Lua `on_event` receives
+`CAI_AGENT_EVENT_EXECUTION_RECORD` / `cai.AGENT_EVENT_EXECUTION_RECORD` with a
+bounded JSON record in `data`; `replay_callback` / `on_replay` receives those
+records with the journal type `execution`. The normal console replay limit
+still applies only to presentation. No execution record is model input.
+
+C hosts include `<cai/execution.h>`, initialize a `cai_execution_record`, call
+`cai_execution_record_parse`, inspect the fields and call
+`cai_execution_record_cleanup`, including on error. The optional
+`cai_execution_record_write_markdown` consumes records in order and joins their
+bounded payload chunks without inserting breaks inside a field. Rendering
+escapes terminal controls while leaving the stored payload unchanged.
+
+`cai_agent_runtime_export_execution_markdown(runtime, sink, error)` streams the
+stored timeline at an idle boundary; Lua exposes
+`runtime:export_execution_markdown(sink)`. The application combines this with
+the existing conversation exporter in its human-facing `/export` and
+`--export` Markdown file. Core `export_markdown` and `export_markdown_file`
+remain agent-handover projections and exclude execution records.
+
+```lua
+local cai = require("cai")
+-- Inside on_event, or on_replay with event.type == "execution":
+if event.type == cai.AGENT_EVENT_EXECUTION_RECORD or event.type == "execution" then
+  local record = assert(cai.execution_record(event.data))
+  -- record.kind, tool_name, call_id, data, offset, final, code, http_status...
+end
+```
+
+Kinds include `tool.started`, `tool.arguments`, `tool.completed`, `tool.output`,
+`tool.failed`, `tool.partial_output`, `hosted.tool`, `subagent.input`,
+`request.failed`, `response.completed`, `turn.started`, `turn.completed`,
+`turn.cancelled`, `turn.failed`, `goal.changed`, and compaction
+started/completed/failed. Error fields are separate ordered chunks; arguments
+are exact JSON text or native custom-tool input. `offset` counts original
+UTF-8 bytes and `final` ends that field, including an empty field. The source
+session/sequence and parent session/call identify delegated activity. When
+correlating with a parent export, use its outer journal sequence for display
+order. A started call without a terminal record is incomplete, not a replay
+request to execute it.
+
+The journal durably acknowledges each record before its live notification.
+Worker-side notifications use the bounded event queue; synchronous owner
+operations never wait for their own pump and retain the journal if the live
+queue is full. Recording failures prevent starting a tool whose arguments
+could not be recorded. Deeper transport/storage implementation logs remain
+with the host's pslog sink; no log-severity filter feeds execution history.
+
 `app->control(app, type, text, &id, &error)` is safe from other host threads
 while the app remains alive. It copies input into a FIFO of at most 64 waiting
 commands and wakes the app loop. Calls with no ready runtime, invalid arguments,

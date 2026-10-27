@@ -5991,7 +5991,7 @@ static int cai_session_run_tool_round(cai_session *session,
 
       tool_rc = rc;
       event.type = rc == CAI_OK ? CAI_TOOL_EVENT_OUTPUT : CAI_TOOL_EVENT_ERROR;
-      event.output_json = rc == CAI_OK ? &capture.output : NULL;
+      event.output_json = &capture.output;
       event.tool_error = rc == CAI_OK ? NULL : error;
       event_rc =
           options->tool_event(options->tool_event_context, &event, error);
@@ -6520,7 +6520,7 @@ static int cai_session_add_stream_tool_outputs(
 
       tool_rc = rc;
       event.type = rc == CAI_OK ? CAI_TOOL_EVENT_OUTPUT : CAI_TOOL_EVENT_ERROR;
-      event.output_json = rc == CAI_OK ? &capture.output : NULL;
+      event.output_json = &capture.output;
       event.tool_error = rc == CAI_OK ? NULL : error;
       event_rc =
           options->tool_event(options->tool_event_context, &event, error);

@@ -4,6 +4,7 @@
 #include <cai/cai.h>
 #include <cai/config.h>
 #include <cai/display.h>
+#include <cai/execution.h>
 #include <cai/mcp.h>
 #include <cai/smith.h>
 #include <cai/tools/exec.h>
@@ -5744,7 +5745,8 @@ static int cai_lua_agent_runtime_model(lua_State *L) {
   return 1;
 }
 
-static int cai_lua_agent_runtime_export_markdown(lua_State *L) {
+static int cai_lua_agent_runtime_export_markdown_common(lua_State *L,
+                                                        int execution) {
   cai_lua_agent_runtime *self;
   cai_lua_sink_ctx sink_ctx;
   cai_sink *sink;
@@ -5758,7 +5760,9 @@ static int cai_lua_agent_runtime_export_markdown(lua_State *L) {
   rc = cai_lua_make_sink(L, 2, &sink_ctx, &sink, &error);
   if (rc == CAI_OK) {
     cai_lua_agent_runtime_enter(self);
-    rc = cai_agent_runtime_export_markdown(self->ptr, sink, &error);
+    rc = execution ? cai_agent_runtime_export_execution_markdown(self->ptr,
+                                                                 sink, &error)
+                   : cai_agent_runtime_export_markdown(self->ptr, sink, &error);
     cai_lua_agent_runtime_leave(self);
   }
   if (sink != NULL) {
@@ -5768,6 +5772,13 @@ static int cai_lua_agent_runtime_export_markdown(lua_State *L) {
     luaL_unref(L, LUA_REGISTRYINDEX, sink_ctx.callback_ref);
   }
   return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_agent_runtime_export_markdown(lua_State *L) {
+  return cai_lua_agent_runtime_export_markdown_common(L, 0);
+}
+static int cai_lua_agent_runtime_export_execution_markdown(lua_State *L) {
+  return cai_lua_agent_runtime_export_markdown_common(L, 1);
 }
 
 static int cai_lua_agent_runtime_export_markdown_file(lua_State *L) {
@@ -12105,6 +12116,8 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"session_id", cai_lua_agent_runtime_session_id},
     {"model", cai_lua_agent_runtime_model},
     {"export_markdown", cai_lua_agent_runtime_export_markdown},
+    {"export_execution_markdown",
+     cai_lua_agent_runtime_export_execution_markdown},
     {"export_markdown_file", cai_lua_agent_runtime_export_markdown_file},
     {"wakeup_fd", cai_lua_agent_runtime_wakeup_fd},
     {"close", cai_lua_agent_runtime_close},
@@ -12408,6 +12421,62 @@ static void cai_lua_metatable(lua_State *L, const char *name,
   lua_pop(L, 1);
 }
 
+/* Decode one bounded execution record without depending on private headers. */
+static int cai_lua_execution_record(lua_State *L) {
+  cai_execution_record record;
+  cai_error error;
+  const char *json = luaL_checkstring(L, 1);
+  const char *values[11];
+  const char *names[11] = {
+      "kind",     "session_id", "parent_session_id", "parent_call_id",
+      "subagent", "tool_name",  "call_id",           "field",
+      "model",    "base_url",   "last_response_id"};
+  size_t i;
+  int rc;
+  cai_execution_record_init(&record);
+  cai_error_init(&error);
+  rc = cai_execution_record_parse(json, &record, &error);
+  if (rc != CAI_OK) {
+    cai_execution_record_cleanup(&record);
+    return cai_lua_fail(L, rc, &error);
+  }
+  values[0] = record.kind;
+  values[1] = record.session_id;
+  values[2] = record.parent_session_id;
+  values[3] = record.parent_call_id;
+  values[4] = record.subagent;
+  values[5] = record.tool_name;
+  values[6] = record.call_id;
+  values[7] = record.field;
+  values[8] = record.model;
+  values[9] = record.base_url;
+  values[10] = record.last_response_id;
+  lua_newtable(L);
+  for (i = 0U; i < 11U; i++) {
+    lua_pushstring(L, values[i]);
+    lua_setfield(L, -2, names[i]);
+  }
+  lua_pushstring(L, record.data);
+  lua_setfield(L, -2, "data");
+  lua_pushinteger(L, (lua_Integer)record.timestamp_ns);
+  lua_setfield(L, -2, "timestamp_ns");
+  lua_pushinteger(L, (lua_Integer)record.source_sequence);
+  lua_setfield(L, -2, "source_sequence");
+  lua_pushinteger(L, (lua_Integer)record.offset);
+  lua_setfield(L, -2, "offset");
+  lua_pushinteger(L, (lua_Integer)record.code);
+  lua_setfield(L, -2, "code");
+  lua_pushinteger(L, (lua_Integer)record.http_status);
+  lua_setfield(L, -2, "http_status");
+  lua_pushboolean(L, record.final);
+  lua_setfield(L, -2, "final");
+  lua_pushboolean(L, record.line_start);
+  lua_setfield(L, -2, "line_start");
+  cai_execution_record_cleanup(&record);
+  cai_error_cleanup(&error);
+  return 1;
+}
+
 int luaopen_cai(lua_State *L) {
 #define CAI_LUA_SET_STRING(name, value)                                        \
   do {                                                                         \
@@ -12468,6 +12537,8 @@ int luaopen_cai(lua_State *L) {
   lua_newtable(L);
   lua_pushcfunction(L, cai_lua_open);
   lua_setfield(L, -2, "open");
+  lua_pushcfunction(L, cai_lua_execution_record);
+  lua_setfield(L, -2, "execution_record");
   lua_pushcfunction(L, cai_lua_config_new);
   lua_setfield(L, -2, "config");
   lua_pushcfunction(L, cai_lua_todo_new);
@@ -12570,6 +12641,8 @@ int luaopen_cai(lua_State *L) {
                       CAI_AGENT_EVENT_REASONING_SUMMARY_STARTED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_INPUT_BOUNDARY",
                       CAI_AGENT_EVENT_INPUT_BOUNDARY);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_EXECUTION_RECORD",
+                      CAI_AGENT_EVENT_EXECUTION_RECORD);
   CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_MCP", CAI_AGENT_TOOL_ACTION_MCP);
   CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_CHROME", CAI_AGENT_TOOL_ACTION_CHROME);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_COMPACTION_STARTED",

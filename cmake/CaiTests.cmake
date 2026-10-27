@@ -482,6 +482,10 @@ if(CAI_BUILD_TESTS)
     smith_review_runtime
     smith_review_parent_handoff
     agent_runtime_input_boundary
+    agent_runtime_execution
+    execution_record
+    execution_compaction
+    execution_poll_review
     agent_runtime_subagent
     agent_runtime_subagent_mcp_snapshot
     agent_runtime_failed_subagent_resume
