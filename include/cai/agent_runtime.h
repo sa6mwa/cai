@@ -604,6 +604,9 @@ typedef struct cai_agent_runtime_config {
   size_t subagent_count;
   /** Disable Smith's otherwise enabled built-in review subagent. */
   int disable_review_subagent;
+  /** Queue parent input instead of steering the foreground child. Default off.
+   */
+  int disable_subagent_steering;
   /** Optional host developer-instruction extension. */
   const char *developer_instructions_extension;
   /**
@@ -860,7 +863,9 @@ int cai_agent_runtime_submit(cai_agent_runtime *runtime, const char *text,
  * Submit interactive user input using Codex's StartOrSteer policy. When the
  * ordinary runtime is idle or terminal this starts a new turn; while it has
  * an active steerable turn, it durably queues direction for the next safe
- * model/tool boundary. Review and compaction work is not steerable. This is
+ * model/tool boundary. A foreground review/subagent receives steering by
+ * default; disable_subagent_steering queues a normal parent turn instead.
+ * Compaction itself is not steerable. This is
  * owner-thread-only; use submit_interactive_threadsafe for input arriving on
  * another thread.
  */
@@ -883,8 +888,9 @@ int cai_agent_runtime_submit_review(cai_agent_runtime *runtime,
  * pause is the sole exception: it may launch a replacement review while its
  * held queued turns remain paused. The returned child has its own session and
  * wakeup descriptor; the host pumps and renders it just like any other
- * runtime. While a review child is active, immediate and steering parent input
- * is rejected, while normal queued turns remain durable and wait for
+ * runtime. While a review child is active, interactive/steering parent input
+ * is forwarded to that child unless disable_subagent_steering is set. Normal
+ * queued turns remain durable and wait for
  * cai_agent_runtime_finish_review. CAI checkpoints that pause before this
  * function returns, so recovery keeps queued turns held until a replacement
  * review is started and handed off. The caller owns the child and must finish
@@ -913,7 +919,9 @@ int cai_agent_runtime_finish_review(cai_agent_runtime *parent,
  * Queue steering for injection at the next safe model/tool boundary. Use
  * submit_interactive when the host wants CAI to choose between starting and
  * steering. This explicit operation is rejected while idle, stopping,
- * compacting, or paused for review. Owner-thread-only.
+ * compacting, or after the last safe boundary. Foreground children receive
+ * steering by default; disabling child steering queues it for the parent.
+ * Owner-thread-only.
  */
 int cai_agent_runtime_submit_steering(cai_agent_runtime *runtime,
                                       const char *text, cai_error *error);

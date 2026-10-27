@@ -329,6 +329,12 @@ static int test_output_failure(int operation) {
   } else if (operation == 7) {
     rc = cli_markdown(&state, "Output unavailable") != 0 ? CAI_ERR_TRANSPORT
                                                          : CAI_OK;
+  } else if (operation >= 11) {
+    event.type = operation == 11   ? CAI_AGENT_EVENT_RUN_STARTED
+                 : operation == 12 ? CAI_AGENT_EVENT_STEERING_DELIVERED
+                 : operation == 13 ? CAI_AGENT_EVENT_STEERING_QUEUED
+                                   : CAI_AGENT_EVENT_TURN_QUEUED;
+    rc = cli_event(&state, &event, NULL);
   } else {
     replay.type = "assistant_text_delta";
     replay.data = event.data;
@@ -347,7 +353,9 @@ cleanup:
   close(pipe_fd[0]);
   if (pipe_fd[1] >= 0)
     close(pipe_fd[1]);
-  if (rc != (operation == 10 ? CAI_OK : CAI_ERR_TRANSPORT)) {
+  if (rc != (operation == 10 || operation == 13 || operation == 14
+                 ? CAI_OK
+                 : CAI_ERR_TRANSPORT)) {
     fprintf(stderr, "unexpected output result for operation %d: %d\n",
             operation, rc);
     return 1;
@@ -630,7 +638,7 @@ int main(void) {
   struct timespec before = {400, 499999999L};
   struct timespec boundary = {400, 500000000L};
 
-  for (rc = 0; rc < 11; rc++)
+  for (rc = 0; rc < 15; rc++)
     if (test_output_failure(rc) != 0)
       return 1;
   if (test_goal_handoff() != 0 || test_shared_auth() != 0 ||
@@ -696,6 +704,8 @@ int main(void) {
   strcpy(state.reasoning.header, "Previous turn");
   state.reasoning.header_length = strlen(state.reasoning.header);
   event.type = CAI_AGENT_EVENT_RUN_STARTED;
+  event.data = "Renderer turn";
+  event.data_length = strlen(event.data);
   rc = cli_event(&state, &event, NULL);
   if (state.reasoning.header_length != 0U)
     return 1;
@@ -871,10 +881,8 @@ int main(void) {
       strstr(output, "Thinking...") != NULL ||
       strstr(output, "* WARN: **literal** _file_ `tick` [name](url)") == NULL ||
       strstr(output, "\n  word") == NULL ||
-      strstr(
-          output,
-          "Local informational Markdown\n\n  Commentary before reasoning.") ==
-          NULL) {
+      strstr(output, "Local informational Markdown\n\n> Renderer turn\n\n  "
+                     "Commentary before reasoning.") == NULL) {
     fprintf(stderr, "reasoning header/body routing failed: %s\n", output);
     return 1;
   }

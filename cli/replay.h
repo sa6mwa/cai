@@ -15,4 +15,15 @@ unsigned long long cai_cli_replay_first(const cai_cli_replay *replay);
 unsigned long long cai_cli_replay_last(const cai_cli_replay *replay);
 size_t cai_cli_replay_omitted(const cai_cli_replay *replay);
 void cai_cli_replay_close(cai_cli_replay *replay);
+
+/* Presentation order for durable input journals. Only pending prompt text is
+ * retained; assistant/shell events pass directly to the renderer. */
+typedef struct cai_cli_replay_order cai_cli_replay_order;
+int cai_cli_replay_order_open(int journal_v2, cai_cli_replay_order **out,
+                              cai_error *error);
+int cai_cli_replay_order_feed(cai_cli_replay_order *order,
+                              const cai_agent_session_event *event,
+                              cai_agent_session_event_fn emit, void *context,
+                              cai_error *error);
+void cai_cli_replay_order_close(cai_cli_replay_order *order);
 #endif

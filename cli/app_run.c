@@ -97,6 +97,7 @@ typedef struct cli_state {
   cai_client *quota_client;
   cai_agent_runtime *runtime;
   cai_agent_runtime *review_runtime;
+  int foreground_subagent;
   sl_watch_id_t review_watch_id;
   int has_review_watch;
   cai_agent_runtime_metrics last_review_metrics;
@@ -143,6 +144,8 @@ typedef struct cli_state {
   int show_welcome;
   int suppress_replay;
   cai_cli_replay *replay;
+  cai_cli_replay_order *replay_order;
+  int replay_journal_v2;
   int automation_done;
   int automation_failed;
   size_t goal_starts_pending;
@@ -940,6 +943,42 @@ static int cli_editor_key(sl_t *sl, sl_key_t key, void *context,
   if ((key == SL_KEY_ENTER || key == SL_KEY_ALT_ENTER) &&
       (strcmp(text, "/quit") == 0 || strcmp(text, "/exit") == 0))
     return cli_goodbye(state);
+  if ((key == SL_KEY_ENTER || key == SL_KEY_ALT_ENTER) && text[0] != '\0' &&
+      text[0] != '/' && text[0] != '!') {
+    cai_agent_runtime_metrics metrics;
+    sl_prompt_queue_entry_info_t draft;
+    if (sl_prompt_queue_draft_info(sl, &draft) != SL_OK)
+      return SL_ERROR_IO;
+    /* Native edits keep their identity, intent and approval policy. */
+    if (draft.id != 0)
+      return SL_OK;
+    cai_error_init(&error);
+    rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, &error);
+    if (rc == CAI_OK && (metrics.turn_active || state->awaiting_turn ||
+                         state->review_runtime != NULL)) {
+      /* Keep pending steering in Softline's own editable queue. Its runtime
+       * delivery event, never this keypress, determines transcript placement.
+       */
+      *action = SL_KEY_ACTION_HANDLED;
+      rc = sl_prompt_queue_enqueue_draft(sl);
+      if (rc != SL_OK) {
+        char message[512];
+        snprintf(message, sizeof(message), "Input not queued: %s",
+                 sl_last_error(sl));
+        cai_error_cleanup(&error);
+        return sl_set_status_message(sl, message);
+      }
+      if (rc == SL_OK)
+        rc = sl_prompt_queue_set_mode(sl, sl_prompt_queue_count(sl) - 1U,
+                                      SL_PROMPT_QUEUE_MODE_STEER);
+      if (rc == SL_OK && cli_messages_process(state, &error) != CAI_OK)
+        rc = SL_ERROR_IO;
+    } else {
+      rc = SL_OK;
+    }
+    cai_error_cleanup(&error);
+    return rc;
+  }
   if (!cli_is_terminal_shell(text))
     return SL_OK;
   cai_error_init(&error);
@@ -1194,6 +1233,13 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     }
   }
   cli_log_event(state, event);
+  if (event->type == CAI_AGENT_EVENT_SUBAGENT_STARTED)
+    state->foreground_subagent = 1;
+  if (event->type == CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF ||
+      (event->parent_tool_call_id == NULL &&
+       (event->type == CAI_AGENT_EVENT_RUN_FAILED ||
+        event->type == CAI_AGENT_EVENT_RUN_CANCELLED)))
+    state->foreground_subagent = 0;
   if (event->parent_tool_call_id != NULL &&
       strcmp(event->parent_tool_call_id, "/review") == 0) {
     if (event->type == CAI_AGENT_EVENT_TEXT_DELTA)
@@ -1299,6 +1345,10 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     }
     return CAI_OK;
   }
+  if ((event->type == CAI_AGENT_EVENT_RUN_STARTED &&
+       event->parent_tool_call_id == NULL) ||
+      event->type == CAI_AGENT_EVENT_STEERING_DELIVERED)
+    return cli_prompt(state, event->data) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
   if (event->type == CAI_AGENT_EVENT_TEXT_DELTA)
     return cli_text(state, event->data, event->data_length) == 0
                ? CAI_OK
@@ -1540,33 +1590,52 @@ static int cli_messages_process(cli_state *state, cai_error *error) {
   rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
   if (rc == CAI_OK)
     rc = cai_agent_runtime_state(state->runtime, &run_state, error);
-  if (rc != CAI_OK || state->review_runtime != NULL || metrics.turn_active ||
-      state->awaiting_turn || state->shell.pid > 0 ||
-      run_state == CAI_AGENT_SAMPLING ||
-      run_state == CAI_AGENT_DISPATCHING_TOOL)
+  if (rc != CAI_OK || state->shell.pid > 0)
     return rc;
   for (index = 0U; index < sl_prompt_queue_count(state->sl); index++) {
     if (sl_prompt_queue_info(state->sl, index, &info) != SL_OK)
       return cai_cli_error(error, CAI_ERR_TRANSPORT, "inspect queued prompt");
-    if (info.held || info.mode != SL_PROMPT_QUEUE_MODE_QUEUED)
+    if (info.held)
+      continue;
+    if (info.mode == SL_PROMPT_QUEUE_MODE_STEER &&
+        !state->options.subagent_steering &&
+        (state->review_runtime != NULL || state->foreground_subagent)) {
+      if (sl_prompt_queue_set_mode(state->sl, index,
+                                   SL_PROMPT_QUEUE_MODE_QUEUED) != SL_OK)
+        return cai_cli_error(error, CAI_ERR_TRANSPORT, "queue parent prompt");
+      info.mode = SL_PROMPT_QUEUE_MODE_QUEUED;
+    }
+    if (info.mode == SL_PROMPT_QUEUE_MODE_QUEUED &&
+        (state->review_runtime != NULL || metrics.turn_active ||
+         state->awaiting_turn || run_state == CAI_AGENT_SAMPLING ||
+         run_state == CAI_AGENT_DISPATCHING_TOOL))
       continue;
     text = NULL;
-    if (sl_prompt_queue_take(state->sl, index, &text) != SL_OK)
+    if (sl_prompt_queue_peek(state->sl, index, &text) != SL_OK)
       return cai_cli_error(error, CAI_ERR_TRANSPORT,
-                           "take approved queued prompt");
-    rc = cli_prompt(state, text) == 0
-             ? cai_agent_runtime_submit_queued(state->runtime, text, error)
-             : CAI_ERR_TRANSPORT;
+                           "read approved queued prompt");
+    rc = info.mode == SL_PROMPT_QUEUE_MODE_STEER
+             ? cai_agent_runtime_submit_interactive(state->runtime, text, error)
+             : cai_agent_runtime_submit_queued(state->runtime, text, error);
     if (rc == CAI_OK) {
-      state->awaiting_turn = 1;
-      rc = cai_cli_messages_consumed(state->messages, info.id, error);
-    } else {
-      sl_prompt_id_t replacement;
-      if (sl_prompt_queue_insert(state->sl, index, text, 0, &replacement) ==
-          SL_OK)
-        cai_cli_messages_rebind(state->messages, info.id, replacement);
+      if (info.mode == SL_PROMPT_QUEUE_MODE_QUEUED)
+        state->awaiting_turn = 1;
+      if (sl_prompt_queue_reject(state->sl, info.id) != SL_OK)
+        rc = cai_cli_error(error, CAI_ERR_TRANSPORT, "remove delivered prompt");
+      else
+        rc = cai_cli_messages_consumed(state->messages, info.id, error);
     }
     sl_free_string(state->sl, text);
+    if (info.mode == SL_PROMPT_QUEUE_MODE_STEER &&
+        (rc == CAI_ERR_INVALID || rc == CAI_ERR_LIMIT)) {
+      /* A launching/finishing/compacting child can briefly have no steerable
+       * seam, or admission can be full. Leave native queued input editable
+       * and retry on the next event.
+       */
+      cai_error_cleanup(error);
+      cai_error_init(error);
+      return CAI_OK;
+    }
     return rc;
   }
   return CAI_OK;
@@ -1613,9 +1682,9 @@ static int cli_wakeup(sl_t *sl, const sl_watch_event_t *event, void *context) {
   return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
 }
 
-static int cli_replay_output(cli_state *state,
-                             const cai_agent_session_event *event, int render,
-                             int logging, cai_error *error) {
+static int cli_replay_output_raw(cli_state *state,
+                                 const cai_agent_session_event *event,
+                                 int render, int logging, cai_error *error) {
   (void)error;
   if (event->data != NULL &&
       strcmp(event->type, "user_shell_output_tail") == 0) {
@@ -1693,6 +1762,7 @@ static int cli_replay_output(cli_state *state,
   }
   if (logging && event->data != NULL &&
       (strcmp(event->type, "policy_diagnostic") == 0 ||
+       strcmp(event->type, "subagent_input") == 0 ||
        strcmp(event->type, "turn_submitted") == 0 ||
        strcmp(event->type, "turn_queued") == 0 ||
        strcmp(event->type, "steering_queued") == 0 ||
@@ -1700,12 +1770,14 @@ static int cli_replay_output(cli_state *state,
     pslog_field fields[2];
     int assistant = strcmp(event->type, "assistant_text_delta") == 0;
     fields[0] = pslog_bool("replay", 1);
-    fields[1] = pslog_str(
-        "prompt_kind",
-        strcmp(event->type, "policy_diagnostic") == 0 ? "policy_diagnostic"
-        : strcmp(event->type, "steering_queued") == 0 ? "steering"
-        : strcmp(event->type, "turn_queued") == 0     ? "queued"
-                                                      : "normal");
+    fields[1] = pslog_str("prompt_kind",
+                          strcmp(event->type, "policy_diagnostic") == 0
+                              ? "policy_diagnostic"
+                          : strcmp(event->type, "steering_queued") == 0 ||
+                                  strcmp(event->type, "subagent_input") == 0
+                              ? "steering"
+                          : strcmp(event->type, "turn_queued") == 0 ? "queued"
+                                                                    : "normal");
     cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_INFO, event->type,
                         assistant ? "assistant" : "user", event->data,
                         strlen(event->data), fields, 2U);
@@ -1713,6 +1785,7 @@ static int cli_replay_output(cli_state *state,
   if (!render)
     return CAI_OK;
   if ((strcmp(event->type, "policy_diagnostic") == 0 ||
+       strcmp(event->type, "subagent_input") == 0 ||
        strcmp(event->type, "turn_submitted") == 0 ||
        strcmp(event->type, "turn_queued") == 0 ||
        strcmp(event->type, "steering_queued") == 0) &&
@@ -1728,6 +1801,34 @@ static int cli_replay_output(cli_state *state,
     return cli_finish_response(state) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
   }
   return CAI_OK;
+}
+
+static int cli_replay_ordered_output(void *context,
+                                     const cai_agent_session_event *event,
+                                     cai_error *error) {
+  return cli_replay_output_raw(context, event, 1, 0, error);
+}
+
+static int cli_replay_output(cli_state *state,
+                             const cai_agent_session_event *event, int render,
+                             int logging, cai_error *error) {
+  int rc = CAI_OK;
+  if (strcmp(event->type, "input_journal_v2") == 0)
+    state->replay_journal_v2 = 1;
+  if (logging)
+    rc = cli_replay_output_raw(state, event, 0, 1, error);
+  if (rc != CAI_OK || !render)
+    return rc;
+  if (!state->replay_journal_v2 && state->replay_order == NULL)
+    return cli_replay_ordered_output(state, event, error);
+  if (state->replay_order == NULL) {
+    rc = cai_cli_replay_order_open(state->replay_journal_v2,
+                                   &state->replay_order, error);
+    if (rc != CAI_OK)
+      return rc;
+  }
+  return cai_cli_replay_order_feed(state->replay_order, event,
+                                   cli_replay_ordered_output, state, error);
 }
 
 static int cli_replay_event(void *context, const cai_agent_session_event *event,
@@ -1763,8 +1864,12 @@ static int cli_replay_render(void *context,
 static int cli_replay_finish(cli_state *state, cai_error *error) {
   unsigned long long first, through;
   int rc;
-  if (state->replay == NULL)
+  if (state->replay == NULL) {
+    cai_cli_replay_order_close(state->replay_order);
+    state->replay_order = NULL;
+    state->replay_journal_v2 = 0;
     return CAI_OK;
+  }
   rc = cai_cli_replay_finish(state->replay, error);
   first = cai_cli_replay_first(state->replay);
   through = cai_cli_replay_last(state->replay);
@@ -1784,6 +1889,9 @@ static int cli_replay_finish(cli_state *state, cai_error *error) {
                               cli_replay_render, state, error);
   cai_cli_replay_close(state->replay);
   state->replay = NULL;
+  cai_cli_replay_order_close(state->replay_order);
+  state->replay_order = NULL;
+  state->replay_journal_v2 = 0;
   return rc;
 }
 
@@ -1959,6 +2067,9 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   if (rc != CAI_OK) {
     cai_cli_replay_close(state->replay);
     state->replay = NULL;
+    cai_cli_replay_order_close(state->replay_order);
+    state->replay_order = NULL;
+    state->replay_journal_v2 = 0;
     return rc;
   }
   rc = cli_replay_finish(state, error);
@@ -1978,12 +2089,7 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
     if (rc != CAI_OK)
       return rc;
     if (state->interactive) {
-      if (sl_set_auto_approval(state->sl, state->options.enable_auto_enqueue) !=
-              SL_OK ||
-          sl_set_prompt_queue_delivery(
-              state->sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) != SL_OK ||
-          sl_set_idle_callback(state->sl, cli_message_idle, state) != SL_OK ||
-          sl_watch_add(state->sl, cai_cli_messages_fd(state->messages),
+      if (sl_watch_add(state->sl, cai_cli_messages_fd(state->messages),
                        SL_WATCH_READ | SL_WATCH_ERROR, cli_message_wakeup,
                        state, &state->message_watch_id) != SL_OK)
         return cai_cli_error(error, CAI_ERR_TRANSPORT,
@@ -2021,14 +2127,14 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   if (rc == CAI_OK) {
     rc = cli_sync_status(state, error);
   }
-  if (rc == CAI_OK && state->interactive && state->bridge != NULL) {
+  if (rc == CAI_OK && state->interactive) {
     if (sl_set_auto_approval(state->sl, state->options.enable_auto_enqueue) !=
             SL_OK ||
         sl_set_prompt_queue_delivery(
             state->sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) != SL_OK ||
         sl_set_idle_callback(state->sl, cli_message_idle, state) != SL_OK)
       rc = cai_cli_error(error, CAI_ERR_TRANSPORT,
-                         "configure host prompt queue");
+                         "configure prompt queue delivery");
   }
   return rc;
 }
@@ -3823,8 +3929,8 @@ static int cli_submit_automation(cli_state *state, const char *instruction,
   if (state->interactive && instruction != NULL &&
       sl_history_add(state->sl, instruction) != SL_OK)
     return cai_cli_error(error, CAI_ERR_TRANSPORT, sl_last_error(state->sl));
-  if (instruction == NULL || cli_prompt(state, instruction) != 0)
-    return CAI_ERR_TRANSPORT;
+  if (instruction == NULL)
+    return cai_cli_error(error, CAI_ERR_INVALID, "instruction is required");
   state->awaiting_turn = 1;
   /* Preserve ordinary prompt journal entries. If another batch turn is
    * pending, this instruction must remain a new turn rather than steering it.
@@ -4609,12 +4715,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     goto cleanup;
   }
   if (state.interactive && bridge != NULL) {
-    if (sl_set_auto_approval(state.sl, state.options.enable_auto_enqueue) !=
-            SL_OK ||
-        sl_set_prompt_queue_delivery(
-            state.sl, SL_PROMPT_QUEUE_DELIVERY_MANUAL) != SL_OK ||
-        sl_set_idle_callback(state.sl, cli_message_idle, &state) != SL_OK ||
-        sl_watch_add(state.sl, bridge->fd, SL_WATCH_READ | SL_WATCH_ERROR,
+    if (sl_watch_add(state.sl, bridge->fd, SL_WATCH_READ | SL_WATCH_ERROR,
                      cli_host_wakeup, &state, &state.host_watch) != SL_OK) {
       cai_cli_error(&error, CAI_ERR_TRANSPORT, "watch host controls");
       goto cleanup;
@@ -4708,20 +4809,16 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
       if (cli_flush_command(&state, rc == CAI_OK) != 0)
         rc = CAI_ERR_TRANSPORT;
       if (rc == CAI_OK && !handled) {
-        if (cli_prompt(&state, line) != 0) {
-          rc = CAI_ERR_TRANSPORT;
-        } else {
-          if (state.review_runtime != NULL || state.shell.pid > 0 ||
-              cai_cli_messages_is_message(state.messages,
-                                          sl_last_prompt_id(state.sl)))
-            rc = cai_agent_runtime_submit_queued(state.runtime, line, &error);
-          else
-            rc = cai_agent_runtime_submit_interactive(state.runtime, line,
-                                                      &error);
-          if (rc == CAI_OK)
-            rc = cai_cli_messages_consumed(state.messages,
-                                           sl_last_prompt_id(state.sl), &error);
-        }
+        if (state.shell.pid > 0 ||
+            cai_cli_messages_is_message(state.messages,
+                                        sl_last_prompt_id(state.sl)))
+          rc = cai_agent_runtime_submit_queued(state.runtime, line, &error);
+        else
+          rc =
+              cai_agent_runtime_submit_interactive(state.runtime, line, &error);
+        if (rc == CAI_OK)
+          rc = cai_cli_messages_consumed(state.messages,
+                                         sl_last_prompt_id(state.sl), &error);
       }
       if (rc != CAI_OK) {
         cli_print_error(&state, "input", &error);
@@ -4862,6 +4959,7 @@ cleanup:
   free(state.high_reasoning_override);
   free(state.review_report);
   cai_cli_replay_close(state.replay);
+  cai_cli_replay_order_close(state.replay_order);
   free(metadata_json);
   cai_config_close(state.configuration);
   cai_error_cleanup(&error);

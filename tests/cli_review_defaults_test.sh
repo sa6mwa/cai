@@ -106,7 +106,7 @@ send '/review-and-fix\r'; expect 'finish the active review'
 send '/shell\r'; expect 'Shell is available only between turns.'
 send '\025'
 send '/status\r'; expect 'Metric'
-send 'Use the queued review findings\r'
+send 'Use the queued review findings\t'
 [[ $(requests) == $((before+1)) ]]
 release
 expect 'QUEUED AFTER REVIEW'

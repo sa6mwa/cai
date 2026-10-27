@@ -12,7 +12,25 @@ static int fixture_runtime_open(cai_client *client,
                                 const cai_agent_runtime_config *config,
                                 cai_agent_runtime **out, cai_error *error) {
   cai_agent_runtime_config selected = *config;
+  cai_agent_preset worker;
+  cai_agent_subagent_profile profile;
   const char *volatile_session = getenv("CAI_TEST_VOLATILE_SESSION");
+  if (getenv("CAI_TEST_STEER_WORKER") != NULL) {
+    memset(&worker, 0, sizeof(worker));
+    worker.name = "seam-worker";
+    worker.prompt_version = "worker-1";
+    worker.default_identity = "Worker";
+    worker.default_model = "gpt-5.6-luna";
+    worker.developer_instructions = "You are the seam test worker.";
+    memset(&profile, 0, sizeof(profile));
+    profile.name = "worker";
+    profile.description = "Delegate to the seam test worker.";
+    profile.preset = &worker;
+    profile.expose_instructions = 1;
+    profile.instruction_template = "Perform {{instructions}}.";
+    selected.subagents = &profile;
+    selected.subagent_count = 1U;
+  }
   if (volatile_session != NULL && strcmp(volatile_session, "1") == 0) {
     selected.session_store = NULL;
     selected.disable_default_session_store = 1;

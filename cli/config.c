@@ -605,12 +605,13 @@ static int tool_environment(cai_config *cfg, const char *prefix,
                                     "SHELL_CONTEXT_MAX_BYTES",
                                     "REASONING_TOOL",
                                     "NORMAL_REASONING_EFFORT",
-                                    "HIGH_REASONING_EFFORT"};
+                                    "HIGH_REASONING_EFFORT",
+                                    "SUBAGENT_STEERING"};
   static const char *const sections[] = {
-      "agent", "chrome",  "agent",   "agent",   "agent",  "agent",
-      "agent", "agent",   "agent",   "searxng", "revgeo", "chrome",
-      "agent", "agent",   "agent",   "agent",   "agent",  "agent",
-      "ui",    "runtime", "runtime", "agent",   "agent",  "agent"};
+      "agent", "chrome", "agent",   "agent",  "agent",  "agent",   "agent",
+      "agent", "agent",  "searxng", "revgeo", "chrome", "agent",   "agent",
+      "agent", "agent",  "agent",   "agent",  "ui",     "runtime", "runtime",
+      "agent", "agent",  "agent",   "agent"};
   static const char *const keys[] = {"web_search",
                                      "enabled",
                                      "todo",
@@ -634,7 +635,8 @@ static int tool_environment(cai_config *cfg, const char *prefix,
                                      "shell_context_max_bytes",
                                      "reasoning_tool",
                                      "normal_reasoning_effort",
-                                     "high_reasoning_effort"};
+                                     "high_reasoning_effort",
+                                     "subagent_steering"};
   size_t i;
   {
     static const char *const aliases[][3] = {
@@ -918,6 +920,8 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
       cai_config_get_bool(cfg, "agent", "terminal", defaults.terminal);
   defaults.review_subagent = cai_config_get_bool(
       cfg, "agent", "review_subagent", defaults.review_subagent);
+  defaults.subagent_steering = cai_config_get_bool(
+      cfg, "agent", "subagent_steering", defaults.subagent_steering);
   defaults.codex_agents_md = cai_config_get_bool(
       cfg, "agent", "codex_agents_md", defaults.codex_agents_md);
   defaults.web_search =

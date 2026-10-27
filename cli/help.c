@@ -212,6 +212,8 @@ static const cai_app_option options[] = {
      1},
     {"--review-subagent", '\0', CAI_APP_FLAG, NULL,
      "Built-in reviewer (default on)", 0, 1},
+    {"--subagent-steering", '\0', CAI_APP_FLAG, NULL,
+     "Steer foreground child; off queues parent (default on)", 0, 1},
     {"--verbose", 'v', CAI_APP_COUNTER, NULL,
      "Print runtime events (repeat for sequences)", 1, 0},
     {"--help", 'h', CAI_APP_FLAG, NULL, "Show this help", 0, 0},

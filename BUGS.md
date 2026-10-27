@@ -11,9 +11,15 @@ commit and verification evidence.
   assistant paragraph, with the response continuing beneath it.
 - **Evidence:** the application calls `cli_prompt()` before runtime admission;
   it finishes the renderer and inserts the prompt while sampling can continue.
-- **Required:** use Softline's queued/steering paths and render user input only
-  at the runtime event that inserts it into conversation history. Preserve
-  streaming output; never buffer a whole response to hide the ordering defect.
+- **Resolution:** native Softline queue admission no longer writes to the
+  feed. `RUN_STARTED` and `STEERING_DELIVERED` place prompts at actual runtime
+  boundaries. Replay retains pending prompt text until its consumed marker;
+  assistant deltas continue directly through libmdf and Softline.
+- **Verification:** paused Responses and Chat Completions streams verify that
+  trailing text/tool results precede steering. Selected-tail and replay-all
+  checks preserve that order. Queue saturation and history-write failure keep
+  input available. The native CLI, Lua application and rebuilt x86_64 musl
+  executable pass their applicable offline regressions.
 
 ## BUG-037: Parent request after review advertises unsupported image generation
 
@@ -40,6 +46,15 @@ commit and verification evidence.
 - **Decision:** enable steering the foreground reviewer/subagent by default,
   with an explicit disable setting that leaves the input queued for the parent.
   Apply and display steering only at safe conversation boundaries.
+- **Resolution:** parent admission forwards steering to its live foreground
+  child. `--no-subagent-steering`, `CAI_SUBAGENT_STEERING=false`, or
+  `[agent] subagent_steering=false` queues parent work instead. C and Lua
+  runtimes expose the corresponding `disable_subagent_steering` policy.
+- **Verification:** request captures distinguish manual review, model-launched
+  review, and ordinary worker steering from parent turns. Disabled delivery
+  stays in Softline's editable queue, including Alt-E/requeue; CLI overrides
+  inherited INI/environment policy. Manual queue delivery is initialized for
+  every interactive invocation, including the standalone test scaffold.
 
 ## BUG-034: Reported ambiguous patch requires its actual input
 

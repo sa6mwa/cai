@@ -156,6 +156,8 @@ F("agent", "terminal", NOTBOOL, RUNTIME, disable_terminal, 0, NULL,
   "Enable managed terminal tools.")
 F("agent", "review_subagent", NOTBOOL, RUNTIME, disable_review_subagent, 0,
   NULL, "Enable the built-in reviewer.")
+F("agent", "subagent_steering", NOTBOOL, RUNTIME, disable_subagent_steering, 0,
+  NULL, "Steer the foreground child; when disabled, queue a parent turn.")
 F("agent", "web_search", NOTBOOL, RUNTIME, disable_web_search, 0, NULL,
   "Enable Smith hosted web_search on Responses providers; Chat Completions "
   "uses optional SearXNG instead.")

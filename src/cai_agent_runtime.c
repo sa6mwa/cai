@@ -685,6 +685,7 @@ struct cai_agent_runtime {
   cai_runtime_subagent_profile *subagents;
   size_t subagent_count;
   int review_subagent_enabled;
+  int disable_subagent_steering;
   char **review_allowed_models;
   size_t review_allowed_model_count;
   char **review_allowed_reasoning_efforts;
@@ -702,6 +703,10 @@ struct cai_agent_runtime {
   char *resumed_subagent_profile;
   char *resumed_subagent_parent_tool_call_id;
   struct cai_agent_runtime *active_review;
+  struct cai_agent_runtime *active_subagent;
+  /* Borrowed until handoff/child destruction. The parent outlives its child;
+   * parent->lock protects published child pointers and steering admission. */
+  struct cai_agent_runtime *parent_runtime;
   int review_launching;
   /* A review pause is journaled and checkpointed independently of the live
    * child pointer.  That makes queued parent work stay held across a crash. */
@@ -1401,6 +1406,10 @@ static int cai_runtime_forward_subagent_event(
         rc = cai_runtime_append_journal_event_locked(
             parent, "assistant_text_delta", event->data, NULL, error);
       }
+    } else if (parent->record_transcript &&
+               event->type == CAI_AGENT_EVENT_STEERING_DELIVERED) {
+      rc = cai_runtime_append_journal_event_locked(parent, "subagent_input",
+                                                   event->data, NULL, error);
     } else if (parent->record_transcript &&
                event->type == CAI_AGENT_EVENT_RESPONSE_COMPLETED) {
       rc = cai_runtime_append_journal_event_locked(parent, "assistant_text_end",
@@ -7395,6 +7404,7 @@ int cai_agent_runtime_open(cai_client *client,
         config->logger_disabled || CAI_CLIENT_IMPL(client)->logger_disabled;
   }
   runtime->review_mode = review_mode;
+  runtime->disable_subagent_steering = config->disable_subagent_steering;
   runtime->terminal_enabled =
       !config->disable_terminal &&
               ((review_mode ? preset->review_tool_capabilities
@@ -7951,6 +7961,23 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
     pthread_mutex_unlock(&runtime->lock);
     cai_runtime_input_node_free(node);
     return cai_set_error(error, CAI_ERR_CANCELLED, "agent runtime is closing");
+  }
+  if ((kind == CAI_RUNTIME_INPUT_INTERACTIVE ||
+       kind == CAI_RUNTIME_INPUT_STEERING) &&
+      (runtime->active_subagent != NULL || runtime->active_review != NULL)) {
+    cai_agent_runtime *child = runtime->active_subagent != NULL
+                                   ? runtime->active_subagent
+                                   : runtime->active_review;
+    if (!runtime->disable_subagent_steering) {
+      /* Keep the borrowed child alive through admission. Child event callbacks
+       * run outside its lock, and cannot recursively launch another child. */
+      rc = cai_runtime_enqueue_input(child, text, CAI_RUNTIME_INPUT_STEERING,
+                                     error);
+      pthread_mutex_unlock(&runtime->lock);
+      cai_runtime_input_node_free(node);
+      return rc;
+    }
+    kind = CAI_RUNTIME_INPUT_QUEUED_TURN;
   }
   if (runtime->model_switching || runtime->settings_applying) {
     pthread_mutex_unlock(&runtime->lock);
@@ -9512,6 +9539,7 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
   pthread_mutex_lock(&parent->lock);
   if (rc == CAI_OK && !parent->stopping) {
     parent->active_review = review;
+    review->parent_runtime = parent;
     parent->review_pause_pending = 1;
     rc = cai_runtime_append_journal_event_locked(parent, "review_pending",
                                                  review->session_id,
@@ -9545,6 +9573,8 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
   }
   if (rc != CAI_OK && !pause_marker_appended) {
     parent->active_review = NULL;
+    if (review != NULL)
+      review->parent_runtime = NULL;
     parent->review_pause_pending = 0;
   }
   parent->review_launching = 0;
@@ -9775,6 +9805,8 @@ static int cai_runtime_finish_review_internal(cai_agent_runtime *parent,
     }
     cai_error_cleanup(&event_error);
     parent->active_review = NULL;
+    if (require_parent_owner)
+      review->parent_runtime = NULL;
     parent->review_pause_pending = 0;
     parent->review_handoff_staged = 0;
     parent->review_handoff_committed = 0;
@@ -10262,6 +10294,8 @@ static int cai_runtime_run_subagent(void *context, const void *params,
   }
   if (rc == CAI_OK) {
     pthread_mutex_lock(&parent->lock);
+    parent->active_subagent = child;
+    child->parent_runtime = parent;
     if (review)
       parent->active_review = child;
     pthread_mutex_unlock(&parent->lock);
@@ -10362,15 +10396,18 @@ static int cai_runtime_run_subagent(void *context, const void *params,
         args->profile, execution.parent_tool_call_id, handover,
         strlen(handover), args->metadata_json, NULL, error);
   }
-  if (child != NULL)
-    cai_agent_runtime_close(child);
   pthread_mutex_lock(&parent->lock);
+  parent->active_subagent = NULL;
+  if (child != NULL)
+    child->parent_runtime = NULL;
   parent->subagent_active = 0;
   if (parent->active_review == child)
     parent->active_review = NULL;
   parent->review_pause_pending = 0;
   pthread_cond_broadcast(&parent->condition);
   pthread_mutex_unlock(&parent->lock);
+  if (child != NULL)
+    cai_agent_runtime_close(child);
   if (rc == CAI_OK) {
     result->profile = cai_tool_result_strdup(args->profile, error);
     result->status = cai_tool_result_strdup(
@@ -11413,11 +11450,6 @@ int cai_agent_runtime_submit_steering_threadsafe(cai_agent_runtime *runtime,
                                                  cai_error *error) {
   if (runtime == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID, "agent runtime is required");
-  }
-  if (runtime->review_mode) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "isolated review runtime does not accept steering "
-                         "input");
   }
   return cai_runtime_enqueue_input(runtime, text, CAI_RUNTIME_INPUT_STEERING,
                                    error);
@@ -12514,6 +12546,16 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
 
   if (runtime->worker_started) {
     pthread_join(runtime->worker_thread, NULL);
+  }
+  if (runtime->parent_runtime != NULL) {
+    cai_agent_runtime *parent = runtime->parent_runtime;
+    pthread_mutex_lock(&parent->lock);
+    if (parent->active_review == runtime)
+      parent->active_review = NULL;
+    if (parent->active_subagent == runtime)
+      parent->active_subagent = NULL;
+    runtime->parent_runtime = NULL;
+    pthread_mutex_unlock(&parent->lock);
   }
   while ((event = runtime->event_head) != NULL) {
     runtime->event_head = event->next;

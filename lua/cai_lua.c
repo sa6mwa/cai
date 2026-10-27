@@ -3756,6 +3756,8 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
       cai_lua_opt_string_field(L, 2, "review_reasoning_summary", NULL);
   config.disable_review_subagent =
       cai_lua_opt_bool_field(L, 2, "disable_review_subagent", 0);
+  config.disable_subagent_steering =
+      cai_lua_opt_bool_field(L, 2, "disable_subagent_steering", 0);
   config.developer_instructions_extension =
       cai_lua_opt_string_field(L, 2, "developer_instructions_extension", NULL);
   config.enable_image_generation =

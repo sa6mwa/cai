@@ -154,6 +154,16 @@ hardlinked image files are rejected.
 Slash commands echo as plain `$ /command` input rows. The reasoning title is
 rendered through libmdf with ANSI disabled; Softline owns the gray `! ` line.
 
+Enter starts an idle turn or steers active work. Tab queues a normal next turn.
+Pending input uses Softline's native queue; a steering prompt appears in the
+conversation feed only when the runtime inserts it after the current response
+or tool round. It never interrupts streamed assistant text. Resume uses those
+same delivery boundaries. Foreground reviewers and other subagents receive
+steering by default. `--no-subagent-steering` leaves it queued for the parent
+instead; `CAI_SUBAGENT_STEERING` and `[agent] subagent_steering` configure the
+same policy. The C runtime field is `disable_subagent_steering`, also accepted
+by Lua runtime constructors.
+
 Interactive prompt recall uses Softline's native store under
 `$XDG_STATE_HOME/cai/history/`, falling back to
 `$HOME/.local/state/cai/history/`. The canonical workspace path is the key;
@@ -943,6 +953,7 @@ controls apply at startup, including when resuming a conversation:
 | Managed commands | `--terminal` | `CAI_TERMINAL` | `[agent] terminal` | on |
 | Image generation | `--image-generation` | `CAI_IMAGE_GENERATION` | `[agent] image_generation` | on |
 | Review subagent | `--review-subagent` | `CAI_REVIEW_SUBAGENT` | `[agent] review_subagent` | on |
+| Foreground child steering | `--subagent-steering` | `CAI_SUBAGENT_STEERING` | `[agent] subagent_steering` | on |
 | Codex global/ancestor instructions | `--codex-agents-md` | `CAI_CODEX_AGENTS_MD` | `[agent] codex_agents_md` | off |
 
 Startup flags, environment and `config.ini` determine instruction settings;

@@ -206,3 +206,89 @@ void cai_cli_replay_close(cai_cli_replay *r) {
   }
   free(r);
 }
+
+typedef struct ordered_input {
+  struct ordered_input *next;
+  unsigned long long sequence;
+  const char *type;
+  char *text;
+} ordered_input;
+struct cai_cli_replay_order {
+  ordered_input *inputs;
+  int journal_v2;
+};
+int cai_cli_replay_order_open(int journal_v2, cai_cli_replay_order **out,
+                              cai_error *error) {
+  *out = calloc(1U, sizeof(**out));
+  if (*out == NULL)
+    return cai_cli_error(error, CAI_ERR_NOMEM, "order replay prompts");
+  (*out)->journal_v2 = journal_v2;
+  return CAI_OK;
+}
+int cai_cli_replay_order_feed(cai_cli_replay_order *order,
+                              const cai_agent_session_event *event,
+                              cai_agent_session_event_fn emit, void *context,
+                              cai_error *error) {
+  const char *type = event->type;
+  ordered_input *input, **link;
+  int rc;
+  if (strcmp(type, "input_journal_v2") == 0)
+    order->journal_v2 = 1;
+  if (order->journal_v2 && event->data != NULL &&
+      (strcmp(type, "turn_submitted") == 0 ||
+       strcmp(type, "turn_queued") == 0 ||
+       strcmp(type, "steering_queued") == 0)) {
+    input = calloc(1U, sizeof(*input));
+    if (input == NULL)
+      return cai_cli_error(error, CAI_ERR_NOMEM,
+                           "retain pending replay prompt");
+    input->text = strdup(event->data);
+    if (input->text == NULL) {
+      free(input);
+      return cai_cli_error(error, CAI_ERR_NOMEM, "copy pending replay prompt");
+    }
+    input->type = strcmp(type, "turn_submitted") == 0 ? "turn_submitted"
+                  : strcmp(type, "turn_queued") == 0  ? "turn_queued"
+                                                      : "steering_queued";
+    input->sequence = event->sequence;
+    input->next = order->inputs;
+    order->inputs = input;
+    return CAI_OK;
+  }
+  if (strcmp(type, "input_consumed") == 0 && event->data != NULL) {
+    char *end;
+    unsigned long long sequence;
+    errno = 0;
+    sequence = strtoull(event->data, &end, 10);
+    if (errno == 0 && end != event->data && *end == '\0') {
+      for (link = &order->inputs; *link != NULL; link = &(*link)->next) {
+        cai_agent_session_event delivered;
+        input = *link;
+        if (input->sequence != sequence)
+          continue;
+        delivered = *event;
+        delivered.type = input->type;
+        delivered.data = input->text;
+        rc = emit(context, &delivered, error);
+        if (rc != CAI_OK)
+          return rc;
+        *link = input->next;
+        free(input->text);
+        free(input);
+        break;
+      }
+    }
+  }
+  return emit(context, event, error);
+}
+void cai_cli_replay_order_close(cai_cli_replay_order *order) {
+  ordered_input *input;
+  if (order == NULL)
+    return;
+  while ((input = order->inputs) != NULL) {
+    order->inputs = input->next;
+    free(input->text);
+    free(input);
+  }
+  free(order);
+}

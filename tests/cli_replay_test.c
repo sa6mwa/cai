@@ -2,6 +2,86 @@
 #include <assert.h>
 #include <limits.h>
 #include <stdio.h>
+#include <string.h>
+
+typedef struct ordered_output {
+  char text[256];
+  int fail;
+} ordered_output;
+static int ordered_emit(void *context, const cai_agent_session_event *event,
+                        cai_error *error) {
+  ordered_output *out = context;
+  (void)error;
+  if (out->fail)
+    return CAI_ERR_TRANSPORT;
+  if (event->data != NULL && strcmp(event->type, "input_consumed") != 0) {
+    assert(strlen(out->text) + strlen(event->data) + 2U < sizeof(out->text));
+    strcat(out->text, event->data);
+    strcat(out->text, "|");
+  }
+  return CAI_OK;
+}
+static void test_order(cai_error *error) {
+  cai_cli_replay_order *order = NULL;
+  cai_agent_session_event event;
+  ordered_output out;
+  memset(&out, 0, sizeof(out));
+  assert(cai_cli_replay_order_open(1, &order, error) == CAI_OK);
+  event.sequence = 2U;
+  event.type = "turn_submitted";
+  event.data = "prompt";
+  assert(cai_cli_replay_order_feed(order, &event, ordered_emit, &out, error) ==
+         CAI_OK);
+  assert(out.text[0] == '\0');
+  event.sequence = 3U;
+  event.type = "input_consumed";
+  event.data = "2";
+  assert(cai_cli_replay_order_feed(order, &event, ordered_emit, &out, error) ==
+         CAI_OK);
+  event.sequence = 4U;
+  event.type = "assistant_text_delta";
+  event.data = "first";
+  assert(cai_cli_replay_order_feed(order, &event, ordered_emit, &out, error) ==
+         CAI_OK);
+  event.sequence = 5U;
+  event.type = "steering_queued";
+  event.data = "steer";
+  assert(cai_cli_replay_order_feed(order, &event, ordered_emit, &out, error) ==
+         CAI_OK);
+  event.sequence = 6U;
+  event.type = "assistant_text_delta";
+  event.data = "last";
+  assert(cai_cli_replay_order_feed(order, &event, ordered_emit, &out, error) ==
+         CAI_OK);
+  assert(strcmp(out.text, "prompt|first|last|") == 0);
+  event.sequence = 7U;
+  event.type = "input_consumed";
+  event.data = "5";
+  out.fail = 1;
+  assert(cai_cli_replay_order_feed(order, &event, ordered_emit, &out, error) ==
+         CAI_ERR_TRANSPORT);
+  out.fail = 0;
+  assert(cai_cli_replay_order_feed(order, &event, ordered_emit, &out, error) ==
+         CAI_OK);
+  assert(strcmp(out.text, "prompt|first|last|steer|") == 0);
+  /* Duplicate/unmatched/malformed receipts never duplicate a prompt. */
+  assert(cai_cli_replay_order_feed(order, &event, ordered_emit, &out, error) ==
+         CAI_OK);
+  event.data = "999";
+  assert(cai_cli_replay_order_feed(order, &event, ordered_emit, &out, error) ==
+         CAI_OK);
+  event.data = "not a number";
+  assert(cai_cli_replay_order_feed(order, &event, ordered_emit, &out, error) ==
+         CAI_OK);
+  assert(strcmp(out.text, "prompt|first|last|steer|") == 0);
+  event.sequence = 8U;
+  event.type = "turn_queued";
+  event.data = "not yet delivered";
+  assert(cai_cli_replay_order_feed(order, &event, ordered_emit, &out, error) ==
+         CAI_OK);
+  cai_cli_replay_order_close(order);
+  assert(strcmp(out.text, "prompt|first|last|steer|") == 0);
+}
 
 static void feed(cai_cli_replay *r, unsigned long long sequence,
                  const char *type, const char *data, cai_error *error) {
@@ -17,6 +97,7 @@ int main(void) {
   unsigned long long base;
   int i;
   cai_error_init(&error);
+  test_order(&error);
   assert(cai_cli_replay_open(0U, &r, &error) == CAI_ERR_INVALID && r == NULL);
   cai_error_cleanup(&error);
   assert(cai_cli_replay_open((size_t)LONG_MAX, &r, &error) == CAI_OK);

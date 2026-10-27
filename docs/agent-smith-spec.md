@@ -771,8 +771,11 @@ embedding event loop to one rendering model. The inherited event receiver can
 distinguish the source through `event.runtime_session_id`.
 
 Once started, the parent is paused. CAI journals and checkpoints that pause
-before `start_review` returns. Immediate and steering input are rejected;
-normal queued turns remain accepted, journaled, and FIFO, but cannot start.
+before `start_review` returns. Immediate parent turns are rejected, while
+interactive/steering input targets the foreground child at its next safe
+response/tool boundary. With `disable_subagent_steering` set, that input becomes
+a queued parent turn instead. Normal queued turns remain accepted, journaled,
+and FIFO, but cannot start.
 If the process crashes, resume restores the pause before it considers replayed
 queued turns. The host starts a replacement isolated review and completes its
 handoff; it never resumes queued parent work without review context.
