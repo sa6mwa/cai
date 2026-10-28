@@ -5,6 +5,24 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-052: Completed lease transactions make the next Pouch open slow
+
+- **Status:** reproduced in liblockdc 0.23.0; upstream fix underway.
+- **Evidence:** the reported startup spent roughly seven seconds recovering
+  722 transaction decisions before instruction/context loading, with 2,888
+  storage reads and 722 durable deletes. The root was only about 7.6 MiB.
+- **Independent reproduction:** a public-SDK-only probe performs 128 successful
+  lease-retention renewals and cleanly closes. First reopen takes 0.945 seconds,
+  recovering 128 decisions with 512 reads and 128 fsyncs; the next takes 0.010
+  seconds. Acquire/release without renewals and collection-retention renewals
+  leave no recovery backlog. CAI currently renews session metadata per event.
+- **Report:** `stash/liblockdc-0.23.0-startup-transaction-recovery.md` and its
+  standalone C89 probe/runner contain the upstream reproduction and controls.
+  These local investigation files are intentionally under ignored `stash/`.
+- **Next:** upgrade when the upstream fix is released, rerun the reproducer
+  and affected Pouch regressions, and rebuild static musl CAI. No recovery or
+  durability workaround has been introduced in CAI.
+
 ## BUG-051: Prompt recall remains in plaintext Softline files
 
 - **Status:** fixed.
