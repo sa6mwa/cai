@@ -75,9 +75,12 @@ expect 'Goal diagnostic finished'
 expect 'Worked for'
 [[ $(requests) == $((before+2)) ]]
 printf 'MANUAL_READ_MARKER\n' >"$work/tracked.txt"
-plan '{"plan":["__read_file__","Manual followup finished"]}'
+# Settle the goal inside this turn, before an automatic continuation can start.
+# The following restart deliberately tests an idle, paused conversation.
+plan '{"plan":["__read_file__",{"tool":"update_goal","arguments":{"status":"paused"}},"Manual followup finished"]}'
 send 'Please proceed with my next task\r'
 expect_assistant 'Manual followup finished'
+expect 'goal=paused'
 jq -s '.[-1]' "$root/peer/requests.jsonl" >"$root/manual-request"
 contains "$root/manual-request" MANUAL_READ_MARKER
 json "$root/manual-request" 'any(.tools[]; .name == "apply_patch")'
