@@ -103,6 +103,13 @@ Undo restores only ordinary draft text, never that identity or approval.
 Escape cancels editing and restores the original queued entry. Alt-K/Alt-J
 use Softline's separate whole-draft stash, without application key overrides.
 
+Model, reasoning and tier changes remain editable in Softline until delivery.
+After acceptance, runtime events confirm the effective settings; the feed does
+not announce a second queue. Changes accepted at the same boundary can be
+confirmed together with their final values. CAI retains only a notification
+field mask, never another command queue or a copy of requested values. Session
+changes discard outstanding notifications.
+
 Conversation steering that misses the final active seam can start at idle only
 when native delivery, approval, draft/search and stopped state permit it.
 Alt-S's draft-retaining shell handoff and Alt-Q's draft-saving exit are explicit

@@ -24,6 +24,8 @@ for chat in false true; do
   send '/fast\r'; expect 'Q 2. /fast'
   send '/tier list\r'; expect 'Selected: default'
   release; expect_assistant CONTINUED; expect_assistant 'FOLLOWUP DONE'
+  expect 'Service tier selected: priority'
+  absent "$term/feed" 'queued for the next safe boundary'
   expect_turn '' 'FOLLOWUP DONE'
   jq -s --argjson before "$before" '.[ $before: ]' "$root/peer/requests.jsonl" >"$root/turn"
   json "$root/turn" 'length == 3 and .[0].service_tier == "default" and .[1].service_tier == "priority" and .[2].service_tier == "priority" and (.[1] | tostring | contains("DEFERRED USER INPUT") | not) and (.[2] | tostring | contains("DEFERRED USER INPUT"))'
@@ -47,6 +49,8 @@ for chat in false true; do
     fi
     send '/tier list\r'; expect "Selected: $previous"
     release; expect_assistant "TIER $key CONTINUED"; expect 'Worked for'
+    expect "Service tier selected: $expected"
+    absent "$term/feed" 'queued for the next safe boundary'
     jq -s --argjson before "$before" '.[ $before: ]' "$root/peer/requests.jsonl" >"$root/turn"
     json "$root/turn" "length == 2 and .[0].service_tier == \"$previous\" and .[1].service_tier == \"$expected\""
   done

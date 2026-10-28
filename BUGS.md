@@ -5,6 +5,21 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-060: Settings commands announce another queue after Softline delivery
+
+- **Status:** fixed.
+- **Evidence:** a queued `/r low` reached its safe response/tool boundary, then
+  CAI printed that the reasoning change was queued again. The runtime had
+  accepted an asynchronous settings update, not another Softline queue entry.
+- **Resolution:** confirm effective settings through runtime events after the
+  update has applied. Model/reasoning updates accepted together share a final
+  confirmation. Tier changes use the same path. No command or requested value
+  is stored in another application queue; session switches clear notifications.
+- **Verification:** both protocol fixtures cover standalone reasoning changes,
+  combined model/reasoning changes, final outbound request values and a single
+  confirmation without the second queue message. Tier cycling, explicit tier
+  selection and Fast toggling cover the same behavior.
+
 ## BUG-059: Explicit incoming-message discard can be lost at teardown
 
 - **Status:** fixed.

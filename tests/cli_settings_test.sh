@@ -46,7 +46,16 @@ selection() {
   send '/r high\r'; expect 'Q 2. /r high'
   send '/m\r'; expect 'Reasoning effort: high'; [[ $(requests) == "$count" ]]
   release; expect_turn "$offset" 'BOUNDARY settings response'; selection gpt-6-luna high
+  expect 'Model changed to gpt-6-luna; reasoning effort high'
+  absent "$term/feed" 'queued for the next safe model/tool boundary'
+  [[ $(grep -Fc 'Model changed to gpt-6-luna; reasoning effort high' "$term/feed") == 1 ]]
   contains "$root/request" 'settings tool output'; absent "$root/request" /reasoning
+  settings_plan '[{"pause":true,"tool":"read_file","arguments":{"path":"data.txt"}},"REASONING ONLY DONE"]'
+  offset=$(wc -c <"$term/text"); send 'Apply reasoning at the tool seam\r'; expect 'STREAM in flight'
+  send '/r low\r'; expect 'Q 1. /r low'
+  release; expect_turn "$offset" 'REASONING ONLY DONE'; expect 'Reasoning effort changed to low'
+  selection gpt-6-luna low
+  absent "$term/feed" 'queued for the next safe model/tool boundary'
   send '/model gpt-6.1-sol ultra\r'; expect 'reasoning effort ultra'; terminal_close
   terminal_start; send '/model\r'; expect 'Reasoning effort: ultra'
   settings_plan '["RESUMED settings response"]'

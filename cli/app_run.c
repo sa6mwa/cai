@@ -161,6 +161,9 @@ typedef struct cli_state {
   int starting_goal;
   size_t startup_goal_pending;
   size_t next_instruction;
+  /* Notification fields only. Softline owns commands until delivery; runtime
+   * owns accepted updates. No command or requested value is copied here. */
+  unsigned int settings_notice_fields;
   cai_chatgpt_quota quota;
   cai_cli_quota_refresh quota_refresh;
   sl_watch_id_t quota_watch_id;
@@ -201,6 +204,7 @@ static int cli_host_process(cli_state *state, cai_error *error);
 static int cli_pump(cli_state *state, long timeout, cai_error *error);
 static int cli_sync_queue(cli_state *state, int at_boundary, cai_error *error);
 static int cli_sync_status(cli_state *state, cai_error *error);
+static int cli_settings_notice(cli_state *state, cai_error *error);
 static int cli_review_event(void *context, const cai_agent_runtime_event *event,
                             cai_error *error);
 
@@ -1525,6 +1529,11 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     }
   }
   cli_log_event(state, event);
+  if (event->parent_tool_call_id == NULL && !state->batch) {
+    int notified = cli_settings_notice(state, error);
+    if (notified != CAI_OK)
+      return notified;
+  }
   if (event->type == CAI_AGENT_EVENT_REQUEST_RETRY) {
     if (!state->batch &&
         (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0))
@@ -2846,6 +2855,7 @@ static int cli_prepare_clipboard(cli_state *state, cai_error *error) {
 }
 
 static void cli_close_runtime(cli_state *state) {
+  state->settings_notice_fields = 0U;
   if (state->has_review_watch) {
     (void)sl_watch_remove(state->sl, state->review_watch_id);
     state->has_review_watch = 0;
@@ -2974,6 +2984,63 @@ static int cli_code_span(cli_state *state, const char *value) {
            : 0;
   free(fence);
   return rc;
+}
+
+static int cli_settings_changed(cli_state *state,
+                                const cai_agent_runtime_settings *settings,
+                                unsigned int fields) {
+  int model = (fields & CAI_AGENT_RUNTIME_SETTING_MODEL) != 0U &&
+              settings->model != NULL;
+  int effort = (fields & CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT) != 0U &&
+               settings->reasoning_effort != NULL;
+  if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
+    return CAI_ERR_TRANSPORT;
+  if (model || effort) {
+    const char *prefix =
+        model ? "Model changed to " : "Reasoning effort changed to ";
+    if (cli_text(state, prefix, strlen(prefix)) != 0 ||
+        cli_code_span(state, model ? settings->model
+                                   : settings->reasoning_effort) != 0 ||
+        (model && effort &&
+         (cli_text(state, "; reasoning effort ", 19U) != 0 ||
+          cli_code_span(state, settings->reasoning_effort) != 0)) ||
+        cli_text(state, ".\n", 2U) != 0 || cli_finish_response(state) != 0)
+      return CAI_ERR_TRANSPORT;
+  }
+  if ((fields & CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER) != 0U &&
+      settings->service_tier != NULL) {
+    if (cli_text(state, "Service tier selected: ", 23U) != 0 ||
+        cli_code_span(state, settings->service_tier) != 0 ||
+        cli_text(state, ".\n", 2U) != 0 || cli_finish_response(state) != 0)
+      return CAI_ERR_TRANSPORT;
+  }
+  return CAI_OK;
+}
+
+/* Only confirm real effective values, after the worker has applied the update.
+ * Native runtime events drive this check; there is no polling or UI work queue.
+ * Several commands delivered at one boundary can settle as one final update. */
+static int cli_settings_notice(cli_state *state, cai_error *error) {
+  cai_agent_runtime_settings effective, pending;
+  cai_error local;
+  unsigned int fields;
+  int rc;
+  if (state->settings_notice_fields == 0U || state->runtime == NULL ||
+      state->exit_requested)
+    return CAI_OK;
+  cai_error_init(&local);
+  rc = cai_agent_runtime_get_settings(state->runtime, &effective, &pending,
+                                      &local);
+  cai_error_cleanup(&local);
+  if (rc == CAI_ERR_INVALID)
+    return CAI_OK; /* A transient application/switch is still in progress. */
+  if (rc != CAI_OK)
+    return cai_cli_error(error, rc, "read applied runtime settings");
+  if ((pending.present & state->settings_notice_fields) != 0U)
+    return CAI_OK;
+  fields = state->settings_notice_fields;
+  state->settings_notice_fields = 0U;
+  return cli_settings_changed(state, &effective, fields);
 }
 
 static int cli_session_field(cli_state *state, const char *label,
@@ -3590,12 +3657,14 @@ static int cli_tier_command(cli_state *state, const char *arguments, int fast,
     fields[1] = pslog_bool("applied", result.applied);
     cli_logger(state)->info(cli_logger(state), "cai.service_tier.selected",
                             fields, 2U);
-    snprintf(message, sizeof(message), "Service tier %s: `%s`.\n",
-             result.applied ? "selected" : "queued for the next safe boundary",
-             selected);
-    if (cli_text(state, message, strlen(message)) != 0 ||
-        cli_finish_response(state) != 0)
-      rc = CAI_ERR_TRANSPORT;
+    if (!result.applied)
+      state->settings_notice_fields |= requested.present;
+    else {
+      unsigned int announced =
+          requested.present | state->settings_notice_fields;
+      state->settings_notice_fields = 0U;
+      rc = cli_settings_changed(state, &result.effective, announced);
+    }
   }
   cai_model_catalog_close(catalog);
   return rc;
@@ -3610,7 +3679,7 @@ static int cli_settings_command(cli_state *state, const char *arguments,
   pslog_field fields[3];
   char buffer[512], message[1024], target_model[257];
   char *first, *second, *extra, *save = NULL;
-  const char *model, *effort, *prefix, *suffix;
+  const char *model, *effort;
   size_t i;
   int rc, listing;
   while (*arguments == ' ' || *arguments == '\t')
@@ -3835,22 +3904,13 @@ static int cli_settings_command(cli_state *state, const char *arguments,
                       "user", message, strlen(message), fields, 3U);
   if (state->batch)
     return cli_markdown(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
-  prefix = requested.model != NULL
-               ? (result.applied ? "Model changed to " : "Model ")
-               : (result.applied ? "Reasoning effort changed to "
-                                 : "Reasoning effort ");
-  suffix = result.applied ? ".\n"
-                          : " queued for the next safe model/tool boundary.\n";
-  if (cli_text(state, prefix, strlen(prefix)) != 0 ||
-      cli_code_span(state,
-                    requested.model != NULL ? requested.model : effort) != 0 ||
-      (requested.model != NULL && effort != NULL &&
-       (cli_text(state, "; reasoning effort ", 19U) != 0 ||
-        cli_code_span(state, effort) != 0)) ||
-      cli_text(state, suffix, strlen(suffix)) != 0 ||
-      cli_finish_response(state) != 0)
-    return CAI_ERR_TRANSPORT;
-  return CAI_OK;
+  if (!result.applied) {
+    state->settings_notice_fields |= requested.present;
+    return CAI_OK;
+  }
+  requested.present |= state->settings_notice_fields;
+  state->settings_notice_fields = 0U;
+  return cli_settings_changed(state, &result.effective, requested.present);
 }
 
 static int cli_tools_write(void *context, const char *bytes, size_t count) {
