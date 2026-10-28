@@ -772,6 +772,10 @@ IDs and current/pending selection, or NAME to select one. ChatGPT uses its
 signed-in per-model catalog; OpenAI API request options do not guarantee
 account/model access. Changes apply at the next safe model/tool boundary and
 survive resume. Explicit unsupported advertised choices fail unchanged.
+Enter and Alt-Enter both apply tier changes before the next request, including
+during an active turn. The native command entry stays editable until applied.
+The request already in flight retains its tier. Queued conversation prompts do
+not delay these routing preferences.
 .TP
 .B /fast
 Toggle Fast/priority and explicit normal routing. Requires a known Fast choice

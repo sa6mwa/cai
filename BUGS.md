@@ -5,6 +5,20 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-055: Enter-submitted tier changes wait for the whole turn
+
+- **Status:** fixed.
+- **Evidence:** a paused tool-round reproduction showed `/fast` submitted with
+  Enter staying Q while the following provider request used the original tier.
+  The existing regression exercised only Alt-Enter and missed this path.
+- **Resolution:** `/fast` and `/tier` routing changes declare independent native
+  queue policies and become executable at the next runtime input boundary for
+  either key. They remain editable/approval-controlled until consumed; the
+  in-flight request and ordinary conversation queue semantics are unchanged.
+- **Verification:** focused Debug classification and local-provider wire checks
+  cover Enter toggles, explicit Enter selections, Alt-Enter toggles, unchanged
+  in-flight settings, continuation routing and session resume on both transports.
+
 ## BUG-054: Whole-turn theme gating strands later steering messages
 
 - **Status:** fixed.

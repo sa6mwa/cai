@@ -25,6 +25,7 @@ static int test_command_queue_modes(void) {
       "ordinary steer", "/theme gruvbox:rose-pine-dawn",
       "/model example", "/reasoning high",
       "/goal pause",    "/yolo on"};
+  static const char *const requests[] = {"/fast", "/tier", "/tier flex"};
   cli_state state;
   sl_prompt_queue_policy_t policy;
   size_t i;
@@ -50,6 +51,26 @@ static int test_command_queue_modes(void) {
         SL_PROMPT_QUEUE_MODE_STEER)
       return 1;
   }
+  for (i = 0U; i < sizeof(requests) / sizeof(requests[0]); i++) {
+    sl_prompt_queue_mode_t modes[2];
+    size_t m;
+    modes[0] = SL_PROMPT_QUEUE_MODE_QUEUED;
+    modes[1] = SL_PROMPT_QUEUE_MODE_STEER;
+    for (m = 0U; m < 2U; m++) {
+      memset(&policy, 0, sizeof(policy));
+      if (cli_prompt_policy(NULL, requests[i], modes[m], &policy, &state) !=
+              SL_OK ||
+          !policy.enqueue || !policy.independent || policy.executable ||
+          cli_command_at_feed_boundary(requests[i]) ||
+          cli_command_at_turn_boundary(requests[i]) ||
+          cli_prompt_mode(&state, requests[i], modes[m]) != modes[m])
+        return 1;
+    }
+  }
+  if (cli_command_at_request_boundary("/fastest") ||
+      cli_command_at_request_boundary("/tiers") ||
+      cli_command_at_request_boundary("ordinary prompt"))
+    return 1;
   state.was_busy = 0;
   for (i = 0U; i < sizeof(turns) / sizeof(turns[0]); i++) {
     memset(&policy, 0, sizeof(policy));

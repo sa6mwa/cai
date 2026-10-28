@@ -991,6 +991,14 @@ static int cli_is_compact(const char *line) {
          (line[8] == '\0' || line[8] == ' ' || line[8] == '\t');
 }
 
+/* Routing preferences affect the next request, not the next user turn.
+ * Both Enter and Alt-Enter retain a native editable entry until that seam. */
+static int cli_command_at_request_boundary(const char *line) {
+  size_t length = strcspn(line, " \t");
+  return length == 5U && (strncmp(line, "/fast", length) == 0 ||
+                          strncmp(line, "/tier", length) == 0);
+}
+
 /* Queued UI commands share admission; delivery follows their actual contract
  * rather than whether Enter or Alt-Enter happened to produce a Q/S label. */
 static int cli_command_at_turn_boundary(const char *line) {
@@ -1102,6 +1110,12 @@ static int cli_prompt_ready(cli_state *state, const char *text,
   }
   if (cli_command_at_turn_boundary(text) || state->shell.pid > 0)
     return CAI_OK;
+  if (cli_command_at_request_boundary(text)) {
+    if (!*ready && at_boundary && state->review_runtime == NULL &&
+        !state->foreground_subagent)
+      *ready = 1;
+    return CAI_OK;
+  }
   if (!*ready && mode == SL_PROMPT_QUEUE_MODE_STEER && at_boundary &&
       (strncmp(text, "/theme ", 7U) == 0 ||
        strncmp(text, "/theme\t", 7U) == 0 || state->options.subagent_steering ||
@@ -1126,10 +1140,11 @@ static int cli_prompt_policy(sl_t *sl, const char *text,
   cai_error error;
   int rc;
   (void)sl;
-  policy->independent = cli_command_at_feed_boundary(text);
+  policy->independent = cli_command_at_feed_boundary(text) ||
+                        cli_command_at_request_boundary(text);
   policy->enqueue = text[0] == '/' || text[0] == '!';
   /* Busy Softline already admits ordinary turns through its native queue.
-   * Non-inspection commands use that lane, so seam steers retain their native
+   * Other mutating commands use that lane, so seam steers retain their native
    * priority over Q entries. Managed admission is still required while idle
    * to keep every command editable before dispatch. */
   if (state->was_busy && !policy->independent)
@@ -1866,14 +1881,14 @@ static int cli_idle_input_ready(cli_state *state, int *ready,
   return CAI_OK;
 }
 
-/* Only eligible independent inspections and seam steers are owner-consumed.
+/* Eligible inspections, request preferences and seam steers are owner-consumed.
  * Ordinary Q turns and whole-turn commands use native next_prompt delivery. */
 static int cli_messages_process(cli_state *state, int at_boundary,
                                 cai_error *error) {
   sl_prompt_queue_entry_info_t info;
   size_t index;
   char *text;
-  int rc, local, idle;
+  int rc, local, request, idle;
   if (state->exit_requested || state->batch || state->runtime == NULL)
     return CAI_OK;
   rc = cai_cli_messages_sync(state->messages, state->sl, error);
@@ -1893,6 +1908,7 @@ static int cli_messages_process(cli_state *state, int at_boundary,
       return cai_cli_error(error, CAI_ERR_TRANSPORT,
                            "read eligible queued prompt");
     local = cli_command_at_feed_boundary(text);
+    request = cli_command_at_request_boundary(text);
     idle = 0;
     if (!local && info.mode == SL_PROMPT_QUEUE_MODE_STEER && !at_boundary) {
       rc = cli_idle_input_ready(state, &idle, error);
@@ -1901,9 +1917,9 @@ static int cli_messages_process(cli_state *state, int at_boundary,
         return rc;
       }
     }
-    if (!local &&
-        ((!at_boundary && !idle) || info.mode != SL_PROMPT_QUEUE_MODE_STEER ||
-         cli_command_at_turn_boundary(text))) {
+    if (!local && ((!at_boundary && !idle) ||
+                   (!request && info.mode != SL_PROMPT_QUEUE_MODE_STEER) ||
+                   cli_command_at_turn_boundary(text))) {
       sl_free_string(state->sl, text);
       index++;
       continue;

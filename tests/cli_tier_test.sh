@@ -16,15 +16,36 @@ for chat in false true; do
   send '/tier unknown\r'; expect 'tier is not advertised'
   send '/tier list\r'; expect 'Selected: flex'
   send '/tier default\r'; expect 'Service tier selected: default'
-  plan "{\"chat\":$chat,\"catalog\":$catalog,\"plan\":[{\"pause\":true,\"tool\":\"read_file\",\"arguments\":{\"path\":\"input\"}},\"CONTINUED\"]}"
+  plan "{\"chat\":$chat,\"catalog\":$catalog,\"plan\":[{\"pause\":true,\"tool\":\"read_file\",\"arguments\":{\"path\":\"input\"}},\"CONTINUED\",\"FOLLOWUP DONE\"]}"
   printf 'TIER_TOOL_RESULT\n' >"$work/input"
   before=$(requests)
   send 'run tool\r'; expect 'STREAM in flight'
-  send '/fast\033\r'; expect 'S 1. /fast'
+  send 'DEFERRED USER INPUT\r'; expect 'Q 1. DEFERRED USER INPUT'
+  send '/fast\r'; expect 'Q 2. /fast'
   send '/tier list\r'; expect 'Selected: default'
-  release; expect_assistant CONTINUED; expect 'Worked for'
+  release; expect_assistant CONTINUED; expect_assistant 'FOLLOWUP DONE'
+  expect_turn '' 'FOLLOWUP DONE'
   jq -s --argjson before "$before" '.[ $before: ]' "$root/peer/requests.jsonl" >"$root/turn"
-  json "$root/turn" 'length == 2 and .[0].service_tier == "default" and .[1].service_tier == "priority"'
+  json "$root/turn" 'length == 3 and .[0].service_tier == "default" and .[1].service_tier == "priority" and .[2].service_tier == "priority" and (.[1] | tostring | contains("DEFERRED USER INPUT") | not) and (.[2] | tostring | contains("DEFERRED USER INPUT"))'
+  # Explicit selection and steering use the same next-request boundary.
+  for key in enter steer; do
+    plan "{\"chat\":$chat,\"catalog\":$catalog,\"plan\":[{\"pause\":true,\"tool\":\"read_file\",\"arguments\":{\"path\":\"input\"}},\"TIER $key CONTINUED\"]}"
+    before=$(requests)
+    send "routing $key\\r"; expect 'STREAM in flight'
+    if [[ "$key" == enter ]]; then
+      send '/tier flex\r'; expect 'Q 1. /tier flex'
+      expected=flex
+      previous=priority
+    else
+      send '/fast\033\r'; expect 'S 1. /fast'
+      expected=priority
+      previous=flex
+    fi
+    send '/tier list\r'; expect "Selected: $previous"
+    release; expect_assistant "TIER $key CONTINUED"; expect 'Worked for'
+    jq -s --argjson before "$before" '.[ $before: ]' "$root/peer/requests.jsonl" >"$root/turn"
+    json "$root/turn" "length == 2 and .[0].service_tier == \"$previous\" and .[1].service_tier == \"$expected\""
+  done
   terminal_close
   terminal_start
   send '/tier list\r'; expect 'Selected: priority'

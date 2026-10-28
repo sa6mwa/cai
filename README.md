@@ -424,6 +424,10 @@ runtime; no receiver layout or ABI changes are needed.
 and pending tier. `/tier NAME` selects one. `/fast` toggles Fast (`priority`, or
 the provider's advertised `fast` ID) and explicit normal routing (`default`).
 Changes apply at the next safe model/tool boundary and persist with the session.
+Enter and Alt-Enter both use this next-request boundary for tier changes, even
+during an active turn. The command remains editable in Softline until applied;
+the request already in flight keeps its original tier. Routing commands are
+independent of queued conversation prompts and do not submit model input.
 `--service-tier NAME`, `CAI_SERVICE_TIER`, and `[agent] service_tier`
 provide startup overrides. An unset value restores saved routing, or leaves
 new-session routing to the provider. CAI never opts into a paid tier from a

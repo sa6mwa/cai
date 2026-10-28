@@ -15,8 +15,8 @@ preserved. Tests cover both Responses and Chat Completions with local fixtures.
 Softline 0.14.0 completes uniform idle command admission. Its native classifier
 queues every typed slash/shell command; CAI declares execution readiness by
 identity and consumes only entries marked eligible. Independent feed-local
-queries can pass blocked work. Whole-turn commands retain steering intent but
-wait until idle. Enter/Alt-Enter/Tab are no longer intercepted by CAI.
+queries can pass blocked work. Whole-turn commands become Q and wait until idle.
+Enter/Alt-Enter/Tab are no longer intercepted by CAI.
 Fresh managed commands can execute after Escape while the old backlog remains
 stopped. Re-editing old work retains its stop until explicit promotion. There
 is no global delivery-mode workaround, queue reinsert/rebinding, fake submission,
@@ -27,6 +27,14 @@ Trusted host controls (`CAI_APP_STEER` and goal operations), startup instruction
 and non-interactive invocations keep their documented API behavior. They are
 separate from the human TUI command path. Slow synchronous work *after* command
 delivery remains a separate concern; this change does not make it asynchronous.
+
+`/fast`, `/tier` and `/tier NAME` are independent request preferences: both Enter
+and Alt-Enter remain editable until the next runtime input boundary, then update
+the next provider request within the active turn. They do not interrupt the
+in-flight request, become model input, or wait behind queued conversation turns.
+`/tier list` remains a feed-local query. Approval, editing and stopped-entry
+eligibility remain under Softline's control. Changes during an active foreground
+subagent wait until the parent can accept settings.
 
 The findings, matrix and probes below describe the historical baseline. In
 particular, their forced pipe-submission, hidden pipe-backlog, busy-shell
