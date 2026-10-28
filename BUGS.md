@@ -29,7 +29,7 @@ commit and verification evidence.
 
 ## BUG-062: Synchronous review startup overflows the musl worker stack
 
-- **Status:** review startup path fixed; upstream scanner stack usage remains.
+- **Status:** fixed; upstream scanner correction verified with liblql 0.4.0.
 - **Evidence:** reproduced SIGSEGV on a 128 KiB thread while opening a review
   child with real Pouch storage. The LQL flat-equality scanner reserves 178,808
   stack bytes by itself. The final index-refresh log matches the reported
@@ -41,7 +41,9 @@ commit and verification evidence.
   from review startup. Worker stacks retain their platform defaults.
 - **Verification:** native Debug regression uses small default stacks, real
   encrypted collections, a failed default review followed by an explicit
-  review, another review after reopening, and transcript replay.
+  review, another review after reopening, and transcript replay. With liblql
+  0.4.0, the public-SDK selector also passes on a real default-stack musl worker
+  with liblockdc 0.23.0; no enlarged stacks are needed.
 
 ## BUG-061: Long delay after switching models, before request dispatch
 
@@ -247,16 +249,19 @@ commit and verification evidence.
 
 ## BUG-050: SDK LQL collection selectors exceed default musl pthread stacks
 
-- **Status:** CAI journal restoration fixed; upstream liblql issue remains.
+- **Status:** fixed; upstream correction verified with liblql 0.4.0.
 - **Evidence:** liblockdc 0.23.0 / liblql 0.3.0 selector execution uses a
   178,808-byte scanner frame. A standalone public-SDK probe with one tiny
   document faults on a default musl pthread and passes with a 2 MiB stack.
 - **Resolution:** restoration now reads the ordered collection directly. Its
   parser already handles commits and incrementally ignores observations;
-  removing the redundant selector also removes a second parse.
+  removing the redundant selector also removes a second parse. The dependency
+  upgrade to liblql 0.4.0 fixes selector execution for other SDK callers.
 - **Verification:** static musl journal restart/export/import round trip,
-  including large context, compression and rejected imports. Other SDK callers
-  using LQL on small stacks still need the upstream correction. See
+  including large context, compression and rejected imports. A standalone
+  static musl public-SDK probe using liblql 0.4.0 and liblockdc 0.23.0 reads
+  exactly one matching record from a two-record encrypted collection on a
+  default-stack pthread. See
   [the investigation](docs/liblockdc-lql-musl-stack.md).
 
 ## BUG-049: Review replay loses child output and obscures conversation text
