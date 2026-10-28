@@ -105,6 +105,31 @@ static int structured_notices(cai_cli_log *log) {
         strstr(observed.text[2], "retryable: true") != NULL);
   CHECK(strchr(observed.text[2], '\n') == NULL);
 
+  fields[0] = pslog_str("tool", "apply_patch");
+  fields[1] = pslog_str("call_id", "call_failure");
+  log->logger->warn(log->logger, "cai.agent.runtime.tool.error", fields, 2U);
+  fields[1] = pslog_str("tool_call_id", "call_failure");
+  fields[2] = pslog_str("event", "tool_call_failed");
+  log->logger->warn(log->logger, "Patch context does not match", fields, 3U);
+  memset(&observed, 0, sizeof(observed));
+  CHECK(cai_cli_log_notices(log, collect, &observed) == 0 &&
+        observed.count == 0U);
+  {
+    char *stored = read_log(log->path);
+    CHECK(stored != NULL);
+    CHECK(strstr(stored, "cai.agent.runtime.tool.error") != NULL &&
+          strstr(stored, "Patch context does not match") != NULL);
+    free(stored);
+  }
+  /* A coincidentally named warning without tool attribution stays visible. */
+  log->logger->warn(log->logger, "cai.agent.runtime.tool.error", NULL, 0U);
+  fields[0] = pslog_str("tool", "apply_patch");
+  fields[1] = pslog_str("event", "tool_call_failed");
+  log->logger->warn(log->logger, "Unattributed failure", fields, 2U);
+  memset(&observed, 0, sizeof(observed));
+  CHECK(cai_cli_log_notices(log, collect, &observed) == 0 &&
+        observed.count == 2U);
+
   log->logger->errorf(log->logger, "cai.response.provider_error",
                       "provider_code=%s detail=%s request_id=%s",
                       "cyber_policy", "Provider cybersecurity notice",

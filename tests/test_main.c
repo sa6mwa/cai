@@ -34743,6 +34743,90 @@ static void test_patch_failure_modes(test_state *state) {
   expect_int(state, "patch_failure_cleanup", rmdir(temporary), 0L);
 }
 
+static void test_patch_context_diagnostics(test_state *state) {
+  static const struct {
+    const char *file, *patch, *reason, *detail;
+  } cases[] = {
+      /* Minimized from a rejected ruleset.go patch in a real journal. */
+      {"type calendarRuleConfig struct {\n\tMonth int   "
+       "`json:\"month,omitempty\"`\n}\n",
+       "@@\n type calendarRuleConfig struct {\n-\tMonth int    "
+       "`json:\"month,omitempty\"`\n+\tMonth int `json:\"month,omitempty\"`\n "
+       "}\n",
+       "does not match", "file line 2"},
+      {"first\nsecond\n", "@@\n-first\n+FIRST\n@@\n-missing\n+changed\n",
+       "does not match", "hunk 2"},
+      {"first\n", "@@ absent anchor\n-first\n+changed\n",
+       "anchor was not found", "absent anchor"},
+      {"same\nseparator\nsame\n", "@@\n-same\n+changed\n", "is ambiguous",
+       "Expected starting line: \"same\""},
+      {"first\nlast\n", "@@\n-first\n+changed\n*** End of File\n",
+       "does not match the end of file", "hunk 1"},
+      {"head\nvalue\033[32mold\n", "@@\n head\n-value\033[32mwrong\n+changed\n",
+       "does not match", "\\x1b[32mwrong"}};
+  char temporary[] = CAI_TEST_BINARY_DIR "/test-tmp/cai-patch-context-XXXXXX";
+  char path[PATH_MAX], patch[2048];
+  char *contents;
+  cai_patch_tool_config config;
+  cai_error error;
+  size_t i;
+  if (mkdtemp(temporary) == NULL) {
+    test_fail(state, "patch_context_directory", "mkdtemp failed");
+    return;
+  }
+  memset(&config, 0, sizeof(config));
+  config.root_path = temporary;
+  snprintf(path, sizeof(path), "%s/ruleset.go", temporary);
+  for (i = 0U; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    write_file_or_die(path, cases[i].file);
+    snprintf(patch, sizeof(patch),
+             "*** Begin Patch\n*** Update File: ruleset.go\n%s*** End Patch\n",
+             cases[i].patch);
+    cai_error_init(&error);
+    expect_int(state, "patch_context_rejected",
+               cai_apply_patch(&config, patch, NULL, &error), CAI_ERR_INVALID);
+    expect_substr(state, "patch_context_file", error.message, "\"ruleset.go\"");
+    expect_substr(state, "patch_context_reason", error.message,
+                  cases[i].reason);
+    expect_substr(state, "patch_context_detail", error.message,
+                  cases[i].detail);
+    expect_substr(state, "patch_context_recovery", error.message,
+                  "Read the current file and regenerate this hunk");
+    if (i == 0U) {
+      expect_substr(state, "patch_context_expected_spaces", error.message,
+                    "Expected: \"\\tMonth int    ");
+      expect_substr(state, "patch_context_actual_spaces", error.message,
+                    "Actual:   \"\\tMonth int   ");
+    }
+    expect_int(state, "patch_context_no_terminal_controls",
+               error.message != NULL && strchr(error.message, '\033') == NULL,
+               1L);
+    contents = read_file_or_die(path);
+    expect_str(state, "patch_context_atomic_failure", contents, cases[i].file);
+    free(contents);
+    cai_error_cleanup(&error);
+  }
+  write_file_or_die(path, cases[0].file);
+  cai_error_init(&error);
+  expect_int(state, "patch_context_corrected_patch",
+             cai_apply_patch(
+                 &config,
+                 "*** Begin Patch\n*** Update File: ruleset.go\n@@\n"
+                 " type calendarRuleConfig struct {\n"
+                 "-\tMonth int   `json:\"month,omitempty\"`\n"
+                 "+\tMonth int `json:\"month,omitempty\"`\n }\n*** End Patch\n",
+                 NULL, &error),
+             CAI_OK);
+  contents = read_file_or_die(path);
+  expect_str(state, "patch_context_corrected_result", contents,
+             "type calendarRuleConfig struct {\n\tMonth int "
+             "`json:\"month,omitempty\"`\n}\n");
+  free(contents);
+  cai_error_cleanup(&error);
+  unlink(path);
+  rmdir(temporary);
+}
+
 static void test_patch_tool(test_state *state) {
   static const char update_and_add[] = "*** Begin Patch\n"
                                        "*** Update File: alpha.txt\n"
@@ -54644,6 +54728,7 @@ static const test_entry test_entries[] = {
     {"goal_tools", test_goal_tools},
     {"goal_create_allocation_failure", test_goal_create_allocation_failure},
     {"patch_tool", test_patch_tool},
+    {"patch_context_diagnostics", test_patch_context_diagnostics},
     {"agent_tool_declarations", test_agent_tool_declarations},
     {"agent_tool_manual_step", test_agent_tool_manual_step},
     {"agent_auto_compaction", test_agent_auto_compaction},

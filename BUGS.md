@@ -5,6 +5,25 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-053: Patch context failures lack actionable diagnostics
+
+- **Status:** fixed.
+- **Evidence:** the rejected call `call_CEqj2jeVlnBsU1LSGTezRijO` in session
+  `dbgtfervs68i52ohr8gg` changed internal spacing in its expected Go declarations.
+  A journal read immediately after rejection confirms the mismatch. Codex's
+  matcher also preserves internal spaces, so accepting this patch would require
+  a different matching policy. The original diagnostic gave no file or hunk,
+  and two log warnings repeated the already-rendered tool failure.
+- **Resolution:** identify file/hunk and report bounded, escaped expected/actual
+  lines from the first starting-line candidate. Distinguish missing anchors,
+  mismatches, ambiguity and EOF failures. Tool guidance now requires copying
+  context exactly and rereading after a mismatch. Matching/atomicity are
+  unchanged. Attributed duplicate tool warnings stay in the JSON log and no
+  longer produce additional interactive notices.
+- **Verification:** fast Debug regressions cover the minimized journal case,
+  later-hunk atomic failure, anchors, ambiguity, EOF, terminal-control escaping,
+  successful correction, log retention and single-failure interactive rendering.
+
 ## BUG-052: Completed lease transactions make the next Pouch open slow
 
 - **Status:** reproduced in liblockdc 0.23.0; upstream fix underway.

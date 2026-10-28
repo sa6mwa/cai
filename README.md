@@ -1317,6 +1317,12 @@ supplied context. `NO_COLOR` disables these colors. Non-interactive invocations
 log the full patch preview and tool activity as pslog records on stderr,
 regardless of the preview setting; stdout still contains only the final reply.
 
+Rejected update context identifies the file and hunk, with bounded escaped
+expected/actual line excerpts when a starting-line candidate exists. Internal
+spacing must match; read the current file before regenerating a rejected hunk.
+These preflight failures leave files unchanged. The interactive feed shows the
+tool failure once; attributed warning records remain in the JSON session log.
+
 A `Delete File` followed by `Add File` for the same path replaces that file
 atomically, including when other file sections separate the two. It preserves
 the original file permissions and participates in whole-patch rollback. Other

@@ -115,7 +115,10 @@ typedef struct cai_patch_spooled_reader {
 
 static const char cai_patch_default_description[] =
     "The `apply_patch` tool can be used to edit files. This is a FREEFORM "
-    "tool, so do not wrap the patch in JSON.";
+    "tool, so do not wrap the patch in JSON. Copy context and deleted lines "
+    "exactly from the current file, including internal spacing; do not "
+    "reformat unchanged context. After a context mismatch, read the reported "
+    "file location and regenerate the hunk.";
 
 static const char cai_patch_lark_grammar_first[] =
     "start: begin_patch hunk+ end_patch\n"
@@ -1549,6 +1552,111 @@ static char *cai_patch_find_context_line(char *text, size_t offset,
   }
 }
 
+/* Diagnostics are bounded and literal: file content and paths must not inject
+ * terminal controls into an error message. Matching itself remains exact. */
+static void cai_patch_excerpt(char *out, size_t capacity, const char *text,
+                              size_t length) {
+  size_t i, used = 0U;
+  static const char hex[] = "0123456789abcdef";
+  for (i = 0U; i < length && used + 8U < capacity; i++) {
+    unsigned char ch = (unsigned char)text[i];
+    if (ch == '\t' || ch == '\r' || ch == '\n' || ch == '\\' || ch == '"') {
+      out[used++] = '\\';
+      out[used++] = ch == '\t'   ? 't'
+                    : ch == '\r' ? 'r'
+                    : ch == '\n' ? 'n'
+                                 : (char)ch;
+    } else if (ch < 32U || ch >= 127U) {
+      out[used++] = '\\';
+      out[used++] = 'x';
+      out[used++] = hex[ch >> 4U];
+      out[used++] = hex[ch & 15U];
+    } else
+      out[used++] = (char)ch;
+  }
+  if (i < length) {
+    memcpy(out + used, "...", 3U);
+    used += 3U;
+  }
+  out[used] = '\0';
+}
+static const char *cai_patch_line_end(const char *text) {
+  const char *end = strchr(text, '\n');
+  return end != NULL ? end : text + strlen(text);
+}
+static size_t cai_patch_line_number(const char *text, const char *at) {
+  size_t line = 1U;
+  for (; text < at; text++)
+    if (*text == '\n')
+      line++;
+  return line;
+}
+static int cai_patch_hunk_error(cai_patch_change *change, cai_patch_hunk *hunk,
+                                const char *reason, const char *search,
+                                int compare, cai_error *error) {
+  const char *expected = hunk->old_text;
+  const char *actual = NULL, *line, *end, *expected_end;
+  char path[384], wanted[256], found[256], message[1400];
+  size_t line_number = 0U;
+  cai_patch_excerpt(path, sizeof(path), change->path, strlen(change->path));
+  if (compare && expected != NULL && expected[0] != '\0') {
+    expected_end = cai_patch_line_end(expected);
+    /* Report the first exact starting-line candidate, not an invented fuzzy
+     * match. It is only an explanation and never authorizes a replacement. */
+    line = search;
+    while (*line != '\0') {
+      end = cai_patch_line_end(line);
+      if ((size_t)(end - line) == (size_t)(expected_end - expected) &&
+          memcmp(line, expected, (size_t)(end - line)) == 0) {
+        actual = line;
+        break;
+      }
+      line = *end == '\n' ? end + 1U : end;
+    }
+    if (actual != NULL) {
+      while (*actual != '\0' && *expected != '\0') {
+        end = cai_patch_line_end(actual);
+        expected_end = cai_patch_line_end(expected);
+        if ((size_t)(end - actual) != (size_t)(expected_end - expected) ||
+            memcmp(actual, expected, (size_t)(end - actual)) != 0)
+          break;
+        if (*expected_end == '\0' || expected_end[1] == '\0')
+          break;
+        actual = *end == '\n' ? end + 1U : end;
+        expected = expected_end + 1U;
+      }
+      line_number = cai_patch_line_number(change->after, actual);
+    }
+  }
+  if (expected == NULL)
+    expected = "";
+  cai_patch_excerpt(wanted, sizeof(wanted), expected,
+                    (size_t)(cai_patch_line_end(expected) - expected));
+  if (actual != NULL) {
+    cai_patch_excerpt(found, sizeof(found), actual,
+                      (size_t)(cai_patch_line_end(actual) - actual));
+    snprintf(message, sizeof(message),
+             "Patch context %s in \"%s\" (hunk %lu).\n"
+             "First starting-line candidate at file line %lu:\n"
+             "Expected: \"%s\"\nActual:   \"%s\"\n"
+             "Read the current file and regenerate this hunk. No files were "
+             "changed.",
+             reason, path, (unsigned long)(hunk - change->hunks + 1U),
+             (unsigned long)line_number, wanted, found);
+  } else {
+    if (hunk->context != NULL && !compare)
+      cai_patch_excerpt(wanted, sizeof(wanted), hunk->context,
+                        strlen(hunk->context));
+    snprintf(message, sizeof(message),
+             "Patch context %s in \"%s\" (hunk %lu).\n"
+             "Expected starting line: \"%s\"\n"
+             "Read the current file and regenerate this hunk. No files were "
+             "changed.",
+             reason, path, (unsigned long)(hunk - change->hunks + 1U), wanted);
+  }
+  return cai_set_error(error, CAI_ERR_INVALID, message);
+}
+
 static int cai_patch_apply_hunk(cai_patch_change *change, cai_patch_hunk *hunk,
                                 cai_error *error) {
   char *match;
@@ -1556,11 +1664,13 @@ static int cai_patch_apply_hunk(cai_patch_change *change, cai_patch_hunk *hunk,
   char *anchor;
   char *anchor_end;
   char *replacement;
+  char *search_start;
   size_t prefix;
   size_t suffix;
   size_t length;
   size_t allocation_size;
 
+  search_start = change->after + change->search_offset;
   if (hunk->old_length == 0U) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "update hunk must include existing context");
@@ -1569,13 +1679,14 @@ static int cai_patch_apply_hunk(cai_patch_change *change, cai_patch_hunk *hunk,
     anchor = cai_patch_find_context_line(change->after, change->search_offset,
                                          hunk->context);
     if (anchor == NULL) {
-      return cai_set_error(error, CAI_ERR_INVALID,
-                           "update hunk context was not found");
+      return cai_patch_hunk_error(change, hunk, "anchor was not found",
+                                  change->after + change->search_offset, 0,
+                                  error);
     }
     anchor_end = strchr(anchor, '\n');
-    match =
-        strstr(anchor_end != NULL ? anchor_end + 1U : anchor + strlen(anchor),
-               hunk->old_text);
+    search_start =
+        anchor_end != NULL ? anchor_end + 1U : anchor + strlen(anchor);
+    match = strstr(search_start, hunk->old_text);
   } else if (hunk->end_of_file && change->after_length >= hunk->old_length) {
     match = change->after + change->after_length - hunk->old_length;
   } else {
@@ -1585,15 +1696,18 @@ static int cai_patch_apply_hunk(cai_patch_change *change, cai_patch_hunk *hunk,
       (hunk->end_of_file &&
        (size_t)(match - change->after) + hunk->old_length !=
            change->after_length)) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "update patch context does not match exactly once");
+    return cai_patch_hunk_error(
+        change, hunk,
+        hunk->end_of_file ? "does not match the end of file" : "does not match",
+        search_start, 1, error);
   }
   if (!hunk->end_of_file &&
       (hunk->context == NULL || hunk->context[0] == '\0')) {
     next_match = strstr(match + 1U, hunk->old_text);
     if (next_match != NULL) {
-      return cai_set_error(error, CAI_ERR_INVALID,
-                           "update patch context is ambiguous");
+      return cai_patch_hunk_error(change, hunk, "is ambiguous",
+                                  change->after + change->search_offset, 0,
+                                  error);
     }
   }
   /* The match is in the evolving new file. Translate its line back to the

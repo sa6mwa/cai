@@ -76,6 +76,9 @@ typedef struct notice_record {
   char level[16];
   char message[1024];
   char operation[256];
+  char event[96];
+  char tool[128];
+  char call_id[160];
   char details[1600];
   char context[1200];
   char key[128];
@@ -144,7 +147,16 @@ static lonejson_status notice_value_end(void *user,
   } else if (strcmp(key, "operation") == 0) {
     notice_append(record, record->operation, sizeof(record->operation), value,
                   strlen(value));
+  } else if (strcmp(key, "event") == 0) {
+    notice_append(record, record->event, sizeof(record->event), value,
+                  strlen(value));
   } else {
+    if (strcmp(key, "tool") == 0)
+      notice_append(record, record->tool, sizeof(record->tool), value,
+                    strlen(value));
+    if (strcmp(key, "call_id") == 0 || strcmp(key, "tool_call_id") == 0)
+      notice_append(record, record->call_id, sizeof(record->call_id), value,
+                    strlen(value));
     /* Prioritize the explanation over transport and provider context. Keep
      * arbitrary scalar fields so dependency diagnostics remain useful too. */
     if (strcmp(key, "ts") == 0 || strcmp(key, "time") == 0 ||
@@ -256,6 +268,14 @@ static void notice(cai_cli_log *log) {
         strcmp(record.level, "error") != 0 &&
         strcmp(record.level, "fatal") != 0 &&
         strcmp(record.level, "panic") != 0)
+      return;
+    /* The ordered tool event already renders its failure and explanation.
+     * Keep these records in the log, but do not repeat them as UI warnings.
+     * Require tool/call attribution; unrelated diagnostics stay visible. */
+    if (strcmp(record.level, "warn") == 0 && record.tool[0] != '\0' &&
+        record.call_id[0] != '\0' &&
+        (strcmp(record.message, "cai.agent.runtime.tool.error") == 0 ||
+         strcmp(record.event, "tool_call_failed") == 0))
       return;
     /* Discovery reports one complete catalog warning. Its lower transport
      * records remain in the log file, without duplicating the UI notice. */

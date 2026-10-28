@@ -99,6 +99,32 @@ contains "$term/feed" 'Added ./internal/toll/./calculator.go'
 for name in calculator vehicle; do
   [[ $(cat "$work/internal/toll/$name.go") == 'package toll' ]]
 done
+# A real-session regression: old context accidentally changes Go alignment.
+# Reject it atomically, explain exactly where, and show one tool failure.
+printf 'type calendarRuleConfig struct {\n\tMonth int   `json:"month,omitempty"`\n}\n' >"$work/ruleset.go"
+cp "$work/ruleset.go" "$root/ruleset.original"
+cat >"$root/patch" <<'PATCH'
+*** Begin Patch
+*** Update File: ruleset.go
+@@
+ type calendarRuleConfig struct {
+-	Month int    `json:"month,omitempty"`
++	Month int `json:"month,omitempty"`
+ }
+*** End Patch
+PATCH
+patch_plan 'PATCH FAILURE HANDLED'
+offset=$(wc -c <"$term/feed")
+prompt 'try the mismatched patch' 'PATCH FAILURE HANDLED'
+tail -c +$((offset+1)) "$term/feed" >"$root/failure-preview"
+contains "$root/failure-preview" '* Failed apply_patch'
+contains "$root/failure-preview" 'Patch context does not match in "ruleset.go" (hunk 1)'
+contains "$root/failure-preview" 'file line 2'
+contains "$root/failure-preview" 'Expected: "\tMonth int    '
+contains "$root/failure-preview" 'Actual:   "\tMonth int   '
+absent "$root/failure-preview" '* WARN:'
+absent "$root/failure-preview" 'cai.agent.runtime.tool.error'
+cmp "$work/ruleset.go" "$root/ruleset.original"
 # Replacing a file by delete/add is one edit, even with another file between.
 cat >"$root/patch" <<'PATCH'
 *** Begin Patch
