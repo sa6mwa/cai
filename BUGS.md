@@ -5,6 +5,22 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-062: Synchronous review startup overflows the musl worker stack
+
+- **Status:** review startup path fixed; upstream scanner stack usage remains.
+- **Evidence:** reproduced SIGSEGV on a 128 KiB thread while opening a review
+  child with real Pouch storage. The LQL flat-equality scanner reserves 178,808
+  stack bytes by itself. The final index-refresh log matches the reported
+  session. Local dependency report (ignored diagnostic):
+  `stash/liblql-0.3.0-flat-eq-stack-overflow.md`.
+- **Resolution:** internal child sessions do not maintain a workspace-latest
+  index. They retain their own journals/metadata and are reopened by ID. This
+  removes the needless index rebuild, collection filter and shared scope lease
+  from review startup. Worker stacks retain their platform defaults.
+- **Verification:** native Debug regression uses small default stacks, real
+  encrypted collections, a failed default review followed by an explicit
+  review, another review after reopening, and transcript replay.
+
 ## BUG-061: Long delay after switching models, before request dispatch
 
 - **Status:** open; no context compaction found in the reported interval.

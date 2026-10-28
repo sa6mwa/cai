@@ -175,6 +175,12 @@ static const lonejson_field latest_fields[] = {
     LONEJSON_FIELD_I64_REQ(latest_index, dirty, "dirty"),
     LONEJSON_FIELD_OBJECT(latest_index, latest, "latest", &session_map)};
 LONEJSON_MAP_DEFINE(latest_map, latest_index, latest_fields);
+/* Internal children are recovered by their recorded session ID, never by
+ * workspace auto-resume. Their journals/metadata do not need a latest index. */
+static int scope_indexed(const char *scope) {
+  return strncmp(scope, "smith-review:", 13U) != 0 &&
+         strncmp(scope, "smith-subagent:", 15U) != 0;
+}
 static int latest_open(cai_cli_pouch *, const char *, lc_lease **,
                        latest_index *, cai_error *);
 static int latest_write(cai_cli_pouch *, lc_lease *, latest_index *,
@@ -1021,9 +1027,9 @@ static int commit(void *context, const char *scope, const char *id,
     collection->close(collection);
     collection = NULL;
   }
-  if (rc == CAI_OK)
+  if (rc == CAI_OK && scope_indexed(scope))
     rc = latest_open(pouch, scope, &directory, &index, error);
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK && directory != NULL) {
     index.dirty = 1;
     rc = latest_write(pouch, directory, &index, error);
   }
@@ -1074,7 +1080,7 @@ static int commit(void *context, const char *scope, const char *id,
   cai_source_close(source);
   lonejson_json_value_cleanup(&record.state);
   rc = release(lease, rc, error);
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK && directory != NULL) {
     if (session.published && strcmp(session.id, index.latest.id) == 0 &&
         session.commit_ns < index.latest.commit_ns)
       rc = latest_rebuild(pouch, &index, error);
@@ -1439,6 +1445,8 @@ static int load_latest(void *context, const char *scope, char *id,
   *out = NULL;
   memset(&index, 0, sizeof(index));
   rc = history_supported(pouch, error);
+  if (rc != CAI_OK || !scope_indexed(scope))
+    return rc;
   if (rc == CAI_OK)
     rc = latest_key(scope, key, error);
   if (rc == CAI_OK)
@@ -2552,9 +2560,12 @@ int cai_cli_pouch_publish(cai_cli_pouch *pouch, const char *id, int published,
   lc_lease *lease = NULL;
   lc_lease *directory = NULL;
   int rc = cai_cli_pouch_session(pouch, id, &session, error);
+  memset(&index, 0, sizeof(index));
   if (rc == CAI_OK)
+    strcpy(index.workspace, session.workspace);
+  if (rc == CAI_OK && scope_indexed(session.workspace))
     rc = latest_open(pouch, session.workspace, &directory, &index, error);
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK && directory != NULL) {
     index.dirty = 1;
     rc = latest_write(pouch, directory, &index, error);
   }
@@ -2567,7 +2578,7 @@ int cai_cli_pouch_publish(cai_cli_pouch *pouch, const char *id, int published,
     rc = update_session(lease, &session, error);
   }
   rc = release(lease, rc, error);
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK && directory != NULL) {
     if (!published && strcmp(index.latest.id, id) == 0)
       rc = latest_rebuild(pouch, &index, error);
     else if (published && session.commit_position != 0U &&

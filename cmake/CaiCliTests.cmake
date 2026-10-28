@@ -291,6 +291,13 @@
       "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_auto_compact_status PROPERTIES
       LABELS "cli;local;offline" TIMEOUT 15)
+    if(CAI_TARGET_ID MATCHES "-linux-gnu$")
+      add_test(NAME cai_cli_review_stack COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_review_stack_test.sh"
+        "$<TARGET_FILE:cai_cli_mock_fixture>")
+      set_tests_properties(cai_cli_review_stack PROPERTIES
+        LABELS "cli;local;offline" TIMEOUT 10)
+    endif()
     foreach(_review_fix_protocol responses chat_completions)
       add_test(NAME cai_cli_review_fix_tool_${_review_fix_protocol} COMMAND bash
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_review_fix_tool_test.sh"

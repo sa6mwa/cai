@@ -4,6 +4,7 @@
 #include "../cli/session_commands.h"
 #include <assert.h>
 #include <fcntl.h>
+#include <openssl/evp.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -45,6 +46,54 @@ static int collections(cai_cli_pouch *pouch) {
                                     collection, &count, &error) == LC_OK);
   lc_error_cleanup(&error);
   return count;
+}
+static void held_child_index(cai_cli_pouch *pouch, cai_error *error) {
+  static const char *const scopes[] = {"smith-review:/old-workspace",
+                                       "smith-subagent:orphan-parent"};
+  static const char *const ids[] = {"old-review", "old-worker"};
+  lc_acquire_req request;
+  lc_lease *guard = NULL;
+  lc_error local;
+  cai_source *source = NULL;
+  unsigned char digest[32];
+  unsigned int length;
+  unsigned long long sequence;
+  char key[70], latest[CAI_AGENT_SESSION_ID_MAX];
+  size_t i, j;
+  lc_error_init(&local);
+  for (i = 0U; i < 2U; i++) {
+    assert(EVP_Digest(scopes[i], strlen(scopes[i]), digest, &length,
+                      EVP_sha256(), NULL) == 1 &&
+           length == 32U);
+    strcpy(key, "lock-");
+    for (j = 0U; j < 32U; j++)
+      snprintf(key + 5U + j * 2U, 65U - j * 2U, "%02x", digest[j]);
+    lc_acquire_req_init(&request);
+    request.ns = pouch->scopes_namespace;
+    request.key = key;
+    request.owner = "crashed-review-fixture";
+    request.ttl_seconds = 3600;
+    assert(lc_acquire(pouch->sessions, &request, &guard, &local) == LC_OK);
+    /* A legacy held index guard cannot block child commit, publication,
+     * ID-based recovery or deletion; no takeover of that lease is required. */
+    save(pouch, scopes[i], ids[i], error);
+    assert(cai_cli_pouch_publish(pouch, ids[i], 0, error) == CAI_OK);
+    assert(cai_cli_pouch_publish(pouch, ids[i], 1, error) == CAI_OK);
+    assert(pouch->store.load_id(pouch, scopes[i], ids[i], &source, &sequence,
+                                error) == CAI_OK &&
+           source != NULL);
+    cai_source_close(source);
+    source = NULL;
+    latest[0] = '\0';
+    assert(pouch->store.load_latest(pouch, scopes[i], latest, sizeof(latest),
+                                    &source, &sequence, error) == CAI_OK &&
+           source == NULL && latest[0] == '\0');
+    assert(cai_cli_pouch_delete(pouch, scopes[i], ids[i], NULL, NULL, error) ==
+           CAI_OK);
+    assert(lc_lease_release(guard, NULL, &local) == LC_OK);
+  }
+  lc_error_cleanup(&local);
+  assert(collections(pouch) == 0);
 }
 typedef struct cleanup_state {
   int fail, calls, seen;
@@ -175,6 +224,7 @@ int main(int argc, char **argv) {
   cai_error_init(&error);
   assert(cai_cli_pouch_open_at(&pouch, root, NULL, NULL, NULL, &error) ==
          CAI_OK);
+  held_child_index(&pouch, &error);
   save(&pouch, "/workspace", "survivor", &error);
   cai_cli_pouch_begin_use(&pouch);
   save(&pouch, "/workspace", "parent", &error);

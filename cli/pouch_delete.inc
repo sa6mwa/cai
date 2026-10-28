@@ -137,9 +137,11 @@ static int deletion_one(cai_cli_pouch *pouch, const cai_cli_session *item,
   latest_index index;
   lc_error local;
   int deleted = 0;
-  int rc = latest_open(pouch, item->workspace, &directory, &index, error);
+  int rc = scope_indexed(item->workspace)
+               ? latest_open(pouch, item->workspace, &directory, &index, error)
+               : CAI_OK;
   lc_error_init(&local);
-  if (rc == CAI_OK) {
+  if (rc == CAI_OK && directory != NULL) {
     index.dirty = 1;
     rc = latest_write(pouch, directory, &index, error);
   }
@@ -155,9 +157,9 @@ static int deletion_one(cai_cli_pouch *pouch, const cai_cli_session *item,
   if (rc == CAI_OK && lease->remove(lease, NULL, &local) != LC_OK)
     rc = cai_cli_lc_error(error, &local);
   rc = release(lease, rc, error);
-  if (rc == CAI_OK)
+  if (rc == CAI_OK && directory != NULL)
     rc = latest_rebuild(pouch, &index, error);
-  if (rc == CAI_OK)
+  if (rc == CAI_OK && directory != NULL)
     rc = latest_write(pouch, directory, &index, error);
   lc_error_cleanup(&local);
   return release(directory, rc, error);

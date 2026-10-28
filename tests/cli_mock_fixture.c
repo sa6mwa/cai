@@ -118,4 +118,26 @@ static int fixture_late_steer(void *context,
   return CAI_OK;
 }
 
-int main(int argc, char **argv) { return cai_cli_app_main(argc, argv, NULL); }
+#ifdef __GLIBC__
+/* Test-only glibc extension, hidden by this C89 fixture's POSIX feature set. */
+extern int pthread_setattr_default_np(const pthread_attr_t *attributes);
+#endif
+int main(int argc, char **argv) {
+#ifdef __GLIBC__
+  /* Exercise small libc defaults in native Debug without a cross build.
+   * Synchronous reviews must work without enlarging the worker stack. */
+  if (getenv("CAI_TEST_SMALL_STACK") != NULL) {
+    pthread_attr_t attributes;
+    int rc = pthread_attr_init(&attributes);
+    if (rc != 0)
+      return 1;
+    rc = pthread_attr_setstacksize(&attributes, 128U * 1024U);
+    if (rc == 0)
+      rc = pthread_setattr_default_np(&attributes);
+    (void)pthread_attr_destroy(&attributes);
+    if (rc != 0)
+      return 1;
+  }
+#endif
+  return cai_cli_app_main(argc, argv, NULL);
+}
