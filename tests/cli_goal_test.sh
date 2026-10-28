@@ -37,8 +37,13 @@ count=$(requests)
 send '/goal new Clear objective\r'; expect 'STREAM in flight'
 send '/goal clear\r'; expect 'Q 1. /goal clear'
 release; expect_assistant 'CLEARED partial response'; expect 'Goal control queued'
+# Clearing at a request boundary updates model context and continues this turn.
+expect_turn "$send_offset" 'CLEARED turn completed'
 send '/goal\r'; expect 'No goal.'
-[[ $(requests) == $((count+1)) ]]
+[[ $(requests) == $((count+2)) ]]
+tail -1 "$root/peer/requests.jsonl" >"$root/request"
+contains "$root/request" 'The host cleared the goal.'
+absent "$root/request" '/goal clear'
 terminal_close
 logs
 jq -se '[.[]|select(.event == "goal_control")]| all(.lvl == "info" and .role == "user")' "$root/logs.jsonl" >/dev/null
