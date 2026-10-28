@@ -14,6 +14,7 @@
 #include "quota_refresh.h"
 #include "reasoning.h"
 #include "replay.h"
+#include "replay_tools.h"
 #include "response.h"
 #include "review_report.h"
 #include "runtime_options.h"
@@ -149,6 +150,7 @@ typedef struct cli_state {
   int suppress_replay;
   cai_cli_replay *replay;
   cai_cli_replay_order *replay_order;
+  cai_cli_replay_tools *replay_tools;
   int replay_journal_v2;
   char replay_child[CAI_AGENT_SESSION_ID_MAX];
   int replay_seen;
@@ -2201,8 +2203,28 @@ static int cli_replay_output_raw(cli_state *state,
       cai_execution_record_cleanup(&record);
       return rc;
     }
-    if (rc == CAI_OK && cli_finish_response(state) != 0)
+    if (rc == CAI_OK &&
+        (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0))
       rc = CAI_ERR_TRANSPORT;
+    if (rc == CAI_OK) {
+      int handled = 0;
+      int width = cli_render_width();
+      rc = cai_tool_display_set_width(state->tool_display,
+                                      (size_t)(width < 32     ? 0
+                                               : width > 4096 ? 4096
+                                                              : width),
+                                      error);
+      if (rc == CAI_OK)
+        rc = cai_cli_replay_tools_render(state->replay_tools, &record,
+                                         state->tool_display, cli_tool_markdown,
+                                         state, &handled, error);
+      if (handled || rc != CAI_OK) {
+        if (rc == CAI_OK && cli_finish_response(state) != 0)
+          rc = CAI_ERR_TRANSPORT;
+        cai_execution_record_cleanup(&record);
+        return rc;
+      }
+    }
     memset(&callbacks, 0, sizeof(callbacks));
     callbacks.write = cli_execution_markdown_write;
     callbacks.context = state;
@@ -2404,6 +2426,19 @@ static int cli_replay_event(void *context, const cai_agent_session_event *event,
   rc = cli_replay_output(state, event, 0, 1, error);
   if (rc == CAI_OK && state->replay != NULL)
     rc = cai_cli_replay_feed(state->replay, event, error);
+  if (rc == CAI_OK && state->replay != NULL &&
+      strcmp(event->type, "execution") == 0) {
+    cai_execution_record record;
+    cai_error ignored;
+    cai_execution_record_init(&record);
+    cai_error_init(&ignored);
+    if (cai_execution_record_parse(event->data, &record, &ignored) == CAI_OK)
+      rc = cai_cli_replay_tools_index(
+          &state->replay_tools, &record, event->sequence,
+          cai_cli_replay_first(state->replay), error);
+    cai_execution_record_cleanup(&record);
+    cai_error_cleanup(&ignored);
+  }
   return rc;
 }
 static int cli_replay_selected(void *context, unsigned long long sequence) {
@@ -2440,11 +2475,15 @@ static int cli_replay_finish(cli_state *state, cai_error *error) {
                               cai_agent_runtime_session_id(state->runtime),
                               first - 1U, through, cli_replay_selected,
                               cli_replay_render, state, error);
+  if (rc == CAI_OK)
+    rc = cai_cli_replay_tools_finish(state->replay_tools, error);
   cai_cli_replay_close(state->replay);
   state->replay = NULL;
   cai_cli_replay_order_close(state->replay_order);
   state->replay_order = NULL;
   state->replay_journal_v2 = 0;
+  cai_cli_replay_tools_close(state->replay_tools);
+  state->replay_tools = NULL;
   return rc;
 }
 
@@ -2716,6 +2755,8 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   if (rc != CAI_OK) {
     cai_cli_replay_close(state->replay);
     state->replay = NULL;
+    cai_cli_replay_tools_close(state->replay_tools);
+    state->replay_tools = NULL;
     cai_cli_replay_order_close(state->replay_order);
     state->replay_order = NULL;
     state->replay_journal_v2 = 0;
@@ -5881,6 +5922,7 @@ cleanup:
   free(state.review_report);
   cai_cli_replay_close(state.replay);
   cai_cli_replay_order_close(state.replay_order);
+  cai_cli_replay_tools_close(state.replay_tools);
   free(metadata_json);
   cai_config_close(state.configuration);
   cai_error_cleanup(&error);

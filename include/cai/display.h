@@ -79,6 +79,16 @@ int cai_tool_display_summary(cai_tool_display *display,
                              const cai_agent_runtime_event *event,
                              const char *verb, const char *label, int success,
                              cai_error *error);
+/** Begin a saved completion with its final heading before streaming its body.
+ * Unlike summary(), retains per-call preview/control state. Follow with
+ * TERMINAL_OUTPUT events and a TERMINAL_COMMAND_COMPLETED event (empty data)
+ * to flush and release it, without another heading. The completion's terminal
+ * status is used by that final event for command failures. No output is saved
+ * or executed. Labels and success follow summary() semantics. */
+int cai_tool_display_replay_begin(cai_tool_display *display,
+                                  const cai_agent_runtime_event *event,
+                                  const char *verb, const char *label,
+                                  int success, cai_error *error);
 /** Release the renderer and retained state. NULL is accepted; the sink is
  * left open. Do not call from its sink callback.
  */

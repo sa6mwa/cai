@@ -23,6 +23,9 @@ extern "C" {
  * This record is never input to inference, recovery actions or compaction.
  */
 typedef struct cai_execution_record {
+  /** Tool arguments/results and lifecycle kinds are separate. Successful
+   * patches also record tool.patch_locations (ASCII old/new line pairs) and
+   * tool.patch (confirmed preview text), each independently chunked. */
   const char *kind;
   const char *session_id;
   const char *parent_session_id;

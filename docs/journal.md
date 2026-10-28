@@ -5,6 +5,23 @@ collection per conversation, alongside the runtime's replayable observation
 events. Recovery reads the collection in order; it neither loads recurring
 full-state snapshots nor executes recorded tools.
 
+Console replay uses the same native tool renderer as live output. The recovery
+pass indexes bounded command/path labels and completion metadata, not result
+bodies, and evicts calls outside the selected replay tail. The rendering pass
+decodes command output directly from ordered execution chunks into the display
+sink, including JSON escapes split between records. There is no additional
+collection scan, spool or per-tool thread. Completed command output is grouped
+across `exec_command`/`write_stdin` calls by source session, terminal and command
+identity; compact output keeps the normal preview limit for that whole command.
+Known small structured results use the live application presenter. Other result
+bodies flow through the bounded tool preview instead of disappearing.
+
+Successful patches additionally record `tool.patch_locations` and `tool.patch`
+execution fields from the confirmed live preview. These preserve context and
+line numbers without rereading workspace files during replay. Submitted patch
+arguments remain available separately for inspection. Invalid saved command
+JSON is reported as a replay diagnostic, leaving the original JSONL available.
+
 A durable `commit` record contains an incremental state edit and the watermark
 of input/control events already reflected in that edit. Normal edits append only
 the new canonical context bytes. Trim records retain a prefix without copying

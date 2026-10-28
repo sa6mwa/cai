@@ -4374,6 +4374,7 @@ static char *cai_runtime_patch_path_from_output(const char *data,
 typedef struct cai_runtime_patch_stream {
   cai_agent_runtime *runtime;
   const cai_tool_event *event;
+  cai_runtime_execution_stream execution;
   int type;
   char bytes[4096];
   size_t length;
@@ -4399,6 +4400,15 @@ static int cai_runtime_patch_write(void *context, const void *bytes,
   cai_runtime_patch_stream *stream = (cai_runtime_patch_stream *)context;
   size_t length;
   int rc = CAI_OK;
+  if (stream->runtime->record_transcript) {
+    rc = count != 0U
+             ? cai_runtime_execution_write(&stream->execution, bytes, count,
+                                           error)
+             : cai_runtime_execution_emit(&stream->execution,
+                                          stream->execution.length, 1, error);
+    if (rc != CAI_OK)
+      return rc;
+  }
   /* Decoding JSON escapes can produce single-byte writes. Batch only one
    * bounded chunk, flushing before the existing end-of-stream sentinel. */
   if (count == 0U) {
@@ -4431,12 +4441,14 @@ static int cai_runtime_emit_patch(cai_agent_runtime *runtime,
   cai_sink_callbacks callbacks;
   cai_sink *sink = NULL;
   int rc;
-  if (runtime->event_callback == NULL)
+  if (runtime->event_callback == NULL && !runtime->record_transcript)
     return CAI_OK;
   memset(&stream, 0, sizeof(stream));
   stream.runtime = runtime;
   stream.event = event;
   stream.type = CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS;
+  cai_runtime_execution_init(&stream.execution, runtime, "tool.patch_locations",
+                             event->name, event->call_id, "data");
   memset(&callbacks, 0, sizeof(callbacks));
   callbacks.write = cai_runtime_patch_write;
   callbacks.context = &stream;
@@ -4447,6 +4459,8 @@ static int cai_runtime_emit_patch(cai_agent_runtime *runtime,
   if (rc == CAI_OK)
     rc = cai_runtime_patch_write(&stream, NULL, 0U, error);
   stream.type = CAI_AGENT_EVENT_TOOL_PATCH;
+  cai_runtime_execution_init(&stream.execution, runtime, "tool.patch",
+                             event->name, event->call_id, "data");
   if (rc == CAI_OK)
     rc = cai_patch_tool_write_preview(CAI_AGENT_IMPL(runtime->agent)->tools,
                                       event, sink, error);

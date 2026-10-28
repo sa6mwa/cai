@@ -37,12 +37,19 @@ cp "$jsonl" "$root/original.jsonl"
 # records do not leak into the next provider request as extra conversation input.
 rm -rf "$root/cache"
 terminal_start
-expect 'Tool failed'
+expect '* Failed read_file'
 before=$(requests)
 send '/export\r'; expect 'Conversation export'
 expect "$id.md"
 [[ $(requests) == "$before" ]]
 terminal_close
+if [[ "${2:-}" == lua ]]; then
+  # Exercise the Lua observer and replay/export boundary once. The remaining
+  # import/patch/review/provider-error matrix is shared C code, already covered
+  # by both native protocol cases and the dedicated Lua subagent replay test.
+  jq -se 'any(.[]; .kind=="tool.failed" and .tool_name=="read_file")' "$root/observed.jsonl" >/dev/null
+  exit 0
+fi
 plan "$(jq -n --argjson chat "$chat" '{chat:$chat,plan:["AFTER REPLAY"]}')"
 run -ni 'Continue normally'; ok
 tail -1 "$root/peer/requests.jsonl" >"$root/request"
@@ -87,7 +94,7 @@ PATCH
   jq -e --arg id "$id" 'any(.[]; .kind=="tool.failed" and .tool_name=="read_file" and .subagent=="review" and .parent_call_id=="/review" and .parent_session_id==$id)' "$root/review.json" >/dev/null
   json "$root/review.json" 'any(.[]; .kind=="subagent.input" and (.data|contains("Inspect the execution fixture")))'
   terminal_start
-  expect 'Tool failed'
+  expect '* Failed read_file'
   terminal_close
 
   # Bad presentation data must not prevent restoring valid model context.
@@ -125,6 +132,3 @@ jq -s '[.[]|select(.type=="execution")|.data|fromjson]' "$jsonl" >"$root/failure
 json "$root/failure.json" 'any(.[]; .kind=="turn.failed" and (.field=="message" or .field=="detail") and (.data|contains("EXECUTION PROVIDER FAILURE")))'
 json "$root/failure.json" 'any(.[]; .kind=="turn.failed" and .field=="provider_code" and .data=="execution_failure")'
 json "$root/failure.json" 'any(.[]; .kind=="turn.failed" and .field=="request_id" and .data=="req_execution")'
-if [[ "${2:-}" == lua ]]; then
-  jq -L "/fixtures" -se 'any(.[]; .kind=="tool.failed" and .tool_name=="read_file")' "$root/observed.jsonl" >/dev/null
-fi

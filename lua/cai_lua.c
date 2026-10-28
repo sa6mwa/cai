@@ -12070,7 +12070,7 @@ static int cai_lua_display_event_common(lua_State *L, int summary) {
   luaL_argcheck(L, !self->active, 1,
                 "tool display cannot reenter its callback");
   luaL_checktype(L, 2, LUA_TTABLE);
-  if (summary) {
+  if (summary != 0) {
     verb = luaL_checkstring(L, 3);
     label = luaL_checkstring(L, 4);
     luaL_checktype(L, 5, LUA_TBOOLEAN);
@@ -12104,9 +12104,11 @@ static int cai_lua_display_event_common(lua_State *L, int summary) {
       (long long)cai_lua_display_integer(L, 2, "terminal_signal", 0);
   cai_error_init(&error);
   self->active++;
-  rc = summary ? cai_tool_display_summary(self->ptr, &event, verb, label,
-                                          success, &error)
-               : cai_tool_display_event(self->ptr, &event, &error);
+  rc = summary == 2 ? cai_tool_display_replay_begin(self->ptr, &event, verb,
+                                                    label, success, &error)
+       : summary    ? cai_tool_display_summary(self->ptr, &event, verb, label,
+                                               success, &error)
+                    : cai_tool_display_event(self->ptr, &event, &error);
   self->active--;
   return cai_lua_bool_result(L, rc, &error);
 }
@@ -12115,6 +12117,9 @@ static int cai_lua_display_event(lua_State *L) {
 }
 static int cai_lua_display_summary(lua_State *L) {
   return cai_lua_display_event_common(L, 1);
+}
+static int cai_lua_display_replay_begin(lua_State *L) {
+  return cai_lua_display_event_common(L, 2);
 }
 static int cai_lua_display_new(lua_State *L) {
   cai_lua_display *self;
@@ -12173,6 +12178,7 @@ static int cai_lua_patch_render(lua_State *L) {
 static const luaL_Reg cai_lua_display_methods[] = {
     {"event", cai_lua_display_event},
     {"summary", cai_lua_display_summary},
+    {"replay_begin", cai_lua_display_replay_begin},
     {"set_mode", cai_lua_display_set_mode},
     {"set_color", cai_lua_display_set_color},
     {"set_width", cai_lua_display_set_width},

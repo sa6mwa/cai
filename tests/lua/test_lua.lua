@@ -2752,6 +2752,19 @@ do
   assert_ok(display:summary(ev, "Accepted", "colored", true))
   assert(table.concat(output):find("\27[92m*\27[0m", 1, true))
   assert_ok(display:set_color(false))
+  output = {}
+  ev = {type = cai.AGENT_EVENT_TOOL_CALL_COMPLETED, tool_call_id = "saved", runtime_session_id = "lua"}
+  assert_not_ok(display:replay_begin({type = cai.AGENT_EVENT_TEXT_DELTA}, "Ran", "saved command", true))
+  assert_ok(display:replay_begin(ev, "Ran", "saved command", true))
+  ev = {type = cai.AGENT_EVENT_TERMINAL_OUTPUT, tool_call_id = "saved", runtime_session_id = "lua", data = "saved output\n"}
+  assert_ok(display:event(ev))
+  ev = {type = cai.AGENT_EVENT_TERMINAL_COMMAND_COMPLETED, tool_call_id = "saved", runtime_session_id = "lua",
+        terminal_has_exit_code = true, terminal_exit_code = 0}
+  assert_ok(display:event(ev))
+  local saved = table.concat(output)
+  assert(saved:find("* Ran saved command\nsaved output\n", 1, true))
+  assert(not saved:find("Running", 1, true))
+  assert(select(2, saved:gsub("Ran saved command", "")) == 1)
   assert_throws(function() display:set_color(1) end)
   assert_ok(display:close())
   assert_throws(function() display:event({}) end)

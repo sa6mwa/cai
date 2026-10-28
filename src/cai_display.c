@@ -25,6 +25,7 @@ typedef struct cai_display_call {
   char *command;
   int mode;
   int command_active;
+  int replay;
   size_t lines;
   int partial_line;
   int pending_cr;
@@ -1262,7 +1263,7 @@ int cai_tool_display_event(cai_tool_display *d,
     ok = e->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED &&
          e->terminal_has_exit_code && e->terminal_exit_code == 0 &&
          (!e->terminal_has_signal || e->terminal_signal == 0);
-    if (rc == CAI_OK)
+    if (rc == CAI_OK && !c->replay)
       rc = display_marker(d, ok,
                           e->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED
                               ? "Cancelled"
@@ -1338,6 +1339,28 @@ int cai_tool_display_summary(cai_tool_display *d,
   if (call != NULL)
     display_remove(d, call);
   return rc;
+}
+
+int cai_tool_display_replay_begin(cai_tool_display *d,
+                                  const cai_agent_runtime_event *e,
+                                  const char *verb, const char *label,
+                                  int success, cai_error *error) {
+  cai_display_call *call;
+  int rc;
+  if (d == NULL || e == NULL || verb == NULL || label == NULL ||
+      (e->type != CAI_AGENT_EVENT_TOOL_CALL_COMPLETED &&
+       e->type != CAI_AGENT_EVENT_TOOL_CALL_FAILED))
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "replay requires a completion and plain labels");
+  call = display_find(d, e);
+  if (call != NULL)
+    display_remove(d, call);
+  rc = display_call_new(d, e, &call, error);
+  if (rc != CAI_OK)
+    return rc;
+  call->command_active = 1;
+  call->replay = 1;
+  return display_marker(d, success != 0, verb, label, strlen(label), error);
 }
 
 void cai_tool_display_close(cai_tool_display *d) {

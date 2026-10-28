@@ -984,16 +984,22 @@ Replay labels delegated activity, preserves assistant progress and reasoning
 summaries, and shows validated review findings as Markdown. Raw review JSON
 remains in the inspection timeline, not the normal findings display. Failed
 review prose and failure details remain available without a logfile. Successful
-tool calls use one completion summary rather than separate called/completed
-headings. Startup policy notices precede replay; the idle message distinguishes
-a resumed conversation from a new conversation. Previously unrecorded child
+tool calls use the live tool presentation with one completion heading. Commands
+show `* Ran COMMAND` followed by their saved output, without a `Running` row;
+`write_stdin` output stays attached to the original command and shares its
+preview limit. `--tool-output compact|full` controls replay just as it controls
+new calls. Saved patch previews retain confirmed line numbers and neighboring
+context; older records containing only submitted patches cannot recover missing
+context from files that have since changed. Startup policy notices precede
+replay; the idle message distinguishes a resumed conversation from a new
+conversation. Previously unrecorded child
 output cannot be recreated by this change.
 
 Execution records and subagent envelopes never enter model context, recovery actions or compaction
 prompts. Context compaction preserves them; explicit history trimming excludes
 the corresponding entries from replay/export. JSONL preserves the complete
-records, while console replay uses concise summaries and failures. Invalid
-side-band payloads produce a historical warning rather than blocking context
+records, while console replay uses tool receipts, bounded output and failures.
+Invalid side-band payloads produce a historical warning rather than blocking context
 recovery; the original record remains in JSONL. Internal debug/trace logs and
 ordinary application warnings remain in the pslog file.
 
@@ -1365,6 +1371,13 @@ releases the originating display call. Lua exposes
 CAI's interactive presenter uses this for reasoning requests, messaging,
 kanban, local search and reverse geocoding. It renders details through libmdf;
 the original tool results remain in model context, structured logs and exports.
+
+For streaming saved results, `cai_tool_display_replay_begin` (Lua
+`display:replay_begin(event, verb, label, success)`) emits that heading but
+retains the call's preview and control-decoding state. Supply body chunks as
+`TERMINAL_OUTPUT` events, then an empty `TERMINAL_COMMAND_COMPLETED` event
+carrying the saved exit status to flush and release the call without another
+heading. This renders saved data; it never executes commands.
 `cai_tool_display_set_width(display, columns, &error)` enables the numbered,
 wrapped layout (32..4096 columns; zero restores unwrapped output). Hosts set
 `LC_CTYPE` to their UTF-8 locale for glyph widths. Width changes apply to the
