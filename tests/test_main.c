@@ -27622,6 +27622,59 @@ static void test_agent_runtime_poll_only_subagent(test_state *state) {
   cai_error_cleanup(&error);
 }
 
+static void test_agent_review_and_fix_objective(test_state *state) {
+  cai_agent_review_request request;
+  cai_agent_runtime_config config;
+  cai_error error;
+  char objective[2048];
+  int i;
+  cai_error_init(&error);
+  cai_agent_runtime_config_init(&config);
+  expect_int(state, "review_fix_disabled_by_default",
+             config.enable_review_and_fix, 0);
+  expect_int(state, "review_enabled_by_default", config.disable_review_subagent,
+             0);
+  cai_agent_review_request_init(&request);
+  request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+  expect_int(state, "review_fix_uncommitted",
+             cai_agent_review_and_fix_objective(".", &request, objective,
+                                                sizeof(objective), &error),
+             CAI_OK);
+  expect_substr(state, "review_fix_explicit_authority", objective,
+                "User-authorized review/fix loop");
+  expect_substr(state, "review_fix_repeat", objective, "repeat the review");
+  expect_int(
+      state, "review_fix_tiny_buffer",
+      cai_agent_review_and_fix_objective(".", &request, objective, 1U, &error),
+      CAI_ERR_LIMIT);
+  expect_str(state, "review_fix_tiny_empty", objective, "");
+  for (i = 0; i < 5; i++) {
+    cai_error_cleanup(&error);
+    cai_agent_review_request_init(&request);
+    request.target = i == 0   ? CAI_AGENT_REVIEW_COMMIT
+                     : i == 1 ? CAI_AGENT_REVIEW_CUSTOM
+                     : i == 2 ? CAI_AGENT_REVIEW_UNCOMMITTED
+                              : CAI_AGENT_REVIEW_BASE_BRANCH;
+    if (i == 2 || i == 3)
+      request.base_branch = i == 2 ? "HEAD" : "--unsafe\nref";
+    expect_int(state, "review_fix_reject_scope",
+               cai_agent_review_and_fix_objective(".", &request, objective,
+                                                  sizeof(objective), &error),
+               CAI_ERR_INVALID);
+    expect_str(state, "review_fix_error_empty", objective, "");
+  }
+  cai_error_cleanup(&error);
+  cai_agent_review_request_init(&request);
+  request.base_branch = "HEAD";
+  expect_int(state, "review_fix_inferred_base",
+             cai_agent_review_and_fix_objective(".", &request, objective,
+                                                sizeof(objective), &error),
+             CAI_OK);
+  expect_substr(state, "review_fix_same_base", objective,
+                "Review changes against base HEAD");
+  cai_error_cleanup(&error);
+}
+
 static void test_agent_runtime_review_subagent(test_state *state) {
   static const char parent_tool_response[] =
       "data: {\"type\":\"response.output_item.done\",\"output_index\":0,"
@@ -27647,9 +27700,17 @@ static void test_agent_runtime_review_subagent(test_state *state) {
       "\"resp_parent_review_final\",\"usage\":{\"input_tokens\":3,"
       "\"output_tokens\":2,\"total_tokens\":5}}}\n\n";
   static const char *parent_required[] = {
-      "review this change", "\"name\":\"run_review\"", "`run_review`",
+      "review this change",
+      "\"name\":\"run_review\"",
+      "`run_review`",
       "for a user-requested code-repository review, call it immediately",
-      "Do not inspect the workspace or Git first"};
+      "Do not inspect the workspace or Git first",
+      "A normal review request authorizes one review, not a review/fix loop",
+      "If later asked to fix findings, fix and verify them without "
+      "automatically reviewing again",
+      "Run one isolated repository review",
+      "Repeat review/fix automatically only with explicit permission for a "
+      "loop"};
   static const char *parent_forbidden[] = {"\"name\":\"run_subagent\"",
                                            "\"model\":{\"type\":"};
   static const char *review_required[] = {
@@ -54673,6 +54734,7 @@ static const test_entry test_entries[] = {
     {"agent_runtime_failed_subagent_resume",
      test_agent_runtime_failed_subagent_resume},
     {"agent_runtime_poll_only_subagent", test_agent_runtime_poll_only_subagent},
+    {"agent_review_and_fix_objective", test_agent_review_and_fix_objective},
     {"agent_runtime_review_subagent", test_agent_runtime_review_subagent},
     {"smith_review_pause_commit_failure",
      test_smith_review_pause_commit_failure},

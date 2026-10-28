@@ -114,6 +114,7 @@ typedef struct cai_cli_options {
   int shell_context;
   size_t shell_context_max_lines, shell_context_max_bytes;
   int review_subagent;
+  int review_and_fix_tool;
   int codex_agents_md;
   int verbosity;
   char diagnostic[512];

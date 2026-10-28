@@ -286,6 +286,13 @@
     target_link_libraries(cai_cli_reasoning_test PRIVATE cai_cli_support)
     cai_configure_cli_target(cai_cli_reasoning_test)
     add_test(NAME cai_cli_reasoning COMMAND cai_cli_reasoning_test)
+    foreach(_review_fix_protocol responses chat_completions)
+      add_test(NAME cai_cli_review_fix_tool_${_review_fix_protocol} COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_review_fix_tool_test.sh"
+        "$<TARGET_FILE:cai_cli_mock_fixture>" "${_review_fix_protocol}")
+      set_tests_properties(cai_cli_review_fix_tool_${_review_fix_protocol}
+        PROPERTIES LABELS "cli;local;offline" TIMEOUT 15)
+    endforeach()
     add_executable(cai_cli_log_test tests/cli_log_test.c
       cli/identity.c cli/log.c cli/response.c cli/pouch_stream.c)
     target_link_libraries(cai_cli_log_test PRIVATE cai_static lockdc::static)

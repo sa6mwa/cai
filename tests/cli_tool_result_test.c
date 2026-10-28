@@ -98,6 +98,9 @@ int main(void) {
                 "id\":\"id\"}"));
   assert(strstr(c.text, "Delivered message to ") && strstr(c.text, "cai.y"));
   assert(!strstr(c.text, "message_id") && !strstr(c.text, "{\""));
+  assert(result(&c, "run_review_and_fix", "{\"status\":\"queued\"}"));
+  assert(strstr(c.text, "Queued ") && strstr(c.text, "review-and-fix goal"));
+  assert(!strstr(c.text, "{\"status\""));
   assert(result(&c, "agent_message",
                 "## Message queues\n\n| Queue | Workspace | Conversation |\n| "
                 "--- | --- | --- |\n| cai.y | /work | session |\n"));

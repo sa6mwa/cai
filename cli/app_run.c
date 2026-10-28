@@ -4054,41 +4054,13 @@ static int cli_review_wakeup(sl_t *sl, const sl_watch_event_t *event,
 static int cli_review_fix_goal(cli_state *state, int uncommitted,
                                const char *base, char *out, size_t capacity,
                                cai_error *error) {
-  char default_base[512];
-  int length, rc;
-  if (uncommitted) {
-    length = snprintf(
-        out, capacity,
-        "Review staged, unstaged, and untracked changes with the built-in "
-        "run_review subagent using target=uncommitted. "
-        "Fix every actionable finding while preserving project invariants. "
-        "After each fix, run relevant verification, then repeat the review "
-        "until it reports no actionable findings. Explain why any reported "
-        "finding is irrelevant. Mark this goal complete only after a clean "
-        "review and passing verification.");
-  } else {
-    if (base == NULL) {
-      rc = cai_agent_review_default_base(state->workspace, default_base,
-                                         sizeof(default_base), error);
-      if (rc != CAI_OK)
-        return rc;
-      base = default_base;
-    }
-    length = snprintf(out, capacity,
-                      "Review changes against base %s with the built-in "
-                      "run_review subagent. Fix every actionable finding "
-                      "while preserving project invariants. After each "
-                      "fix, run relevant verification, then repeat review "
-                      "against the same base until no actionable findings "
-                      "remain. Explain why any finding is irrelevant. "
-                      "Mark this goal complete only after a clean review "
-                      "and passing verification.",
-                      base);
-  }
-  return length >= 0 && (size_t)length < capacity
-             ? CAI_OK
-             : cai_cli_error(error, CAI_ERR_INVALID,
-                             "review-and-fix objective is too long");
+  cai_agent_review_request request;
+  cai_agent_review_request_init(&request);
+  request.target =
+      uncommitted ? CAI_AGENT_REVIEW_UNCOMMITTED : CAI_AGENT_REVIEW_DEFAULT;
+  request.base_branch = base;
+  return cai_agent_review_and_fix_objective(state->workspace, &request, out,
+                                            capacity, error);
 }
 
 static int cli_review_fix_command(cli_state *state, const char *arguments,

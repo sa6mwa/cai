@@ -1067,6 +1067,11 @@ if(CAI_BUILD_LUA)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/shared_export_policy_test.sh"
         "${CMAKE_NM}" "$<TARGET_FILE:cai_app_lua>"
         "${CMAKE_CURRENT_SOURCE_DIR}/lua/cai_app.exports" linux)
+      add_test(NAME cai_lua_review_fix COMMAND ${CAI_LUA_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/review_fix_test.lua")
+      set_tests_properties(cai_lua_review_fix PROPERTIES LABELS "cli;local;offline"
+        TIMEOUT 5 WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        ENVIRONMENT "${CAI_LUA_TEST_ENV}")
       set_tests_properties(cai_app_lua_exports PROPERTIES LABELS "cli;local;offline" TIMEOUT 5)
       if(CAI_BUILD_CLI)
         add_test(NAME cai_app_lua_home COMMAND bash
@@ -1104,6 +1109,12 @@ if(CAI_BUILD_LUA)
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_draft_actions_test.sh"
           "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host" editing)
         set_tests_properties(cai_app_lua_draft_actions PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
+          ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
+        add_test(NAME cai_app_lua_review_fix_tool COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_review_fix_tool_test.sh"
+          "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host" responses smoke)
+        set_tests_properties(cai_app_lua_review_fix_tool PROPERTIES
+          LABELS "cli;local;offline" TIMEOUT 15
           ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
         add_test(NAME cai_app_lua_execution COMMAND bash
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_execution_test.sh"

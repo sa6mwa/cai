@@ -518,6 +518,63 @@ static int status_fields_settings(char *path) {
   return failed;
 }
 
+static int review_fix_settings(const char *path) {
+  char raw[][32] = {"cai", "--config", "--no-review-and-fix-tool"};
+  char *args[4];
+  cai_cli_options options;
+  cai_agent_runtime_config runtime;
+  cai_agent_preset preset;
+  cai_skill_config skills;
+  cai_config *cfg = NULL;
+  cai_error error;
+  FILE *stream;
+  int i, failed = 0;
+  args[0] = raw[0];
+  args[1] = raw[1];
+  args[3] = raw[2];
+  args[2] = strdup(path);
+  if (args[2] == NULL)
+    return 1;
+  cai_error_init(&error);
+  unsetenv("CAI_REVIEW_AND_FIX_TOOL");
+  unsetenv("CAI_AGENT_REVIEW_AND_FIX_TOOL");
+  for (i = 0; i < 5; i++) {
+    stream = fopen(path, "w");
+    if (stream == NULL)
+      return 1;
+    fputs(i == 0 ? "" : "[agent]\nreview_and_fix_tool=true\n", stream);
+    if (fclose(stream) != 0)
+      return 1;
+    if (i == 2 || i == 3)
+      setenv("CAI_REVIEW_AND_FIX_TOOL", "false", 1);
+    if (i == 4) {
+      unsetenv("CAI_REVIEW_AND_FIX_TOOL");
+      setenv("CAI_AGENT_REVIEW_AND_FIX_TOOL", "true", 1);
+    }
+    strcpy(raw[2],
+           i == 3 ? "--review-and-fix-tool" : "--no-review-and-fix-tool");
+    if (cai_cli_configure(i >= 3 ? 4 : 3, args, &options, &cfg, NULL, &error) !=
+        1)
+      failed = 1;
+    else {
+      cai_agent_runtime_config_init(&runtime);
+      if (cfg->apply_runtime(cfg, &runtime, &error) != CAI_OK)
+        failed = 1;
+      cai_cli_apply_runtime_options(&options, &runtime, &preset, &skills);
+      if (runtime.enable_review_and_fix != (i == 1 || i == 3) ||
+          runtime.disable_review_subagent)
+        failed = 1;
+    }
+    cai_config_close(cfg);
+    cfg = NULL;
+  }
+  unsetenv("CAI_REVIEW_AND_FIX_TOOL");
+  unsetenv("CAI_AGENT_REVIEW_AND_FIX_TOOL");
+  cai_error_cleanup(&error);
+  free(args[2]);
+  return failed;
+}
+
 int main(int argc, char **argv) {
   static const char *const env[] = {"CAI_TODO",       "CAI_CHROME",
                                     "CAI_WEB_SEARCH", "CAI_SEARXNG",
@@ -566,6 +623,7 @@ int main(int argc, char **argv) {
   failed |= chrome_directory_settings(path, argv[1]);
   failed |= yolo_settings(path);
   failed |= status_fields_settings(path);
+  failed |= review_fix_settings(path);
   unlink(path);
   return failed != 0;
 }

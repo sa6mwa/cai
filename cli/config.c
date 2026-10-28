@@ -635,12 +635,13 @@ static int tool_environment(cai_config *cfg, const char *prefix,
                                     "HIGH_REASONING_EFFORT",
                                     "SUBAGENT_STEERING",
                                     "YOLO",
-                                    "CAPACITY_RETRY"};
+                                    "CAPACITY_RETRY",
+                                    "REVIEW_AND_FIX_TOOL"};
   static const char *const sections[] = {
       "agent", "chrome", "agent",   "agent",  "agent",  "agent",   "agent",
       "agent", "agent",  "searxng", "revgeo", "chrome", "agent",   "agent",
       "agent", "agent",  "agent",   "agent",  "ui",     "runtime", "runtime",
-      "agent", "agent",  "agent",   "agent",  "agent",  "agent"};
+      "agent", "agent",  "agent",   "agent",  "agent",  "agent",   "agent"};
   static const char *const keys[] = {"web_search",
                                      "enabled",
                                      "todo",
@@ -667,7 +668,8 @@ static int tool_environment(cai_config *cfg, const char *prefix,
                                      "high_reasoning_effort",
                                      "subagent_steering",
                                      "yolo",
-                                     "capacity_retry"};
+                                     "capacity_retry",
+                                     "review_and_fix_tool"};
   size_t i;
   {
     static const char *const aliases[][3] = {
@@ -1001,6 +1003,8 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   defaults.yolo = cai_config_get_bool(cfg, "agent", "yolo", defaults.yolo);
   defaults.review_subagent = cai_config_get_bool(
       cfg, "agent", "review_subagent", defaults.review_subagent);
+  defaults.review_and_fix_tool = cai_config_get_bool(
+      cfg, "agent", "review_and_fix_tool", defaults.review_and_fix_tool);
   defaults.subagent_steering = cai_config_get_bool(
       cfg, "agent", "subagent_steering", defaults.subagent_steering);
   defaults.capacity_retry = cai_config_get_bool(cfg, "agent", "capacity_retry",

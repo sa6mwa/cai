@@ -499,6 +499,7 @@ if(CAI_BUILD_TESTS)
     agent_runtime_subagent_mcp_snapshot
     agent_runtime_failed_subagent_resume
     agent_runtime_poll_only_subagent
+    agent_review_and_fix_objective
     agent_runtime_review_subagent
     smith_review_pause_commit_failure
     agent_runtime_lifecycle

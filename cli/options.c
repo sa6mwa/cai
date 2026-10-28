@@ -187,8 +187,9 @@ static int cli_read_options(int argc, char *const *argv,
                                           "reasoning-tool",
                                           "subagent-steering",
                                           "yolo",
-                                          "capacity-retry"};
-      int *values[19];
+                                          "capacity-retry",
+                                          "review-and-fix-tool"};
+      int *values[20];
       size_t k;
       int enabled = strncmp(flag, "--no-", 5U) != 0;
       const char *name = flag + (enabled ? 2U : 5U);
@@ -211,6 +212,7 @@ static int cli_read_options(int argc, char *const *argv,
       values[16] = &options->subagent_steering;
       values[18] = &options->capacity_retry;
       values[17] = &options->yolo;
+      values[19] = &options->review_and_fix_tool;
       for (k = 0U; k < sizeof(names) / sizeof(names[0]); k++)
         if (strncmp(flag, "--", 2U) == 0 && strcmp(name, names[k]) == 0) {
           *values[k] = enabled;

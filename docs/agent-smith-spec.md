@@ -918,9 +918,10 @@ visible in the tool schema instead of being reconstructed from parent prose.
 }
 ```
 
-Omitting `target` means `uncommitted`. Thus “review this codebase against
-trunk” becomes `{"target":"base","base":"trunk"}`; a plain repository
-review becomes `{"target":"uncommitted"}`. CAI renders those values through
+Omitting `target` infers an explicit base, commit or custom instruction;
+with none supplied it selects the Git default branch. Thus “review this codebase
+against trunk” becomes `{"target":"base","base":"trunk"}`; a plain repository
+review uses `{}`. CAI renders those values through
 the same trusted review-request preparation used by the host-driven API. For a
 `base` target CAI runs exactly `git merge-base HEAD <base>` in the workspace
 through a forked direct `execve` child (never a shell or `system(3)`). The
@@ -931,6 +932,18 @@ reviewer discovers repository instructions, Git state, refs, and the selected
 diff itself. The parent calls `run_review` immediately for a user-requested
 repository review unless the user requests another approach; it does not
 inspect the workspace or Git first.
+
+An ordinary review request authorizes one review. A later request to fix its
+findings authorizes fixes and verification, without starting another review or
+a review/fix goal. Repeated review/fix iterations require explicit user permission.
+`run_review_and_fix` is a separate opt-in runtime tool, disabled by default through
+`enable_review_and_fix = 0`. It requires the built-in reviewer and goal tools,
+and is not inherited by children. Its `target`/`base` arguments select the Git
+default branch, an explicit base, or uncommitted changes. It replaces the current
+conversation's goal through the ordinary durable goal-control path; the current
+agent then reviews, fixes and verifies until clean. It returns a queued
+acknowledgement, not a completed-loop report. Enabling it is not permission to
+use it without an explicit request for a loop.
 
 A host-defined profile declares its generated tool fields as bounded `string`,
 `integer`, or string `enum` parameters, each with a description and required
@@ -1042,6 +1055,7 @@ to the host as events before they are returned to the model.
 | `create_goal` | function | Create an explicit user-requested goal. |
 | `update_goal` | function | Complete, block or pause an active goal; resume a paused goal when the model decides it can proceed. |
 | `run_review` | function | Synchronously run the isolated built-in reviewer against the Git default branch when scope is omitted, or use explicit `uncommitted`, `base`, `commit`, or `custom` scope, then inject its durable handover. Smith enables it by default. |
+| `run_review_and_fix` | function | Opt-in, default off. Only for an explicitly authorized loop: replace the current goal and repeat review, fix and verification in this conversation. Requires reviewer and goal tools. |
 | `run_<profile>` | function | One generated typed schema for each host-defined profile; run it synchronously and durably inject its handover. |
 | MCP tools/resources | dynamic | Register configured remote MCP capabilities as CAI tools with server-qualified names. |
 

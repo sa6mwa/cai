@@ -613,6 +613,15 @@ Disable terminal tools.
 .B \-\-no-review-subagent
 Disable the built-in reviewer.
 .TP
+.BR \-\-review-and-fix-tool " / " \-\-no-review-and-fix-tool
+Enable or disable the model's run_review_and_fix tool (default off).
+CAI_REVIEW_AND_FIX_TOOL and [agent] review_and_fix_tool configure the same
+setting. Requires reviewer and goal tools. Call only when the user explicitly
+requests or permits a review/fix loop. An ordinary review request, even
+followed by a request to fix findings, does not authorize a loop. The tool
+replaces the current conversation's goal and queues the same repeated
+review/fix/verification as /review-and-fix; it does not launch a fixing subagent.
+.TP
 .B \-\-no-subagent-steering
 Queue input for the parent instead of steering the foreground reviewer or
 subagent. Child steering is enabled by default; CAI_SUBAGENT_STEERING and

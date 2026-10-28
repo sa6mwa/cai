@@ -159,6 +159,10 @@ F("agent", "yolo", BOOL, RUNTIME, yolo, 0, NULL,
   "Default false; applies to reviewers and subagents too.")
 F("agent", "review_subagent", NOTBOOL, RUNTIME, disable_review_subagent, 0,
   NULL, "Enable the built-in reviewer.")
+F("agent", "review_and_fix_tool", BOOL, RUNTIME, enable_review_and_fix, 0, NULL,
+  "Enable run_review_and_fix (default false). Requires reviewer and "
+  "goal tools. Use only for explicitly authorized review/fix loops; ordinary "
+  "review requests and later requests to fix findings do not authorize a loop.")
 F("agent", "subagent_steering", NOTBOOL, RUNTIME, disable_subagent_steering, 0,
   NULL, "Steer the foreground child; when disabled, queue a parent turn.")
 F("agent", "web_search", NOTBOOL, RUNTIME, disable_web_search, 0, NULL,

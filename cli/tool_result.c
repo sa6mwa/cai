@@ -85,6 +85,7 @@ int cai_cli_tool_result_open(const cai_agent_runtime_event *e,
   if (e->type != CAI_AGENT_EVENT_TOOL_CALL_COMPLETED ||
       e->tool_action != CAI_AGENT_TOOL_ACTION_EXTERNAL || e->data == NULL ||
       (!same(e->tool_name, "set_reasoning") &&
+       !same(e->tool_name, "run_review_and_fix") &&
        !same(e->tool_name, "agent_message") &&
        !same(e->tool_name, "todo_kanban") &&
        !same(e->tool_name, "searxng_search") &&
@@ -120,7 +121,12 @@ int cai_cli_tool_result_open(const cai_agent_runtime_event *e,
     lonejson_free(json);
     if (!recognized)
       goto unrecognized;
-    if (same(e->tool_name, "agent_message")) {
+    if (same(e->tool_name, "run_review_and_fix")) {
+      if (!same(r->doc.status, "queued"))
+        goto unrecognized;
+      r->verb = "Queued";
+      r->label = "review-and-fix goal";
+    } else if (same(e->tool_name, "agent_message")) {
       if (!same(r->doc.status, "delivered") || r->doc.recipient == NULL ||
           r->doc.recipient[0] == '\0')
         goto unrecognized;

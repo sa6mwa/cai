@@ -305,6 +305,28 @@ typedef struct cai_runtime_review_subagent_args {
   char *reasoning_summary;
 } cai_runtime_review_subagent_args;
 
+typedef struct cai_runtime_review_fix_args {
+  char *target;
+  char *base;
+} cai_runtime_review_fix_args;
+typedef struct cai_runtime_review_fix_result {
+  char *status;
+} cai_runtime_review_fix_result;
+static const lonejson_field cai_runtime_review_fix_arg_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_runtime_review_fix_args, target,
+                                          "target"),
+    LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(cai_runtime_review_fix_args, base,
+                                          "base")};
+LONEJSON_MAP_DEFINE(cai_runtime_review_fix_args_map,
+                    cai_runtime_review_fix_args,
+                    cai_runtime_review_fix_arg_fields);
+static const lonejson_field cai_runtime_review_fix_result_fields[] = {
+    LONEJSON_FIELD_STRING_ALLOC_REQ(cai_runtime_review_fix_result, status,
+                                    "status")};
+LONEJSON_MAP_DEFINE(cai_runtime_review_fix_result_map,
+                    cai_runtime_review_fix_result,
+                    cai_runtime_review_fix_result_fields);
+
 typedef struct cai_runtime_subagent_result {
   char *profile;
   char *status;
@@ -706,6 +728,7 @@ struct cai_agent_runtime {
   cai_runtime_subagent_profile *subagents;
   size_t subagent_count;
   int review_subagent_enabled;
+  int review_and_fix_enabled;
   int disable_subagent_steering;
   char **review_allowed_models;
   size_t review_allowed_model_count;
@@ -2361,6 +2384,13 @@ static int cai_runtime_capture_subagents(cai_agent_runtime *runtime,
                CAI_AGENT_PRESET_TOOL_SUBAGENTS) != 0UL
           ? 1
           : 0;
+  runtime->review_and_fix_enabled = config->enable_review_and_fix != 0;
+  if (runtime->review_and_fix_enabled &&
+      (!runtime->review_subagent_enabled || runtime->review_mode ||
+       (parent_preset->tool_capabilities & CAI_AGENT_PRESET_TOOL_GOAL) == 0UL))
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "run_review_and_fix requires goal tools and the "
+                         "built-in reviewer outside isolated review mode");
   rc = cai_runtime_copy_string_list(config->review_allowed_models,
                                     config->review_allowed_model_count,
                                     &runtime->review_allowed_models, error);
@@ -2398,8 +2428,10 @@ static int cai_runtime_capture_subagents(cai_agent_runtime *runtime,
     cai_runtime_subagent_profile *target = &runtime->subagents[i];
 
     if (!cai_runtime_subagent_name_valid(source->name) ||
-        strcmp(source->name, "review") == 0 || source->description == NULL ||
-        source->description[0] == '\0' || strlen(source->description) > 1024U) {
+        strcmp(source->name, "review") == 0 ||
+        strcmp(source->name, "review_and_fix") == 0 ||
+        source->description == NULL || source->description[0] == '\0' ||
+        strlen(source->description) > 1024U) {
       rc = cai_set_error(
           error, CAI_ERR_INVALID,
           "subagent profile requires a unique lowercase name and description");
@@ -2510,6 +2542,24 @@ cai_runtime_build_subagent_instructions(const cai_agent_runtime *runtime,
         "diff, then returns prioritized findings.\n",
         error);
   }
+  if (rc == CAI_OK && runtime->review_subagent_enabled)
+    rc = cai_buffer_append_cstr(
+        &builder,
+        "A normal review request authorizes one review, not a review/fix "
+        "loop. If later asked to fix findings, fix and verify them without "
+        "automatically reviewing again. Start repeated review/fix iterations "
+        "or a review/fix goal only when the user explicitly requests or "
+        "authorizes a loop. Enabling a tool is not that authorization.\n",
+        error);
+  if (rc == CAI_OK && runtime->review_and_fix_enabled)
+    rc = cai_buffer_append_cstr(
+        &builder,
+        "- `run_review_and_fix`: only for an explicitly authorized "
+        "review/fix loop. It replaces this conversation's current goal, then "
+        "repeats run_review, fixes and verification until clean. It does not "
+        "run an isolated fixing agent. Do not use it for a normal review "
+        "request or a later request to fix the findings.\n",
+        error);
   for (i = 0U; rc == CAI_OK && i < runtime->subagent_count; i++) {
     rc = cai_buffer_append_cstr(&builder, "- `run_", error);
     if (rc == CAI_OK)
@@ -9572,6 +9622,77 @@ int cai_agent_review_default_base(const char *workspace, char *base,
   return CAI_OK;
 }
 
+int cai_agent_review_and_fix_objective(const char *workspace,
+                                       const cai_agent_review_request *request,
+                                       char *out, size_t capacity,
+                                       cai_error *error) {
+  static const char authorized[] = "User-authorized review/fix loop. ";
+  cai_agent_review_request empty;
+  char default_base[CAI_RUNTIME_GIT_CAPTURE_MAX];
+  const char *base;
+  int length, rc;
+  if (out != NULL && capacity != 0U)
+    out[0] = '\0';
+  if (workspace == NULL || workspace[0] == '\0' || out == NULL ||
+      capacity == 0U)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "review/fix workspace and output buffer are required");
+  cai_agent_review_request_init(&empty);
+  if (request == NULL)
+    request = &empty;
+  if (request->commit != NULL || request->commit_title != NULL ||
+      request->instructions != NULL ||
+      (request->target != CAI_AGENT_REVIEW_DEFAULT &&
+       request->target != CAI_AGENT_REVIEW_UNCOMMITTED &&
+       request->target != CAI_AGENT_REVIEW_BASE_BRANCH) ||
+      (request->target == CAI_AGENT_REVIEW_UNCOMMITTED &&
+       request->base_branch != NULL) ||
+      (request->target == CAI_AGENT_REVIEW_BASE_BRANCH &&
+       request->base_branch == NULL))
+    return cai_set_error(
+        error, CAI_ERR_INVALID,
+        "review/fix accepts default, base or uncommitted scope");
+  if (request->target == CAI_AGENT_REVIEW_UNCOMMITTED) {
+    length = snprintf(
+        out, capacity,
+        "%sReview staged, unstaged, and untracked changes with the built-in "
+        "run_review subagent using target=uncommitted. "
+        "Fix every actionable finding while preserving project invariants. "
+        "After each fix, run relevant verification, then repeat the review "
+        "until it reports no actionable findings. Explain why any reported "
+        "finding is irrelevant. Mark this goal complete only after a clean "
+        "review and passing verification.",
+        authorized);
+  } else {
+    base = request->base_branch;
+    if (base == NULL) {
+      rc = cai_agent_review_default_base(workspace, default_base,
+                                         sizeof(default_base), error);
+      if (rc != CAI_OK)
+        return rc;
+      base = default_base;
+    }
+    if (!cai_runtime_review_ref_valid(base))
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "review/fix base must be a safe Git ref");
+    length = snprintf(
+        out, capacity,
+        "%sReview changes against base %s with the built-in run_review "
+        "subagent. Fix every actionable finding while preserving project "
+        "invariants. After each fix, run relevant verification, then repeat "
+        "review against the same base until no actionable findings remain. "
+        "Explain why any finding is irrelevant. Mark this goal complete "
+        "only after a clean review and passing verification.",
+        authorized, base);
+  }
+  if (length < 0 || (size_t)length >= capacity) {
+    out[0] = '\0';
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "review/fix objective buffer is too small");
+  }
+  return CAI_OK;
+}
+
 static int cai_runtime_git_merge_base(const char *workspace, const char *base,
                                       char output[CAI_RUNTIME_GIT_CAPTURE_MAX],
                                       cai_error *error) {
@@ -11158,6 +11279,77 @@ static int cai_runtime_run_review_subagent(void *context, const void *params,
   return rc;
 }
 
+static int cai_runtime_run_review_and_fix(void *context, const void *params,
+                                          void *out, cai_error *error) {
+  cai_agent_runtime *runtime = context;
+  const cai_runtime_review_fix_args *args = params;
+  cai_runtime_review_fix_result *result = out;
+  cai_agent_review_request request;
+  char objective[2048];
+  int rc;
+  if (runtime == NULL || !runtime->review_and_fix_enabled || args == NULL ||
+      result == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "review/fix tool is unavailable");
+  cai_agent_review_request_init(&request);
+  request.base_branch = args->base;
+  if (args->target != NULL) {
+    if (strcmp(args->target, "base") == 0)
+      request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
+    else if (strcmp(args->target, "uncommitted") == 0)
+      request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+    else
+      return cai_set_error(error, CAI_ERR_INVALID,
+                           "review/fix target must be base or uncommitted");
+  }
+  rc =
+      cai_agent_review_and_fix_objective(runtime->workspace_directory, &request,
+                                         objective, sizeof(objective), error);
+  if (rc != CAI_OK)
+    return rc;
+  result->status = cai_tool_result_strdup("queued", error);
+  if (result->status == NULL)
+    return cai_set_error(error, CAI_ERR_NOMEM,
+                         "allocate review/fix acknowledgement");
+  /* The same durable goal-replacement path used by explicit host controls.
+   * Apply on the worker's next boundary, never from an owner-only API. */
+  return cai_runtime_enqueue_goal_control(runtime, CAI_RUNTIME_GOAL_REPLACE,
+                                          objective, 0, 0LL, error);
+}
+
+static int cai_runtime_register_review_fix_tool(cai_agent_runtime *runtime,
+                                                cai_error *error) {
+  static const char *const targets[] = {"base", "uncommitted"};
+  cai_tool_schema *schema = NULL;
+  int rc = cai_tool_schema_new(&schema, error);
+  if (rc == CAI_OK)
+    rc = cai_tool_schema_set_strict(schema, 1, error);
+  if (rc == CAI_OK)
+    rc = cai_tool_schema_add_string_enum(
+        schema, "target",
+        "Omit for Git default branch; base requires base. "
+        "Use uncommitted only when explicitly requested.",
+        targets, 2U, 0, error);
+  if (rc == CAI_OK)
+    rc = cai_tool_schema_add_string(
+        schema, "base", "Git base ref for every review iteration.", 0, error);
+  if (rc == CAI_OK)
+    rc = cai_agent_register_lonejson_tool_schema_internal(
+        runtime->agent, "run_review_and_fix",
+        "Call once to start a review/fix loop ONLY when the user explicitly "
+        "requests or authorizes repeated review/fix iterations. A normal "
+        "review request, even followed by a request to fix findings, is not "
+        "permission. Replaces this conversation's current goal with repeated "
+        "run_review, fixes and verification until clean. Returns after "
+        "queueing the goal; the current agent performs the work. Use "
+        "run_review for a single review. No implicit token budget.",
+        cai_tool_schema_json(schema), cai_tool_schema_strict(schema),
+        &cai_runtime_review_fix_args_map, &cai_runtime_review_fix_result_map,
+        cai_runtime_run_review_and_fix, runtime, error);
+  cai_tool_schema_destroy(schema);
+  return rc;
+}
+
 static int cai_runtime_register_review_subagent_tool(cai_agent_runtime *runtime,
                                                      cai_error *error) {
   static const char *const targets[] = {"uncommitted", "base", "commit",
@@ -11210,12 +11402,13 @@ static int cai_runtime_register_review_subagent_tool(cai_agent_runtime *runtime,
   if (rc == CAI_OK) {
     rc = cai_agent_register_lonejson_tool_schema_internal(
         runtime->agent, "run_review",
-        "Synchronously run the isolated reviewer. It discovers repository "
-        "instructions, Git state, and the selected diff itself. Call it "
-        "directly for a user-requested repository review; do not inspect the "
-        "workspace first. Its validated Markdown handover becomes parent "
-        "context. With no scope, compare against the repository's Git default "
-        "branch; use target=uncommitted only when requested.",
+        "Run one isolated repository review and return its durable Markdown "
+        "handover. Call directly for a requested review; the reviewer "
+        "discovers instructions, Git state and diff. Default scope is the Git "
+        "default branch; target=uncommitted only when requested. Review "
+        "requests and later requests to fix findings do not authorize a "
+        "loop. Repeat review/fix automatically only with explicit permission "
+        "for a loop.",
         cai_tool_schema_json(schema), cai_tool_schema_strict(schema),
         &cai_runtime_review_subagent_args_map, &cai_runtime_subagent_result_map,
         cai_runtime_run_review_subagent, runtime, error);
@@ -11849,6 +12042,8 @@ static int cai_runtime_register_subagent_tool(cai_agent_runtime *runtime,
   if (runtime->review_subagent_enabled) {
     rc = cai_runtime_register_review_subagent_tool(runtime, error);
   }
+  if (rc == CAI_OK && runtime->review_and_fix_enabled)
+    rc = cai_runtime_register_review_fix_tool(runtime, error);
   for (i = 0U; rc == CAI_OK && i < runtime->subagent_count; i++) {
     rc = cai_runtime_register_profile_subagent_tool(
         runtime, &runtime->subagents[i], error);

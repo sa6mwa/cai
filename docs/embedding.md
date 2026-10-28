@@ -262,6 +262,19 @@ later valid steers eligible at their own boundaries.
 This selection applies to future output in the current app invocation,
 including after `/new` or `/resume`, without changing startup settings.
 
+The optional `run_review_and_fix` model tool is disabled by default. Native
+runtime hosts set `cai_agent_runtime_config.enable_review_and_fix = 1`; Lua
+runtime hosts use `enable_review_and_fix = true`. Application hosts set
+`[agent] review_and_fix_tool = true` through INI or their C/Lua settings, or use
+`--review-and-fix-tool` / `CAI_REVIEW_AND_FIX_TOOL`. It requires reviewer and
+goal tools. A user must explicitly authorize repeated review/fix work; normal
+review requests and follow-up fixes do not grant that permission. The tool
+replaces the current conversation's goal and returns after queueing it.
+`cai_agent_review_and_fix_objective` and Lua's
+`cai.review_and_fix_objective(workspace, request)` expose the shared objective
+builder without starting an agent. The request accepts default, base and
+uncommitted scopes (`base_branch` names the base in C/Lua; model tool uses `base`).
+
 The C and Lua application receivers use Softline's native editor controls.
 Alt-K stashes the whole draft and clears it; Alt-J appends the reusable saved
 draft after the current text. The stash lasts for this app run, across prompts

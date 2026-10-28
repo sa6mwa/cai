@@ -345,6 +345,16 @@ void cai_agent_review_request_init(cai_agent_review_request *request);
 int cai_agent_review_default_base(const char *workspace, char *base,
                                   size_t capacity, cai_error *error);
 
+/** Build the objective shared by explicit review/fix loops and the optional
+ * run_review_and_fix tool. Only default, base and uncommitted scopes are
+ * supported. A NULL request selects the Git default branch. No agent is run.
+ * Requires explicit user authorization for repeated review/fix iterations.
+ * Writes a NUL-terminated objective; errors leave the output empty. */
+int cai_agent_review_and_fix_objective(const char *workspace,
+                                       const cai_agent_review_request *request,
+                                       char *out, size_t capacity,
+                                       cai_error *error);
+
 /** Supported model-facing parameter kinds for a subagent profile tool. */
 typedef enum cai_agent_subagent_parameter_type {
   CAI_AGENT_SUBAGENT_PARAMETER_STRING = 0,
@@ -789,6 +799,12 @@ typedef struct cai_agent_runtime_config {
   int (*register_agent_tools)(void *context, cai_agent *agent,
                               cai_error *error);
   void *register_agent_tools_context;
+  /** Enable run_review_and_fix; default off. Requires goal tools and the
+   * built-in reviewer. The tool replaces the current conversation's goal and
+   * queues repeated review/fix/verification. Availability is not authorization:
+   * the user must explicitly request or permit a loop. Not inherited by
+   * children; unavailable to isolated reviewers. */
+  int enable_review_and_fix;
 } cai_agent_runtime_config;
 
 /** Initialize a zero-defaultable runtime configuration. */

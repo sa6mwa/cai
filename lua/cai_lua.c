@@ -3758,6 +3758,8 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
       cai_lua_opt_string_field(L, 2, "review_reasoning_summary", NULL);
   config.disable_review_subagent =
       cai_lua_opt_bool_field(L, 2, "disable_review_subagent", 0);
+  config.enable_review_and_fix =
+      cai_lua_opt_bool_field(L, 2, "enable_review_and_fix", 0);
   config.disable_subagent_steering =
       cai_lua_opt_bool_field(L, 2, "disable_subagent_steering", 0);
   config.disable_capacity_retry =
@@ -5170,6 +5172,42 @@ static int cai_lua_review_default_base(lua_State *L) {
   if (rc != CAI_OK)
     return cai_lua_bool_result(L, rc, &error);
   lua_pushstring(L, base);
+  cai_error_cleanup(&error);
+  return 1;
+}
+
+/* Objective builder only: callers still explicitly authorize and start a loop.
+ */
+static int cai_lua_review_and_fix_objective(lua_State *L) {
+  const char *workspace = luaL_checkstring(L, 1);
+  const char *target;
+  cai_agent_review_request request;
+  cai_error error;
+  char objective[2048];
+  int rc;
+  cai_agent_review_request_init(&request);
+  if (!lua_isnoneornil(L, 2)) {
+    luaL_checktype(L, 2, LUA_TTABLE);
+    request.base_branch = cai_lua_opt_string_field(L, 2, "base_branch", NULL);
+    request.commit = cai_lua_opt_string_field(L, 2, "commit", NULL);
+    request.commit_title = cai_lua_opt_string_field(L, 2, "commit_title", NULL);
+    request.instructions = cai_lua_opt_string_field(L, 2, "instructions", NULL);
+    target = cai_lua_opt_string_field(L, 2, "target", NULL);
+    if (target != NULL) {
+      if (strcmp(target, "base") == 0)
+        request.target = CAI_AGENT_REVIEW_BASE_BRANCH;
+      else if (strcmp(target, "uncommitted") == 0)
+        request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
+      else
+        return luaL_error(L, "review/fix target must be base or uncommitted");
+    }
+  }
+  cai_error_init(&error);
+  rc = cai_agent_review_and_fix_objective(workspace, &request, objective,
+                                          sizeof(objective), &error);
+  if (rc != CAI_OK)
+    return cai_lua_bool_result(L, rc, &error);
+  lua_pushstring(L, objective);
   cai_error_cleanup(&error);
   return 1;
 }
@@ -12691,6 +12729,8 @@ int luaopen_cai(lua_State *L) {
   lua_setfield(L, -2, "skill_metadata");
   lua_pushcfunction(L, cai_lua_review_default_base);
   lua_setfield(L, -2, "review_default_base");
+  lua_pushcfunction(L, cai_lua_review_and_fix_objective);
+  lua_setfield(L, -2, "review_and_fix_objective");
   lua_pushcfunction(L, cai_lua_patch_render);
   lua_setfield(L, -2, "patch_render");
   lua_pushcfunction(L, cai_lua_display_new);

@@ -1244,6 +1244,7 @@ controls apply at startup, including when resuming a conversation:
 | Managed commands | `--terminal` | `CAI_TERMINAL` | `[agent] terminal` | on |
 | Image generation | `--image-generation` | `CAI_IMAGE_GENERATION` | `[agent] image_generation` | on |
 | Review subagent | `--review-subagent` | `CAI_REVIEW_SUBAGENT` | `[agent] review_subagent` | on |
+| Review/fix loop tool | `--review-and-fix-tool` | `CAI_REVIEW_AND_FIX_TOOL` | `[agent] review_and_fix_tool` | off |
 | Foreground child steering | `--subagent-steering` | `CAI_SUBAGENT_STEERING` | `[agent] subagent_steering` | on |
 | Codex global/ancestor instructions | `--codex-agents-md` | `CAI_CODEX_AGENTS_MD` | `[agent] codex_agents_md` | off |
 
@@ -1494,6 +1495,17 @@ and repeats until a clean review; stopped or failed goals return nonzero.
 It has no default iteration limit. Review model and reasoning flags apply to
 review subagents in both workflows. Review-and-fix uses the same default base;
 `cai --review-and-fix uncommitted` selects uncommitted changes instead.
+The default `run_review` tool performs one isolated review. A request to review,
+or a later request to fix its findings, does not authorize repeated reviews or
+a review/fix goal. The optional `run_review_and_fix` tool requires both explicit
+opt-in and a user request or permission to run a loop. Enabling the tool alone
+does not grant that permission. It replaces the current conversation's goal and
+queues the same review/fix/verify workflow as the explicit command; it does not
+launch an isolated fixing agent. It requires goal tools and the reviewer and
+is never inherited by subagents. Its optional `target` is `base` or
+`uncommitted`, with `base` required for `target=base`; no arguments use the Git
+default branch. The tool acknowledges the queued goal, rather than waiting for
+the loop to finish. No token budget is imposed.
 In the TUI, `/review` starts an isolated reviewer between turns and preserves
 the current conversation. `/review uncommitted`, `/review base REF`,
 `/review commit SHA`, and `/review TEXT` select an explicit scope. Findings are
