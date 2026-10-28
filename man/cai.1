@@ -697,8 +697,24 @@ the Markdown description. Descriptions are omitted from board and list layouts.
 .B /help
 Render help as Markdown tables of slash commands and prompt keys, with startup
 examples. This command is local and does not send a model request.
+.PP
+Softline editing includes Ctrl-U/Ctrl-K to cut to line start/end, Ctrl-W to cut
+the previous whitespace-delimited word, and Alt-Backspace/Alt-D to cut Unicode
+words. Ctrl-Y yanks the most recent cut; Alt-Y cycles the last yank through a
+ten-entry ring retained for this run. Focused message approval takes precedence
+over Alt-Y. Ctrl-_ or Ctrl-X then Ctrl-U undoes draft edits; Ctrl-T transposes
+adjacent characters. Home/Ctrl-A and End/Ctrl-E move within the current line;
+Alt-B/Alt-F move by word.
+.PP
+Ctrl-J inserts a newline. Use the terminal's paste shortcut for text; bracketed
+paste keeps pasted newlines in the draft without submitting it. Ctrl-V saves a
+PNG/JPEG from the X11 clipboard and inserts its cached file path. Ctrl-R searches
+prompt history; Enter selects for editing, and Ctrl-G cancels search. Ctrl-P/N
+recall history directly. Alt-E edits pending input; Alt-A focuses approval before
+Alt-Y/Alt-N approves/rejects it. See /help for shell, layout and exit shortcuts.
 .TP
 .BI /theme " [NAME|SOFTLINE:LIBMDF]"
+Alias /t accepts the same arguments.
 With no argument, show the current pair, all softline pairings and all libmdf
 themes through the Markdown feed. Accepts the same aliases and explicit pairs
 as --theme. Enter and Alt-Enter apply changes at the next safe response/tool
@@ -748,6 +764,7 @@ deliveries; previously delivered messages and approvals stay in their original
 conversation. The old destination has no listener from this app after renaming.
 .TP
 .BI /model " [MODEL [EFFORT]]"
+Alias /m accepts the same arguments.
 Show current and pending settings and the provider catalog, or select MODEL
 and optional reasoning EFFORT in the same conversation. A lone known effort
 (such as /model high) changes only effort. A model without an effort keeps
@@ -785,6 +802,7 @@ Inspect or configure the optional reasoning tool between turns. Applies to
 this app, including new/resumed conversations; does not modify config.ini.
 .TP
 .BI /reasoning " [EFFORT]"
+Alias /r accepts the same arguments.
 Set reasoning effort, or list provider-advertised choices and the default for
 the selected or pending model. When model-specific metadata is unavailable,
 show the accepted vocabulary with a notice that provider support is unknown.

@@ -9,15 +9,17 @@ chat=false
 terminal_start -N
 for selection in gruvbox:rose-pine-dawn no-such-theme plain queued; do
   theme=$selection
+  command=/theme
   intent=S key='\033\r'
   if [[ "$selection" == queued ]]; then theme=dracula; intent=Q; key='\r'; fi
+  if [[ "$selection" == queued || "$selection" == gruvbox:rose-pine-dawn ]]; then command=/t; fi
   steer="THEME_FOLLOWING_STEER_$selection"
   before=$(requests)
   plan "$(jq -n --argjson chat "$chat" '{chat:$chat,plan:[
     {pause:true,pause_text:"ThemeBoundaryBegin\n\n",tool:"get_goal",arguments:{},text:"ThemeBoundaryEnd"},"ThemeSteerContinued"
   ]}')"
   send "Start theme seam $theme\r"; expect ThemeBoundaryBegin
-  send "/theme $theme$key"; expect "$intent 1. /theme $theme"
+  send "$command $theme$key"; expect "$intent 1. $command $theme"
   send "$steer\033\r"; expect "S 2. $steer"
   absent "$term/feed" "> $steer"
   release; expect_assistant ThemeSteerContinued; expect 'Worked for'
@@ -25,6 +27,7 @@ for selection in gruvbox:rose-pine-dawn no-such-theme plain queued; do
   # eventual new turn after the theme drains does not satisfy this check.
   sed -n "$((before+2))p" "$root/peer/requests.jsonl" >"$root/continuation"
   contains "$root/continuation" "$steer"
+  absent "$root/continuation" "$command $theme"
   [[ $(requests) == $((before+2)) ]]
   if [[ "$theme" == no-such-theme ]]; then
     contains "$term/feed" 'unknown softline theme'

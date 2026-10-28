@@ -6,6 +6,12 @@ resolved by `cli_command_delivery`. Admission, readiness, mode normalization and
 owner-thread consumption use that same classification. This replaces the earlier
 audit's historical classifications.
 
+`/m`, `/r` and `/t` resolve to `/model`, `/reasoning` and `/theme` before both
+classification and dispatch. They accept the same arguments and share every
+boundary, including child-safe theme changes. The original alias remains in the
+editable native queue, prompt history and command echo. Prefixes such as `/mm`
+are not aliases.
+
 ## Boundaries
 
 | Boundary | Behavior with Enter or Alt-Enter |
@@ -106,8 +112,8 @@ Admission and execution are distinct. Safely admitted `/model`, `/tools`,
 or read storage. This audit does not make those operations asynchronous.
 
 Focused Debug checks cover every command class and query/mutation split with
-both modes, same-burst editing across the command inventory, Enter-based model
-and effort changes, tier cycling/toggling, theme/steer ordering, turn-only
-reclassification, stopped work, approval and idle delivery. Local fixtures
+both modes, same-burst editing across command boundaries and aliases,
+Enter-based model and effort changes, tier cycling/toggling, theme/steer ordering,
+turn-only reclassification, stopped work, approval and idle delivery. Local fixtures
 capture actual Responses and Chat Completions requests; no live inference or
 cross-target testing is required for these regressions.

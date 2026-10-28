@@ -42,7 +42,11 @@ static int test_command_queue_modes(void) {
                                          "/goal pause",
                                          "/goal resume",
                                          "/goal clear",
-                                         "/goal new objective"};
+                                         "/goal new objective",
+                                         "/m example high",
+                                         "/m\tmedium  ",
+                                         "/r high",
+                                         "/t plain"};
   static const char *const feed[] = {"/help",
                                      "/status",
                                      "/tools",
@@ -80,7 +84,13 @@ static int test_command_queue_modes(void) {
                                      "/shell-context off",
                                      "/unknown-command",
                                      "/fastest",
-                                     "/tiers"};
+                                     "/tiers",
+                                     "/m",
+                                     "/r",
+                                     "/t",
+                                     "/mm",
+                                     "/rr",
+                                     "/tt"};
   cli_state state;
   sl_prompt_queue_policy_t policy;
   size_t i;
@@ -127,7 +137,8 @@ static int test_command_queue_modes(void) {
   }
   if (cli_command_at_request_boundary("/fastest") ||
       cli_command_at_request_boundary("/tiers") ||
-      cli_command_at_request_boundary("ordinary prompt"))
+      cli_command_at_request_boundary("ordinary prompt") ||
+      !cli_is_theme("/t plain") || cli_is_theme("/tier"))
     return 1;
   state.was_busy = 0;
   for (i = 0U; i < sizeof(turns) / sizeof(turns[0]); i++) {
@@ -149,6 +160,9 @@ static int test_command_queue_modes(void) {
   return cli_prompt_mode(&state, "child steer", SL_PROMPT_QUEUE_MODE_STEER) ==
                      SL_PROMPT_QUEUE_MODE_QUEUED &&
                  cli_prompt_mode(&state, "/theme plain",
+                                 SL_PROMPT_QUEUE_MODE_STEER) ==
+                     SL_PROMPT_QUEUE_MODE_STEER &&
+                 cli_prompt_mode(&state, "/t plain",
                                  SL_PROMPT_QUEUE_MODE_STEER) ==
                      SL_PROMPT_QUEUE_MODE_STEER
              ? 0

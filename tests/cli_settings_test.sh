@@ -27,7 +27,7 @@ selection() {
   base=("$cli" -p openai --no-terminal --no-image-generation -C "$work")
   settings_plan '[]'; terminal_start -N
   send '/help\r'; expect manual.; contains "$term/text" /reasoning; contains "$term/text" /model
-  send '/reasoning\r'; expect max; expect 'Provider-advertised choices'
+  send '/r\r'; expect max; expect 'Provider-advertised choices'
   settings_plan '["INITIAL settings response"]'; offset=$(wc -c <"$term/text"); send 'original settings conversation\r'; expect_turn "$offset" 'INITIAL settings response'; selection gpt-6-luna medium
   send '/model gpt-6.1-sol high\r'; expect 'Model changed to gpt-6.1-sol'
   send '/reasoning\r'; expect ultra
@@ -42,9 +42,9 @@ selection() {
   settings_plan '[{"pause":true,"tool":"read_file","arguments":{"path":"data.txt"}},"BOUNDARY settings response"]'
   offset=$(wc -c <"$term/text"); send 'use a tool while switching settings\r'; expect 'STREAM in flight'; selection gpt-6.1-sol high
   count=$(requests)
-  send '/model gpt-6-luna low\r'; expect 'Q 1. /model gpt-6-luna low'
-  send '/reasoning high\r'; expect 'Q 2. /reasoning high'
-  send '/model\r'; expect 'Reasoning effort: high'; [[ $(requests) == "$count" ]]
+  send '/m gpt-6-luna low\r'; expect 'Q 1. /m gpt-6-luna low'
+  send '/r high\r'; expect 'Q 2. /r high'
+  send '/m\r'; expect 'Reasoning effort: high'; [[ $(requests) == "$count" ]]
   release; expect_turn "$offset" 'BOUNDARY settings response'; selection gpt-6-luna high
   contains "$root/request" 'settings tool output'; absent "$root/request" /reasoning
   send '/model gpt-6.1-sol ultra\r'; expect 'reasoning effort ultra'; terminal_close

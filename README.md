@@ -174,6 +174,13 @@ hardlinked image files are rejected.
 Slash commands echo as plain `$ /command` input rows. The reasoning title is
 rendered through libmdf with ANSI disabled; Softline owns the gray `! ` line.
 
+`/m`, `/r` and `/t` alias `/model`, `/reasoning` and `/theme`, including their
+arguments and delivery boundaries. `/help` lists the enabled Softline shortcuts:
+cut/yank and yank rotation, undo, word movement, multiline paste, history search,
+queue editing/approval and draft-preserving shell handoff. Ctrl-Y yanks from the
+in-process kill ring; use the terminal's paste shortcut for clipboard text and
+Ctrl-V for X11 clipboard images.
+
 Softline's queued-turns profile handles conversation input: Enter starts an
 idle turn or queues the next turn while busy. Alt-Enter queues steering, or
 marks the newest pending entry as steering when the editor is empty. Alt-E

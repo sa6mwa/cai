@@ -1000,8 +1000,29 @@ static int cli_word_is(const char *text, size_t length, const char *word) {
   return strlen(word) == length && strncmp(text, word, length) == 0;
 }
 
+/* Expand only the command token. Queue policy and dispatch share this map;
+ * the original alias stays in the editor, prompt history and input echo. */
+static const char *cli_command_name(const char *line, size_t *length) {
+  static const struct {
+    const char *alias, *name;
+  } aliases[] = {{"/m", "/model"}, {"/r", "/reasoning"}, {"/t", "/theme"}};
+  size_t i;
+  for (i = 0U; i < sizeof(aliases) / sizeof(aliases[0]); i++)
+    if (cli_word_is(line, *length, aliases[i].alias)) {
+      *length = strlen(aliases[i].name);
+      return aliases[i].name;
+    }
+  return line;
+}
+
+static int cli_is_theme(const char *line) {
+  size_t length = strcspn(line, " \t");
+  const char *name = cli_command_name(line, &length);
+  return cli_word_is(name, length, "/theme");
+}
+
 static cli_command_boundary cli_command_delivery(const char *line) {
-  const char *arg;
+  const char *arg, *name;
   size_t length, arg_length, word_length, i;
   if (line[0] == '!')
     return CLI_COMMAND_TURN;
@@ -1010,18 +1031,19 @@ static cli_command_boundary cli_command_delivery(const char *line) {
   length = strcspn(line, " \t");
   arg = line + length;
   arg += strspn(arg, " \t");
+  name = cli_command_name(line, &length);
   arg_length = strlen(arg);
   while (arg_length > 0U && strchr(" \t", arg[arg_length - 1U]) != NULL)
     arg_length--;
   word_length = strcspn(arg, " \t");
-  if (cli_word_is(line, length, "/goal") &&
+  if (cli_word_is(name, length, "/goal") &&
       (cli_word_is(arg, arg_length, "status") ||
        cli_word_is(arg, arg_length, "help")))
     return CLI_COMMAND_FEED;
-  if (cli_word_is(line, length, "/tier") &&
+  if (cli_word_is(name, length, "/tier") &&
       cli_word_is(arg, arg_length, "list"))
     return CLI_COMMAND_FEED;
-  if (cli_word_is(line, length, "/todo") &&
+  if (cli_word_is(name, length, "/todo") &&
       (cli_word_is(arg, arg_length, "list") ||
        cli_word_is(arg, arg_length, "help") ||
        cli_word_is(arg, word_length, "layout") ||
@@ -1030,7 +1052,7 @@ static cli_command_boundary cli_command_delivery(const char *line) {
   for (i = 0U;
        i < sizeof(cli_command_definitions) / sizeof(cli_command_definitions[0]);
        i++)
-    if (cli_word_is(line, length, cli_command_definitions[i].name))
+    if (cli_word_is(name, length, cli_command_definitions[i].name))
       return arg_length == 0U ? cli_command_definitions[i].bare
                               : cli_command_definitions[i].arguments;
   /* Reject unknown commands locally; they are never model steering. */
@@ -1166,7 +1188,7 @@ static int cli_prompt_ready(cli_state *state, const char *text,
   }
   if (cli_command_at_request_boundary(text)) {
     if (!*ready && at_boundary &&
-        (cli_word_is(text, strcspn(text, " \t"), "/theme") ||
+        (cli_is_theme(text) ||
          (state->review_runtime == NULL && !state->foreground_subagent)))
       *ready = 1;
     return CAI_OK;
@@ -4451,8 +4473,9 @@ static int cli_handle_command(cli_state *state, const char *line,
         "Stored-entry pruning awaits liblockdc max_entries. |\n",
         "| `/yolo [on\\|off]` | Show or change the runtime's local execution "
         "policy; changes wait for idle tools and subagents. |\n",
-        "| `/theme [NAME or SOFTLINE:LIBMDF]` | Show the current pair and all "
-        "themes, or change themes between turns for this app invocation. "
+        "| `/theme [NAME or SOFTLINE:LIBMDF]`, `/t` | Show the current pair "
+        "and all "
+        "themes, or change themes at the next safe response/tool boundary. "
         "|\n",
         "| `/review [uncommitted\\|base REF\\|custom TEXT]` | Run an isolated "
         "reviewer; no argument compares against the Git default branch. |\n",
@@ -4476,16 +4499,22 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| `/goal [COMMAND]` | Show a goal; new TEXT replaces it, pause/resume "
         "control pursuit, clear removes it, help explains commands. Prefer "
         "asking the agent to manage goals. |\n",
+        "| `!COMMAND` | Run a user command without a PTY; retain its newest "
+        "literal output. |\n"
+        "| `/shell-context [on\\|off]` | Share future command results with the "
+        "model, or keep them local. |\n"
         "| `/shell`, `!sh` | Open your interactive shell between turns; return "
         "to the agent when it exits. Terminal output stays local. |\n",
         "| `/shellshare`, `!sh+` | Open a shell and share sanitized output "
         "when it exits. A ring buffer retains only the newest text that fits "
         "the configured line, byte and replay limits; older text falls out. "
         "|\n",
-        "| `/model [MODEL [EFFORT]]` | Show models or change model/effort at "
+        "| `/model [MODEL [EFFORT]]`, `/m` | Show models or change "
+        "model/effort at "
         "the next safe "
         "model/tool boundary, keeping this conversation. |\n",
-        "| `/reasoning [EFFORT]` | Show model-specific reasoning choices or "
+        "| `/reasoning [EFFORT]`, `/r` | Show model-specific reasoning choices "
+        "or "
         "change effort at the next safe model/tool boundary. |\n",
         "| `/reasoning-tool [on\\|off\\|normal LEVEL\\|high LEVEL]` | "
         "Configure "
@@ -4510,29 +4539,51 @@ static int cli_handle_command(cli_state *state, const char *line,
         "selects one format; other names get both suffixes. No name uses the "
         "default export directory. |\n"
         "| `/quit`, `/exit` | Exit the application. |\n\n",
-        "## Prompt keys\n\n"
+        "## Queue and approval keys\n\n"
         "| Key | Action |\n"
         "| --- | --- |\n"
         "| Enter | Send when idle; queue the next turn while busy. |\n"
         "| Alt-Enter | Steer while busy; promote the newest queued input. |\n"
-        "| Alt-E | Edit the newest queued input. |\n"
-        "| Ctrl-J | Insert a newline. |\n"
-        "| `!COMMAND` | Run a user shell command without a PTY; save its "
-        "literal output. |\n",
-        "| `/shell-context [on\\|off]` | Share future `!COMMAND` results with "
-        "the "
-        "model, or keep them local. |\n"
-        "| Up / Down | Recall prompts for this conversation. |\n"
+        "| Alt-E | Edit the newest queued input. |\n",
+        "| Alt-A | Focus an incoming message's approval panel. |\n"
+        "| Alt-Y / Alt-N | Approve/reject the focused message; Alt-E edits it. "
+        "|\n"
+        "| Escape / Ctrl-C | Cancel the active turn and pause an active goal. "
+        "|\n\n",
+        "## Editing, cut/yank and paste\n\n"
+        "| Key | Action |\n| --- | --- |\n"
+        "| Ctrl-J | Insert a newline without sending. |\n"
+        "| Home / Ctrl-A | Move to the current line's beginning. |\n"
+        "| End / Ctrl-E | Move to the current line's end. |\n"
+        "| Alt-B / Alt-F | Move backward/forward by Unicode word. |\n",
+        "| Ctrl-U / Ctrl-K | Cut from the cursor to line start/end; at an "
+        "edge, remove the adjacent newline. |\n"
+        "| Ctrl-W | Cut the previous whitespace-delimited word. |\n"
+        "| Alt-Backspace / Alt-D | Cut the previous/next Unicode word. |\n"
+        "| Ctrl-Y | Yank (paste) the most recent cut. |\n",
+        "| Alt-Y | Cycle the last yank through earlier cuts, unless approval "
+        "is focused. |\n"
+        "| `Ctrl-_` or Ctrl-X then Ctrl-U | Undo a draft edit. |\n"
+        "| Ctrl-T | Swap adjacent characters. |\n"
+        "| Delete / Ctrl-D | Delete forward inside a draft. |\n",
+        "| Terminal paste | Use your terminal's paste shortcut. Bracketed "
+        "paste keeps multiline text in the draft without sending it. |\n"
+        "| Ctrl-V | Paste a PNG/JPEG from the X11 clipboard as a cached image "
+        "path. |\n\n"
+        "Cuts live in Softline's ten-entry kill ring for this run, across "
+        "prompts. Yanking uses this ring, not the desktop clipboard.\n\n",
+        "## History and terminal keys\n\n"
+        "| Key | Action |\n| --- | --- |\n"
+        "| Up / Down | Navigate draft rows or conversation prompt history. |\n"
+        "| Ctrl-P / Ctrl-N | Recall previous/next history entry directly. |\n"
         "| Ctrl-R | Search history; Enter selects for editing, Enter again "
-        "sends. |\n",
+        "sends. |\n"
+        "| Ctrl-G | Cancel history search and restore the original draft. |\n",
         "| Alt-S | Open a local shell between turns; retain your draft, "
         "cursor and undo state when it exits. |\n"
         "| Ctrl-L | Refresh terminal layout while retaining the draft. |\n"
         "| Alt-Q | Save the draft to prompt history and quit without sending "
         "it. Up recalls it after restarting. |\n"
-        "| Ctrl-V | Paste a PNG or JPEG image from the X11 clipboard. |\n"
-        "| Escape / Ctrl-C | Cancel the active turn and pause an active goal. "
-        "|\n"
         "| Ctrl-D (empty prompt) | Exit. |\n\n",
         "## Startup options\n\n"};
     char example[4096];
@@ -4723,6 +4774,7 @@ static int cli_dispatch_command(cli_state *state, const char *line,
   if (line[0] == '/') {
     size_t name = strcspn(line, " \t"), length;
     const char *arg = line + name;
+    const char *canonical = cli_command_name(line, &name);
     arg += strspn(arg, " \t");
     length = strlen(arg);
     while (length > 0U && strchr(" \t", arg[length - 1U]) != NULL)
@@ -4730,7 +4782,7 @@ static int cli_dispatch_command(cli_state *state, const char *line,
     normalized = malloc(name + length + 2U);
     if (normalized == NULL)
       return cai_cli_error(error, CAI_ERR_NOMEM, "normalize command input");
-    memcpy(normalized, line, name);
+    memcpy(normalized, canonical, name);
     if (length != 0U) {
       normalized[name++] = ' ';
       memcpy(normalized + name, arg, length);

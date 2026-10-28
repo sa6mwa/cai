@@ -9,8 +9,9 @@ chat=false
 [[ "$protocol" != chat_completions ]] || chat=true
 command_plan() { plan "$(jq -n --argjson chat "$chat" "{chat:\$chat,plan:$1}")"; }
 
-# Every busy command must enter the native queue. Edit them in the same input
-# burst, before delivery, replacing potentially destructive operations.
+# Exercise native editing for each command boundary and every alias, replacing
+# operations in the same input burst before dispatch. The complete per-command
+# classification matrix is covered by the fast owner-thread unit check.
 command_plan '[{pause:true,pause_text:"AdmissionBegin\n\n",text:"AdmissionDone"}]'
 terminal_start -N
 before=$(requests)
@@ -19,14 +20,10 @@ for command in '/review custom review scope' '/review-and-fix uncommitted' \
   '/model some-model high' '/reasoning low' '/goal new original objective' \
   '/goal pause' '/goal resume' '/goal clear' '/tier priority' '/fast' \
   '/theme dracula' '/queue on' '/queue cai.other' '/todo use other' \
+  '/m some-model high' '/r low' '/t dracula' \
   '/todo new other' '/todo layout list' '/reasoning-tool on' '/trim 1' \
   '/new' '/resume 1' '/export' '/shell' '/shellshare' '!sh' '!sh+' \
-  '!touch must-not-exist' '/no-such-command' \
-  '/help' '/status' '/tools' '/skills' '/quit' '/exit' '/resume' \
-  '/model' '/reasoning' '/tier' '/tier list' '/goal' '/goal status' '/goal help' \
-  '/theme' '/queue' '/todo' '/todo list' '/todo help' '/todo see DEF-001' \
-  '/todo layout board' '/reasoning-tool' '/trim' '/trim list' '/compact' \
-  '/yolo' '/yolo on' '/output' '/autoqueue' '/shell-context' '/history' '/retention'; do
+  '!touch must-not-exist' '/no-such-command' '/help' '/status' '/m' '/r' '/t'; do
   send "$command\r\033e"; expect_prompt "$command"
   tail -c +$((send_feed_offset+1)) "$term/feed" >"$root/admission-feed"
   absent "$root/admission-feed" "\$ $command"
@@ -133,6 +130,11 @@ terminal_start -N
 send 'Stream until the seam\r'; expect InvalidCommandBegin
 send '/no-such-command\033\r'; expect 'Unknown command.'
 send '/quit\r'
+expect '! Goodbye.'
+absent "$term/feed" InvalidCommandEnd
+# Quit has been applied while the provider is still held. Release this fixture
+# so teardown does not wait for its artificial server-side pause deadline.
+release
 wait_for test -s "$term/status"
 wait "$terminal_pid"; terminal_pid=
 [[ $(cat "$term/status") == 0 ]]
