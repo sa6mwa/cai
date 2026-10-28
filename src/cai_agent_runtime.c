@@ -528,6 +528,8 @@ struct cai_agent_runtime {
   int goal_paused_during_turn;
   int goal_turn_automatic;
   int goal_turn_has_activity;
+  unsigned int capacity_retries;
+  int disable_capacity_retry;
   unsigned int goal_empty_turns;
   unsigned int goal_utf8_value;
   int goal_utf8_remaining;
@@ -1379,7 +1381,8 @@ static int cai_runtime_forward_subagent_event(
        event->type == CAI_AGENT_EVENT_REVIEW_REPORT)) {
     return CAI_OK;
   }
-  if (event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED) {
+  if (event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED ||
+      event->type == CAI_AGENT_EVENT_REQUEST_RETRY) {
     cai_free_mem(NULL, execution->output.data);
     memset(&execution->output, 0, sizeof(execution->output));
   }
@@ -5406,6 +5409,8 @@ static void cai_runtime_policy_diagnostic(cai_agent_runtime *runtime,
   cai_error_cleanup(&error);
 }
 
+#include "cai_runtime_capacity.inc"
+
 static void *cai_runtime_worker(void *context) {
   cai_agent_run_state final_state;
   cai_agent_runtime *runtime;
@@ -5733,6 +5738,7 @@ static void *cai_runtime_worker(void *context) {
       cai_runtime_mark_commit_event_locked(runtime, consumed_sequence);
       pthread_mutex_unlock(&runtime->lock);
     }
+    runtime->capacity_retries = 0U;
     budget_limited = 0;
     if (rc == CAI_OK) {
       rc = cai_runtime_account_goal(runtime, &budget_limited, &error);
@@ -7700,6 +7706,7 @@ int cai_agent_runtime_open(cai_client *client,
   }
   runtime->review_mode = review_mode;
   runtime->disable_subagent_steering = config->disable_subagent_steering;
+  runtime->disable_capacity_retry = config->disable_capacity_retry;
   runtime->terminal_enabled =
       !config->disable_terminal &&
               ((review_mode ? preset->review_tool_capabilities
@@ -8166,6 +8173,11 @@ int cai_agent_runtime_open(cai_client *client,
   }
   if (rc == CAI_OK) {
     rc = cai_runtime_refresh_goal_projection(runtime, error);
+  }
+  if (rc == CAI_OK) {
+    CAI_SESSION_IMPL(runtime->session)->retry_request =
+        cai_runtime_capacity_retry;
+    CAI_SESSION_IMPL(runtime->session)->retry_request_context = runtime;
   }
   if (rc == CAI_OK && pthread_create(&runtime->worker_thread, NULL,
                                      cai_runtime_worker, runtime) != 0) {
@@ -9893,6 +9905,7 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
                               ? cai_runtime_manual_review_event
                               : NULL;
   config.record_transcript = parent->record_transcript;
+  config.disable_capacity_retry = parent->disable_capacity_retry;
   config.synchronize_input_boundaries = parent->synchronize_input_boundaries;
   config.event_context = parent;
   config.logger = parent->logger;
@@ -10486,6 +10499,7 @@ static int cai_runtime_open_tool_subagent(
             : 0;
   }
   config.disable_review_subagent = 1;
+  config.disable_capacity_retry = parent->disable_capacity_retry;
   config.synchronize_input_boundaries = parent->synchronize_input_boundaries;
   return cai_agent_runtime_open(parent->client, &config, out, error);
 }

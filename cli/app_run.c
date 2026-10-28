@@ -73,6 +73,7 @@ static int cli_cancel_editor(sl_t *sl, sl_key_t key, void *context,
 
 typedef struct cli_state {
   char welcome[128], clipboard_template[PATH_MAX + 4];
+  char capacity_retry_message[192];
   const cai_app_config *application;
   cai_app_bridge *bridge;
   sl_watch_id_t host_watch;
@@ -1311,7 +1312,10 @@ static void cli_log_event(cli_state *state,
                                       "tool_patch_locations",
                                       "policy_diagnostic",
                                       "reasoning_summary_started",
-                                      "input_boundary"};
+                                      "input_boundary",
+                                      "execution_record",
+                                      "request_retry",
+                                      "request_retry_started"};
   pslog_field fields[16];
   size_t count;
   const char *name;
@@ -1430,6 +1434,24 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     }
   }
   cli_log_event(state, event);
+  if (event->type == CAI_AGENT_EVENT_REQUEST_RETRY) {
+    if (!state->batch &&
+        (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0))
+      return CAI_ERR_TRANSPORT;
+    cai_cli_response_close(&state->final_response);
+    cai_cli_reasoning_reset(&state->reasoning);
+    snprintf(state->capacity_retry_message,
+             sizeof(state->capacity_retry_message), "%.*s",
+             (int)(event->data_length < sizeof(state->capacity_retry_message)
+                       ? event->data_length
+                       : sizeof(state->capacity_retry_message) - 1U),
+             event->data != NULL ? event->data : "");
+  } else if (event->type == CAI_AGENT_EVENT_REQUEST_RETRY_STARTED ||
+             event->type == CAI_AGENT_EVENT_RUN_STARTED ||
+             event->type == CAI_AGENT_EVENT_RUN_COMPLETED ||
+             event->type == CAI_AGENT_EVENT_RUN_FAILED ||
+             event->type == CAI_AGENT_EVENT_RUN_CANCELLED)
+    state->capacity_retry_message[0] = '\0';
   if (state->interactive &&
       (event->type == CAI_AGENT_EVENT_RUN_STARTED ||
        event->type == CAI_AGENT_EVENT_RUN_COMPLETED ||
@@ -1771,6 +1793,8 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
     return CAI_ERR_TRANSPORT;
   if (state->manual_compaction && metrics.turn_active)
     reasoning_title = "Compacting context";
+  if (state->capacity_retry_message[0] != '\0' && metrics.turn_active)
+    reasoning_title = state->capacity_retry_message;
   if (cai_cli_turn_status_message(turn_message, sizeof(turn_message),
                                   reasoning_title, turn_metrics) != 0)
     return CAI_ERR_TRANSPORT;

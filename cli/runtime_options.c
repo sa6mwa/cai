@@ -59,4 +59,5 @@ void cai_cli_apply_runtime_options(const cai_cli_options *options,
   config->yolo = options->yolo;
   config->disable_review_subagent = !options->review_subagent;
   config->disable_subagent_steering = !options->subagent_steering;
+  config->disable_capacity_retry = !options->capacity_retry;
 }

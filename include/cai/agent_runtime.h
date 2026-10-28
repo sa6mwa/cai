@@ -207,7 +207,12 @@ typedef enum cai_agent_runtime_event_type {
    * Synchronous owner operations retain the journal even when a live
    * notification cannot fit the bounded event queue.
    */
-  CAI_AGENT_EVENT_EXECUTION_RECORD = 35
+  CAI_AGENT_EVENT_EXECUTION_RECORD = 35,
+  /** Capacity backoff scheduled. data is a human-readable retry notice.
+   * The turn stays active; cancellation/close interrupts the wait. */
+  CAI_AGENT_EVENT_REQUEST_RETRY = 36,
+  /** The capacity wait ended and the same pending request will be retried. */
+  CAI_AGENT_EVENT_REQUEST_RETRY_STARTED = 37
 } cai_agent_runtime_event_type;
 
 /**
@@ -580,6 +585,10 @@ typedef struct cai_agent_runtime_config {
   /** Optional service-tier override. NULL restores the saved tier on resume,
    * otherwise leaves provider routing unset. No automatic paid-tier opt-in. */
   const char *service_tier;
+  /** Disable automatic server_is_overloaded retries. Default enabled: at most
+   * 10 retries per turn, waiting 30, 60, 120, then 240 seconds (capped).
+   * Retries reuse the pending request, without user prompts or tool reruns. */
+  int disable_capacity_retry;
   /**
    * Optional model for review children launched from this Smith runtime. NULL
    * inherits model. Ignored by a directly opened smith-review runtime.

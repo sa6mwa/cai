@@ -257,6 +257,7 @@ int cai_execution_record_write_markdown(const cai_execution_record *r,
           : strcmp(r->kind, "turn.failed") == 0          ? "Turn failed"
           : strcmp(r->kind, "compaction.failed") == 0    ? "Compaction failed"
           : strcmp(r->kind, "request.failed") == 0       ? "Request failed"
+          : strcmp(r->kind, "request.retry") == 0        ? "Request retry"
           : strcmp(r->kind, "turn.started") == 0         ? "Turn started"
           : strcmp(r->kind, "turn.completed") == 0       ? "Turn completed"
           : strcmp(r->kind, "turn.cancelled") == 0       ? "Turn cancelled"

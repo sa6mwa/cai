@@ -174,6 +174,9 @@ F("agent", "view_image", NOTBOOL, RUNTIME, disable_view_image, 0, NULL,
   "Enable local image inspection when supported by the model.")
 F("agent", "goals", NOTBOOL, RUNTIME, disable_goals, 0, NULL,
   "Enable model goal lifecycle tools.")
+F("agent", "capacity_retry", NOTBOOL, RUNTIME, disable_capacity_retry, 0, NULL,
+  "Automatically retry server_is_overloaded, at most 10 retries per turn: 30, "
+  "60, 120, then 240 seconds. No continuation prompt or tool rerun.")
 F("agent", "reasoning_tool", BOOL, RUNTIME, reasoning_tool.enabled, 0, NULL,
   "Enable set_reasoning normal/high; unsupported or unknown choices are "
   "harmless no-ops.")

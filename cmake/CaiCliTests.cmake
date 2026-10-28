@@ -111,6 +111,10 @@
       "$<TARGET_FILE:cai_cli_mock_fixture>" ${_cai_journal_lua_args})
     set_tests_properties(cai_cli_journal PROPERTIES TIMEOUT 20)
     foreach(_final_protocol responses chat_completions)
+      add_test(NAME cai_cli_capacity_${_final_protocol} COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_capacity_test.sh"
+        "$<TARGET_FILE:cai_cli_mock_fixture>" "${_final_protocol}")
+      set_tests_properties(cai_cli_capacity_${_final_protocol} PROPERTIES TIMEOUT 10)
       add_test(NAME cai_cli_final_output_${_final_protocol} COMMAND bash
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_final_output_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>" "${_final_protocol}")

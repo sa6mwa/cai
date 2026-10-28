@@ -634,12 +634,13 @@ static int tool_environment(cai_config *cfg, const char *prefix,
                                     "NORMAL_REASONING_EFFORT",
                                     "HIGH_REASONING_EFFORT",
                                     "SUBAGENT_STEERING",
-                                    "YOLO"};
+                                    "YOLO",
+                                    "CAPACITY_RETRY"};
   static const char *const sections[] = {
       "agent", "chrome", "agent",   "agent",  "agent",  "agent",   "agent",
       "agent", "agent",  "searxng", "revgeo", "chrome", "agent",   "agent",
       "agent", "agent",  "agent",   "agent",  "ui",     "runtime", "runtime",
-      "agent", "agent",  "agent",   "agent",  "agent"};
+      "agent", "agent",  "agent",   "agent",  "agent",  "agent"};
   static const char *const keys[] = {"web_search",
                                      "enabled",
                                      "todo",
@@ -665,7 +666,8 @@ static int tool_environment(cai_config *cfg, const char *prefix,
                                      "normal_reasoning_effort",
                                      "high_reasoning_effort",
                                      "subagent_steering",
-                                     "yolo"};
+                                     "yolo",
+                                     "capacity_retry"};
   size_t i;
   {
     static const char *const aliases[][3] = {
@@ -1001,6 +1003,8 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
       cfg, "agent", "review_subagent", defaults.review_subagent);
   defaults.subagent_steering = cai_config_get_bool(
       cfg, "agent", "subagent_steering", defaults.subagent_steering);
+  defaults.capacity_retry = cai_config_get_bool(cfg, "agent", "capacity_retry",
+                                                defaults.capacity_retry);
   defaults.codex_agents_md = cai_config_get_bool(
       cfg, "agent", "codex_agents_md", defaults.codex_agents_md);
   defaults.web_search =

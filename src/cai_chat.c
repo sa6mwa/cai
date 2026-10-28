@@ -2516,6 +2516,8 @@ static int cai_chat_stream_attempt(
          curl_rc == CURLE_SEND_ERROR || curl_rc == CURLE_RECV_ERROR)));
   if (error != NULL && error->server_code != NULL &&
       (strcmp(error->server_code, "insufficient_quota") == 0 ||
+       /* The runtime owns the longer, bounded capacity retry policy. */
+       strcmp(error->server_code, "server_is_overloaded") == 0 ||
        strcmp(error->server_code, "quota_exceeded") == 0 ||
        strcmp(error->server_code, "billing_hard_limit_reached") == 0))
     result->retryable = 0;

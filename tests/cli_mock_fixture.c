@@ -10,6 +10,18 @@
 #include <string.h>
 #include <unistd.h>
 
+/* Test-only wait injection: exercise the real retry path without wall sleeps.
+ */
+extern void cai_runtime_test_set_capacity_wait_fn(int (*fn)(cai_agent_runtime *,
+                                                            long, cai_error *));
+static int fixture_capacity_wait(cai_agent_runtime *runtime, long delay,
+                                 cai_error *error) {
+  (void)runtime;
+  (void)delay;
+  (void)error;
+  return CAI_OK;
+}
+
 static int fixture_prompt_append(cai_cli_pouch *pouch, const char *prompt,
                                  cai_error *error) {
   const char *failure = getenv("CAI_TEST_PROMPT_APPEND_FAILURE");
@@ -26,6 +38,8 @@ static int fixture_runtime_open(cai_client *client,
   cai_agent_preset worker;
   cai_agent_subagent_profile profile;
   const char *volatile_session = getenv("CAI_TEST_VOLATILE_SESSION");
+  cai_runtime_test_set_capacity_wait_fn(
+      getenv("CAI_TEST_CAPACITY_WAIT") != NULL ? fixture_capacity_wait : NULL);
   if (getenv("CAI_TEST_STEER_WORKER") != NULL) {
     memset(&worker, 0, sizeof(worker));
     worker.name = "seam-worker";

@@ -681,13 +681,33 @@ Set `CAI_BERGET_CANARY_MODEL` to a model ID to restrict this gate to one model.
 Live tests require credentials and spend tokens; they make no requests unless
 explicitly enabled.
 
-Chat Completions requests retry transient HTTP 429, 502, and 503 failures and
+Smith runtimes automatically retry the exact provider error
+`server_is_overloaded` ("Selected model is at capacity"). The first retry waits
+30 seconds, then 60, 120, and 240 seconds; subsequent waits stay at 240 seconds.
+There are at most ten retries per turn, in addition to the original attempt.
+The active turn remains responsive to Escape, host cancellation and shutdown.
+The status message and logs say when the next retry will run; exhaustion reports
+the provider error and stops the turn. Completed tool calls are not repeated.
+The pending request is reused without adding a user prompt such as "Proceed."
+Incomplete attempt captures are discarded; any partial text already displayed
+can appear again when the model resamples. Quota, rate-limit, policy and other
+errors do not trigger this capacity policy.
+
+Disable it with `--no-capacity-retry`, `CAI_CAPACITY_RETRY=false`, or
+`[agent] capacity_retry = false`. C/Lua runtime config accepts
+`disable_capacity_retry = true`; libcai_app accepts the normal agent setting.
+The same policy applies to child runtimes and both wire protocols. Low-level
+standalone client requests and explicit compaction endpoints do not use it.
+With transcript recording, failed attempts and retry notices are execution
+records, never model input. A new turn resets the retry allowance.
+
+Separately, Chat Completions requests retry transient HTTP 429, 502, and 503 failures and
 connection failures before response headers, with at most three attempts.
 This includes failures while a large request is still uploading; stopping its
 producer does not suppress a transport retry. Input serialization failures
 remain errors and are not retried.
 Retries stop once model activity or usage is received. Authentication, invalid
-requests, permanent quota errors, malformed streams, callback failures, and
+requests, permanent quota errors, capacity errors (handled by the runtime above), malformed streams, callback failures, and
 partial responses are not retried. A retry after a completed tool round resends
 the tool results without executing the tools again. Backoff starts at 500 ms,
 adds jitter, and doubles up to 30 seconds. Valid `Retry-After` seconds or HTTP

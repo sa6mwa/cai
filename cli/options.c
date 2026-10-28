@@ -61,6 +61,7 @@ void cai_cli_options_init(cai_cli_options *options) {
   options->shell_context_max_bytes = 4U * 1024U * 1024U;
   options->review_subagent = 1;
   options->subagent_steering = 1;
+  options->capacity_retry = 1;
   options->chrome = 1;
   options->web_search = 1;
   options->mcp = 1;
@@ -185,8 +186,9 @@ static int cli_read_options(int argc, char *const *argv,
                                           "mcp",
                                           "reasoning-tool",
                                           "subagent-steering",
-                                          "yolo"};
-      int *values[18];
+                                          "yolo",
+                                          "capacity-retry"};
+      int *values[19];
       size_t k;
       int enabled = strncmp(flag, "--no-", 5U) != 0;
       const char *name = flag + (enabled ? 2U : 5U);
@@ -207,6 +209,7 @@ static int cli_read_options(int argc, char *const *argv,
       values[14] = &options->mcp;
       values[15] = &options->reasoning_tool;
       values[16] = &options->subagent_steering;
+      values[18] = &options->capacity_retry;
       values[17] = &options->yolo;
       for (k = 0U; k < sizeof(names) / sizeof(names[0]); k++)
         if (strncmp(flag, "--", 2U) == 0 && strcmp(name, names[k]) == 0) {

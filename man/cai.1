@@ -1155,6 +1155,16 @@ Default cai global instructions when
 is set; otherwise
 .IR ~/.config/cai/AGENTS.md .
 .SH CONFIGURATION
+Agent inference retries the provider code server_is_overloaded by default.
+The initial wait is 30 seconds, then 60, 120, and 240 seconds, capped at
+240 seconds for the remaining retries. At most ten retries are made per turn.
+The pending request is reused without a continuation prompt or tool reruns.
+Escape, host cancellation and shutdown interrupt the wait. Exhaustion stops
+the turn with the provider error. Disable with
+.BR \-\-no-capacity-retry ,
+CAI_CAPACITY_RETRY=false, or [agent] capacity_retry=false.
+Other provider errors and standalone compaction requests do not use this policy.
+.PP
 The --mcp and --no-mcp flags control configured MCP servers (default enabled).
 .PP
 Named [mcp.NAME] sections configure Streamable HTTP tool servers. Enabled

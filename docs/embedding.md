@@ -55,6 +55,17 @@ completed batch/review work, or failure. On CAI_OK its output exit code has the
 normal CLI meaning (0/1/2). Invocation and restoration failures return a CAI
 status and `cai_error` instead.
 
+Agent inference retries `server_is_overloaded` by default: ten retries per turn,
+after 30, 60, 120, then at most 240 seconds each. These are cancellable worker
+waits, not owner-thread sleeps. The pending request and completed tool results
+are reused without a continuation prompt. `CAI_AGENT_EVENT_REQUEST_RETRY`
+contains the scheduled notice; `CAI_AGENT_EVENT_REQUEST_RETRY_STARTED` ends the
+wait. C and Lua observers receive both. Failed attempts and retry notices also
+enter the execution journal when recording is enabled, outside model context.
+Set the application setting `agent.capacity_retry` to `false` to opt out, or
+use `disable_capacity_retry` in the core C/Lua runtime config. This does not
+retry unrelated errors or standalone compaction requests.
+
 The C and Lua receivers accept `-D` / `--delete` through the same argument
 parser. With no value it lists eligible conversations in the selected workspace;
 an ID or list number deletes the conversation and its owned child history,

@@ -6386,6 +6386,73 @@ static int cai_session_retain_partial_stream(
   return rc;
 }
 
+/* Retry only the provider request. Tool execution and its durable outputs are
+ * outside this loop. Discard incomplete attempt captures before resampling. */
+static int cai_session_stream_request(
+    cai_session *session, cai_response_create_params *params,
+    const cai_stream_sinks *sinks, cai_stream_tool_capture *capture,
+    char **response_id, cai_token_usage *usage, cai_error *error) {
+  cai_session_impl *impl = CAI_SESSION_IMPL(session);
+  int rc;
+  for (;;) {
+    int retry = 0;
+    cai_error control;
+    rc = cai_client_stream_response_internal_with_id(
+        CAI_SESSION_CLIENT(session), params, sinks, response_id, usage, error);
+    if (rc == CAI_OK || impl->retry_request == NULL || error == NULL ||
+        error->server_code == NULL ||
+        strcmp(error->server_code, "server_is_overloaded") != 0)
+      return rc;
+    cai_error_init(&control);
+    if (!cai_token_usage_is_empty(usage)) {
+      int account = cai_session_record_usage(session, usage, &control);
+      memset(usage, 0, sizeof(*usage));
+      if (account != CAI_OK) {
+        cai_error_cleanup(error);
+        *error = control;
+        return account;
+      }
+    }
+    {
+      int decision;
+      int available = cai_session_check_usage_available(session, &control);
+      if (available != CAI_OK) {
+        cai_error_cleanup(error);
+        *error = control;
+        return available;
+      }
+      decision = impl->retry_request(impl->retry_request_context, error, &retry,
+                                     &control);
+      if (decision != CAI_OK) {
+        cai_error_cleanup(error);
+        *error = control;
+        return decision;
+      }
+    }
+    cai_error_cleanup(&control);
+    if (!retry)
+      return rc;
+    cai_stream_tool_call_list_cleanup(capture->tool_calls);
+    if (capture->output_text != NULL) {
+      capture->output_text->cleanup(capture->output_text);
+      cai_history_init_spooled(session, capture->output_text);
+    }
+    if (capture->output_items_initialized)
+      capture->output_items.cleanup(&capture->output_items);
+    memset(&capture->output_items, 0, sizeof(capture->output_items));
+    capture->output_items_initialized = 0;
+    capture->output_items_count = 0U;
+    cai_free_mem(NULL, *response_id);
+    *response_id = NULL;
+    memset(usage, 0, sizeof(*usage));
+    cai_error_cleanup(error);
+    cai_error_init(error);
+    rc = cai_session_check_usage_available(session, error);
+    if (rc != CAI_OK)
+      return rc;
+  }
+}
+
 static int cai_session_stream_once(cai_session *session,
                                    const cai_stream_sinks *sinks,
                                    cai_stream_tool_call_list *tool_calls,
@@ -6422,8 +6489,8 @@ static int cai_session_stream_once(cai_session *session,
                        CAI_SESSION_CONTINUITY_CLIENT_HISTORY;
   has_output_text = 0;
   partial_recorded = 0;
+  memset(&capture, 0, sizeof(capture));
   if (capture_stream) {
-    memset(&capture, 0, sizeof(capture));
     capture.user_sinks = sinks;
     capture.tool_calls = tool_calls;
     if (CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
@@ -6465,9 +6532,8 @@ static int cai_session_stream_once(cai_session *session,
     rc = cai_session_check_usage_available(session, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_client_stream_response_internal_with_id(
-        CAI_SESSION_AGENT_IMPL(session)->client, params, &effective_sinks,
-        &response_id, &usage, error);
+    rc = cai_session_stream_request(session, params, &effective_sinks, &capture,
+                                    &response_id, &usage, error);
   }
   if (rc == CAI_OK) {
     if (CAI_SESSION_AGENT_IMPL(session)->session_continuity ==
@@ -6836,9 +6902,8 @@ static int cai_session_stream_tool_round(
   }
   if (rc == CAI_OK) {
     CAI_SESSION_IMPL(session)->request_only_tool_output_pending = 0;
-    rc = cai_client_stream_response_internal_with_id(
-        CAI_SESSION_AGENT_IMPL(session)->client, params, &effective_sinks,
-        &response_id, &usage, error);
+    rc = cai_session_stream_request(session, params, &effective_sinks, &capture,
+                                    &response_id, &usage, error);
   }
   if (rc == CAI_OK) {
     if (CAI_SESSION_AGENT_IMPL(session)->session_continuity ==

@@ -26919,6 +26919,7 @@ static int test_runtime_input_boundary(void *context,
   return CAI_OK;
 }
 
+#include "runtime_capacity_test.inc"
 #include "runtime_execution_test.inc"
 #include "runtime_goal_cancel_test.inc"
 #include "runtime_goal_continuation_test.inc"
@@ -54576,6 +54577,8 @@ static const test_entry test_entries[] = {
     {"agent_runtime_input_boundary", test_agent_runtime_input_boundary},
     {"agent_runtime_goal_cancel", test_agent_runtime_goal_cancel},
     {"agent_runtime_goal_continuation", test_agent_runtime_goal_continuation},
+    {"agent_runtime_capacity", test_agent_runtime_capacity},
+    {"agent_runtime_capacity_websocket", test_agent_runtime_capacity_websocket},
     {"agent_runtime_goal_restart", test_agent_runtime_goal_restart},
     {"agent_runtime_execution", test_agent_runtime_execution},
     {"execution_record", test_execution_record},

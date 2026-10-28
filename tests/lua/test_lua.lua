@@ -2742,6 +2742,8 @@ end
 -- ordinary agent startup. Reviewers still reject explicit browser access.
 do
   local browser_client = assert_ok(cai.open({ api_key = "fixture" }))
+  assert(cai.AGENT_EVENT_REQUEST_RETRY == 36)
+  assert(cai.AGENT_EVENT_REQUEST_RETRY_STARTED == 37)
   native_todo.reset()
   local store = assert(native_todo.new())
   local runtime = assert_ok(browser_client:new_smith_runtime({
@@ -2760,6 +2762,7 @@ do
     disable_apply_patch = true,
     disable_view_image = true,
     disable_goals = true,
+    disable_capacity_retry = true,
     disable_skills = true,
   }))
   assert_not_ok(store:close(), "runtime must retain its borrowed todo store")

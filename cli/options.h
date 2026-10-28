@@ -51,6 +51,7 @@ typedef struct cai_cli_options {
   int revgeo;
   int read_file, list_files, apply_patch, view_image, goals, skills;
   int subagent_steering;
+  int capacity_retry;
   const char *searxng_url;
   const char *revgeo_url;
   int chrome_setup;

@@ -17,6 +17,7 @@
 #include <time.h>
 
 struct curl_slist;
+struct cai_agent_runtime;
 
 #define CAI_DEFAULT_BASE_URL CAI_OPENAI_BASE_URL
 #define CAI_DEFAULT_HTTP_TIMEOUT_MS 60000L
@@ -26,6 +27,8 @@ struct curl_slist;
 #ifdef CAI_TESTING
 void cai_chat_test_set_retry_sleep_fn(int (*fn)(const struct timespec *,
                                                 struct timespec *));
+void cai_runtime_test_set_capacity_wait_fn(int (*fn)(struct cai_agent_runtime *,
+                                                     long, cai_error *));
 #endif
 
 typedef struct cai_client_impl {
@@ -224,6 +227,10 @@ typedef struct cai_session_impl {
   /* A tool result that only exists in the next request (for example an image
    * data URL) must reach that request before local history can be compacted. */
   int request_only_tool_output_pending;
+  /* Runtime-owned request retry seam. Runs after a failed transport request,
+   * before destroying its exact parameters or executing returned tools. */
+  int (*retry_request)(void *, const cai_error *, int *, cai_error *);
+  void *retry_request_context;
 } cai_session_impl;
 
 int cai_session_history_begin(cai_session *session, int kind,

@@ -371,8 +371,10 @@ static int help_columns(void) {
       continue;
     rows++;
     if (strlen(line) <= 40U || line[38] != ' ' || line[39] == ' ' ||
-        line[39] == '\n')
+        line[39] == '\n') {
+      fprintf(stderr, "misaligned help row: %s", line);
       failed = 1;
+    }
   }
   fclose(stream);
   return failed || rows < 60U;
