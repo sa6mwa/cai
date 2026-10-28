@@ -2788,12 +2788,11 @@ static int cli_prompt_append(const char *key, const char *prompt,
 
 static int cli_prompt_configure(cli_state *state, cai_error *error) {
   int limit = state->options.prompt_history_limit;
-  int rc = CAI_OK;
-  if (limit != 0 && state->pouch.prompt_history == NULL)
-    rc = cai_cli_pouch_prompt_open(
-        &state->pouch, cai_agent_runtime_session_id(state->runtime), error);
-  if (limit == 0)
-    cai_cli_pouch_prompt_close(&state->pouch);
+  int rc = cai_cli_pouch_prompt_configure(
+      &state->pouch, cai_agent_runtime_session_id(state->runtime),
+      (unsigned int)limit, error);
+  if (rc != CAI_OK)
+    return rc;
   if (rc == CAI_OK &&
       (sl_history_close(state->sl) != SL_OK ||
        sl_history_set_max_len(state->sl, 0) != SL_OK ||
@@ -4581,8 +4580,11 @@ static int cli_retention_command(cli_state *state, const char *arg, int history,
               ? "use /history COUNT (nonnegative entry count)"
               : "use /retention DAYS; 0 or off keeps the conversation forever");
     if (history) {
+      int previous = state->options.prompt_history_limit;
       state->options.prompt_history_limit = (int)value;
       rc = cli_prompt_configure(state, error);
+      if (rc != CAI_OK)
+        state->options.prompt_history_limit = previous;
     } else
       rc = cai_cli_pouch_set_retention(
           &state->pouch, cai_agent_runtime_session_id(state->runtime), value,
@@ -4591,11 +4593,13 @@ static int cli_retention_command(cli_state *state, const char *arg, int history,
       return rc;
   }
   if (history) {
-    snprintf(message, sizeof(message),
-             "Prompt history limit: **%d entries**.\n\n"
-             "Stored-entry pruning is pending liblockdc `max_entries`; this "
-             "currently controls recall. Zero disables recall and recording.",
-             state->options.prompt_history_limit);
+    snprintf(
+        message, sizeof(message),
+        "Prompt history limit: **%d entries**.\n\n"
+        "Controls recall and native stored-entry retention. Oldest "
+        "entries are pruned asynchronously by storage maintenance. "
+        "Zero disables recall and recording without deleting saved prompts.",
+        state->options.prompt_history_limit);
   } else {
     rc = cai_cli_pouch_retention(&state->pouch,
                                  cai_agent_runtime_session_id(state->runtime),
@@ -4926,7 +4930,8 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| `/retention [DAYS or off]` | Show or set this conversation's "
         "inactivity retention. 0 or off keeps it forever. |\n"
         "| `/history [COUNT]` | Show or set prompt recall (default 200). "
-        "Stored-entry pruning awaits liblockdc max_entries. |\n",
+        "Storage maintenance prunes oldest entries; zero disables recall "
+        "and recording. |\n",
         "| `/yolo [on\\|off]` | Show or change the runtime's local execution "
         "policy; changes wait for idle tools and subagents. |\n",
         "| `/theme [NAME or SOFTLINE:LIBMDF]`, `/t` | Show the current pair "

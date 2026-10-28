@@ -172,8 +172,10 @@ automatic names; `queue_name` / `--message-queue` replaces the full public name.
 
 Prompt recall shares the configured session store and encryption key through
 separate `prompts.<session-id>` collections. `ui.prompt_history_limit` defaults
-to 200 and configures recall only; `/history` exposes the same setting in the
-TUI. SDK `max_entries` integration for stored-entry pruning is deferred.
+to 200 and configures recall and the collection's native `max_entries` cap;
+`/history` exposes the same setting in the TUI. SDK maintenance prunes oldest
+entries asynchronously, without a foreground scan or per-append deletion.
+Zero disables recall/recording and clears the cap without deleting saved prompts.
 `storage.conversation_retention_days` defaults to 30 days since the latest
 journal append; zero disables expiry. `/retention` shows that policy and
 persists an override for the active conversation (0/off means forever).

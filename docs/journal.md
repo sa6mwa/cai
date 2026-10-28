@@ -73,7 +73,16 @@ disable_compression = true
 Embedders can set the same schema field through application settings. Standalone
 kanban receivers expose `disable_compression` in their C/Lua configuration too.
 Equal Pouch roots still share one process client; conflicting compression modes
-are rejected. Remote lockd clients do not receive local compression settings.
+within that process are rejected. On a closed root, liblockdc 0.24.0 converts a
+changed explicit mode synchronously, preserving stored values, positions and
+retention. Competing writers prevent conversion and trigger a warning with
+adoption of the stored mode. Remote clients receive no local compression settings.
+
+Journal appends atomically renew whole-collection inactivity retention through
+the native append request. There is no second collection-metadata write per
+event, and identical retries do not extend either the collection or session
+metadata lifetime. Small generated records retain liblockdc's pull-append fast
+path; the new push writer's segment-per-commit cost is unnecessary here.
 The configured mode must match the root manifest. This cutover does not migrate
 old snapshot-backed stores; use a new root.
 

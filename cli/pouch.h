@@ -71,6 +71,14 @@ void cai_cli_pouch_close(cai_cli_pouch *pouch);
 int cai_cli_pouch_prompt_open(cai_cli_pouch *pouch, const char *id,
                               cai_error *error);
 void cai_cli_pouch_prompt_close(cai_cli_pouch *pouch);
+/* SDK maintenance owns oldest-first pruning; zero clears the stored count cap.
+ * Applying an unchanged limit does not write metadata. */
+int cai_cli_pouch_prompt_set_limit(cai_cli_pouch *pouch, unsigned int limit,
+                                   cai_error *error);
+/* Apply recall's stored-entry cap, retaining an enabled receiver. Zero clears
+ * an existing cap and closes recall without creating a missing collection. */
+int cai_cli_pouch_prompt_configure(cai_cli_pouch *pouch, const char *id,
+                                   unsigned int limit, cai_error *error);
 int cai_cli_pouch_prompt_load(cai_cli_pouch *pouch, unsigned int limit,
                               int (*emit)(void *, const char *, cai_error *),
                               void *context, cai_error *error);

@@ -116,11 +116,12 @@ static void journal_faults(cai_cli_pouch *pouch, cai_error *error) {
     assert(cai_source_from_callbacks(&callbacks, &source, error) == CAI_OK);
     if (mode == 1) {
       assert(collection_append_source(pouch, collection, "lost-ack", source,
-                                      &position, error) == CAI_OK);
+                                      NULL, &position, NULL, error) == CAI_OK);
       assert(position == 1U && error->code == CAI_OK);
     } else {
       assert(collection_append_source(pouch, collection, "uncommitted", source,
-                                      NULL, error) == CAI_ERR_TRANSPORT);
+                                      NULL, NULL, NULL,
+                                      error) == CAI_ERR_TRANSPORT);
       cai_error_cleanup(error);
     }
     cai_source_close(source);
@@ -131,7 +132,7 @@ static void journal_faults(cai_cli_pouch *pouch, cai_error *error) {
       offset = 0U;
       assert(cai_source_from_callbacks(&callbacks, &source, error) == CAI_OK);
       assert(collection_append_source(pouch, collection, "uncommitted", source,
-                                      &position, error) == CAI_OK);
+                                      NULL, &position, NULL, error) == CAI_OK);
       cai_source_close(source);
       collection->append = journal_lost_ack;
       assert(position == 2U);
@@ -145,7 +146,7 @@ static void journal_faults(cai_cli_pouch *pouch, cai_error *error) {
   assert(cai_source_from_callbacks(&callbacks, &source, error) == CAI_OK);
   calls = journal_append_calls;
   assert(collection_append_source(&alias, collection, "blocked", source, NULL,
-                                  error) == CAI_ERR_TRANSPORT);
+                                  NULL, NULL, error) == CAI_ERR_TRANSPORT);
   assert(journal_append_calls == calls && offset == 0U);
   assert(strstr(error->message, "unresolved outcome") != NULL);
   cai_source_close(source);

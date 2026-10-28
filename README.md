@@ -143,7 +143,7 @@ runtime, review, storage, and presentation contracts.
 The musl SDK presets build the terminal coding agent as a statically linked
 Linux x86_64, aarch64 or armhf executable. The `cai` convenience preset selects
 the same x86_64 musl producer. It adds pinned softline 0.15.0 for the prompt and
-libmdf 0.17.0 for streamed Markdown rendering, and liblockdc 0.23.0 with
+libmdf 0.17.0 for streamed Markdown rendering, and liblockdc 0.24.0 with
 liblql 0.4.0 for durable storage. It uses libpslog 0.12.0 for logging.
 The native dependency SDK is cpkt 0.6.1 from
 [c89systems/cpkt](https://github.com/c89systems/cpkt). CAI consumes liblockdc's
@@ -237,13 +237,16 @@ Interactive prompt recall uses Softline's custom backend hooks and encrypted
 the conversation journal. It shares the session store's Pouch client and key;
 there are no plaintext `.history` files or separate history-directory settings.
 Recall loads only the newest 200 entries by default, oldest first, through a
-bounded collection range. Configure the recall window with
+bounded collection range. Configure recall and the native stored-entry cap with
 `--prompt-history-limit`, `CAI_PROMPT_HISTORY_LIMIT`, or `[ui] prompt_history_limit`
 (also accepted through C/Lua application settings). Zero disables recall and
-recording. This window does not delete stored entries or set their age expiry.
+recording and clears the stored count cap without deleting saved prompts.
 `/history` shows the current window; `/history COUNT` changes it for this app
-invocation. Stored-entry retention is deferred until liblockdc supports native
-collection `max_entries`; the command explicitly reports that boundary.
+invocation. Liblockdc's existing maintenance worker lazily removes the oldest
+entries beyond `max_entries`; appends never scan or trim prompts synchronously.
+The stored cap survives restarts and is updated when recall is configured.
+Raising it cannot recover prompts already removed by maintenance. Conversation
+journals are never subject to this count cap.
 Accepted prompts and local commands append immediately, including steering; replay and Ctrl-R
 selection do not append. `/new` starts fresh recall; `/resume` restores the
 selected conversation's recall. Each entry appends synchronously without
@@ -683,7 +686,11 @@ runs. Its kanban data stays with the private conversation store.
 Conversation storage uses an [ordered incremental journal](docs/journal.md),
 with zlib compression enabled by default for Pouch. Set
 `[storage] disable_compression = true`, `CAI_DISABLE_COMPRESSION=true`, or
-`--disable-compression` to disable it. The mode must match an existing root.
+`--disable-compression` to disable it. Changing the mode converts an existing
+root synchronously before open returns, preserving data, collection positions,
+and retention. Conversion needs space for the replacement and exclusive writer
+ownership; a competing writer makes liblockdc warn and use the stored mode.
+Conflicting options for a root already shared inside this process are rejected.
 Normal durable boundaries append changes rather than full conversation copies.
 
 Berget uses its OpenAI-compatible Chat Completions endpoint. The CLI streams

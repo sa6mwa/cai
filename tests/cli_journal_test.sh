@@ -40,10 +40,18 @@ contains "$root/request" 'FIRST-CONTEXT-λ'; contains "$root/request" 'PROMPT 3'
 compressed=$(find "$root/state/cai/pouch/namespaces/cai.sessions/collections/data" -name 'seg-*.log' -printf '%s\n' | awk '{n+=$1} END{print n}')
 plain=$(find "$root/uncompressed/pouch/namespaces/cai.sessions/collections/data" -name 'seg-*.log' -printf '%s\n' | awk '{n+=$1} END{print n}')
 (( compressed * 2 < plain )) || fail "Compression not effective: $compressed vs $plain bytes"
-run --disable-compression --list; bad; contains "$root/stderr" compression
+for mode in none zlib; do
+  flags=(); [[ "$mode" != none ]] || flags=(--disable-compression)
+  run "${flags[@]}" --export "$id"; ok
+  grep -qx "compression=$mode" "$root/state/cai/pouch/manifest"
+  # Portable export stamps its generated initialization commit at export time.
+  jq -se --slurpfile expected "$root/native.jsonl" \
+    'map(del(.commit_created_at_ns)) == ($expected | map(del(.commit_created_at_ns)))' \
+    "$(head -1 "$root/stdout")" >/dev/null
+done
 # Environment and INI surfaces select the same setting; an explicit CLI flag
-# overrides configuration. Mismatching an existing root fails rather than
-# silently changing its storage mode.
+# overrides configuration. Changing an existing root converts its retained
+# data before open returns; round-trip context and observations are identical.
 CAI_DISABLE_COMPRESSION=true run --state-dir "$root/env-state" --list; ok
 grep -qx 'compression=none' "$root/env-state/pouch/manifest"
 printf '[storage]\ndisable_compression=true\n' >"$root/storage.ini"

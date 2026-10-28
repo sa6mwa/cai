@@ -284,7 +284,7 @@ commit and verification evidence.
 
 ## BUG-052: Completed lease transactions make the next Pouch open slow
 
-- **Status:** reproduced in liblockdc 0.23.0; upstream fix underway.
+- **Status:** fixed by upgrading to liblockdc 0.24.0.
 - **Evidence:** the reported startup spent roughly seven seconds recovering
   722 transaction decisions before instruction/context loading, with 2,888
   storage reads and 722 durable deletes. The root was only about 7.6 MiB.
@@ -296,9 +296,13 @@ commit and verification evidence.
 - **Report:** `stash/liblockdc-0.23.0-startup-transaction-recovery.md` and its
   standalone C89 probe/runner contain the upstream reproduction and controls.
   These local investigation files are intentionally under ignored `stash/`.
-- **Next:** upgrade when the upstream fix is released, rerun the reproducer
-  and affected Pouch regressions, and rebuild static musl CAI. No recovery or
-  durability workaround has been introduced in CAI.
+- **Verification:** the same public-SDK probe with 128 successful lease
+  retention renewals reproduced 512 reads, 128 deletes and 128 fsyncs on the
+  first reopen with 0.23.0 (953 ms). With 0.24.0 it reopened in 3 ms with none
+  of those recovery operations. Cleanup now happens on successful release;
+  no recovery or durability workaround has been introduced in CAI. Existing
+  backlogs still need their first recovery after upgrading. See
+  [upgrade investigation](docs/liblockdc-0.24.0-upgrade.md).
 
 ## BUG-051: Prompt recall remains in plaintext Softline files
 
@@ -314,8 +318,9 @@ commit and verification evidence.
   there is no migration or fallback backend.
 - **Retention:** whole conversation collections and their metadata use SDK
   retention (default 30 days since update); `/retention` persists a per-session
-  override. `/history` controls the 200-entry recall window, explicitly deferring
-  stored-entry pruning until liblockdc provides `max_entries`.
+  override. `/history` controls the 200-entry recall window and native
+  `max_entries` cap. SDK maintenance prunes oldest excess prompts asynchronously;
+  zero clears the cap and disables recall/recording without deleting prompts.
 - **Verification:** encrypted-store recall, bounded tail, client reuse,
   multiline/Unicode prompts, restart and session switching, draft persistence
   failure/retry, malformed records, and deletion with/without prompt records.

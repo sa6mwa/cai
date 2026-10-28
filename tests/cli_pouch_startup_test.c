@@ -327,8 +327,9 @@ static void replay_limits(cai_cli_pouch *pouch, cai_error *error) {
     lc_collection *collection = NULL;
     assert(history_collection(pouch, "oversized", "events", 0, &collection,
                               error) == CAI_OK);
-    rc = collection_append_source(
-        pouch, collection, "event-00000000000001000004", source, NULL, error);
+    rc = collection_append_source(pouch, collection,
+                                  "event-00000000000001000004", source, NULL,
+                                  NULL, NULL, error);
     collection->close(collection);
     assert(rc == CAI_OK);
   }

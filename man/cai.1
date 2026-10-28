@@ -140,9 +140,11 @@ Override the encryption-key filename (default state_dir/pouch.key). Sharing an
 encrypted Pouch root requires sharing the same key.
 .TP
 .BI \-\-prompt-history-limit " COUNT"
-Prompt recall window, default 200; zero disables recall and recording.
+Prompt recall and native stored-entry cap, default 200; zero disables recall
+and recording and clears the stored count cap without deleting saved prompts.
 Configured by CAI_PROMPT_HISTORY_LIMIT or [ui] prompt_history_limit, also exposed
-through C/Lua settings. This window does not delete data or set age expiry.
+through C/Lua settings. Storage maintenance prunes oldest excess entries
+asynchronously; appends do not trim synchronously. This does not set age expiry.
 .TP
 .BI \-\-conversation-retention-days " DAYS"
 Whole conversation collection retention since its last append, default 30 days.
@@ -423,8 +425,9 @@ Enable remote mTLS with a combined client certificate, private key, and CA
 PEM bundle. HTTPS verifies server certificates.
 .TP
 .B \-\-disable-compression
-Disable Pouch zlib compression (enabled by default). The configured mode must
-match an existing root. Also configured with CAI_DISABLE_COMPRESSION or
+Disable Pouch zlib compression (enabled by default). A changed mode converts an
+existing root synchronously with exclusive writer ownership. Competing writers
+cause a warning and adoption of the stored mode. Also configured with CAI_DISABLE_COMPRESSION or
 [storage] disable_compression in config.ini. Remote lockd is unaffected.
 .TP
 .BI \-\-export " ID"
@@ -1141,16 +1144,17 @@ prompts.<session-id> collections in the configured sessions namespace. It uses
 the same Pouch client, root and key as conversation storage. Recall loads the
 newest 200 prompts and commands by default through a bounded ordered range.
 Use --prompt-history-limit, CAI_PROMPT_HISTORY_LIMIT or [ui] prompt_history_limit
-to change that window. Zero disables recall and recording. The recall window
-does not delete stored data or set age expiry. Accepted input
+to change recall and the native stored-entry cap. Zero disables recall and
+recording and clears the cap without deleting saved prompts. Accepted input
 appends immediately, including steering; replay and Ctrl-R selection do not
 append. /new starts fresh recall; /resume restores the selected conversation's
 recall. Existing file-backed prompt history is not imported. Ctrl-R Enter selects a match for editing;
 a subsequent Enter submits it.
 .PP
-/history shows the current limit; /history COUNT changes the recall window for
-this invocation. Native stored-entry retention is deferred until liblockdc
-supports collection max_entries; the command reports that limitation.
+/history shows the current limit; /history COUNT changes recall and the stored
+collection cap. Existing storage maintenance lazily removes oldest excess
+entries, independently of conversation retention. Raising the limit cannot
+recover removed prompts. Conversation journals have no count cap.
 .PP
 Alt-Q saves the active draft as the newest prompt-history entry and exits
 without submitting it. Restart in the same directory and press Up to recall it.

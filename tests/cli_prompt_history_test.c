@@ -73,6 +73,26 @@ static int fail_describe(lc_collection *collection, lc_collection_info *info,
   error->code = LC_ERR_INVALID;
   return LC_ERR_INVALID;
 }
+static int metadata_calls;
+static int (*real_metadata)(lc_collection *, const lc_collection_metadata_req *,
+                            lc_collection_info *, lc_error *);
+static int count_metadata(lc_collection *collection,
+                          const lc_collection_metadata_req *request,
+                          lc_collection_info *info, lc_error *error) {
+  metadata_calls++;
+  assert(request->has_max_entries && !request->has_retention_seconds);
+  return real_metadata(collection, request, info, error);
+}
+static int reject_metadata(lc_collection *collection,
+                           const lc_collection_metadata_req *request,
+                           lc_collection_info *info, lc_error *error) {
+  (void)collection;
+  (void)request;
+  (void)info;
+  metadata_calls++;
+  error->code = LC_ERR_INVALID;
+  return LC_ERR_INVALID;
+}
 static size_t empty_state(void *context, void *bytes, size_t capacity,
                           cai_error *error) {
   size_t *offset = context, count = 2U - *offset;
@@ -172,6 +192,21 @@ static void retention_test(cai_cli_pouch *pouch, cai_error *error) {
                                    error) == CAI_OK);
   assert(collection->describe(collection, &info, &local) == LC_OK);
   assert(info.retention_expires_at_unix >= before + 30L * 86400L);
+  /* Identical retries preserve both retention deadlines. */
+  assert(collection_retain(collection, 1L, &local) == LC_OK);
+  assert(collection->describe(collection, &info, &local) == LC_OK);
+  {
+    lc_unix_seconds deadline = info.retention_expires_at_unix;
+    assert(acquire(pouch, "retained", &removed, error) == CAI_OK);
+    assert(session_retain(removed, 1L, &local) == LC_OK);
+    assert(release(removed, CAI_OK, error) == CAI_OK);
+    removed = NULL;
+    assert(pouch->store.append_event(pouch, "/workspace", "retained", &event,
+                                     error) == CAI_OK);
+    assert(collection->describe(collection, &info, &local) == LC_OK);
+    assert(info.retention_expires_at_unix == deadline);
+    session_deadline(pouch, "retained", 1L, before);
+  }
   lc_collection_read_opts_init(&options);
   lc_collection_read_res_init(&result);
   memset(&sink, 0, sizeof(sink));
@@ -205,9 +240,17 @@ static void retention_test(cai_cli_pouch *pouch, cai_error *error) {
   assert(cai_cli_pouch_session(pouch, "retained", &metadata, error) == CAI_OK);
   assert(cai_cli_mapped_source(&event_map, &imported, &source, error) ==
          CAI_OK);
+  real_metadata = collection->metadata;
+  metadata_calls = 0;
+  collection->metadata = reject_metadata;
   assert(journal_append_source(pouch, NULL, &metadata, collection,
                                "event-00000000000000000005", source, NULL,
                                error) == CAI_OK);
+  assert(metadata_calls ==
+         0); /* Renewal is part of append, not a second write. */
+  collection->metadata = real_metadata;
+  assert(collection->describe(collection, &info, &local) == LC_OK);
+  assert(info.retention_expires_at_unix >= before + 7L * 86400L);
   cai_source_close(source);
   source = NULL;
   lc_collection_close(collection);
@@ -273,6 +316,7 @@ static void unit(const char *directory, cai_error *error) {
   lc_error local;
   lc_collection_append_req request;
   lc_collection_append_res result;
+  lc_collection_info info;
   cai_source *source = NULL;
   cai_cli_session wrong;
   lc_source *input = NULL;
@@ -291,27 +335,59 @@ static void unit(const char *directory, cai_error *error) {
   assert(cai_cli_pouch_open_at(&pouch, root, NULL, NULL, NULL, error) ==
          CAI_OK);
   assert(cai_test_storage_open_count() == 1U);
+  lc_error_init(&local);
   retention_test(&pouch, error);
+  assert(cai_cli_pouch_prompt_configure(&pouch, "disabled", 0U, error) ==
+         CAI_OK);
+  assert(pouch.prompt_history == NULL);
+  assert(open_history_collection(&pouch, "disabled", "prompts", 0, 1, &receiver,
+                                 error) == CAI_OK);
+  assert(receiver == NULL); /* Disabling recall does not create storage. */
   assert(cai_cli_pouch_prompt_open(&pouch, "one", error) == CAI_OK);
   receiver = pouch.prompt_history;
+  real_metadata = receiver->metadata;
+  receiver->metadata = count_metadata;
+  metadata_calls = 0;
+  assert(cai_cli_pouch_prompt_set_limit(&pouch, 12U, error) == CAI_OK);
+  assert(metadata_calls == 1);
+  assert(cai_cli_pouch_prompt_set_limit(&pouch, 12U, error) == CAI_OK);
+  assert(metadata_calls == 1); /* No redundant metadata writes. */
+  receiver->metadata = reject_metadata;
+  assert(cai_cli_pouch_prompt_set_limit(&pouch, 13U, error) != CAI_OK);
+  cai_error_cleanup(error);
+  cai_error_init(error);
+  assert(cai_cli_pouch_prompt_configure(&pouch, "one", 0U, error) != CAI_OK);
+  assert(pouch.prompt_history ==
+         receiver); /* Failed disable keeps recall usable. */
+  cai_error_cleanup(error);
+  cai_error_init(error);
+  assert(cai_cli_pouch_prompt_configure(&pouch, "../unsafe", 0U, error) ==
+         CAI_ERR_INVALID);
+  assert(pouch.prompt_history == receiver);
+  cai_error_cleanup(error);
+  cai_error_init(error);
+  receiver->metadata = real_metadata;
+  assert(receiver->describe(receiver, &info, &local) == LC_OK);
+  assert(info.max_entries == 12U);
   memset(&state, 0, sizeof(state));
-  assert(cai_cli_pouch_prompt_load(&pouch, 1000U, visit, &state, error) ==
+  assert(cai_cli_pouch_prompt_load(&pouch, 12U, visit, &state, error) ==
          CAI_OK);
   assert(state.count == 0);
-  for (i = 0; i < 1005; i++) {
+  for (i = 0; i < 17; i++) {
     snprintf(prompt, sizeof(prompt), "entry-%d", i);
     assert(cai_cli_pouch_prompt_append(&pouch, prompt, error) == CAI_OK);
     assert(pouch.prompt_history == receiver);
   }
+  assert(receiver->describe(receiver, &info, &local) == LC_OK);
+  assert(info.max_entries == 12U && info.live_count == 17U);
   state.first = 5;
-  assert(cai_cli_pouch_prompt_load(&pouch, 1000U, visit, &state, error) ==
+  assert(cai_cli_pouch_prompt_load(&pouch, 12U, visit, &state, error) ==
          CAI_OK);
-  assert(state.count == 1000 && cai_test_storage_open_count() == 1U);
+  assert(state.count == 12 && cai_test_storage_open_count() == 1U);
   state.count = 0;
-  state.first = 805;
-  assert(cai_cli_pouch_prompt_load(&pouch, 200U, visit, &state, error) ==
-         CAI_OK);
-  assert(state.count == 200);
+  state.first = 14;
+  assert(cai_cli_pouch_prompt_load(&pouch, 3U, visit, &state, error) == CAI_OK);
+  assert(state.count == 3);
   state.count = 0;
   assert(cai_cli_pouch_prompt_load(&pouch, 0U, visit, &state, error) == CAI_OK);
   assert(state.count == 0);
@@ -322,9 +398,9 @@ static void unit(const char *directory, cai_error *error) {
          cai_test_storage_open_count() == 1U);
   assert(cai_cli_pouch_prompt_open(&shared, "one", error) == CAI_OK);
   state.count = 0;
-  assert(cai_cli_pouch_prompt_load(&shared, 1000U, visit, &state, error) ==
+  assert(cai_cli_pouch_prompt_load(&shared, 12U, visit, &state, error) ==
          CAI_OK);
-  assert(state.count == 1000);
+  assert(state.count == 12);
   cai_cli_pouch_close(&shared);
   append = receiver->append;
   receiver->append = fail_append;
@@ -368,6 +444,7 @@ static void unit(const char *directory, cai_error *error) {
          CAI_OK);
   assert(state.count == 0);
   /* Corrupt data is reported; it is never interpreted as model input. */
+  lc_error_cleanup(&local);
   lc_error_init(&local);
   lc_collection_append_req_init(&request);
   request.append_id = "corrupt";
@@ -382,15 +459,24 @@ static void unit(const char *directory, cai_error *error) {
          CAI_OK);
   cai_error_cleanup(error);
   cai_error_init(error);
-  lc_error_cleanup(&local);
   cai_cli_pouch_close(&pouch);
   assert(cai_cli_pouch_open_at(&pouch, root, NULL, NULL, NULL, error) ==
          CAI_OK);
   assert(cai_cli_pouch_prompt_open(&pouch, "one", error) == CAI_OK);
   state.count = 0;
-  assert(cai_cli_pouch_prompt_load(&pouch, 1000U, visit, &state, error) ==
+  assert(cai_cli_pouch_prompt_load(&pouch, 12U, visit, &state, error) ==
          CAI_OK);
-  assert(state.count == 1000);
+  assert(state.count == 12);
+  assert(pouch.prompt_history->describe(pouch.prompt_history, &info, &local) ==
+         LC_OK);
+  assert(info.max_entries == 12U); /* SDK policy survives close/reopen. */
+  assert(cai_cli_pouch_prompt_configure(&pouch, "one", 0U, error) == CAI_OK);
+  assert(pouch.prompt_history == NULL);
+  assert(cai_cli_pouch_prompt_open(&pouch, "one", error) == CAI_OK);
+  assert(pouch.prompt_history->describe(pouch.prompt_history, &info, &local) ==
+         LC_OK);
+  assert(info.max_entries == 0U && info.live_count == 17U);
+  lc_error_cleanup(&local);
   cai_cli_pouch_close(&pouch);
   parent = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   assert(parent >= 0);
@@ -424,6 +510,17 @@ int main(int argc, char **argv) {
     if (rc == CAI_OK && collection->drop(collection, &local) != LC_OK)
       rc = cai_cli_lc_error(&error, &local);
     lc_collection_close(collection);
+    lc_error_cleanup(&local);
+  } else if (rc == CAI_OK && strcmp(argv[1], "limit") == 0) {
+    lc_collection_info info;
+    lc_error local;
+    lc_error_init(&local);
+    rc = cai_cli_pouch_prompt_open(&pouch, argv[3], &error);
+    if (rc == CAI_OK && pouch.prompt_history->describe(pouch.prompt_history,
+                                                       &info, &local) != LC_OK)
+      rc = cai_cli_lc_error(&error, &local);
+    if (rc == CAI_OK)
+      printf("%llu\n", (unsigned long long)info.max_entries);
     lc_error_cleanup(&local);
   } else if (rc == CAI_OK) {
     assert(strcmp(argv[1], "dump") == 0);

@@ -1108,6 +1108,7 @@ if(CAI_BUILD_TESTS)
           "-DCAI_BUILD_LUA=${CAI_BUILD_LUA}"
           "-DCAI_BUILD_EXAMPLES=${CAI_BUILD_EXAMPLES}"
           "-DCAI_BUILD_CLI=${CAI_BUILD_CLI}"
+          "-DCAI_LOCKDC_VERSION=${CAI_LOCKDC_VERSION}"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cpkt_link_targets_test.cmake")
       set_tests_properties(cai_cpkt_link_targets_test PROPERTIES
         LABELS "packaging;local"

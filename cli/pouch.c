@@ -610,8 +610,9 @@ static int history_collection(cai_cli_pouch *pouch, const char *id,
 static int collection_append_source(cai_cli_pouch *pouch,
                                     lc_collection *collection,
                                     const char *append_id, cai_source *source,
+                                    const long *retention_seconds,
                                     unsigned long long *position,
-                                    cai_error *error) {
+                                    int *duplicate, cai_error *error) {
   lc_collection_append_req request;
   lc_collection_append_res result;
   lc_source *input = NULL;
@@ -627,6 +628,10 @@ static int collection_append_source(cai_cli_pouch *pouch,
   lc_error_init(&local);
   lc_collection_append_req_init(&request);
   request.append_id = append_id;
+  if (retention_seconds != NULL) {
+    request.has_collection_retention_seconds = 1;
+    request.collection_retention_seconds = *retention_seconds;
+  }
   rc = cai_cli_lc_source(source, &input, error);
   if (rc == CAI_OK) {
     rc = collection->append(collection, &request, input, &result, &local);
@@ -655,8 +660,12 @@ static int collection_append_source(cai_cli_pouch *pouch,
     if (rc == LC_OK && result.deleted)
       rc = cai_cli_error(error, CAI_ERR_INVALID,
                          "session append identity was already deleted");
-    else if (rc == LC_OK && position != NULL)
-      *position = result.position;
+    else if (rc == LC_OK) {
+      if (position != NULL)
+        *position = result.position;
+      if (duplicate != NULL)
+        *duplicate = result.duplicate;
+    }
   }
   lc_source_close(input);
   lc_error_cleanup(&local);
@@ -700,28 +709,16 @@ static int journal_append_source(cai_cli_pouch *pouch, lc_lease *lease,
                                  cai_error *error) {
   lc_error local;
   long seconds = 0L;
+  int duplicate = 0;
   int rc = session_retention(pouch, session, &seconds, error);
   if (rc == CAI_OK)
-    rc = collection_append_source(pouch, collection, id, source, position,
-                                  error);
+    rc = collection_append_source(pouch, collection, id, source, &seconds,
+                                  position, &duplicate, error);
   if (rc != CAI_OK)
     return rc;
   lc_error_init(&local);
-  if (collection_retain(collection, seconds, &local) != LC_OK &&
-      pouch->logger != NULL) {
-    pslog_field fields[2];
-    fields[0] = pslog_str("collection", collection->name);
-    fields[1] =
-        pslog_str("detail", local.message != NULL ? local.message
-                                                  : "metadata update failed");
-    pouch->logger->warn(pouch->logger,
-                        "Journal append is durable; could not renew "
-                        "conversation retention. The next append will retry.",
-                        fields, 2U);
-  }
-  lc_error_cleanup(&local);
-  lc_error_init(&local);
-  if (lease != NULL && session_retain(lease, seconds, &local) != LC_OK &&
+  if (!duplicate && lease != NULL &&
+      session_retain(lease, seconds, &local) != LC_OK &&
       pouch->logger != NULL) {
     pslog_field fields[2];
     fields[0] = pslog_str("session_id", session->id);

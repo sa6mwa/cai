@@ -52,7 +52,7 @@ json "$root/prompts" '.prompt == "/goal"'
 [[ ! -e "$root/.local/state/cai/history" && ! -e "$root/.local/state/softline" ]]
 terminal_close
 [[ -z $(find "$root/state" "$root/.local/state" -name '*.history' -print) ]]
-# The flag overrides the environment; the recall window does not delete data.
+# The flag overrides the environment; storage pruning is asynchronous.
 export CAI_PROMPT_HISTORY_LIMIT=1
 terminal_start -N --prompt-history-limit 2
 limited=$(current_session_id)
@@ -64,6 +64,7 @@ send '\033[A'; expect_prompt '> /goal'
 send '\025'; terminal_close
 prompt_history_dump "$limited" "$root/.local/state/cai" >"$root/prompts"
 [[ $(wc -l <"$root/prompts") == 3 ]]
+[[ $("$history_reader" limit "$root/.local/state/cai" "$limited") == 2 ]]
 # Zero disables both recording and recall, including local commands.
 terminal_start -N --prompt-history-limit 0
 disabled=$(current_session_id)
@@ -75,17 +76,24 @@ prompt_history_dump "$disabled" "$root/.local/state/cai" >"$root/prompts"
 [[ ! -s "$root/prompts" && $(requests) == "$count" ]]
 unset CAI_PROMPT_HISTORY_LIMIT
 # Slash commands render Markdown, persist the conversation override, and keep
-# stored-entry pruning explicitly separate from the current recall setting.
+# configure the native per-collection count limit alongside recall.
 terminal_start --resume "$disabled"
 send '/retention\r'; expect '30 days from last update'
 send '/retention off \r'; expect 'forever'
-send '/history\r'; expect '200 entries'; expect 'max_entries'
+send '/history\r'; expect '200 entries'; expect 'pruned asynchronously'
+send '/history 2\r'; expect '2 entries'
+[[ $("$history_reader" limit "$root/.local/state/cai" "$disabled") == 2 ]]
+send '/history 0\r'; expect '0 entries'
+[[ $("$history_reader" limit "$root/.local/state/cai" "$disabled") == 0 ]]
 send '/history 2\r'; expect '2 entries'
 send '/history bad\r'; expect 'use /history COUNT'
 send '/retention -1\r'; expect 'use /retention DAYS'
 send '/retention 7\r'; expect '7 days from last update'
 terminal_close
 [[ $("$history_reader" policy "$root/.local/state/cai" "$disabled") == 7 ]]
+terminal_start --resume "$disabled" --prompt-history-limit 0
+[[ $("$history_reader" limit "$root/.local/state/cai" "$disabled") == 0 ]]
+terminal_close
 terminal_start --resume "$disabled" --conversation-retention-days 2
 send '/retention\r'; expect '7 days from last update'
 send '/retention 0\r'; expect 'forever'

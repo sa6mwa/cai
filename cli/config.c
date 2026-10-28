@@ -137,7 +137,9 @@ static const cli_field fields[] = {
       "Named store for conversations. --temp uses its own private store."),
     B("storage", "disable_compression", disable_compression,
       "Disable streaming zlib compression for Pouch roots. Default false. "
-      "The compression mode must match the existing root."),
+      "Changing an existing root's mode converts it synchronously with "
+      "exclusive writer ownership; contention warns and keeps the stored "
+      "mode."),
     S("storage", "auth_store", auth_store, 0U,
       "Named authentication store; retained in --temp runs."),
     S("storage", "messaging_store", messaging_store, 0U,
@@ -153,8 +155,9 @@ static const cli_field fields[] = {
     {"ui", "prompt_history_limit",
      offsetof(cai_cli_options, prompt_history_limit), CAI_CONFIG_INTEGER, 0U,
      NULL,
-     "Newest prompt-history entries loaded for recall, default 200; 0 disables "
-     "recall and recording. This is not stored-data expiry."},
+     "Newest prompt-history entries loaded for recall and retained by native "
+     "count maintenance, default 200. Pruning is asynchronous; 0 disables "
+     "recall and recording without deleting saved prompts."},
     B("ui", "shell_context", shell_context,
       "Share sanitized !COMMAND output; /shell and !sh always stay local."),
     S("ui", "theme", theme, 0U,

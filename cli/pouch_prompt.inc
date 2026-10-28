@@ -27,6 +27,50 @@ int cai_cli_pouch_prompt_open(cai_cli_pouch *pouch, const char *id,
   return rc;
 }
 
+int cai_cli_pouch_prompt_set_limit(cai_cli_pouch *pouch, unsigned int limit,
+                                   cai_error *error) {
+  lc_collection_info info;
+  lc_collection_metadata_req request;
+  lc_error local;
+  int rc;
+  if (pouch->prompt_history == NULL)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "prompt-history collection is not open");
+  lc_error_init(&local);
+  rc = pouch->prompt_history->describe(pouch->prompt_history, &info, &local);
+  if (rc == LC_OK && info.max_entries != (uint64_t)limit) {
+    lc_collection_metadata_req_init(&request);
+    request.has_max_entries = 1;
+    request.max_entries = limit;
+    rc = pouch->prompt_history->metadata(pouch->prompt_history, &request, &info,
+                                         &local);
+  }
+  if (rc != LC_OK)
+    rc = cai_cli_lc_error(error, &local);
+  lc_error_cleanup(&local);
+  return rc;
+}
+
+int cai_cli_pouch_prompt_configure(cai_cli_pouch *pouch, const char *id,
+                                   unsigned int limit, cai_error *error) {
+  int rc = CAI_OK;
+  if (!session_component(id) || strlen(id) >= CAI_AGENT_SESSION_ID_MAX)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "invalid prompt-history conversation ID");
+  if (pouch->prompt_history == NULL) {
+    if (limit != 0U)
+      rc = cai_cli_pouch_prompt_open(pouch, id, error);
+    else
+      rc = open_history_collection(pouch, id, "prompts", 0, 1,
+                                   &pouch->prompt_history, error);
+  }
+  if (rc == CAI_OK && pouch->prompt_history != NULL)
+    rc = cai_cli_pouch_prompt_set_limit(pouch, limit, error);
+  if (rc == CAI_OK && limit == 0U)
+    cai_cli_pouch_prompt_close(pouch);
+  return rc;
+}
+
 typedef struct prompt_read {
   lonejson *json;
   lonejson_curl_parse parser;
@@ -109,8 +153,8 @@ int cai_cli_pouch_prompt_load(cai_cli_pouch *pouch, unsigned int limit,
                                                       &info, &local) != LC_OK)
     rc = cai_cli_lc_error(error, &local);
   if (rc == CAI_OK) {
-    /* Prompt records are append-only until whole-session deletion, so their
-     * permanent positions select an exact bounded tail without scanning it. */
+    /* Count maintenance removes oldest positions without renumbering the
+     * retained suffix. Read the bounded tail; never scan old prompt bodies. */
     options.has_after = options.has_through = 1;
     options.after =
         info.upper_position > limit ? info.upper_position - limit : 0U;
@@ -149,7 +193,7 @@ int cai_cli_pouch_prompt_append(cai_cli_pouch *pouch, const char *prompt,
   rc = cai_cli_mapped_source(&prompt_map, &record, &source, error);
   if (rc == CAI_OK)
     rc = collection_append_source(pouch, pouch->prompt_history, id, source,
-                                  NULL, error);
+                                  NULL, NULL, NULL, error);
   cai_source_close(source);
   return rc;
 }
