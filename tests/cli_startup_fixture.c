@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <cai/quota.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 /* Replace quota/catalog transport and optionally inject a pslog warning. The
@@ -17,8 +18,24 @@ static int blocked_quota(cai_client *client, cai_chatgpt_quota *out,
   int release = atoi(getenv("CAI_TEST_QUOTA_RELEASE"));
   char signal = 'Q';
   const char *expected = getenv("CAI_TEST_QUOTA_TIMEOUT_MS");
+  const char *bundle = getenv("CAI_TEST_QUOTA_CA_BUNDLE");
+  const char *directory = getenv("CAI_TEST_QUOTA_CA_PATH");
   assert(CAI_CLIENT_IMPL(client)->timeout_ms ==
          (expected != NULL ? strtol(expected, NULL, 10) : 10000L));
+  assert(bundle != NULL
+             ? CAI_CLIENT_IMPL(client)->ca_bundle_path != NULL &&
+                   strcmp(CAI_CLIENT_IMPL(client)->ca_bundle_path, bundle) == 0
+             : CAI_CLIENT_IMPL(client)->ca_bundle_path == NULL);
+  assert(directory != NULL
+             ? CAI_CLIENT_IMPL(client)->ca_path != NULL &&
+                   strcmp(CAI_CLIENT_IMPL(client)->ca_path, directory) == 0
+             : CAI_CLIENT_IMPL(client)->ca_path == NULL);
+  expected = getenv("CAI_TEST_QUOTA_INSECURE");
+  assert(CAI_CLIENT_IMPL(client)->insecure_skip_verify ==
+         (expected != NULL ? atoi(expected) : 0));
+  expected = getenv("CAI_TEST_QUOTA_HTTP2_DISABLED");
+  assert(CAI_CLIENT_IMPL(client)->http_2_disabled ==
+         (expected != NULL ? atoi(expected) : 0));
   (void)error;
   if (write(started, &signal, 1U) != 1 || read(release, &signal, 1U) != 1)
     return CAI_ERR_TRANSPORT;
