@@ -5,6 +5,24 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-059: Explicit incoming-message discard can be lost at teardown
+
+- **Status:** fixed.
+- **Evidence:** receive a message, edit it with Alt-E, then send Alt-N and
+  Alt-Q in one input burst. Softline removes the entry correctly, but CAI
+  previously detached its IDs before an idle synchronization could persist
+  rejection. Resuming, or disabling/re-enabling messaging, could offer it again.
+- **Resolution:** flush native removal decisions before shutdown, session
+  switches and messaging reconfiguration. This operation neither discovers
+  arrivals nor injects prompts. Still-queued and actively edited messages remain
+  pending. Queue inspection and persistence errors propagate instead of being
+  interpreted as rejection or silently ignored.
+- **Verification:** real CLI recovery covers Alt-N discard and empty edited
+  submission followed immediately by exit, ordered delivery after restart,
+  messaging reconfiguration and preservation of an untouched edit. Native
+  tests cover queue-inspection failure without a false rejection and preserve
+  other queued messages through flush and reopen.
+
 ## BUG-058: Failed patch diagnostics bypass Markdown presentation
 
 - **Status:** fixed.

@@ -14,6 +14,7 @@ SH
 chmod 700 "$SHELL"
 canonical() { [[ -s "$term/tty" && $(cut -d' ' -f1 "$term/tty") == "$1" ]]; }
 terminal_start -N
+send 'SHELL-STASH\033k'
 # Preserve a multiline Unicode draft and its cursor across terminal resize.
 send 'keep å€\012second tail\033[D\033[D\033[D\033[D\033s'
 expect DRAFT_SHELL_READY; wait_for canonical 1
@@ -27,6 +28,8 @@ send 'INSERT \r'; expect_turn "$send_offset" 'DRAFT PRESERVED'
 json "$root/peer/requests.jsonl" 'any(.. | objects; .text? == "keep å€\nsecond INSERT tail")'
 absent "$root/peer/requests.jsonl" ALT_S_LOCAL_ONLY
 absent "$root/peer/requests.jsonl" '<user_shell_command>'
+send '\033j'; expect_prompt SHELL-STASH
+send '\033n'
 # Cursor movement starts a distinct edit group before X. Undo must survive a
 # failed shell, not just a successful one, without submitting the draft.
 send 'undo draft\033[D\033[CX\033s'; expect DRAFT_SHELL_READY; wait_for canonical 1

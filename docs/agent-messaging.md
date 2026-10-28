@@ -128,14 +128,19 @@ an already delivered message.
 ## Approval and editing
 
 Incoming text is labelled with its message ID and sending conversation. It uses
-softline 0.12's **normal prompt injection hook**, never the steering hook.
+Softline's **normal prompt injection hook**, never the steering hook.
+Approval focus is available at an empty ordinary prompt. Alt-K can stash a
+draft first; Alt-J restores it afterward. With a nonempty ordinary draft,
+Alt-N clears that draft and leaves pending approvals alone.
 
 | Key or command | Action |
 | --- | --- |
 | Alt+A | Focus the oldest pending approval |
 | Alt+Y | Approve the focused message |
 | Alt+N | Reject the focused message |
-| Alt+E | Edit and requeue, preserving message identity and approval |
+| Alt+E | Edit and requeue nonempty text, preserving message identity and approval |
+| Alt+N while editing | Discard that message; undo restores ordinary draft text only |
+| Enter on an empty edited message | Discard that message |
 | `/autoqueue` | Toggle automatic approval |
 | `/autoqueue on` | Approve waiting messages and automatically approve future arrivals |
 | `/autoqueue off` | Require approval for future arrivals; existing approvals remain valid |
@@ -146,6 +151,9 @@ goal continuation or the next startup instruction;
 it is not injected between tool calls. A message can be edited while waiting.
 Editor changes live in softline until submission; reopening an unsubmitted
 message restores the original delivered text.
+Escape cancels editing and restores the original queued message. Explicit
+discard, empty edit submission and focused rejection retire the durable inbox
+entry, so it does not reappear when the conversation resumes.
 Unapproved messages survive restart in the inbox. Rejected and consumed IDs are
 retained without message bodies to suppress repeated queue delivery.
 

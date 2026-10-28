@@ -10,6 +10,13 @@ typedef struct capture {
   char text[32768];
   size_t used;
 } capture;
+static int unreadable_queue(const sl_t *sl, size_t index,
+                            sl_prompt_queue_entry_info_t *info) {
+  (void)sl;
+  (void)index;
+  (void)info;
+  return SL_ERROR_IO;
+}
 static int capture_write(void *context, const void *bytes, size_t count,
                          cai_error *error) {
   capture *out = context;
@@ -935,7 +942,22 @@ int main(int argc, char **argv) {
   assert(sl_prompt_queue_info(sl, 1U, &second) == SL_OK && !second.held);
   assert(sl_set_auto_approval(sl, 0) == SL_OK);
   assert(sl_prompt_queue_reject(sl, first.id) == SL_OK);
-  assert(cai_cli_messages_sync(receiver, sl, &error) == CAI_OK);
+  {
+    sl_t broken = *sl;
+    broken.prompt_queue_info = unreadable_queue;
+    assert(cai_cli_messages_flush_decisions(receiver, &broken, &error) ==
+           CAI_ERR_TRANSPORT);
+    cai_error_cleanup(&error);
+    cai_error_init(&error);
+    inbox_key(key, &duplicate);
+    assert(load_doc(receiver, key, &loaded, &error) == CAI_OK);
+    assert(strcmp(loaded.kind, "pending") == 0 && loaded.text != NULL);
+    lonejson_cleanup(&message_map, &loaded);
+  }
+  /* Shutdown flush writes only explicit removals; it must not retire the
+   * second, still-queued message or need a delivery/discovery pass. */
+  assert(cai_cli_messages_flush_decisions(receiver, sl, &error) == CAI_OK);
+  assert(sl_prompt_queue_count(sl) == 1U);
   inbox_key(key, &duplicate);
   assert(load_doc(receiver, key, &loaded, &error) == CAI_OK);
   assert(strcmp(loaded.kind, "rejected") == 0);

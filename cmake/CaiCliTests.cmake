@@ -539,6 +539,13 @@
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_tool_display_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_tool_display PROPERTIES TIMEOUT 60)
+    foreach(_draft_case editing approvals)
+      add_test(NAME cai_cli_draft_actions_${_draft_case} COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_draft_actions_test.sh"
+        "$<TARGET_FILE:cai_cli_mock_fixture>" "${_draft_case}")
+      set_tests_properties(cai_cli_draft_actions_${_draft_case} PROPERTIES
+        LABELS "cli;local;offline" TIMEOUT 15)
+    endforeach()
     add_test(NAME cai_cli_terminal_failures
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_failures_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>")

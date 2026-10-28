@@ -9,7 +9,7 @@ for colors in yes no; do
     send '/help\r'; expect manual.
     sed -E $'s/\033\[[0-?]*[ -/]*[@-~]//g' "$term/feed" >"$root/help"
     for alias in /m /r /t; do grep -Eq "$alias([^a-zA-Z]|$)" "$root/help"; done
-    for hint in Ctrl-Y Alt-Y Ctrl-T Ctrl-G Ctrl-_ 'Bracketed' 'ten-entry'; do contains "$root/help" "$hint"; done
+    for hint in Ctrl-Y Alt-Y Alt-K Alt-J Alt-N Ctrl-T Ctrl-G Ctrl-_ 'Bracketed' 'ten-entry' 'stash'; do contains "$root/help" "$hint"; done
     send 'YANK_DRAFT\025\031'; expect_prompt YANK_DRAFT
     send '\025'
     send '/t\r'; expect 'Current: default:default'; expect 'pairings'

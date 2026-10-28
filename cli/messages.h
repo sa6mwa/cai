@@ -25,6 +25,11 @@ int cai_cli_messages_set_queue(cai_cli_messages *messages, const char *name,
 int cai_cli_messages_fd(const cai_cli_messages *messages);
 int cai_cli_messages_sync(cai_cli_messages *messages, sl_t *sl,
                           cai_error *error);
+/* Persist native removals before detaching/destroying the editor. Never reads
+ * new deliveries or changes the queue; retained entries and edits stay pending.
+ */
+int cai_cli_messages_flush_decisions(cai_cli_messages *messages, sl_t *sl,
+                                     cai_error *error);
 int cai_cli_messages_consumed(cai_cli_messages *messages, sl_prompt_id_t id,
                               cai_error *error);
 int cai_cli_messages_is_message(const cai_cli_messages *messages,

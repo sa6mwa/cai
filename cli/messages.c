@@ -1114,23 +1114,14 @@ int cai_cli_messages_consumed(cai_cli_messages *m, sl_prompt_id_t id,
                               cai_error *error) {
   return finish_message(m, id, "consumed", error);
 }
-int cai_cli_messages_sync(cai_cli_messages *m, sl_t *sl, cai_error *error) {
-  lc_query_req query;
-  lc_query_res result;
-  lc_query_key_handler handler;
-  lc_error local;
-  message_page page;
-  message_doc doc;
+int cai_cli_messages_flush_decisions(cai_cli_messages *m, sl_t *sl,
+                                     cai_error *error) {
   message_link *link;
   sl_prompt_queue_entry_info_t info, draft;
-  char *cursor = NULL, *text, selector[256];
-  size_t i, j, capacity;
-  uint64_t notification;
-  int dirty, present, rc = CAI_OK;
+  size_t j;
+  int present, rc;
   if (m == NULL || sl == NULL)
     return CAI_OK;
-  while (read(m->fd, &notification, sizeof(notification)) > 0) {
-  }
   /* A native rejection removes the ID; editing retains it in the draft. */
   if (sl_prompt_queue_draft_info(sl, &draft) != SL_OK)
     return cai_cli_error(error, CAI_ERR_TRANSPORT,
@@ -1140,14 +1131,44 @@ int cai_cli_messages_sync(cai_cli_messages *m, sl_t *sl, cai_error *error) {
     sl_prompt_id_t id = link->prompt_id;
     message_link *next = link->next;
     present = draft.id == id;
-    for (j = 0U; !present && j < sl_prompt_queue_count(sl); j++)
-      present = sl_prompt_queue_info(sl, j, &info) == SL_OK && info.id == id;
+    for (j = 0U; !present && j < sl_prompt_queue_count(sl); j++) {
+      if (sl_prompt_queue_info(sl, j, &info) != SL_OK)
+        return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                             "inspect incoming message queue");
+      present = info.id == id;
+    }
     if (!present && sl_last_prompt_id(sl) != id) {
-      if (finish_message(m, id, "rejected", error) != CAI_OK)
-        return error->code;
+      rc = finish_message(m, id, "rejected", error);
+      if (rc != CAI_OK)
+        return rc;
     }
     link = next;
   }
+  return CAI_OK;
+}
+int cai_cli_messages_sync(cai_cli_messages *m, sl_t *sl, cai_error *error) {
+  lc_query_req query;
+  lc_query_res result;
+  lc_query_key_handler handler;
+  lc_error local;
+  message_page page;
+  message_doc doc;
+  message_link *link;
+  sl_prompt_queue_entry_info_t draft;
+  char *cursor = NULL, *text, selector[256];
+  size_t i, capacity;
+  uint64_t notification;
+  int dirty, rc = CAI_OK;
+  if (m == NULL || sl == NULL)
+    return CAI_OK;
+  while (read(m->fd, &notification, sizeof(notification)) > 0) {
+  }
+  rc = cai_cli_messages_flush_decisions(m, sl, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (sl_prompt_queue_draft_info(sl, &draft) != SL_OK)
+    return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                         "inspect queued message capacity");
   if (sl_prompt_queue_count(sl) + (draft.id != 0 ? 1U : 0U) >=
       sl_prompt_queue_capacity(sl))
     return CAI_OK;

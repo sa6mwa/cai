@@ -3037,6 +3037,11 @@ static int cli_set_messaging(cli_state *state, int enabled, cai_error *error) {
   /* Tool registration is immutable while a runtime exists. Reopen this same
    * durable session with the updated catalog, without replaying it to the UI
    * or host observers. No model request or new conversation is created. */
+  rc = cai_cli_messages_flush_decisions(state->messages, state->sl, error);
+  if (rc != CAI_OK) {
+    free(id);
+    return rc;
+  }
   state->suppress_replay = 1;
   cli_close_runtime(state);
   state->options.messaging = enabled;
@@ -3073,6 +3078,9 @@ static int cli_switch_session(cli_state *state, const char *id, int new_session,
   }
   if (cli_finish_response(state) != 0)
     return CAI_ERR_TRANSPORT;
+  rc = cai_cli_messages_flush_decisions(state->messages, state->sl, error);
+  if (rc != CAI_OK)
+    return rc;
   cli_close_runtime(state);
   state->awaiting_turn = 0;
   state->automation_done = 1;
@@ -4586,7 +4594,8 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| Enter | Send when idle; queue the next turn while busy. |\n"
         "| Alt-Enter | Steer while busy; promote the newest queued input. |\n"
         "| Alt-E | Edit the newest queued input. |\n",
-        "| Alt-A | Focus an incoming message's approval panel. |\n"
+        "| Alt-A | Focus an incoming message's approval panel at an empty "
+        "ordinary prompt. |\n"
         "| Alt-Y / Alt-N | Approve/reject the focused message; Alt-E edits it. "
         "|\n"
         "| Escape / Ctrl-C | Cancel the active turn and pause an active goal. "
@@ -4601,6 +4610,10 @@ static int cli_handle_command(cli_state *state, const char *line,
         "edge, remove the adjacent newline. |\n"
         "| Ctrl-W | Cut the previous whitespace-delimited word. |\n"
         "| Alt-Backspace / Alt-D | Cut the previous/next Unicode word. |\n"
+        "| Alt-K / Alt-J | Stash the whole draft and clear it / append the "
+        "saved draft after all current text. |\n"
+        "| Alt-N | Clear the draft or discard the queued/approval entry "
+        "being edited; a focused approval is rejected instead. |\n"
         "| Ctrl-Y | Yank (paste) the most recent cut. |\n",
         "| Alt-Y | Cycle the last yank through earlier cuts, unless approval "
         "is focused. |\n"
@@ -4613,6 +4626,11 @@ static int cli_handle_command(cli_state *state, const char *line,
         "path. |\n\n"
         "Cuts live in Softline's ten-entry kill ring for this run, across "
         "prompts. Yanking uses this ring, not the desktop clipboard.\n\n",
+        "The separate, reusable draft stash lasts for this run, across "
+        "prompts and shell handoff. Stashing an empty draft keeps it. Undo "
+        "after discard recovers text only, without queue identity or approval. "
+        "Submitting an empty queued edit deletes that entry; Escape cancels "
+        "the edit and restores the original entry.\n\n",
         "## History and terminal keys\n\n"
         "| Key | Action |\n| --- | --- |\n"
         "| Up / Down | Navigate draft rows or conversation prompt history. |\n"
@@ -5811,6 +5829,20 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   }
   result = 0;
 cleanup:
+  {
+    cai_error decisions;
+    cai_error_init(&decisions);
+    /* A discard and Alt-Q/EOF/host STOP can share one input batch, without an
+     * idle callback. Flush only decisions already made, before detaching IDs;
+     * still-queued or actively edited inbox messages remain recoverable. */
+    if (cai_cli_messages_flush_decisions(state.messages, state.sl,
+                                         &decisions) != CAI_OK) {
+      cli_print_error(&state, "save incoming message decisions", &decisions);
+      cai_app_bridge_fail(bridge, &decisions);
+      result = 1;
+    }
+    cai_error_cleanup(&decisions);
+  }
   if (state.host_stopped) {
     cai_app_bridge_outcome(bridge, CAI_APP_STOPPED);
   }

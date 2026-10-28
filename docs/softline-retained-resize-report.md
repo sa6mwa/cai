@@ -6,7 +6,7 @@
 `sl_output_stream_reconcile()` on the owner thread before
 resuming output after changed terminal dimensions. The retained/shrink regression
 is enabled and passes, alongside the other seven terminal resize scenarios.
-CAI now pins softline 0.14.0, which retains the 0.11.0 reconciliation API and
+CAI now pins softline 0.15.0, which retains the 0.11.0 reconciliation API and
 adds further growth/shrink and retained-cursor corrections.
 The historical diagnosis and captures below describe the 0.10.0 baseline.
 

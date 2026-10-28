@@ -1,6 +1,6 @@
 # Interactive command policies
 
-CAI uses Softline 0.14.0's native queue policies. The complete inventory is
+CAI uses Softline 0.15.0's native queue policies. The complete inventory is
 `cli_command_definitions` in `cli/app_run.c`; argument-specific query forms are
 resolved by `cli_command_delivery`. Admission, readiness, mode normalization and
 owner-thread consumption use that same classification. This replaces the earlier
@@ -98,6 +98,10 @@ Readiness follows runtime, shell and owner-loop events through
 Execution readiness never overrides approval or stopped state. Escape stops
 retained work. Fresh managed actions can execute without resuming that backlog;
 passive inspection and edits do not resume it. Alt-E edits the admitted identity.
+Alt-N discards an edited entry; submitting an empty edit does the same.
+Undo restores only ordinary draft text, never that identity or approval.
+Escape cancels editing and restores the original queued entry. Alt-K/Alt-J
+use Softline's separate whole-draft stash, without application key overrides.
 
 Conversation steering that misses the final active seam can start at idle only
 when native delivery, approval, draft/search and stopped state permit it.

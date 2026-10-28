@@ -141,7 +141,7 @@ runtime, review, storage, and presentation contracts.
 
 The musl SDK presets build the terminal coding agent as a statically linked
 Linux x86_64, aarch64 or armhf executable. The `cai` convenience preset selects
-the same x86_64 musl producer. It adds pinned softline 0.14.0 for the prompt and
+the same x86_64 musl producer. It adds pinned softline 0.15.0 for the prompt and
 libmdf 0.15.0 for streamed Markdown rendering, and liblockdc 0.23.0 with
 liblql 0.3.0 for durable storage. It uses libpslog 0.12.0 for logging.
 The native dependency SDK is cpkt 0.6.1 from
@@ -176,10 +176,25 @@ rendered through libmdf with ANSI disabled; Softline owns the gray `! ` line.
 
 `/m`, `/r` and `/t` alias `/model`, `/reasoning` and `/theme`, including their
 arguments and delivery boundaries. `/help` lists the enabled Softline shortcuts:
-cut/yank and yank rotation, undo, word movement, multiline paste, history search,
+cut/yank and yank rotation, draft stashing/discard, undo, word movement, multiline paste, history search,
 queue editing/approval and draft-preserving shell handoff. Ctrl-Y yanks from the
 in-process kill ring; use the terminal's paste shortcut for clipboard text and
 Ctrl-V for X11 clipboard images.
+
+**Alt-K** stashes the whole draft and clears it. **Alt-J** appends that saved
+draft after all current text, regardless of the cursor position, retaining the
+saved copy for reuse. A new nonempty stash replaces the previous one; stashing
+an empty draft leaves it unchanged. This run-local stash is separate from the
+kill ring and survives prompt submissions and draft-preserving shell handoff.
+It is not persisted to prompt history merely by stashing.
+
+**Alt-N** clears an ordinary draft or permanently discards the queued/approval
+entry being edited. Undo recovers its text as a fresh draft, without restoring
+queue identity or approval. Submitting an empty queued edit also deletes the
+entry. Escape cancels editing and restores the original entry instead. An
+approval can take focus only at an empty ordinary prompt: stash a draft with
+Alt-K first, then use Alt-A and Alt-N to reject the message. With a nonempty
+ordinary draft, Alt-N clears that draft and leaves pending approvals alone.
 
 Softline's queued-turns profile handles conversation input: Enter starts an
 idle turn or queues the next turn while busy. Alt-Enter queues steering, or

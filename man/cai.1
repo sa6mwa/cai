@@ -706,6 +706,19 @@ over Alt-Y. Ctrl-_ or Ctrl-X then Ctrl-U undoes draft edits; Ctrl-T transposes
 adjacent characters. Home/Ctrl-A and End/Ctrl-E move within the current line;
 Alt-B/Alt-F move by word.
 .PP
+Alt-K stashes the whole draft and clears it. Alt-J appends the saved draft
+after all current text, retaining it for reuse. An empty stash operation keeps
+the previous stash. This run-local stash is separate from the kill ring,
+survives prompt submissions and draft-preserving shell handoff, and does not
+itself append prompt history.
+Alt-N clears an ordinary draft or discards the queued/approval entry being
+edited. Undo restores text as a fresh draft, without its queue identity or
+approval. Submitting an empty queued edit also deletes that entry; Escape
+cancels editing and restores the original entry. Approval can take focus only
+at an empty ordinary prompt: stash a draft with Alt-K, then use Alt-A and
+Alt-N to reject. With a nonempty ordinary draft, Alt-N clears that draft
+and leaves pending approvals alone.
+.PP
 Ctrl-J inserts a newline. Use the terminal's paste shortcut for text; bracketed
 paste keeps pasted newlines in the draft without submitting it. Ctrl-V saves a
 PNG/JPEG from the X11 clipboard and inserts its cached file path. Ctrl-R searches

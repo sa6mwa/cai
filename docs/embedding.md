@@ -261,6 +261,17 @@ are reclassified as ordinary `Q` entries when submitted with Alt-Enter, leaving
 later valid steers eligible at their own boundaries.
 This selection applies to future output in the current app invocation,
 including after `/new` or `/resume`, without changing startup settings.
+
+The C and Lua application receivers use Softline's native editor controls.
+Alt-K stashes the whole draft and clears it; Alt-J appends the reusable saved
+draft after the current text. The stash lasts for this app run, across prompts
+and shell handoff, independently of the kill ring. Alt-N clears an ordinary
+draft or discards an edited queued/approval entry. Undo restores only text,
+without its queue identity or approval; submitting an empty queued edit also
+discards it. Approval focus requires an empty ordinary prompt. `/help` lists
+the complete bindings. Explicit incoming-message removals are persisted before
+session changes and shutdown; untouched pending messages remain recoverable.
+
 `[paths]`, `[storage]`, and `[env]` XDG variables provide host path overrides.
 Configuration strings/settings are copied by open. Logger ownership stays with
 the host until close; CAI neither closes nor reconfigures a supplied logger.
