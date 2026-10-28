@@ -23,6 +23,7 @@ typedef struct cai_cli_session {
   lonejson_uint64 commit_ns;
   lonejson_uint64 applied_sequence;
   lonejson_int64 published;
+  lonejson_int64 retention_override, retention_days;
 } cai_cli_session;
 
 typedef struct cai_cli_pouch {
@@ -31,6 +32,10 @@ typedef struct cai_cli_pouch {
   /* Keep the active journal open; operation receivers are independently owned.
    */
   lc_collection *history_anchor;
+  /* Owner-thread prompt recall; shares the session client, never model input.
+   */
+  lc_collection *prompt_history;
+  long conversation_retention_seconds;
   pthread_mutex_t history_lock;
   int history_lock_initialized;
   char program_name[33], queue_prefix[33];
@@ -63,6 +68,18 @@ int cai_cli_pouch_open_at(cai_cli_pouch *pouch, const char *state_directory,
                           const char *endpoint, const char *client_pem,
                           pslog_logger *logger, cai_error *error);
 void cai_cli_pouch_close(cai_cli_pouch *pouch);
+int cai_cli_pouch_prompt_open(cai_cli_pouch *pouch, const char *id,
+                              cai_error *error);
+void cai_cli_pouch_prompt_close(cai_cli_pouch *pouch);
+int cai_cli_pouch_prompt_load(cai_cli_pouch *pouch, unsigned int limit,
+                              int (*emit)(void *, const char *, cai_error *),
+                              void *context, cai_error *error);
+int cai_cli_pouch_prompt_append(cai_cli_pouch *pouch, const char *prompt,
+                                cai_error *error);
+int cai_cli_pouch_retention(cai_cli_pouch *pouch, const char *id, long *days,
+                            cai_error *error);
+int cai_cli_pouch_set_retention(cai_cli_pouch *pouch, const char *id, long days,
+                                cai_error *error);
 /* Console tail only: bounded collection range, selection before rendering,
  * without invoking recovery or startup observers a second time. */
 int cai_cli_pouch_replay(cai_cli_pouch *pouch, const char *scope,

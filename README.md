@@ -204,21 +204,46 @@ event callback; the worker resumes after that callback returns. The setting is
 inherited by children and requires an event callback. Lua exports the same
 setting and `AGENT_EVENT_INPUT_BOUNDARY` constant.
 
-Interactive prompt recall uses Softline's native store under
-`$XDG_STATE_HOME/cai/history/`, falling back to
-`$HOME/.local/state/cai/history/`. Each conversation has its own ID subdirectory;
-Softline hashes that ID for the `.history` filename. Recall keeps the newest 1000
-entries for that conversation across restarts. Accepted prompts
-and local commands append immediately, including steering; replay and Ctrl-R
+Interactive prompt recall uses Softline's custom backend hooks and encrypted
+`prompts.<session-id>` collections in the configured sessions namespace, beside
+the conversation journal. It shares the session store's Pouch client and key;
+there are no plaintext `.history` files or separate history-directory settings.
+Recall loads only the newest 200 entries by default, oldest first, through a
+bounded collection range. Configure the recall window with
+`--prompt-history-limit`, `CAI_PROMPT_HISTORY_LIMIT`, or `[ui] prompt_history_limit`
+(also accepted through C/Lua application settings). Zero disables recall and
+recording. This window does not delete stored entries or set their age expiry.
+`/history` shows the current window; `/history COUNT` changes it for this app
+invocation. Stored-entry retention is deferred until liblockdc supports native
+collection `max_entries`; the command explicitly reports that boundary.
+Accepted prompts and local commands append immediately, including steering; replay and Ctrl-R
 selection do not append. `/new` starts fresh recall; `/resume` restores the
-selected conversation's recall. These owner-only plaintext
-files are separate from encrypted conversation/auth storage: directories are
-0700, files and locks 0600. The store is append-only, without an exit-time save
-or per-prompt fsync. Ctrl-R Enter selects a match for editing; Enter again sends.
+selected conversation's recall. Each entry appends synchronously without
+rewriting earlier entries, using the store's configured durability and
+compression. Recall is separate from model context and conversation export;
+deleting a conversation drops its prompt collection too. Temporary chats use
+their private session store for recall. Existing file-backed recall is not
+imported. Ctrl-R Enter selects a match for editing; Enter again sends.
 **Alt-Q** saves the active draft as the newest prompt-history entry and exits
 without submitting it. After restarting in the same workspace, press Up to
 recall it. Empty drafts add nothing; an identical last entry is not duplicated.
 If saving fails, CAI stays open with the draft intact and reports the error.
+
+Conversation journals have a default **30-day inactivity retention**, enforced
+by liblockdc on the whole `events.<session-id>` collection and its session
+metadata. Every successful append renews the deadline; individual journal
+entries have no separate expiry. Configure the default through
+`--conversation-retention-days`, `CAI_CONVERSATION_RETENTION_DAYS`, or
+`[storage] conversation_retention_days` (also accepted through C/Lua settings).
+Zero disables expiry. `/retention` shows the active conversation's policy;
+`/retention DAYS` persists its override, and `/retention 0` or `/retention off`
+keeps it forever. Changing it waits for a whole-turn boundary through Softline.
+Expiry is eligibility for asynchronous SDK maintenance, not exact-time
+deletion. Reads do not renew it. After SDK cleanup, lists omit unavailable
+conversations and auto-resume selects an available conversation or starts fresh.
+Explicitly resuming a removed journal reports that it is unavailable.
+Prompt-history aging/pruning remains deferred; conversation retention does not
+silently expire individual prompt records, exports, or logs.
 
 `-D` / `--delete` lists numbered conversations eligible for deletion in the
 current directory. `-D ID` or `-D NUMBER` deletes that conversation, its child
@@ -229,7 +254,6 @@ Open conversations are omitted and cannot be deleted until closed. Filesystem
 locks on the shared Pouch root release automatically on process exit/crash.
 Shared authentication, boards, mailboxes and workspace files remain separate.
 Deletion is logical; Pouch reclaims dropped collection storage during maintenance.
-Previously shared workspace prompt history is not migrated into conversations.
 
 Exact `!sh` and `/shell` commands hand the real terminal to `$SHELL -i`
 (`/bin/sh -i` when unset or empty) between turns. They require terminal input

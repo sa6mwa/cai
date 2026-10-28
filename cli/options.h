@@ -17,7 +17,7 @@ typedef struct cai_cli_options {
   const char *todo_namespace, *messages_namespace;
   const char *sessions_store, *auth_store, *messaging_store;
   const char *home_dir, *runtime_dir;
-  const char *state_dir, *cache_dir, *data_dir, *history_dir;
+  const char *state_dir, *cache_dir, *data_dir;
   const char *clipboard_dir, *log_dir, *pouch_key_file;
   int help, version;
   int list_themes;
@@ -42,6 +42,8 @@ typedef struct cai_cli_options {
   int enable_auto_enqueue;
   long message_ack_timeout_ms;
   long replay_turns;
+  int prompt_history_limit;
+  long conversation_retention_days;
   int todo;
   const char *board;
   int board_explicit;

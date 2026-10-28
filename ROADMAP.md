@@ -144,6 +144,17 @@ of coverage, not proof that the current tree passed a release gate:
 - Full `make release` gate, including release CTest, binary/source archive
   packaging, Lua rock artifacts, checksums, and archive verification.
 
+## Deferred: Native Prompt-History Retention
+
+Prompt recall now uses encrypted per-conversation collections and a configurable
+200-entry recall window. `/history COUNT` is the configuration/control surface;
+it explicitly reports that stored-entry pruning is not yet enforced. Once
+liblockdc provides collection `max_entries`, pass that policy directly to the
+SDK rather than introducing CAI pruning or expiry timers. Prompt-entry and
+prompt-collection aging are deferred with that integration. Whole-conversation
+collection retention is already enforced through SDK metadata (default 30 days
+since the last append, configurable with `/retention`).
+
 ## Active First-Release Work
 
 The `cai` CLI ships static musl binaries for Linux x86_64, aarch64 and armhf.

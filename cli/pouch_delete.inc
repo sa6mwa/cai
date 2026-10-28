@@ -69,13 +69,8 @@ static int deletion_reviews(session_deletion *plan,
   lc_error_init(&local);
   lc_collection_read_opts_init(&options);
   lc_collection_read_res_init(&result);
-  rc = open_history_collection(plan->pouch, parent->id, "events", 0,
+  rc = open_history_collection(plan->pouch, parent->id, "events", 0, 1,
                                &collection, error);
-  if (rc != CAI_OK && error->http_status == 404) {
-    cai_error_cleanup(error);
-    cai_error_init(error);
-    rc = CAI_OK;
-  }
   if (rc == CAI_OK && collection != NULL) {
     plan->review_scope = scope;
     read.pouch = plan->pouch;
@@ -128,14 +123,10 @@ static int deletion_drop(cai_cli_pouch *pouch, const char *id, const char *kind,
   lc_error local;
   int rc;
   lc_error_init(&local);
-  rc = open_history_collection(pouch, id, kind, 0, &collection, error);
-  if (rc == CAI_OK && collection->drop(collection, &local) != LC_OK)
+  rc = open_history_collection(pouch, id, kind, 0, 1, &collection, error);
+  if (rc == CAI_OK && collection != NULL &&
+      collection->drop(collection, &local) != LC_OK)
     rc = cai_cli_lc_error(error, &local);
-  if (rc != CAI_OK && error->http_status == 404) {
-    cai_error_cleanup(error);
-    cai_error_init(error);
-    rc = CAI_OK;
-  }
   lc_collection_close(collection);
   lc_error_cleanup(&local);
   return rc;
@@ -156,6 +147,8 @@ static int deletion_one(cai_cli_pouch *pouch, const cai_cli_session *item,
     rc = acquire(pouch, item->id, &lease, error);
   if (rc == CAI_OK)
     rc = deletion_drop(pouch, item->id, "events", error);
+  if (rc == CAI_OK)
+    rc = deletion_drop(pouch, item->id, "prompts", error);
   if (rc == CAI_OK &&
       lease->delete_all_attachments(lease, &deleted, &local) != LC_OK)
     rc = cai_cli_lc_error(error, &local);

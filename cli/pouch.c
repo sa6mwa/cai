@@ -154,7 +154,10 @@ static const lonejson_field session_fields[] = {
     LONEJSON_FIELD_U64(cai_cli_session, commit_position, "commit_position"),
     LONEJSON_FIELD_U64(cai_cli_session, commit_ns, "commit_ns"),
     LONEJSON_FIELD_U64(cai_cli_session, applied_sequence, "applied_sequence"),
-    LONEJSON_FIELD_I64(cai_cli_session, published, "published")};
+    LONEJSON_FIELD_I64(cai_cli_session, published, "published"),
+    LONEJSON_FIELD_I64(cai_cli_session, retention_override,
+                       "retention_override"),
+    LONEJSON_FIELD_I64(cai_cli_session, retention_days, "retention_days")};
 LONEJSON_MAP_DEFINE(session_map, cai_cli_session, session_fields);
 
 /* A derived directory index, kept separately from conversation documents.
@@ -510,7 +513,7 @@ static int history_supported(cai_cli_pouch *pouch, cai_error *error) {
   return rc;
 }
 static int open_history_collection(cai_cli_pouch *pouch, const char *id,
-                                   const char *kind, int create,
+                                   const char *kind, int create, int optional,
                                    lc_collection **out, cai_error *error) {
   lc_collection_config config;
   lc_error local;
@@ -526,21 +529,45 @@ static int open_history_collection(cai_cli_pouch *pouch, const char *id,
   config.ns = pouch->sessions_namespace;
   config.name = name;
   rc = lc_client_open_collection(pouch->sessions, &config, out, &local);
+  if (rc != LC_OK && optional && local.server_code != NULL &&
+      strcmp(local.server_code, "collection_not_found") == 0) {
+    lc_error_cleanup(&local);
+    return CAI_OK;
+  }
   if (rc != LC_OK && create && local.server_code != NULL &&
       strcmp(local.server_code, "collection_not_found") == 0) {
     lc_error_cleanup(&local);
     lc_error_init(&local);
+    if (strcmp(kind, "events") == 0) {
+      config.has_retention_seconds = 1;
+      config.retention_seconds = pouch->conversation_retention_seconds;
+    }
     rc = lc_client_create_collection(pouch->sessions, &config, out, &local);
     if (rc != LC_OK && local.server_code != NULL &&
         strcmp(local.server_code, "collection_exists") == 0) {
       lc_error_cleanup(&local);
       lc_error_init(&local);
+      config.has_retention_seconds = 0;
       rc = lc_client_open_collection(pouch->sessions, &config, out, &local);
     }
   }
   if (rc != LC_OK)
     rc = cai_cli_lc_error(error, &local);
   lc_error_cleanup(&local);
+  return rc;
+}
+
+/* SDK maintenance owns expiry. Availability checks test only whether cleanup
+ * has removed a collection, never compare clocks or delete data themselves. */
+static int session_available(cai_cli_pouch *pouch, const char *id,
+                             int *available, cai_error *error) {
+  lc_collection *collection = NULL;
+  int rc =
+      open_history_collection(pouch, id, "events", 0, 1, &collection, error);
+  *available = collection != NULL;
+  lc_collection_close(collection);
+  if (rc == CAI_OK && *available)
+    rc = session_exists(pouch, id, available, error);
   return rc;
 }
 
@@ -561,7 +588,7 @@ static int history_collection(cai_cli_pouch *pouch, const char *id,
   pthread_mutex_lock(&pouch->history_lock);
   if (pouch->history_anchor == NULL ||
       strcmp(pouch->history_anchor->name, name) != 0) {
-    rc = open_history_collection(pouch, id, kind, create, &anchor, error);
+    rc = open_history_collection(pouch, id, kind, create, 0, &anchor, error);
     if (rc == CAI_OK) {
       if (pouch->history_anchor != NULL)
         pouch->history_anchor->close(pouch->history_anchor);
@@ -569,7 +596,7 @@ static int history_collection(cai_cli_pouch *pouch, const char *id,
     }
   }
   if (rc == CAI_OK)
-    rc = open_history_collection(pouch, id, kind, 0, out, error);
+    rc = open_history_collection(pouch, id, kind, 0, 0, out, error);
   pthread_mutex_unlock(&pouch->history_lock);
   return rc;
 }
@@ -628,6 +655,80 @@ static int collection_append_source(cai_cli_pouch *pouch,
   lc_source_close(input);
   lc_error_cleanup(&local);
   return rc;
+}
+
+static int session_retention(cai_cli_pouch *pouch,
+                             const cai_cli_session *session, long *seconds,
+                             cai_error *error) {
+  if ((session->retention_override != 0 && session->retention_override != 1) ||
+      session->retention_days < 0 ||
+      session->retention_days > LONG_MAX / 86400L)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "invalid stored conversation retention");
+  *seconds = session->retention_override
+                 ? (long)session->retention_days * 86400L
+                 : pouch->conversation_retention_seconds;
+  return CAI_OK;
+}
+static int collection_retain(lc_collection *collection, long seconds,
+                             lc_error *error) {
+  lc_collection_metadata_req request;
+  lc_collection_info info;
+  lc_collection_metadata_req_init(&request);
+  request.has_retention_seconds = 1;
+  request.retention_seconds = seconds;
+  return collection->metadata(collection, &request, &info, error);
+}
+static int session_retain(lc_lease *lease, long seconds, lc_error *error) {
+  lc_metadata_req request;
+  lc_metadata_req_init(&request);
+  request.has_retention_seconds = 1;
+  request.retention_seconds = seconds;
+  return lease->metadata(lease, &request, error);
+}
+static int journal_append_source(cai_cli_pouch *pouch, lc_lease *lease,
+                                 const cai_cli_session *session,
+                                 lc_collection *collection, const char *id,
+                                 cai_source *source,
+                                 unsigned long long *position,
+                                 cai_error *error) {
+  lc_error local;
+  long seconds = 0L;
+  int rc = session_retention(pouch, session, &seconds, error);
+  if (rc == CAI_OK)
+    rc = collection_append_source(pouch, collection, id, source, position,
+                                  error);
+  if (rc != CAI_OK)
+    return rc;
+  lc_error_init(&local);
+  if (collection_retain(collection, seconds, &local) != LC_OK &&
+      pouch->logger != NULL) {
+    pslog_field fields[2];
+    fields[0] = pslog_str("collection", collection->name);
+    fields[1] =
+        pslog_str("detail", local.message != NULL ? local.message
+                                                  : "metadata update failed");
+    pouch->logger->warn(pouch->logger,
+                        "Journal append is durable; could not renew "
+                        "conversation retention. The next append will retry.",
+                        fields, 2U);
+  }
+  lc_error_cleanup(&local);
+  lc_error_init(&local);
+  if (lease != NULL && session_retain(lease, seconds, &local) != LC_OK &&
+      pouch->logger != NULL) {
+    pslog_field fields[2];
+    fields[0] = pslog_str("session_id", session->id);
+    fields[1] =
+        pslog_str("detail", local.message != NULL ? local.message
+                                                  : "metadata update failed");
+    pouch->logger->warn(pouch->logger,
+                        "Journal append is durable; could not renew session "
+                        "metadata retention. The next append will retry.",
+                        fields, 2U);
+  }
+  lc_error_cleanup(&local);
+  return CAI_OK;
 }
 
 static int collection_copy_selected(lc_collection *collection, uint64_t after,
@@ -828,10 +929,13 @@ static int get_session(lc_lease *lease, const char *scope, const char *id,
       return cai_cli_error(error, CAI_ERR_INVALID,
                            "Session uses retired attachment-backed history; "
                            "start a new conversation with --new");
-    if (strcmp(session->workspace, scope) != 0)
+    if (scope != NULL && strcmp(session->workspace, scope) != 0)
       return cai_cli_error(error, CAI_ERR_INVALID,
                            "session belongs to another directory");
   } else {
+    if (scope == NULL)
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "conversation was not found");
     memset(session, 0, sizeof(*session));
     if (strlen(scope) >= sizeof(session->workspace) ||
         strlen(id) >= sizeof(session->id))
@@ -845,7 +949,50 @@ static int get_session(lc_lease *lease, const char *scope, const char *id,
   return CAI_OK;
 }
 
+int cai_cli_pouch_retention(cai_cli_pouch *pouch, const char *id, long *days,
+                            cai_error *error) {
+  cai_cli_session session;
+  long seconds = 0L;
+  int rc = cai_cli_pouch_session(pouch, id, &session, error);
+  if (rc == CAI_OK)
+    rc = session_retention(pouch, &session, &seconds, error);
+  if (rc == CAI_OK)
+    *days = seconds / 86400L;
+  return rc;
+}
+int cai_cli_pouch_set_retention(cai_cli_pouch *pouch, const char *id, long days,
+                                cai_error *error) {
+  cai_cli_session session;
+  lc_lease *lease = NULL;
+  lc_collection *collection = NULL;
+  lc_error local;
+  int rc;
+  if (days < 0L || days > LONG_MAX / 86400L)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "conversation retention day count is out of range");
+  lc_error_init(&local);
+  rc = acquire(pouch, id, &lease, error);
+  if (rc == CAI_OK)
+    rc = get_session(lease, NULL, id, &session, error);
+  if (rc == CAI_OK)
+    rc = open_history_collection(pouch, id, "events", 0, 0, &collection, error);
+  if (rc == CAI_OK &&
+      collection_retain(collection, days * 86400L, &local) != LC_OK)
+    rc = cai_cli_lc_error(error, &local);
+  if (rc == CAI_OK) {
+    session.retention_override = 1;
+    session.retention_days = days;
+    rc = update_session(lease, &session, error);
+    if (rc == CAI_OK && session_retain(lease, days * 86400L, &local) != LC_OK)
+      rc = cai_cli_lc_error(error, &local);
+  }
+  lc_collection_close(collection);
+  lc_error_cleanup(&local);
+  return release(lease, rc, error);
+}
+
 #include "pouch_guard.inc"
+#include "pouch_prompt.inc"
 
 static int commit(void *context, const char *scope, const char *id,
                   cai_source *state, unsigned long long sequence,
@@ -915,8 +1062,8 @@ static int commit(void *context, const char *scope, const char *id,
     if (rc == CAI_OK)
       rc = history_collection(pouch, id, "events", 1, &collection, error);
     if (rc == CAI_OK)
-      rc = collection_append_source(pouch, collection, append_id, source,
-                                    &position, error);
+      rc = journal_append_source(pouch, lease, &session, collection, append_id,
+                                 source, &position, error);
     durable = rc == CAI_OK;
     session.commit_position = position;
     if (rc == CAI_OK)
@@ -966,7 +1113,7 @@ static int load_id(void *context, const char *scope, const char *id,
                    cai_error *error) {
   cai_cli_pouch *pouch;
   cai_cli_session session;
-  int rc;
+  int rc, available;
   pouch = (cai_cli_pouch *)context;
   *out = NULL;
   rc = session_claim(pouch, id, error);
@@ -983,6 +1130,13 @@ static int load_id(void *context, const char *scope, const char *id,
     return cai_cli_error(error, CAI_ERR_INVALID,
                          "Session uses retired attachment-backed history; "
                          "start a new conversation with --new");
+  rc = session_available(pouch, id, &available, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (!available)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "Conversation journal is no longer available (it may "
+                         "have expired); start a new conversation");
   if (session.commit_position == 0U) {
     rc = session_refresh(pouch, &session, error);
     if (rc != CAI_OK)
@@ -1049,7 +1203,7 @@ static int session_list(cai_cli_pouch *pouch, const char *scope, int visible,
   lonejson_error json_error;
   size_t i;
   int rc;
-  int exists;
+  int exists, available;
   *out = NULL;
   *count = 0U;
   rc = history_supported(pouch, error);
@@ -1116,6 +1270,19 @@ static int session_list(cai_cli_pouch *pouch, const char *scope, int visible,
       if ((visible && !session.published) ||
           (scope != NULL && strcmp(scope, session.workspace) != 0))
         continue;
+      if (strcmp(session.id, page->keys[i]) != 0) {
+        rc = cai_cli_error(
+            error, CAI_ERR_INVALID,
+            "conversation metadata identity does not match its key");
+        break;
+      }
+      if (visible) {
+        rc = session_available(pouch, session.id, &available, error);
+        if (rc != CAI_OK)
+          break;
+        if (!available)
+          continue;
+      }
       if (visible == 2 || (visible && session.commit_position == 0U)) {
         rc = session_refresh(pouch, &session, error);
         if (rc != CAI_OK)
@@ -1123,12 +1290,6 @@ static int session_list(cai_cli_pouch *pouch, const char *scope, int visible,
       }
       if (visible && session.commit_position == 0U)
         continue;
-      if (strcmp(session.id, page->keys[i]) != 0) {
-        rc = cai_cli_error(
-            error, CAI_ERR_INVALID,
-            "conversation metadata identity does not match its key");
-        break;
-      }
       grown = (cai_cli_session *)realloc(*out, (*count + 1U) * sizeof(**out));
       if (grown == NULL) {
         rc = cai_cli_error(error, CAI_ERR_NOMEM, "allocate session list");
@@ -1242,6 +1403,12 @@ static int latest_open_wait(cai_cli_pouch *pouch, const char *scope,
   lc_get_res_cleanup(&response);
   lc_error_cleanup(&local);
   rc = release(head, rc, error);
+  if (rc == CAI_OK && !index->dirty && index->latest.id[0] != '\0') {
+    int available;
+    rc = session_available(pouch, index->latest.id, &available, error);
+    if (rc == CAI_OK && !available)
+      index->dirty = 1;
+  }
   if (rc == CAI_OK && index->dirty) {
     pslog_field field = pslog_str("workspace", scope);
     if (pouch->logger != NULL)
@@ -1290,6 +1457,12 @@ static int load_latest(void *context, const char *scope, char *id,
   if (rc == CAI_OK && has_body && strcmp(scope, index.workspace) != 0)
     rc =
         cai_cli_error(error, CAI_ERR_INVALID, "directory index scope mismatch");
+  if (rc == CAI_OK && has_body && !index.dirty && index.latest.id[0] != '\0') {
+    int available;
+    rc = session_available(pouch, index.latest.id, &available, error);
+    if (rc == CAI_OK && !available)
+      index.dirty = 1;
+  }
   if (rc == CAI_OK && (!has_body || index.dirty)) {
     cai_error optional;
     cai_error_init(&optional);
@@ -1383,7 +1556,8 @@ static int append_event(void *context, const char *scope, const char *id,
   if (rc == CAI_OK)
     rc = history_collection(pouch, id, "events", 1, &collection, error);
   if (rc == CAI_OK)
-    rc = collection_append_source(pouch, collection, name, source, NULL, error);
+    rc = journal_append_source(pouch, lease, &session, collection, name, source,
+                               NULL, error);
   if (rc == CAI_OK && session.first_prompt[0] == '\0' && event->data != NULL &&
       (strcmp(event->type, "turn_submitted") == 0 ||
        strcmp(event->type, "turn_queued") == 0)) {
@@ -1396,26 +1570,42 @@ static int append_event(void *context, const char *scope, const char *id,
   return release(lease, rc, error);
 }
 
+static int session_presence_write(lc_sink *sink, const void *bytes,
+                                  size_t count, lc_error *error) {
+  (void)sink;
+  (void)bytes;
+  (void)count;
+  (void)error;
+  return 1;
+}
 static int session_exists(cai_cli_pouch *pouch, const char *id, int *exists,
                           cai_error *error) {
-  lc_describe_req request;
-  lc_describe_res response;
+  lc_get_opts options;
+  lc_get_res response;
+  lc_sink sink;
   lc_error local;
   int rc;
   *exists = 0;
-  lc_describe_req_init(&request);
+  lc_get_opts_init(&options);
+  options.public_read = 1;
+  memset(&sink, 0, sizeof(sink));
+  sink.write = session_presence_write;
   memset(&response, 0, sizeof(response));
   lc_error_init(&local);
-  request.ns = pouch->sessions_namespace;
-  request.key = id;
-  rc = lc_describe(pouch->sessions, &request, &response, &local);
-  if (rc != LC_OK && local.http_status != 404)
+  /* A private etag can survive body deletion as lease metadata. Inspect the
+   * committed public body, streaming only the small identity document into a
+   * discard sink: no JSON allocation, download thread or history read. */
+  rc = lc_get_in_namespace(pouch->sessions, pouch->sessions_namespace, id,
+                           &options, &sink, &response, &local);
+  if (rc != LC_OK && local.http_status != 404 &&
+      (local.server_code == NULL ||
+       strcmp(local.server_code, "not_found") != 0))
     rc = cai_cli_lc_error(error, &local);
   else {
-    *exists = response.state_etag != NULL && response.state_etag[0] != '\0';
+    *exists = rc == LC_OK && !response.no_content;
     rc = CAI_OK;
   }
-  lc_describe_res_cleanup(&response);
+  lc_get_res_cleanup(&response);
   lc_error_cleanup(&local);
   return rc;
 }
@@ -2021,6 +2211,7 @@ int cai_cli_pouch_open_at(cai_cli_pouch *pouch, const char *state_directory,
                           pslog_logger *logger, cai_error *error) {
   cai_cli_options options;
   memset(&options, 0, sizeof(options));
+  options.conversation_retention_days = 30L;
   options.state_dir = state_directory;
   options.lockd = selected_endpoint;
   options.lockd_client_pem = client_pem;
@@ -2053,6 +2244,12 @@ int cai_cli_pouch_open_options(cai_cli_pouch *pouch,
   int rc;
   memset(pouch, 0, sizeof(*pouch));
   pouch->logger = logger;
+  if (options->conversation_retention_days < 0L ||
+      options->conversation_retention_days > LONG_MAX / 86400L)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "conversation retention day count is out of range");
+  pouch->conversation_retention_seconds =
+      options->conversation_retention_days * 86400L;
   if (options->config_dir != NULL) {
     if (strlen(options->config_dir) >= sizeof(pouch->config_directory))
       return cai_cli_error(error, CAI_ERR_INVALID,
@@ -2225,6 +2422,7 @@ int cai_cli_pouch_open_options(cai_cli_pouch *pouch,
 
 void cai_cli_pouch_close(cai_cli_pouch *pouch) {
   cai_cli_pouch_client **link, *entry;
+  cai_cli_pouch_prompt_close(pouch);
   cai_cli_pouch_end_use(pouch);
   if (pouch->history_lock_initialized) {
     if (pouch->history_anchor != NULL)

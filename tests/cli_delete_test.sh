@@ -2,7 +2,6 @@
 source "$(dirname "$0")/cli_test_common.sh"
 peer_start
 session_id() { current_session_id; }
-history_file() { find "$root/state/cai/history/$1" -name '*.history' -print; }
 
 # An open conversation is omitted, and an explicit deletion fails unchanged.
 terminal_start -N
@@ -10,11 +9,10 @@ first=$(session_id)
 [[ -n "$first" ]]
 plan '{"plan":["FIRST SAVED ANSWER"]}'
 prompt 'First saved prompt' 'FIRST SAVED ANSWER'
-history=$(history_file "$first")
-[[ -s "$history" && -s "$root/cache/cai/$first.log" ]]
+[[ ! -e "$root/state/cai/history" && -s "$root/cache/cai/$first.log" ]]
 run -D; ok; contains "$root/stdout" 'No conversations.'
 run --delete "$first"; bad; contains "$root/stderr" 'currently open'
-[[ -s "$history" && -s "$root/cache/cai/$first.log" ]]
+[[ -s "$root/cache/cai/$first.log" ]]
 
 # Switching sessions releases the old use guard and opens a distinct history.
 send '/new\r'; expect 'New session'; expect 'ID:'
@@ -24,7 +22,7 @@ run --export "$first"; ok
 exports="$root/data/cai/exports/$first"
 [[ -s "$exports/$first.jsonl" && -s "$exports/$first.md" ]]
 printf sentinel >"$root/sentinel"
-ln -s "$root/sentinel" "$(dirname "$history")/outside-link"
+ln -s "$root/sentinel" "$exports/outside-link"
 printf workspace >"$work/keep-me"
 # A filesystem cleanup error leaves the stored conversation selectable, and
 # retrying the same ID completes cleanup after the problem is repaired.
@@ -38,7 +36,7 @@ run --delete; ok
 contains "$root/stdout" "1  $first"
 absent "$root/stdout" "$second"
 run -D 1; ok; contains "$root/stdout" "Deleted conversation $first."
-[[ ! -e "$(dirname "$history")" && ! -e "$exports" && ! -e "$root/cache/cai/$first.log" ]]
+[[ ! -e "$exports" && ! -e "$root/cache/cai/$first.log" ]]
 [[ $(cat "$root/sentinel") == sentinel && $(cat "$work/keep-me") == workspace ]]
 [[ $(session_id) == "$second" ]]
 run --delete "$first"; bad; contains "$root/stderr" 'was not found'

@@ -35,8 +35,7 @@ int main(int argc, char **argv) {
     cai_cli_temp_init(&temp);
     assert(cai_cli_temp_open(&temp, &options, &error) == CAI_OK);
     assert(stat(temp.root, &st) == 0 && (st.st_mode & 0777U) == 0700U);
-    assert(strcmp(options.history_dir, temp.history) == 0 &&
-           options.lockd == NULL);
+    assert(options.lockd == NULL);
     assert(getcwd(current, sizeof(current)) != NULL &&
            strcmp(current, temp.workspace) == 0);
     assert(symlink(outside, "outside-link") == 0);

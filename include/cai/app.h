@@ -97,7 +97,11 @@ typedef struct cai_app_option {
  * [env] retains its normal config_env_has_precedence policy.
  * Runtime defaults match cai; startup text is empty unless the host sets it.
  * Conversation history requires Pouch collections. Remote lockd stores remain
- * available for separately selected authentication, messaging and kanban. */
+ * available for separately selected authentication, messaging and kanban.
+ * ui.prompt_history_limit defaults to 200 recall entries; storage pruning is
+ * deferred. storage.conversation_retention_days defaults to 30 days since the
+ * last journal append; 0 disables expiry. SDK maintenance removes whole
+ * collections, not individual journal entries. */
 #define CAI_APP_DEFAULT_PROGRAM_NAME "cai"
 typedef struct cai_app_config {
   /** Application identity: lowercase letter followed by lowercase letters,
@@ -120,7 +124,7 @@ typedef struct cai_app_config {
    * before config-file discovery. The process HOME is never changed. */
   const char *home_directory;
   /** Independent root/child defaults. NULL derives roots from home_directory
-   * or the XDG roots and program_name, history/key from state, and
+   * or the XDG roots and program_name, key from state, and
    * clipboard/logs from cache.
    * Explicit INI/environment, settings and argv override these defaults. */
   const char *state_directory;
@@ -129,8 +133,6 @@ typedef struct cai_app_config {
   /** Runtime files; NULL derives home/run, otherwise XDG_RUNTIME_DIR/name,
    * falling back to cache_directory when no runtime directory is available. */
   const char *runtime_directory;
-  /** Prompt-history root; each conversation uses its own session-ID child. */
-  const char *history_directory;
   const char *clipboard_directory;
   const char *log_directory;
   const char *pouch_key_file;

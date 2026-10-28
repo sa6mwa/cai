@@ -120,13 +120,27 @@ Override individual application roots. Defaults use the matching XDG home and
 the application name (cai for this binary). Environment aliases are CAI_STATE_DIR,
 CAI_CACHE_DIR and CAI_DATA_DIR; INI keys are in [paths].
 .TP
-.BR \-\-history-dir " DIR, " \-\-clipboard-dir " DIR, " \-\-log-dir " DIR"
-Override prompt history, pasted images, or interactive logs independently.
-Defaults follow state_dir/history, cache_dir/clipboard, and cache_dir respectively.
+.BR \-\-clipboard-dir " DIR, " \-\-log-dir " DIR"
+Override pasted images or interactive logs independently.
+Defaults follow cache_dir/clipboard and cache_dir respectively. Prompt recall
+is encrypted in a separate per-conversation collection in the session store,
+uses the same client and key, and loads the newest 200 entries by default. It is not
+model context or exported conversation data.
 .TP
 .BI \-\-pouch-key-file " FILE"
 Override the encryption-key filename (default state_dir/pouch.key). Sharing an
 encrypted Pouch root requires sharing the same key.
+.TP
+.BI \-\-prompt-history-limit " COUNT"
+Prompt recall window, default 200; zero disables recall and recording.
+Configured by CAI_PROMPT_HISTORY_LIMIT or [ui] prompt_history_limit, also exposed
+through C/Lua settings. This window does not delete data or set age expiry.
+.TP
+.BI \-\-conversation-retention-days " DAYS"
+Whole conversation collection retention since its last append, default 30 days.
+Zero disables expiry. CAI_CONVERSATION_RETENTION_DAYS and
+[storage] conversation_retention_days configure the same default through C/Lua
+settings as well. Individual journal entries never expire separately.
 .TP
 .BI \-\-namespace-prefix " NAME"
 Default storage namespace prefix (cai). Individual --sessions-namespace,
@@ -1047,24 +1061,47 @@ LOG_OUTPUT overrides the default sink; default+PATH retains the default sink
 and its UI warning notices while adding a file. LOG_LEVEL=warn filters out
 ordinary conversation messages.
 .SH PROMPT HISTORY
-Interactive recall uses $XDG_STATE_HOME/cai/history, falling back to
-$HOME/.local/state/cai/history. Each conversation has an ID subdirectory;
-Softline hashes that ID into a .history filename. Recall retains the newest
-1000 prompts and commands for that conversation across restarts. Accepted input
+Interactive recall uses Softline's custom load/append hooks with encrypted
+prompts.<session-id> collections in the configured sessions namespace. It uses
+the same Pouch client, root and key as conversation storage. Recall loads the
+newest 200 prompts and commands by default through a bounded ordered range.
+Use --prompt-history-limit, CAI_PROMPT_HISTORY_LIMIT or [ui] prompt_history_limit
+to change that window. Zero disables recall and recording. The recall window
+does not delete stored data or set age expiry. Accepted input
 appends immediately, including steering; replay and Ctrl-R selection do not
 append. /new starts fresh recall; /resume restores the selected conversation's
-recall. Existing shared workspace history is not migrated. Ctrl-R Enter selects a match for editing;
+recall. Existing file-backed prompt history is not imported. Ctrl-R Enter selects a match for editing;
 a subsequent Enter submits it.
+.PP
+/history shows the current limit; /history COUNT changes the recall window for
+this invocation. Native stored-entry retention is deferred until liblockdc
+supports collection max_entries; the command reports that limitation.
 .PP
 Alt-Q saves the active draft as the newest prompt-history entry and exits
 without submitting it. Restart in the same directory and press Up to recall it.
 Empty drafts and consecutive duplicates do not add history entries. If saving
 fails, CAI remains open with the draft intact and reports the error.
 .PP
-Prompt history is stored in private plaintext files, separately from encrypted
-conversation and authentication storage. Directories use mode 0700; files and
-lock files use 0600. The native store appends without per-entry fsync or an
-exit-time save. Persistence failures stop acceptance and report native errors.
+Each prompt appends synchronously, without rewriting earlier entries, using
+the configured Pouch compression and durability. There are no separate
+plaintext history files or history-directory settings. Prompt recall is not
+model context and is excluded from conversation export. Conversation deletion
+also drops its prompt collection. Temporary chats keep recall in their private
+session store. Persistence failures stop acceptance and report the error.
+.SH CONVERSATION RETENTION
+Liblockdc owns asynchronous expiry of each whole conversation collection and
+its session metadata, default 30 days from the latest append. Reads never renew
+the deadline; individual journal records have no separate expiry. Maintenance
+can delete eligible data after the deadline; deletion is not guaranteed at its
+exact time. There is no CAI expiry timer or foreground age-based deletion.
+.PP
+/retention shows the active conversation's policy. /retention DAYS saves a
+conversation-specific override; /retention 0 and /retention off keep it forever.
+Changes use the normal Softline queue and wait for a whole-turn boundary.
+Overrides survive resume and take precedence over application defaults.
+Unavailable journals are omitted from lists and auto-resume; explicit resume
+reports their absence. Prompt-history aging/pruning is deferred, and this
+policy does not expire exports or logs.
 .SH FILES
 The following paths describe the XDG defaults. With --home DIR, unset roots
 instead use DIR/config, DIR/state, DIR/cache, DIR/data and DIR/run. Explicit

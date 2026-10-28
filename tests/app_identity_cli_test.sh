@@ -29,7 +29,7 @@ terminal_start --resume "$id"
 send '/queue on\r'; expect 'smith.work'
 send '/status\r'; expect 'smith global AGENTS.md'
 terminal_close
-[[ -d "$root/cache/smith/clipboard" && -d "$root/state/smith/history" ]]
+[[ -d "$root/cache/smith/clipboard" && ! -e "$root/state/smith/history" ]]
 find "$root/cache/smith" -name '*.log' | grep -q .
 [[ ! -e "$root/config/cai" && ! -e "$root/state/cai" && ! -e "$root/cache/cai" && ! -e "$root/data/cai" ]]
 # The embedding host can choose a different layout without changing identity.
@@ -63,7 +63,7 @@ contains "$root/stdout" BOT_API_KEY
 absent "$root/stdout" SMITH_API_KEY
 # Every root and namespace can also be overridden by forwarded flags.
 base+=(--state-dir "$root/flags/state" --cache-dir "$root/flags/cache"
-       --data-dir "$root/flags/data" --history-dir "$root/flags/history"
+       --data-dir "$root/flags/data"
        --clipboard-dir "$root/flags/clipboard" --log-dir "$root/flags/logs"
        --pouch-key-file "$root/flags/key" --namespace-prefix flags
        --sessions-namespace flags.sessions-explicit --scopes-namespace flags.scopes-explicit
@@ -79,7 +79,7 @@ run --export "$id"; ok
 terminal_start --resume "$id"
 send '/queue on\r'; expect 'dispatch.work'
 terminal_close
-[[ -d "$root/flags/history" ]]
+[[ ! -e "$root/flags/history" ]]
 find "$root/flags/logs" -name '*.log' | grep -q .
 export BOT_TODO=invalid
 run --list

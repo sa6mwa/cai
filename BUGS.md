@@ -5,6 +5,26 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-051: Prompt recall remains in plaintext Softline files
+
+- **Status:** fixed.
+- **Cause:** the conversation journal cutover did not replace CAI's call to
+  Softline's native file backend. Per-conversation `.history` files remained
+  outside encrypted Pouch storage.
+- **Resolution:** custom Softline load/append hooks use a separate
+  `prompts.<session-id>` collection on the existing session-store client and
+  key. Writes append one prompt; startup reads a configurable tail (default 200).
+  Session deletion drops the prompt collection, and temporary chats use their
+  private session store. File-history paths and C/Lua configuration are removed;
+  there is no migration or fallback backend.
+- **Retention:** whole conversation collections and their metadata use SDK
+  retention (default 30 days since update); `/retention` persists a per-session
+  override. `/history` controls the 200-entry recall window, explicitly deferring
+  stored-entry pruning until liblockdc provides `max_entries`.
+- **Verification:** encrypted-store recall, bounded tail, client reuse,
+  multiline/Unicode prompts, restart and session switching, draft persistence
+  failure/retry, malformed records, and deletion with/without prompt records.
+
 ## BUG-050: SDK LQL collection selectors exceed default musl pthread stacks
 
 - **Status:** CAI journal restoration fixed; upstream liblql issue remains.

@@ -9,7 +9,7 @@
 typedef struct cai_cli_temp {
   int parent_fd, root_fd, cwd_fd;
   char root[PATH_MAX], workspace[PATH_MAX], private_dir[PATH_MAX];
-  char state[PATH_MAX], cache[PATH_MAX], data[PATH_MAX], history[PATH_MAX];
+  char state[PATH_MAX], cache[PATH_MAX], data[PATH_MAX];
   char clipboard[PATH_MAX], logs[PATH_MAX], key[PATH_MAX], exports[PATH_MAX];
 } cai_cli_temp;
 void cai_cli_temp_init(cai_cli_temp *temp);

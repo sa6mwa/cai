@@ -77,7 +77,6 @@ int main(void) {
   ends(o.state_dir, "/state/smith");
   ends(o.cache_dir, "/cache/smith");
   ends(o.data_dir, "/data/smith");
-  ends(o.history_dir, "/state/smith/history");
   ends(o.clipboard_dir, "/cache/smith/clipboard");
   ends(o.log_dir, "/cache/smith");
   ends(o.export_dir, "/data/smith/exports");
@@ -195,7 +194,6 @@ int main(void) {
   assert(strcmp(o.log_dir, state) == 0 &&
          strcmp(o.cache_dir, getenv("XDG_CACHE_HOME")) == 0);
   ends(o.clipboard_dir, "/cache/clipboard");
-  ends(o.history_dir, "/state/other/history");
   assert(cfg->set(cfg, "store.team", "endpoint", endpoint, &error) == CAI_OK);
   assert(cfg->set(cfg, "store.team", "key_file", key, &error) == CAI_OK);
   assert(cai_cli_stores_resolve(cfg, &error) == CAI_OK);

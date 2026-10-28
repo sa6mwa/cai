@@ -66,7 +66,6 @@ int cai_cli_temp_open(cai_cli_temp *temp, cai_cli_options *options,
   PATH(state, private_dir, "state");
   PATH(cache, private_dir, "cache");
   PATH(data, private_dir, "data");
-  PATH(history, state, "history");
   PATH(clipboard, cache, "clipboard");
   PATH(logs, cache, "logs");
   PATH(key, state, "pouch.key");
@@ -77,7 +76,6 @@ int cai_cli_temp_open(cai_cli_temp *temp, cai_cli_options *options,
   options->state_dir = temp->state;
   options->cache_dir = temp->cache;
   options->data_dir = temp->data;
-  options->history_dir = temp->history;
   options->clipboard_dir = temp->clipboard;
   options->log_dir = temp->logs;
   options->pouch_key_file = temp->key;

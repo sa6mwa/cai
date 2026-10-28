@@ -173,8 +173,8 @@ int cai_cli_pouch_import(cai_cli_pouch *pouch, const char *path,
       snprintf(append_id, sizeof(append_id), "commit-import-%020llu",
                line_number);
     if (rc == CAI_OK)
-      rc = collection_append_source(pouch, collection, append_id, source,
-                                    &position, error);
+      rc = journal_append_source(pouch, lease, &session, collection, append_id,
+                                 source, &position, error);
     cai_source_close(source);
     if (rc == CAI_OK &&
         lonejson_curl_parse_finish(&line.parser) != LONEJSON_STATUS_OK)
@@ -220,6 +220,14 @@ int cai_cli_pouch_import(cai_cli_pouch *pouch, const char *path,
     rc = acquire(pouch, id, &lease, error);
   if (rc == CAI_OK)
     rc = update_session(lease, &session, error);
+  if (rc == CAI_OK) {
+    lc_error retention;
+    lc_error_init(&retention);
+    if (session_retain(lease, pouch->conversation_retention_seconds,
+                       &retention) != LC_OK)
+      rc = cai_cli_lc_error(error, &retention);
+    lc_error_cleanup(&retention);
+  }
   rc = release(lease, rc, error);
   lease = NULL;
   if (rc == CAI_OK)

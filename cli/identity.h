@@ -17,7 +17,6 @@
   X(cache_directory) \
   X(data_directory) \
   X(runtime_directory) \
-  X(history_directory) \
   X(clipboard_directory) \
   X(log_directory) \
   X(pouch_key_file) \

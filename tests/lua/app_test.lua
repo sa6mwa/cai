@@ -5,7 +5,7 @@ assert(not application.open {on_replay = "not a callback"})
 assert(not application.open {introduction_markdown = true})
 for _, field in ipairs {
   "program_name", "invocation_name", "environment_prefix", "namespace_prefix", "queue_prefix",
-  "home_directory", "runtime_directory", "state_directory", "cache_directory", "data_directory", "history_directory", "clipboard_directory",
+  "home_directory", "runtime_directory", "state_directory", "cache_directory", "data_directory", "clipboard_directory",
   "log_directory", "pouch_key_file", "banner", "config_file", "config_directory", "introduction_markdown",
 } do
   assert(not application.open {[field] = true})
@@ -17,6 +17,17 @@ for _, margin in ipairs {"introduction_margin_left", "introduction_margin_right"
   end
 end
 assert(not application.open {unknown = true})
+assert(not application.open {history_directory = '/unused/history'})
+for _, limit in ipairs {0, 1, 200, 1000} do
+  local recall = assert(application.open {no_config = true, settings = {ui = {prompt_history_limit = limit}}})
+  recall:close()
+end
+assert(not application.open {no_config = true, settings = {ui = {prompt_history_limit = -1}}})
+for _, days in ipairs {0, 7, 30} do
+  local retained = assert(application.open {no_config = true, settings = {storage = {conversation_retention_days = days}}})
+  retained:close()
+end
+assert(not application.open {no_config = true, settings = {storage = {conversation_retention_days = -1}}})
 assert(not application.open {program_name = "bad\0name"})
 assert(not application.open {settings = {agent = {model = "bad\0model"}}})
 assert(not application.open {settings = {agent = {unknown_setting = "bad"}}})
@@ -37,7 +48,7 @@ local named = assert(application.open {
   environment_prefix = 'VECTIS_SMITH_', namespace_prefix = 'vectis.smith', queue_prefix = 'smith',
   config_file = '/unused/config.ini', config_directory = '/unused/config',
   state_directory = '/unused/state', cache_directory = '/unused/cache', data_directory = '/unused/data',
-  history_directory = '/unused/history', clipboard_directory = '/unused/clipboard',
+  clipboard_directory = '/unused/clipboard',
   log_directory = '/unused/log', pouch_key_file = '/unused/key',
 })
 assert(named:help():find('smith and libcai', 1, true))

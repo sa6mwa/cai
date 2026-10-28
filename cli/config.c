@@ -49,8 +49,6 @@ static const cli_field fields[] = {
       "Runtime files; empty uses home_dir/run, then "
       "XDG_RUNTIME_DIR/program_name, "
       "otherwise cache_dir. Chrome sockets default to runtime_dir/chrome."),
-    S("paths", "history_dir", history_dir, CAI_CONFIG_PATH,
-      "Per-conversation prompt history root; empty uses state_dir/history."),
     S("paths", "clipboard_dir", clipboard_dir, CAI_CONFIG_PATH,
       "Pasted images; empty uses cache_dir/clipboard."),
     S("paths", "log_dir", log_dir, CAI_CONFIG_PATH,
@@ -61,6 +59,13 @@ static const cli_field fields[] = {
       "Namespace prefix; empty uses program_name."),
     S("storage", "sessions_namespace", sessions_namespace, 0U,
       "Empty uses namespace_prefix.sessions."),
+    {"storage", "conversation_retention_days",
+     offsetof(cai_cli_options, conversation_retention_days), CAI_CONFIG_INTEGER,
+     0U, NULL,
+     "Whole conversation collection retention since last append, default 30 "
+     "days; 0 disables expiry. Liblockdc maintenance performs deletion, not a "
+     "CAI timer. "
+     "Individual journal entries never expire separately."},
     S("storage", "auth_namespace", auth_namespace, 0U,
       "Empty uses namespace_prefix.auth."),
     S("storage", "scopes_namespace", scopes_namespace, 0U,
@@ -140,6 +145,11 @@ static const cli_field fields[] = {
      CAI_CONFIG_INTEGER, CAI_CONFIG_SIGNED, NULL,
      "Console replay only: newest whole turns and standalone shell entries. "
      "Default 20; 0 hides replay; -1 shows all. Agent context is unchanged."},
+    {"ui", "prompt_history_limit",
+     offsetof(cai_cli_options, prompt_history_limit), CAI_CONFIG_INTEGER, 0U,
+     NULL,
+     "Newest prompt-history entries loaded for recall, default 200; 0 disables "
+     "recall and recording. This is not stored-data expiry."},
     B("ui", "shell_context", shell_context,
       "Share sanitized !COMMAND output; /shell and !sh always stay local."),
     S("ui", "theme", theme, 0U,
@@ -253,19 +263,19 @@ static int application_defaults(cai_config *cfg, cai_cli_options *o,
                                               "data"};
   const char **roots[4];
   const char *host_roots[4];
-  const char **children[8];
-  const char *host_children[8];
-  const char *parents[8];
+  const char **children[7];
+  const char *host_children[7];
+  const char *parents[7];
   const char **inputs[3];
   static const char *const input_sections[] = {"paths", "store.default",
                                                "chrome"};
   static const char *const input_keys[] = {"auth_json", "client_pem", "socket"};
   static const char *const keys[] = {
-      "history_dir", "clipboard_dir", "log_dir",    "pouch_key_file",
-      "export_dir",  "agents_md",     "skills_dir", "model_metadata"};
+      "clipboard_dir", "log_dir",    "pouch_key_file", "export_dir",
+      "agents_md",     "skills_dir", "model_metadata"};
   static const char *const suffixes[] = {
-      "/history", "/clipboard", "",        "/pouch.key",
-      "/exports", "/AGENTS.md", "/skills", "/models.json"};
+      "/clipboard", "",        "/pouch.key",  "/exports",
+      "/AGENTS.md", "/skills", "/models.json"};
   const char **namespaces[5];
   static const char *const ns_keys[] = {"sessions_namespace", "auth_namespace",
                                         "scopes_namespace", "todo_namespace",
@@ -358,28 +368,26 @@ static int application_defaults(cai_config *cfg, cai_cli_options *o,
     if (rc != CAI_OK)
       return rc;
   }
-  children[0] = &o->history_dir;
-  children[1] = &o->clipboard_dir;
-  children[2] = &o->log_dir;
-  children[3] = &o->pouch_key_file;
-  children[4] = &o->export_dir;
-  children[5] = &o->agents_md;
-  children[6] = &o->skills_dir;
-  children[7] = &o->model_metadata;
-  host_children[0] = app != NULL ? app->history_directory : NULL;
-  host_children[1] = app != NULL ? app->clipboard_directory : NULL;
-  host_children[2] = app != NULL ? app->log_directory : NULL;
-  host_children[3] = app != NULL ? app->pouch_key_file : NULL;
-  host_children[4] = host_children[5] = host_children[6] = host_children[7] =
+  children[0] = &o->clipboard_dir;
+  children[1] = &o->log_dir;
+  children[2] = &o->pouch_key_file;
+  children[3] = &o->export_dir;
+  children[4] = &o->agents_md;
+  children[5] = &o->skills_dir;
+  children[6] = &o->model_metadata;
+  host_children[0] = app != NULL ? app->clipboard_directory : NULL;
+  host_children[1] = app != NULL ? app->log_directory : NULL;
+  host_children[2] = app != NULL ? app->pouch_key_file : NULL;
+  host_children[3] = host_children[4] = host_children[5] = host_children[6] =
       NULL;
-  parents[0] = parents[3] = o->state_dir;
-  parents[1] = parents[2] = o->cache_dir;
-  parents[4] = o->data_dir;
-  parents[5] = parents[6] = parents[7] = o->config_dir;
-  for (i = 0U; i < 8U; i++) {
+  parents[2] = o->state_dir;
+  parents[0] = parents[1] = o->cache_dir;
+  parents[3] = o->data_dir;
+  parents[4] = parents[5] = parents[6] = o->config_dir;
+  for (i = 0U; i < 7U; i++) {
     const char *v = *children[i] != NULL ? *children[i] : host_children[i];
     /* Optional discovery retains its "missing is okay" semantics. */
-    if (!document && i >= 5U && v == NULL)
+    if (!document && i >= 4U && v == NULL)
       continue;
     if (v == NULL) {
       n = snprintf(path, sizeof(path), "%s%s", parents[i], suffixes[i]);
@@ -387,8 +395,8 @@ static int application_defaults(cai_config *cfg, cai_cli_options *o,
         return fail(error, NULL, "application path too long");
       v = path;
     }
-    rc = default_string(cfg, i == 3U ? "store.default" : "paths",
-                        i == 3U ? "key_file" : keys[i], v, children[i],
+    rc = default_string(cfg, i == 2U ? "store.default" : "paths",
+                        i == 2U ? "key_file" : keys[i], v, children[i],
                         document, 1, error);
     if (rc != CAI_OK)
       return rc;
@@ -566,8 +574,14 @@ int cai_cli_app_schema(cai_config **out, cai_error *error) {
   if (rc == CAI_OK)
     rc = cai_config_set_default(*out, "ui", "replay_turns", "20", error);
   if (rc == CAI_OK)
+    rc = cai_config_set_default(*out, "ui", "prompt_history_limit", "200",
+                                error);
+  if (rc == CAI_OK)
     rc = cai_config_set_default(*out, "messaging", "ack_timeout_ms", "300000",
                                 error);
+  if (rc == CAI_OK)
+    rc = cai_config_set_default(*out, "storage", "conversation_retention_days",
+                                "30", error);
   return rc == CAI_OK ? 1 : -1;
 }
 static void optional_string(const cai_config *cfg, const char *section,
@@ -668,7 +682,6 @@ static int tool_environment(cai_config *cfg, const char *prefix,
         {"CACHE_DIR", "paths", "cache_dir"},
         {"DATA_DIR", "paths", "data_dir"},
         {"RUNTIME_DIR", "paths", "runtime_dir"},
-        {"HISTORY_DIR", "paths", "history_dir"},
         {"CLIPBOARD_DIR", "paths", "clipboard_dir"},
         {"LOG_DIR", "paths", "log_dir"},
         {"POUCH_KEY_FILE", "store.default", "key_file"},
@@ -684,6 +697,9 @@ static int tool_environment(cai_config *cfg, const char *prefix,
         {"MESSAGING_STORE", "storage", "messaging_store"},
         {"TEMP", "ui", "temporary"},
         {"REPLAY_TURNS", "ui", "replay_turns"},
+        {"PROMPT_HISTORY_LIMIT", "ui", "prompt_history_limit"},
+        {"CONVERSATION_RETENTION_DAYS", "storage",
+         "conversation_retention_days"},
         {"NAMESPACE_PREFIX", "storage", "namespace_prefix"},
         {"QUEUE_PREFIX", "messaging", "queue_prefix"},
         {"TODO_LAYOUT", "ui", "todo_layout"}};
@@ -933,7 +949,25 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
                   "ui.replay_turns requires -1, 0 or a positive count");
     defaults.replay_turns = (long)replay;
   }
+  {
+    long long limit =
+        cai_config_get_integer(cfg, "ui", "prompt_history_limit", 200LL);
+    if (limit < 0LL || limit > INT_MAX)
+      return fail(
+          error, NULL,
+          "ui.prompt_history_limit requires a nonnegative count up to INT_MAX");
+    defaults.prompt_history_limit = (int)limit;
+  }
   defaults.no_config = early.no_config;
+  {
+    long long days = cai_config_get_integer(
+        cfg, "storage", "conversation_retention_days", 30LL);
+    if (days < 0LL || days > LONG_MAX / 86400L)
+      return fail(error, NULL,
+                  "storage.conversation_retention_days exceeds the supported "
+                  "day range");
+    defaults.conversation_retention_days = (long)days;
+  }
   defaults.shell_context_max_lines = (size_t)cai_config_get_integer(
       cfg, "runtime", "shell_context_max_lines", 5000LL);
   defaults.shell_context_max_bytes = (size_t)cai_config_get_integer(

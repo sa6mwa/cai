@@ -22,23 +22,14 @@ typedef struct app_text_field {
 } app_text_field;
 #define APP_TEXT_FIELD(n) {#n, offsetof(cai_app_config, n)}
 static const app_text_field text_fields[] = {
-    APP_TEXT_FIELD(program_name),
-    APP_TEXT_FIELD(invocation_name),
-    APP_TEXT_FIELD(environment_prefix),
-    APP_TEXT_FIELD(namespace_prefix),
-    APP_TEXT_FIELD(queue_prefix),
-    APP_TEXT_FIELD(home_directory),
-    APP_TEXT_FIELD(state_directory),
-    APP_TEXT_FIELD(cache_directory),
-    APP_TEXT_FIELD(data_directory),
-    APP_TEXT_FIELD(runtime_directory),
-    APP_TEXT_FIELD(history_directory),
-    APP_TEXT_FIELD(clipboard_directory),
-    APP_TEXT_FIELD(log_directory),
-    APP_TEXT_FIELD(pouch_key_file),
-    APP_TEXT_FIELD(banner),
-    APP_TEXT_FIELD(config_file),
-    APP_TEXT_FIELD(config_directory),
+    APP_TEXT_FIELD(program_name),         APP_TEXT_FIELD(invocation_name),
+    APP_TEXT_FIELD(environment_prefix),   APP_TEXT_FIELD(namespace_prefix),
+    APP_TEXT_FIELD(queue_prefix),         APP_TEXT_FIELD(home_directory),
+    APP_TEXT_FIELD(state_directory),      APP_TEXT_FIELD(cache_directory),
+    APP_TEXT_FIELD(data_directory),       APP_TEXT_FIELD(runtime_directory),
+    APP_TEXT_FIELD(clipboard_directory),  APP_TEXT_FIELD(log_directory),
+    APP_TEXT_FIELD(pouch_key_file),       APP_TEXT_FIELD(banner),
+    APP_TEXT_FIELD(config_file),          APP_TEXT_FIELD(config_directory),
     APP_TEXT_FIELD(introduction_markdown)};
 #undef APP_TEXT_FIELD
 typedef int (*logger_ref_fn)(lua_State *, int, const pslog_field *, size_t,

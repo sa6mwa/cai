@@ -25,8 +25,6 @@ int cai_cli_session_select_delete(cai_cli_pouch *pouch, const char *workspace,
                                   cai_error *error);
 int cai_cli_sessions_deletable(cai_cli_pouch *pouch, cai_cli_session *sessions,
                                size_t *count, cai_error *error);
-int cai_cli_session_history_path(const cai_cli_options *options, const char *id,
-                                 char out[PATH_MAX], cai_error *error);
 int cai_cli_session_delete(cai_cli_pouch *pouch, cai_cli_pouch *messaging,
                            const cai_cli_options *options,
                            const char *workspace, const char *choice,

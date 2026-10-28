@@ -120,12 +120,10 @@ static void separate_messaging_store(cai_cli_pouch *sessions, const char *root,
   lc_get_res result;
   lc_lease *lease = NULL;
   lc_error local;
-  char state[PATH_MAX], history[PATH_MAX], logs[PATH_MAX], exports[PATH_MAX];
+  char state[PATH_MAX], logs[PATH_MAX], exports[PATH_MAX];
   char id[CAI_AGENT_SESSION_ID_MAX];
   assert(snprintf(state, sizeof(state), "%s/messages", root) <
          (int)sizeof(state));
-  assert(snprintf(history, sizeof(history), "%s/history", root) <
-         (int)sizeof(history));
   assert(snprintf(logs, sizeof(logs), "%s/logs", root) < (int)sizeof(logs));
   assert(snprintf(exports, sizeof(exports), "%s/exports", root) <
          (int)sizeof(exports));
@@ -145,7 +143,6 @@ static void separate_messaging_store(cai_cli_pouch *sessions, const char *root,
   assert(lc_lease_release(lease, NULL, &local) == LC_OK);
   save(sessions, "/workspace", "split", error);
   cai_cli_options_init(&options);
-  options.history_dir = history;
   options.log_dir = logs;
   options.export_dir = exports;
   assert(cai_cli_session_delete(sessions, &messages, &options, "/workspace",
@@ -181,6 +178,10 @@ int main(int argc, char **argv) {
   save(&pouch, "/workspace", "survivor", &error);
   cai_cli_pouch_begin_use(&pouch);
   save(&pouch, "/workspace", "parent", &error);
+  assert(cai_cli_pouch_prompt_open(&pouch, "parent", &error) == CAI_OK);
+  assert(cai_cli_pouch_prompt_append(&pouch, "private prompt", &error) ==
+         CAI_OK);
+  cai_cli_pouch_prompt_close(&pouch);
   pouch.capture_session = 0;
   save(&pouch, "smith-subagent:parent", "worker-child", &error);
   save(&pouch, "smith-review:/workspace", "review-child", &error);
@@ -191,21 +192,21 @@ int main(int argc, char **argv) {
   event.data = "review-child";
   assert(pouch.store.append_event(&pouch, "/workspace", "parent", &event,
                                   &error) == CAI_OK);
-  assert(collections(&pouch) == 5);
+  assert(collections(&pouch) == 6);
   assert(cai_cli_pouch_deletable(&pouch, "parent", &eligible, &error) ==
              CAI_OK &&
          !eligible);
   memset(&state, 0, sizeof(state));
   assert(cai_cli_pouch_delete(&pouch, "/workspace", "parent", cleanup, &state,
                               &error) == CAI_ERR_INVALID);
-  assert(state.calls == 0 && collections(&pouch) == 5);
+  assert(state.calls == 0 && collections(&pouch) == 6);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   cai_cli_pouch_end_use(&pouch);
   metadata_identity(&pouch, "parent", "/workspace", "survivor");
   assert(cai_cli_pouch_delete(&pouch, "/workspace", "parent", cleanup, &state,
                               &error) == CAI_ERR_INVALID);
-  assert(state.calls == 0 && collections(&pouch) == 5);
+  assert(state.calls == 0 && collections(&pouch) == 6);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   metadata_identity(&pouch, "parent", "/workspace", "parent");
@@ -214,7 +215,7 @@ int main(int argc, char **argv) {
                     "survivor");
   assert(cai_cli_pouch_delete(&pouch, "/workspace", "parent", cleanup, &state,
                               &error) == CAI_ERR_INVALID);
-  assert(state.calls == 0 && collections(&pouch) == 5);
+  assert(state.calls == 0 && collections(&pouch) == 6);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   metadata_identity(&pouch, "review-child", "smith-review:/workspace",
@@ -223,7 +224,7 @@ int main(int argc, char **argv) {
   state.fail = 1;
   assert(cai_cli_pouch_delete(&pouch, "/workspace", "parent", cleanup, &state,
                               &error) == CAI_ERR_TRANSPORT);
-  assert(state.calls == 1 && collections(&pouch) == 5);
+  assert(state.calls == 1 && collections(&pouch) == 6);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   assert(cai_cli_pouch_session(&pouch, "parent", &metadata, &error) == CAI_OK);

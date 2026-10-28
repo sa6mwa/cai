@@ -1143,8 +1143,15 @@ if(CAI_BUILD_LUA)
           ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
         add_test(NAME cai_app_lua_draft_quit COMMAND bash
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_draft_quit_test.sh"
-          "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host")
+          "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host"
+          "$<TARGET_FILE:cai_cli_prompt_history_test>" production)
         set_tests_properties(cai_app_lua_draft_quit PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
+          ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
+        add_test(NAME cai_app_lua_history COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_history_test.sh"
+          "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host"
+          "$<TARGET_FILE:cai_cli_prompt_history_test>")
+        set_tests_properties(cai_app_lua_history PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
           ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
         add_test(NAME cai_app_lua_steering_seam COMMAND bash
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_steering_seam_test.sh"

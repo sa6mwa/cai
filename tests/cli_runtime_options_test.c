@@ -160,9 +160,11 @@ static int messaging_settings(const char *path) {
 }
 
 /* Exercise every configuration source without storage or model requests. */
-static int replay_settings(const char *path) {
+static int history_settings(const char *path, int prompts) {
   static char program[] = "cai", config_flag[] = "--config", list[] = "--list";
   static char replay_flag[] = "--replay-turns";
+  static char prompt_flag[] = "--prompt-history-limit";
+  static char retention_flag[] = "--conversation-retention-days";
   static char values[][32] = {"-2", "-1",  "0",
                               "20", "bad", "999999999999999999999999"};
   char *args[6];
@@ -174,15 +176,21 @@ static int replay_settings(const char *path) {
   FILE *file;
   size_t i;
   int source, rc, valid, failed = 0;
+  const char *key = prompts == 2 ? "conversation_retention_days"
+                    : prompts    ? "prompt_history_limit"
+                                 : "replay_turns";
+  const char *environment = prompts == 2 ? "CAI_CONVERSATION_RETENTION_DAYS"
+                            : prompts    ? "CAI_PROMPT_HISTORY_LIMIT"
+                                         : "CAI_REPLAY_TURNS";
   args[0] = program;
   args[1] = config_flag;
   args[2] = strdup(path);
   args[3] = list;
-  args[4] = replay_flag;
+  args[4] = prompts == 2 ? retention_flag : prompts ? prompt_flag : replay_flag;
   if (args[2] == NULL)
     return 1;
-  setting.section = "ui";
-  setting.key = "replay_turns";
+  setting.section = prompts == 2 ? "storage" : "ui";
+  setting.key = key;
   for (source = 0; source < 4; source++) {
     for (i = 0U; i < sizeof(values) / sizeof(values[0]); i++) {
       file = fopen(path, "w");
@@ -191,14 +199,14 @@ static int replay_settings(const char *path) {
         return 1;
       }
       if (source == 0)
-        fprintf(file, "[ui]\nreplay_turns = %s\n", values[i]);
+        fprintf(file, "[%s]\n%s = %s\n", setting.section, key, values[i]);
       if (fclose(file) != 0) {
         free(args[2]);
         return 1;
       }
-      unsetenv("CAI_REPLAY_TURNS");
+      unsetenv(environment);
       if (source == 1)
-        setenv("CAI_REPLAY_TURNS", values[i], 1);
+        setenv(environment, values[i], 1);
       memset(&app, 0, sizeof(app));
       app.program_name = CAI_APP_DEFAULT_PROGRAM_NAME;
       setting.value = values[i];
@@ -210,12 +218,15 @@ static int replay_settings(const char *path) {
       cai_error_init(&error);
       rc = cai_cli_configure(source == 3 ? 6 : 4, args, &options,
                              &configuration, &app, &error);
-      valid = i >= 1U && i <= 3U;
+      valid = i >= (prompts ? 2U : 1U) && i <= 3U;
       if ((valid &&
-           (rc != 1 || options.replay_turns != strtol(values[i], NULL, 10))) ||
+           (rc != 1 || (prompts == 2 ? options.conversation_retention_days
+                        : prompts    ? options.prompt_history_limit
+                                     : options.replay_turns) !=
+                           strtol(values[i], NULL, 10))) ||
           (!valid && (rc != -1 || (error.message == NULL &&
                                    options.diagnostic[0] == '\0')))) {
-        fprintf(stderr, "replay source=%d value=%s rc=%d: %s\n", source,
+        fprintf(stderr, "%s source=%d value=%s rc=%d: %s\n", key, source,
                 values[i], rc,
                 error.message != NULL ? error.message : options.diagnostic);
         failed = 1;
@@ -224,7 +235,7 @@ static int replay_settings(const char *path) {
       cai_error_cleanup(&error);
     }
   }
-  unsetenv("CAI_REPLAY_TURNS");
+  unsetenv(environment);
   free(args[2]);
   return failed;
 }
@@ -548,7 +559,9 @@ int main(int argc, char **argv) {
   failed |= resolve(path, NULL, 4);
   failed |= resolve(path, "--no-todo", 0);
   failed |= messaging_settings(path);
-  failed |= replay_settings(path);
+  failed |= history_settings(path, 0);
+  failed |= history_settings(path, 1);
+  failed |= history_settings(path, 2);
   failed |= retained_paths(path, argv[1]);
   failed |= chrome_directory_settings(path, argv[1]);
   failed |= yolo_settings(path);

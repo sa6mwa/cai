@@ -950,9 +950,9 @@ static int cli_shell_editor_key(sl_t *sl, sl_key_t key, void *context,
  * running agent. Keep them available without consuming an unrelated queue. */
 static int cli_command_at_feed_boundary(const char *line) {
   static const char *const queries[] = {
-      "/help",           "/status",    "/tools", "/skills", "/goal",
-      "/model",          "/reasoning", "/theme", "/queue",  "/todo",
-      "/reasoning-tool", "/resume",    "/yolo"};
+      "/help",           "/status",    "/tools", "/skills",    "/goal",
+      "/model",          "/reasoning", "/theme", "/queue",     "/todo",
+      "/reasoning-tool", "/resume",    "/yolo",  "/retention", "/history"};
   const char *arg = line + strcspn(line, " \t");
   size_t length = (size_t)(arg - line), i;
   arg += strspn(arg, " \t");
@@ -972,6 +972,7 @@ static int cli_command_at_feed_boundary(const char *line) {
            strncmp(arg, "layout\t", 7U) == 0 || strncmp(arg, "see ", 4U) == 0 ||
            strncmp(arg, "see\t", 4U) == 0;
   return (length == 7U && strncmp(line, "/output", length) == 0) ||
+         (length == 8U && strncmp(line, "/history", length) == 0) ||
          (length == 10U && strncmp(line, "/autoqueue", length) == 0) ||
          (length == 14U && strncmp(line, "/shell-context", length) == 0);
 }
@@ -992,7 +993,7 @@ static int cli_command_at_turn_boundary(const char *line) {
   static const char *const commands[] = {
       "/new",   "/resume",     "/review", "/review-and-fix", "/theme",
       "/queue", "/todo",       "/trim",   "/reasoning-tool", "/compact",
-      "/shell", "/shellshare", "/export"};
+      "/shell", "/shellshare", "/export", "/retention"};
   size_t i, length = strcspn(line, " \t");
   if (cli_command_at_feed_boundary(line))
     return 0;
@@ -2384,6 +2385,71 @@ static int cli_sandbox_notice(cli_state *state) {
                             : 0;
 }
 
+typedef struct cli_prompt_import {
+  sl_history_emit_t emit;
+  void *context;
+} cli_prompt_import;
+static int cli_prompt_emit(void *context, const char *prompt,
+                           cai_error *error) {
+  cli_prompt_import *import = context;
+  return import->emit(import->context, prompt) == SL_OK
+             ? CAI_OK
+             : cai_cli_error(error, CAI_ERR_INVALID,
+                             "Softline rejected stored prompt history");
+}
+static int cli_prompt_load(const char *key, sl_history_emit_t emit,
+                           void *context, void *userdata) {
+  cli_state *state = userdata;
+  cli_prompt_import import;
+  cai_error error;
+  int rc;
+  (void)key;
+  cai_error_init(&error);
+  import.emit = emit;
+  import.context = context;
+  rc = cai_cli_pouch_prompt_load(
+      &state->pouch, (unsigned int)state->options.prompt_history_limit,
+      cli_prompt_emit, &import, &error);
+  if (rc != CAI_OK)
+    cai_cli_log_error(cli_logger(state), "load prompt history", &error);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
+}
+static int cli_prompt_append(const char *key, const char *prompt,
+                             void *userdata) {
+  cli_state *state = userdata;
+  cai_error error;
+  int rc;
+  (void)key;
+  cai_error_init(&error);
+  rc = cai_cli_pouch_prompt_append(&state->pouch, prompt, &error);
+  if (rc != CAI_OK)
+    cai_cli_log_error(cli_logger(state), "save prompt history", &error);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
+}
+
+static int cli_prompt_configure(cli_state *state, cai_error *error) {
+  int limit = state->options.prompt_history_limit;
+  int rc = CAI_OK;
+  if (limit != 0 && state->pouch.prompt_history == NULL)
+    rc = cai_cli_pouch_prompt_open(
+        &state->pouch, cai_agent_runtime_session_id(state->runtime), error);
+  if (limit == 0)
+    cai_cli_pouch_prompt_close(&state->pouch);
+  if (rc == CAI_OK &&
+      (sl_history_close(state->sl) != SL_OK ||
+       sl_history_set_max_len(state->sl, 0) != SL_OK ||
+       sl_history_set_max_len(state->sl, limit) != SL_OK ||
+       (limit != 0 &&
+        sl_history_set_backend(
+            state->sl, cai_agent_runtime_session_id(state->runtime),
+            cli_prompt_load, cli_prompt_append, state) != SL_OK) ||
+       sl_history_set_auto_add(state->sl, 1) != SL_OK))
+    rc = cai_cli_error(error, CAI_ERR_TRANSPORT, sl_last_error(state->sl));
+  return rc;
+}
+
 static int cli_replay_begin(void *context, const char *id, cai_error *error) {
   cli_state *state = context;
   int rc = cai_cli_log_session(state->log, id, error);
@@ -2605,23 +2671,8 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   }
   rc = cai_cli_log_session(state->log,
                            cai_agent_runtime_session_id(state->runtime), error);
-  if (rc == CAI_OK && state->interactive) {
-    char history[PATH_MAX];
-    rc = cai_cli_session_history_path(
-        &state->options, cai_agent_runtime_session_id(state->runtime), history,
-        error);
-    if (rc == CAI_OK)
-      rc = cai_cli_private_directory(history, error);
-    if (rc == CAI_OK &&
-        (sl_history_close(state->sl) != SL_OK ||
-         sl_history_set_max_len(state->sl, 0) != SL_OK ||
-         sl_history_set_max_len(state->sl, 1000) != SL_OK ||
-         sl_history_open(state->sl,
-                         cai_agent_runtime_session_id(state->runtime),
-                         history) != SL_OK ||
-         sl_history_set_auto_add(state->sl, 1) != SL_OK))
-      rc = cai_cli_error(error, CAI_ERR_TRANSPORT, sl_last_error(state->sl));
-  }
+  if (rc == CAI_OK && state->interactive)
+    rc = cli_prompt_configure(state, error);
   if (rc != CAI_OK)
     return rc;
   if (state->options.developer_instructions != NULL) {
@@ -2711,10 +2762,11 @@ static void cli_close_runtime(cli_state *state) {
   state->runtime = NULL;
   cai_cli_messages_close(state->messages);
   state->messages = NULL;
-  /* Release recall's file descriptors before making the conversation eligible
-   * for deletion. Accepted entries have already been appended by Softline. */
+  /* Detach callbacks and close recall before releasing the session use guard.
+   * Softline has already persisted accepted entries synchronously. */
   if (state->sl != NULL)
     (void)sl_history_close(state->sl);
+  cai_cli_pouch_prompt_close(&state->pouch);
   cai_cli_pouch_end_use(&state->pouch);
   state->goal_starts_pending = 0U;
   cai_cli_reasoning_reset(&state->reasoning);
@@ -4010,6 +4062,63 @@ static int cli_review_command(cli_state *state, const char *arguments,
   return rc != CAI_OK ? rc : started;
 }
 
+static int cli_retention_command(cli_state *state, const char *arg, int history,
+                                 cai_error *error) {
+  char *end, message[512], empty[1] = {0};
+  long value;
+  int rc;
+  arg += strspn(arg, " \t");
+  if (*arg != '\0') {
+    errno = 0;
+    if (strncmp(arg, "off", 3U) == 0 &&
+        arg[3U + strspn(arg + 3U, " \t")] == '\0') {
+      value = 0L;
+      end = empty;
+    } else
+      value = strtol(arg, &end, 10);
+    end += strspn(end, " \t");
+    if (errno != 0 || end == arg || *end != '\0' || value < 0L ||
+        value > (history ? INT_MAX : LONG_MAX / 86400L))
+      return cai_cli_error(
+          error, CAI_ERR_INVALID,
+          history
+              ? "use /history COUNT (nonnegative entry count)"
+              : "use /retention DAYS; 0 or off keeps the conversation forever");
+    if (history) {
+      state->options.prompt_history_limit = (int)value;
+      rc = cli_prompt_configure(state, error);
+    } else
+      rc = cai_cli_pouch_set_retention(
+          &state->pouch, cai_agent_runtime_session_id(state->runtime), value,
+          error);
+    if (rc != CAI_OK)
+      return rc;
+  }
+  if (history) {
+    snprintf(message, sizeof(message),
+             "Prompt history limit: **%d entries**.\n\n"
+             "Stored-entry pruning is pending liblockdc `max_entries`; this "
+             "currently controls recall. Zero disables recall and recording.",
+             state->options.prompt_history_limit);
+  } else {
+    rc = cai_cli_pouch_retention(&state->pouch,
+                                 cai_agent_runtime_session_id(state->runtime),
+                                 &value, error);
+    if (rc != CAI_OK)
+      return rc;
+    if (value == 0L)
+      snprintf(message, sizeof(message),
+               "Conversation retention: **forever**.");
+    else
+      snprintf(
+          message, sizeof(message),
+          "Conversation retention: **%ld days from last update**.\n\n"
+          "Liblockdc maintenance removes the whole collection after expiry.",
+          value);
+  }
+  return cli_markdown(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+}
+
 static int cli_handle_command(cli_state *state, const char *line,
                               cai_error *error, int *handled) {
   const char *arg;
@@ -4017,6 +4126,12 @@ static int cli_handle_command(cli_state *state, const char *line,
   unsigned long number;
   int rc;
   *handled = 1;
+  if (strncmp(line, "/history", 8U) == 0 &&
+      (line[8] == '\0' || line[8] == ' ' || line[8] == '\t'))
+    return cli_retention_command(state, line + 8U, 1, error);
+  if (strncmp(line, "/retention", 10U) == 0 &&
+      (line[10] == '\0' || line[10] == ' ' || line[10] == '\t'))
+    return cli_retention_command(state, line + 10U, 0, error);
   if (cli_is_compact(line)) {
     arg = line + 8U;
     arg += strspn(arg, " \t");
@@ -4279,6 +4394,10 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| Command | Action |\n"
         "| --- | --- |\n"
         "| `/help` | Show this help. |\n",
+        "| `/retention [DAYS or off]` | Show or set this conversation's "
+        "inactivity retention. 0 or off keeps it forever. |\n"
+        "| `/history [COUNT]` | Show or set prompt recall (default 200). "
+        "Stored-entry pruning awaits liblockdc max_entries. |\n",
         "| `/yolo [on\\|off]` | Show or change the runtime's local execution "
         "policy; changes wait for idle tools and subagents. |\n",
         "| `/theme [NAME or SOFTLINE:LIBMDF]` | Show the current pair and all "
@@ -4352,7 +4471,7 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| `/shell-context [on\\|off]` | Share future `!COMMAND` results with "
         "the "
         "model, or keep them local. |\n"
-        "| Up / Down | Recall prompts for this directory. |\n"
+        "| Up / Down | Recall prompts for this conversation. |\n"
         "| Ctrl-R | Search history; Enter selects for editing, Enter again "
         "sends. |\n",
         "| Alt-S | Open a local shell between turns; retain your draft, "
@@ -5189,7 +5308,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
         getenv("NO_COLOR") != NULL ? SL_PROMPT_THEME_PLAIN : state.theme.prompt;
     prompt_config.prompt_queue = 1;
     prompt_config.line_max_len = 65536U + 512U;
-    prompt_config.history_max_len = 1000;
+    prompt_config.history_max_len = state.options.prompt_history_limit;
     snprintf(state.clipboard_template, sizeof(state.clipboard_template), "%s/*",
              state.clipboard_directory);
     prompt_config.image_paste_path_template = state.clipboard_template;

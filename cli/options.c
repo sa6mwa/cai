@@ -5,6 +5,7 @@
 #include <cai/version.h>
 
 #include <errno.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -66,6 +67,8 @@ void cai_cli_options_init(cai_cli_options *options) {
   options->messaging = 0;
   options->message_ack_timeout_ms = 300000L;
   options->replay_turns = 20L;
+  options->prompt_history_limit = 200;
+  options->conversation_retention_days = 30L;
   options->read_file = options->list_files = options->apply_patch = 1;
   options->view_image = options->goals = options->skills = 1;
 }
@@ -230,6 +233,43 @@ static int cli_read_options(int argc, char *const *argv,
     if (strcmp(flag, "--autoqueue") == 0 ||
         strcmp(flag, "--no-autoqueue") == 0) {
       options->enable_auto_enqueue = strcmp(flag, "--autoqueue") == 0;
+      continue;
+    }
+    if (strcmp(flag, "--conversation-retention-days") == 0) {
+      char *end;
+      long number;
+      if (++i >= argc) {
+        cai_cli_option_error(options, "%s requires a nonnegative day count",
+                             flag);
+        return -1;
+      }
+      errno = 0;
+      number = strtol(argv[i], &end, 10);
+      if (errno != 0 || end == argv[i] || *end != '\0' || number < 0L ||
+          number > LONG_MAX / 86400L) {
+        cai_cli_option_error(options, "%s requires days in 0..%ld", flag,
+                             LONG_MAX / 86400L);
+        return -1;
+      }
+      options->conversation_retention_days = number;
+      continue;
+    }
+    if (strcmp(flag, "--prompt-history-limit") == 0) {
+      char *end;
+      long number;
+      if (++i >= argc) {
+        cai_cli_option_error(options, "%s requires a nonnegative count", flag);
+        return -1;
+      }
+      errno = 0;
+      number = strtol(argv[i], &end, 10);
+      if (errno != 0 || end == argv[i] || *end != '\0' || number < 0L ||
+          number > INT_MAX) {
+        cai_cli_option_error(
+            options, "%s requires a nonnegative count up to %d", flag, INT_MAX);
+        return -1;
+      }
+      options->prompt_history_limit = (int)number;
       continue;
     }
     if (strcmp(flag, "--replay-turns") == 0) {
@@ -428,8 +468,6 @@ static int cli_read_options(int argc, char *const *argv,
       field = &options->cache_dir;
     else if (strcmp(flag, "--data-dir") == 0)
       field = &options->data_dir;
-    else if (strcmp(flag, "--history-dir") == 0)
-      field = &options->history_dir;
     else if (strcmp(flag, "--clipboard-dir") == 0)
       field = &options->clipboard_dir;
     else if (strcmp(flag, "--log-dir") == 0)

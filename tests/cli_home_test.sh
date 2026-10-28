@@ -40,7 +40,7 @@ send '/help\r'; expect '/resume'
 terminal_close
 [[ $(requests) == 0 ]]
 find "$unified/cache" -maxdepth 1 -name '*.log' -print -quit | grep -q .
-find "$unified/state/history" -type f -print -quit | grep -q .
+[[ -d "$unified/state/pouch" && ! -e "$unified/state/history" ]]
 [[ ! -e "$root/config/cai" && ! -e "$root/state/cai" && ! -e "$root/cache/cai" ]]
 cp "$unified/config/config.ini" "$root/original.ini"
 cp "$unified/state/pouch.key" "$root/original.key"

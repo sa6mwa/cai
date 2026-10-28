@@ -93,7 +93,8 @@ With `program_name = "smith"`, automatic defaults are:
 | Configuration | `$XDG_CONFIG_HOME/smith/config.ini` |
 | Instructions / skills / model overrides | `config_directory/AGENTS.md`, `skills`, `models.json` |
 | State / cache / data | `$XDG_STATE_HOME/smith`, `$XDG_CACHE_HOME/smith`, `$XDG_DATA_HOME/smith` |
-| Pouch / encryption key / prompt history | `state_directory/pouch`, `pouch.key`, `history` |
+| Pouch / encryption key | `state_directory/pouch`, `pouch.key` |
+| Prompt recall | Encrypted `prompts.<session-id>` collection in the sessions namespace |
 | Clipboard / interactive logs | `cache_directory/clipboard`, `cache_directory` |
 | Exports | `data_directory/exports` |
 | Chrome sockets | `$XDG_RUNTIME_DIR/smith/chrome` when set; otherwise `cache_directory/chrome` |
@@ -105,7 +106,7 @@ Unset XDG variables use the standard HOME fallbacks. The C and Lua open configs
 both accept `environment_prefix`, `namespace_prefix`, `queue_prefix`,
 `home_directory`, `runtime_directory`,
 `config_file`, `config_directory`, `state_directory`, `cache_directory`,
-`data_directory`, `history_directory`, `clipboard_directory`, `log_directory`,
+`data_directory`, `clipboard_directory`, `log_directory`,
 and `pouch_key_file`. Roots are independent: moving the config file does not
 implicitly move instructions or state. Child defaults follow their selected
 root. For example, a host can supply its own resolved XDG paths:
@@ -150,13 +151,25 @@ host process's `HOME` or relocate explicit external inputs or endpoints.
 
 These fields seed defaults. Explicit INI values, environment, `settings`, and
 argv take precedence in that order. Paths are also configurable through
-`[paths]` (`home_dir`, `runtime_dir`, `config_dir`, `state_dir`, `cache_dir`, `data_dir`, `history_dir`,
+`[paths]` (`home_dir`, `runtime_dir`, `config_dir`, `state_dir`, `cache_dir`, `data_dir`,
 `clipboard_dir`, `log_dir`, and the existing individual file
 settings), and matching `--...-dir` / `--pouch-key-file` flags. Each namespace
 has its own `[storage] ..._namespace` key and matching flag, alongside
 `namespace_prefix`. `[messaging] queue_prefix` / `--queue-prefix` controls
 automatic names; `queue_name` / `--message-queue` replaces the full public name.
 `[chrome] socket_directory` and `[mcp.NAME] client_name` override those defaults.
+
+Prompt recall shares the configured session store and encryption key through
+separate `prompts.<session-id>` collections. `ui.prompt_history_limit` defaults
+to 200 and configures recall only; `/history` exposes the same setting in the
+TUI. SDK `max_entries` integration for stored-entry pruning is deferred.
+`storage.conversation_retention_days` defaults to 30 days since the latest
+journal append; zero disables expiry. `/retention` shows that policy and
+persists an override for the active conversation (0/off means forever).
+Liblockdc maintenance removes the whole journal collection and its session
+metadata. Individual journal records never expire separately. Both defaults
+are available through C/Lua `settings`, prefixed environment variables and
+forwarded flags; there is no separate prompt-history filesystem path.
 
 Environment keys use the selected prefix plus uppercased section and key,
 for example `SMITH_PATHS_STATE_DIR` and `SMITH_STORAGE_AUTH_NAMESPACE`.

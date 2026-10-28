@@ -379,13 +379,22 @@
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_terminal_handoff_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_terminal_handoff PROPERTIES TIMEOUT 45)
+    add_executable(cai_cli_prompt_history_test tests/cli_prompt_history_test.c
+      cli/identity.c cli/pouch_stream.c cli/log.c)
+    target_link_libraries(cai_cli_prompt_history_test PRIVATE cai_static lockdc::static)
+    cai_configure_cli_target(cai_cli_prompt_history_test)
+    cai_cli_use_storage_fixture(cai_cli_prompt_history_test)
+    target_compile_options(cai_cli_prompt_history_test PRIVATE -UNDEBUG)
+    add_test(NAME cai_cli_prompt_history COMMAND cai_cli_prompt_history_test
+      "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(cai_cli_prompt_history PROPERTIES TIMEOUT 10)
     add_test(NAME cai_cli_history
       COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_history_test.sh"
-        "$<TARGET_FILE:cai_cli_mock_fixture>")
+        "$<TARGET_FILE:cai_cli_mock_fixture>" "$<TARGET_FILE:cai_cli_prompt_history_test>")
     set_tests_properties(cai_cli_history PROPERTIES TIMEOUT 45)
     add_test(NAME cai_cli_draft_quit COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_draft_quit_test.sh"
-      "$<TARGET_FILE:cai_cli_mock_fixture>")
+      "$<TARGET_FILE:cai_cli_mock_fixture>" "$<TARGET_FILE:cai_cli_prompt_history_test>")
     set_tests_properties(cai_cli_draft_quit PROPERTIES TIMEOUT 15)
     add_test(NAME cai_cli_yolo COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_yolo_test.sh" "$<TARGET_FILE:cai_cli_mock_fixture>")

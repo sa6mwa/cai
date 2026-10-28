@@ -68,7 +68,6 @@ static void roots(const char *root) {
   under(options.cache_dir, root, "cache");
   under(options.data_dir, root, "data");
   under(options.runtime_dir, root, "run");
-  under(options.history_dir, root, "state/history");
   under(options.pouch_key_file, root, "state/pouch.key");
   under(options.clipboard_dir, root, "cache/clipboard");
   under(options.log_dir, root, "cache");
@@ -131,8 +130,7 @@ int main(void) {
   assert(setenv("CAI_HOME", "environment-home", 1) == 0);
   assert(setenv("CAI_CACHE_DIR", "/specific/cache", 1) == 0);
   write_ini(selected, "[paths]\nhome_dir = ini-home\n"
-                      "state_dir = /specific/state\n"
-                      "history_dir = /specific/history\n");
+                      "state_dir = /specific/state\n");
   flags[4] = "--runtime-dir";
   flags[5] = "/specific/runtime";
   app.data_directory = "/specific/data";
@@ -144,7 +142,6 @@ int main(void) {
   equal(options.cache_dir, "/specific/cache");
   equal(options.data_dir, app.data_directory);
   equal(options.runtime_dir, "/specific/runtime");
-  equal(options.history_dir, "/specific/history");
   equal(options.clipboard_dir, "/specific/cache/clipboard");
   equal(options.export_dir, "/specific/data/exports");
   equal(cfg->get(cfg, "chrome", "socket_directory"),

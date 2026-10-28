@@ -90,15 +90,6 @@ static int session_file_id(const char *id) {
          strspn(id, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
                     "0123456789-_") == strlen(id);
 }
-int cai_cli_session_history_path(const cai_cli_options *options, const char *id,
-                                 char out[PATH_MAX], cai_error *error) {
-  if (!session_file_id(id) || options->history_dir == NULL ||
-      snprintf(out, PATH_MAX, "%s/%s", options->history_dir, id) >= PATH_MAX)
-    return cai_cli_error(error, CAI_ERR_INVALID,
-                         "invalid conversation prompt-history path");
-  return CAI_OK;
-}
-
 /* Sanitize and clip a UTF-8 field by displayed cells, preserving codepoints. */
 static void row_field(char *out, size_t capacity, const char *text, int width) {
   mbstate_t state;
@@ -656,8 +647,6 @@ static int cleanup_session_files(void *context, const char *id,
   if (!session_file_id(id))
     return cai_cli_error(error, CAI_ERR_INVALID, "unsafe conversation file ID");
   rc = cai_cli_messages_delete_session(cleanup->messaging, id, error);
-  if (rc == CAI_OK)
-    rc = remove_session_child(cleanup->options->history_dir, id, 1, error);
   if (rc == CAI_OK) {
     snprintf(name, sizeof(name), "%s.log", id);
     rc = remove_session_child(cleanup->options->log_dir, name, 0, error);

@@ -4,9 +4,20 @@
 #define _POSIX_C_SOURCE 200809L
 #define _XOPEN_SOURCE 700
 #include "../cli/messages.h"
+#include "../cli/pouch.h"
 #include <cai/agent_runtime.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+static int fixture_prompt_append(cai_cli_pouch *pouch, const char *prompt,
+                                 cai_error *error) {
+  const char *failure = getenv("CAI_TEST_PROMPT_APPEND_FAILURE");
+  if (failure != NULL && access(failure, F_OK) == 0)
+    return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                         "Injected prompt persistence failure");
+  return cai_cli_pouch_prompt_append(pouch, prompt, error);
+}
 
 static int fixture_runtime_open(cai_client *client,
                                 const cai_agent_runtime_config *config,
@@ -55,7 +66,9 @@ static int fixture_messages_start(cai_cli_messages *messages, const char *id,
 }
 #define cai_agent_runtime_open fixture_runtime_open
 #define cai_cli_messages_start fixture_messages_start
+#define cai_cli_pouch_prompt_append fixture_prompt_append
 #include "../cli/app_run.c"
+#undef cai_cli_pouch_prompt_append
 #undef cai_cli_messages_start
 #undef cai_agent_runtime_open
 

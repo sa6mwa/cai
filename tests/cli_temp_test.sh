@@ -106,7 +106,7 @@ for answer in n '' yes; do
   terminal_start --temp
   workspace=$(find "$root/cache/cai/temp" -path '*/private/state/pouch.key' -printf '%h\n' | sed 's,/private/state$,/workspace,')
   [[ -d "$workspace" ]]
-  [[ -d "${workspace%/workspace}/private/state/history" ]]
+  [[ -d "${workspace%/workspace}/private/state/pouch" && ! -e "${workspace%/workspace}/private/state/history" ]]
   printf 'interactive file\n' >"$workspace/kept.txt"
   send '/quit\r'
   wait_for has "$term/text" '[y/N]'
