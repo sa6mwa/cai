@@ -1310,6 +1310,8 @@ bytes with `?`; their content is unaffected by preview filtering.
 The native `apply_patch` matcher follows Codex's ordered line matching, including
 repeated context, whitespace fallback and Unicode punctuation normalization.
 It preserves unchanged context and validates the full plan before publication.
+Failed patch diagnostics go through libmdf as quoted prose with literal
+expected/actual values; source spacing and raw journal/log data are preserved.
 See [patch tool behavior](docs/patch-tool.md) for the matching and safety contract.
 
 Successful `apply_patch` calls display the **agent's submitted changes**, with

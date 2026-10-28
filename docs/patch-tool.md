@@ -51,9 +51,18 @@ or other preflight failure leaves every file untouched. The existing publication
 and rollback machinery handles filesystem failures.
 
 Failures identify the file and hunk and provide bounded escaped context where
-available. Read that location before retrying. The interactive feed shows the
-ordered tool failure; attributed duplicate warnings remain in the log instead
-of repeating it in the feed. These semantics do not rewrite old transcript text.
+available. Read that location before retrying. libcai_app renders the failure
+summary followed by a libmdf quote, with expected/actual values in literal code
+spans so source spacing stays visible. Source text cannot become Markdown
+markup or terminal controls. Attributed duplicate warnings remain in the log
+instead of repeating in the feed. Raw results and journal records are retained;
+these semantics do not rewrite old transcript text.
+
+Codex's CLI verifies the patch through its matcher before executing it. Genuine
+verification failures return a diagnostic to the model; there is no additional
+hidden context-repair step that rewrites an unmatched patch. The model can read
+the relevant file and issue a corrected tool call. Codex's TUI also retains the
+failure diagnostics in a dedicated patch-failure cell for transcript display.
 
 ## Evidence
 

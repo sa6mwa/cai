@@ -143,7 +143,10 @@ contains "$root/failure-preview" '* Failed apply_patch'
 contains "$root/failure-preview" 'Patch context does not match in "ruleset.go" (hunk 1)'
 contains "$root/failure-preview" 'file line 2'
 contains "$root/failure-preview" 'Expected: "\tMonth int    '
-contains "$root/failure-preview" 'Actual:   "\tMonth int   '
+contains "$root/failure-preview" 'Actual: "\tMonth int   '
+sed -E $'s/\033\[[0-?]*[ -/]*[@-~]//g' "$root/failure-preview" >"$root/failure-markdown"
+grep -Eq '^  > .*Patch context does not match' "$root/failure-markdown"
+absent "$root/failure-markdown" '```'
 absent "$root/failure-preview" '* WARN:'
 absent "$root/failure-preview" 'cai.agent.runtime.tool.error'
 cmp "$work/ruleset.go" "$root/ruleset.original"

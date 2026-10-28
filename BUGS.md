@@ -5,6 +5,23 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-058: Failed patch diagnostics bypass Markdown presentation
+
+- **Status:** fixed.
+- **Evidence:** context matching diagnostics improved, but failed patch events
+  still used the generic display's raw text sink. The historical "exactly
+  once" wording is no longer emitted by the current matcher; stored events
+  can still contain it.
+- **Resolution:** libcai_app presents patch failures as a red failure summary
+  followed by a libmdf quote. Expected/actual source values use literal code
+  spans to preserve meaningful spaces; other text is escaped and terminal
+  controls are removed. Missing diagnostics receive an explicit fallback.
+  Runtime tool results, pslog records and journal data remain unchanged.
+- **Verification:** focused presentation tests cover source markup/backticks,
+  control characters, missing/empty diagnostics and output failures. The real
+  CLI verifies Markdown rendering and exact context spacing; reasoning and
+  duplicate-warning regressions remain covered.
+
 ## BUG-057: Patch matching rejects Codex-compatible repeated context
 
 - **Status:** fixed.

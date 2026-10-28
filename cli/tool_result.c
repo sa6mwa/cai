@@ -45,7 +45,7 @@ struct cai_cli_tool_result {
   result_doc doc;
   const char *verb, *label, *markdown;
   size_t markdown_length;
-  int success;
+  int success, failure;
 };
 static int same(const char *a, const char *b) {
   return a != NULL && strcmp(a, b) == 0;
@@ -65,6 +65,23 @@ int cai_cli_tool_result_open(const cai_agent_runtime_event *e,
   const char *op;
   int recognized = 0;
   *out = NULL;
+  if (e->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED &&
+      e->tool_action == CAI_AGENT_TOOL_ACTION_PATCH) {
+    r = calloc(1U, sizeof(*r));
+    if (r == NULL)
+      return cai_cli_error(error, CAI_ERR_NOMEM, "prepare patch failure");
+    r->verb = "Failed";
+    r->label = e->tool_name != NULL ? e->tool_name : "apply_patch";
+    r->failure = 1;
+    r->markdown = e->data != NULL && e->data_length != 0U
+                      ? e->data
+                      : "Patch could not be applied; no details provided.";
+    r->markdown_length = e->data != NULL && e->data_length != 0U
+                             ? e->data_length
+                             : strlen(r->markdown);
+    *out = r;
+    return CAI_OK;
+  }
   if (e->type != CAI_AGENT_EVENT_TOOL_CALL_COMPLETED ||
       e->tool_action != CAI_AGENT_TOOL_ACTION_EXTERNAL || e->data == NULL ||
       (!same(e->tool_name, "set_reasoning") &&
@@ -158,25 +175,81 @@ int cai_cli_tool_result_heading(cai_cli_tool_result *r,
 
 /* Escape metadata as text even inside Markdown tables. Description Markdown
  * remains in /todo see; tool receipts are deliberately short summaries. */
-static int cell(int (*write)(void *, const char *, size_t), void *context,
-                const char *text) {
+static int literal(int (*write)(void *, const char *, size_t), void *context,
+                   const char *text, size_t length, int escape) {
   const unsigned char *p = (const unsigned char *)(text != NULL ? text : "");
-  for (; *p != '\0'; p++) {
+  const unsigned char *end = p + length;
+  for (; p < end; p++) {
     if (*p < 32U || *p == 127U) {
       if (write(context, " ", 1U) != 0)
         return -1;
-    } else if (*p == 0xc2U && p[1] >= 0x80U && p[1] <= 0x9fU) {
+    } else if (*p == 0xc2U && p + 1U < end && p[1] >= 0x80U && p[1] <= 0x9fU) {
       if (write(context, " ", 1U) != 0)
         return -1;
       p++;
     } else {
-      if (strchr("\\|`*_[]<>!#~", *p) != NULL && write(context, "\\", 1U) != 0)
+      if (escape && strchr("\\|`*_[]<>!#~", *p) != NULL &&
+          write(context, "\\", 1U) != 0)
         return -1;
       if (write(context, (const char *)p, 1U) != 0)
         return -1;
     }
   }
   return 0;
+}
+static int cell(int (*write)(void *, const char *, size_t), void *context,
+                const char *text) {
+  return literal(write, context, text, text != NULL ? strlen(text) : 0U, 1);
+}
+
+/* Quote diagnostics as prose with literal expected/actual code spans. Source
+ * whitespace stays visible and excerpts cannot become Markdown markup.
+ * libmdf owns wrapping/theme; logs/export retain the original event. */
+static int failure(int (*write)(void *, const char *, size_t), void *context,
+                   const char *text, size_t length) {
+  size_t start = 0U, end, i, label, run, fence;
+  while (start < length) {
+    for (end = start; end < length && text[end] != '\n'; end++) {
+    }
+    label = end - start >= 9U && memcmp(text + start, "Expected:", 9U) == 0 ? 9U
+            : end - start >= 7U && memcmp(text + start, "Actual:", 7U) == 0 ? 7U
+            : end - start >= 23U &&
+                    memcmp(text + start, "Expected starting line:", 23U) == 0
+                ? 23U
+                : 0U;
+    if (write(context, "> ", 2U) != 0)
+      return -1;
+    if (label != 0U) {
+      if (write(context, text + start, label) != 0 ||
+          write(context, " ", 1U) != 0)
+        return -1;
+      start += label;
+      while (start < end && (text[start] == ' ' || text[start] == '\t'))
+        start++;
+      run = 0U;
+      fence = 1U;
+      for (i = start; i < end; i++) {
+        run = text[i] == '`' ? run + 1U : 0U;
+        if (run >= fence)
+          fence = run + 1U;
+      }
+      for (i = 0U; i < fence; i++)
+        if (write(context, "`", 1U) != 0)
+          return -1;
+      if (write(context, " ", 1U) != 0 ||
+          literal(write, context, text + start, end - start, 0) != 0 ||
+          write(context, " ", 1U) != 0)
+        return -1;
+      for (i = 0U; i < fence; i++)
+        if (write(context, "`", 1U) != 0)
+          return -1;
+    } else if (literal(write, context, text + start, end - start, 1) != 0)
+      return -1;
+    if (write(context, "  \n", 3U) != 0)
+      return -1;
+    start = end + 1U;
+  }
+  return write(context, "\n", 1U);
 }
 #define WRITE(s)                                                               \
   do {                                                                         \
@@ -194,6 +267,11 @@ int cai_cli_tool_result_write(cai_cli_tool_result *r,
   result_row *rows;
   size_t i, count;
   int boards;
+  if (r->failure) {
+    if (failure(write, context, r->markdown, r->markdown_length) != 0)
+      goto failed;
+    return CAI_OK;
+  }
   if (r->markdown != NULL) {
     if (write(context, r->markdown, r->markdown_length) != 0)
       goto failed;

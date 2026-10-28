@@ -148,6 +148,35 @@ int main(void) {
                  CAI_AGENT_EVENT_TOOL_CALL_COMPLETED, "ok"));
   assert(!format(&c, "set_reasoning", CAI_AGENT_TOOL_ACTION_EXTERNAL,
                  CAI_AGENT_EVENT_TOOL_CALL_FAILED, "failure detail"));
+  memset(&c, 0, sizeof(c));
+  assert(format(&c, "apply_patch", CAI_AGENT_TOOL_ACTION_PATCH,
+                CAI_AGENT_EVENT_TOOL_CALL_FAILED,
+                "Patch context does not match in \"file.c\" (hunk 2).\n"
+                "Expected: \"int    x;\"\nActual:   \"int  x;\""));
+  assert(strstr(c.text, "\033[91m*\033[0m") && strstr(c.text, "Failed"));
+  assert(strstr(c.text, "> Patch context"));
+  assert(strstr(
+      c.text, "\n> Expected: ` \"int    x;\" `  \n> Actual: ` \"int  x;\" `"));
+  memset(&c, 0, sizeof(c));
+  assert(format(&c, "apply_patch", CAI_AGENT_TOOL_ACTION_PATCH,
+                CAI_AGENT_EVENT_TOOL_CALL_FAILED,
+                "head\n```\n**source** [link](url)\033\302\233\nend"));
+  assert(strstr(
+      c.text, "> head  \n> \\`\\`\\`  \n> \\*\\*source\\*\\* \\[link\\](url)"));
+  assert(strstr(c.text, "\n> end  \n\n"));
+  assert(!strstr(c.text, "\033\302\233") && !strstr(c.text, "\302\233"));
+  memset(&c, 0, sizeof(c));
+  assert(format(&c, "apply_patch", CAI_AGENT_TOOL_ACTION_PATCH,
+                CAI_AGENT_EVENT_TOOL_CALL_FAILED, NULL));
+  assert(strstr(c.text, "no details provided"));
+  memset(&c, 0, sizeof(c));
+  assert(format(&c, "apply_patch", CAI_AGENT_TOOL_ACTION_PATCH,
+                CAI_AGENT_EVENT_TOOL_CALL_FAILED, ""));
+  assert(strstr(c.text, "no details provided"));
+  memset(&c, 0, sizeof(c));
+  c.fail = 1;
+  assert(format(&c, "apply_patch", CAI_AGENT_TOOL_ACTION_PATCH,
+                CAI_AGENT_EVENT_TOOL_CALL_FAILED, "failure detail"));
   c.fail = 1;
   assert(format(&c, "agent_message", CAI_AGENT_TOOL_ACTION_EXTERNAL,
                 CAI_AGENT_EVENT_TOOL_CALL_COMPLETED,
@@ -162,6 +191,19 @@ int main(void) {
     event.tool_name = "todo_kanban";
     event.data = "{\"ok\":true,\"operation\":\"add_item\",\"code\":\"ok\","
                  "\"message\":\"item added\"}";
+    event.data_length = strlen(event.data);
+    cai_error_init(&error);
+    assert(cai_cli_tool_result_open(&event, &prepared, &error) == CAI_OK &&
+           prepared != NULL);
+    assert(cai_cli_tool_result_write(prepared, write_text, &c, &error) ==
+           CAI_ERR_TRANSPORT);
+    cai_cli_tool_result_close(prepared);
+    cai_error_cleanup(&error);
+    prepared = NULL;
+    event.type = CAI_AGENT_EVENT_TOOL_CALL_FAILED;
+    event.tool_action = CAI_AGENT_TOOL_ACTION_PATCH;
+    event.tool_name = "apply_patch";
+    event.data = "Cannot find the requested context.";
     event.data_length = strlen(event.data);
     cai_error_init(&error);
     assert(cai_cli_tool_result_open(&event, &prepared, &error) == CAI_OK &&

@@ -17,7 +17,7 @@ terminal_start -N
 prompt 'check reasoning-to-tool boundary' 'AFTER TOOL FAILURE'
 sed -E $'s/\033\[[0-?]*[ -/]*[@-~]//g' "$term/feed" >"$root/failed-tool"
 grep -q '^\* Failed create_goal' "$root/failed-tool"
-grep -q '^\* WARN:' "$root/failed-tool"
+absent "$root/failed-tool" '* WARN:'
 if grep -Eq '^.*[>│].*\* (Failed|WARN:)' "$root/failed-tool"; then fail 'tool output retained a reasoning quote'; fi
 terminal_close
 plan '{"plan":[{"reasoning_parts":[["**Planning full ANSI Tetris implementation**"],["**Confirming ","build and source setup**"]],"pause":true,"text":"PARTS DONE"}]}'
