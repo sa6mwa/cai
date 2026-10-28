@@ -11,6 +11,7 @@ typedef struct capture {
 } capture;
 static int write_text(void *context, const char *bytes, size_t count) {
   capture *c = context;
+  assert(count != 0U);
   if (c->fail)
     return -1;
   assert(count < sizeof(c->text) - c->length);
@@ -76,9 +77,44 @@ static int result(capture *c, const char *tool, const char *body) {
   return format(c, tool, CAI_AGENT_TOOL_ACTION_EXTERNAL,
                 CAI_AGENT_EVENT_TOOL_CALL_COMPLETED, body);
 }
+static void streamed_text(void) {
+  static const char *const input[] = {"## Header\n\n**body**\n",
+                                      "{\"one\":1,\n\"two\":2}\n",
+                                      "bad **line**\nnext\n"};
+  static const char *const expected[] = {"## Header\n\n**body**\n\n",
+                                         "    {\"one\":1,\n    \"two\":2}\n\n",
+                                         ">     bad **line**\n>     next\n\n"};
+  capture c;
+  cai_cli_tool_text state;
+  cai_error error;
+  size_t i, step, offset, count, length;
+  cai_error_init(&error);
+  for (i = 0U; i < 3U; i++) {
+    length = strlen(input[i]);
+    for (step = 1U; step <= 7U; step++) {
+      memset(&c, 0, sizeof(c));
+      memset(&state, 0, sizeof(state));
+      for (offset = 0U; offset < length; offset += count) {
+        count = length - offset < step ? length - offset : step;
+        assert(cai_cli_tool_text_write(&state, input[i] + offset, count,
+                                       offset + count == length, i == 2U,
+                                       write_text, &c, &error) == CAI_OK);
+        assert(c.length != 0U); /* Writes before the payload is complete. */
+      }
+      assert(strcmp(c.text, expected[i]) == 0);
+    }
+  }
+  memset(&c, 0, sizeof(c));
+  memset(&state, 0, sizeof(state));
+  c.fail = 1;
+  assert(cai_cli_tool_text_write(&state, "body", 4U, 1, 0, write_text, &c,
+                                 &error) == CAI_ERR_TRANSPORT);
+  cai_error_cleanup(&error);
+}
 int main(void) {
   capture c;
   size_t i;
+  int action;
   static const char *invalid[] = {
       NULL,
       "",
@@ -91,6 +127,20 @@ int main(void) {
       "{\"status\":\"delivered\",\"recipient\":\"q\"} trailing"};
   assert(!result(&c, "set_reasoning", "ok"));
   assert(!result(&c, "set_reasoning", "not ok"));
+  streamed_text();
+  for (action = CAI_AGENT_TOOL_ACTION_NONE;
+       action <= CAI_AGENT_TOOL_ACTION_CHROME; action++) {
+    memset(&c, 0, sizeof(c));
+    if (action == CAI_AGENT_TOOL_ACTION_EXECUTE ||
+        action == CAI_AGENT_TOOL_ACTION_WRITE_STDIN)
+      assert(!format(&c, "fixture", action, CAI_AGENT_EVENT_TOOL_CALL_FAILED,
+                     "literal **failure**"));
+    else {
+      assert(format(&c, "fixture", action, CAI_AGENT_EVENT_TOOL_CALL_FAILED,
+                    "literal **failure**"));
+      assert(strstr(c.text, ">     literal **failure**"));
+    }
+  }
   assert(result(&c, "agent_message",
                 "{\"status\":\"delivered\",\"recipient\":\"cai.y\",\"message_"
                 "id\":\"id\"}"));
@@ -134,7 +184,8 @@ int main(void) {
   assert(strstr(c.text, "\033[91m*\033[0m") &&
          strstr(c.text, "Kanban declined"));
   assert(strstr(c.text, "Limit exceeded"));
-  assert(!result(&c, "todo_kanban", "{\"operation\":\"list_board\"}"));
+  assert(result(&c, "todo_kanban", "{\"operation\":\"list_board\"}"));
+  assert(strstr(c.text, "    {\"operation\":\"list_board\"}"));
   assert(result(&c, "searxng_search",
                 "{\"query\":\"query\",\"title\":\"Title\",\"url\":\"https://"
                 "example.test\",\"snippet\":\"Result snippet\"}"));
@@ -142,29 +193,53 @@ int main(void) {
   assert(result(&c, "reverse_geocode", "{\"label\":\"Gothenburg\"}"));
   assert(strstr(c.text, "Located ") && strstr(c.text, "Gothenburg"));
   for (i = 0U; i < sizeof(invalid) / sizeof(invalid[0]); i++)
-    assert(!result(&c, "agent_message", invalid[i]));
-  assert(!result(&c, "custom_tool", "ok"));
+    assert(result(&c, "agent_message", invalid[i]));
+  assert(result(&c, "custom_tool", "## Result\n\n**Useful details**"));
+  assert(strstr(c.text, "## Result\n\n**Useful details**"));
+  assert(result(&c, "custom_tool", "invalid \340\200\200 text"));
+  assert(strstr(c.text, "invalid ??? text"));
   memset(&c, 0, sizeof(c));
-  assert(!format(&c, "set_reasoning", CAI_AGENT_TOOL_ACTION_MCP,
-                 CAI_AGENT_EVENT_TOOL_CALL_COMPLETED, "ok"));
-  assert(!format(&c, "set_reasoning", CAI_AGENT_TOOL_ACTION_EXTERNAL,
-                 CAI_AGENT_EVENT_TOOL_CALL_FAILED, "failure detail"));
+  assert(format(&c, "set_reasoning", CAI_AGENT_TOOL_ACTION_MCP,
+                CAI_AGENT_EVENT_TOOL_CALL_COMPLETED, "ok"));
+  assert(format(&c, "set_reasoning", CAI_AGENT_TOOL_ACTION_EXTERNAL,
+                CAI_AGENT_EVENT_TOOL_CALL_FAILED, "failure detail"));
+  assert(strstr(c.text, ">     failure detail"));
+  memset(&c, 0, sizeof(c));
+  assert(format(&c, "run_review", CAI_AGENT_TOOL_ACTION_SUBAGENT,
+                CAI_AGENT_EVENT_TOOL_CALL_FAILED, "pouch lease already held"));
+  assert(strstr(c.text, ">     pouch lease already held"));
+  memset(&c, 0, sizeof(c));
+  assert(format(&c, "mcp_server_tool", CAI_AGENT_TOOL_ACTION_MCP,
+                CAI_AGENT_EVENT_TOOL_CALL_COMPLETED,
+                "{\"isError\":false,\"content\":[{\"type\":\"text\","
+                "\"text\":\"## Server result\\n\\n**details**\"}]}"));
+  assert(strstr(c.text, "## Server result\n\n**details**"));
+  assert(!strstr(c.text, "\"content\""));
+  memset(&c, 0, sizeof(c));
+  assert(format(&c, "mcp_server_tool", CAI_AGENT_TOOL_ACTION_MCP,
+                CAI_AGENT_EVENT_TOOL_CALL_COMPLETED,
+                "{\"isError\":true,\"content\":[{\"type\":\"text\","
+                "\"text\":\"bad **literal** request\"}]}"));
+  assert(strstr(c.text, "\033[91m*\033[0m") && strstr(c.text, "MCP failed"));
+  assert(strstr(c.text, ">     bad **literal** request"));
+  memset(&c, 0, sizeof(c));
+  assert(!format(&c, "exec_command", CAI_AGENT_TOOL_ACTION_EXECUTE,
+                 CAI_AGENT_EVENT_TOOL_CALL_FAILED, "command failure"));
   memset(&c, 0, sizeof(c));
   assert(format(&c, "apply_patch", CAI_AGENT_TOOL_ACTION_PATCH,
                 CAI_AGENT_EVENT_TOOL_CALL_FAILED,
                 "Patch context does not match in \"file.c\" (hunk 2).\n"
                 "Expected: \"int    x;\"\nActual:   \"int  x;\""));
   assert(strstr(c.text, "\033[91m*\033[0m") && strstr(c.text, "Failed"));
-  assert(strstr(c.text, "> Patch context"));
+  assert(strstr(c.text, ">     Patch context"));
   assert(strstr(
-      c.text, "\n> Expected: ` \"int    x;\" `  \n> Actual: ` \"int  x;\" `"));
+      c.text, "\n>     Expected: \"int    x;\"\n>     Actual:   \"int  x;\""));
   memset(&c, 0, sizeof(c));
   assert(format(&c, "apply_patch", CAI_AGENT_TOOL_ACTION_PATCH,
                 CAI_AGENT_EVENT_TOOL_CALL_FAILED,
                 "head\n```\n**source** [link](url)\033\302\233\nend"));
-  assert(strstr(
-      c.text, "> head  \n> \\`\\`\\`  \n> \\*\\*source\\*\\* \\[link\\](url)"));
-  assert(strstr(c.text, "\n> end  \n\n"));
+  assert(strstr(c.text, ">     head\n>     ```\n>     **source** [link](url)"));
+  assert(strstr(c.text, "\n>     end\n\n"));
   assert(!strstr(c.text, "\033\302\233") && !strstr(c.text, "\302\233"));
   memset(&c, 0, sizeof(c));
   assert(format(&c, "apply_patch", CAI_AGENT_TOOL_ACTION_PATCH,

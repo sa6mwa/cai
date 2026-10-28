@@ -5,20 +5,22 @@
 #include <string.h>
 
 typedef struct result_row {
-  char *id, *key, *name, *title, *status;
+  char *id, *key, *name, *title, *status, *type, *text;
 } result_row;
 static const lonejson_field row_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(result_row, id, "id"),
     LONEJSON_FIELD_STRING_ALLOC(result_row, key, "key"),
     LONEJSON_FIELD_STRING_ALLOC(result_row, name, "name"),
     LONEJSON_FIELD_STRING_ALLOC(result_row, title, "title"),
-    LONEJSON_FIELD_STRING_ALLOC(result_row, status, "status")};
+    LONEJSON_FIELD_STRING_ALLOC(result_row, status, "status"),
+    LONEJSON_FIELD_STRING_ALLOC(result_row, type, "type"),
+    LONEJSON_FIELD_STRING_ALLOC(result_row, text, "text")};
 LONEJSON_MAP_DEFINE(row_map, result_row, row_fields);
 typedef struct result_doc {
   char *operation, *code, *message, *status, *recipient;
   char *board_name, *item_id, *title, *query, *url, *snippet, *label;
-  int ok, has_ok, truncated;
-  lonejson_object_array items, boards;
+  int ok, has_ok, truncated, is_error;
+  lonejson_object_array items, boards, content;
 } result_doc;
 static const lonejson_field result_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(result_doc, operation, "operation"),
@@ -35,6 +37,9 @@ static const lonejson_field result_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(result_doc, label, "label"),
     LONEJSON_FIELD_BOOL_PRESENT(result_doc, ok, has_ok, "ok"),
     LONEJSON_FIELD_BOOL(result_doc, truncated, "truncated"),
+    LONEJSON_FIELD_BOOL(result_doc, is_error, "isError"),
+    LONEJSON_FIELD_OBJECT_ARRAY(result_doc, content, "content", result_row,
+                                &row_map, LONEJSON_OVERFLOW_FAIL),
     LONEJSON_FIELD_OBJECT_ARRAY(result_doc, items, "items", result_row,
                                 &row_map, LONEJSON_OVERFLOW_FAIL),
     LONEJSON_FIELD_OBJECT_ARRAY(result_doc, boards, "boards", result_row,
@@ -45,7 +50,7 @@ struct cai_cli_tool_result {
   result_doc doc;
   const char *verb, *label, *markdown;
   size_t markdown_length;
-  int success, failure;
+  int success, failure, generic, mcp;
 };
 static int same(const char *a, const char *b) {
   return a != NULL && strcmp(a, b) == 0;
@@ -66,16 +71,18 @@ int cai_cli_tool_result_open(const cai_agent_runtime_event *e,
   int recognized = 0;
   *out = NULL;
   if (e->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED &&
-      e->tool_action == CAI_AGENT_TOOL_ACTION_PATCH) {
+      e->tool_action != CAI_AGENT_TOOL_ACTION_EXECUTE &&
+      e->tool_action != CAI_AGENT_TOOL_ACTION_WRITE_STDIN) {
     r = calloc(1U, sizeof(*r));
     if (r == NULL)
-      return cai_cli_error(error, CAI_ERR_NOMEM, "prepare patch failure");
-    r->verb = "Failed";
-    r->label = e->tool_name != NULL ? e->tool_name : "apply_patch";
+      return cai_cli_error(error, CAI_ERR_NOMEM, "prepare tool failure");
+    r->verb =
+        e->tool_action == CAI_AGENT_TOOL_ACTION_MCP ? "MCP failed" : "Failed";
+    r->label = e->tool_name != NULL ? e->tool_name : "tool";
     r->failure = 1;
     r->markdown = e->data != NULL && e->data_length != 0U
                       ? e->data
-                      : "Patch could not be applied; no details provided.";
+                      : "Tool failed; no details provided.";
     r->markdown_length = e->data != NULL && e->data_length != 0U
                              ? e->data_length
                              : strlen(r->markdown);
@@ -83,17 +90,22 @@ int cai_cli_tool_result_open(const cai_agent_runtime_event *e,
     return CAI_OK;
   }
   if (e->type != CAI_AGENT_EVENT_TOOL_CALL_COMPLETED ||
-      e->tool_action != CAI_AGENT_TOOL_ACTION_EXTERNAL || e->data == NULL ||
-      (!same(e->tool_name, "run_review_and_fix") &&
-       !same(e->tool_name, "agent_message") &&
-       !same(e->tool_name, "todo_kanban") &&
-       !same(e->tool_name, "searxng_search") &&
-       !same(e->tool_name, "reverse_geocode")))
+      (e->tool_action != CAI_AGENT_TOOL_ACTION_EXTERNAL &&
+       e->tool_action != CAI_AGENT_TOOL_ACTION_MCP) ||
+      (e->tool_action == CAI_AGENT_TOOL_ACTION_EXTERNAL &&
+       same(e->tool_name, "set_reasoning")))
     return CAI_OK;
   r = calloc(1U, sizeof(*r));
   if (r == NULL)
     return cai_cli_error(error, CAI_ERR_NOMEM, "prepare tool presentation");
   r->success = 1;
+  if (e->data == NULL || (e->tool_action != CAI_AGENT_TOOL_ACTION_MCP &&
+                          !same(e->tool_name, "run_review_and_fix") &&
+                          !same(e->tool_name, "agent_message") &&
+                          !same(e->tool_name, "todo_kanban") &&
+                          !same(e->tool_name, "searxng_search") &&
+                          !same(e->tool_name, "reverse_geocode")))
+    goto unrecognized;
   if (same(e->tool_name, "agent_message") &&
       e->data_length >= sizeof(queue_heading) - 1U &&
       memcmp(e->data, queue_heading, sizeof(queue_heading) - 1U) == 0) {
@@ -114,7 +126,14 @@ int cai_cli_tool_result_open(const cai_agent_runtime_event *e,
     lonejson_free(json);
     if (!recognized)
       goto unrecognized;
-    if (same(e->tool_name, "run_review_and_fix")) {
+    if (e->tool_action == CAI_AGENT_TOOL_ACTION_MCP) {
+      if (r->doc.content.count == 0U && !r->doc.is_error)
+        goto unrecognized;
+      r->mcp = 1;
+      r->success = !r->doc.is_error;
+      r->verb = r->success ? "MCP" : "MCP failed";
+      r->label = e->tool_name != NULL ? e->tool_name : "tool";
+    } else if (same(e->tool_name, "run_review_and_fix")) {
       if (!same(r->doc.status, "queued"))
         goto unrecognized;
       r->verb = "Queued";
@@ -160,7 +179,12 @@ int cai_cli_tool_result_open(const cai_agent_runtime_event *e,
   *out = r;
   return CAI_OK;
 unrecognized:
-  cai_cli_tool_result_close(r);
+  r->verb = e->tool_action == CAI_AGENT_TOOL_ACTION_MCP ? "MCP" : "Completed";
+  r->label = e->tool_name != NULL ? e->tool_name : "tool";
+  r->generic = 1;
+  r->markdown = e->data;
+  r->markdown_length = e->data_length;
+  *out = r;
   return CAI_OK;
 }
 
@@ -178,78 +202,100 @@ static int literal(int (*write)(void *, const char *, size_t), void *context,
                    const char *text, size_t length, int escape) {
   const unsigned char *p = (const unsigned char *)(text != NULL ? text : "");
   const unsigned char *end = p + length;
+  char buffer[1024];
+  size_t used = 0U, need, i;
   for (; p < end; p++) {
-    if (*p < 32U || *p == 127U) {
-      if (write(context, " ", 1U) != 0)
+    if (used > sizeof(buffer) - 8U) {
+      if (write(context, buffer, used) != 0)
         return -1;
+      used = 0U;
+    }
+    if ((*p == '\n' || *p == '\t') && escape < 0) {
+      buffer[used++] = (char)*p;
+    } else if (*p < 32U || *p == 127U) {
+      buffer[used++] = ' ';
     } else if (*p == 0xc2U && p + 1U < end && p[1] >= 0x80U && p[1] <= 0x9fU) {
-      if (write(context, " ", 1U) != 0)
-        return -1;
+      buffer[used++] = ' ';
       p++;
+    } else if (*p >= 128U) {
+      need = *p >= 0xc2U && *p < 0xe0U    ? 2U
+             : *p >= 0xe0U && *p < 0xf0U  ? 3U
+             : *p >= 0xf0U && *p <= 0xf4U ? 4U
+                                          : 0U;
+      for (i = 1U; need != 0U && i < need; i++)
+        if (i >= (size_t)(end - p) || (p[i] & 0xc0U) != 0x80U)
+          need = 0U;
+      if (need != 0U &&
+          ((*p == 0xe0U && p[1] < 0xa0U) || (*p == 0xedU && p[1] >= 0xa0U) ||
+           (*p == 0xf0U && p[1] < 0x90U) || (*p == 0xf4U && p[1] >= 0x90U)))
+        need = 0U;
+      if (need == 0U)
+        buffer[used++] = '?';
+      else {
+        memcpy(buffer + used, p, need);
+        used += need;
+        p += need - 1U;
+      }
     } else {
-      if (escape && strchr("\\|`*_[]<>!#~", *p) != NULL &&
-          write(context, "\\", 1U) != 0)
-        return -1;
-      if (write(context, (const char *)p, 1U) != 0)
-        return -1;
+      if (escape > 0 && strchr("\\|`*_[]<>!#~", *p) != NULL)
+        buffer[used++] = '\\';
+      buffer[used++] = (char)*p;
     }
   }
-  return 0;
+  return used != 0U ? write(context, buffer, used) : 0;
 }
 static int cell(int (*write)(void *, const char *, size_t), void *context,
                 const char *text) {
   return literal(write, context, text, text != NULL ? strlen(text) : 0U, 1);
 }
-
-/* Quote diagnostics as prose with literal expected/actual code spans. Source
- * whitespace stays visible and excerpts cannot become Markdown markup.
- * libmdf owns wrapping/theme; logs/export retain the original event. */
-static int failure(int (*write)(void *, const char *, size_t), void *context,
-                   const char *text, size_t length) {
-  size_t start = 0U, end, i, label, run, fence;
+int cai_cli_tool_text_write(cai_cli_tool_text *state, const char *text,
+                            size_t length, int final, int failed,
+                            int (*write)(void *, const char *, size_t),
+                            void *context, cai_error *error) {
+  size_t start = 0U, end;
+  if (!state->started) {
+    size_t first = 0U;
+    while (first < length && strchr(" \r\n\t", text[first]) != NULL)
+      first++;
+    state->format =
+        failed                                                         ? 1
+        : first < length && (text[first] == '{' || text[first] == '[') ? 2
+                                                                       : 0;
+    state->started = state->line_start = 1;
+  }
   while (start < length) {
+    if (state->line_start) {
+      const char *prefix = state->format == 1   ? ">     "
+                           : state->format == 2 ? "    "
+                                                : "";
+      if (prefix[0] != '\0' && write(context, prefix, strlen(prefix)) != 0)
+        goto failed;
+      state->line_start = 0;
+    }
     for (end = start; end < length && text[end] != '\n'; end++) {
     }
-    label = end - start >= 9U && memcmp(text + start, "Expected:", 9U) == 0 ? 9U
-            : end - start >= 7U && memcmp(text + start, "Actual:", 7U) == 0 ? 7U
-            : end - start >= 23U &&
-                    memcmp(text + start, "Expected starting line:", 23U) == 0
-                ? 23U
-                : 0U;
-    if (write(context, "> ", 2U) != 0)
-      return -1;
-    if (label != 0U) {
-      if (write(context, text + start, label) != 0 ||
-          write(context, " ", 1U) != 0)
-        return -1;
-      start += label;
-      while (start < end && (text[start] == ' ' || text[start] == '\t'))
-        start++;
-      run = 0U;
-      fence = 1U;
-      for (i = start; i < end; i++) {
-        run = text[i] == '`' ? run + 1U : 0U;
-        if (run >= fence)
-          fence = run + 1U;
-      }
-      for (i = 0U; i < fence; i++)
-        if (write(context, "`", 1U) != 0)
-          return -1;
-      if (write(context, " ", 1U) != 0 ||
-          literal(write, context, text + start, end - start, 0) != 0 ||
-          write(context, " ", 1U) != 0)
-        return -1;
-      for (i = 0U; i < fence; i++)
-        if (write(context, "`", 1U) != 0)
-          return -1;
-    } else if (literal(write, context, text + start, end - start, 1) != 0)
-      return -1;
-    if (write(context, "  \n", 3U) != 0)
-      return -1;
-    start = end + 1U;
+    if (literal(write, context, text + start, end - start, -1) != 0)
+      goto failed;
+    if (end < length) {
+      const char *newline = "\n";
+      if (write(context, newline, strlen(newline)) != 0)
+        goto failed;
+      state->line_start = 1;
+      end++;
+    }
+    start = end;
   }
-  return write(context, "\n", 1U);
+  if (final) {
+    if (!state->line_start && write(context, "\n", 1U) != 0)
+      goto failed;
+    if (write(context, "\n", 1U) != 0)
+      goto failed;
+  }
+  return CAI_OK;
+failed:
+  return cai_cli_error(error, CAI_ERR_TRANSPORT, "render tool result Markdown");
 }
+
 #define WRITE(s)                                                               \
   do {                                                                         \
     if (write(context, (s), strlen(s)) != 0)                                   \
@@ -266,10 +312,29 @@ int cai_cli_tool_result_write(cai_cli_tool_result *r,
   result_row *rows;
   size_t i, count;
   int boards;
-  if (r->failure) {
-    if (failure(write, context, r->markdown, r->markdown_length) != 0)
-      goto failed;
+  if (r->mcp) {
+    rows = r->doc.content.items;
+    for (i = 0U; i < r->doc.content.count; i++) {
+      if (rows[i].text != NULL) {
+        cai_cli_tool_text text;
+        memset(&text, 0, sizeof(text));
+        if (cai_cli_tool_text_write(&text, rows[i].text, strlen(rows[i].text),
+                                    1, !r->success, write, context,
+                                    error) != CAI_OK)
+          return CAI_ERR_TRANSPORT;
+      } else {
+        WRITE("Non-text MCP content: ");
+        CELL(rows[i].type != NULL ? rows[i].type : "unknown");
+        WRITE("\n\n");
+      }
+    }
     return CAI_OK;
+  }
+  if (r->generic || r->failure) {
+    cai_cli_tool_text text;
+    memset(&text, 0, sizeof(text));
+    return cai_cli_tool_text_write(&text, r->markdown, r->markdown_length, 1,
+                                   r->failure, write, context, error);
   }
   if (r->markdown != NULL) {
     if (write(context, r->markdown, r->markdown_length) != 0)

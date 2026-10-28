@@ -5,6 +5,28 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-064: libmdf corrupts escaped emphasis in literal Markdown text
+
+- **Status:** upstream issue; independently reproduced with one complete input
+  and no CAI/Softline involvement. Tool diagnostics now use quoted code, which
+  preserves literal text. Ordinary escaped metadata can still be affected.
+- **Evidence:** local ignored report
+  `stash/libmdf-0.17.0-escaped-emphasis.md`; the live MCP diagnostic integration
+  test verifies literal punctuation in the chosen diagnostic presentation.
+
+## BUG-063: Non-command tool results bypass the Markdown feed
+
+- **Status:** fixed.
+- **Resolution:** all non-command failures share the literal Markdown diagnostic
+  presenter. Unknown external/MCP successes use a Markdown/code fallback;
+  standard MCP text content is unwrapped and themed, including error results.
+  Commands retain their raw preview. Replay streams fallback bodies through the
+  same presenter without collecting complete values.
+- **Verification:** native checks cover every non-command failure category,
+  malformed/unknown results, MCP error styling, literal diagnostics, small-chunk
+  Markdown/JSON rendering and sink failures. A mock-provider TUI check verifies
+  live and replayed file-tool failures and rich MCP success/failure content.
+
 ## BUG-062: Synchronous review startup overflows the musl worker stack
 
 - **Status:** review startup path fixed; upstream scanner stack usage remains.

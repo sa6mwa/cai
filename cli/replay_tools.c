@@ -27,6 +27,7 @@ typedef struct replay_call {
   int parsing, invalid, output, rendering, opened, patch, has_preview,
       bad_output;
   int replayed;
+  cai_cli_tool_text markdown;
   lonejson_curl_parse parser;
   replay_value value;
   lonejson_path_value_visitor visitor;
@@ -513,6 +514,28 @@ int cai_cli_replay_tools_render(cai_cli_replay_tools *r,
     }
     if (rc != CAI_OK)
       return rc;
+  }
+  if (!command) {
+    if (!origin->opened) {
+      verb = same(record->kind, "tool.partial_output") ? "Partial result from"
+             : c->failed || c->is_error
+                 ? (c->action == CAI_AGENT_TOOL_ACTION_MCP ? "MCP failed"
+                                                           : "Failed")
+             : c->action == CAI_AGENT_TOOL_ACTION_MCP ? "MCP"
+                                                      : "Completed";
+      label = c->name;
+      rc = cai_tool_display_summary(display, &c->event, verb, label,
+                                    !c->failed && !c->is_error, error);
+      origin->opened = rc == CAI_OK;
+      memset(&origin->markdown, 0, sizeof(origin->markdown));
+    }
+    if (rc == CAI_OK)
+      rc = cai_cli_tool_text_write(
+          &origin->markdown, record->data, strlen(record->data), record->final,
+          c->failed || c->is_error, markdown, context, error);
+    if (record->final)
+      origin->opened = 0;
+    return rc;
   }
   if (record->offset == 0U && !origin->opened) {
     success = !c->failed && !c->is_error &&

@@ -1324,12 +1324,18 @@ Interactive tool activity uses bright green/red `*` receipts for success/failure
 with normal cyan activity verbs, bold bright cyan command/path details, and
 separate MCP and Chrome receipts.
 The heading color is independent of the green/red success/failure star.
+Non-command result bodies use the themed Markdown feed. Tool failures are
+wrapped literal blockquotes; known tools have concise receipts, MCP text content
+is rendered as Markdown, and unfamiliar JSON-looking results use code blocks.
+These presentation rules apply to replay too; model-visible results and journal
+payloads are unchanged. Command runners alone use raw terminal previews.
 Commands show their
 first five logical output lines by default. `/output` shows the current setting;
 `/output compact|full` changes it, and `--tool-output compact|full` selects the
 startup setting. Each tool call captures its mode when it starts: active calls
 and already displayed output stay unchanged. Full mode retains supplied
-command and MCP output and all patch context. Any tool-level output limit is
+command output and all patch context. Non-command Markdown follows its tool's
+response limits. Any tool-level output limit is
 still reported explicitly.
 Command previews preserve recognized ANSI SGR colors/styles and discard other
 terminal controls, including cursor movement and title/clipboard strings.

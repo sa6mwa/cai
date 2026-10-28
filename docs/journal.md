@@ -13,8 +13,11 @@ sink, including JSON escapes split between records. There is no additional
 collection scan, spool or per-tool thread. Completed command output is grouped
 across `exec_command`/`write_stdin` calls by source session, terminal and command
 identity; compact output keeps the normal preview limit for that whole command.
-Known small structured results use the live application presenter. Other result
-bodies flow through the bounded tool preview instead of disappearing.
+Known small structured results use the live application presenter. Other
+non-command results flow through the Markdown feed: diagnostics are literal
+blockquotes, JSON-looking bodies are code, and MCP text content is Markdown.
+Chunked fallback bodies retain only rendering state, never a complete payload.
+Command runners alone use the raw terminal preview.
 
 Successful patches additionally record `tool.patch_locations` and `tool.patch`
 execution fields from the confirmed live preview. These preserve context and
@@ -44,6 +47,12 @@ journal append, the append remains committed; dirty-index recovery streams commi
 headers to repair selection. A stale index watermark cannot suppress newer
 committed state. Pending events after the recovered watermark remain eligible
 for the existing input/control replay path.
+
+Internal review/subagent scopes have no workspace-latest index. Their journals
+and session metadata remain available by ID and in the parent's replay timeline;
+workspace auto-resume is only for ordinary conversation scopes. Child commit,
+publication and deletion therefore do not acquire a shared latest-index lease.
+An old crash-held child index lease can expire without blocking a new reviewer.
 
 The dependency-free `cai_agent_session_store` contract follows the same model.
 Its `commit` callback atomically appends an edit, and its load callbacks return

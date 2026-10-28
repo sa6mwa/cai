@@ -243,6 +243,27 @@ static void streaming_and_errors(void) {
                                      &handled, &f.error) == CAI_ERR_TRANSPORT);
   close_fixture(&f);
 }
+static void streamed_markdown(void) {
+  fixture f;
+  int phase;
+  open_fixture(&f, 0);
+  for (phase = 0; phase < 2; phase++) {
+    f.phase = phase;
+    FEED("s", "md", "custom_tool", "tool.arguments", "data",
+         "{\"path\":\"unrelated label\"}", 1U);
+    FEED("s", "md", "custom_tool", "tool.completed", NULL, "", 1U);
+    FEED("s", "md", "custom_tool", "tool.output", "data",
+         "## Report\n\n**details**\n", 1U);
+    FEED("s", "failure", "run_review", "tool.failed", "message",
+         "pouch lease already held", 1U);
+  }
+  assert(
+      strstr(f.text, "* Completed custom_tool\n## Report\n\n**details**\n\n"));
+  assert(!strstr(f.text, "unrelated label"));
+  assert(strstr(f.text,
+                "* Failed run_review\n>     pouch lease already held\n\n"));
+  close_fixture(&f);
+}
 static void large_output(void) {
   fixture f;
   cai_execution_record r;
@@ -311,6 +332,7 @@ int main(void) {
   commands(0, 4096U);
   native_tools();
   streaming_and_errors();
+  streamed_markdown();
   large_output();
   invalid_output();
   puts("replay tool presentation passed");

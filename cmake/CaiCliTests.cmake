@@ -291,6 +291,11 @@
       "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_auto_compact_status PROPERTIES
       LABELS "cli;local;offline" TIMEOUT 15)
+    add_test(NAME cai_cli_tool_markdown COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_tool_markdown_test.sh"
+      "$<TARGET_FILE:cai_cli_mock_fixture>")
+    set_tests_properties(cai_cli_tool_markdown PROPERTIES
+      LABELS "cli;local;offline" TIMEOUT 15)
     if(CAI_TARGET_ID MATCHES "-linux-gnu$")
       add_test(NAME cai_cli_review_stack COMMAND bash
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_review_stack_test.sh"

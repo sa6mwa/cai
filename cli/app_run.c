@@ -2224,7 +2224,7 @@ static int cli_replay_output_raw(cli_state *state,
       cai_execution_record_cleanup(&record);
       return rc;
     }
-    if (rc == CAI_OK &&
+    if (rc == CAI_OK && record.offset == 0U &&
         (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0))
       rc = CAI_ERR_TRANSPORT;
     if (rc == CAI_OK) {
@@ -2240,7 +2240,7 @@ static int cli_replay_output_raw(cli_state *state,
                                          state->tool_display, cli_tool_markdown,
                                          state, &handled, error);
       if (handled || rc != CAI_OK) {
-        if (rc == CAI_OK && cli_finish_response(state) != 0)
+        if (rc == CAI_OK && record.final && cli_finish_response(state) != 0)
           rc = CAI_ERR_TRANSPORT;
         cai_execution_record_cleanup(&record);
         return rc;

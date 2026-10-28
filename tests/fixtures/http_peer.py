@@ -211,7 +211,7 @@ class Peer(http.server.BaseHTTPRequestHandler):
                 result = dict(tools=spec['tools'])
         elif method == 'tools/call':
             time.sleep(spec.get('call_delay_ms', 0) / 1000)
-            result = dict(content=[{'type': 'text', 'text': 'MCP TOOL RESULT ' + json.dumps(request['params'])}])
+            result = spec.get('call_result', dict(content=[{'type': 'text', 'text': 'MCP TOOL RESULT ' + json.dumps(request['params'])}]))
         else:
             result = {}
         response = dict(jsonrpc='2.0', id=request.get('id'), result=result)

@@ -1025,7 +1025,7 @@ int main(void) {
     return 1;
   }
   if (strstr(output, "{\"ok\":true}\n\n  Answer after tool.\n") == NULL ||
-      strstr(output, "failed output\n\n  Answer after tool.\n") == NULL ||
+      strstr(output, "  > failed output\n\n  Answer after tool.\n") == NULL ||
       strstr(output, "already separated\n\n  Answer after tool.\n") == NULL ||
       strstr(output, "before reasoning\n\n  > Reasoning after tool\n") ==
           NULL ||

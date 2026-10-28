@@ -653,13 +653,17 @@ Whole-turn commands become Q and cannot run mid-turn, even with Alt-Enter.
 Select interactive tool previews: compact (default) or full.
 Compact previews show five command output lines and one surrounding patch
 context row, with a vertical ellipsis between separated changes.
-Full previews retain supplied command and MCP output and all patch context.
+Full previews retain supplied command output and all patch context.
+Non-command Markdown follows its tool's response limits.
 Tool output limits still apply. Non-interactive activity remains complete
 pslog output on stderr, independent of this preview setting.
 Command completion headings include elapsed whole seconds, for example
 "Ran for 1m3s", with a dimmer activity/duration and brighter command.
 Replay includes one completion heading and the saved output even for fast
 commands that omit their live completion row.
+Non-command tool bodies use the themed Markdown feed. Failures are literal
+blockquotes; MCP text content is Markdown, and generic JSON bodies are code.
+Model-visible tool results are unchanged.
 .TP
 .BR \-v , " " \-\-verbose
 Print runtime events; repeat for event sequence numbers.
