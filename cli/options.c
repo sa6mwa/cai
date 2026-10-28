@@ -56,6 +56,7 @@ void cai_cli_options_init(cai_cli_options *options) {
       "default";
   options->image_generation = 1;
   options->terminal = 1;
+  options->yield_time_ms = CAI_TERMINAL_DEFAULT_YIELD_TIME_MS;
   options->shell_context = 1;
   options->shell_context_max_lines = 5000U;
   options->shell_context_max_bytes = 4U * 1024U * 1024U;
@@ -188,8 +189,9 @@ static int cli_read_options(int argc, char *const *argv,
                                           "subagent-steering",
                                           "yolo",
                                           "capacity-retry",
-                                          "review-and-fix-tool"};
-      int *values[20];
+                                          "review-and-fix-tool",
+                                          "foreground"};
+      int *values[21];
       size_t k;
       int enabled = strncmp(flag, "--no-", 5U) != 0;
       const char *name = flag + (enabled ? 2U : 5U);
@@ -213,6 +215,7 @@ static int cli_read_options(int argc, char *const *argv,
       values[18] = &options->capacity_retry;
       values[17] = &options->yolo;
       values[19] = &options->review_and_fix_tool;
+      values[20] = &options->foreground;
       for (k = 0U; k < sizeof(names) / sizeof(names[0]); k++)
         if (strncmp(flag, "--", 2U) == 0 && strcmp(name, names[k]) == 0) {
           *values[k] = enabled;
@@ -401,6 +404,31 @@ static int cli_read_options(int argc, char *const *argv,
     }
     if (strcmp(flag, "--no-shell-context") == 0) {
       options->shell_context = 0;
+      continue;
+    }
+    if (strcmp(flag, "--background") == 0) {
+      if (options->foreground)
+        options->yield_time_ms = CAI_TERMINAL_DEFAULT_YIELD_TIME_MS;
+      options->foreground = 0;
+      continue;
+    }
+    if (strcmp(flag, "--yield-time-ms") == 0) {
+      char *end;
+      long interval;
+      if (++i >= argc || argv[i][0] < '0' || argv[i][0] > '9') {
+        cai_cli_option_error(options, "%s requires 0..30000 milliseconds",
+                             flag);
+        return -1;
+      }
+      errno = 0;
+      interval = strtol(argv[i], &end, 10);
+      if (errno != 0 || *end != '\0' || interval < 0L || interval > 30000L) {
+        cai_cli_option_error(options, "invalid value for %s", flag);
+        return -1;
+      }
+      options->foreground = interval == 0L;
+      options->yield_time_ms =
+          interval != 0L ? interval : CAI_TERMINAL_DEFAULT_YIELD_TIME_MS;
       continue;
     }
     if (strcmp(flag, "--shell-context") == 0) {

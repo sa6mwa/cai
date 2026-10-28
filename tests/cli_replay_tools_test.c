@@ -100,6 +100,15 @@ static void commands(int full, size_t step) {
          "{\"cmd\":\"printf 'hello'\"}", step);
     FEED("parent", "a", "exec_command", "tool.completed", NULL, "", step);
     FEED("parent", "a", "exec_command", "tool.output", "data", body, step);
+    FEED("parent", "busy", "exec_command", "tool.arguments", "data",
+         "{\"cmd\":\"must not run\"}", step);
+    FEED("parent", "busy", "exec_command", "tool.completed", NULL, "", step);
+    FEED(
+        "parent", "busy", "exec_command", "tool.output", "data",
+        "{\"status\":\"busy\",\"accepted\":false,\"session_id\":\"terminal-1\","
+        "\"command_id\":1,\"active_command\":\"printf "
+        "'hello'\",\"output\":\"\"}",
+        step);
     /* write_stdin recovers the originating command, even with a distinct
      * tool call ID. A child's identical call/terminal IDs cannot replace it. */
     FEED("child", "a", "exec_command", "tool.arguments", "data",
@@ -126,6 +135,9 @@ static void commands(int full, size_t step) {
   assert(!strstr(f.text, "Running"));
   assert(!strstr(f.text, "Tool completed"));
   assert(!strstr(f.text, "session_id"));
+  assert(strstr(f.text, "* Busy command not started\n"));
+  assert(strstr(f.text, "Active handle: `terminal-1`"));
+  assert(!strstr(f.text, "\"accepted\""));
   assert(!strstr(f.text, "hidden"));
   assert(!strchr(f.text, '\033'));
   if (full) {

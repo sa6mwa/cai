@@ -7,14 +7,21 @@ commit and verification evidence.
 
 ## BUG-066: Managed Git commands can wait in an interactive pager
 
-- **Status:** observed; terminal environment policy remains to be addressed.
+- **Status:** fixed.
 - **Evidence:** session `dbgtfervs68i52ohr8gg`, 2026-10-28 at 21:58 and 21:59:
   Git diff output enters a pager (alternate-screen controls and a `:` prompt).
   The command remains running, so another `exec_command` fails with
   `single terminal already has a running command`. The reviewer exits its
   pager using `write_stdin`; the parent later encounters the same behavior.
-- **Remaining investigation:** choose noninteractive pager defaults for managed
-  agent commands while preserving intentional interactive command behavior.
+- **Resolution:** managed commands force `PAGER`, `GIT_PAGER`, and `GH_PAGER` to
+  `cat`, including YOLO. Commands default to pipes and closed stdin; explicit
+  `tty=true` enables terminal interaction. User shell handoffs are unchanged.
+  A second command receives a structured busy receipt with the active handle;
+  its request is not started or queued, and it consumes no output.
+- **Verification:** native checks cover both descriptor modes, pager overrides,
+  fresh/stale handles, serialized interactions, completion-based waiting and
+  foreground policy. Both mock protocols cover live/replayed busy receipts,
+  command attribution, foreground progress, cancellation and recovery.
 
 ## BUG-065: Completed model-invoked reviews show no findings in the live feed
 

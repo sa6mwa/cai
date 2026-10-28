@@ -296,12 +296,25 @@
       "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_tool_markdown PROPERTIES
       LABELS "cli;local;offline" TIMEOUT 15)
+    foreach(_wait_protocol responses chat_completions)
+      foreach(_wait_scenario process foreground)
+        add_test(NAME cai_cli_command_${_wait_scenario}_${_wait_protocol}
+          COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_command_wait_test.sh"
+          "$<TARGET_FILE:cai_cli_mock_fixture>" "${_wait_protocol}"
+          "${_wait_scenario}")
+        set_tests_properties(cai_cli_command_${_wait_scenario}_${_wait_protocol}
+          PROPERTIES LABELS "cli;local;offline" TIMEOUT 15)
+      endforeach()
+    endforeach()
     if(CAI_TARGET_ID MATCHES "-linux-gnu$")
       add_test(NAME cai_cli_review_stack COMMAND bash
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_review_stack_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>")
       set_tests_properties(cai_cli_review_stack PROPERTIES
-        LABELS "cli;local;offline" TIMEOUT 10)
+        # Three application invocations share real encrypted storage. Keep the
+        # reopen/handoff sequence intact and allow for filesystem contention.
+        LABELS "cli;local;offline" TIMEOUT 20)
     endif()
     foreach(_review_fix_protocol responses chat_completions)
       add_test(NAME cai_cli_review_fix_tool_${_review_fix_protocol} COMMAND bash

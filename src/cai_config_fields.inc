@@ -315,6 +315,8 @@ F("terminal", "shell_path", STR, TERMINAL, shell_path, CAI_CONFIG_PATH, NULL,
   "Agent command shell; empty uses /bin/sh.")
 F("terminal", "default_yield_time_ms", LONG, TERMINAL, default_yield_time_ms, 0,
   NULL, "Initial exec wait; zero selects 10000 ms.")
+F("terminal", "foreground", BOOL, TERMINAL, foreground, 0, NULL,
+  "Wait for completion or cancellation; override model-requested yielding.")
 F("terminal", "max_yield_time_ms", LONG, TERMINAL, max_yield_time_ms, 0, NULL,
   "Maximum initial wait; zero selects 30000 ms.")
 F("terminal", "output_max_bytes", SIZE, TERMINAL, output_max_bytes, 0, NULL,

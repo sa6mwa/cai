@@ -3843,10 +3843,7 @@ static int test_terminal_race_policy(void *context, const char *command,
   }
   pthread_mutex_lock(&state->lock);
   state->arrivals++;
-  if (state->arrivals >= 2) {
-    state->released = 1;
-    pthread_cond_broadcast(&state->changed);
-  }
+  pthread_cond_broadcast(&state->changed);
   while (!state->released) {
     pthread_cond_wait(&state->changed, &state->lock);
   }
@@ -38401,12 +38398,36 @@ static void test_terminal_path(test_state *state) {
   expect_int(state, "terminal_path_cleanup", rmdir(root), 0L);
 }
 
+/* Consume the handle emitted by the last accepted start in multi-command
+ * scenarios. Dedicated invalid/stale-handle checks use the registry directly.
+ */
+static int test_terminal_current(terminal_event_state *events,
+                                 cai_tool_registry *registry, const char *name,
+                                 const char *arguments, cai_sink *sink,
+                                 cai_error *error) {
+  const char *marker = strstr(arguments, "terminal-1");
+  char *request;
+  size_t prefix;
+  int rc;
+  if (strcmp(name, CAI_TERMINAL_WRITE_TOOL_NAME) != 0 || marker == NULL)
+    return cai_tool_registry_run(registry, name, arguments, sink, error);
+  prefix = (size_t)(marker - arguments);
+  request = malloc(strlen(arguments) + sizeof(events->terminal_id));
+  if (request == NULL)
+    return CAI_ERR_NOMEM;
+  memcpy(request, arguments, prefix);
+  strcpy(request + prefix, events->terminal_id);
+  strcat(request, marker + strlen("terminal-1"));
+  rc = cai_tool_registry_run(registry, name, request, sink, error);
+  free(request);
+  return rc;
+}
+
 static void test_terminal_tools(test_state *state) {
   char dir_template[] =
       CAI_TEST_BINARY_DIR "/test-tmp/cai-terminal-test-XXXXXX";
-  static const cai_terminal_tool_config legacy_config = {
-      NULL, NULL, NULL, 20L, 300L, 32768U, NULL, NULL,
-      NULL, NULL, 0L,   0L,  0L,   0L,     0};
+  char gate_path[PATH_MAX];
+  int gate_fd;
   terminal_event_state events;
   int policy_calls;
   cai_terminal_tool_config config;
@@ -38429,11 +38450,21 @@ static void test_terminal_tools(test_state *state) {
     test_fail(state, "terminal_mkdtemp", "mkdtemp failed");
     return;
   }
+  snprintf(gate_path, sizeof(gate_path), "%s/poll-gate", dir_template);
+  if (mkfifo(gate_path, 0600) != 0 ||
+      (gate_fd = open(gate_path, O_RDWR | O_CLOEXEC)) < 0) {
+    test_fail(state, "terminal_poll_gate", "cannot create poll gate");
+    unlink(gate_path);
+    rmdir(dir_template);
+    return;
+  }
   memset(&events, 0, sizeof(events));
   policy_calls = 0;
   blocked_stdin_request = NULL;
-  /* Keep the pre-polling-field positional layout valid for source consumers. */
-  config = legacy_config;
+  memset(&config, 0, sizeof(config));
+  config.default_yield_time_ms = 20L;
+  config.max_yield_time_ms = 300L;
+  config.output_max_bytes = 32768U;
   config.root_path = dir_template;
   config.default_workdir = dir_template;
   config.policy = test_terminal_policy;
@@ -38467,7 +38498,7 @@ static void test_terminal_tools(test_state *state) {
     setenv("CAI_TEST_TERMINAL_SECRET", "must-not-reach-model", 1);
     expect_int(
         state, "terminal_sanitized_environment",
-        cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+        test_terminal_current(&events, registry, CAI_TERMINAL_EXEC_TOOL_NAME,
                               "{\"cmd\":\"printf '%s|%s|%s' "
                               "\\\"$CAI_TEST_TERMINAL_SECRET\\\" \\\"$HOME\\\" "
                               "\\\"$LESSHISTFILE\\\"\","
@@ -38490,8 +38521,8 @@ static void test_terminal_tools(test_state *state) {
       writer.buffer[0] = '\0';
       writer.length = 0U;
       expect_int(state, "terminal_sanitized_environment_finalize",
-                 cai_tool_registry_run(
-                     registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                 test_terminal_current(
+                     &events, registry, CAI_TERMINAL_WRITE_TOOL_NAME,
                      "{\"session_id\":\"terminal-1\",\"yield_time_ms\":100}",
                      sink, &error),
                  CAI_OK);
@@ -38501,54 +38532,68 @@ static void test_terminal_tools(test_state *state) {
     writer.buffer[0] = '\0';
     writer.length = 0U;
     expect_int(state, "terminal_policy_reject",
-               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+               test_terminal_current(&events, registry,
+                                     CAI_TERMINAL_EXEC_TOOL_NAME,
                                      "{\"cmd\":\"forbidden\"}", sink, &error),
                CAI_ERR_INVALID);
     expect_int(state, "terminal_policy_called", policy_calls, 2L);
     cai_error_cleanup(&error);
     cai_error_init(&error);
-    rc = cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
-                               "{\"cmd\":\"trap '' INT; sleep 0.15; "
-                               "printf poll-ready; while :; do sleep 1; done\","
-                               "\"yield_time_ms\":0}",
-                               sink, &error);
+    rc = test_terminal_current(
+        &events, registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+        "{\"cmd\":\"read x < poll-gate; printf poll-ready\","
+        "\"yield_time_ms\":0}",
+        sink, &error);
     expect_int(state, "terminal_exec_background", rc, CAI_OK);
     expect_substr(state, "terminal_exec_session", writer.buffer,
-                  "\"session_id\":\"terminal-1\"");
+                  "\"session_id\":\"terminal-2\"");
     expect_substr(state, "terminal_exec_running", writer.buffer,
                   "\"running\":true");
     expect_int(state, "terminal_exec_zero_yield_returns_before_output",
                strstr(writer.buffer, "poll-ready") == NULL, 1L);
     writer.buffer[0] = '\0';
     writer.length = 0U;
-    expect_int(state, "terminal_reject_parallel_exec",
-               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+    expect_int(state, "terminal_busy_parallel_exec",
+               test_terminal_current(&events, registry,
+                                     CAI_TERMINAL_EXEC_TOOL_NAME,
                                      "{\"cmd\":\"true\"}", sink, &error),
-               CAI_ERR_INVALID);
+               CAI_OK);
+    expect_substr(state, "terminal_busy_status", writer.buffer,
+                  "\"status\":\"busy\"");
+    expect_substr(state, "terminal_busy_not_started", writer.buffer,
+                  "\"accepted\":false");
     cai_error_cleanup(&error);
     cai_error_init(&error);
-    expect_int(state, "terminal_reject_wrong_id",
-               cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
-                                     "{\"session_id\":\"wrong\"}", sink,
-                                     &error),
-               CAI_ERR_INVALID);
+    expect_int(
+        state, "terminal_reject_wrong_id",
+        test_terminal_current(&events, registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                              "{\"session_id\":\"wrong\"}", sink, &error),
+        CAI_ERR_INVALID);
     cai_error_cleanup(&error);
     cai_error_init(&error);
     writer.buffer[0] = '\0';
     writer.length = 0U;
-    expect_int(state, "terminal_poll",
-               cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
-                                     "{\"session_id\":\"terminal-1\"}", sink,
-                                     &error),
-               CAI_OK);
+    expect_int(state, "terminal_release_poll", write(gate_fd, "go\n", 3U), 3L);
+    expect_int(
+        state, "terminal_poll",
+        test_terminal_current(&events, registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                              "{\"session_id\":\"terminal-1\"}", sink, &error),
+        CAI_OK);
     expect_substr(state, "terminal_poll_output", writer.buffer, "poll-ready");
+    expect_int(
+        state, "terminal_start_cancel_target",
+        test_terminal_current(
+            &events, registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+            "{\"cmd\":\"while :; do sleep 1; done\",\"yield_time_ms\":0}", sink,
+            &error),
+        CAI_OK);
     cai_error_cleanup(&error);
     cai_error_init(&error);
     writer.buffer[0] = '\0';
     writer.length = 0U;
     expect_int(state, "terminal_terminate",
-               cai_tool_registry_run(
-                   registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+               test_terminal_current(
+                   &events, registry, CAI_TERMINAL_WRITE_TOOL_NAME,
                    "{\"session_id\":\"terminal-1\",\"terminate\":true}", sink,
                    &error),
                CAI_OK);
@@ -38558,8 +38603,8 @@ static void test_terminal_tools(test_state *state) {
     writer.buffer[0] = '\0';
     writer.length = 0U;
     expect_int(state, "terminal_terminate_grace_exec",
-               cai_tool_registry_run(
-                   registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+               test_terminal_current(
+                   &events, registry, CAI_TERMINAL_EXEC_TOOL_NAME,
                    "{\"cmd\":\"trap '' INT; "
                    "trap 'printf term-noted; while :; do :; done' TERM; "
                    "printf ready; while :; do :; done\","
@@ -38572,8 +38617,8 @@ static void test_terminal_tools(test_state *state) {
     writer.length = 0U;
     (void)clock_gettime(CLOCK_MONOTONIC, &terminate_grace_started);
     expect_int(state, "terminal_terminate_grace",
-               cai_tool_registry_run(
-                   registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+               test_terminal_current(
+                   &events, registry, CAI_TERMINAL_WRITE_TOOL_NAME,
                    "{\"session_id\":\"terminal-1\",\"terminate\":true,"
                    "\"yield_time_ms\":100}",
                    sink, &error),
@@ -38596,18 +38641,18 @@ static void test_terminal_tools(test_state *state) {
     writer.buffer[0] = '\0';
     writer.length = 0U;
     expect_int(state, "terminal_exec_interactive",
-               cai_tool_registry_run(
-                   registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+               test_terminal_current(
+                   &events, registry, CAI_TERMINAL_EXEC_TOOL_NAME,
                    "{\"cmd\":\"stty -echo; IFS= read line; sleep 0.15; "
                    "printf got:$line\","
-                   "\"yield_time_ms\":10}",
+                   "\"yield_time_ms\":10,\"tty\":true}",
                    sink, &error),
                CAI_OK);
     writer.buffer[0] = '\0';
     writer.length = 0U;
     expect_int(state, "terminal_write_interactive",
-               cai_tool_registry_run(
-                   registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+               test_terminal_current(
+                   &events, registry, CAI_TERMINAL_WRITE_TOOL_NAME,
                    "{\"session_id\":\"terminal-1\",\"chars\":\"alpha\\n\"}",
                    sink, &error),
                CAI_OK);
@@ -38617,7 +38662,8 @@ static void test_terminal_tools(test_state *state) {
       writer.buffer[0] = '\0';
       writer.length = 0U;
       expect_int(state, "terminal_write_interactive_poll",
-                 cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                 test_terminal_current(&events, registry,
+                                       CAI_TERMINAL_WRITE_TOOL_NAME,
                                        "{\"session_id\":\"terminal-1\","
                                        "\"yield_time_ms\":100}",
                                        sink, &error),
@@ -38628,7 +38674,8 @@ static void test_terminal_tools(test_state *state) {
     writer.buffer[0] = '\0';
     writer.length = 0U;
     expect_int(state, "terminal_finalize_interactive",
-               cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+               test_terminal_current(&events, registry,
+                                     CAI_TERMINAL_WRITE_TOOL_NAME,
                                      "{\"session_id\":\"terminal-1\","
                                      "\"yield_time_ms\":100}",
                                      sink, &error),
@@ -38639,7 +38686,7 @@ static void test_terminal_tools(test_state *state) {
     writer.length = 0U;
     expect_int(
         state, "terminal_exec_detached_child",
-        cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+        test_terminal_current(&events, registry, CAI_TERMINAL_EXEC_TOOL_NAME,
                               "{\"cmd\":\"sleep 0.2 &\",\"yield_time_ms\":100}",
                               sink, &error),
         CAI_OK);
@@ -38649,13 +38696,14 @@ static void test_terminal_tools(test_state *state) {
                   "\"detached_processes_possible\":true");
     expect_substr(state, "terminal_detached_duration", writer.buffer,
                   "\"duration_ms\":");
-    expect_int(state, "terminal_event_started", events.started, 5L);
-    expect_int(state, "terminal_event_completed", events.completed, 3L);
-    expect_str(state, "terminal_event_id", events.terminal_id, "terminal-1");
+    expect_int(state, "terminal_event_started", events.started, 6L);
+    expect_int(state, "terminal_event_completed", events.completed, 4L);
+    expect_str(state, "terminal_event_id", events.terminal_id, "terminal-6");
     writer.buffer[0] = '\0';
     writer.length = 0U;
     expect_int(state, "terminal_drain_fast_output",
-               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+               test_terminal_current(&events, registry,
+                                     CAI_TERMINAL_EXEC_TOOL_NAME,
                                      "{\"cmd\":\"seq 1 3000\","
                                      "\"yield_time_ms\":100,"
                                      "\"max_output_tokens\":16}",
@@ -38668,11 +38716,12 @@ static void test_terminal_tools(test_state *state) {
     while (events.completed < 4 && test_now_seconds() < drain_deadline) {
       writer.buffer[0] = '\0';
       writer.length = 0U;
-      rc = cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
-                                 "{\"session_id\":\"terminal-1\","
-                                 "\"yield_time_ms\":100,"
-                                 "\"max_output_tokens\":16}",
-                                 sink, &error);
+      rc =
+          test_terminal_current(&events, registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                                "{\"session_id\":\"terminal-1\","
+                                "\"yield_time_ms\":100,"
+                                "\"max_output_tokens\":16}",
+                                sink, &error);
       if (rc != CAI_OK) {
         expect_int(state, "terminal_drain_fast_output_poll", rc, CAI_OK);
         break;
@@ -38683,17 +38732,19 @@ static void test_terminal_tools(test_state *state) {
     writer.buffer[0] = '\0';
     writer.length = 0U;
     expect_int(state, "terminal_exec_no_stdin_reader",
-               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+               test_terminal_current(&events, registry,
+                                     CAI_TERMINAL_EXEC_TOOL_NAME,
                                      "{\"cmd\":\"stty -echo && printf "
                                      "stdin-ready; sleep 5\","
-                                     "\"yield_time_ms\":100}",
+                                     "\"yield_time_ms\":100,\"tty\":true}",
                                      sink, &error),
                CAI_OK);
     for (i = 0; i < 10 && strstr(writer.buffer, "stdin-ready") == NULL; i++) {
       writer.buffer[0] = '\0';
       writer.length = 0U;
       expect_int(state, "terminal_stdin_ready_poll",
-                 cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                 test_terminal_current(&events, registry,
+                                       CAI_TERMINAL_WRITE_TOOL_NAME,
                                        "{\"session_id\":\"terminal-1\","
                                        "\"yield_time_ms\":100}",
                                        sink, &error),
@@ -38719,7 +38770,8 @@ static void test_terminal_tools(test_state *state) {
              "\",\"yield_time_ms\":10}",
              strlen("\",\"yield_time_ms\":10}") + 1U);
       expect_int(state, "terminal_stdin_unread",
-                 cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+                 test_terminal_current(&events, registry,
+                                       CAI_TERMINAL_WRITE_TOOL_NAME,
                                        blocked_stdin_request, sink, &error),
                  CAI_OK);
       free(blocked_stdin_request);
@@ -38730,8 +38782,8 @@ static void test_terminal_tools(test_state *state) {
     cai_error_cleanup(&error);
     cai_error_init(&error);
     expect_int(state, "terminal_stdin_limit_terminate",
-               cai_tool_registry_run(
-                   registry, CAI_TERMINAL_WRITE_TOOL_NAME,
+               test_terminal_current(
+                   &events, registry, CAI_TERMINAL_WRITE_TOOL_NAME,
                    "{\"session_id\":\"terminal-1\",\"terminate\":true,"
                    "\"yield_time_ms\":10}",
                    sink, &error),
@@ -38759,7 +38811,8 @@ static void test_terminal_tools(test_state *state) {
   }
   if (sink != NULL) {
     expect_int(state, "terminal_root_workdir",
-               cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
+               test_terminal_current(&events, registry,
+                                     CAI_TERMINAL_EXEC_TOOL_NAME,
                                      "{\"cmd\":\"printf root-ok\","
                                      "\"yield_time_ms\":100}",
                                      sink, &error),
@@ -38770,92 +38823,13 @@ static void test_terminal_tools(test_state *state) {
   cai_sink_close(sink);
   cai_tool_registry_destroy(registry);
   cai_error_cleanup(&error);
+  close(gate_fd);
+  unlink(gate_path);
   rmdir(dir_template);
   test_terminal_workdir_pinning(state);
 }
 
-static void
-test_terminal_buffered_output_returns_immediately(test_state *state) {
-  char dir_template[] =
-      CAI_TEST_BINARY_DIR "/test-tmp/cai-terminal-buffered-XXXXXX";
-  cai_terminal_tool_config config;
-  cai_tool_registry *registry;
-  cai_sink_callbacks callbacks;
-  cai_sink *sink;
-  write_state writer;
-  cai_error error;
-  struct timespec pause_time;
-  struct timespec started;
-  struct timespec finished;
-  long long elapsed_ms;
-
-  if (mkdtemp(dir_template) == NULL) {
-    test_fail(state, "terminal_buffered_mkdtemp", "mkdtemp failed");
-    return;
-  }
-  memset(&config, 0, sizeof(config));
-  config.root_path = dir_template;
-  config.default_workdir = dir_template;
-  config.default_poll_yield_time_ms = 1000L;
-  config.max_poll_yield_time_ms = 1000L;
-  registry = NULL;
-  sink = NULL;
-  memset(&writer, 0, sizeof(writer));
-  cai_error_init(&error);
-  callbacks.write = test_write;
-  callbacks.close = test_write_close;
-  callbacks.context = &writer;
-  expect_int(state, "terminal_buffered_registry",
-             cai_tool_registry_new(&registry, &error), CAI_OK);
-  if (registry != NULL) {
-    expect_int(
-        state, "terminal_buffered_register",
-        cai_tool_registry_register_terminal_tools(registry, &config, &error),
-        CAI_OK);
-    expect_int(state, "terminal_buffered_sink",
-               cai_sink_from_callbacks(&callbacks, &sink, &error), CAI_OK);
-  }
-  if (sink != NULL) {
-    expect_int(
-        state, "terminal_buffered_exec",
-        cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
-                              "{\"cmd\":\"printf buffered-ready; sleep 2\","
-                              "\"yield_time_ms\":0}",
-                              sink, &error),
-        CAI_OK);
-    pause_time.tv_sec = 0;
-    pause_time.tv_nsec = 250000000L;
-    (void)nanosleep(&pause_time, NULL);
-    writer.buffer[0] = '\0';
-    writer.length = 0U;
-    (void)clock_gettime(CLOCK_MONOTONIC, &started);
-    expect_int(state, "terminal_buffered_poll",
-               cai_tool_registry_run(registry, CAI_TERMINAL_WRITE_TOOL_NAME,
-                                     "{\"session_id\":\"terminal-1\","
-                                     "\"yield_time_ms\":1000}",
-                                     sink, &error),
-               CAI_OK);
-    (void)clock_gettime(CLOCK_MONOTONIC, &finished);
-    elapsed_ms = (long long)(finished.tv_sec - started.tv_sec) * 1000LL +
-                 (long long)(finished.tv_nsec - started.tv_nsec) / 1000000LL;
-    expect_substr(state, "terminal_buffered_output", writer.buffer,
-                  "buffered-ready");
-    expect_int(state, "terminal_buffered_no_wait", elapsed_ms < 750LL, 1L);
-    writer.buffer[0] = '\0';
-    writer.length = 0U;
-    expect_int(state, "terminal_buffered_terminate",
-               cai_tool_registry_run(
-                   registry, CAI_TERMINAL_WRITE_TOOL_NAME,
-                   "{\"session_id\":\"terminal-1\",\"terminate\":true,"
-                   "\"yield_time_ms\":10}",
-                   sink, &error),
-               CAI_OK);
-  }
-  cai_sink_close(sink);
-  cai_tool_registry_destroy(registry);
-  cai_error_cleanup(&error);
-  rmdir(dir_template);
-}
+#include "terminal_modes_test.inc"
 
 static void test_terminal_sink_failure_preserves_output(test_state *state) {
   char dir_template[] =
@@ -39344,12 +39318,12 @@ static void test_terminal_concurrent_start(test_state *state) {
                                     test_terminal_race_exec, &second) == 0;
     expect_int(state, "terminal_race_first_thread", first_created, 1L);
     expect_int(state, "terminal_race_second_thread", second_created, 1L);
-    if (!first_created || !second_created) {
-      pthread_mutex_lock(&policy.lock);
-      policy.released = 1;
-      pthread_cond_broadcast(&policy.changed);
-      pthread_mutex_unlock(&policy.lock);
-    }
+    pthread_mutex_lock(&policy.lock);
+    while ((first_created || second_created) && policy.arrivals == 0)
+      pthread_cond_wait(&policy.changed, &policy.lock);
+    policy.released = 1;
+    pthread_cond_broadcast(&policy.changed);
+    pthread_mutex_unlock(&policy.lock);
     if (first_created) {
       pthread_join(first_thread, NULL);
     }
@@ -39357,10 +39331,14 @@ static void test_terminal_concurrent_start(test_state *state) {
       pthread_join(second_thread, NULL);
     }
     if (first_created && second_created) {
-      expect_int(state, "terminal_race_one_success",
-                 (first.rc == CAI_OK) + (second.rc == CAI_OK), 1L);
-      expect_int(state, "terminal_race_one_rejected",
-                 (first.rc == CAI_ERR_INVALID) + (second.rc == CAI_ERR_INVALID),
+      expect_int(state, "terminal_race_both_return_results",
+                 (first.rc == CAI_OK) + (second.rc == CAI_OK), 2L);
+      expect_int(
+          state, "terminal_race_exactly_one_busy",
+          (strstr(first.writer.buffer, "\"status\":\"busy\"") != NULL) +
+              (strstr(second.writer.buffer, "\"status\":\"busy\"") != NULL),
+          1L);
+      expect_int(state, "terminal_race_one_authorized_start", policy.arrivals,
                  1L);
     }
     cai_error_cleanup(&first.error);
@@ -39454,18 +39432,20 @@ static void test_terminal_concurrent_operation(test_state *state) {
       (void)nanosleep(&pause_time, NULL);
       cai_error_cleanup(&error);
       cai_error_init(&error);
-      expect_int(state, "terminal_operation_reject_overlap",
+      expect_int(state, "terminal_operation_serialized",
                  cai_tool_registry_run(registry, CAI_TERMINAL_EXEC_TOOL_NAME,
-                                       "{\"cmd\":\"printf wrong\","
-                                       "\"yield_time_ms\":0}",
+                                       "{\"cmd\":\"printf second\","
+                                       "\"yield_time_ms\":100}",
                                        sink, &error),
-                 CAI_ERR_INVALID);
+                 CAI_OK);
       pthread_join(write_thread, NULL);
       expect_int(state, "terminal_operation_poll", write.rc, CAI_OK);
       expect_str(state, "terminal_operation_completion_command", events.command,
-                 "sleep 1");
+                 "printf second");
       expect_int(state, "terminal_operation_completion_id",
-                 (long long)events.command_id, 1L);
+                 (long long)events.command_id, 2L);
+      expect_substr(state, "terminal_operation_original_result",
+                    write.writer.buffer, "\"command_id\":1");
       cai_error_cleanup(&write.error);
       cai_error_cleanup(&error);
       cai_error_init(&error);
@@ -54814,8 +54794,9 @@ static const test_entry test_entries[] = {
     {"terminal_output_limit_clamp", test_terminal_output_limit_clamp},
     {"terminal_registration_rollback", test_terminal_registration_rollback},
     {"terminal_tools", test_terminal_tools},
-    {"terminal_buffered_output_returns_immediately",
-     test_terminal_buffered_output_returns_immediately},
+    {"terminal_wait_policy", test_terminal_wait_policy},
+    {"terminal_process_modes", test_terminal_process_modes},
+    {"terminal_busy_output", test_terminal_busy_output},
     {"terminal_sink_failure_preserves_output",
      test_terminal_sink_failure_preserves_output},
     {"terminal_capture_truncation", test_terminal_capture_truncation},

@@ -691,6 +691,7 @@ struct cai_agent_runtime {
   cai_terminal_event_fn terminal_event_callback;
   void *terminal_event_context;
   char *terminal_origin_tool_call_id;
+  char *terminal_pending_tool_call_id;
   char *smith_identity;
   char *smith_model;
   char *smith_reasoning_effort;
@@ -4609,8 +4610,8 @@ static int cai_runtime_tool_event(void *context, const cai_tool_event *event,
       return cai_set_error(error, CAI_ERR_NOMEM,
                            "failed to copy terminal tool call id");
     }
-    cai_free_mem(NULL, runtime->terminal_origin_tool_call_id);
-    runtime->terminal_origin_tool_call_id = origin;
+    cai_free_mem(NULL, runtime->terminal_pending_tool_call_id);
+    runtime->terminal_pending_tool_call_id = origin;
   }
   if (event->type == CAI_TOOL_EVENT_START &&
       tool_action == CAI_AGENT_TOOL_ACTION_SUBAGENT) {
@@ -4678,6 +4679,12 @@ static int cai_runtime_terminal_event(void *context,
         event->command != NULL ? strlen(event->command) : 0U;
   }
   pthread_mutex_lock(&runtime->lock);
+  if (event->type == CAI_TERMINAL_EVENT_COMMAND_STARTED) {
+    cai_free_mem(NULL, runtime->terminal_origin_tool_call_id);
+    runtime->terminal_origin_tool_call_id =
+        runtime->terminal_pending_tool_call_id;
+    runtime->terminal_pending_tool_call_id = NULL;
+  }
   rc =
       cai_runtime_enqueue_terminal_locked(runtime, type, &display_event, error);
   pthread_mutex_unlock(&runtime->lock);
@@ -9119,6 +9126,7 @@ static int cai_runtime_settings_value_valid(unsigned int field,
 }
 
 #include "cai_runtime_reasoning.inc"
+#include "cai_runtime_terminal.inc"
 #include "cai_runtime_yolo.inc"
 
 int cai_agent_runtime_get_settings(cai_agent_runtime *runtime,
@@ -13375,6 +13383,7 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
   cai_free_mem(NULL, runtime->response_id_snapshot);
   cai_free_mem(NULL, runtime->conversation_id_snapshot);
   cai_free_mem(NULL, runtime->terminal_origin_tool_call_id);
+  cai_free_mem(NULL, runtime->terminal_pending_tool_call_id);
   cai_free_mem(NULL, runtime->active_subagent_parent_tool_call_id);
   cai_free_mem(NULL, runtime->execution_parent_session);
   cai_free_mem(NULL, runtime->execution_parent_call);

@@ -30,6 +30,11 @@ static int test_command_queue_modes(void) {
                                       "!sh+",
                                       "!ls"};
   static const char *const requests[] = {"/fast",
+                                         "/foreground",
+                                         "/fg",
+                                         "/background",
+                                         "/bg",
+                                         "/yield_time_ms 0",
                                          "/tier",
                                          "/tier flex",
                                          "/tier\tpriority  ",
@@ -48,6 +53,7 @@ static int test_command_queue_modes(void) {
                                          "/r high",
                                          "/t plain"};
   static const char *const feed[] = {"/help",
+                                     "/yield_time_ms",
                                      "/status",
                                      "/tools",
                                      "/skills",

@@ -80,6 +80,11 @@ static const cli_field fields[] = {
       "Provider service tier; empty restores saved routing. Explicit default "
       "requests normal routing; priority requests Fast. Use /tier list."),
     B("agent", "mcp", mcp, "Connect named [mcp.NAME] HTTP servers."),
+    {"terminal", "yield_time_ms", offsetof(cai_cli_options, yield_time_ms),
+     CAI_CONFIG_INTEGER, 0U, NULL,
+     "Command yield interval, 0..30000 ms. Default 10000. Zero selects "
+     "foreground mode: wait for exit or cancellation. /background restores "
+     "the libcai default when yielding is disabled."},
     B("messaging", "enabled", messaging,
       "Listen for and send conversation messages on the shared Pouch backend."),
     S("messaging", "queue_name", message_queue, 0U,
@@ -706,7 +711,9 @@ static int tool_environment(cai_config *cfg, const char *prefix,
          "conversation_retention_days"},
         {"NAMESPACE_PREFIX", "storage", "namespace_prefix"},
         {"QUEUE_PREFIX", "messaging", "queue_prefix"},
-        {"TODO_LAYOUT", "ui", "todo_layout"}};
+        {"TODO_LAYOUT", "ui", "todo_layout"},
+        {"FOREGROUND", "terminal", "foreground"},
+        {"YIELD_TIME_MS", "terminal", "yield_time_ms"}};
     for (i = 0U; i < sizeof(aliases) / sizeof(aliases[0]); i++) {
       const char *v = app_environment(prefix, aliases[i][0]);
       char home[PATH_MAX];
@@ -1000,6 +1007,23 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
       cfg, "agent", "image_generation", defaults.image_generation);
   defaults.terminal =
       cai_config_get_bool(cfg, "agent", "terminal", defaults.terminal);
+  defaults.foreground = cai_config_get_bool(cfg, "terminal", "foreground", 0);
+  {
+    long long interval =
+        cai_config_get_integer(cfg, "terminal", "default_yield_time_ms",
+                               CAI_TERMINAL_DEFAULT_YIELD_TIME_MS);
+    if (interval == 0LL)
+      interval = CAI_TERMINAL_DEFAULT_YIELD_TIME_MS;
+    interval =
+        cai_config_get_integer(cfg, "terminal", "yield_time_ms", interval);
+    if (interval < 0LL || interval > 30000LL)
+      return fail(error, NULL, "yield_time_ms must be 0..30000");
+    defaults.yield_time_ms = (long)interval;
+  }
+  if (defaults.yield_time_ms == 0L) {
+    defaults.foreground = 1;
+    defaults.yield_time_ms = CAI_TERMINAL_DEFAULT_YIELD_TIME_MS;
+  }
   defaults.yolo = cai_config_get_bool(cfg, "agent", "yolo", defaults.yolo);
   defaults.review_subagent = cai_config_get_bool(
       cfg, "agent", "review_subagent", defaults.review_subagent);

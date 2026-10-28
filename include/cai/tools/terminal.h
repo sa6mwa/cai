@@ -1,5 +1,5 @@
 /** @file cai/tools/terminal.h
- *  One-slot asynchronous PTY terminal tools for CAI agent mode.
+ *  Single-process pipe/PTY command tools for CAI agent mode.
  */
 #ifndef CAI_TOOLS_TERMINAL_H
 #define CAI_TOOLS_TERMINAL_H
@@ -14,14 +14,16 @@ extern "C" {
 #define CAI_TERMINAL_EXEC_TOOL_NAME "exec_command"
 /** Stable model-facing name for interacting with that same command. */
 #define CAI_TERMINAL_WRITE_TOOL_NAME "write_stdin"
+/** Default time before yielding a live command to the model. */
+#define CAI_TERMINAL_DEFAULT_YIELD_TIME_MS 10000L
 
 /** A managed terminal command began. */
 #define CAI_TERMINAL_EVENT_COMMAND_STARTED 1
-/** New PTY output is available. */
+/** New pipe/PTY output is available. */
 #define CAI_TERMINAL_EVENT_OUTPUT 2
 /** A requested wait ended while the command remains active. */
 #define CAI_TERMINAL_EVENT_WAITING 3
-/** The command exited and CAI drained its PTY. */
+/** The command exited and CAI drained its output. */
 #define CAI_TERMINAL_EVENT_COMMAND_COMPLETED 4
 /** CAI requested and observed terminal-command cancellation. */
 #define CAI_TERMINAL_EVENT_COMMAND_CANCELLED 5
@@ -31,15 +33,15 @@ extern "C" {
 typedef struct cai_terminal_event {
   /** CAI_TERMINAL_EVENT_* discriminator. */
   int type;
-  /** Stable one-slot terminal session identifier. */
+  /** Handle for this accepted command; changes when a new command starts. */
   const char *terminal_id;
-  /** Monotonic command identifier within terminal_id. */
+  /** Monotonic command identifier within this registered tool pair. */
   unsigned long long command_id;
   /** Original command text; borrowed for the callback duration. */
   const char *command;
   /** Resolved working directory; borrowed for the callback duration. */
   const char *workdir;
-  /** New PTY output bytes; borrowed and not NUL-terminated. */
+  /** New subprocess output bytes; borrowed and not NUL-terminated. */
   const char *output;
   /** Number of bytes in output. */
   size_t output_length;
@@ -53,7 +55,7 @@ typedef struct cai_terminal_event {
   long long signal;
   /** Elapsed wall-clock time for the supervised shell command. */
   unsigned long long duration_ms;
-  /** Total PTY bytes observed for this command, including omitted bytes. */
+  /** Total output bytes observed for this command, including omitted bytes. */
   unsigned long long total_output_bytes;
   /** Non-zero when CAI omitted terminal bytes from its bounded retention. */
   int output_truncated;
@@ -84,12 +86,14 @@ typedef int (*cai_terminal_policy_fn)(void *context, const char *command,
                                       cai_error *error);
 
 /**
- * Configuration for CAI's one-slot PTY terminal tool pair. Child commands
+ * Configuration for CAI's single-process terminal tool pair. Child commands
  * receive a filtered environment by default: HOME and all XDG_* variables are
  * copied unchanged, including empty/unset values. PATH is copied, with a system
  * fallback only when unset. LANG, LC_ALL, TERM, TMPDIR and LESSHISTFILE have
  * controlled defaults. YOLO snapshots the complete host environment instead.
- * This PTY runner does not provide an OS sandbox in either mode.
+ * PAGER, GIT_PAGER and GH_PAGER are set to cat in both modes. Commands use
+ * pipes and closed stdin by default; tty=true requests a PTY. This runner
+ * does not provide an OS sandbox in either mode.
  */
 typedef struct cai_terminal_tool_config {
   /** Required workspace base. Workdirs are confined here unless yolo is set. */
@@ -113,7 +117,7 @@ typedef struct cai_terminal_tool_config {
   /** Context passed to policy. */
   void *policy_context;
   /**
-   * Optional lifecycle observer; never called on the PTY reader thread. The
+   * Optional lifecycle observer; never called on the output reader thread. The
    * callback/context remain borrowed for the registered tools' lifetime.
    */
   cai_terminal_event_fn event_callback;
@@ -129,7 +133,8 @@ typedef struct cai_terminal_tool_config {
   /**
    * Default wait for an empty write_stdin poll; zero selects 5000.
    * A non-terminating empty poll always waits at least 5000 milliseconds
-   * unless output or completion arrives first.
+   * unless completion or cancellation arrives first. Output continues to
+   * lifecycle callbacks during the wait; output alone does not end it.
    */
   long default_poll_yield_time_ms;
   /**
@@ -140,6 +145,9 @@ typedef struct cai_terminal_tool_config {
   /** Ordinary host filesystem/environment access; bypass policy callback.
    * Zero confines workdirs and filters environment, preserving HOME/XDG_*. */
   int yolo;
+  /** Wait for completion/cancellation regardless of model-requested yields.
+   * Default zero permits yielding. Captured separately for each tool wait. */
+  int foreground;
 } cai_terminal_tool_config;
 
 /**

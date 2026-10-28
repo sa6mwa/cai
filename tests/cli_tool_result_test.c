@@ -127,6 +127,20 @@ int main(void) {
       "{\"status\":\"delivered\",\"recipient\":\"q\"} trailing"};
   assert(!result(&c, "set_reasoning", "ok"));
   assert(!result(&c, "set_reasoning", "not ok"));
+  memset(&c, 0, sizeof(c));
+  assert(format(
+      &c, "exec_command", CAI_AGENT_TOOL_ACTION_EXECUTE,
+      CAI_AGENT_EVENT_TOOL_CALL_COMPLETED,
+      "{\"status\":\"busy\",\"accepted\":false,\"session_id\":\"terminal-1\","
+      "\"active_command\":\"read x; echo **literal**\",\"output\":\"\"}"));
+  assert(strstr(c.text, "Busy ") && strstr(c.text, "command not started"));
+  assert(strstr(c.text, "Active handle: `terminal-1`"));
+  assert(strstr(c.text, ">     read x; echo **literal**"));
+  assert(!strstr(c.text, "\"accepted\""));
+  assert(!format(
+      &c, "exec_command", CAI_AGENT_TOOL_ACTION_EXECUTE,
+      CAI_AGENT_EVENT_TOOL_CALL_COMPLETED,
+      "{\"status\":\"completed\",\"accepted\":true,\"output\":\"raw bytes\"}"));
   streamed_text();
   for (action = CAI_AGENT_TOOL_ACTION_NONE;
        action <= CAI_AGENT_TOOL_ACTION_CHROME; action++) {

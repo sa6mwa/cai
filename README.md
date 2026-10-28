@@ -66,7 +66,7 @@ call the explicit threadsafe input methods from an input thread.
 
 The built-in `smith` preset is CAI's Codex-inspired coding-agent profile. It
 uses the native `apply_patch`, sandboxed file/image tools, optional MCP and
-image generation, durable goals, and one managed PTY terminal slot with only
+image generation, durable goals, and one managed pipe/PTY terminal slot with only
 one active command. `submit_interactive` follows Codex's StartOrSteer policy:
 it starts an idle turn or queues interactive direction for an active one at
 the next safe model/tool boundary. `submit_queued` queues an ordinary FIFO
@@ -92,12 +92,13 @@ changes it once active turns, subagents and terminal commands finish. Pending
 changes remain editable in Softline and appear in `/status`. This does not
 write configuration or save the policy in conversation history.
 
-YOLO commands inherit the complete environment and ordinary user filesystem
-permissions. Local read/list/patch/image tools may access paths outside the
+YOLO commands inherit the host environment and ordinary user filesystem
+permissions; managed commands still force `PAGER`, `GIT_PAGER`, and `GH_PAGER`
+to `cat`. Local read/list/patch/image tools may access paths outside the
 workspace, and reviewers/subagents inherit the selected mode. Explicitly
 disabled tools remain disabled; output retention, timeout and cancellation
 mechanisms still apply. The legacy synchronous exec preset bypasses Bubblewrap
-or sandbox-exec in YOLO mode. Smith's managed PTY runner has no OS sandbox in
+or sandbox-exec in YOLO mode. Smith's managed command runner has no OS sandbox in
 either mode: restricted mode scopes file tools and working directories and
 filters command environments. Startup warns about the effective policy and
 `/status` reports it. `!COMMAND` and `/shell` already use ordinary user access.
@@ -3151,7 +3152,7 @@ the same Responses WebSocket transport used by ChatGPT-auth streaming sessions.
 `CAI_INTEGRATION_CHATGPT_SMITH_E2E=1` is the live Luna-low coding acceptance
 test for `cai_agent_runtime`, using a disposable workspace and local JSONL
 store.
-It proves Smith's runtime event loop, read/patch/read-back flow, one-slot PTY
+It proves Smith's runtime event loop, read/patch/read-back flow, single-process
 terminal start/wait/completion lifecycle, steering delivery after a tool round,
 durable commits, and `resume_latest` continuation. All live Smith tests
 use ChatGPT subscription authentication and GPT-5.6 Luna; they never consume

@@ -18,7 +18,7 @@ LONEJSON_MAP_DEFINE(value_map, replay_value, value_fields);
 typedef struct replay_call {
   struct replay_call *next;
   struct replay_call *origin, *last_output;
-  char *session, *id, *name, *label;
+  char *session, *id, *name, *label, *active_command;
   char terminal[257], number[64];
   size_t label_length, terminal_length, number_length;
   unsigned long long last, offset, command_id, duration_ms;
@@ -26,7 +26,8 @@ typedef struct replay_call {
   long long exit_code, signal;
   int parsing, invalid, output, rendering, opened, patch, has_preview,
       bad_output;
-  int replayed;
+  int replayed, busy;
+  size_t active_command_length;
   cai_cli_tool_text markdown;
   lonejson_curl_parse parser;
   replay_value value;
@@ -89,6 +90,7 @@ static void call_free(replay_call *c) {
   free(c->session);
   free(c->name);
   free(c->label);
+  free(c->active_command);
   free(c);
 }
 void cai_cli_replay_tools_close(cai_cli_replay_tools *r) {
@@ -154,6 +156,20 @@ static lonejson_status string_chunk(void *context,
     }
   } else if (path_is(path, "session_id")) {
     append(c->terminal, &c->terminal_length, sizeof(c->terminal), bytes, count);
+  } else if (c->output && path_is(path, "active_command")) {
+    size_t n = count;
+    char *label;
+    if (n > 8192U - c->active_command_length)
+      n = 8192U - c->active_command_length;
+    if (n != 0U) {
+      label = realloc(c->active_command, c->active_command_length + n + 1U);
+      if (label == NULL)
+        return LONEJSON_STATUS_ALLOCATION_FAILED;
+      c->active_command = label;
+      memcpy(label + c->active_command_length, bytes, n);
+      c->active_command_length += n;
+      label[c->active_command_length] = '\0';
+    }
   }
   return LONEJSON_STATUS_OK;
 }
@@ -200,6 +216,8 @@ static lonejson_status bool_value(void *context,
       c->truncated = value;
     if (path_is(path, "isError"))
       c->is_error = value;
+    if (path_is(path, "accepted"))
+      c->busy = !value;
   }
   return LONEJSON_STATUS_OK;
 }
@@ -319,12 +337,15 @@ int cai_cli_replay_tools_index(cai_cli_replay_tools **out,
       c->terminal_length = 0U;
     if (parse_feed(r, c, record, 1) != CAI_OK)
       c->bad_output = 1;
+    if (record->final && c->busy)
+      return CAI_OK;
     if (record->final && c->action == CAI_AGENT_TOOL_ACTION_EXECUTE)
       c->origin = c;
     if (record->final && c->action == CAI_AGENT_TOOL_ACTION_WRITE_STDIN &&
         c->terminal_length != 0U)
       for (other = r->calls; other != NULL; other = other->next)
-        if (other != c && other->action == CAI_AGENT_TOOL_ACTION_EXECUTE &&
+        if (other != c && !other->busy &&
+            other->action == CAI_AGENT_TOOL_ACTION_EXECUTE &&
             same(other->session, c->session) &&
             strcmp(other->terminal, c->terminal) == 0 &&
             other->command_id == c->command_id) {
@@ -403,6 +424,16 @@ int cai_cli_replay_tools_render(cai_cli_replay_tools *r,
              c->action == CAI_AGENT_TOOL_ACTION_WRITE_STDIN) &&
             !same(record->kind, "tool.failed");
   origin = command && c->origin != NULL ? c->origin : c;
+  if (command && c->busy && same(record->kind, "tool.output")) {
+    if (record->offset != 0U)
+      return CAI_OK;
+    rc = cai_tool_display_summary(display, &c->event, "Busy",
+                                  "command not started", 1, error);
+    if (rc == CAI_OK)
+      rc = cai_cli_tool_busy_write(c->terminal, c->active_command, markdown,
+                                   context, error);
+    return rc;
+  }
   if (command) {
     event_init(origin);
     c->event = origin->event;

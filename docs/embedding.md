@@ -345,7 +345,8 @@ environment prefix applies normally. C runtime/preset configurations and Lua
 runtime/Smith tables expose `yolo`. Standalone C tool configurations and Lua's
 exec/read/list registration tables expose the same opt-out. It is inherited by
 reviewers and other child runtimes. `HOME` and every `XDG_*` value are preserved
-in both modes; YOLO inherits all remaining environment variables too. Ordinary
+in both modes; YOLO also inherits other host variables, with managed-command
+pager overrides described below. Ordinary
 user permissions, disabled tools, output retention, timeouts and cancellation
 still apply.
 
@@ -366,6 +367,39 @@ handles/output, callbacks, goals and session identity are retained. Lua exposes
 `runtime:yolo()` returning `{enabled=boolean, can_change=boolean}` and
 `runtime:try_set_yolo(boolean)` returning whether the request applied. A false
 result means busy; an error returns `nil, error`.
+
+Managed agent commands use pipes with closed stdin by default; model requests
+with `tty=true` get a PTY and can receive `write_stdin` input. Exactly one command
+can run at once. A second `exec_command` returns `status="busy"`, `accepted=false`
+and the current handle without starting or queueing a process, or consuming its
+output. Every accepted command receives a new handle. Managed commands force
+`PAGER`, `GIT_PAGER`, and `GH_PAGER` to `cat` in restricted and YOLO modes.
+
+The default initial yield interval is 10000 ms. A wait ends when the process
+finishes or the deadline expires; receiving output alone does not return control
+to the model. Output continues through lifecycle callbacks during the wait.
+C hosts inspect/change this policy on the owner thread with
+`cai_agent_runtime_get_terminal_yield_time(runtime, &milliseconds, error)` and
+`cai_agent_runtime_set_terminal_yield_time(runtime, milliseconds, error)`.
+The range is 0..30000 ms; zero forces foreground waiting until completion or
+cancellation, overriding model arguments. Changes affect subsequent waits in
+the runtime and its active child, and future children inherit the policy.
+Lua exposes `runtime:yield_time_ms([milliseconds])`; Smith/runtime constructor
+tables accept `yield_time_ms` and `foreground`. Low-level C terminal registration
+uses `default_yield_time_ms` (zero selects the 10000 ms default) and `foreground`.
+
+For libcai_app, `[terminal] yield_time_ms`, `CAI_YIELD_TIME_MS`, and
+`--yield-time-ms N` select the interval; **zero means foreground** at this
+application boundary. `[terminal] foreground`, `CAI_FOREGROUND`, or
+`--foreground` also force foreground execution. Program-specific environment
+prefixes and `cai_app_setting` overrides apply normally. `/foreground` (`/fg`)
+enables it; `/background` (`/bg`) restores the libcai 10000 ms default if yielding
+was disabled, otherwise preserving the current positive interval.
+`--background` has the same startup behavior. `/yield_time_ms` queries the
+effective policy and `/yield_time_ms N` changes it at a request boundary.
+These are host settings, not model input or persistent conversation settings.
+The model-facing argument `yield_time_ms=0` still means immediate yielding when
+the host has not forced foreground execution.
 
 Execution history is enabled by the application and is independent of pslog
 levels or host logger configuration. `event_callback` / Lua `on_event` receives

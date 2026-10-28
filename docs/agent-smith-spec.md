@@ -1147,12 +1147,11 @@ reused. stdio MCP and plugin installation are out of this initial scope.
 
 ### 8.1 Required invariant
 
-Each Smith runtime owns one terminal *slot*. At most one slot exists, at most
-one command is active in it, and the runtime never exposes a second terminal
-ID. A slot has a stable `terminal_id` for its runtime lifetime and a monotonic
-`command_id`; a dead slot may be re-created in place only after all its fds and
-the previous process group have been reaped. It is never recreated
-concurrently.
+Each Smith runtime owns one terminal *slot*, with at most one active command.
+Each accepted command receives a distinct handle and a monotonic `command_id`.
+The next process starts only after the previous supervised process has exited
+and its reader has been joined. A failed slot can accept another command after
+its owned process and descriptors have been cleaned up.
 
 The model-visible tool schema retains Codex-familiar fields where useful:
 
@@ -1161,11 +1160,21 @@ exec_command: cmd, workdir, yield_time_ms, max_output_tokens, tty
 write_stdin:  session_id, chars, yield_time_ms, max_output_tokens, terminate
 ```
 
-`session_id` always equals the single terminal slot ID. Supplying a stale or
-different ID fails with a structured “single terminal is <id>; requested <id>”
-error. `exec_command` while the terminal command is running fails instead of
-queueing or replacing it. The model must use `write_stdin` to poll, send input,
-or terminate.
+Each accepted `exec_command` gets a new `session_id`. A stale or different ID
+is rejected by `write_stdin`. While a command is running, another
+`exec_command` returns a structured successful receipt with `status="busy"`,
+`accepted=false`, the active handle and both commands. The requested command
+has not started; it is neither queued nor substituted for the active command.
+Busy receipts do not consume the active command's output. The model uses
+`write_stdin` to poll, send PTY input, or terminate. Tool interactions with the
+single process are serialized.
+
+Initial waits default to 10 seconds, capped at 30 seconds. Empty polls default
+to at least 5 seconds; nonempty input defaults to 250 milliseconds. A wait ends
+on completion, cancellation, or its deadline; output alone does not end it.
+Lifecycle callbacks continue to receive output during the wait. An explicit
+model argument `yield_time_ms=0` yields immediately unless the host has forced
+foreground execution.
 
 ### 8.2 Delivered state machine
 
@@ -1185,10 +1194,11 @@ stateDiagram-v2
 ```
 
 The delivered manager launches one supervised `/bin/sh -c` command in a fresh
-PTY/process group; it does not maintain a reusable shell daemon. Only the
+process group, with pipes by default or a PTY when `tty=true`. It does not
+maintain a reusable shell daemon. Only the
 transition from `Draining` to `Idle` produces a completed command result.
 `Running` output does not imply process liveness. CAI observes the supervising
-shell with `waitpid`, drains remaining PTY output, and reports the actual
+shell with `waitpid`, drains remaining output, and reports the actual
 exit/signal result. A process that deliberately detaches can leave the PTY
 open; after the shell exits CAI returns a bounded result with
 `detached_processes_possible: true` rather than claiming all descendants
@@ -1196,8 +1206,10 @@ completed.
 
 ### 8.3 Delivered execution protocol
 
-The terminal manager uses `openpty`, starts one `/bin/sh -c` command in a
-dedicated process group, and owns all PTY I/O. The model cannot choose a shell,
+The terminal manager uses merged stdout/stderr pipes and closed stdin by
+default. `tty=true` uses `openpty` with terminal stdin, stdout and stderr. It
+starts one `/bin/sh -c` command in a dedicated process group and owns its I/O.
+The model cannot choose a shell,
 terminal count, or process identity. Output is streamed to host lifecycle
 events and a bounded tool result while the manager independently waits for the
 supervised shell.
@@ -1220,9 +1232,20 @@ design is intended to avoid.
 
 Terminal output has a byte limit. CAI streams available bytes to bounded host
 events and returns a bounded model-visible result with explicit truncation
-facts. It never blocks PTY draining on renderer speed. Interactive input is
-accepted only while `Running`; writing after final collection returns a
-stale/finished result rather than silently opening a new shell command.
+facts. It never blocks output draining on renderer speed. Interactive input
+requires `tty=true` and a running command. Pipe commands still accept polls,
+`terminate=true`, and Ctrl-C cancellation. Polling a completed current handle
+returns any remaining output and final status; a stale handle cannot address
+a newer process.
+
+Hosts can force foreground execution through
+`cai_terminal_tool_config.foreground` or
+`cai_agent_runtime_set_terminal_yield_time(runtime, 0, error)`. Foreground
+ignores model yield requests and waits for completion or cancellation while
+continuing UI output. Runtime policy changes apply to subsequent waits and
+are inherited by review/subagent runtimes. They do not alter an active wait.
+Managed commands always receive `PAGER=cat`, `GIT_PAGER=cat` and `GH_PAGER=cat`,
+including in YOLO mode. User shell handoffs retain the user's environment.
 
 The stream-to-host and model-visible-result limits are execution limits, not
 presentation limits. A host may display a smaller head (for example, ten

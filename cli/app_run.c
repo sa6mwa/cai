@@ -986,6 +986,11 @@ static const struct cli_command_definition {
     {"/reasoning", CLI_COMMAND_FEED, CLI_COMMAND_REQUEST},
     {"/tier", CLI_COMMAND_REQUEST, CLI_COMMAND_REQUEST},
     {"/fast", CLI_COMMAND_REQUEST, CLI_COMMAND_REQUEST},
+    {"/foreground", CLI_COMMAND_REQUEST, CLI_COMMAND_REQUEST},
+    {"/fg", CLI_COMMAND_REQUEST, CLI_COMMAND_REQUEST},
+    {"/background", CLI_COMMAND_REQUEST, CLI_COMMAND_REQUEST},
+    {"/bg", CLI_COMMAND_REQUEST, CLI_COMMAND_REQUEST},
+    {"/yield_time_ms", CLI_COMMAND_FEED, CLI_COMMAND_REQUEST},
     {"/goal", CLI_COMMAND_FEED, CLI_COMMAND_REQUEST},
     {"/theme", CLI_COMMAND_FEED, CLI_COMMAND_REQUEST},
     {"/yolo", CLI_COMMAND_FEED, CLI_COMMAND_TURN},
@@ -2713,6 +2718,8 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
     config.revgeo.response_spool_dir = state->temporary.private_dir;
   }
   cai_cli_apply_runtime_options(&state->options, &config, &preset, &skills);
+  terminal.default_yield_time_ms = state->options.yield_time_ms;
+  terminal.foreground = state->options.foreground;
   if (state->suppress_replay) {
     /* A live catalog change must restore the current commit settings,
      * rather than reapply the invocation's original explicit overrides. */
@@ -4240,6 +4247,53 @@ static int cli_review_command(cli_state *state, const char *arguments,
   return rc != CAI_OK ? rc : started;
 }
 
+static int cli_yield_command(cli_state *state, const char *arg, int mode,
+                             cai_error *error) {
+  char message[320], *end;
+  long value;
+  int rc =
+      cai_agent_runtime_get_terminal_yield_time(state->runtime, &value, error);
+  if (rc != CAI_OK)
+    return rc;
+  arg += strspn(arg, " \t");
+  if (mode != 0 && *arg != '\0')
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "Use /foreground or /background.");
+  if (mode > 0)
+    value = 0L;
+  else if (mode < 0 && value == 0L)
+    value = CAI_TERMINAL_DEFAULT_YIELD_TIME_MS;
+  else if (*arg != '\0') {
+    errno = 0;
+    value = strtol(arg, &end, 10);
+    end += strspn(end, " \t");
+    if (errno != 0 || end == arg || *end != '\0' || value < 0L ||
+        value > 30000L)
+      return cai_cli_error(
+          error, CAI_ERR_INVALID,
+          "Use /yield_time_ms 0..30000; 0 selects foreground mode.");
+  }
+  if (mode != 0 || *arg != '\0') {
+    rc =
+        cai_agent_runtime_set_terminal_yield_time(state->runtime, value, error);
+    if (rc != CAI_OK)
+      return rc;
+    state->options.foreground = value == 0L;
+    state->options.yield_time_ms =
+        value != 0L ? value : CAI_TERMINAL_DEFAULT_YIELD_TIME_MS;
+  }
+  if (value == 0L)
+    snprintf(message, sizeof(message),
+             "**Foreground commands:** wait for completion or cancellation "
+             "(`yield_time_ms = 0`). Use `/background` to restore yielding.");
+  else
+    snprintf(message, sizeof(message),
+             "**Background commands:** default yield interval `%ld ms`. "
+             "Use `/foreground` to wait for completion or cancellation.",
+             value);
+  return cli_markdown(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+}
+
 static int cli_retention_command(cli_state *state, const char *arg, int history,
                                  cai_error *error) {
   char *end, message[512], empty[1] = {0};
@@ -4485,6 +4539,24 @@ static int cli_handle_command(cli_state *state, const char *line,
   if (strcmp(line, "/tier") == 0 || strncmp(line, "/tier ", 6U) == 0 ||
       strncmp(line, "/tier\t", 6U) == 0)
     return cli_tier_command(state, line + 5U, 0, error);
+  if (strcmp(line, "/foreground") == 0 ||
+      strncmp(line, "/foreground ", 12U) == 0 ||
+      strncmp(line, "/foreground\t", 12U) == 0)
+    return cli_yield_command(state, line + 11U, 1, error);
+  if (strcmp(line, "/fg") == 0 || strncmp(line, "/fg ", 4U) == 0 ||
+      strncmp(line, "/fg\t", 4U) == 0)
+    return cli_yield_command(state, line + 3U, 1, error);
+  if (strcmp(line, "/background") == 0 ||
+      strncmp(line, "/background ", 12U) == 0 ||
+      strncmp(line, "/background\t", 12U) == 0)
+    return cli_yield_command(state, line + 11U, -1, error);
+  if (strcmp(line, "/bg") == 0 || strncmp(line, "/bg ", 4U) == 0 ||
+      strncmp(line, "/bg\t", 4U) == 0)
+    return cli_yield_command(state, line + 3U, -1, error);
+  if (strcmp(line, "/yield_time_ms") == 0 ||
+      strncmp(line, "/yield_time_ms ", 15U) == 0 ||
+      strncmp(line, "/yield_time_ms\t", 15U) == 0)
+    return cli_yield_command(state, line + 14U, 0, error);
   if (strcmp(line, "/fast") == 0 || strncmp(line, "/fast ", 6U) == 0 ||
       strncmp(line, "/fast\t", 6U) == 0)
     return cli_tier_command(state, line + 5U, 1, error);
@@ -4629,6 +4701,14 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| `/tier [list\\|NAME]` | Cycle service tiers, list choices, or "
         "select a tier at the next safe boundary. |\n"
         "| `/fast` | Toggle Fast/priority and explicit normal routing. |\n",
+        "| `/foreground`, `/fg` | Wait for command completion or cancellation. "
+        "|\n"
+        "| `/background`, `/bg` | Enable yielding; if disabled, restore "
+        "libcai's "
+        "default interval (10000 ms). |\n"
+        "| `/yield_time_ms [MS]` | Show or set the host interval, 0..30000 ms. "
+        "Zero selects foreground mode. Changes affect subsequent tool waits. "
+        "|\n",
         "| `/output [compact\\|full]` | Show or change tool previews, starting "
         "with the next tool call. Compact commands show five lines; patches "
         "collapse unchanged context. |\n",

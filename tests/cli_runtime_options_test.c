@@ -575,6 +575,106 @@ static int review_fix_settings(const char *path) {
   return failed;
 }
 
+static int yield_settings(const char *path) {
+  static const char *const intervals[] = {"0",  "25",    "30000",
+                                          "-1", "30001", "4294967296"};
+  char *args[5];
+  cai_cli_options options;
+  cai_config *configuration;
+  cai_app_config app;
+  cai_app_setting setting;
+  cai_error error;
+  FILE *file;
+  size_t i;
+  int source, rc, failed = 0;
+  args[0] = strdup("cai");
+  args[1] = strdup("--config");
+  args[2] = strdup(path);
+  args[3] = strdup("--yield-time-ms");
+  setting.section = "terminal";
+  setting.key = "yield_time_ms";
+  unsetenv("CAI_FOREGROUND");
+  unsetenv("CAI_TERMINAL_FOREGROUND");
+  unsetenv("CAI_TERMINAL_YIELD_TIME_MS");
+  for (source = 0; source < 4; source++) {
+    for (i = 0U; i < sizeof(intervals) / sizeof(intervals[0]); i++) {
+      configuration = NULL;
+      cai_error_init(&error);
+      unsetenv("CAI_YIELD_TIME_MS");
+      file = fopen(path, "w");
+      if (file == NULL)
+        return 1;
+      if (source == 0)
+        fprintf(file, "[terminal]\nyield_time_ms=%s\n", intervals[i]);
+      fclose(file);
+      memset(&app, 0, sizeof(app));
+      if (source == 1)
+        setenv("CAI_YIELD_TIME_MS", intervals[i], 1);
+      if (source == 2) {
+        setting.value = intervals[i];
+        app.settings = &setting;
+        app.setting_count = 1U;
+      }
+      args[4] = strdup(intervals[i]);
+      rc = cai_cli_configure(source == 3 ? 5 : 3, args, &options,
+                             &configuration, &app, &error);
+      if (i >= 3U) {
+        if (rc >= 0)
+          failed = 1;
+      } else if (rc != 1 || options.foreground != (i == 0U) ||
+                 options.yield_time_ms != (i == 0U   ? 10000L
+                                           : i == 1U ? 25L
+                                                     : 30000L))
+        failed = 1;
+      if (failed)
+        fprintf(stderr, "yield setting source %d value %s: %s\n", source,
+                intervals[i],
+                error.message != NULL ? error.message
+                                      : "wrong effective value");
+      cai_config_close(configuration);
+      cai_error_cleanup(&error);
+      free(args[4]);
+    }
+  }
+  unsetenv("CAI_YIELD_TIME_MS");
+  /* The independent foreground switch is available through every host
+   * configuration surface, even with the default positive yield interval. */
+  setting.key = "foreground";
+  setting.value = "true";
+  free(args[3]);
+  args[3] = strdup("--foreground");
+  for (source = 0; source < 4; source++) {
+    configuration = NULL;
+    cai_error_init(&error);
+    file = fopen(path, "w");
+    if (file == NULL)
+      return 1;
+    if (source == 0)
+      fputs("[terminal]\nforeground=true\n", file);
+    fclose(file);
+    memset(&app, 0, sizeof(app));
+    unsetenv("CAI_FOREGROUND");
+    if (source == 1)
+      setenv("CAI_FOREGROUND", "true", 1);
+    if (source == 2) {
+      app.settings = &setting;
+      app.setting_count = 1U;
+    }
+    rc = cai_cli_configure(source == 3 ? 4 : 3, args, &options, &configuration,
+                           &app, &error);
+    if (rc != 1 || !options.foreground || options.yield_time_ms != 10000L) {
+      fprintf(stderr, "foreground setting source %d failed\n", source);
+      failed = 1;
+    }
+    cai_config_close(configuration);
+    cai_error_cleanup(&error);
+  }
+  unsetenv("CAI_FOREGROUND");
+  for (i = 0U; i < 4U; i++)
+    free(args[i]);
+  return failed;
+}
+
 int main(int argc, char **argv) {
   static const char *const env[] = {"CAI_TODO",       "CAI_CHROME",
                                     "CAI_WEB_SEARCH", "CAI_SEARXNG",
@@ -624,6 +724,7 @@ int main(int argc, char **argv) {
   failed |= yolo_settings(path);
   failed |= status_fields_settings(path);
   failed |= review_fix_settings(path);
+  failed |= yield_settings(path);
   unlink(path);
   return failed != 0;
 }

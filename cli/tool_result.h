@@ -18,6 +18,9 @@ int cai_cli_tool_result_write(cai_cli_tool_result *result,
                               int (*write)(void *, const char *, size_t),
                               void *context, cai_error *error);
 void cai_cli_tool_result_close(cai_cli_tool_result *result);
+int cai_cli_tool_busy_write(const char *session_id, const char *command,
+                            int (*write)(void *, const char *, size_t),
+                            void *context, cai_error *error);
 typedef struct cai_cli_tool_text {
   int started, line_start, format;
 } cai_cli_tool_text;

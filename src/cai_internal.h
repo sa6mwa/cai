@@ -574,6 +574,8 @@ void *cai_tool_registry_context_internal(cai_tool_registry *registry,
                                          const char *name,
                                          void (*cleanup)(void *));
 int cai_terminal_tools_busy_internal(cai_tool_registry *registry);
+int cai_terminal_tools_set_yield_internal(cai_tool_registry *registry,
+                                          long milliseconds, cai_error *error);
 int cai_view_image_builtin_internal(cai_tool_registry *registry);
 int cai_terminal_tools_yolo_internal(cai_tool_registry *registry,
                                      const char *workspace, int enabled,

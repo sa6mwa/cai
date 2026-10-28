@@ -2991,9 +2991,23 @@ static int cai_lua_client_list_models(lua_State *L) {
   return 1;
 }
 
+static void cai_lua_terminal_wait_config(lua_State *L, int index,
+                                         cai_terminal_tool_config *config) {
+  long long interval = cai_lua_opt_ll_field(L, index, "yield_time_ms",
+                                            CAI_TERMINAL_DEFAULT_YIELD_TIME_MS);
+  luaL_argcheck(L, interval >= 0LL && interval <= 30000LL, index,
+                "yield_time_ms must be 0..30000");
+  memset(config, 0, sizeof(*config));
+  config->foreground =
+      interval == 0LL || cai_lua_opt_bool_field(L, index, "foreground", 0);
+  config->default_yield_time_ms =
+      interval != 0LL ? (long)interval : CAI_TERMINAL_DEFAULT_YIELD_TIME_MS;
+}
+
 static int cai_lua_client_new_smith_agent(lua_State *L) {
   cai_lua_client *self;
   cai_smith_config config;
+  cai_terminal_tool_config terminal;
   cai_skill_config skills;
   cai_lua_native_store *skill_store;
   cai_agent *agent;
@@ -3060,6 +3074,8 @@ static int cai_lua_client_new_smith_agent(lua_State *L) {
       cai_lua_opt_string_field(L, 2, "developer_instructions_extension", NULL);
   config.disable_terminal = cai_lua_opt_int_field(L, 2, "disable_terminal", 0);
   config.yolo = cai_lua_opt_bool_field(L, 2, "yolo", 0);
+  cai_lua_terminal_wait_config(L, 2, &terminal);
+  config.terminal_tool_config = &terminal;
   config.image_directory =
       cai_lua_opt_string_field(L, 2, "image_directory", NULL);
   if (config.workspace_directory == NULL ||
@@ -3574,6 +3590,7 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   cai_lua_native_store *native_todo_store = NULL;
   cai_todo_store_callbacks todo_callbacks;
   cai_agent_runtime_config config;
+  cai_terminal_tool_config terminal;
   cai_chrome_config chrome_config;
   int has_chrome;
   cai_skill_config skills;
@@ -3771,6 +3788,8 @@ static int cai_lua_client_new_smith_runtime_common(lua_State *L,
   config.enable_image_generation =
       cai_lua_opt_bool_field(L, 2, "enable_image_generation", 0);
   config.disable_terminal = cai_lua_opt_bool_field(L, 2, "disable_terminal", 0);
+  cai_lua_terminal_wait_config(L, 2, &terminal);
+  config.terminal_tool_config = &terminal;
   config.yolo = cai_lua_opt_bool_field(L, 2, "yolo", 0);
   config.disable_web_search =
       cai_lua_opt_bool_field(L, 2, "disable_web_search", 0);
@@ -5029,6 +5048,35 @@ static int cai_lua_agent_runtime_reasoning_tool(lua_State *L) {
   lua_pushstring(L, config.high_effort);
   lua_setfield(L, -2, "high_effort");
   cai_error_cleanup(&error);
+  return 1;
+}
+
+/* runtime:yield_time_ms([milliseconds]) -> effective host interval.
+ * Zero forces foreground; omitted argument queries without changing it. */
+static int cai_lua_agent_runtime_yield_time(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  cai_error error;
+  long interval;
+  int rc = CAI_OK;
+  lua_Integer requested = 0;
+  if (!lua_isnoneornil(L, 2)) {
+    requested = luaL_checkinteger(L, 2);
+    luaL_argcheck(L, requested >= 0 && requested <= 30000, 2,
+                  "yield interval must be 0..30000 ms");
+  }
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  if (!lua_isnoneornil(L, 2))
+    rc = cai_agent_runtime_set_terminal_yield_time(self->ptr, (long)requested,
+                                                   &error);
+  if (rc == CAI_OK)
+    rc =
+        cai_agent_runtime_get_terminal_yield_time(self->ptr, &interval, &error);
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK)
+    return cai_lua_fail(L, rc, &error);
+  cai_error_cleanup(&error);
+  lua_pushinteger(L, (lua_Integer)interval);
   return 1;
 }
 
@@ -12272,6 +12320,7 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"settings", cai_lua_agent_runtime_settings},
     {"yolo", cai_lua_agent_runtime_yolo},
     {"try_set_yolo", cai_lua_agent_runtime_try_set_yolo},
+    {"yield_time_ms", cai_lua_agent_runtime_yield_time},
     {"reasoning_tool", cai_lua_agent_runtime_reasoning_tool},
     {"select_board", cai_lua_agent_runtime_select_board},
     {"todo_board", cai_lua_agent_runtime_todo_board},

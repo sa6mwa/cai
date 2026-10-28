@@ -18,8 +18,10 @@ static const lonejson_field row_fields[] = {
 LONEJSON_MAP_DEFINE(row_map, result_row, row_fields);
 typedef struct result_doc {
   char *operation, *code, *message, *status, *recipient;
+  char *session_id, *active_command;
   char *board_name, *item_id, *title, *query, *url, *snippet, *label;
   int ok, has_ok, truncated, is_error;
+  int accepted, has_accepted;
   lonejson_object_array items, boards, content;
 } result_doc;
 static const lonejson_field result_fields[] = {
@@ -27,6 +29,9 @@ static const lonejson_field result_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC(result_doc, code, "code"),
     LONEJSON_FIELD_STRING_ALLOC(result_doc, message, "message"),
     LONEJSON_FIELD_STRING_ALLOC(result_doc, status, "status"),
+    LONEJSON_FIELD_STRING_ALLOC(result_doc, session_id, "session_id"),
+    LONEJSON_FIELD_STRING_ALLOC(result_doc, active_command, "active_command"),
+    LONEJSON_FIELD_BOOL_PRESENT(result_doc, accepted, has_accepted, "accepted"),
     LONEJSON_FIELD_STRING_ALLOC(result_doc, recipient, "recipient"),
     LONEJSON_FIELD_STRING_ALLOC(result_doc, board_name, "board_name"),
     LONEJSON_FIELD_STRING_ALLOC(result_doc, item_id, "item_id"),
@@ -50,7 +55,7 @@ struct cai_cli_tool_result {
   result_doc doc;
   const char *verb, *label, *markdown;
   size_t markdown_length;
-  int success, failure, generic, mcp;
+  int success, failure, generic, mcp, busy;
 };
 static int same(const char *a, const char *b) {
   return a != NULL && strcmp(a, b) == 0;
@@ -89,7 +94,8 @@ int cai_cli_tool_result_open(const cai_agent_runtime_event *e,
   }
   if (e->type != CAI_AGENT_EVENT_TOOL_CALL_COMPLETED ||
       (e->tool_action != CAI_AGENT_TOOL_ACTION_EXTERNAL &&
-       e->tool_action != CAI_AGENT_TOOL_ACTION_MCP) ||
+       e->tool_action != CAI_AGENT_TOOL_ACTION_MCP &&
+       e->tool_action != CAI_AGENT_TOOL_ACTION_EXECUTE) ||
       (e->tool_action == CAI_AGENT_TOOL_ACTION_EXTERNAL &&
        same(e->tool_name, "set_reasoning")))
     return CAI_OK;
@@ -98,6 +104,7 @@ int cai_cli_tool_result_open(const cai_agent_runtime_event *e,
     return cai_cli_error(error, CAI_ERR_NOMEM, "prepare tool presentation");
   r->success = 1;
   if (e->data == NULL || (e->tool_action != CAI_AGENT_TOOL_ACTION_MCP &&
+                          e->tool_action != CAI_AGENT_TOOL_ACTION_EXECUTE &&
                           !same(e->tool_name, "run_review_and_fix") &&
                           !same(e->tool_name, "agent_message") &&
                           !same(e->tool_name, "todo_kanban") &&
@@ -124,7 +131,17 @@ int cai_cli_tool_result_open(const cai_agent_runtime_event *e,
     lonejson_free(json);
     if (!recognized)
       goto unrecognized;
-    if (e->tool_action == CAI_AGENT_TOOL_ACTION_MCP) {
+    if (e->tool_action == CAI_AGENT_TOOL_ACTION_EXECUTE) {
+      if (!same(r->doc.status, "busy") || !r->doc.has_accepted ||
+          r->doc.accepted || r->doc.session_id == NULL ||
+          r->doc.active_command == NULL) {
+        cai_cli_tool_result_close(r);
+        return CAI_OK;
+      }
+      r->busy = 1;
+      r->verb = "Busy";
+      r->label = "command not started";
+    } else if (e->tool_action == CAI_AGENT_TOOL_ACTION_MCP) {
       if (r->doc.content.count == 0U && !r->doc.is_error)
         goto unrecognized;
       r->mcp = 1;
@@ -177,6 +194,10 @@ int cai_cli_tool_result_open(const cai_agent_runtime_event *e,
   *out = r;
   return CAI_OK;
 unrecognized:
+  if (e->tool_action == CAI_AGENT_TOOL_ACTION_EXECUTE) {
+    cai_cli_tool_result_close(r);
+    return CAI_OK;
+  }
   r->verb = e->tool_action == CAI_AGENT_TOOL_ACTION_MCP ? "MCP" : "Completed";
   r->label = e->tool_name != NULL ? e->tool_name : "tool";
   r->generic = 1;
@@ -304,12 +325,35 @@ failed:
     if (cell(write, context, (s)) != 0)                                        \
       goto failed;                                                             \
   } while (0)
+int cai_cli_tool_busy_write(const char *session_id, const char *command,
+                            int (*write)(void *, const char *, size_t),
+                            void *context, cai_error *error) {
+  cai_cli_tool_text text;
+  WRITE("The requested command was **not started**. A command is still "
+        "running.\n\n");
+  WRITE("Active handle: `");
+  CELL(session_id);
+  WRITE("`. Use `write_stdin` to poll or terminate it.\n\n");
+  if (command != NULL && command[0] != '\0') {
+    WRITE("Active command:\n\n");
+    memset(&text, 0, sizeof(text));
+    return cai_cli_tool_text_write(&text, command, strlen(command), 1, 1, write,
+                                   context, error);
+  }
+  return CAI_OK;
+failed:
+  return cai_cli_error(error, CAI_ERR_TRANSPORT, "render busy command receipt");
+}
+
 int cai_cli_tool_result_write(cai_cli_tool_result *r,
                               int (*write)(void *, const char *, size_t),
                               void *context, cai_error *error) {
   result_row *rows;
   size_t i, count;
   int boards;
+  if (r->busy)
+    return cai_cli_tool_busy_write(r->doc.session_id, r->doc.active_command,
+                                   write, context, error);
   if (r->mcp) {
     rows = r->doc.content.items;
     for (i = 0U; i < r->doc.content.count; i++) {

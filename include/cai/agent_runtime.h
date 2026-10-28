@@ -923,6 +923,19 @@ int cai_agent_runtime_get_yolo(cai_agent_runtime *runtime, int *enabled,
  * Owner-thread-only. applied is required and cleared before validation. */
 int cai_agent_runtime_try_set_yolo(cai_agent_runtime *runtime, int enabled,
                                    int *applied, cai_error *error);
+/** Host terminal wait policy, independent of provider request settings.
+ * Zero means foreground waits until exit/cancellation; positive values set
+ * the default yield interval (1..30000 ms). A model-requested shorter wait
+ * remains possible in background mode. Setter affects subsequent waits,
+ * including those in an active child; it never restarts a process or changes
+ * an already-started wait. New children inherit it. Not saved in conversation
+ * context. Both functions require the runtime owner thread. */
+int cai_agent_runtime_get_terminal_yield_time(cai_agent_runtime *runtime,
+                                              long *milliseconds,
+                                              cai_error *error);
+int cai_agent_runtime_set_terminal_yield_time(cai_agent_runtime *runtime,
+                                              long milliseconds,
+                                              cai_error *error);
 /**
  * Request cancellation of the active turn without closing the runtime.
  * Owner-thread-only and idempotent while cancellation is pending. Returns an
