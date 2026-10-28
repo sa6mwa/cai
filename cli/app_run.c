@@ -1548,15 +1548,29 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
       return CAI_ERR_TRANSPORT;
     {
+      cai_agent_runtime_event presented = *event;
+      char delivery[192];
+      int message =
+          event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED &&
+          event->tool_name != NULL &&
+          strcmp(event->tool_name, "agent_message") == 0 &&
+          cai_cli_message_delivery_markdown(event->data, event->data_length,
+                                            delivery, sizeof(delivery));
       int width = cli_render_width();
       int rc = cai_tool_display_set_width(state->tool_display,
                                           (size_t)(width < 32     ? 0
                                                    : width > 4096 ? 4096
                                                                   : width),
                                           error);
-      return rc == CAI_OK
-                 ? cai_tool_display_event(state->tool_display, event, error)
-                 : rc;
+      if (message) {
+        presented.data = NULL;
+        presented.data_length = 0U;
+      }
+      if (rc == CAI_OK)
+        rc = cai_tool_display_event(state->tool_display, &presented, error);
+      if (rc == CAI_OK && message && cli_markdown(state, delivery) != 0)
+        rc = CAI_ERR_TRANSPORT;
+      return rc;
     }
   } else if (event->type == CAI_AGENT_EVENT_REASONING_SUMMARY_STARTED) {
     if (cli_finish_reasoning(state) != 0)

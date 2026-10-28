@@ -65,6 +65,8 @@ contains "$root/request" "$lua_queue"
 plan "$(jq -n --arg id "$lua_queue" '{plan:[{tool:"agent_message",arguments:{operation:"send",recipient:$id,text:"PING FROM C"}},"C PING DELIVERED"]}')"
 before=$(requests)
 prompt 'send a ping to Lua' 'C PING DELIVERED'
+contains "$term/feed" "Message delivered to $lua_queue."
+absent "$term/feed" '"status":"delivered"'
 [[ $(requests) == $((before+2)) ]]
 tail -1 "$root/peer/requests.jsonl" >"$root/request"
 jq -e --arg id "$lua_queue" '[.input[]? | select(.type=="function_call_output") | .output] | last | fromjson | .status=="delivered" and .recipient==$id' "$root/request" >/dev/null
@@ -76,6 +78,8 @@ contains "$term/text" 'PING FROM C'
 plan "$(jq -n --arg id "$c_queue" '{plan:[{tool:"agent_message",arguments:{operation:"send",recipient:$id,text:"PONG FROM LUA"}},"LUA REPLY DELIVERED"]}')"
 offset=$(wc -c <"$term/text")
 send '\033a\033y'; expect_turn "$offset" 'LUA REPLY DELIVERED'
+contains "$term/feed" "Message delivered to $c_queue."
+absent "$term/feed" '"status":"delivered"'
 [[ $(requests) == $((before+4)) ]]
 tail -1 "$root/peer/requests.jsonl" >"$root/request"
 contains "$root/request" 'PING FROM C'

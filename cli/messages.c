@@ -65,6 +65,40 @@ static const lonejson_field argument_fields[] = {
                                 LONEJSON_OVERFLOW_FAIL),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(send_args, text, "text")};
 LONEJSON_MAP_DEFINE(arguments_map, send_args, argument_fields);
+typedef struct delivery_result {
+  char status[16], recipient[129];
+} delivery_result;
+static const lonejson_field delivery_fields[] = {
+    LONEJSON_FIELD_STRING_FIXED_REQ(delivery_result, status, "status",
+                                    LONEJSON_OVERFLOW_FAIL),
+    LONEJSON_FIELD_STRING_FIXED_REQ(delivery_result, recipient, "recipient",
+                                    LONEJSON_OVERFLOW_FAIL)};
+LONEJSON_MAP_DEFINE(delivery_map, delivery_result, delivery_fields);
+
+int cai_cli_message_delivery_markdown(const char *data, size_t length,
+                                      char *out, size_t capacity) {
+  delivery_result result;
+  lonejson_error error;
+  lonejson *json;
+  int n, valid;
+  if (data == NULL || out == NULL || capacity == 0U)
+    return 0;
+  memset(&result, 0, sizeof(result));
+  json = lonejson_new(NULL, &error);
+  if (json == NULL)
+    return 0;
+  valid = lonejson_parse_buffer(json, &delivery_map, &result, data, length,
+                                &error) == LONEJSON_STATUS_OK &&
+          strcmp(result.status, "delivered") == 0 &&
+          result.recipient[0] != '\0' &&
+          strspn(result.recipient, "abcdefghijklmnopqrstuvwxyz0123456789._-") ==
+              strlen(result.recipient);
+  lonejson_free(json);
+  if (!valid)
+    return 0;
+  n = snprintf(out, capacity, "Message delivered to `%s`.\n", result.recipient);
+  return n >= 0 && (size_t)n < capacity;
+}
 typedef struct message_link {
   struct message_link *next;
   sl_prompt_id_t prompt_id;

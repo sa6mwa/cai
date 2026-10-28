@@ -849,6 +849,32 @@ static void delete_conversation_inbox(cai_cli_pouch *pouch) {
   cai_error_cleanup(&error);
 }
 
+static void delivery_presentation(void) {
+  static const char *const invalid[] = {
+      "",
+      "not json",
+      "{}",
+      "{\"status\":\"delivered\"}",
+      "{\"status\":\"failed\",\"recipient\":\"cai.y\"}",
+      "{\"status\":\"delivered\",\"recipient\":\"bad`queue\"}",
+      "{\"status\":\"delivered\",\"recipient\":12}",
+      "{\"status\":\"delivered\",\"recipient\":\"\"}"};
+  static const char receipt[] =
+      "{\"message_id\":\"dbgkj0jvs68jpmusptdg\",\"status\":\"delivered\","
+      "\"recipient\":\"cai.y\"}";
+  char out[192];
+  size_t i;
+  assert(cai_cli_message_delivery_markdown(receipt, sizeof(receipt) - 1U, out,
+                                           sizeof(out)) == 1);
+  assert(strcmp(out, "Message delivered to `cai.y`.\n") == 0);
+  assert(cai_cli_message_delivery_markdown(receipt, sizeof(receipt) - 1U, out,
+                                           1U) == 0);
+  for (i = 0U; i < sizeof(invalid) / sizeof(invalid[0]); i++)
+    assert(cai_cli_message_delivery_markdown(invalid[i], strlen(invalid[i]),
+                                             out, sizeof(out)) == 0);
+  assert(cai_cli_message_delivery_markdown(NULL, 0U, out, sizeof(out)) == 0);
+}
+
 int main(int argc, char **argv) {
   cai_cli_pouch a, b;
   cai_cli_messages *sender = NULL, *receiver = NULL;
@@ -862,6 +888,7 @@ int main(int argc, char **argv) {
   char expired_text[] = "expired";
   char controls[] = "illegal\033[31m terminal control";
   assert(argc == 2 || (argc == 3 && strcmp(argv[2], "startup") == 0));
+  delivery_presentation();
   if (argc == 2 && strcmp(argv[1], "--names-only") == 0) {
     naming_prefixes();
     naming_rules();

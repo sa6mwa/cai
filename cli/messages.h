@@ -4,6 +4,11 @@
 #include <softline/softline.h>
 
 typedef struct cai_cli_messages cai_cli_messages;
+/* Recognized send receipts become Markdown for the interactive feed only.
+ * Return 1 when formatted, 0 for unknown/invalid results or insufficient space.
+ * The original tool result remains owned by the runtime. */
+int cai_cli_message_delivery_markdown(const char *data, size_t length,
+                                      char *out, size_t capacity);
 /* Enqueue once without a delivery deadline, receipt listener or session. */
 int cai_cli_messages_send_once(cai_cli_pouch *pouch, const char *recipient,
                                const char *text, cai_sink *result,
