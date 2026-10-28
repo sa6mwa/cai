@@ -101,14 +101,15 @@ tui_themes() {
   offset=$(wc -c <"$term/text")
   send 'read while checking theme guard\r'; expect 'STREAM in flight'
   count=$(requests)
-  send '/theme synthwave\033\r'; expect 'S 1. /theme synthwave'
+  send '/theme synthwave\033\r'; expect 'Q 1. /theme synthwave'
   send '/theme\r'; expect 'Current: dracula:dracula'
   [[ $(requests) == "$count" ]]
   release; expect_turn "$offset" 'THEME BOUNDARY DONE'
-  contains "$term/feed" 'Change themes between turns'
+  expect 'Theme changed to synthwave:synthwave-84.'
+  absent "$term/feed" 'Change themes between turns'
   contains "$root/peer/requests.jsonl" 'THEME TOOL CONTENT'
   send '/new\r'; expect 'New session'
-  send '/theme\r'; expect 'Current: dracula:dracula'
+  send '/theme\r'; expect 'Current: synthwave:synthwave-84'
   cmp "$root/config-before" "$root/config/cai/config.ini"
   terminal_close
   export NO_COLOR=1

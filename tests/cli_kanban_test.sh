@@ -30,13 +30,14 @@ send '/todo\r'; expect 'PERSISTENT BOARD CARD'
 terminal_close
 terminal_start
 send '/todo\r'; expect 'PERSISTENT BOARD CARD'
-# Busy mutations fail without changing the next tool's board.
+# Busy board changes remain queued until a complete turn boundary.
 plan '{"plan":[{"pause":true,"text":"BUSY DONE"}]}'
 send 'busy\r'; expect 'STREAM in flight'
-send '/todo new unsafe\033\r'; expect 'S 1. /todo new unsafe'
+send '/todo new deferred\033\r'; expect 'Q 1. /todo new deferred'
 release
 expect 'BUSY DONE'
-expect 'between turns'
+expect 'Kanban: deferred'
+absent "$term/feed" 'between turns'
 terminal_close
 terminal_start -N
 send '/todo\r'; expect 'Kanban: environment'

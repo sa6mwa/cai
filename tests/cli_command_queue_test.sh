@@ -9,8 +9,67 @@ chat=false
 [[ "$protocol" != chat_completions ]] || chat=true
 command_plan() { plan "$(jq -n --argjson chat "$chat" "{chat:\$chat,plan:$1}")"; }
 
+# Every busy command must enter the native queue. Edit them in the same input
+# burst, before delivery, replacing potentially destructive operations.
+command_plan '[{pause:true,pause_text:"AdmissionBegin\n\n",text:"AdmissionDone"}]'
+terminal_start -N
+before=$(requests)
+send 'Wait while commands are edited\r'; expect AdmissionBegin
+for command in '/review custom review scope' '/review-and-fix uncommitted' \
+  '/model some-model high' '/reasoning low' '/goal new original objective' \
+  '/goal pause' '/goal resume' '/goal clear' '/tier priority' '/fast' \
+  '/theme dracula' '/queue on' '/queue cai.other' '/todo use other' \
+  '/todo new other' '/todo layout list' '/reasoning-tool on' '/trim 1' \
+  '/new' '/resume 1' '/export' '/shell' '/shellshare' '!sh' '!sh+' \
+  '!touch must-not-exist' '/no-such-command'; do
+  send "$command\r\033e"; expect_prompt "$command"
+  absent "$term/feed" "\$ $command"
+  send '\025/output compact\r'; expect 'applies from the next tool call'
+done
+[[ $(requests) == $((before+1)) && ! -e "$work/must-not-exist" ]]
+release; expect AdmissionDone; expect 'Worked for'
+terminal_close
+
+# A running user command is busy even with no model turn. Further input stays
+# in Softline, editable with Alt-E; it never enters libcai's hidden turn queue.
+command_plan '["AFTER PIPE EDIT"]'
+mkfifo "$work/pipe-gate"
+terminal_start -N
+send '!printf PIPE_QUEUE_RUNNING; cat pipe-gate\r'; expect PIPE_QUEUE_RUNNING
+before=$(requests)
+send 'WRONG PIPE PROMPT\r'; expect 'Q 1. WRONG PIPE PROMPT'
+send '/status\r'; expect 'Use /tools for the full inventory.'
+send '\033e'; expect_prompt 'WRONG PIPE PROMPT'
+send '\025RIGHT PIPE PROMPT\r'; expect 'Q 1. RIGHT PIPE PROMPT'
+[[ $(requests) == "$before" ]]
+printf 'PIPE RELEASED\n' >"$work/pipe-gate"
+expect 'AFTER PIPE EDIT'; expect 'Worked for'
+tail -1 "$root/peer/requests.jsonl" >"$root/request"
+contains "$root/request" 'RIGHT PIPE PROMPT'
+absent "$root/peer/requests.jsonl" 'WRONG PIPE PROMPT'
+terminal_close
+
+# An idle-only command cannot be consumed/rejected at an intermediate tool
+# seam, even if empty-editor Alt-Enter promotes the queued entry to steering.
+command_plan '[{pause:true,pause_text:"TurnBoundaryBegin\n\n",tool:"get_goal",arguments:{}},
+  {pause:true,pause_gate:"release-after-seam",pause_text:"AfterToolSeam\n\n",text:"TurnBoundaryDone"}]'
+terminal_start -N
+send 'Wait across the tool seam\r'; expect TurnBoundaryBegin
+send '/theme plain\033\r'; expect 'Q 1. /theme plain'
+send '\033\r'
+release; expect AfterToolSeam
+expect 'Q 1. /theme plain'
+absent "$term/feed" 'Change themes between turns'
+send '\033e'; expect_prompt '/theme plain'
+send '\025/theme dracula\r'; expect 'Q 1. /theme dracula'
+touch "$root/peer/release-after-seam"
+expect TurnBoundaryDone; expect 'Theme changed to dracula:dracula.'
+absent "$root/peer/requests.jsonl" '/theme dracula'
+terminal_close
+
 # Enter must leave goal commands visible and editable until the turn ends.
 command_plan '[{pause:true,pause_text:"QueueGoalBegin\n\n",text:"QueueGoalEnd"}]'
+before=$(requests)
 terminal_start -N
 send '/goal new Queue ownership objective\r'; expect QueueGoalBegin
 send '/goal pause\r'; expect 'Q 1. /goal pause'
@@ -21,7 +80,7 @@ jq -se 'all(.[]; .event != "goal_control" or .command != "pause")' "$root/logs.j
 # the unrelated goal control or submitting any model input.
 send '/goal\r'; expect 'Queue ownership objective'; expect 'Status: active'
 send '/status\033\r'; expect 'Use /tools for the full inventory.'
-[[ $(requests) == 1 ]]
+[[ $(requests) == $((before+1)) ]]
 # Local queries themselves can be retained in the editor before their feed
 # boundary. Both queue insertion and Alt-E arrive in the same native input burst.
 send '/goal help\r\033e'; expect_prompt '/goal help'
@@ -31,7 +90,7 @@ send '\033e'; expect_prompt '/goal pause'
 send '\025/goal clear\r'; expect 'Q 1. /goal clear'
 release; expect 'Goal control queued'
 send '/goal\r'; expect 'No goal.'
-[[ $(requests) == 1 ]]
+[[ $(requests) == $((before+1)) ]]
 absent "$root/peer/requests.jsonl" '/goal clear'
 terminal_close
 

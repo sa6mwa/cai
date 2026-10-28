@@ -124,13 +124,14 @@ class Peer(http.server.BaseHTTPRequestHandler):
                            summary_index=index, delta=summary)
             self.event('response.reasoning_summary_part.done', summary_index=index)
         if item.get('pause'):
+            gate = root / item.get('pause_gate', 'release')
             marker = item.get('pause_text', 'STREAM in flight\n\n')
             if chat: delta({'role': 'assistant', 'content': marker})
             else: self.event('response.output_text.delta', delta=marker)
             deadline = time.monotonic() + 15
-            while not (root / 'release').exists() and time.monotonic() < deadline:
+            while not gate.exists() and time.monotonic() < deadline:
                 time.sleep(.01)
-            if not (root / 'release').exists():
+            if not gate.exists():
                 return
         if 'tool' in item:
             arguments = item.get('arguments', {})

@@ -198,6 +198,7 @@ static int cli_continue_goal(cli_state *state, cai_error *error);
 static int cli_host_process(cli_state *state, cai_error *error);
 static int cli_pump(cli_state *state, long timeout, cai_error *error);
 static int cli_command_delivery(cli_state *state, cai_error *error);
+static int cli_sync_status(cli_state *state, cai_error *error);
 static int cli_review_event(void *context, const cai_agent_runtime_event *event,
                             cai_error *error);
 
@@ -813,6 +814,8 @@ static int cli_shell_wakeup(sl_t *sl, const sl_watch_event_t *event,
   (void)event;
   cai_error_init(&error);
   rc = cli_shell_pump(state, &error);
+  if (rc == CAI_OK)
+    rc = cli_sync_status(state, &error);
   if (rc != CAI_OK)
     cli_print_error(state, "user shell command", &error);
   cai_error_cleanup(&error);
@@ -880,8 +883,8 @@ static int cli_terminal_shell_ready(cli_state *state, cai_error *error) {
   if (rc != CAI_OK)
     return rc;
   if (state->review_runtime != NULL || state->shell.pid > 0 ||
-      metrics.turn_active || state->awaiting_turn || !state->automation_done ||
-      sl_prompt_queue_count(state->sl) > 0 || run_state == CAI_AGENT_SAMPLING ||
+      metrics.turn_active || state->awaiting_turn ||
+      run_state == CAI_AGENT_SAMPLING ||
       run_state == CAI_AGENT_DISPATCHING_TOOL)
     return cai_cli_error(error, CAI_ERR_INVALID,
                          "Shell is available only between turns.");
@@ -964,7 +967,8 @@ static int cli_command_at_feed_boundary(const char *line) {
     return strcmp(arg, "list") == 0;
   if (length == 5U && strncmp(line, "/todo", length) == 0)
     return strcmp(arg, "list") == 0 || strcmp(arg, "help") == 0 ||
-           strcmp(arg, "layout") == 0 || strncmp(arg, "see ", 4U) == 0 ||
+           strcmp(arg, "layout") == 0 || strncmp(arg, "layout ", 7U) == 0 ||
+           strncmp(arg, "layout\t", 7U) == 0 || strncmp(arg, "see ", 4U) == 0 ||
            strncmp(arg, "see\t", 4U) == 0;
   return (length == 7U && strncmp(line, "/output", length) == 0) ||
          (length == 10U && strncmp(line, "/autoqueue", length) == 0) ||
@@ -979,6 +983,40 @@ static int cli_is_yolo(const char *line) {
 static int cli_is_compact(const char *line) {
   return strncmp(line, "/compact", 8U) == 0 &&
          (line[8] == '\0' || line[8] == ' ' || line[8] == '\t');
+}
+
+/* Queued UI commands share admission; delivery follows their actual contract
+ * rather than whether Enter or Alt-Enter happened to produce a Q/S label. */
+static int cli_command_at_turn_boundary(const char *line) {
+  static const char *const commands[] = {
+      "/new",   "/resume",     "/review", "/review-and-fix", "/theme",
+      "/queue", "/todo",       "/trim",   "/reasoning-tool", "/compact",
+      "/shell", "/shellshare", "/export"};
+  size_t i, length = strcspn(line, " \t");
+  if (cli_command_at_feed_boundary(line))
+    return 0;
+  if (line[0] == '!')
+    return 1;
+  for (i = 0U; i < sizeof(commands) / sizeof(commands[0]); i++)
+    if (strlen(commands[i]) == length &&
+        strncmp(line, commands[i], length) == 0)
+      return 1;
+  return 0;
+}
+
+static int cli_command_turn_ready(cli_state *state, int *ready,
+                                  cai_error *error) {
+  cai_agent_runtime_metrics metrics;
+  cai_agent_run_state run_state;
+  int rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
+  if (rc == CAI_OK)
+    rc = cai_agent_runtime_state(state->runtime, &run_state, error);
+  if (rc == CAI_OK)
+    *ready = state->shell.pid <= 0 && state->review_runtime == NULL &&
+             !metrics.turn_active && !state->awaiting_turn &&
+             run_state != CAI_AGENT_SAMPLING &&
+             run_state != CAI_AGENT_DISPATCHING_TOOL;
+  return rc;
 }
 
 static int cli_yolo_value(const char *line, int *enabled) {
@@ -1019,7 +1057,7 @@ static int cli_yolo_pending(cli_state *state, int *enabled) {
 }
 
 /* A running terminal can outlive its turn. Prevent native FIFO release of
- * ineligible policy/compaction commands, without hiding them in a second queue.
+ * ineligible commands, without hiding them in a second queue.
  * Native Esc/approval/edit state is preserved when automatic delivery returns.
  */
 static int cli_command_delivery(cli_state *state, cai_error *error) {
@@ -1044,9 +1082,14 @@ static int cli_command_delivery(cli_state *state, cai_error *error) {
     if (cli_is_compact(text)) {
       rc = cai_agent_runtime_can_compact(state->runtime, &ready, error);
       hold = !ready || state->shell.pid > 0 || state->review_runtime != NULL;
+    } else if (cli_command_at_turn_boundary(text)) {
+      rc = cli_command_turn_ready(state, &ready, error);
+      hold = !ready;
     } else
       hold =
           cli_yolo_value(text, &requested) && requested != effective && !ready;
+    if (!cli_command_at_feed_boundary(text) && state->shell.pid > 0)
+      hold = 1;
     sl_free_string(state->sl, text);
     if (rc != CAI_OK)
       return rc;
@@ -1075,30 +1118,25 @@ static int cli_editor_key(sl_t *sl, sl_key_t key, void *context,
   *action = SL_KEY_ACTION_PASS;
   if (sl_history_search_active(sl))
     return SL_OK;
-  /* Explicit pipe execution remains a direct local operation. A native queue
-   * edit keeps its existing intent instead of being promoted by this shortcut.
-   */
-  if ((key == SL_KEY_ENTER || key == SL_KEY_ALT_ENTER) && text[0] == '!' &&
-      !cli_is_terminal_shell(text)) {
-    sl_prompt_queue_entry_info_t draft;
-    if (sl_prompt_queue_draft_info(sl, &draft) != SL_OK)
-      return SL_ERROR_IO;
-    if (draft.id == 0)
-      *action = SL_KEY_ACTION_SUBMIT;
-    return SL_OK;
-  }
   if ((key == SL_KEY_ENTER || key == SL_KEY_ALT_ENTER) &&
-      (cli_command_at_feed_boundary(text) || cli_is_yolo(text) ||
-       cli_is_compact(text))) {
+      (text[0] == '/' || text[0] == '!')) {
     sl_prompt_queue_entry_info_t draft;
     size_t index;
-    int compact = cli_is_compact(text);
+    int whole_turn = cli_command_at_turn_boundary(text);
     if (sl_prompt_queue_draft_info(sl, &draft) != SL_OK)
       return SL_ERROR_IO;
+    /* Preserve native explicit-submit resumption after Escape until Softline
+     * can distinguish a fresh queued user command from a passive draft enqueue.
+     * Do not fake a submit or reset the profile to unpause its stopped FIFO.
+     * See stash/softline-command-queue-policies-cr.md. */
+    if (!state->was_busy && draft.id == 0 &&
+        !cli_command_at_feed_boundary(text) && !cli_is_yolo(text) &&
+        !cli_is_compact(text))
+      return SL_OK;
     *action = SL_KEY_ACTION_HANDLED;
     rc = sl_prompt_queue_enqueue_draft(sl);
     if (rc == SL_OK) {
-      if (key == SL_KEY_ALT_ENTER || compact) {
+      if (key == SL_KEY_ALT_ENTER || whole_turn) {
         index = sl_prompt_queue_count(sl) - 1U;
         if (draft.id != 0) {
           sl_prompt_queue_entry_info_t info;
@@ -1110,7 +1148,7 @@ static int cli_editor_key(sl_t *sl, sl_key_t key, void *context,
           }
         }
         if (sl_prompt_queue_set_mode(sl, index,
-                                     compact
+                                     whole_turn
                                          ? SL_PROMPT_QUEUE_MODE_QUEUED
                                          : SL_PROMPT_QUEUE_MODE_STEER) != SL_OK)
           return SL_ERROR_IO;
@@ -1127,15 +1165,10 @@ static int cli_editor_key(sl_t *sl, sl_key_t key, void *context,
   }
   if (!cli_is_terminal_shell(text))
     return SL_OK;
-  cai_error_init(&error);
-  if (key == SL_KEY_TAB || cli_terminal_shell_ready(state, &error) != CAI_OK) {
+  if (key == SL_KEY_TAB) {
     *action = SL_KEY_ACTION_HANDLED;
-    rc = sl_set_status_message(
-        sl, key == SL_KEY_TAB
-                ? "Use Enter to open the shell; it cannot be queued."
-                : error.message);
+    rc = sl_set_status_message(sl, "Use Enter to queue the shell handoff.");
   }
-  cai_error_cleanup(&error);
   return rc;
 }
 
@@ -1692,7 +1725,8 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
   rc = cai_agent_runtime_get_metrics(display_runtime, &metrics, error);
   if (rc != CAI_OK)
     return rc;
-  busy = metrics.turn_active || run_state == CAI_AGENT_SAMPLING ||
+  busy = metrics.turn_active || state->awaiting_turn || state->shell.pid > 0 ||
+         state->review_runtime != NULL || run_state == CAI_AGENT_SAMPLING ||
          run_state == CAI_AGENT_DISPATCHING_TOOL;
   rc = cli_command_delivery(state, error);
   if (rc != CAI_OK)
@@ -1803,10 +1837,11 @@ static int cli_messages_process(cli_state *state, int at_boundary,
       return cai_cli_error(error, CAI_ERR_TRANSPORT,
                            "read approved queued prompt");
     /* Empty Alt-Enter can promote the newest native entry to STEER without
-     * visiting the draft key hook. Compaction always requires a whole-turn
-     * boundary; retain it in Softline rather than consuming it at a tool seam.
+     * visiting the draft key hook. Idle-only commands still require a whole
+     * turn boundary; retain them instead of consuming them at a tool seam.
      */
-    if (cli_is_compact(text) && info.mode == SL_PROMPT_QUEUE_MODE_STEER) {
+    if (cli_command_at_turn_boundary(text) &&
+        info.mode == SL_PROMPT_QUEUE_MODE_STEER) {
       if (sl_prompt_queue_set_mode(state->sl, index,
                                    SL_PROMPT_QUEUE_MODE_QUEUED) != SL_OK) {
         sl_free_string(state->sl, text);
@@ -5428,7 +5463,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     if (line[0] != '\0') {
       rc = cli_dispatch_command(&state, line, &error, &handled);
       if (rc == CAI_OK && !handled) {
-        if (prompt_source == SL_PROMPT_SOURCE_QUEUED || state.shell.pid > 0 ||
+        if (prompt_source == SL_PROMPT_SOURCE_QUEUED ||
             cai_cli_messages_is_message(state.messages,
                                         sl_last_prompt_id(state.sl)))
           rc = cai_agent_runtime_submit_queued(state.runtime, line, &error);

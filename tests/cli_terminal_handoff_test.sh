@@ -48,13 +48,16 @@ send 'exit 137\r'; expect 'interactive shell exited 137'
 plan '{"plan":[{"text":"BusyHandoffDone","pause":true}]}'
 send 'busy turn\r'; expect 'STREAM in flight'
 count=$(wc -c <"$root/launches")
-send '/shell\r'; expect 'Shell is available only between turns'
-send '\025/shellshare\r'; expect_prompt /shellshare
-send '\025!sh+\r'; expect_prompt '!sh+'
-send '\t\033\r'; expect 'Use Enter to open the shell'
+send '/shell\r'; expect 'Q 1. /shell'
+send '\033e'; expect_prompt /shell
+send '\025/shellshare\r'; expect 'Q 1. /shellshare'
+send '\033e'; expect_prompt /shellshare
+send '\025!sh+\t'; expect 'Use Enter to queue the shell handoff'
+send '\033\r'; expect 'Q 1. !sh+'
 [[ $(wc -c <"$root/launches") == "$count" ]]
-send '\025'; release; expect BusyHandoffDone
-expect 'Worked for'
+release; expect BusyHandoffDone
+expect SHELL_HANDOFF_READY # Shared handoff owns a child PTY, not the outer TTY.
+send 'exit\r'; expect 'Shell exited 0.'; wait_for canonical 0
 send '!sh\r'; expect SHELL_HANDOFF_READY
 send 'sleep 60 & echo $! > "$CAI_TEST_BACKGROUND_PID"; exit\r'
 expect 'Shell exited 0.'

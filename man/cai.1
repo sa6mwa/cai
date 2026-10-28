@@ -776,8 +776,9 @@ Old storage checkpoints and diagnostic logs are not erased.
 .BR /shell , " " !sh
 With no arguments, hand the real terminal to $SHELL -i, falling back to
 /bin/sh -i when SHELL is unset or empty. Requires terminal input and output
-and an idle agent. These commands cannot be queued or steered; a busy draft
-remains editable. The shell uses normal user permissions in the workspace.
+and an idle agent. While busy, typed commands stay editable in Softline's queue
+until a whole-turn boundary; Alt-Enter does not permit mid-turn handoff.
+The shell uses normal user permissions in the workspace.
 CAI restores terminal ownership, prompt state and geometry after exit, even
 following a screen clear or resize. The child uses the existing terminal
 directly, including its stderr, with native foreground-job control; no PTY

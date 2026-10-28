@@ -233,8 +233,9 @@ Previously shared workspace prompt history is not migrated into conversations.
 
 Exact `!sh` and `/shell` commands hand the real terminal to `$SHELL -i`
 (`/bin/sh -i` when unset or empty) between turns. They require terminal input
-and output, cannot be queued or steered, and leave the draft editable if the
-agent is busy. The shell runs with normal user permissions in the workspace.
+and output. While busy, typed shell commands remain editable in Softline's
+queue until a whole-turn boundary; Alt-Enter cannot interrupt a turn to hand
+off the terminal. The shell runs with normal user permissions in the workspace.
 On exit, CAI restores terminal ownership, prompt settings and current geometry,
 including after a screen clear or resize. The shell uses the terminal directly,
 with native window changes and foreground-job control. Terminal output stays
@@ -265,7 +266,8 @@ UTF-8, newlines and tabs are preserved; other controls and invalid bytes are
 shown as `\xNN`. Stdout and stderr share one pipe. Ctrl-C/Escape cancels the
 shell first; quit also cancels it. Commands have a one-hour timeout, and their
 background descendants are terminated at completion. Ordinary prompts entered
-while a shell runs are durably queued until its result has been recorded.
+while a shell runs stay in Softline's visible, editable queue until its result
+has been recorded; they are not moved into libcai's internal turn queue.
 
 Commands are journaled at start; only the newest sanitized output is saved at
 completion. Replay displays that tail without executing commands. By default,

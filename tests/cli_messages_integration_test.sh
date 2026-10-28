@@ -77,9 +77,13 @@ run --list; ok
 # goal continuation. It must not wait for the entire goal to finish.
 plan '{"plan":[{"pause":true,"text":"BUSY TURN DONE"}]}'
 send '/goal new coordinate with the sender\r'; expect 'STREAM in flight'
-send '/queue not-between-turns\033\r'; expect 'S 1. /queue not-between-turns'
-send '/queue off\033\r'; expect 'S 2. /queue off'
+send '/queue not-between-turns\033\r'; expect 'Q 1. /queue not-between-turns'
+send '/queue off\033\r'; expect 'Q 2. /queue off'
 send '/queue\r'; expect 'Message queue: receiver-workspace'
+send '\033e'; expect_prompt '/queue off'
+send '\025/output compact\r'; expect 'applies from the next tool call'
+send '\033e'; expect_prompt '/queue not-between-turns'
+send '\025/output compact\r'; expect 'applies from the next tool call'
 send_message 'External hello two'
 expect 'approval'
 send '\033a\033y'
@@ -92,8 +96,8 @@ mv "$root/peer/config.tmp" "$root/peer/config.json"
 offset=$(wc -c <"$term/text")
 release
 expect_turn "$offset" 'QUEUED INBOUND DONE'
-contains "$term/feed" 'Change the message queue between turns'
-contains "$term/feed" 'Change messaging between turns'
+absent "$term/feed" 'Change the message queue between turns'
+absent "$term/feed" 'Change messaging between turns'
 tail -1 "$root/peer/requests.jsonl" >"$root/request"
 contains "$root/request" 'External hello two'
 sed -n "$((count+1))p" "$root/peer/requests.jsonl" >"$root/next-request"

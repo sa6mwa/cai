@@ -75,12 +75,14 @@ send '/reasoning-tool high high\r'; expect 'High effort'
 send '/reasoning-tool on\r'; expect 'on'
 plan "{\"chat\":$chat,\"plan\":[{\"pause\":true,\"tool\":\"set_reasoning\",\"arguments\":{\"mode\":\"high\"}},\"HOST WINS\"]}"
 send 'respect manual control\r'; expect 'STREAM in flight'
-send '/reasoning-tool off\033\r'; expect 'S 1. /reasoning-tool off'
+send '/reasoning-tool off\033\r'; expect 'Q 1. /reasoning-tool off'
 send '/reasoning low\033\r'; expect 'S 2. /reasoning low'
 release; expect_assistant 'HOST WINS'; expect 'Worked for'
-contains "$term/feed" 'Configure the reasoning tool between turns'
+absent "$term/feed" 'Configure the reasoning tool between turns'
+send '/reasoning-tool\r'; expect 'off'
 efforts '["medium","low"]'
 acknowledged
+send '/reasoning-tool on\r'; expect 'on'
 plan "{\"chat\":$chat,\"plan\":[{\"tool\":\"set_reasoning\",\"arguments\":{\"mode\":\"high\"}},\"TUI HIGH\"]}"
 prompt complex 'TUI HIGH'; efforts '["low","high"]'
 acknowledged

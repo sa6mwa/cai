@@ -101,16 +101,21 @@ last_request; contains "$root/request" 'staged, unstaged, and untracked'
 plan "$(jq -n --arg report "$report" '{plan:[{pause:true,pause_text:"",reasoning:["REVIEW QUEUE BARRIER"],text:$report},"QUEUED AFTER REVIEW"]}')"
 before=$(requests)
 send '/review\r'; expect 'REVIEW QUEUE BARRIER'
-send '/review uncommitted\033\r'; expect 'S 1. /review uncommitted'
-send '/review-and-fix\033\r'; expect 'S 2. /review-and-fix'
-send '/shell\r'; expect 'Shell is available only between turns.'
-send '\025'
+send '/review uncommitted\033\r'; expect 'Q 1. /review uncommitted'
+send '/review-and-fix\033\r'; expect 'Q 2. /review-and-fix'
+send '/shell\r'; expect 'Q 3. /shell'
+# These cannot run during a reviewer. Edit them before delivery rather than
+# expecting the old behavior which popped and rejected every command.
+for pending in '/shell' '/review-and-fix' '/review uncommitted'; do
+  send '\033e'; expect_prompt "$pending"
+  send '\025/output compact\r'; expect 'applies from the next tool call'
+done
 send '/status\r'; expect 'Metric'
 send 'Use the queued review findings\r'
 [[ $(requests) == $((before+1)) ]]
 release
 expect 'QUEUED AFTER REVIEW'
-contains "$term/feed" 'finish the active review'
+absent "$term/feed" 'finish the active review'
 last_request; contains "$root/request" 'Fix parser'
 # Cancelling an active child releases its parent for subsequent normal work.
 plan '{"plan":[{"tool":"create_goal","arguments":{"objective":"Parent goal"}},{"error":"PARENT GOAL WAIT"}]}'

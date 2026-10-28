@@ -29,7 +29,10 @@ count=$(requests)
 send '/shell-context off\r'; expect 'stay out of model context'
 queued_offset=$(wc -c <"$term/text")
 send 'queued behind the shell\r'; expect 'queued behind the shell'; [[ $(requests) == "$count" ]]
-send '!touch never-started\r'; expect 'a shell command is running'; [[ ! -e "$work/never-started" ]]
+send '!touch never-started\r'; expect 'Q 2. !touch never-started'
+send '\033e'; expect_prompt '!touch never-started'
+send '\025/output compact\r'; expect 'applies from the next tool call'
+[[ ! -e "$work/never-started" ]]
 plan '{"plan":["QUEUED DONE"]}'
 touch "$work/gate"; expect_turn "$queued_offset" 'QUEUED DONE'
 contains "$root/peer/requests.jsonl" EARLY-shellLATE-shell
