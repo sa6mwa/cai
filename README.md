@@ -142,7 +142,7 @@ runtime, review, storage, and presentation contracts.
 The musl SDK presets build the terminal coding agent as a statically linked
 Linux x86_64, aarch64 or armhf executable. The `cai` convenience preset selects
 the same x86_64 musl producer. It adds pinned softline 0.13.0 for the prompt and
-libmdf 0.15.0 for streamed Markdown rendering, and liblockdc 0.22.0 with
+libmdf 0.15.0 for streamed Markdown rendering, and liblockdc 0.23.0 with
 liblql 0.3.0 for durable storage. It uses libpslog 0.12.0 for logging.
 The native dependency SDK is cpkt 0.5.2 from
 [c89systems/cpkt](https://github.com/c89systems/cpkt). CAI consumes liblockdc's
