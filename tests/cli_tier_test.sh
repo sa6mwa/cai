@@ -28,7 +28,7 @@ for chat in false true; do
   jq -s --argjson before "$before" '.[ $before: ]' "$root/peer/requests.jsonl" >"$root/turn"
   json "$root/turn" 'length == 3 and .[0].service_tier == "default" and .[1].service_tier == "priority" and .[2].service_tier == "priority" and (.[1] | tostring | contains("DEFERRED USER INPUT") | not) and (.[2] | tostring | contains("DEFERRED USER INPUT"))'
   # Explicit selection and steering use the same next-request boundary.
-  for key in enter steer; do
+  for key in enter cycle steer; do
     plan "{\"chat\":$chat,\"catalog\":$catalog,\"plan\":[{\"pause\":true,\"tool\":\"read_file\",\"arguments\":{\"path\":\"input\"}},\"TIER $key CONTINUED\"]}"
     before=$(requests)
     send "routing $key\\r"; expect 'STREAM in flight'
@@ -36,10 +36,14 @@ for chat in false true; do
       send '/tier flex\r'; expect 'Q 1. /tier flex'
       expected=flex
       previous=priority
+    elif [[ "$key" == cycle ]]; then
+      send '/tier\r'; expect 'Q 1. /tier'
+      expected=default
+      previous=flex
     else
       send '/fast\033\r'; expect 'S 1. /fast'
       expected=priority
-      previous=flex
+      previous=default
     fi
     send '/tier list\r'; expect "Selected: $previous"
     release; expect_assistant "TIER $key CONTINUED"; expect 'Worked for'

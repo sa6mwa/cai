@@ -950,35 +950,95 @@ static int cli_shell_editor_key(sl_t *sl, sl_key_t key, void *context,
   return rc;
 }
 
-/* Inspectors and UI preferences do not submit model input or mutate the
- * running agent. Keep them available without consuming an unrelated queue. */
-static int cli_command_at_feed_boundary(const char *line) {
-  static const char *const queries[] = {
-      "/help",           "/status",    "/tools", "/skills",    "/goal",
-      "/model",          "/reasoning", "/theme", "/queue",     "/todo",
-      "/reasoning-tool", "/resume",    "/yolo",  "/retention", "/history"};
-  const char *arg = line + strcspn(line, " \t");
-  size_t length = (size_t)(arg - line), i;
+typedef enum cli_command_boundary {
+  CLI_COMMAND_PROMPT,
+  CLI_COMMAND_FEED,
+  CLI_COMMAND_REQUEST,
+  CLI_COMMAND_TURN
+} cli_command_boundary;
+
+/* One policy inventory for the complete slash-command surface. Bare queries
+ * can differ from mutations; neither Enter nor Alt-Enter changes the boundary
+ * required by a command. Ordinary conversation input keeps its native intent.
+ */
+static const struct cli_command_definition {
+  const char *name;
+  cli_command_boundary bare, arguments;
+} cli_command_definitions[] = {
+    {"/help", CLI_COMMAND_FEED, CLI_COMMAND_FEED},
+    {"/status", CLI_COMMAND_FEED, CLI_COMMAND_FEED},
+    {"/tools", CLI_COMMAND_FEED, CLI_COMMAND_FEED},
+    {"/skills", CLI_COMMAND_FEED, CLI_COMMAND_FEED},
+    {"/quit", CLI_COMMAND_FEED, CLI_COMMAND_FEED},
+    {"/exit", CLI_COMMAND_FEED, CLI_COMMAND_FEED},
+    {"/new", CLI_COMMAND_TURN, CLI_COMMAND_TURN},
+    {"/resume", CLI_COMMAND_FEED, CLI_COMMAND_TURN},
+    {"/review", CLI_COMMAND_TURN, CLI_COMMAND_TURN},
+    {"/review-and-fix", CLI_COMMAND_TURN, CLI_COMMAND_TURN},
+    {"/model", CLI_COMMAND_FEED, CLI_COMMAND_REQUEST},
+    {"/reasoning", CLI_COMMAND_FEED, CLI_COMMAND_REQUEST},
+    {"/tier", CLI_COMMAND_REQUEST, CLI_COMMAND_REQUEST},
+    {"/fast", CLI_COMMAND_REQUEST, CLI_COMMAND_REQUEST},
+    {"/goal", CLI_COMMAND_FEED, CLI_COMMAND_REQUEST},
+    {"/theme", CLI_COMMAND_FEED, CLI_COMMAND_REQUEST},
+    {"/yolo", CLI_COMMAND_FEED, CLI_COMMAND_TURN},
+    {"/reasoning-tool", CLI_COMMAND_FEED, CLI_COMMAND_TURN},
+    {"/queue", CLI_COMMAND_FEED, CLI_COMMAND_TURN},
+    {"/todo", CLI_COMMAND_FEED, CLI_COMMAND_TURN},
+    {"/trim", CLI_COMMAND_TURN, CLI_COMMAND_TURN},
+    {"/export", CLI_COMMAND_TURN, CLI_COMMAND_TURN},
+    {"/compact", CLI_COMMAND_TURN, CLI_COMMAND_TURN},
+    {"/shell", CLI_COMMAND_TURN, CLI_COMMAND_TURN},
+    {"/shellshare", CLI_COMMAND_TURN, CLI_COMMAND_TURN},
+    {"/autoqueue", CLI_COMMAND_FEED, CLI_COMMAND_FEED},
+    {"/output", CLI_COMMAND_FEED, CLI_COMMAND_FEED},
+    {"/history", CLI_COMMAND_FEED, CLI_COMMAND_FEED},
+    {"/retention", CLI_COMMAND_FEED, CLI_COMMAND_TURN},
+    {"/shell-context", CLI_COMMAND_FEED, CLI_COMMAND_FEED}};
+
+static int cli_word_is(const char *text, size_t length, const char *word) {
+  return strlen(word) == length && strncmp(text, word, length) == 0;
+}
+
+static cli_command_boundary cli_command_delivery(const char *line) {
+  const char *arg;
+  size_t length, arg_length, word_length, i;
+  if (line[0] == '!')
+    return CLI_COMMAND_TURN;
+  if (line[0] != '/')
+    return CLI_COMMAND_PROMPT;
+  length = strcspn(line, " \t");
+  arg = line + length;
   arg += strspn(arg, " \t");
-  if (*arg == '\0') {
-    for (i = 0U; i < sizeof(queries) / sizeof(queries[0]); i++)
-      if (strlen(queries[i]) == length &&
-          strncmp(line, queries[i], length) == 0)
-        return 1;
-  }
-  if (length == 5U && strncmp(line, "/goal", length) == 0)
-    return strcmp(arg, "status") == 0 || strcmp(arg, "help") == 0;
-  if (length == 5U && strncmp(line, "/tier", length) == 0)
-    return strcmp(arg, "list") == 0;
-  if (length == 5U && strncmp(line, "/todo", length) == 0)
-    return strcmp(arg, "list") == 0 || strcmp(arg, "help") == 0 ||
-           strcmp(arg, "layout") == 0 || strncmp(arg, "layout ", 7U) == 0 ||
-           strncmp(arg, "layout\t", 7U) == 0 || strncmp(arg, "see ", 4U) == 0 ||
-           strncmp(arg, "see\t", 4U) == 0;
-  return (length == 7U && strncmp(line, "/output", length) == 0) ||
-         (length == 8U && strncmp(line, "/history", length) == 0) ||
-         (length == 10U && strncmp(line, "/autoqueue", length) == 0) ||
-         (length == 14U && strncmp(line, "/shell-context", length) == 0);
+  arg_length = strlen(arg);
+  while (arg_length > 0U && strchr(" \t", arg[arg_length - 1U]) != NULL)
+    arg_length--;
+  word_length = strcspn(arg, " \t");
+  if (cli_word_is(line, length, "/goal") &&
+      (cli_word_is(arg, arg_length, "status") ||
+       cli_word_is(arg, arg_length, "help")))
+    return CLI_COMMAND_FEED;
+  if (cli_word_is(line, length, "/tier") &&
+      cli_word_is(arg, arg_length, "list"))
+    return CLI_COMMAND_FEED;
+  if (cli_word_is(line, length, "/todo") &&
+      (cli_word_is(arg, arg_length, "list") ||
+       cli_word_is(arg, arg_length, "help") ||
+       cli_word_is(arg, word_length, "layout") ||
+       cli_word_is(arg, word_length, "see")))
+    return CLI_COMMAND_FEED;
+  for (i = 0U;
+       i < sizeof(cli_command_definitions) / sizeof(cli_command_definitions[0]);
+       i++)
+    if (cli_word_is(line, length, cli_command_definitions[i].name))
+      return arg_length == 0U ? cli_command_definitions[i].bare
+                              : cli_command_definitions[i].arguments;
+  /* Reject unknown commands locally; they are never model steering. */
+  return CLI_COMMAND_FEED;
+}
+
+static int cli_command_at_feed_boundary(const char *line) {
+  return cli_command_delivery(line) == CLI_COMMAND_FEED;
 }
 
 static int cli_is_yolo(const char *line) {
@@ -991,31 +1051,16 @@ static int cli_is_compact(const char *line) {
          (line[8] == '\0' || line[8] == ' ' || line[8] == '\t');
 }
 
-/* Routing preferences affect the next request, not the next user turn.
- * Both Enter and Alt-Enter retain a native editable entry until that seam. */
+/* Agent controls and renderer changes use a response/tool seam, not a new
+ * user turn. Both submission keys retain an editable identity until then. */
 static int cli_command_at_request_boundary(const char *line) {
-  size_t length = strcspn(line, " \t");
-  return length == 5U && (strncmp(line, "/fast", length) == 0 ||
-                          strncmp(line, "/tier", length) == 0);
+  return cli_command_delivery(line) == CLI_COMMAND_REQUEST;
 }
 
 /* Queued UI commands share admission; delivery follows their actual contract
  * rather than whether Enter or Alt-Enter happened to produce a Q/S label. */
 static int cli_command_at_turn_boundary(const char *line) {
-  static const char *const commands[] = {
-      "/new",        "/resume", "/review",         "/review-and-fix", "/queue",
-      "/todo",       "/trim",   "/reasoning-tool", "/compact",        "/shell",
-      "/shellshare", "/export", "/retention"};
-  size_t i, length = strcspn(line, " \t");
-  if (cli_command_at_feed_boundary(line))
-    return 0;
-  if (line[0] == '!')
-    return 1;
-  for (i = 0U; i < sizeof(commands) / sizeof(commands[0]); i++)
-    if (strlen(commands[i]) == length &&
-        strncmp(line, commands[i], length) == 0)
-      return 1;
-  return 0;
+  return cli_command_delivery(line) == CLI_COMMAND_TURN;
 }
 
 static sl_prompt_queue_mode_t cli_prompt_mode(cli_state *state,
@@ -1025,8 +1070,7 @@ static sl_prompt_queue_mode_t cli_prompt_mode(cli_state *state,
     return mode;
   if (cli_command_at_turn_boundary(text))
     return SL_PROMPT_QUEUE_MODE_QUEUED;
-  if (!cli_command_at_feed_boundary(text) &&
-      strncmp(text, "/theme ", 7U) != 0 && strncmp(text, "/theme\t", 7U) != 0 &&
+  if (cli_command_delivery(text) == CLI_COMMAND_PROMPT &&
       !state->options.subagent_steering &&
       (state->review_runtime != NULL || state->foreground_subagent))
     return SL_PROMPT_QUEUE_MODE_QUEUED;
@@ -1108,28 +1152,29 @@ static int cli_prompt_ready(cli_state *state, const char *text,
     *ready = *ready && compact_ready;
     return rc;
   }
-  if (cli_command_at_turn_boundary(text) || state->shell.pid > 0)
+  if (cli_command_at_turn_boundary(text) || state->shell.pid > 0) {
+    if (*ready && cli_is_yolo(text)) {
+      int requested, effective, change_ready;
+      if (cli_yolo_value(text, &requested)) {
+        rc = cai_agent_runtime_get_yolo(state->runtime, &effective,
+                                        &change_ready, error);
+        if (rc == CAI_OK && requested != effective && !change_ready)
+          *ready = 0;
+      }
+    }
     return CAI_OK;
+  }
   if (cli_command_at_request_boundary(text)) {
-    if (!*ready && at_boundary && state->review_runtime == NULL &&
-        !state->foreground_subagent)
+    if (!*ready && at_boundary &&
+        (cli_word_is(text, strcspn(text, " \t"), "/theme") ||
+         (state->review_runtime == NULL && !state->foreground_subagent)))
       *ready = 1;
     return CAI_OK;
   }
   if (!*ready && mode == SL_PROMPT_QUEUE_MODE_STEER && at_boundary &&
-      (strncmp(text, "/theme ", 7U) == 0 ||
-       strncmp(text, "/theme\t", 7U) == 0 || state->options.subagent_steering ||
+      (state->options.subagent_steering ||
        (state->review_runtime == NULL && !state->foreground_subagent)))
     *ready = 1;
-  if (*ready && cli_is_yolo(text)) {
-    int requested, effective, change_ready;
-    if (cli_yolo_value(text, &requested)) {
-      rc = cai_agent_runtime_get_yolo(state->runtime, &effective, &change_ready,
-                                      error);
-      if (rc == CAI_OK && requested != effective && !change_ready)
-        *ready = 0;
-    }
-  }
   return rc;
 }
 
@@ -3783,9 +3828,8 @@ static int cli_theme_command(cli_state *state, const char *arguments,
   reason = cai_cli_theme_parse(name, &selected);
   if (reason != NULL)
     return cai_cli_error(error, CAI_ERR_INVALID, reason);
-  /* Queue policy admits a steering change at INPUT_BOUNDARY, with the
-   * worker paused. Ordinary queued changes retain their next-turn intent.
-   * The turn itself need not finish to replace a completed Markdown feed. */
+  /* Both submission keys retain this command until INPUT_BOUNDARY, with the
+   * worker paused, or idle. Never replace a renderer mid-response. */
   rc = cli_renderer_create(state, &selected, &renderer, error);
   if (rc == CAI_OK &&
       (cli_flush_command(state, 1) != 0 || cli_finish_response(state) != 0 ||
@@ -4393,8 +4437,10 @@ static int cli_handle_command(cli_state *state, const char *line,
         "# Help\n\n"
         "Your coding agent for the current directory. Enter a prompt to "
         "start a turn. Local queries respond immediately. While busy, Enter "
-        "queues prompts and agent changes; Alt-Enter delivers them at a safe "
-        "boundary. Alt-E edits pending input.\n\n"
+        "queues prompts; Alt-Enter steers at a safe boundary. Model, "
+        "reasoning, "
+        "tier, goal and theme changes use the next safe boundary with either "
+        "key. Alt-E edits pending input.\n\n"
         "## Slash commands\n\n"
         "| Command | Action |\n"
         "| --- | --- |\n"
@@ -4669,9 +4715,34 @@ static int cli_handle_command(cli_state *state, const char *line,
 static int cli_dispatch_command(cli_state *state, const char *line,
                                 cai_error *error, int *handled) {
   int rc;
+  char *normalized = NULL;
+  const char *command = line;
+  /* Classification and execution share horizontal-whitespace semantics.
+   * Preserve argument contents (especially goal text and file paths), and
+   * leave ! shell commands entirely untouched. The feed echoes the input. */
+  if (line[0] == '/') {
+    size_t name = strcspn(line, " \t"), length;
+    const char *arg = line + name;
+    arg += strspn(arg, " \t");
+    length = strlen(arg);
+    while (length > 0U && strchr(" \t", arg[length - 1U]) != NULL)
+      length--;
+    normalized = malloc(name + length + 2U);
+    if (normalized == NULL)
+      return cai_cli_error(error, CAI_ERR_NOMEM, "normalize command input");
+    memcpy(normalized, line, name);
+    if (length != 0U) {
+      normalized[name++] = ' ';
+      memcpy(normalized + name, arg, length);
+      name += length;
+    }
+    normalized[name] = '\0';
+    command = normalized;
+  }
   if (line[0] == '/' || line[0] == '!')
     cli_command_input(state, line);
-  rc = cli_handle_command(state, line, error, handled);
+  rc = cli_handle_command(state, command, error, handled);
+  free(normalized);
   if (cli_flush_command(state, rc == CAI_OK) != 0)
     rc = CAI_ERR_TRANSPORT;
   /* FIFO delivery can return without an active editor. Refresh the retained

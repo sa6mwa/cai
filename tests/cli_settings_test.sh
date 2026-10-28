@@ -42,8 +42,8 @@ selection() {
   settings_plan '[{"pause":true,"tool":"read_file","arguments":{"path":"data.txt"}},"BOUNDARY settings response"]'
   offset=$(wc -c <"$term/text"); send 'use a tool while switching settings\r'; expect 'STREAM in flight'; selection gpt-6.1-sol high
   count=$(requests)
-  send '/model gpt-6-luna low\033\r'; expect 'S 1. /model gpt-6-luna low'
-  send '/reasoning high\033\r'; expect 'S 2. /reasoning high'
+  send '/model gpt-6-luna low\r'; expect 'Q 1. /model gpt-6-luna low'
+  send '/reasoning high\r'; expect 'Q 2. /reasoning high'
   send '/model\r'; expect 'Reasoning effort: high'; [[ $(requests) == "$count" ]]
   release; expect_turn "$offset" 'BOUNDARY settings response'; selection gpt-6-luna high
   contains "$root/request" 'settings tool output'; absent "$root/request" /reasoning

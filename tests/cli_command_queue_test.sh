@@ -21,9 +21,15 @@ for command in '/review custom review scope' '/review-and-fix uncommitted' \
   '/theme dracula' '/queue on' '/queue cai.other' '/todo use other' \
   '/todo new other' '/todo layout list' '/reasoning-tool on' '/trim 1' \
   '/new' '/resume 1' '/export' '/shell' '/shellshare' '!sh' '!sh+' \
-  '!touch must-not-exist' '/no-such-command'; do
+  '!touch must-not-exist' '/no-such-command' \
+  '/help' '/status' '/tools' '/skills' '/quit' '/exit' '/resume' \
+  '/model' '/reasoning' '/tier' '/tier list' '/goal' '/goal status' '/goal help' \
+  '/theme' '/queue' '/todo' '/todo list' '/todo help' '/todo see DEF-001' \
+  '/todo layout board' '/reasoning-tool' '/trim' '/trim list' '/compact' \
+  '/yolo' '/yolo on' '/output' '/autoqueue' '/shell-context' '/history' '/retention'; do
   send "$command\r\033e"; expect_prompt "$command"
-  absent "$term/feed" "\$ $command"
+  tail -c +$((send_feed_offset+1)) "$term/feed" >"$root/admission-feed"
+  absent "$root/admission-feed" "\$ $command"
   send '\025/output compact\r'; expect 'applies from the next tool call'
 done
 [[ $(requests) == $((before+1)) && ! -e "$work/must-not-exist" ]]
@@ -55,19 +61,19 @@ command_plan '[{pause:true,pause_text:"TurnBoundaryBegin\n\n",tool:"get_goal",ar
   {pause:true,pause_gate:"release-after-seam",pause_text:"AfterToolSeam\n\n",text:"TurnBoundaryDone"}]'
 terminal_start -N
 send 'Wait across the tool seam\r'; expect TurnBoundaryBegin
-send '/theme plain\033\r'; expect 'S 1. /theme plain'
+send '/yolo on\033\r'; expect 'Q 1. /yolo on'
 send '\033\r'
 release; expect AfterToolSeam
-contains "$term/text" 'S 1. /theme plain'
-absent "$term/feed" 'Change themes between turns'
-send '\033e'; expect_prompt '/theme plain'
-send '\025/theme dracula\r'; expect 'S 1. /theme dracula'
+contains "$term/text" 'Q 1. /yolo on'
+absent "$term/feed" 'YOLO enabled.'
+send '\033e'; expect_prompt '/yolo on'
+send '\025/yolo off\r'; expect 'Q 1. /yolo off'
 touch "$root/peer/release-after-seam"
-expect TurnBoundaryDone; expect 'Theme changed to dracula:dracula.'
-absent "$root/peer/requests.jsonl" '/theme dracula'
+expect TurnBoundaryDone; expect 'YOLO disabled.'
+absent "$root/peer/requests.jsonl" '/yolo off'
 terminal_close
 
-# Enter must leave goal commands visible and editable until the turn ends.
+# Enter leaves goal controls editable until the next safe response seam.
 command_plan '[{pause:true,pause_text:"QueueGoalBegin\n\n",text:"QueueGoalEnd"}]'
 before=$(requests)
 terminal_start -N
@@ -85,7 +91,7 @@ send '/status\033\r'; expect 'Use /tools for the full inventory.'
 # boundary. Both queue insertion and Alt-E arrive in the same native input burst.
 send '/goal help\r\033e'; expect_prompt '/goal help'
 absent "$term/feed" '$ /goal help'
-send '\025/goal status\r'; expect 'Status: active'
+send '\025\033[200~/goal\tstatus  \033[201~\r'; expect 'Status: active'
 send '\033e'; expect_prompt '/goal pause'
 send '\025/goal clear\r'; expect 'Q 1. /goal clear'
 release; expect 'Goal control queued'
@@ -94,7 +100,7 @@ send '/goal\r'; expect 'No goal.'
 absent "$root/peer/requests.jsonl" '/goal clear'
 terminal_close
 
-# Alt-Enter also retains commands until a real seam. Edited clear and pause
+# Enter also retains commands until a real tool seam. Edited clear and pause
 # commands are local controls, never model steering, and preserve feed order.
 before=$(requests)
 command_plan '[{tool:"create_goal",arguments:{objective:"Steered goal objective"}},
@@ -102,9 +108,9 @@ command_plan '[{tool:"create_goal",arguments:{objective:"Steered goal objective"
   "MUST NOT CONTINUE THE PAUSED GOAL"]'
 terminal_start -N
 send 'Create and work on a goal\r'; expect SteerGoalBegin
-send '/goal clear\033\r'; expect 'S 1. /goal clear'
+send '/goal clear\r'; expect 'Q 1. /goal clear'
 send '\033e'; expect_prompt '/goal clear'
-send '\025/goal pause\033\r'; expect 'S 1. /goal pause'
+send '\025/goal pause\r'; expect 'Q 1. /goal pause'
 absent "$term/feed" '$ /goal pause'
 [[ $(requests) == $((before+2)) ]]
 release; expect 'goal=paused'; expect 'Worked for'
@@ -120,16 +126,13 @@ absent "$root/request" '/goal status'
 terminal_close
 
 # A rejected local steer reports its error once without aborting the turn or
-# leaking the command into inference. Quit obeys the same native queue.
+# leaking the command into inference. Quit uses the native queue but need not
+# wait for the active turn to finish before shutting it down.
 command_plan '[{pause:true,pause_text:"InvalidCommandBegin\n\n",text:"InvalidCommandEnd"}]'
 terminal_start -N
 send 'Stream until the seam\r'; expect InvalidCommandBegin
-send '/no-such-command\033\r'; expect 'S 1. /no-such-command'
-send '/quit\r'; expect 'Q 2. /quit'
-absent "$term/feed" '$ /no-such-command'
-absent "$term/feed" '$ /quit'
-release
-expect 'Unknown command.'
+send '/no-such-command\033\r'; expect 'Unknown command.'
+send '/quit\r'
 wait_for test -s "$term/status"
 wait "$terminal_pid"; terminal_pid=
 [[ $(cat "$term/status") == 0 ]]

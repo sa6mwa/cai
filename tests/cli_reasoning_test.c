@@ -20,12 +20,67 @@ static int test_command_queue_modes(void) {
                                       "/reasoning-tool off",
                                       "/export output.md",
                                       "/retention 30",
+                                      "/yolo on",
+                                      "/yolo off",
+                                      "/trim",
+                                      "/trim list 20",
+                                      "/todo use other",
+                                      "/shellshare",
+                                      "!sh",
+                                      "!sh+",
                                       "!ls"};
-  static const char *const steers[] = {
-      "ordinary steer", "/theme gruvbox:rose-pine-dawn",
-      "/model example", "/reasoning high",
-      "/goal pause",    "/yolo on"};
-  static const char *const requests[] = {"/fast", "/tier", "/tier flex"};
+  static const char *const requests[] = {"/fast",
+                                         "/tier",
+                                         "/tier flex",
+                                         "/tier\tpriority  ",
+                                         "/theme gruvbox:rose-pine-dawn",
+                                         "/theme\tplain",
+                                         "/model example",
+                                         "/model high",
+                                         "/model example high",
+                                         "/reasoning high",
+                                         "/goal pause",
+                                         "/goal resume",
+                                         "/goal clear",
+                                         "/goal new objective"};
+  static const char *const feed[] = {"/help",
+                                     "/status",
+                                     "/tools",
+                                     "/skills",
+                                     "/quit",
+                                     "/exit",
+                                     "/resume",
+                                     "/model",
+                                     "/reasoning",
+                                     "/theme",
+                                     "/yolo",
+                                     "/reasoning-tool",
+                                     "/queue",
+                                     "/todo",
+                                     "/goal",
+                                     "/goal status",
+                                     "/goal help",
+                                     "/tier list",
+                                     "/tier\tlist  ",
+                                     "/todo list",
+                                     "/todo help",
+                                     "/todo see DEF-001",
+                                     "/todo see",
+                                     "/todo layout",
+                                     "/todo layout list",
+                                     "/todo layout\tboard",
+                                     "/autoqueue",
+                                     "/autoqueue on",
+                                     "/output",
+                                     "/output full",
+                                     "/history",
+                                     "/history 20",
+                                     "/retention",
+                                     "/shell-context",
+                                     "/shell-context off",
+                                     "/unknown-command",
+                                     "/fastest",
+                                     "/tiers"};
   cli_state state;
   sl_prompt_queue_policy_t policy;
   size_t i;
@@ -41,14 +96,17 @@ static int test_command_queue_modes(void) {
             SL_PROMPT_QUEUE_MODE_QUEUED)
       return 1;
   }
-  for (i = 0U; i < sizeof(steers) / sizeof(steers[0]); i++) {
+  for (i = 0U; i < sizeof(feed) / sizeof(feed[0]); i++) {
     memset(&policy, 0, sizeof(policy));
-    if (cli_prompt_policy(NULL, steers[i], SL_PROMPT_QUEUE_MODE_STEER, &policy,
+    if (cli_prompt_policy(NULL, feed[i], SL_PROMPT_QUEUE_MODE_QUEUED, &policy,
                           &state) != SL_OK ||
-        policy.enqueue)
+        !policy.enqueue || !policy.independent || !policy.executable ||
+        !cli_command_at_feed_boundary(feed[i]))
       return 1;
-    if (cli_prompt_mode(&state, steers[i], SL_PROMPT_QUEUE_MODE_STEER) !=
-        SL_PROMPT_QUEUE_MODE_STEER)
+    memset(&policy, 0, sizeof(policy));
+    if (cli_prompt_policy(NULL, feed[i], SL_PROMPT_QUEUE_MODE_STEER, &policy,
+                          &state) != SL_OK ||
+        !policy.enqueue || !policy.independent || !policy.executable)
       return 1;
   }
   for (i = 0U; i < sizeof(requests) / sizeof(requests[0]); i++) {
@@ -81,6 +139,13 @@ static int test_command_queue_modes(void) {
   }
   state.foreground_subagent = 1;
   state.options.subagent_steering = 0;
+  memset(&policy, 0, sizeof(policy));
+  if (cli_prompt_policy(NULL, "ordinary prompt", SL_PROMPT_QUEUE_MODE_QUEUED,
+                        &policy, &state) != SL_OK ||
+      policy.enqueue || policy.independent || policy.executable ||
+      cli_prompt_mode(&state, "ordinary prompt", SL_PROMPT_QUEUE_MODE_QUEUED) !=
+          SL_PROMPT_QUEUE_MODE_QUEUED)
+    return 1;
   return cli_prompt_mode(&state, "child steer", SL_PROMPT_QUEUE_MODE_STEER) ==
                      SL_PROMPT_QUEUE_MODE_QUEUED &&
                  cli_prompt_mode(&state, "/theme plain",

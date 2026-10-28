@@ -182,19 +182,20 @@ response/tool boundary. The application does not keep a second UI queue.
 Read-only local commands such as `/goal`, `/status`, `/model` and `/tier list`
 use the same Softline queue but can run between feed writes, even while
 inference is pending. Approval and active edits remain under Softline's control;
-inspecting state does not restart FIFO delivery stopped by Escape. Agent changes
-such as `/goal pause` and `/model MODEL` follow the native input keys: Enter
-queues them after the current turn; Alt-Enter keeps them editable until the
-next response/tool boundary, where CAI applies them locally. Commands never
-become model steering text. `/quit` follows the same queue; Alt-Q saves the
-draft and exits directly.
+inspecting state does not restart FIFO delivery stopped by Escape. Model,
+reasoning, tier, goal and theme changes remain editable until the next safe
+response/tool boundary with either Enter or Alt-Enter. Commands execute locally
+and never become model steering text. `/quit` and `/exit` use the native queue
+but can shut down an active turn; Alt-Q saves the draft and exits directly.
 All typed slash and `!COMMAND` inputs enter Softline's visible, editable queue,
 including while idle. Its native policy keeps approval, execution readiness and
 Escape's stopped backlog separate. A fresh `/goal resume` can run after Escape
 without releasing old stopped entries. Editing an old stopped entry retains
 its stop; Alt-Enter explicitly promotes that entry. Whole-turn commands such as
-`/review`, `/compact` and `/shell` stay queued until idle, even with steering
-intent. Local `!COMMAND` results enter model context at the next safe boundary.
+`/review`, `/compact`, `/shell` and `/yolo on|off` become `Q` and wait until idle,
+even when entered as steering. Local `!COMMAND` results enter model context at
+the next safe boundary. The complete command/boundary inventory is in
+[the command policy audit](docs/interactive-command-audit.md).
 A steering prompt appears in the
 conversation feed only when the runtime inserts it after the current response
 or tool round. It never interrupts streamed assistant text. Resume uses those
@@ -397,8 +398,8 @@ provider requests or execute tools.
 ### Manual context compaction
 
 `/compact` starts a standalone compaction task between turns. While busy it
-stays in Softline's native editable queue. Alt-Enter retains its steering label
-but cannot waive the whole-turn hold or steer the model. Escape cancels the task. Progress
+stays in Softline's native editable queue. Alt-Enter becomes `Q` and cannot
+waive the whole-turn hold or steer the model. Escape cancels the task. Progress
 appears in the gray status line and completion in the Markdown feed.
 
 The worker uses the same compactor as automatic compaction: streamed Responses
@@ -570,7 +571,8 @@ is `default:default`. Set `CAI_THEME` or `[ui] theme = "synthwave"` in
 and their configured environment prefix replaces `CAI_`.
 In the TUI, `/theme` shows the current pair, all softline pairings, and all
 libmdf themes. `/theme synthwave` or `/theme riced:iosvkem` changes future
-output between turns. The selection survives `/new` and `/resume` within
+output at the next safe response/tool boundary with either submission key.
+The selection survives `/new` and `/resume` within
 the app invocation; it does not rewrite `config.ini` or session history.
 `ascii` is a libmdf output mode, not a theme: it disables Markdown ANSI styling
 while retaining UTF-8 text. `NO_COLOR` selects the plain prompt and disables

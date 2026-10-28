@@ -254,8 +254,8 @@ to the Markdown introduction and conversation feed; raw banners stay verbatim
 and logger configuration remains independent.
 The same TUI provides `/theme` to show the active pair and both libraries'
 themes, and `/theme NAME` or `/theme SOFTLINE:LIBMDF` to change the selection.
-Alt-Enter applies a theme change at the next steering boundary during a turn;
-ordinary queued submissions retain their next-turn intent. Active command
+Enter and Alt-Enter apply a theme change at the next safe response/tool boundary
+during a turn. Active command
 display state survives the change. Commands that require a whole turn boundary
 are reclassified as ordinary `Q` entries when submitted with Alt-Enter, leaving
 later valid steers eligible at their own boundaries.

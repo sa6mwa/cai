@@ -5,6 +5,23 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-056: Command boundary policies differ across the interactive surface
+
+- **Status:** fixed.
+- **Evidence:** several settings followed ordinary Q/S prompt intent rather
+  than their runtime contract. Whole-turn-only operations had inconsistent
+  mode labels; the audit and some tests still described obsolete behavior.
+- **Resolution:** one complete command inventory classifies feed-local,
+  response/tool-boundary and idle-only operations. Model, effort, tier,
+  goal and theme changes use the next safe seam with either submission key.
+  Queries/preferences stay feed-local; stable-runtime operations become Q.
+  Unknown commands and explicit exit execute locally. Softline retains native
+  admission, identity, approval, editing and stopped-entry ownership.
+- **Verification:** focused Debug classification, full command-inventory
+  editing, wire-level Enter settings/tier cycling, theme/steer ordering,
+  cancellation/approval, idle-only operations and both provider protocols.
+  The complete decision matrix is in `docs/interactive-command-audit.md`.
+
 ## BUG-055: Enter-submitted tier changes wait for the whole turn
 
 - **Status:** fixed.

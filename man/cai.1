@@ -627,16 +627,15 @@ Read-only local commands, including /goal, /status, /model and /tier list,
 use the same prompt queue but may run between feed writes while inference is
 pending. Approval and active edits remain under Softline's control. Inspecting
 state does not restart FIFO delivery stopped by Escape.
-Agent changes such as /goal pause or /model MODEL use the native input keys:
-Enter queues them after the current turn, and Alt-Enter keeps them editable
-until the next response/tool boundary. Commands execute locally and never
-become model steering text. /quit follows the same queue; Alt-Q saves the
-draft and exits directly.
+Model, reasoning, tier, goal and theme changes stay editable until the next
+response/tool boundary with either Enter or Alt-Enter. Commands execute locally
+and never become model steering text. /quit and /exit use the native queue but
+can shut down an active turn; Alt-Q saves the draft and exits directly.
 Typed slash and shell commands enter the native queue even while idle.
 Execution readiness is separate from approval, editing and cancellation.
 A fresh /goal resume can run after Escape while the old backlog remains stopped.
 Editing old stopped work retains its stop until explicit Alt-Enter promotion.
-Whole-turn commands retain their native Q/S intent but cannot run mid-turn.
+Whole-turn commands become Q and cannot run mid-turn, even with Alt-Enter.
 .TP
 .BI \-\-tool-output " MODE"
 Select interactive tool previews: compact (default) or full.
@@ -658,8 +657,8 @@ Show the version.
 .TP
 .B /compact
 Compact conversation context between turns. While busy, the command stays in
-the native editable Softline queue. Alt-Enter retains steering intent but does
-not waive the whole-turn execution hold or steer the model. Escape cancels.
+the native editable Softline queue. Alt-Enter becomes Q and does not waive the
+whole-turn execution hold or steer the model. Escape cancels.
 Responses providers use streamed V2 compaction; Chat Completions providers use
 client-side summarization. No user prompt, tool execution or follow-up answer
 is generated. Successful replacement is checkpointed before completion;
@@ -702,8 +701,8 @@ examples. This command is local and does not send a model request.
 .BI /theme " [NAME|SOFTLINE:LIBMDF]"
 With no argument, show the current pair, all softline pairings and all libmdf
 themes through the Markdown feed. Accepts the same aliases and explicit pairs
-as --theme. Alt-Enter applies changes at the next steering boundary during a
-turn; ordinary queued submissions retain their next-turn intent. Changes affect future output in
+as --theme. Enter and Alt-Enter apply changes at the next safe response/tool
+boundary during a turn. Changes affect future output in
 this app invocation, including after /new and /resume. Configuration and
 session history are not rewritten. NO_COLOR continues to override styling.
 .TP

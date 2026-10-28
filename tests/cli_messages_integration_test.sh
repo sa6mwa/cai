@@ -77,8 +77,8 @@ run --list; ok
 # goal continuation. It must not wait for the entire goal to finish.
 plan '{"plan":[{"pause":true,"text":"BUSY TURN DONE"}]}'
 send '/goal new coordinate with the sender\r'; expect 'STREAM in flight'
-send '/queue not-between-turns\033\r'; expect 'S 1. /queue not-between-turns'
-send '/queue off\033\r'; expect 'S 2. /queue off'
+send '/queue not-between-turns\033\r'; expect 'Q 1. /queue not-between-turns'
+send '/queue off\033\r'; expect 'Q 2. /queue off'
 send '/queue\r'; expect 'Message queue: receiver-workspace'
 send '\033e'; expect_prompt '/queue off'
 send '\025/output compact\r'; expect 'applies from the next tool call'

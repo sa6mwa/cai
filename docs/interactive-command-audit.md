@@ -1,189 +1,113 @@
-# Interactive input and command audit
+# Interactive command policies
 
-Historical audited baseline: `fce46cb`, including the corresponding static musl
-`cai`. The original baseline excluded then-uncommitted `/yolo` changes.
+CAI uses Softline 0.14.0's native queue policies. The complete inventory is
+`cli_command_definitions` in `cli/app_run.c`; argument-specific query forms are
+resolved by `cli_command_delivery`. Admission, readiness, mode normalization and
+owner-thread consumption use that same classification. This replaces the earlier
+audit's historical classifications.
 
-## Current disposition
+## Boundaries
 
-The fixes following `50de6d7` remove forced busy `!COMMAND` submission and account
-for active shells in Softline's busy lifecycle. Typed commands entered while
-busy, including `/shell`, use the editable native queue. Idle-only commands
-retain that ownership through tool seams even after empty-editor Alt-Enter.
-`/todo layout board|list` is now feed-local. Approval holds and queue edits are
-preserved. Tests cover both Responses and Chat Completions with local fixtures.
-
-Softline 0.14.0 completes uniform idle command admission. Its native classifier
-queues every typed slash/shell command; CAI declares execution readiness by
-identity and consumes only entries marked eligible. Independent feed-local
-queries can pass blocked work. Whole-turn commands become Q and wait until idle.
-Enter/Alt-Enter/Tab are no longer intercepted by CAI.
-Fresh managed commands can execute after Escape while the old backlog remains
-stopped. Re-editing old work retains its stop until explicit promotion. There
-is no global delivery-mode workaround, queue reinsert/rebinding, fake submission,
-profile reset or second application queue. The completed upstream request is
-`stash/softline-command-queue-policies-cr.md`.
-
-Trusted host controls (`CAI_APP_STEER` and goal operations), startup instructions
-and non-interactive invocations keep their documented API behavior. They are
-separate from the human TUI command path. Slow synchronous work *after* command
-delivery remains a separate concern; this change does not make it asynchronous.
-
-`/fast`, `/tier` and `/tier NAME` are independent request preferences: both Enter
-and Alt-Enter remain editable until the next runtime input boundary, then update
-the next provider request within the active turn. They do not interrupt the
-in-flight request, become model input, or wait behind queued conversation turns.
-`/tier list` remains a feed-local query. Approval, editing and stopped-entry
-eligibility remain under Softline's control. Changes during an active foreground
-subagent wait until the parent can accept settings.
-
-The findings, matrix and probes below describe the historical baseline. In
-particular, their forced pipe-submission, hidden pipe-backlog, busy-shell
-rejection and popped-command findings have been addressed as described above.
-
-The requested contract is that commands can enter Softline's visible, editable
-queue on Enter, including while idle. The application consumes them when their
-delivery boundary is eligible. Feed boundaries, model/tool boundaries and turn
-boundaries are different. A command being queued does not establish that its
-eventual execution is asynchronous. Synchronous execution after delivery is a
-separate property, not evidence that admission bypassed Softline.
-
-## Historical gaps in queue ownership
-
-1. **Most slash commands still bypass queue admission while idle.**
-   `cli_editor_key` explicitly enqueues only the feed-command allowlist. All
-   other slash commands fall through to the queued-turns profile's normal idle
-   Enter behavior: `sl_next_prompt` returns the submitted line directly, and
-   `cli_dispatch_command` runs it. `/review` is in this group. This native
-   behavior is legitimate Softline behavior; failing to route the requested
-   application commands through its queue is CAI's omission.
-2. **`!COMMAND` still has an explicit submission override.** Fresh Enter and
-   Alt-Enter request `SL_KEY_ACTION_SUBMIT`, even while busy. Editing an existing
-   queued entry is the exception. The child runs asynchronously, but that does
-   not make its admission use the editable queue.
-3. **Normal prompts can move into a hidden queue behind `!COMMAND`.**
-   `cli_sync_status` derives busy from model/turn state, omitting the user shell
-   process. While the model is idle and the pipe command is running, Enter can
-   return a normal prompt directly. The owner loop then calls
-   `cai_agent_runtime_submit_queued` because `state.shell.pid > 0`. Pending input
-   is now in libcai rather than Softline and Alt-E cannot retrieve it.
-4. **An ineligible command can be removed and rejected instead of retained.**
-   The queue consumer takes an approved steering entry before dispatching its
-   command. At a model/tool seam, operations requiring a fully idle runtime may
-   then fail their own busy guards. The command is no longer editable. Affects
-   `/review`, `/new`, `/resume NUMBER`, `/theme NAME`, `/queue on|off|NAME`,
-   `/todo use|new NAME`, `/reasoning-tool` changes and `/trim COUNT`. During an
-   active reviewer, `/review-and-fix` is another example. Existing regression
-   tests explicitly expect some of these errors; that expectation does not
-   prove correct retention until the appropriate boundary.
-5. **Some local display changes wait for a turn unnecessarily.**
-   `/todo layout` is feed-eligible, but `/todo layout board|list` is not in the
-   feed allowlist. The setting change is therefore treated like an ordinary
-   queued turn on busy Enter, or a steering command on Alt-Enter. The handler
-   also fetches a board snapshot after changing the layout.
-6. **Interactive host steering still bypasses Softline.**
-   `CAI_APP_QUEUE_PROMPT` injects into Softline, but `CAI_APP_STEER` directly calls
-   the runtime steering API. Host goal controls likewise call goal operations
-   directly. These are documented trusted-host control paths, not a new
-   regression; nevertheless, they are exceptions to a claim that every
-   interactive injection remains editable in Softline. Core libcai without the
-   application has no Softline dependency and is not expected to use its queue.
-
-## Historical command admission matrix
-
-Outside history search, with no queued draft currently being edited:
-
-| Commands | Enter while idle | Enter while busy | Other delivery details |
-| --- | --- | --- | --- |
-| `/help`, `/status`, `/tools`, `/skills` | Explicit native enqueue | Explicit native enqueue | Eligible between feeds. |
-| `/goal`, `/goal status`, `/goal help` | Explicit native enqueue | Explicit native enqueue | Queries/help, not model steering. |
-| `/model`, `/reasoning` without arguments | Explicit native enqueue | Explicit native enqueue | Catalog operations can run synchronously after taking the entry. |
-| `/tier list` | Explicit native enqueue | Explicit native enqueue | Other `/tier` forms are not in this class. |
-| `/theme`, `/queue`, `/reasoning-tool` without arguments | Explicit native enqueue | Explicit native enqueue | Queries, not their setting-changing forms. |
-| `/todo`, `/todo list`, `/todo help`, `/todo layout`, `/todo see ID` | Explicit native enqueue | Explicit native enqueue | Board reads can block during execution. |
-| `/output [compact|full]`, `/autoqueue [on|off]`, `/shell-context [on|off]` | Explicit native enqueue | Explicit native enqueue | Includes invalid values, which are validated after delivery. |
-| `/resume` without a number | Explicit native enqueue | Explicit native enqueue | Listing reads session storage synchronously. |
-| `/review` with any scope | **Direct submission** | Native ordinary queue | Busy Alt-Enter makes a steering entry; no command-specific idle eligibility gate. |
-| `/review-and-fix` with any scope | **Direct submission** | Native ordinary queue | Goal preparation may perform Git work. |
-| `/model MODEL [EFFORT]`, `/model EFFORT`, `/reasoning EFFORT` | **Direct submission** | Native ordinary queue | Busy Alt-Enter uses the model/tool seam. |
-| `/goal new TEXT`, `/goal pause`, `/goal resume`, `/goal clear` | **Direct submission** | Native ordinary queue | Busy Alt-Enter uses the model/tool seam. |
-| `/tier`, `/tier NAME`, `/fast` | **Direct submission** | Native ordinary queue | Busy Alt-Enter uses the model/tool seam. |
-| `/theme NAME`, `/queue on|off|NAME`, `/todo use|new NAME`, `/reasoning-tool` changes | **Direct submission** | Native ordinary queue | Busy Alt-Enter can consume the command before its idle guard succeeds. |
-| `/todo layout board|list` | **Direct submission** | Native ordinary queue | Local preference is missing from the feed-command classification. |
-| `/trim`, `/trim list [LIMIT]`, `/trim COUNT` | **Direct submission** | Native ordinary queue | History APIs require an idle runtime. |
-| `/new`, `/resume NUMBER`, `/export [ID]` | **Direct submission** | Native ordinary queue | Storage/session work occurs in the command handler. |
-| `/quit`, `/exit`, unknown slash commands | **Direct submission** | Native ordinary queue | Busy Alt-Enter uses the steering seam. |
-| Fresh `!COMMAND` | **Forced direct submission** | **Forced direct submission** | Existing queue edits keep their native delivery intent. |
-| `/shell`, `/shellshare`, `!sh`, `!sh+` | Guarded direct handoff | Rejected with draft retained | Explicitly implemented as non-queueable terminal handoffs. |
-
-For the ordinary slash-command rows, busy Alt-Enter creates a native steering
-entry. The consumer still needs a command-specific eligibility check; its Q/S
-label alone cannot determine whether the operation can run.
-
-History-search selection, approval and an active Alt-E edit retain Softline's
-own handling. Alt-S intentionally suspends the editor for terminal handoff;
-Alt-Q intentionally saves the draft and exits. Startup automation, batch mode
-and `--review` are separate from the interactive `/review` command.
-
-## Synchronous work after delivery
-
-These are execution properties, separate from the admission defects above.
-They explain why a consumed command can stop input processing. They have not
-all been reproduced with slow backends.
-
-| Commands or callbacks | Work on the UI owner thread |
+| Boundary | Behavior with Enter or Alt-Enter |
 | --- | --- |
-| `/review` startup, all scopes | Child runtime creation, instruction/skill loading, request preparation, durable parent pause/checkpoint. Default/base scopes also run Git capture with blocking `read`/`waitpid`. The reviewer watch is added afterward. |
-| Reviewer completion callback | Durable report handoff/checkpoint and child close before returning to Softline. |
-| `/review-and-fix` without explicit scope | Git default-branch resolution before goal admission. |
-| `/model`/`/reasoning` queries | Online model-catalog call where the endpoint policy supports live discovery. OpenRouter's suppressed listing and providers without a live catalog are exceptions. |
-| `/model MODEL [EFFORT]`, `/reasoning EFFORT` | Metadata lookup/validation; idle setting application/checkpoint. A model switch may also compact history synchronously. |
-| `/tier [list|NAME]`, `/fast` | Catalog lookup if uncached; idle setting application/checkpoint. |
-| `/status` with ChatGPT quota enabled | `cli_refresh_quota(state, 1)` passes `wait=1` to the quota worker and waits on its condition variable. Having a worker does not make this caller nonblocking. |
-| `/resume`, `/new`, `/resume NUMBER` | Stored-session listing, close/open, replay and associated initialization. |
-| `/export [ID]` | Document lease acquisition, session reads and both exports. |
-| `/queue on|off` | Close/reopen the runtime, stop/start message services and restore session state. |
-| `/queue NAME` | Mailbox acquisition, old consumer stop/wait and replacement consumer start. |
-| `/todo` board/list/detail/layout views | The producer uses a thread, but the UI thread parses its reader synchronously and waits for data/completion. Board selection also checkpoints. |
-| `/trim` listing/removal | Stable history traversal or mutation/checkpoint. |
-| Goal-changing commands | Durable journal append during runtime admission, followed by worker-side application. |
-| Automatic status refresh | Git branch capture uses synchronous pipe read and `waitpid` at startup and busy-to-idle transitions. This can block without a slash command. |
-| Incoming-message callbacks | Dirty-inbox queries/document loads and consumed/rejected tombstone writes occur on the owner thread. Background queue consumption does not eliminate these storage waits. |
+| Feed | Execute between owner-thread feed writes. No provider input is submitted. |
+| Request | Execute at the next runtime `INPUT_BOUNDARY`, after the response/tool round and before the next request, or while idle. The in-flight request keeps its original settings. |
+| Turn | Wait until the turn, shell and foreground review finish. Normalize steering intent to visible `Q`; the original identity remains editable. |
+| Conversation prompt | Enter queues a new turn; Alt-Enter steers at a runtime input boundary. Native ordering and approval rules remain authoritative. |
 
-`/tools` formats the captured inventory; it does not itself perform a new remote
-MCP discovery. `/skills` visits the captured catalog. `/goal` queries and the
-pure display settings have no identified long operation of their own, apart
-from locks and rendering. Initial MCP discovery can still occur during runtime
-construction, with its configured per-server timeout.
+Feed and request commands are independent native managed entries: unrelated
+queued conversation input cannot delay them, and an unready command does not
+block a later conversation steer. They remain approval-controlled, editable,
+cancellable and stopped when appropriate. Request readiness is false during
+streaming; submission never inserts command output into that response.
 
-## Reproduction and verification limits
+Turn-only commands submitted while busy use Softline's ordinary admission lane,
+with readiness held until idle. They become `Q`, so native steering can pass
+them. Idle commands use managed admission, retaining same-burst Enter/Alt-E
+editing before dispatch. There is no second UI queue, synthetic key submission,
+global delivery-mode workaround or queue removal/reinsertion.
 
-Two event-gated probes used the last committed static musl binary and the
-existing terminal/HTTP fixtures, without live inference:
+## Complete command inventory
 
-1. Hold the Git `symbolic-ref --quiet refs/remotes/origin/HEAD` operation on a
-   FIFO while starting idle `/review`. CAI remains inside preparation, before
-   any model POST and before the command feed echo. The native terminal remains
-   owned, but subsequent input is not serviced. Releasing the gate allows the
-   reviewer to start and finish. This proves a CAI owner-thread wait, not a
-   Softline fault.
-2. Hold an explicitly run pipe command on a FIFO, submit a normal prompt, then
-   press Alt-E. The runtime logs `turn_queued`, no model request starts until
-   the shell finishes, and Softline cannot restore the prompt. Releasing the
-   shell gate allows that hidden input to run.
+| Command | Boundary | Reason |
+| --- | --- | --- |
+| `/help` | Feed | Local help. |
+| `/status` | Feed | Runtime/status snapshots and tool inventory. |
+| `/tools` | Feed | Tool/MCP inventory. |
+| `/skills` | Feed | Skill catalog. |
+| `/model` | Feed | Model and reasoning choices. |
+| `/model MODEL [EFFORT]`, `/model EFFORT` | Request | Settings for subsequent inference. |
+| `/reasoning` | Feed | Current model's advertised efforts. |
+| `/reasoning EFFORT` | Request | Effort for subsequent inference. |
+| `/tier list` | Feed | Current/pending routing and choices. |
+| `/tier`, `/tier NAME`, `/fast` | Request | Cycle, select or toggle routing within the current turn. |
+| `/goal`, `/goal status`, `/goal help` | Feed | Inspect the goal or its controls. |
+| `/goal new TEXT`, `/goal pause`, `/goal resume`, `/goal clear` | Request | Explicit parent goal controls, never model steering text. |
+| `/theme` | Feed | Inspect themes. |
+| `/theme NAME[:NAME]` | Request | Replace the renderer after its current response, retaining tool display state. |
+| `/output [compact\|full]` | Feed | Set the display preference for future tool calls. |
+| `/history [COUNT]` | Feed | Inspect/configure prompt recall. |
+| `/shell-context [on\|off]` | Feed | Set sharing for future shell calls. |
+| `/autoqueue [on\|off]` | Feed | Change native incoming-message approval policy; bare form toggles it. |
+| `/yolo` | Feed | Inspect effective/pending confinement. |
+| `/yolo on`, `/yolo off` | Turn | Reconfigure built-in tool contexts only when runtime/tools are stable. |
+| `/reasoning-tool` | Feed | Inspect optional tool configuration. |
+| `/reasoning-tool on\|off\|normal LEVEL\|high LEVEL` | Turn | Reconfigure tool registration/mappings. |
+| `/queue` | Feed | Inspect the mailbox or show how to enable messaging. |
+| `/queue on\|off\|NAME` | Turn | Reopen integration or change consumer ownership. |
+| `/todo`, `/todo list`, `/todo help`, `/todo see ID` | Feed | Read boards or a card. |
+| `/todo layout [board\|list]` | Feed | Inspect/change local layout and display the board. |
+| `/todo use NAME`, `/todo new NAME` | Turn | Commit the runtime's selected board. |
+| `/retention` | Feed | Inspect conversation retention. |
+| `/retention DAYS\|off` | Turn | Update collection/session leases without racing runtime commits. |
+| `/trim`, `/trim list [LIMIT]`, `/trim COUNT` | Turn | History APIs require a stable runtime. |
+| `/export [BASENAME]` | Turn | Export consistent retained history. |
+| `/resume` | Feed | List conversations. |
+| `/resume NUMBER` | Turn | Switch the active runtime. |
+| `/new` | Turn | Create and switch conversations. |
+| `/review [SCOPE]` | Turn | Start an isolated foreground review. |
+| `/review-and-fix [SCOPE]` | Turn | Start goal-driven review/fix work. |
+| `/compact` | Turn | Start only when `can_compact` permits it. |
+| `/shell`, `/shellshare`, `!sh`, `!sh+` | Turn | Transfer terminal ownership; only shared forms record output. |
+| `!COMMAND` | Turn | Execute a user shell command. |
+| `/quit`, `/exit` | Feed | Shut down without waiting for an active turn to complete. |
+| Unknown slash commands | Feed | Reject locally; never forward as model steering. |
 
-The disposable controller is `build/debug/softline-owner-audit.sh`. Model-catalog
-HTTP blocking is identified by its synchronous call path; exploratory loopback
-endpoint probes did not exercise live catalog policy and are not claimed as
-latency evidence.
+Horizontal whitespace separating a slash command and its arguments, and trailing
+horizontal whitespace, mean the same during classification and dispatch. The
+original input is echoed/recorded; argument interiors and shell text are preserved.
 
-The earlier CLI tests covered queue editing and steering after streams or child
-reviews had already started. They did not assert uniform admission while idle,
-retention of ineligible command entries, responsiveness during preparation, or
-Softline ownership of normal input behind a user-run pipe command. Passing those
-tests did not establish a complete cutover.
+## Foreground reviews and subagents
 
-The next implementation should make admission and boundary eligibility common
-to command variants. It must preserve native queue identities, edits, approval
-holds and cancellation, and distinguish slow execution after delivery from
-whether the command was queued in the first place. `/yolo` should use that same
-path rather than becoming another isolated exception.
+Conversation steers reach the active child when subagent steering is enabled;
+otherwise they become `Q`. Parent settings and goal controls wait for a parent
+input boundary; they do not retarget a review's configuration or goal. Themes
+are UI-local and may change at a child's completed response/tool seam. Queries
+remain available. Turn-only operations wait for the child to finish.
+
+## Cancellation, editing and delivery
+
+Readiness follows runtime, shell and owner-loop events through
+`sl_prompt_queue_set_executable`. Consumers take only natively eligible entries.
+Execution readiness never overrides approval or stopped state. Escape stops
+retained work. Fresh managed actions can execute without resuming that backlog;
+passive inspection and edits do not resume it. Alt-E edits the admitted identity.
+
+Conversation steering that misses the final active seam can start at idle only
+when native delivery, approval, draft/search and stopped state permit it.
+Alt-S's draft-retaining shell handoff and Alt-Q's draft-saving exit are explicit
+editor actions. Trusted host controls, startup automation, batch input and the
+standalone `--review` option retain their separate documented APIs.
+
+## Synchronous work and verification
+
+Admission and execution are distinct. Safely admitted `/model`, `/tools`,
+`/status` and `/resume` can still synchronously load catalogs, discover MCP tools
+or read storage. This audit does not make those operations asynchronous.
+
+Focused Debug checks cover every command class and query/mutation split with
+both modes, same-burst editing across the command inventory, Enter-based model
+and effort changes, tier cycling/toggling, theme/steer ordering, turn-only
+reclassification, stopped work, approval and idle delivery. Local fixtures
+capture actual Responses and Chat Completions requests; no live inference or
+cross-target testing is required for these regressions.
