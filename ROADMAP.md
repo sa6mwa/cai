@@ -158,7 +158,7 @@ since the last append, configurable with `/retention`).
 ## Active First-Release Work
 
 The `cai` CLI ships static musl binaries for Linux x86_64, aarch64 and armhf.
-It wraps `libcai_app` and uses the Smith runtime, softline 0.13.0, libmdf 0.15.0,
+It wraps `libcai_app` and uses the Smith runtime, softline 0.15.0, libmdf 0.17.0,
 ChatGPT or API-key providers, and encrypted liblockdc Pouch sessions/auth.
 The same application SDK also ships static/shared libraries for all three
 Linux architectures with glibc and musl. Core libcai's independent JSONL
