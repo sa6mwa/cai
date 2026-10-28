@@ -33,6 +33,11 @@ typedef struct cai_patch_tool_config {
 /**
  * Parse, validate, and apply a Codex-style patch within root_path. CAI uses
  * its native parser/applier and never invokes system diff or patch programs.
+ * Hunks select source-ordered line matches, with Codex's exact, trailing-space,
+ * edge-space and Unicode punctuation fallback order. Repeated matches select
+ * the first candidate after the preceding hunk. Unchanged context retains its
+ * original bytes/endings; inserted lines use the first source ending, or LF.
+ * Insertion-only update hunks append at EOF. Updates terminate the final line.
  * Missing add/move parent directories are created after plan validation,
  * respecting the process umask. New destinations reject symlink parents.
  * On success it streams the changed-file receipt to result; failed parsing,

@@ -5,6 +5,24 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-057: Patch matching rejects Codex-compatible repeated context
+
+- **Status:** fixed.
+- **Evidence:** the three reported calls in session `dbgtfervs68i52ohr8gg`
+  fail CAI's global-uniqueness check on repeated profile rows. Codex's actual
+  executable accepts each call. The `Slh36j` patch includes context-only chunks
+  advancing between two profiles, so the repeated row is intentionally ordered.
+- **Resolution:** match logical lines against original source, using Codex's
+  first ordered candidate and exact/whitespace/Unicode fallback precedence.
+  Preserve context bytes and mixed endings; handle insertion-only chunks,
+  unterminated final lines and trailing empty context. Build the result once,
+  checking its byte bound before each append. Path confinement, identity checks
+  and all-file validation/publication remain authoritative.
+- **Verification:** fast native cases exercise both direct and spooled tool
+  invocation; exact reported patches and compatibility cases are also compared
+  against Codex's executable. Interactive tool rendering and Lua facade checks
+  cover the shared implementation without live inference.
+
 ## BUG-056: Command boundary policies differ across the interactive surface
 
 - **Status:** fixed.

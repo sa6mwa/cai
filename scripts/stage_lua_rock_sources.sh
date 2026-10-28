@@ -61,6 +61,7 @@ files=(
   docs/agent-messaging.md
   docs/kanban.md
   docs/journal.md
+  docs/patch-tool.md
   examples/app.lua
   cli/main.c
   cai.rockspec.in

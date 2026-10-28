@@ -99,6 +99,28 @@ contains "$term/feed" 'Added ./internal/toll/./calculator.go'
 for name in calculator vehicle; do
   [[ $(cat "$work/internal/toll/$name.go") == 'package toll' ]]
 done
+# A real-session regression: identical rows belong to source-ordered profiles.
+printf '2013:\nexempt: bus\ncurrent:\nexempt: bus\n' >"$work/profiles.txt"
+cat >"$root/patch" <<'PATCH'
+*** Begin Patch
+*** Update File: profiles.txt
+@@
+ 2013:
+@@
+-exempt: bus
++exempt: bus
+@@
+ current:
+@@
+-exempt: bus
++exempt: heavy_bus
+*** End Patch
+PATCH
+patch_plan 'ORDERED PROFILE PATCH DONE'
+prompt 'update repeated profile rows in order' 'ORDERED PROFILE PATCH DONE'
+printf '2013:\nexempt: bus\ncurrent:\nexempt: heavy_bus\n' >"$root/profiles.expected"
+cmp "$work/profiles.txt" "$root/profiles.expected"
+contains "$term/feed" '* Edited profiles.txt'
 # A real-session regression: old context accidentally changes Go alignment.
 # Reject it atomically, explain exactly where, and show one tool failure.
 printf 'type calendarRuleConfig struct {\n\tMonth int   `json:"month,omitempty"`\n}\n' >"$work/ruleset.go"

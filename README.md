@@ -1307,6 +1307,11 @@ in the UI.
 Terminal tool results and JSON logs preserve valid UTF-8 and replace malformed
 bytes with `?`; their content is unaffected by preview filtering.
 
+The native `apply_patch` matcher follows Codex's ordered line matching, including
+repeated context, whitespace fallback and Unicode punctuation normalization.
+It preserves unchanged context and validates the full plan before publication.
+See [patch tool behavior](docs/patch-tool.md) for the matching and safety contract.
+
 Successful `apply_patch` calls display the **agent's submitted changes**, with
 one neighboring unchanged line from the current edit's snapshot when the patch
 omits context. No VCS comparison is used. A gutter shows actual file line numbers:

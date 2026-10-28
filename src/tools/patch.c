@@ -7,6 +7,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #if defined(__linux__)
@@ -65,6 +66,9 @@ typedef struct cai_patch_hunk {
   int end_of_file;
   size_t old_line, new_line;
   int first_kind, last_kind;
+  cai_buffer_builder operations;
+  size_t match_count, emitted_lines;
+  int trim_final_blank;
 } cai_patch_hunk;
 
 typedef struct cai_patch_change {
@@ -89,8 +93,6 @@ typedef struct cai_patch_change {
   int before_stat_valid;
   char *after;
   size_t after_length;
-  size_t search_offset;
-  size_t removed_lines, added_lines;
   int target_published;
   struct stat published_stat;
   int published_stat_valid;
@@ -115,10 +117,11 @@ typedef struct cai_patch_spooled_reader {
 
 static const char cai_patch_default_description[] =
     "The `apply_patch` tool can be used to edit files. This is a FREEFORM "
-    "tool, so do not wrap the patch in JSON. Copy context and deleted lines "
-    "exactly from the current file, including internal spacing; do not "
-    "reformat unchanged context. After a context mismatch, read the reported "
-    "file location and regenerate the hunk.";
+    "tool, so do not wrap the patch in JSON. Use source-ordered @@ hunks. "
+    "Repeated context selects the first match after the preceding hunk; use "
+    "@@ context anchors to skip to a later section. Copy current context "
+    "faithfully, including internal spacing. After a context mismatch, read "
+    "the reported file location and regenerate the hunk.";
 
 static const char cai_patch_lark_grammar_first[] =
     "start: begin_patch hunk+ end_patch\n"
@@ -206,6 +209,7 @@ static void cai_patch_change_cleanup(cai_patch_change *change) {
       cai_free_mem(NULL, change->hunks[i].old_text);
       cai_free_mem(NULL, change->hunks[i].new_text);
       cai_free_mem(NULL, change->hunks[i].context);
+      cai_free_mem(NULL, change->hunks[i].operations.data);
     }
   }
   cai_free_mem(NULL, change->hunks);
@@ -1069,6 +1073,26 @@ static int cai_patch_spooled_reader_next(cai_patch_spooled_reader *reader,
   return 1;
 }
 
+static int cai_patch_hunk_line(cai_patch_hunk *hunk,
+                               cai_buffer_builder *old_text,
+                               cai_buffer_builder *new_text, const char *line,
+                               cai_error *error) {
+  char kind = line[0] == '\0' ? ' ' : line[0];
+  const char *content = line[0] == '\0' ? line : line + 1U;
+  int rc;
+  if (kind != ' ' && kind != '+' && kind != '-')
+    return cai_set_error(error, CAI_ERR_INVALID, "invalid update hunk line");
+  rc = cai_buffer_append(&hunk->operations, &kind, 1U, error);
+  if (rc == CAI_OK && kind != '+')
+    rc = cai_patch_append_line(old_text, content, error);
+  if (rc == CAI_OK && kind != '-')
+    rc = cai_patch_append_line(new_text, content, error);
+  if (hunk->first_kind == 0)
+    hunk->first_kind = kind;
+  hunk->last_kind = kind;
+  return rc;
+}
+
 static int cai_patch_parse_change(cai_patch_plan *plan, char **cursor,
                                   cai_error *error) {
   cai_patch_change *change;
@@ -1188,19 +1212,18 @@ static int cai_patch_parse_change(cai_patch_plan *plan, char **cursor,
       hunk->end_of_file = 1;
       break;
     }
-    if (!seen_hunk || (line[0] != ' ' && line[0] != '+' && line[0] != '-')) {
-      cai_free_mem(NULL, old_text.data);
-      cai_free_mem(NULL, new_text.data);
-      return cai_set_error(error, CAI_ERR_INVALID, "invalid update hunk line");
+    if (!seen_hunk) {
+      if (line[0] == '\0')
+        continue;
+      rc = cai_patch_change_append_hunk(change, &hunk, error);
+      if (rc != CAI_OK) {
+        cai_free_mem(NULL, old_text.data);
+        cai_free_mem(NULL, new_text.data);
+        return rc;
+      }
+      seen_hunk = 1;
     }
-    if (line[0] != '+') {
-      rc = cai_patch_append_line(&old_text, line + 1U, error);
-    } else {
-      rc = CAI_OK;
-    }
-    if (rc == CAI_OK && line[0] != '-') {
-      rc = cai_patch_append_line(&new_text, line + 1U, error);
-    }
+    rc = cai_patch_hunk_line(hunk, &old_text, &new_text, line, error);
     if (rc != CAI_OK) {
       cai_free_mem(NULL, old_text.data);
       cai_free_mem(NULL, new_text.data);
@@ -1406,18 +1429,15 @@ static int cai_patch_parse_change_spooled(cai_patch_plan *plan,
       end_of_file_seen = 1;
       continue;
     }
-    if (!seen_hunk || (line[0] != ' ' && line[0] != '+' && line[0] != '-')) {
-      rc = cai_set_error(error, CAI_ERR_INVALID, "invalid update hunk line");
-      goto fail;
+    if (!seen_hunk) {
+      if (line[0] == '\0')
+        continue;
+      rc = cai_patch_change_append_hunk(change, &hunk, error);
+      if (rc != CAI_OK)
+        goto fail;
+      seen_hunk = 1;
     }
-    if (hunk->first_kind == 0)
-      hunk->first_kind = line[0];
-    hunk->last_kind = line[0];
-    rc = line[0] != '+' ? cai_patch_append_line(&old_text, line + 1U, error)
-                        : CAI_OK;
-    if (rc == CAI_OK && line[0] != '-') {
-      rc = cai_patch_append_line(&new_text, line + 1U, error);
-    }
+    rc = cai_patch_hunk_line(hunk, &old_text, &new_text, line, error);
     if (rc != CAI_OK) {
       goto fail;
     }
@@ -1507,53 +1527,9 @@ static int cai_patch_parse_spooled(const cai_patch_context *ctx,
   return rc;
 }
 
-static int cai_patch_context_line_matches(const char *line,
-                                          const char *line_end,
-                                          const char *context) {
-  const char *context_end;
-
-  while (line < line_end && (*line == ' ' || *line == '\t' || *line == '\r')) {
-    line++;
-  }
-  while (line_end > line && (line_end[-1] == ' ' || line_end[-1] == '\t' ||
-                             line_end[-1] == '\r')) {
-    line_end--;
-  }
-  context_end = context + strlen(context);
-  while (*context == ' ' || *context == '\t' || *context == '\r') {
-    context++;
-  }
-  while (context_end > context &&
-         (context_end[-1] == ' ' || context_end[-1] == '\t' ||
-          context_end[-1] == '\r')) {
-    context_end--;
-  }
-  return (size_t)(line_end - line) == (size_t)(context_end - context) &&
-         memcmp(line, context, (size_t)(context_end - context)) == 0;
-}
-
-static char *cai_patch_find_context_line(char *text, size_t offset,
-                                         const char *context) {
-  char *line;
-  char *line_end;
-
-  line = text + offset;
-  for (;;) {
-    line_end = strchr(line, '\n');
-    if (line_end == NULL) {
-      return cai_patch_context_line_matches(line, line + strlen(line), context)
-                 ? line
-                 : NULL;
-    }
-    if (cai_patch_context_line_matches(line, line_end, context)) {
-      return line;
-    }
-    line = line_end + 1U;
-  }
-}
-
 /* Diagnostics are bounded and literal: file content and paths must not inject
- * terminal controls into an error message. Matching itself remains exact. */
+ * terminal controls into an error message. Diagnostic candidates never
+ * authorize a replacement; the ordered line matcher does that separately. */
 static void cai_patch_excerpt(char *out, size_t capacity, const char *text,
                               size_t length) {
   size_t i, used = 0U;
@@ -1625,7 +1601,7 @@ static int cai_patch_hunk_error(cai_patch_change *change, cai_patch_hunk *hunk,
         actual = *end == '\n' ? end + 1U : end;
         expected = expected_end + 1U;
       }
-      line_number = cai_patch_line_number(change->after, actual);
+      line_number = cai_patch_line_number(change->before, actual);
     }
   }
   if (expected == NULL)
@@ -1657,100 +1633,7 @@ static int cai_patch_hunk_error(cai_patch_change *change, cai_patch_hunk *hunk,
   return cai_set_error(error, CAI_ERR_INVALID, message);
 }
 
-static int cai_patch_apply_hunk(cai_patch_change *change, cai_patch_hunk *hunk,
-                                cai_error *error) {
-  char *match;
-  char *next_match;
-  char *anchor;
-  char *anchor_end;
-  char *replacement;
-  char *search_start;
-  size_t prefix;
-  size_t suffix;
-  size_t length;
-  size_t allocation_size;
-
-  search_start = change->after + change->search_offset;
-  if (hunk->old_length == 0U) {
-    return cai_set_error(error, CAI_ERR_INVALID,
-                         "update hunk must include existing context");
-  }
-  if (hunk->context != NULL && hunk->context[0] != '\0') {
-    anchor = cai_patch_find_context_line(change->after, change->search_offset,
-                                         hunk->context);
-    if (anchor == NULL) {
-      return cai_patch_hunk_error(change, hunk, "anchor was not found",
-                                  change->after + change->search_offset, 0,
-                                  error);
-    }
-    anchor_end = strchr(anchor, '\n');
-    search_start =
-        anchor_end != NULL ? anchor_end + 1U : anchor + strlen(anchor);
-    match = strstr(search_start, hunk->old_text);
-  } else if (hunk->end_of_file && change->after_length >= hunk->old_length) {
-    match = change->after + change->after_length - hunk->old_length;
-  } else {
-    match = strstr(change->after + change->search_offset, hunk->old_text);
-  }
-  if (match == NULL || memcmp(match, hunk->old_text, hunk->old_length) != 0 ||
-      (hunk->end_of_file &&
-       (size_t)(match - change->after) + hunk->old_length !=
-           change->after_length)) {
-    return cai_patch_hunk_error(
-        change, hunk,
-        hunk->end_of_file ? "does not match the end of file" : "does not match",
-        search_start, 1, error);
-  }
-  if (!hunk->end_of_file &&
-      (hunk->context == NULL || hunk->context[0] == '\0')) {
-    next_match = strstr(match + 1U, hunk->old_text);
-    if (next_match != NULL) {
-      return cai_patch_hunk_error(change, hunk, "is ambiguous",
-                                  change->after + change->search_offset, 0,
-                                  error);
-    }
-  }
-  /* The match is in the evolving new file. Translate its line back to the
-   * original using the preceding hunks' inserted/deleted line counts. */
-  {
-    size_t i;
-    hunk->new_line = 1U;
-    for (i = 0U; i < (size_t)(match - change->after); i++)
-      if (change->after[i] == '\n')
-        hunk->new_line++;
-    hunk->old_line =
-        hunk->new_line + change->removed_lines - change->added_lines;
-    for (i = 0U; i < hunk->old_length; i++)
-      if (hunk->old_text[i] == '\n')
-        change->removed_lines++;
-    for (i = 0U; i < hunk->new_length; i++)
-      if (hunk->new_text[i] == '\n')
-        change->added_lines++;
-  }
-  prefix = (size_t)(match - change->after);
-  suffix = change->after_length - prefix - hunk->old_length;
-  if (!cai_patch_size_add(prefix, hunk->new_length, &length) ||
-      !cai_patch_size_add(length, suffix, &length) ||
-      !cai_patch_size_add(length, 1U, &allocation_size)) {
-    return cai_set_error(error, CAI_ERR_LIMIT,
-                         "patched file exceeds addressable size");
-  }
-  replacement = (char *)cai_alloc(NULL, allocation_size);
-  if (replacement == NULL) {
-    return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to allocate patched file");
-  }
-  memcpy(replacement, change->after, prefix);
-  memcpy(replacement + prefix, hunk->new_text, hunk->new_length);
-  memcpy(replacement + prefix + hunk->new_length, match + hunk->old_length,
-         change->after_length - prefix - hunk->old_length);
-  replacement[length] = '\0';
-  cai_free_mem(NULL, change->after);
-  change->after = replacement;
-  change->after_length = length;
-  change->search_offset = prefix + hunk->new_length;
-  return CAI_OK;
-}
+#include "patch_match.inc"
 
 static int cai_patch_validate_destinations(const cai_patch_plan *plan,
                                            size_t index, cai_error *error) {
@@ -1916,17 +1799,7 @@ static int cai_patch_preflight(const cai_patch_context *ctx,
                           error);
       change->after_length = change->new_length;
     } else {
-      rc = cai_patch_copy(&change->after, change->before, change->before_length,
-                          error);
-      if (rc == CAI_OK) {
-        change->after_length = change->before_length;
-        for (j = 0U; j < change->hunk_count; j++) {
-          rc = cai_patch_apply_hunk(change, &change->hunks[j], error);
-          if (rc != CAI_OK) {
-            break;
-          }
-        }
-      }
+      rc = cai_patch_apply_hunks(change, ctx->max_file_bytes, error);
     }
     if (rc != CAI_OK || change->after_length > ctx->max_file_bytes) {
       return rc != CAI_OK ? rc
@@ -2506,27 +2379,23 @@ int cai_apply_patch(const cai_patch_tool_config *config, const char *patch,
   return rc;
 }
 
-static size_t cai_patch_lines(const char *text, size_t length) {
-  size_t i, count = 0U;
-  for (i = 0U; i < length; i++)
-    if (text[i] == '\n')
-      count++;
-  return count;
-}
-
 static int cai_patch_neighbor(const char *text, size_t number, char **out,
                               cai_error *error) {
   const char *start = text, *end;
   size_t line = 1U;
   while (line < number && *start != '\0') {
-    if (*start++ == '\n')
-      line++;
+    start += strcspn(start, "\r\n");
+    if (*start == '\0')
+      break;
+    if (*start == '\r' && start[1] == '\n')
+      start++;
+    start++;
+    line++;
   }
   if (line != number || *start == '\0')
     return CAI_OK;
-  end = strchr(start, '\n');
-  *out = cai_strndup(NULL, start,
-                     end != NULL ? (size_t)(end - start) : strlen(start));
+  end = start + strcspn(start, "\r\n");
+  *out = cai_strndup(NULL, start, (size_t)(end - start));
   return *out != NULL ? CAI_OK
                       : cai_set_error(error, CAI_ERR_NOMEM,
                                       "cannot retain patch preview context");
@@ -2575,16 +2444,13 @@ static int cai_patch_tool_spooled_callback(void *context,
         for (j = 0U; rc == CAI_OK && j < change->hunk_count; j++) {
           cai_patch_hunk *hunk = &change->hunks[j];
           cai_patch_location *location = &ctx->locations[index++];
-          size_t end = hunk->new_line +
-                       cai_patch_lines(hunk->new_text, hunk->new_length);
+          size_t end = hunk->new_line + hunk->emitted_lines;
           size_t previous_end = 0U;
           location->old_line = hunk->old_line;
           location->new_line = hunk->new_line;
           if (j != 0U) {
             cai_patch_hunk *previous = &change->hunks[j - 1U];
-            previous_end =
-                previous->new_line +
-                cai_patch_lines(previous->new_text, previous->new_length);
+            previous_end = previous->new_line + previous->emitted_lines;
           }
           if (hunk->first_kind != ' ' && hunk->new_line > 1U &&
               (j == 0U || hunk->new_line - 1U > previous_end)) {

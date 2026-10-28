@@ -34743,6 +34743,8 @@ static void test_patch_failure_modes(test_state *state) {
   expect_int(state, "patch_failure_cleanup", rmdir(temporary), 0L);
 }
 
+#include "patch_codex_test.inc"
+
 static void test_patch_context_diagnostics(test_state *state) {
   static const struct {
     const char *file, *patch, *reason, *detail;
@@ -34758,8 +34760,6 @@ static void test_patch_context_diagnostics(test_state *state) {
        "does not match", "hunk 2"},
       {"first\n", "@@ absent anchor\n-first\n+changed\n",
        "anchor was not found", "absent anchor"},
-      {"same\nseparator\nsame\n", "@@\n-same\n+changed\n", "is ambiguous",
-       "Expected starting line: \"same\""},
       {"first\nlast\n", "@@\n-first\n+changed\n*** End of File\n",
        "does not match the end of file", "hunk 1"},
       {"head\nvalue\033[32mold\n", "@@\n head\n-value\033[32mwrong\n+changed\n",
@@ -35236,12 +35236,11 @@ static void test_patch_tool(test_state *state) {
   cai_error_cleanup(&error);
   cai_error_init(&error);
   write_file_or_die(ambiguous_path, "same\nseparator\nsame\n");
-  expect_int(state, "patch_reject_ambiguous_hunk",
-             cai_apply_patch(&config, ambiguous_patch, NULL, &error),
-             CAI_ERR_INVALID);
+  expect_int(state, "patch_first_ordered_match",
+             cai_apply_patch(&config, ambiguous_patch, NULL, &error), CAI_OK);
   contents = read_file_or_die(ambiguous_path);
-  expect_str(state, "patch_ambiguous_hunk_preserves_file", contents,
-             "same\nseparator\nsame\n");
+  expect_str(state, "patch_first_ordered_match_contents", contents,
+             "changed\nseparator\nsame\n");
   free(contents);
   cai_error_cleanup(&error);
   cai_error_init(&error);
@@ -54729,6 +54728,7 @@ static const test_entry test_entries[] = {
     {"goal_create_allocation_failure", test_goal_create_allocation_failure},
     {"patch_tool", test_patch_tool},
     {"patch_context_diagnostics", test_patch_context_diagnostics},
+    {"patch_codex_matching", test_patch_codex_matching},
     {"agent_tool_declarations", test_agent_tool_declarations},
     {"agent_tool_manual_step", test_agent_tool_manual_step},
     {"agent_auto_compaction", test_agent_auto_compaction},

@@ -539,6 +539,7 @@ if(CAI_BUILD_TESTS)
     goal_create_allocation_failure
     patch_tool
     patch_context_diagnostics
+    patch_codex_matching
     agent_tool_declarations
     agent_tool_manual_step
     agent_auto_compaction
