@@ -675,6 +675,81 @@ static int yield_settings(const char *path) {
   return failed;
 }
 
+static int theme_offset_settings(const char *path) {
+  static const char *const sections[] = {"ui", "subagent", "review"};
+  static const char *const variables[] = {"CAI_THEME_OFFSET",
+                                          "CAI_SUBAGENT_THEME_OFFSET",
+                                          "CAI_REVIEW_THEME_OFFSET"};
+  static const char *const flags[] = {
+      "--theme-offset", "--subagent-theme-offset", "--review-theme-offset"};
+  static const char *const values[] = {
+      "-9223372036854775808", "-300", "0", "1234", "9223372036854775807", "bad",
+      "9223372036854775808"};
+  cai_cli_options options;
+  cai_config *configuration;
+  cai_app_config app;
+  cai_app_setting setting;
+  cai_error error;
+  char *args[5];
+  FILE *file;
+  size_t role, value;
+  int source, rc, failed = 0;
+  args[0] = strdup("cai");
+  args[1] = strdup("--config");
+  args[2] = strdup(path);
+  for (role = 0U; role < 3U; role++) {
+    args[3] = strdup(flags[role]);
+    setting.section = sections[role];
+    setting.key = "theme_offset";
+    for (source = 0; source < 4; source++) {
+      for (value = 0U; value < sizeof(values) / sizeof(values[0]); value++) {
+        long long actual;
+        configuration = NULL;
+        cai_error_init(&error);
+        unsetenv(variables[role]);
+        file = fopen(path, "w");
+        if (file == NULL)
+          return 1;
+        if (source == 0)
+          fprintf(file, "[%s]\ntheme_offset=%s\n", sections[role],
+                  values[value]);
+        fclose(file);
+        memset(&app, 0, sizeof(app));
+        setting.value = values[value];
+        if (source == 1)
+          setenv(variables[role], values[value], 1);
+        if (source == 2) {
+          app.settings = &setting;
+          app.setting_count = 1U;
+        }
+        args[4] = strdup(values[value]);
+        memset(&options, 0, sizeof(options));
+        rc = cai_cli_configure(source == 3 ? 5 : 3, args, &options,
+                               &configuration, &app, &error);
+        actual = role == 0U   ? options.theme_offset
+                 : role == 1U ? options.subagent_theme_offset
+                              : options.review_theme_offset;
+        if (value >= 5U
+                ? rc >= 0
+                : rc != 1 || actual != strtoll(values[value], NULL, 10)) {
+          fprintf(stderr, "theme offset source %d role %lu value %s failed\n",
+                  source, (unsigned long)role, values[value]);
+          failed = 1;
+        }
+        cai_config_close(configuration);
+        cai_error_cleanup(&error);
+        free(args[4]);
+      }
+    }
+    unsetenv(variables[role]);
+    free(args[3]);
+  }
+  free(args[0]);
+  free(args[1]);
+  free(args[2]);
+  return failed;
+}
+
 int main(int argc, char **argv) {
   static const char *const env[] = {"CAI_TODO",       "CAI_CHROME",
                                     "CAI_WEB_SEARCH", "CAI_SEARXNG",
@@ -725,6 +800,7 @@ int main(int argc, char **argv) {
   failed |= status_fields_settings(path);
   failed |= review_fix_settings(path);
   failed |= yield_settings(path);
+  failed |= theme_offset_settings(path);
   unlink(path);
   return failed != 0;
 }

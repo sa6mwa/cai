@@ -5,6 +5,23 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-068: Review startup is invisible among parent tool output
+
+- **Status:** fixed.
+- **Cause:** the tool renderer tracked review-start events without printing a
+  receipt, so only the completion was visible after a reviewer ran commands.
+- **Resolution:** print a start receipt before model-invoked review preparation;
+  both invocation paths show bold Markdown start/finish titles even without
+  color differentiation. Review Markdown defaults to
+  offset +1 from the effective parent theme, with configurable signed parent,
+  ordinary-child and reviewer offsets. Restore the parent after completion,
+  failure, cancellation and replay. Metadata-only child events cannot interrupt
+  a parent's streamed reasoning.
+- **Verification:** both mock protocols cover model/manual review startup,
+  preparation failure, cancellation, child inheritance, palette switching and
+  restoration. Other checks cover ASCII/NO_COLOR, all four configuration
+  sources, signed limits, modulo wrapping and Softline request boundaries.
+
 ## BUG-067: Parent reasoning summaries disappear on replay
 
 - **Status:** fixed.

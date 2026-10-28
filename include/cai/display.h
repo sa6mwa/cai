@@ -58,7 +58,9 @@ int cai_tool_display_set_width(cai_tool_display *display, size_t width,
                                cai_error *error);
 /** Consume a borrowed owner-thread runtime event. Payloads are written as they
  * arrive; command output is never retained for later expansion. Sink failures
- * propagate to the caller. Command previews filter terminal controls, retain
+ * propagate to the caller. Review/subagent tool starts have immediate activity
+ * receipts; manual review events print start/finish markers.
+ * Command previews filter terminal controls, retain
  * recognized SGR colors/styles when color is enabled, and reset styling before
  * returning. Split controls/UTF-8 and styles are tracked per command. CRLF is
  * normalized; standalone CR starts a new transcript line. Incomplete controls

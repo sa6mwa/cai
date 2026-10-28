@@ -1,6 +1,8 @@
 #include "../cli/theme.h"
 #include <assert.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 typedef struct capture {
@@ -19,6 +21,44 @@ static int write_capture(void *context, const void *bytes, size_t length,
   out->length += length;
   out->bytes[out->length] = '\0';
   return CAI_OK;
+}
+
+static void test_offsets(void) {
+  static const long long offsets[] = {1LL,    -1LL,      -300LL,
+                                      1234LL, LLONG_MIN, LLONG_MAX};
+  cai_cli_theme base, result, roundtrip;
+  const char **names;
+  size_t i, j, n = 0U;
+  mdf_options options;
+  names = malloc(mdf_theme_count() * sizeof(*names));
+  assert(names != NULL);
+  for (i = 0U; i < mdf_theme_count(); i++)
+    if (strcmp(mdf_theme_name(i), "boring") != 0)
+      names[n++] = mdf_theme_name(i);
+  assert(n > 1U);
+  assert(cai_cli_theme_parse("riced", &base) == NULL);
+  for (i = 0U; i < n; i++) {
+    base.markdown = names[i];
+    for (j = 0U; j < sizeof(offsets) / sizeof(offsets[0]); j++) {
+      long long expected =
+          ((long long)i + offsets[j] % (long long)n + (long long)n) %
+          (long long)n;
+      cai_cli_theme_offset(&base, offsets[j], &result);
+      assert(strcmp(result.markdown, names[(size_t)expected]) == 0);
+      assert(result.prompt == base.prompt && result.ascii == base.ascii);
+      cai_cli_theme_offset(&result, -(offsets[j] % (long long)n), &roundtrip);
+      assert(strcmp(roundtrip.markdown, base.markdown) == 0);
+    }
+    cai_cli_theme_offset(&base, (long long)n, &result);
+    assert(strcmp(result.markdown, base.markdown) == 0);
+  }
+  assert(cai_cli_theme_parse("plain", &base) == NULL);
+  cai_cli_theme_offset(&base, 1234LL, &result);
+  assert(result.ascii && result.prompt == SL_PROMPT_THEME_PLAIN);
+  mdf_options_init(&options);
+  cai_cli_theme_markdown(&result, &options);
+  assert(options.ansi_mode == MDF_ANSI_OFF);
+  free(names);
 }
 
 int main(void) {
@@ -53,6 +93,7 @@ int main(void) {
   capture out;
   char pair[128];
   size_t i;
+  test_offsets();
   for (i = 0U; i < sizeof(pairs) / sizeof(pairs[0]); i++) {
     assert(cai_cli_theme_parse(pairs[i].alias, &theme) == NULL);
     assert(theme.prompt == pairs[i].prompt);

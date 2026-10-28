@@ -605,6 +605,26 @@ Markdown styling regardless of the selected theme. The gray reasoning message
 remains plain text styled by softline, and pslog retains its separate `LOG_`
 configuration. Host-supplied raw banners are printed verbatim.
 
+Review calls print a start receipt before preparation, then a completion or
+failure receipt. Both model-invoked reviews and `/review` show standalone
+**Review started** and **Review finished** Markdown titles, including when
+colors are disabled. Review output uses the next libmdf theme by default and restores
+the parent theme when it ends. These offsets affect Markdown only:
+
+| Context | INI setting | Flag and TUI command | Environment | Default |
+| --- | --- | --- | --- | --- |
+| Parent | `[ui] theme_offset` | `--theme-offset N`, `/theme-offset [N]` | `CAI_THEME_OFFSET` | 0 |
+| Ordinary child | `[subagent] theme_offset` | `--subagent-theme-offset N`, `/subagent-theme-offset [N]` | `CAI_SUBAGENT_THEME_OFFSET` | 0 |
+| Reviewer | `[review] theme_offset` | `--review-theme-offset N`, `/review-theme-offset [N]` | `CAI_REVIEW_THEME_OFFSET` | 1 |
+
+Child offsets are relative to the effective parent theme. Signed offsets wrap
+through libmdf's listed themes, excluding `boring`; `-300` and `1234` are valid.
+Zero keeps the selected theme. `/theme` also shows offsets and the active
+libmdf theme. Offset changes stay editable in Softline until the next safe
+response/tool boundary. Softline's theme, ASCII output and `NO_COLOR` are
+preserved, including during replay. Settings and slash-command changes apply
+to this invocation without rewriting history or configuration.
+
 `cai --temp` starts a new conversation in a unique
 `cache_dir/temp/chat-XXXXXX/workspace` directory. Its sibling `private/`
 contains the encrypted conversation pouch and key, prompt history, clipboard,

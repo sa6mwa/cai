@@ -161,6 +161,18 @@ static const cli_field fields[] = {
       "Softline theme alias or SOFTLINE:LIBMDF. Use --list-themes for names "
       "and default pairings. plain selects plain:ascii (non-colored "
       "Markdown)."),
+    {"ui", "theme_offset", offsetof(cai_cli_options, theme_offset),
+     CAI_CONFIG_INTEGER, CAI_CONFIG_SIGNED, NULL,
+     "Parent libmdf theme rotation, default 0. Signed modulo usable themes; "
+     "boring is excluded. Softline and ANSI policy are unchanged."},
+    {"subagent", "theme_offset",
+     offsetof(cai_cli_options, subagent_theme_offset), CAI_CONFIG_INTEGER,
+     CAI_CONFIG_SIGNED, NULL,
+     "Ordinary child libmdf rotation relative to the effective parent, default "
+     "0."},
+    {"review", "theme_offset", offsetof(cai_cli_options, review_theme_offset),
+     CAI_CONFIG_INTEGER, CAI_CONFIG_SIGNED, NULL,
+     "Reviewer libmdf rotation relative to the effective parent, default 1."},
     S("ui", "status_fields", status_fields, 0U,
       "Colon-separated status order: model, ctx, dir, branch, weekly, crd, "
       "yolo, goal, provider. default expands "
@@ -577,6 +589,12 @@ int cai_cli_app_schema(cai_config **out, cai_error *error) {
   if (rc == CAI_OK)
     rc = cai_config_set_default(*out, "ui", "theme", defaults.theme, error);
   if (rc == CAI_OK)
+    rc = cai_config_set_default(*out, "ui", "theme_offset", "0", error);
+  if (rc == CAI_OK)
+    rc = cai_config_set_default(*out, "subagent", "theme_offset", "0", error);
+  if (rc == CAI_OK)
+    rc = cai_config_set_default(*out, "review", "theme_offset", "1", error);
+  if (rc == CAI_OK)
     rc = cai_config_set_default(*out, "ui", "replay_turns", "10", error);
   if (rc == CAI_OK)
     rc = cai_config_set_default(*out, "ui", "prompt_history_limit", "200",
@@ -680,6 +698,9 @@ static int tool_environment(cai_config *cfg, const char *prefix,
     static const char *const aliases[][3] = {
         {"MODEL", "agent", "model"},
         {"THEME", "ui", "theme"},
+        {"THEME_OFFSET", "ui", "theme_offset"},
+        {"SUBAGENT_THEME_OFFSET", "subagent", "theme_offset"},
+        {"REVIEW_THEME_OFFSET", "review", "theme_offset"},
         {"STATUS_FIELDS", "ui", "status_fields"},
         {"PROVIDER", "client", "provider"},
         {"REASONING_EFFORT", "agent", "reasoning_effort"},
@@ -990,6 +1011,12 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   if (defaults.shell_context_max_bytes < 4U)
     return fail(error, NULL, "shell_context_max_bytes must be at least 4");
   optional_string(cfg, "client", "provider", &defaults.provider);
+  defaults.theme_offset =
+      cai_config_get_integer(cfg, "ui", "theme_offset", 0LL);
+  defaults.subagent_theme_offset =
+      cai_config_get_integer(cfg, "subagent", "theme_offset", 0LL);
+  defaults.review_theme_offset =
+      cai_config_get_integer(cfg, "review", "theme_offset", 1LL);
   for (i = 0U; i < sizeof(agent_keys) / sizeof(agent_keys[0]); i++)
     if (i >= 3U ||
         ((value = cai_config_get(cfg, "agent", agent_keys[i])) != NULL &&

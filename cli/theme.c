@@ -75,6 +75,38 @@ void cai_cli_theme_markdown(const cai_cli_theme *theme, mdf_options *options) {
     options->ansi_mode = MDF_ANSI_OFF;
 }
 
+void cai_cli_theme_offset(const cai_cli_theme *base, long long offset,
+                          cai_cli_theme *out) {
+  size_t i, count = 0U, index = 0U, current = 0U;
+  long long step;
+  *out = *base;
+  if (offset == 0LL)
+    return;
+  for (i = 0U; i < mdf_theme_count(); i++) {
+    const char *name = mdf_theme_name(i);
+    if (strcmp(name, "boring") == 0)
+      continue;
+    if (strcmp(name, base->markdown != NULL ? base->markdown : "default") == 0)
+      index = count;
+    count++;
+  }
+  if (count == 0U)
+    return;
+  step = offset % (long long)count;
+  if (step < 0LL)
+    step += (long long)count;
+  index = (index + (size_t)step) % count;
+  for (i = 0U; i < mdf_theme_count(); i++) {
+    const char *name = mdf_theme_name(i);
+    if (strcmp(name, "boring") == 0)
+      continue;
+    if (current++ == index) {
+      out->markdown = name;
+      return;
+    }
+  }
+}
+
 const char *cai_cli_theme_prompt_name(const cai_cli_theme *theme) {
   size_t i;
   for (i = 0U; i < sizeof(themes) / sizeof(themes[0]); i++)
@@ -93,7 +125,8 @@ int cai_cli_theme_describe(const cai_cli_theme *theme, cai_sink *sink,
                cai_cli_theme_prompt_name(theme),
                theme->ascii ? "ascii" : theme->markdown);
   rc = cai_sink_write(sink, row, (size_t)n, error);
-  text = "Use `/theme NAME` or `/theme SOFTLINE:LIBMDF` between turns. "
+  text = "Use `/theme NAME` or `/theme SOFTLINE:LIBMDF` at a safe "
+         "response/tool boundary. "
          "Changes affect future output in this app invocation.\n\n";
   if (rc == CAI_OK)
     rc = cai_sink_write(sink, text, strlen(text), error);

@@ -140,6 +140,15 @@ if [[ "$scope" != full ]]; then
   export SMITH_THEME=riced:iosvkem
   run --list; ok
   unset CAI_TEST_APP_NAME SMITH_THEME
+  export CAI_TEST_APP_THEME_OFFSET=3 CAI_TEST_APP_SUBAGENT_THEME_OFFSET=-300 CAI_TEST_APP_REVIEW_THEME_OFFSET=1234
+  count=$(requests)
+  terminal_start -N
+  send '/theme-offset\r'; expect 'Parent theme offset: 3.'
+  send '/subagent-theme-offset\r'; expect 'Subagent theme offset: -300.'
+  send '/review-theme-offset\r'; expect 'Review theme offset: 1234.'
+  terminal_close
+  [[ $(requests) == "$count" ]]
+  unset CAI_TEST_APP_THEME_OFFSET CAI_TEST_APP_SUBAGENT_THEME_OFFSET CAI_TEST_APP_REVIEW_THEME_OFFSET
   # The shared /theme command runs through the full CLI scope below. Hosts
   # verify their own settings/argv/environment boundary without repeating it.
   exit 0

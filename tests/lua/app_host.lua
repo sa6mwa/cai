@@ -47,9 +47,12 @@ local app = assert(require("cai.app").open {
   end or nil,
   settings = {agent = {model = os.getenv("CAI_TEST_APP_MODEL")},
               ui = {theme = os.getenv("CAI_TEST_APP_THEME"),
+                    theme_offset = tonumber(os.getenv("CAI_TEST_APP_THEME_OFFSET")),
                     status_fields = os.getenv("CAI_TEST_APP_STATUS_FIELDS"),
                     temporary = os.getenv("CAI_TEST_APP_TEMPORARY"),
-                    replay_turns = tonumber(os.getenv("CAI_TEST_APP_REPLAY_TURNS"))}},
+                    replay_turns = tonumber(os.getenv("CAI_TEST_APP_REPLAY_TURNS"))},
+              subagent = {theme_offset = tonumber(os.getenv("CAI_TEST_APP_SUBAGENT_THEME_OFFSET"))},
+              review = {theme_offset = tonumber(os.getenv("CAI_TEST_APP_REVIEW_THEME_OFFSET"))}},
 })
 local code, err = app:run(arg)
 assert(code, err)

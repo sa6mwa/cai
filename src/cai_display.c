@@ -1198,6 +1198,12 @@ int cai_tool_display_event(cai_tool_display *d,
   if (e->type == CAI_AGENT_EVENT_REASONING_TOOL_RESULT)
     return display_marker(d, 1, "Reasoning", e->data != NULL ? e->data : "",
                           e->data_length, error);
+  if (e->type == CAI_AGENT_EVENT_REVIEW_STARTED ||
+      e->type == CAI_AGENT_EVENT_REVIEW_HANDED_OFF)
+    return display_marker(
+        d, -1,
+        e->type == CAI_AGENT_EVENT_REVIEW_STARTED ? "Starting" : "Finished",
+        "review", 6U, error);
   c = display_find(d, e);
   if (e->type == CAI_AGENT_EVENT_RUN_FAILED ||
       e->type == CAI_AGENT_EVENT_RUN_CANCELLED) {
@@ -1216,6 +1222,10 @@ int cai_tool_display_event(cai_tool_display *d,
     rc = display_call_new(d, e, &c, error);
     if (rc != CAI_OK)
       return rc;
+    if (e->tool_action == CAI_AGENT_TOOL_ACTION_SUBAGENT)
+      return display_marker(
+          d, -1, "Starting", e->tool_name != NULL ? e->tool_name : "subagent",
+          strlen(e->tool_name != NULL ? e->tool_name : "subagent"), error);
     return CAI_OK;
   }
   if (e->type == CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS) {

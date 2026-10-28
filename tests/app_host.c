@@ -54,7 +54,7 @@ static int register_host_tools(void *context, cai_agent *agent,
 }
 int main(int argc, char **argv) {
   cai_app_config config;
-  cai_app_setting settings[4];
+  cai_app_setting settings[7];
   cai_app *app = NULL;
   cai_error error;
   pslog_config logging;
@@ -133,6 +133,21 @@ int main(int argc, char **argv) {
     settings[config.setting_count].key = "replay_turns";
     settings[config.setting_count++].value =
         getenv("CAI_TEST_APP_REPLAY_TURNS");
+  }
+  {
+    static const char *const sections[] = {"ui", "subagent", "review"};
+    static const char *const variables[] = {
+        "CAI_TEST_APP_THEME_OFFSET", "CAI_TEST_APP_SUBAGENT_THEME_OFFSET",
+        "CAI_TEST_APP_REVIEW_THEME_OFFSET"};
+    size_t i;
+    for (i = 0U; i < 3U; i++) {
+      const char *value = getenv(variables[i]);
+      if (value != NULL) {
+        settings[config.setting_count].section = sections[i];
+        settings[config.setting_count].key = "theme_offset";
+        settings[config.setting_count++].value = value;
+      }
+    }
   }
   if (getenv("CAI_TEST_APP_REPLAY_PATH") != NULL) {
     replay_file = fopen(getenv("CAI_TEST_APP_REPLAY_PATH"), "w");

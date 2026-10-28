@@ -85,6 +85,12 @@ static const cai_app_option options[] = {
      "List softline themes, pairings and libmdf themes", 0, 0},
     {"--theme", 't', CAI_APP_STRING, "NAME|SOFTLINE:LIBMDF",
      "Prompt/Markdown themes (default default:default)", 0, 0},
+    {"--theme-offset", '\0', CAI_APP_INTEGER, "N",
+     "Parent libmdf theme rotation (default 0; signed)", 0, 0},
+    {"--subagent-theme-offset", '\0', CAI_APP_INTEGER, "N",
+     "Child theme rotation from parent (default 0; signed)", 0, 0},
+    {"--review-theme-offset", '\0', CAI_APP_INTEGER, "N",
+     "Review theme rotation from parent (default 1; signed)", 0, 0},
     {"--status-fields", '\0', CAI_APP_STRING, "FIELDS",
      "Status order (model:ctx:dir:branch:weekly:crd:yolo:goal); default "
      "expands it",

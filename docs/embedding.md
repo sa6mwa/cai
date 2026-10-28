@@ -262,6 +262,25 @@ later valid steers eligible at their own boundaries.
 This selection applies to future output in the current app invocation,
 including after `/new` or `/resume`, without changing startup settings.
 
+Markdown context rotations use the application settings `ui.theme_offset`
+(parent, default 0), `subagent.theme_offset` (ordinary child, default 0), and
+`review.theme_offset` (reviewer, default 1). Each accepts a signed 64-bit
+integer. Child offsets apply to the parent's effective libmdf theme. Rotation
+uses libmdf's theme order with `boring` excluded; offsets are reduced modulo
+that count before addition. ASCII/NO_COLOR and Softline's theme are unchanged.
+Live and replayed review content uses the selected child theme, restoring the
+parent on completion, failure or cancellation.
+
+C hosts pass these keys in `cai_app_setting`; Lua uses, for example,
+`settings = {ui = {theme_offset = -300}, review = {theme_offset = 1}}`.
+The matching flags are `--theme-offset`, `--subagent-theme-offset`, and
+`--review-theme-offset`. Environment aliases are `CAI_THEME_OFFSET`,
+`CAI_SUBAGENT_THEME_OFFSET`, and `CAI_REVIEW_THEME_OFFSET`, using the host's
+configured prefix. Matching slash commands query without an argument and set
+with one. Changes apply at a safe response/tool boundary through Softline's
+editable queue. These presentation settings belong to libcai_app; the core
+runtime continues to emit renderer-independent lifecycle events.
+
 The optional `run_review_and_fix` model tool is disabled by default. Native
 runtime hosts set `cai_agent_runtime_config.enable_review_and_fix = 1`; Lua
 runtime hosts use `enable_review_and_fix = true`. Application hosts set

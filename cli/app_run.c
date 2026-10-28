@@ -86,6 +86,9 @@ typedef struct cli_state {
   cai_cli_options normal_options;
   cai_cli_temp temporary;
   cai_cli_theme theme;
+  cai_cli_theme render_theme;
+  int theme_scope; /* 0 parent, 1 ordinary child, 2 reviewer. */
+  int review_block;
   char *normal_reasoning_override, *high_reasoning_override;
   cai_config *configuration;
   cai_agent_session_store store;
@@ -614,7 +617,7 @@ static int cli_introduction(cli_state *state, const cai_app_config *config) {
       config->introduction_markdown[0] == '\0')
     return 0;
   mdf_options_init(&options);
-  cai_cli_theme_markdown(&state->theme, &options);
+  cai_cli_theme_markdown(&state->render_theme, &options);
   options.output_fd = STDOUT_FILENO;
   if (getenv("NO_COLOR") != NULL)
     options.ansi_mode = MDF_ANSI_OFF;
@@ -679,6 +682,111 @@ static int cli_markdown(cli_state *state, const char *text) {
                  cli_finish_response(state) == 0
              ? 0
              : -1;
+}
+
+static void cli_theme_for_scope(const cli_state *state,
+                                const cai_cli_theme *base, int scope,
+                                cai_cli_theme *out) {
+  cai_cli_theme parent;
+  cai_cli_theme_offset(base, state->options.theme_offset, &parent);
+  cai_cli_theme_offset(&parent,
+                       scope == 2   ? state->options.review_theme_offset
+                       : scope == 1 ? state->options.subagent_theme_offset
+                                    : 0LL,
+                       out);
+}
+
+static int cli_set_theme_scope(cli_state *state, int scope, cai_error *error) {
+  cai_cli_theme selected;
+  mdf *renderer = NULL;
+  int changed, rc;
+  cli_theme_for_scope(state, &state->theme, scope, &selected);
+  changed =
+      selected.ascii != state->render_theme.ascii ||
+      (selected.markdown != state->render_theme.markdown &&
+       (selected.markdown == NULL || state->render_theme.markdown == NULL ||
+        strcmp(selected.markdown, state->render_theme.markdown) != 0));
+  if (!changed && state->theme_scope == scope)
+    return CAI_OK;
+  if (changed && state->renderer != NULL) {
+    rc = cli_renderer_create(state, &selected, &renderer, error);
+    if (rc != CAI_OK)
+      return rc;
+  }
+  if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0) {
+    if (renderer != NULL)
+      renderer->destroy(renderer);
+    return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                         "finish themed Markdown block");
+  }
+  if (renderer != NULL) {
+    state->renderer->destroy(state->renderer);
+    state->renderer = renderer;
+    state->documents_rendered = 0;
+  }
+  state->render_theme = selected;
+  state->theme_scope = scope;
+  cai_cli_reasoning_end(&state->reasoning);
+  if (state->log != NULL) {
+    pslog_field fields[2];
+    fields[0] = pslog_str("scope", scope == 2   ? "review"
+                                   : scope == 1 ? "subagent"
+                                                : "parent");
+    fields[1] = pslog_str("theme", selected.markdown != NULL ? selected.markdown
+                                                             : "default");
+    cai_cli_log_message(cli_logger(state), PSLOG_LEVEL_DEBUG, "theme_scope",
+                        "runtime", "Markdown rendering context changed",
+                        strlen("Markdown rendering context changed"), fields,
+                        2U);
+  }
+  return CAI_OK;
+}
+
+static int cli_event_theme_scope(const cai_agent_runtime_event *event) {
+  if (event->type == CAI_AGENT_EVENT_REVIEW_STARTED ||
+      event->type == CAI_AGENT_EVENT_REVIEW_HANDED_OFF)
+    return 2;
+  if ((event->parent_tool_call_id != NULL || event->subagent_name != NULL) &&
+      (event->type == CAI_AGENT_EVENT_RUN_STARTED ||
+       event->type == CAI_AGENT_EVENT_RUN_STATE_CHANGED ||
+       event->type == CAI_AGENT_EVENT_SESSION_COMMITTED ||
+       event->type == CAI_AGENT_EVENT_RUN_COMPLETED ||
+       event->type == CAI_AGENT_EVENT_INPUT_BOUNDARY))
+    return -1; /* Metadata cannot split a parent's streamed reasoning. */
+  if (event->parent_tool_call_id != NULL || event->subagent_name != NULL)
+    return (event->subagent_name != NULL &&
+            strcmp(event->subagent_name, "review") == 0) ||
+                   (event->parent_tool_call_id != NULL &&
+                    strcmp(event->parent_tool_call_id, "/review") == 0)
+               ? 2
+               : 1;
+  if ((event->type >= CAI_AGENT_EVENT_TOOL_CALL_STARTED &&
+       event->type <= CAI_AGENT_EVENT_TOOL_CALL_FAILED) ||
+      (event->type >= CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED &&
+       event->type <= CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED) ||
+      event->type == CAI_AGENT_EVENT_RUN_STARTED ||
+      event->type == CAI_AGENT_EVENT_RUN_COMPLETED ||
+      event->type == CAI_AGENT_EVENT_RUN_FAILED ||
+      event->type == CAI_AGENT_EVENT_RUN_CANCELLED ||
+      event->type == CAI_AGENT_EVENT_TEXT_DELTA ||
+      event->type == CAI_AGENT_EVENT_REASONING_SUMMARY_STARTED ||
+      event->type == CAI_AGENT_EVENT_REASONING_SUMMARY ||
+      event->type == CAI_AGENT_EVENT_STEERING_DELIVERED)
+    return 0;
+  return -1;
+}
+
+static int cli_review_boundary(cli_state *state, int start, cai_error *error) {
+  int rc = cli_set_theme_scope(state, 2, error);
+  if (rc == CAI_OK && cli_markdown(state, start ? "**Review started**"
+                                                : "**Review finished**") != 0)
+    rc = CAI_ERR_TRANSPORT;
+  if (rc == CAI_OK) {
+    state->review_block = start;
+    if (!start)
+      rc = cli_set_theme_scope(state, 0, error);
+  }
+  return rc;
 }
 
 static int cli_prompt(cli_state *state, const char *text) {
@@ -993,6 +1101,9 @@ static const struct cli_command_definition {
     {"/yield_time_ms", CLI_COMMAND_FEED, CLI_COMMAND_REQUEST},
     {"/goal", CLI_COMMAND_FEED, CLI_COMMAND_REQUEST},
     {"/theme", CLI_COMMAND_FEED, CLI_COMMAND_REQUEST},
+    {"/theme-offset", CLI_COMMAND_FEED, CLI_COMMAND_REQUEST},
+    {"/subagent-theme-offset", CLI_COMMAND_FEED, CLI_COMMAND_REQUEST},
+    {"/review-theme-offset", CLI_COMMAND_FEED, CLI_COMMAND_REQUEST},
     {"/yolo", CLI_COMMAND_FEED, CLI_COMMAND_TURN},
     {"/reasoning-tool", CLI_COMMAND_FEED, CLI_COMMAND_TURN},
     {"/queue", CLI_COMMAND_FEED, CLI_COMMAND_TURN},
@@ -1030,7 +1141,10 @@ static const char *cli_command_name(const char *line, size_t *length) {
 static int cli_is_theme(const char *line) {
   size_t length = strcspn(line, " \t");
   const char *name = cli_command_name(line, &length);
-  return cli_word_is(name, length, "/theme");
+  return cli_word_is(name, length, "/theme") ||
+         cli_word_is(name, length, "/theme-offset") ||
+         cli_word_is(name, length, "/subagent-theme-offset") ||
+         cli_word_is(name, length, "/review-theme-offset");
 }
 
 static cli_command_boundary cli_command_delivery(const char *line) {
@@ -1580,6 +1694,21 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     int rc = cli_host_process(state, error);
     return rc != CAI_OK ? rc : cli_messages_process(state, 1, error);
   }
+  if (!state->batch) {
+    int scope;
+    int themed;
+    if (state->review_block && event->parent_tool_call_id == NULL &&
+        (event->type == CAI_AGENT_EVENT_RUN_FAILED ||
+         event->type == CAI_AGENT_EVENT_RUN_CANCELLED)) {
+      int finished = cli_review_boundary(state, 0, error);
+      if (finished != CAI_OK)
+        return finished;
+    }
+    scope = cli_event_theme_scope(event);
+    themed = scope < 0 ? CAI_OK : cli_set_theme_scope(state, scope, error);
+    if (themed != CAI_OK)
+      return themed;
+  }
   if (event->type == CAI_AGENT_EVENT_SUBAGENT_STARTED)
     state->foreground_subagent = 1;
   if (event->type == CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF ||
@@ -1701,16 +1830,27 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
   /* Tool-invoked reviewers suppress their machine-readable answer deltas.
    * Their validated Markdown arrives on the handoff, independently of any
    * subsequent parent answer. Generic workers already stream their text. */
+  if (event->type == CAI_AGENT_EVENT_REVIEW_STARTED)
+    return state->review_block ? CAI_OK : cli_review_boundary(state, 1, error);
+  if (event->type == CAI_AGENT_EVENT_SUBAGENT_STARTED &&
+      event->subagent_name != NULL &&
+      strcmp(event->subagent_name, "review") == 0)
+    return cli_review_boundary(state, 1, error);
+  if (event->type == CAI_AGENT_EVENT_REVIEW_HANDED_OFF)
+    return cli_review_boundary(state, 0, error);
   if (event->type == CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF &&
       event->subagent_name != NULL &&
-      strcmp(event->subagent_name, "review") == 0 && event->data != NULL &&
-      event->data_length != 0U)
-    return cli_finish_response(state) == 0 &&
+      strcmp(event->subagent_name, "review") == 0) {
+    int rc = CAI_OK;
+    if (event->data != NULL && event->data_length != 0U)
+      rc = cli_finish_response(state) == 0 &&
                    cli_finish_reasoning(state) == 0 &&
                    cli_text(state, event->data, event->data_length) == 0 &&
                    cli_finish_response(state) == 0
                ? CAI_OK
                : CAI_ERR_TRANSPORT;
+    return rc == CAI_OK ? cli_review_boundary(state, 0, error) : rc;
+  }
   if (event->data != NULL &&
       ((event->type == CAI_AGENT_EVENT_RUN_STARTED &&
         event->parent_tool_call_id == NULL) ||
@@ -2141,14 +2281,45 @@ static int cli_replay_child_heading(cli_state *state,
     return 0;
   snprintf(state->replay_child, sizeof(state->replay_child), "%s",
            record->session_id);
-  return cli_markdown(state, strcmp(record->subagent, "review") == 0
-                                 ? "### Review subagent\n"
-                                 : "### Subagent\n");
+  if (strcmp(record->subagent, "review") == 0) {
+    state->review_block = 1;
+    return cli_markdown(state, "### Review subagent\n\n**Review started**\n");
+  }
+  return cli_markdown(state, "### Subagent\n");
 }
 
 static int cli_replay_output_raw(cli_state *state,
                                  const cai_agent_session_event *event,
                                  int render, int logging, cai_error *error) {
+  /* This is the durable acknowledgement of an already-presented handoff,
+   * not another subagent ending. Host replay observers still receive it. */
+  if (strcmp(event->type, "subagent_handoff_committed") == 0 &&
+      event->data != NULL && strcmp(event->data, "tool_round") == 0)
+    return CAI_OK;
+  if (render && (strncmp(event->type, "user_shell_", 11U) == 0 ||
+                 strcmp(event->type, "turn_submitted") == 0 ||
+                 strcmp(event->type, "turn_queued") == 0 ||
+                 strcmp(event->type, "steering_queued") == 0 ||
+                 strcmp(event->type, "goal_continuation") == 0 ||
+                 strcmp(event->type, "policy_diagnostic") == 0 ||
+                 strcmp(event->type, "assistant_text_delta") == 0 ||
+                 strcmp(event->type, "reasoning_summary_started") == 0 ||
+                 strcmp(event->type, "reasoning_summary") == 0 ||
+                 strcmp(event->type, "review_pending") == 0 ||
+                 strcmp(event->type, "review_handoff_committed") == 0 ||
+                 strcmp(event->type, "subagent_handoff_committed") == 0)) {
+    int themed = cli_set_theme_scope(
+        state,
+        strcmp(event->type, "review_pending") == 0 ||
+                (state->review_block &&
+                 (strcmp(event->type, "review_handoff_committed") == 0 ||
+                  strcmp(event->type, "subagent_handoff_committed") == 0))
+            ? 2
+            : 0,
+        error);
+    if (themed != CAI_OK)
+      return themed;
+  }
   if (logging && strcmp(event->type, "subagent") == 0) {
     cai_execution_record record;
     cai_error ignored;
@@ -2205,7 +2376,13 @@ static int cli_replay_output_raw(cli_state *state,
                  : cai_cli_error(error, CAI_ERR_TRANSPORT,
                                  "render execution warning");
     }
-    if (cli_replay_child_heading(state, &record) != 0)
+    if (rc == CAI_OK)
+      rc = cli_set_theme_scope(state,
+                               record.subagent == NULL                  ? 0
+                               : strcmp(record.subagent, "review") == 0 ? 2
+                                                                        : 1,
+                               error);
+    if (rc == CAI_OK && cli_replay_child_heading(state, &record) != 0)
       rc = CAI_ERR_TRANSPORT;
     if (rc == CAI_OK && strcmp(event->type, "subagent") == 0) {
       if (strcmp(record.kind, "assistant_text_delta") == 0) {
@@ -2384,15 +2561,19 @@ static int cli_replay_output_raw(cli_state *state,
       return CAI_OK;
     snprintf(state->replay_child, sizeof(state->replay_child), "%s",
              event->data != NULL ? event->data : "");
-    return cli_markdown(state, "## Review\n") == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+    state->review_block = 1;
+    return cli_markdown(state, "## Review\n\n**Review started**\n") == 0
+               ? CAI_OK
+               : CAI_ERR_TRANSPORT;
   }
   if (strcmp(event->type, "review_handoff_committed") == 0) {
     state->replay_child[0] = '\0';
-    return cli_markdown(state, "*Review ended.*\n") == 0 ? CAI_OK
-                                                         : CAI_ERR_TRANSPORT;
+    return cli_review_boundary(state, 0, error);
   }
   if (strcmp(event->type, "subagent_handoff_committed") == 0) {
     state->replay_child[0] = '\0';
+    if (state->review_block)
+      return cli_review_boundary(state, 0, error);
     return cli_markdown(state, "*Subagent ended.*\n") == 0 ? CAI_OK
                                                            : CAI_ERR_TRANSPORT;
   }
@@ -2881,6 +3062,8 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   rc = cli_finish_response(state) == 0 && cli_finish_reasoning(state) == 0
            ? CAI_OK
            : CAI_ERR_TRANSPORT;
+  if (rc == CAI_OK)
+    rc = cli_set_theme_scope(state, 0, error);
   if (rc == CAI_OK) {
     rc = cli_sync_status(state, error);
   }
@@ -2944,6 +3127,7 @@ static void cli_close_runtime(cli_state *state) {
   }
   cai_agent_runtime_close(state->runtime);
   state->runtime = NULL;
+  state->review_block = 0;
   cai_cli_messages_close(state->messages);
   state->messages = NULL;
   /* Detach callbacks and close recall before releasing the session use guard.
@@ -3977,9 +4161,45 @@ static int cli_theme_write(void *context, const void *bytes, size_t count,
   return cli_text(context, bytes, count) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
 }
 
+static int cli_theme_offset_command(cli_state *state, const char *argument,
+                                    int scope, cai_error *error) {
+  long long *setting = scope == 2   ? &state->options.review_theme_offset
+                       : scope == 1 ? &state->options.subagent_theme_offset
+                                    : &state->options.theme_offset;
+  long long previous = *setting, value;
+  cai_cli_theme selected;
+  char *end, message[256];
+  int rc;
+  argument += strspn(argument, " \t");
+  if (*argument != '\0') {
+    errno = 0;
+    value = strtoll(argument, &end, 10);
+    if (errno != 0 || end == argument || end[strspn(end, " \t")] != '\0')
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "Theme offset requires a signed 64-bit integer.");
+    *setting = value;
+    rc = cli_set_theme_scope(state, state->theme_scope, error);
+    if (rc != CAI_OK) {
+      *setting = previous;
+      return rc;
+    }
+  }
+  cli_theme_for_scope(state, &state->theme, scope, &selected);
+  snprintf(message, sizeof(message),
+           "%s theme offset: `%lld`. Effective libmdf theme: `%s`.",
+           scope == 2   ? "Review"
+           : scope == 1 ? "Subagent"
+                        : "Parent",
+           *setting,
+           selected.ascii              ? "ascii"
+           : selected.markdown != NULL ? selected.markdown
+                                       : "default");
+  return cli_markdown(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+}
+
 static int cli_theme_command(cli_state *state, const char *arguments,
                              cai_error *error) {
-  cai_cli_theme selected;
+  cai_cli_theme selected, effective;
   mdf *renderer = NULL;
   cai_sink_callbacks callbacks;
   cai_sink *sink = NULL;
@@ -4001,6 +4221,20 @@ static int cli_theme_command(cli_state *state, const char *arguments,
     if (rc == CAI_OK)
       rc = cai_cli_theme_describe(&state->theme, sink, error);
     cai_sink_close(sink);
+    if (rc == CAI_OK) {
+      char details[384];
+      snprintf(
+          details, sizeof(details),
+          "\nParent offset: `%lld`; subagent offset: `%lld`; review offset: "
+          "`%lld`.\n\nActive libmdf theme: `%s`.\n",
+          state->options.theme_offset, state->options.subagent_theme_offset,
+          state->options.review_theme_offset,
+          state->render_theme.ascii              ? "ascii"
+          : state->render_theme.markdown != NULL ? state->render_theme.markdown
+                                                 : "default");
+      if (cli_text(state, details, strlen(details)) != 0)
+        rc = CAI_ERR_TRANSPORT;
+    }
     if (rc == CAI_OK && cli_finish_response(state) != 0)
       rc = CAI_ERR_TRANSPORT;
     return rc;
@@ -4015,7 +4249,8 @@ static int cli_theme_command(cli_state *state, const char *arguments,
     return cai_cli_error(error, CAI_ERR_INVALID, reason);
   /* Both submission keys retain this command until INPUT_BOUNDARY, with the
    * worker paused, or idle. Never replace a renderer mid-response. */
-  rc = cli_renderer_create(state, &selected, &renderer, error);
+  cli_theme_for_scope(state, &selected, state->theme_scope, &effective);
+  rc = cli_renderer_create(state, &effective, &renderer, error);
   if (rc == CAI_OK &&
       (cli_flush_command(state, 1) != 0 || cli_finish_response(state) != 0 ||
        cli_finish_reasoning(state) != 0 ||
@@ -4043,6 +4278,7 @@ static int cli_theme_command(cli_state *state, const char *arguments,
   state->renderer->destroy(state->renderer);
   state->renderer = renderer;
   state->theme = selected;
+  state->render_theme = effective;
   state->documents_rendered = 0;
   snprintf(message, sizeof(message), "Theme changed to `%s:%s`.\n%s",
            cai_cli_theme_prompt_name(&selected),
@@ -4247,11 +4483,18 @@ static int cli_review_command(cli_state *state, const char *arguments,
   if (state->review_runtime != NULL || state->shell.pid > 0)
     return cai_cli_error(error, CAI_ERR_INVALID,
                          "finish the active review or shell before reviewing");
+  rc = cli_review_boundary(state, 1, error);
+  if (rc != CAI_OK)
+    return rc;
   rc = cai_agent_runtime_start_review(state->runtime, &request,
                                       &state->review_runtime, error);
   started = rc;
-  if (state->review_runtime == NULL)
+  if (state->review_runtime == NULL) {
+    int finished = cli_review_boundary(state, 0, NULL);
+    if (finished != CAI_OK)
+      return finished;
     return rc;
+  }
   rc = cai_agent_runtime_wakeup_fd(state->review_runtime, &fd, error);
   if (rc == CAI_OK &&
       sl_watch_add(state->sl, fd,
@@ -4442,6 +4685,19 @@ static int cli_handle_command(cli_state *state, const char *line,
           pending ? (requested ? "on" : "off") : "", pending ? "**.\n\n" : "");
     }
     return cli_markdown(state, message) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+  }
+  {
+    static const char *const offset_commands[] = {
+        "/theme-offset", "/subagent-theme-offset", "/review-theme-offset"};
+    size_t offset_index;
+    for (offset_index = 0U; offset_index < 3U; offset_index++) {
+      size_t command_length = strlen(offset_commands[offset_index]);
+      if (strncmp(line, offset_commands[offset_index], command_length) == 0 &&
+          (line[command_length] == '\0' || line[command_length] == ' ' ||
+           line[command_length] == '\t'))
+        return cli_theme_offset_command(state, line + command_length,
+                                        (int)offset_index, error);
+    }
   }
   if (strcmp(line, "/theme") == 0 || strncmp(line, "/theme ", 7U) == 0 ||
       strncmp(line, "/theme\t", 7U) == 0)
@@ -4677,6 +4933,12 @@ static int cli_handle_command(cli_state *state, const char *line,
         "and all "
         "themes, or change themes at the next safe response/tool boundary. "
         "|\n",
+        "| `/theme-offset [N]` | Show/set the parent libmdf rotation (default "
+        "0). |\n"
+        "| `/subagent-theme-offset [N]` | Show/set ordinary child rotation "
+        "from the parent (default 0). |\n"
+        "| `/review-theme-offset [N]` | Show/set reviewer rotation from the "
+        "parent (default 1). Signed offsets wrap, excluding boring. |\n",
         "| `/review [uncommitted\\|base REF\\|custom TEXT]` | Run an isolated "
         "reviewer; no argument compares against the Git default branch. |\n",
         "| `/review-and-fix [uncommitted\\|base REF]` | Replace the current "
@@ -5414,6 +5676,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
       cai_cli_error(&error, CAI_ERR_INVALID, reason);
       parsed = -1;
     }
+    cli_theme_for_scope(&state, &state.theme, 0, &state.render_theme);
   }
   if (parsed > 0 &&
       cai_cli_stores_resolve(state.configuration, &error) != CAI_OK)
@@ -5677,8 +5940,8 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
                    "failed to initialize terminal renderers\n");
     goto cleanup;
   }
-  if (cli_renderer_create(&state, &state.theme, &state.renderer, &error) !=
-      CAI_OK) {
+  if (cli_renderer_create(&state, &state.render_theme, &state.renderer,
+                          &error) != CAI_OK) {
     cli_print_error(&state, "initialize Markdown renderer", &error);
     goto cleanup;
   }

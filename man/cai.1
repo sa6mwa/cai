@@ -115,6 +115,14 @@ NO_COLOR selects the plain prompt and disables Markdown ANSI styling.
 Themes apply to the introduction and conversation feed; host-supplied raw
 banners stay verbatim and LOG_ settings remain independent.
 .TP
+.BR \-\-theme-offset " N, " \-\-subagent-theme-offset " N, " \-\-review-theme-offset " N"
+Rotate only the libmdf theme. Defaults are parent 0, ordinary child 0, reviewer 1.
+Child offsets are relative to the effective parent. Signed 64-bit integers wrap
+through the listed libmdf themes, excluding boring. Softline, ASCII and NO_COLOR
+policies are preserved. INI keys are theme_offset in [ui], [subagent], [review];
+environment aliases are CAI_THEME_OFFSET, CAI_SUBAGENT_THEME_OFFSET,
+CAI_REVIEW_THEME_OFFSET. Review exit and replay restore the parent theme.
+.TP
 .BR \-\-state-dir " DIR, " \-\-cache-dir " DIR, " \-\-data-dir " DIR"
 Override individual application roots. Defaults use the matching XDG home and
 the application name (cai for this binary). Environment aliases are CAI_STATE_DIR,
@@ -754,6 +762,11 @@ as --theme. Enter and Alt-Enter apply changes at the next safe response/tool
 boundary during a turn. Changes affect future output in
 this app invocation, including after /new and /resume. Configuration and
 session history are not rewritten. NO_COLOR continues to override styling.
+.TP
+.BR /theme-offset " [N], " /subagent-theme-offset " [N], " /review-theme-offset " [N]"
+Show the offset without an argument, or set a signed theme rotation. Changes
+remain editable in Softline until the next safe response/tool boundary.
+The /theme command also shows offsets and the currently active libmdf theme.
 .TP
 .B /resume
 List saved sessions for the current workspace, newest first.

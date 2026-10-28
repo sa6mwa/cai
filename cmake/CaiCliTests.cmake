@@ -403,6 +403,18 @@
     cai_configure_cli_target(cai_cli_theme_test)
     target_compile_options(cai_cli_theme_test PRIVATE -UNDEBUG)
     add_test(NAME cai_cli_theme COMMAND cai_cli_theme_test)
+    foreach(_review_theme_protocol responses chat_completions)
+      add_test(NAME cai_cli_review_presentation_${_review_theme_protocol}
+        COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_review_presentation_test.sh"
+        "$<TARGET_FILE:cai_cli_mock_fixture>" "${_review_theme_protocol}")
+      set_tests_properties(cai_cli_review_presentation_${_review_theme_protocol}
+        PROPERTIES TIMEOUT 25 LABELS "cli;local;offline")
+    endforeach()
+    add_test(NAME cai_cli_review_presentation_plain
+      COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_review_presentation_test.sh"
+      "$<TARGET_FILE:cai_cli_mock_fixture>" responses plain)
+    set_tests_properties(cai_cli_review_presentation_plain PROPERTIES
+      TIMEOUT 15 LABELS "cli;local;offline")
     add_test(NAME cai_cli_themes COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_themes_test.sh"
       "$<TARGET_FILE:cai_cli_mock_fixture>")

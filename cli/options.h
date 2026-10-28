@@ -22,6 +22,7 @@ typedef struct cai_cli_options {
   int help, version;
   int list_themes;
   const char *theme;
+  long long theme_offset, subagent_theme_offset, review_theme_offset;
   const char *status_fields;
   int dump_config;
   const char *dump_config_file;

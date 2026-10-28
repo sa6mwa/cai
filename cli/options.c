@@ -51,6 +51,7 @@ void cai_cli_options_init(cai_cli_options *options) {
   options->reasoning_summary = "concise";
   options->todo_layout = "board";
   options->theme = "default";
+  options->review_theme_offset = 1LL;
   options->status_fields = CAI_CLI_STATUS_DEFAULT_FIELDS;
   options->sessions_store = options->auth_store = options->messaging_store =
       "default";
@@ -404,6 +405,29 @@ static int cli_read_options(int argc, char *const *argv,
     }
     if (strcmp(flag, "--no-shell-context") == 0) {
       options->shell_context = 0;
+      continue;
+    }
+    if (strcmp(flag, "--theme-offset") == 0 ||
+        strcmp(flag, "--subagent-theme-offset") == 0 ||
+        strcmp(flag, "--review-theme-offset") == 0) {
+      char *end;
+      long long offset;
+      if (++i >= argc) {
+        cai_cli_option_error(options, "%s requires a signed integer", flag);
+        return -1;
+      }
+      errno = 0;
+      offset = strtoll(argv[i], &end, 10);
+      if (errno != 0 || end == argv[i] || *end != '\0') {
+        cai_cli_option_error(options, "%s requires a signed integer", flag);
+        return -1;
+      }
+      if (strcmp(flag, "--theme-offset") == 0)
+        options->theme_offset = offset;
+      else if (strcmp(flag, "--subagent-theme-offset") == 0)
+        options->subagent_theme_offset = offset;
+      else
+        options->review_theme_offset = offset;
       continue;
     }
     if (strcmp(flag, "--background") == 0) {
