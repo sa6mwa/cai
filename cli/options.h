@@ -79,6 +79,7 @@ typedef struct cai_cli_options {
   const char *tool_output;
   const char *todo_layout;
   const char *resume_id;
+  const char *delete_id;
   const char *export_id;
   const char *export_dir;
   const char *import_file;
@@ -90,6 +91,7 @@ typedef struct cai_cli_options {
   int login;
   int list;
   int resume_list;
+  int delete_list;
   int new_session;
   int non_interactive;
   int review;

@@ -87,36 +87,6 @@ int cai_cli_temp_open(cai_cli_temp *temp, cai_cli_options *options,
   return CAI_OK;
 }
 
-static int remove_at(int parent, const char *name) {
-  struct stat st;
-  struct dirent *entry;
-  DIR *directory;
-  int fd, rc = 0;
-  if (fstatat(parent, name, &st, AT_SYMLINK_NOFOLLOW) != 0)
-    return errno == ENOENT ? 0 : -1;
-  if (!S_ISDIR(st.st_mode))
-    return unlinkat(parent, name, 0);
-  fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-  if (fd < 0)
-    return -1;
-  if (fchmod(fd, 0700) != 0 || (directory = fdopendir(fd)) == NULL) {
-    close(fd);
-    return -1;
-  }
-  errno = 0;
-  while ((entry = readdir(directory)) != NULL) {
-    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
-      continue;
-    if (remove_at(fd, entry->d_name) != 0)
-      rc = -1;
-    errno = 0;
-  }
-  if (errno != 0)
-    rc = -1;
-  closedir(directory);
-  return rc == 0 ? unlinkat(parent, name, AT_REMOVEDIR) : -1;
-}
-
 static int confirm(const char *workspace, int stop_fd, int (*stop)(void *),
                    void *context) {
   struct pollfd fds[2];
@@ -172,11 +142,11 @@ int cai_cli_temp_close(cai_cli_temp *temp, int force, int ask, int stop_fd,
                          "temporary root changed; automatic deletion refused");
     if (!force && ask && rc == CAI_OK && !(stop != NULL && stop(context)))
       remove_workspace = confirm(temp->workspace, stop_fd, stop, context);
-    if (remove_at(temp->root_fd, "private") != 0)
+    if (cai_cli_remove_at(temp->root_fd, "private") != 0)
       rc = cai_cli_error(error, CAI_ERR_TRANSPORT,
                          "remove temporary private history and state");
     if (rc == CAI_OK && remove_workspace) {
-      if (remove_at(temp->root_fd, "workspace") != 0 ||
+      if (cai_cli_remove_at(temp->root_fd, "workspace") != 0 ||
           unlinkat(temp->parent_fd, name, AT_REMOVEDIR) != 0)
         rc = cai_cli_error(error, CAI_ERR_TRANSPORT,
                            "remove temporary workspace");

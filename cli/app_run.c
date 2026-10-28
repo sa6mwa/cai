@@ -2458,7 +2458,9 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
                               : (size_t)state->options.replay_turns,
                           &state->replay, error) != CAI_OK)
     return error->code;
+  cai_cli_pouch_begin_use(&state->pouch);
   rc = cai_agent_runtime_open(state->client, &config, &state->runtime, error);
+  state->pouch.capture_session = 0;
   state->pouch.replay_begin = NULL;
   state->pouch.replay_event = NULL;
   state->pouch.replay_context = NULL;
@@ -2501,6 +2503,23 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   }
   rc = cai_cli_log_session(state->log,
                            cai_agent_runtime_session_id(state->runtime), error);
+  if (rc == CAI_OK && state->interactive) {
+    char history[PATH_MAX];
+    rc = cai_cli_session_history_path(
+        &state->options, cai_agent_runtime_session_id(state->runtime), history,
+        error);
+    if (rc == CAI_OK)
+      rc = cai_cli_private_directory(history, error);
+    if (rc == CAI_OK &&
+        (sl_history_close(state->sl) != SL_OK ||
+         sl_history_set_max_len(state->sl, 0) != SL_OK ||
+         sl_history_set_max_len(state->sl, 1000) != SL_OK ||
+         sl_history_open(state->sl,
+                         cai_agent_runtime_session_id(state->runtime),
+                         history) != SL_OK ||
+         sl_history_set_auto_add(state->sl, 1) != SL_OK))
+      rc = cai_cli_error(error, CAI_ERR_TRANSPORT, sl_last_error(state->sl));
+  }
   if (rc != CAI_OK)
     return rc;
   if (state->options.developer_instructions != NULL) {
@@ -2590,6 +2609,11 @@ static void cli_close_runtime(cli_state *state) {
   state->runtime = NULL;
   cai_cli_messages_close(state->messages);
   state->messages = NULL;
+  /* Release recall's file descriptors before making the conversation eligible
+   * for deletion. Accepted entries have already been appended by Softline. */
+  if (state->sl != NULL)
+    (void)sl_history_close(state->sl);
+  cai_cli_pouch_end_use(&state->pouch);
   state->goal_starts_pending = 0U;
   cai_cli_reasoning_reset(&state->reasoning);
 }
@@ -4822,6 +4846,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   utility_mode =
       state.options.chrome_setup || state.options.chrome_remove ||
       state.options.login || state.options.list || state.options.resume_list ||
+      state.options.delete_list || state.options.delete_id != NULL ||
       state.options.export_id != NULL || state.options.import_file != NULL ||
       state.options.install_skill != NULL || state.options.message != NULL;
   default_log_level = utility_mode ? PSLOG_LEVEL_WARN : PSLOG_LEVEL_TRACE;
@@ -4914,23 +4939,45 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
       result = 1;
     goto cleanup;
   }
-  if (state.options.list || state.options.resume_list) {
+  if (state.options.list || state.options.resume_list ||
+      state.options.delete_list) {
     cai_sink *destination;
     destination = NULL;
     rc = cai_cli_pouch_list(&state.pouch,
                             state.options.list ? NULL : state.workspace,
                             &state.sessions, &state.session_count, &error);
+    if (rc == CAI_OK && state.options.delete_list)
+      rc = cai_cli_sessions_deletable(&state.pouch, state.sessions,
+                                      &state.session_count, &error);
     if (rc == CAI_OK)
       rc = cai_sink_stdout(&destination, &error);
     if (rc == CAI_OK)
-      rc =
-          cai_cli_sessions_print(destination, state.sessions,
-                                 state.session_count, state.options.resume_list,
-                                 mdf_terminal_width(STDOUT_FILENO, 80), &error);
+      rc = cai_cli_sessions_print(
+          destination, state.sessions, state.session_count, !state.options.list,
+          mdf_terminal_width(STDOUT_FILENO, 80), &error);
     cai_sink_close(destination);
     if (rc != CAI_OK)
       cli_print_error(&state, "list conversations", &error);
     result = rc == CAI_OK ? 0 : 1;
+    goto cleanup;
+  }
+  if (state.options.delete_id != NULL) {
+    cai_cli_pouch *messaging = cli_named_store(
+        &state, state.normal_options.messaging_store, 0, &error);
+    char id[CAI_AGENT_SESSION_ID_MAX];
+    rc = messaging == NULL
+             ? error.code
+             : cai_cli_session_delete(&state.pouch, messaging, &state.options,
+                                      state.workspace, state.options.delete_id,
+                                      id, &error);
+    if (rc != CAI_OK)
+      cli_print_error(&state, "delete conversation", &error);
+    else if (fprintf(stdout, "Deleted conversation %s.\n", id) < 0 ||
+             fflush(stdout) != 0)
+      rc = CAI_ERR_TRANSPORT;
+    result = rc == CAI_OK ? 0 : 1;
+    if (cli_host_process(&state, &error) != CAI_OK)
+      result = 1;
     goto cleanup;
   }
   if (state.options.export_id != NULL) {
@@ -5044,15 +5091,6 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   if (!state.batch && cli_tool_display_init(&state, &error) != CAI_OK) {
     cli_print_error(&state, "initialize tool renderer", &error);
     goto cleanup;
-  }
-  if (state.interactive) {
-    if (sl_history_open(state.sl, state.workspace, state.options.history_dir) !=
-            SL_OK ||
-        sl_history_set_auto_add(state.sl, 1) != SL_OK) {
-      cai_cli_error(&error, CAI_ERR_TRANSPORT, sl_last_error(state.sl));
-      cli_print_error(&state, "initialize prompt history", &error);
-      goto cleanup;
-    }
   }
   if (state.interactive) {
     if (sl_set_prompt_queue_profile(

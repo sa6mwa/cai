@@ -49,7 +49,7 @@ static const cli_field fields[] = {
       "XDG_RUNTIME_DIR/program_name, "
       "otherwise cache_dir. Chrome sockets default to runtime_dir/chrome."),
     S("paths", "history_dir", history_dir, CAI_CONFIG_PATH,
-      "Prompt history; empty uses state_dir/history."),
+      "Per-conversation prompt history root; empty uses state_dir/history."),
     S("paths", "clipboard_dir", clipboard_dir, CAI_CONFIG_PATH,
       "Pasted images; empty uses cache_dir/clipboard."),
     S("paths", "log_dir", log_dir, CAI_CONFIG_PATH,

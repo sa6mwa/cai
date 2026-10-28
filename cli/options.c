@@ -89,6 +89,7 @@ static int cai_cli_short_value_option(const char *flag) {
   case 'g':
   case 't':
   case 'R':
+  case 'D':
   case 'c':
     return flag[length - 1U];
   default:
@@ -336,6 +337,11 @@ static int cli_read_options(int argc, char *const *argv,
       options->resume_list = 1;
       continue;
     }
+    if ((strcmp(flag, "--delete") == 0 || strcmp(flag, "-D") == 0) &&
+        (i + 1 >= argc || argv[i + 1][0] == '-')) {
+      options->delete_list = 1;
+      continue;
+    }
     if (strcmp(flag, "--no-shell-context") == 0) {
       options->shell_context = 0;
       continue;
@@ -390,6 +396,8 @@ static int cli_read_options(int argc, char *const *argv,
       field = &options->theme;
     else if (strcmp(flag, "--resume") == 0 || strcmp(flag, "-R") == 0)
       field = &options->resume_id;
+    else if (strcmp(flag, "--delete") == 0 || strcmp(flag, "-D") == 0)
+      field = &options->delete_id;
     else if (strcmp(flag, "--export") == 0)
       field = &options->export_id;
     else if (strcmp(flag, "--export-dir") == 0)
@@ -578,7 +586,8 @@ int cai_cli_validate_options(cai_cli_options *options) {
   }
   if (options->temporary &&
       (options->resume_id != NULL || options->resume_list || options->list ||
-       options->login || options->chrome_setup || options->chrome_remove ||
+       options->delete_id != NULL || options->delete_list || options->login ||
+       options->chrome_setup || options->chrome_remove ||
        options->export_id != NULL || options->import_file != NULL ||
        options->install_skill != NULL || options->message != NULL)) {
     cai_cli_option_error(options, "%s",
@@ -620,17 +629,19 @@ int cai_cli_validate_options(cai_cli_options *options) {
                          "isolated --review does not support Chrome tools");
     return -1;
   }
-  if ((options->list + options->resume_list + options->login +
-       options->chrome_setup + options->chrome_remove +
-       (options->export_id != NULL) + (options->import_file != NULL) +
-       (options->install_skill != NULL) + (options->message != NULL)) > 1) {
+  if ((options->list + options->resume_list + options->delete_list +
+       (options->delete_id != NULL) + options->login + options->chrome_setup +
+       options->chrome_remove + (options->export_id != NULL) +
+       (options->import_file != NULL) + (options->install_skill != NULL) +
+       (options->message != NULL)) > 1) {
     cai_cli_option_error(
         options, "%s",
-        "select only one of --list, --resume without ID, --login, "
+        "select only one of --list, --resume without ID, --delete, --login, "
         "--export, --import, --install-skill, or --message\n");
     return -1;
   }
-  if ((options->list || options->resume_list || options->export_id != NULL ||
+  if ((options->list || options->resume_list || options->delete_list ||
+       options->delete_id != NULL || options->export_id != NULL ||
        options->import_file != NULL || options->install_skill != NULL ||
        options->message != NULL) &&
       (options->new_session || options->resume_id != NULL || options->review ||

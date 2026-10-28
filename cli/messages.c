@@ -1231,6 +1231,100 @@ static int send_cancelled(cai_cli_messages *m, unsigned long long sequence) {
   pthread_mutex_unlock(&m->lock);
   return cancelled;
 }
+
+int cai_cli_messages_delete_session(cai_cli_pouch *pouch, const char *id,
+                                    cai_error *error) {
+  cai_cli_messages owner;
+  lc_query_req query;
+  lc_query_res result;
+  lc_query_key_handler handler;
+  lc_lease *lease;
+  lc_error local;
+  message_page page;
+  message_doc doc;
+  char selector[256], *cursor;
+  char (*keys)[300] = NULL, (*grown)[300];
+  size_t i, count;
+  int mode, rc = LC_OK;
+  if (!safe_id(id))
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "unsafe conversation inbox ID");
+  memset(&owner, 0, sizeof(owner));
+  owner.pouch = pouch;
+  strcpy(owner.instance, "conversation-delete");
+  lc_error_init(&local);
+  lc_query_req_init(&query);
+  memset(&handler, 0, sizeof(handler));
+  handler.begin = key_begin;
+  handler.chunk = key_chunk;
+  handler.end = key_end;
+  query.ns = pouch->messages_namespace;
+  query.engine = "index";
+  query.refresh = "wait_for";
+  query.limit = PAGE_KEYS;
+  for (mode = 0; rc == LC_OK && mode < 2; mode++) {
+    snprintf(selector, sizeof(selector), "eq{field=/%s,value=\"%s\"}",
+             mode == 0 ? "pending_for" : "sender_session", id);
+    query.selector_lql = selector;
+    cursor = NULL;
+    count = 0U;
+    do {
+      memset(&page, 0, sizeof(page));
+      memset(&result, 0, sizeof(result));
+      query.cursor = cursor;
+      rc = lc_query_keys(pouch->sessions, &query, &handler, &page, &result,
+                         &local);
+      free(cursor);
+      cursor = result.cursor != NULL ? strdup(result.cursor) : NULL;
+      if (rc == LC_OK && result.cursor != NULL && cursor == NULL)
+        rc = lc_error_set(&local, LC_ERR_NOMEM, 0, "copy inbox query cursor",
+                          NULL, NULL, NULL);
+      lc_query_res_cleanup(&result);
+      /* Finish key discovery before removing index entries: continuation
+       * cursors must not race this operation's own mutations. */
+      if (rc == LC_OK && page.count != 0U) {
+        if (count > (size_t)-1 / sizeof(*keys) - page.count)
+          rc = lc_error_set(&local, LC_ERR_NOMEM, 0, "inbox key list too large",
+                            NULL, NULL, NULL);
+        else {
+          grown = realloc(keys, (count + page.count) * sizeof(*keys));
+          if (grown == NULL)
+            rc = lc_error_set(&local, LC_ERR_NOMEM, 0, "collect inbox keys",
+                              NULL, NULL, NULL);
+          else {
+            keys = grown;
+            memcpy(keys + count, page.keys, page.count * sizeof(*keys));
+            count += page.count;
+          }
+        }
+      }
+    } while (rc == LC_OK && cursor != NULL && cursor[0] != '\0');
+    free(cursor);
+    for (i = 0U; rc == LC_OK && i < count; i++) {
+      lease = NULL;
+      memset(&doc, 0, sizeof(doc));
+      rc = lease_open(&owner, keys[i], &lease, &local);
+      if (rc == LC_OK)
+        rc = mailbox_load(lease, &doc, &local);
+      if (rc == LC_OK && mode == 0 && strcmp(doc.pending_for, id) == 0)
+        rc = lc_lease_remove(lease, NULL, &local);
+      else if (rc == LC_OK && mode == 1 && strcmp(doc.kind, "mailbox") == 0 &&
+               strcmp(doc.sender_session, id) == 0) {
+        doc.sender_session[0] = doc.instance[0] = '\0';
+        rc = lc_lease_save(lease, &message_map, &doc, NULL, &local);
+      }
+      if (lease != NULL)
+        rc = lease_finish(lease, rc, &local);
+      lonejson_cleanup(&message_map, &doc);
+    }
+    free(keys);
+    keys = NULL;
+  }
+  if (rc != LC_OK)
+    rc = fail_lc(error, &local);
+  lc_error_cleanup(&local);
+  return rc;
+}
 static int send_tool(void *context, const char *arguments, cai_sink *output,
                      cai_error *error) {
   cai_cli_messages *m = context;

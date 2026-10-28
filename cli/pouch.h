@@ -47,6 +47,9 @@ typedef struct cai_cli_pouch {
   char state_directory[PATH_MAX];
   char config_directory[PATH_MAX];
   char key_path[PATH_MAX];
+  char root_directory[PATH_MAX];
+  struct cai_cli_session_guard *use_guard;
+  int capture_session;
 } cai_cli_pouch;
 
 int cai_cli_pouch_open_options(cai_cli_pouch *pouch,
@@ -75,6 +78,20 @@ int cai_cli_pouch_session(cai_cli_pouch *pouch, const char *id,
                           cai_cli_session *out, cai_error *error);
 int cai_cli_pouch_publish(cai_cli_pouch *pouch, const char *id, int published,
                           cai_error *error);
+/* Capture the root runtime's session identity during its synchronous open.
+ * A shared filesystem lock stays held until end_use (after runtime close). */
+void cai_cli_pouch_begin_use(cai_cli_pouch *pouch);
+void cai_cli_pouch_end_use(cai_cli_pouch *pouch);
+int cai_cli_pouch_begin_read(cai_cli_pouch *pouch, const char *id,
+                             struct cai_cli_session_guard **guard,
+                             cai_error *error);
+void cai_cli_pouch_end_read(struct cai_cli_session_guard *guard);
+int cai_cli_pouch_deletable(cai_cli_pouch *pouch, const char *id, int *eligible,
+                            cai_error *error);
+int cai_cli_pouch_delete(cai_cli_pouch *pouch, const char *workspace,
+                         const char *id,
+                         int (*cleanup)(void *, const char *, cai_error *),
+                         void *context, cai_error *error);
 int cai_cli_pouch_lock(cai_cli_pouch *pouch, const char *id, lc_lease **out,
                        cai_error *error);
 int cai_cli_pouch_unlock(lc_lease *lease, int result, cai_error *error);

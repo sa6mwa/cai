@@ -70,7 +70,12 @@ for colors in yes no; do
   if [[ "$colors" == yes ]]; then command=/quit; else command=/exit; fi
   terminal_close "$command"
   [[ $(requests) == "$count" ]]
-  tail -c +$((send_offset+1)) "$term/text" >"$root/farewell"
+  # The peer publishes its sticky-row snapshot before appending the matching
+  # text frame. A pending Worked-for redraw can therefore arrive after send's
+  # offset. Check from the applied quit command, not the input write.
+  tail -c +$((send_offset+1)) "$term/text" |
+    awk -v marker="\$ $command" 'index($0, marker) { applied=1 } applied' >"$root/farewell"
+  contains "$root/farewell" "\$ $command"
   contains "$root/farewell" '! Goodbye.'
   absent "$root/farewell" 'Worked for'
   tail -c +$((send_feed_offset+1)) "$term/feed" >"$root/farewell-feed"

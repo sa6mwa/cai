@@ -790,6 +790,65 @@ static void queue_overrides(cai_cli_pouch *pouch, const char *workspace) {
   sl_destroy(sl);
   cai_error_cleanup(&error);
 }
+static void delete_conversation_inbox(cai_cli_pouch *pouch) {
+  cai_cli_messages owner;
+  message_doc doc, loaded;
+  lc_lease *lease = NULL;
+  lc_get_res result;
+  lc_error local;
+  cai_error error;
+  char keys[PAGE_KEYS + 3U][300], text[] = "owned pending message";
+  size_t i;
+  memset(&owner, 0, sizeof(owner));
+  owner.pouch = pouch;
+  strcpy(owner.instance, "delete-test");
+  lc_error_init(&local);
+  cai_error_init(&error);
+  for (i = 0U; i < PAGE_KEYS + 3U; i++) {
+    memset(&doc, 0, sizeof(doc));
+    strcpy(doc.kind, "pending");
+    snprintf(doc.id, sizeof(doc.id), "delete-%03lu", (unsigned long)i);
+    strcpy(doc.recipient, "cai.delete-test");
+    strcpy(doc.pending_for,
+           i == PAGE_KEYS + 2U ? "keep-target" : "delete-target");
+    strcpy(doc.sender_session,
+           i == PAGE_KEYS + 2U ? "delete-target" : "message-source");
+    doc.text = text;
+    inbox_key(keys[i], &doc);
+    assert(save_doc(&owner, &doc, &error) == CAI_OK);
+  }
+  memset(&doc, 0, sizeof(doc));
+  strcpy(doc.kind, "mailbox");
+  strcpy(doc.recipient, "cai.delete-test");
+  strcpy(doc.sender_session, "delete-target");
+  strcpy(doc.instance, "former-owner");
+  assert(lease_open(&owner, "mailbox.cai.delete-test", &lease, &local) ==
+         LC_OK);
+  assert(lc_lease_save(lease, &message_map, &doc, NULL, &local) == LC_OK);
+  assert(lease_finish(lease, LC_OK, &local) == LC_OK);
+  assert(cai_cli_messages_delete_session(pouch, "delete-target", &error) ==
+         CAI_OK);
+  for (i = 0U; i < PAGE_KEYS + 3U; i++) {
+    memset(&result, 0, sizeof(result));
+    memset(&loaded, 0, sizeof(loaded));
+    assert(lc_load_in_namespace(pouch->sessions, pouch->messages_namespace,
+                                keys[i], &message_map, &loaded, NULL, &result,
+                                &local) == LC_OK);
+    assert(!result.no_content == (i == PAGE_KEYS + 2U));
+    if (!result.no_content)
+      assert(strcmp(loaded.pending_for, "keep-target") == 0);
+    lonejson_cleanup(&message_map, &loaded);
+    lc_get_res_cleanup(&result);
+  }
+  assert(load_doc(&owner, "mailbox.cai.delete-test", &loaded, &error) ==
+         CAI_OK);
+  assert(strcmp(loaded.kind, "mailbox") == 0 &&
+         loaded.sender_session[0] == '\0' && loaded.instance[0] == '\0');
+  lonejson_cleanup(&message_map, &loaded);
+  lc_error_cleanup(&local);
+  cai_error_cleanup(&error);
+}
+
 int main(int argc, char **argv) {
   cai_cli_pouch a, b;
   cai_cli_messages *sender = NULL, *receiver = NULL;
@@ -973,6 +1032,7 @@ int main(int argc, char **argv) {
   workspace_mailboxes(&a, argv[1]);
   shared_naming(&a, argv[1]);
   queue_overrides(&a, argv[1]);
+  delete_conversation_inbox(&a);
   cai_cli_pouch_close(&b);
   cai_cli_pouch_close(&a);
   lc_error_cleanup(&local);

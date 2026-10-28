@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/cli_test_common.sh"
 peer_start
-history="$root/state/cai/history/$(printf %s "$work" | sha256sum | cut -d' ' -f1).history"
 finish_alt_q() {
   send '\033q'
   wait_for test -s "$term/status"
@@ -16,6 +15,7 @@ finish_alt_q() {
   unset CAI_TEST_TERMINAL_EVENT_FD
 }
 terminal_start -N
+history=$(prompt_history_file "$(current_session_id)")
 send '\033[200~draft å€\nsecond tail\033[201~'
 finish_alt_q
 printf 'draft å€\\nsecond tail\n' >"$root/expected"
@@ -51,6 +51,7 @@ finish_alt_q
 [[ $(requests) == 1 ]]
 # Exiting an active turn preserves the unsent draft without steering/submission.
 terminal_start -N
+history=$(prompt_history_file "$(current_session_id)")
 plan '{"plan":[{"text":"BUSY DRAFT TEST","pause":true},"UNUSED"]}'
 send 'start a turn\r'; expect 'STREAM in flight'
 send 'busy unsent draft'

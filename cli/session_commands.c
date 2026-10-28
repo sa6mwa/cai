@@ -2,6 +2,7 @@
 #define _XOPEN_SOURCE 700
 #include "session_commands.h"
 #include "identity.h"
+#include "messages.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -11,10 +12,10 @@
 #include <unistd.h>
 #include <wchar.h>
 
-int cai_cli_session_select(cai_cli_pouch *pouch, const char *workspace,
-                           const char *choice,
-                           char out[CAI_AGENT_SESSION_ID_MAX],
-                           cai_error *error) {
+static int session_select(cai_cli_pouch *pouch, const char *workspace,
+                          const char *choice,
+                          char out[CAI_AGENT_SESSION_ID_MAX], int deleting,
+                          cai_error *error) {
   cai_cli_session *sessions = NULL;
   unsigned long long number;
   size_t count = 0U, i;
@@ -22,7 +23,7 @@ int cai_cli_session_select(cai_cli_pouch *pouch, const char *workspace,
   int rc;
   if (choice == NULL || choice[0] == '\0')
     return cai_cli_error(error, CAI_ERR_INVALID,
-                         "resume requires a conversation ID or list number");
+                         "select a conversation ID or list number");
   if (strspn(choice, "0123456789") != strlen(choice)) {
     if (strlen(choice) >= CAI_AGENT_SESSION_ID_MAX)
       return cai_cli_error(error, CAI_ERR_INVALID,
@@ -32,7 +33,7 @@ int cai_cli_session_select(cai_cli_pouch *pouch, const char *workspace,
   }
   rc = cai_cli_pouch_list(pouch, workspace, &sessions, &count, error);
   if (rc != CAI_OK)
-    return rc;
+    goto done;
   for (i = 0U; i < count; i++) {
     if (strcmp(choice, sessions[i].id) == 0) {
       strcpy(out, sessions[i].id);
@@ -40,16 +41,62 @@ int cai_cli_session_select(cai_cli_pouch *pouch, const char *workspace,
       return CAI_OK;
     }
   }
+  if (deleting) {
+    rc = cai_cli_sessions_deletable(pouch, sessions, &count, error);
+    if (rc != CAI_OK)
+      goto done;
+  }
   errno = 0;
   number = strtoull(choice, &end, 10);
   if (errno != 0 || *end != '\0' || number == 0U || number > count)
     rc = cai_cli_error(error, CAI_ERR_INVALID,
                        "No conversation with that number in this directory. "
-                       "Run --resume to list available conversations.");
+                       "List conversations with --resume or --delete.");
   else
     strcpy(out, sessions[(size_t)number - 1U].id);
+done:
   free(sessions);
   return rc;
+}
+
+int cai_cli_session_select(cai_cli_pouch *pouch, const char *workspace,
+                           const char *choice,
+                           char out[CAI_AGENT_SESSION_ID_MAX],
+                           cai_error *error) {
+  return session_select(pouch, workspace, choice, out, 0, error);
+}
+int cai_cli_session_select_delete(cai_cli_pouch *pouch, const char *workspace,
+                                  const char *choice,
+                                  char out[CAI_AGENT_SESSION_ID_MAX],
+                                  cai_error *error) {
+  return session_select(pouch, workspace, choice, out, 1, error);
+}
+int cai_cli_sessions_deletable(cai_cli_pouch *pouch, cai_cli_session *sessions,
+                               size_t *count, cai_error *error) {
+  size_t i, kept = 0U;
+  int eligible, rc;
+  for (i = 0U; i < *count; i++) {
+    rc = cai_cli_pouch_deletable(pouch, sessions[i].id, &eligible, error);
+    if (rc != CAI_OK)
+      return rc;
+    if (eligible)
+      sessions[kept++] = sessions[i];
+  }
+  *count = kept;
+  return CAI_OK;
+}
+static int session_file_id(const char *id) {
+  return id != NULL && id[0] != '\0' && strlen(id) < CAI_AGENT_SESSION_ID_MAX &&
+         strspn(id, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                    "0123456789-_") == strlen(id);
+}
+int cai_cli_session_history_path(const cai_cli_options *options, const char *id,
+                                 char out[PATH_MAX], cai_error *error) {
+  if (!session_file_id(id) || options->history_dir == NULL ||
+      snprintf(out, PATH_MAX, "%s/%s", options->history_dir, id) >= PATH_MAX)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "invalid conversation prompt-history path");
+  return CAI_OK;
 }
 
 /* Sanitize and clip a UTF-8 field by displayed cells, preserving codepoints. */
@@ -397,6 +444,7 @@ int cai_cli_session_export(cai_cli_pouch *pouch, const char *id,
   char md_path[PATH_MAX];
   char json_tmp[PATH_MAX];
   char md_tmp[PATH_MAX];
+  struct cai_cli_session_guard *use = NULL;
   const char *cursor;
   FILE *file;
   lc_lease *lease;
@@ -421,7 +469,9 @@ int cai_cli_session_export(cai_cli_pouch *pouch, const char *id,
   lease = NULL;
   /* Hold one document lease across both exports so their checkpoint and
    * journal cannot change between the Markdown and JSONL reads. */
-  rc = cai_cli_pouch_lock(pouch, id, &lease, error);
+  rc = cai_cli_pouch_begin_read(pouch, id, &use, error);
+  if (rc == CAI_OK)
+    rc = cai_cli_pouch_lock(pouch, id, &lease, error);
   if (rc == CAI_OK)
     rc = cai_cli_pouch_session(pouch, id, &metadata, error);
   if (rc == CAI_OK && active_runtime == NULL)
@@ -492,5 +542,78 @@ int cai_cli_session_export(cai_cli_pouch *pouch, const char *id,
     rc = cai_sink_write(destination, md_path, strlen(md_path), error);
   if (rc == CAI_OK)
     rc = cai_sink_write(destination, "\n", 1U, error);
+  cai_cli_pouch_end_read(use);
   return rc;
+}
+
+typedef struct session_cleanup {
+  cai_cli_pouch *pouch;
+  cai_cli_pouch *messaging;
+  const cai_cli_options *options;
+} session_cleanup;
+
+static int remove_session_child(const char *directory, const char *name,
+                                int tree, cai_error *error) {
+  int fd, rc, saved;
+  char message[PATH_MAX + 256];
+  if (directory == NULL)
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "conversation cleanup directory is not configured");
+  fd = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0 && errno == ENOENT)
+    return CAI_OK;
+  if (fd < 0)
+    rc = -1;
+  else {
+    rc = tree ? cai_cli_remove_at(fd, name) : unlinkat(fd, name, 0);
+    if (rc != 0 && errno == ENOENT)
+      rc = 0;
+    saved = errno;
+    close(fd);
+    errno = saved;
+  }
+  if (rc == 0)
+    return CAI_OK;
+  snprintf(message, sizeof(message), "remove conversation data %s/%s: %s",
+           directory, name, strerror(errno));
+  return cai_cli_error(error, CAI_ERR_TRANSPORT, message);
+}
+static int cleanup_session_files(void *context, const char *id,
+                                 cai_error *error) {
+  session_cleanup *cleanup = context;
+  char name[CAI_AGENT_SESSION_ID_MAX + 8U], exports[PATH_MAX], *slash;
+  int rc;
+  if (!session_file_id(id))
+    return cai_cli_error(error, CAI_ERR_INVALID, "unsafe conversation file ID");
+  rc = cai_cli_messages_delete_session(cleanup->messaging, id, error);
+  if (rc == CAI_OK)
+    rc = remove_session_child(cleanup->options->history_dir, id, 1, error);
+  if (rc == CAI_OK) {
+    snprintf(name, sizeof(name), "%s.log", id);
+    rc = remove_session_child(cleanup->options->log_dir, name, 0, error);
+  }
+  if (rc == CAI_OK)
+    rc = export_path(cleanup->pouch, exports, sizeof(exports),
+                     cleanup->options->export_dir, id, error);
+  if (rc == CAI_OK) {
+    slash = strrchr(exports, '/');
+    *slash = '\0';
+    rc = remove_session_child(exports, id, 1, error);
+  }
+  return rc;
+}
+int cai_cli_session_delete(cai_cli_pouch *pouch, cai_cli_pouch *messaging,
+                           const cai_cli_options *options,
+                           const char *workspace, const char *choice,
+                           char id[CAI_AGENT_SESSION_ID_MAX],
+                           cai_error *error) {
+  session_cleanup cleanup;
+  int rc = cai_cli_session_select_delete(pouch, workspace, choice, id, error);
+  cleanup.pouch = pouch;
+  cleanup.messaging = messaging;
+  cleanup.options = options;
+  return rc == CAI_OK
+             ? cai_cli_pouch_delete(pouch, workspace, id, cleanup_session_files,
+                                    &cleanup, error)
+             : rc;
 }

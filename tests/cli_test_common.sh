@@ -60,6 +60,10 @@ plan() {
   rm -f "$root/peer/release"
 }
 requests() { [[ -f "$root/peer/requests.jsonl" ]] && wc -l <"$root/peer/requests.jsonl" || printf '0\n'; }
+current_session_id() { "${base[@]}" -R 2>"$root/list.err" | awk 'NR==1 {print $2}'; }
+prompt_history_file() {
+  printf '%s/%s/%s.history\n' "${2:-$root/state/cai/history}" "$1" "$(printf %s "$1" | sha256sum | cut -d' ' -f1)"
+}
 release() { touch "$root/peer/release"; }
 run() { rc=0; "${base[@]}" "$@" >"$root/stdout" 2>"$root/stderr" || rc=$?; }
 ok() { [[ "$rc" == 0 ]] || fail "CLI exited $rc"; }

@@ -129,6 +129,7 @@ typedef struct cai_app_config {
   /** Runtime files; NULL derives home/run, otherwise XDG_RUNTIME_DIR/name,
    * falling back to cache_directory when no runtime directory is available. */
   const char *runtime_directory;
+  /** Prompt-history root; each conversation uses its own session-ID child. */
   const char *history_directory;
   const char *clipboard_directory;
   const char *log_directory;

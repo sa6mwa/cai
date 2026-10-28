@@ -173,6 +173,7 @@ static int latest_write(cai_cli_pouch *, lc_lease *, latest_index *,
 static int session_exists(cai_cli_pouch *, const char *, int *, cai_error *);
 static int latest_rebuild(cai_cli_pouch *, latest_index *, cai_error *);
 static int session_compare(const void *, const void *);
+static int latest_key(const char *, char[65], cai_error *);
 
 typedef struct scope_predicate {
   char field[24];
@@ -804,6 +805,8 @@ static int get_session(lc_lease *lease, const char *scope, const char *id,
   return CAI_OK;
 }
 
+#include "pouch_guard.inc"
+
 static int checkpoint(void *context, const char *scope, const char *id,
                       cai_source *state, unsigned long long sequence,
                       cai_error *error) {
@@ -820,7 +823,9 @@ static int checkpoint(void *context, const char *scope, const char *id,
   pouch = (cai_cli_pouch *)context;
   lease = NULL;
   directory = NULL;
-  rc = history_collection(pouch, id, "events", 1, &collection, error);
+  rc = session_claim(pouch, id, error);
+  if (rc == CAI_OK)
+    rc = history_collection(pouch, id, "events", 1, &collection, error);
   if (collection != NULL) {
     collection->close(collection);
     collection = NULL;
@@ -879,7 +884,9 @@ static int load_id(void *context, const char *scope, const char *id,
   int rc;
   pouch = (cai_cli_pouch *)context;
   *out = NULL;
-  rc = history_supported(pouch, error);
+  rc = session_claim(pouch, id, error);
+  if (rc == CAI_OK)
+    rc = history_supported(pouch, error);
   if (rc == CAI_OK)
     rc = cai_cli_pouch_session(pouch, id, &session, error);
   if (rc != CAI_OK)
@@ -938,8 +945,9 @@ static int key_end(void *context, lc_error *error) {
   return 1;
 }
 
-int cai_cli_pouch_list(cai_cli_pouch *pouch, const char *scope,
-                       cai_cli_session **out, size_t *count, cai_error *error) {
+static int session_list(cai_cli_pouch *pouch, const char *scope, int visible,
+                        cai_cli_session **out, size_t *count,
+                        cai_error *error) {
   lc_query_req query;
   lc_query_res result;
   lc_query_key_handler handler;
@@ -991,7 +999,8 @@ int cai_cli_pouch_list(cai_cli_pouch *pouch, const char *scope,
   handler.chunk = key_chunk;
   handler.end = key_end;
   query.selector_json = selector;
-  query.selector_lql = scope == NULL ? "eq{field=/published,value=1}" : NULL;
+  query.selector_lql =
+      scope == NULL && visible ? "eq{field=/published,value=1}" : NULL;
   query.engine = "index";
   query.refresh = "wait_for";
   query.limit = 256;
@@ -1016,9 +1025,16 @@ int cai_cli_pouch_list(cai_cli_pouch *pouch, const char *scope,
         continue;
       if (rc != CAI_OK)
         break;
-      if (!session.published || session.checkpoint_position == 0U ||
+      if ((visible &&
+           (!session.published || session.checkpoint_position == 0U)) ||
           (scope != NULL && strcmp(scope, session.workspace) != 0))
         continue;
+      if (strcmp(session.id, page->keys[i]) != 0) {
+        rc = cai_cli_error(
+            error, CAI_ERR_INVALID,
+            "conversation metadata identity does not match its key");
+        break;
+      }
       grown = (cai_cli_session *)realloc(*out, (*count + 1U) * sizeof(**out));
       if (grown == NULL) {
         rc = cai_cli_error(error, CAI_ERR_NOMEM, "allocate session list");
@@ -1041,6 +1057,11 @@ int cai_cli_pouch_list(cai_cli_pouch *pouch, const char *scope,
     qsort(*out, *count, sizeof(**out), session_compare);
   }
   return rc;
+}
+
+int cai_cli_pouch_list(cai_cli_pouch *pouch, const char *scope,
+                       cai_cli_session **out, size_t *count, cai_error *error) {
+  return session_list(pouch, scope, 1, out, count, error);
 }
 
 static int latest_write(cai_cli_pouch *pouch, lc_lease *guard,
@@ -1254,7 +1275,9 @@ static int append_event(void *context, const char *scope, const char *id,
   record.type = event->type;
   record.data = event->data;
   snprintf(name, sizeof(name), "event-%020llu", event->sequence);
-  rc = history_supported(pouch, error);
+  rc = session_claim(pouch, id, error);
+  if (rc == CAI_OK)
+    rc = history_supported(pouch, error);
   if (rc == CAI_OK)
     rc = acquire(pouch, id, &lease, error);
   if (rc == CAI_OK)
@@ -1529,6 +1552,8 @@ int cai_cli_pouch_replay(cai_cli_pouch *pouch, const char *scope,
   return read_events(pouch, scope, id, after, through, select_event, visit,
                      context, 0, error);
 }
+
+#include "pouch_delete.inc"
 
 static int auth_load(void *context, const char *key, cai_source **out,
                      cai_error *error) {
@@ -1995,6 +2020,10 @@ int cai_cli_pouch_open_options(cai_cli_pouch *pouch,
     cai_cli_pouch_close(pouch);
     return rc;
   }
+  if (local_pouch && realpath(root, pouch->root_directory) == NULL) {
+    cai_cli_pouch_close(pouch);
+    return cai_cli_error(error, CAI_ERR_TRANSPORT, "resolve shared Pouch root");
+  }
   if (pthread_mutex_init(&pouch->history_lock, NULL) != 0) {
     cai_cli_pouch_close(pouch);
     return cai_cli_error(error, CAI_ERR_TRANSPORT,
@@ -2019,6 +2048,7 @@ int cai_cli_pouch_open_options(cai_cli_pouch *pouch,
 void cai_cli_pouch_close(cai_cli_pouch *pouch) {
   cai_cli_pouch_client **link, *entry;
   size_t slot;
+  cai_cli_pouch_end_use(pouch);
   if (pouch->history_lock_initialized) {
     for (slot = 0U; slot < 2U; slot++) {
       if (pouch->history_anchors[slot] != NULL)

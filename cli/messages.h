@@ -37,4 +37,8 @@ void cai_cli_messages_stop(cai_cli_messages *messages);
  * A later send starts with a fresh cancellation sequence. Thread-safe. */
 void cai_cli_messages_cancel_send(cai_cli_messages *messages);
 void cai_cli_messages_close(cai_cli_messages *messages);
+/* Remove delivered inbox records owned by this closed conversation; preserve
+ * shared workspace queues and records owned by other conversations. */
+int cai_cli_messages_delete_session(cai_cli_pouch *pouch, const char *id,
+                                    cai_error *error);
 #endif

@@ -223,6 +223,38 @@ static int resume_alias_options(void) {
   return 0;
 }
 
+static int delete_options(void) {
+  char cases[][6][32] = {{"cai", "--delete"},
+                         {"cai", "-D"},
+                         {"cai", "-vD"},
+                         {"cai", "--delete", "saved-id"},
+                         {"cai", "-D", "2"},
+                         {"cai", "-vD", "saved-id"},
+                         {"cai", "-D", "-C", "/tmp/project"},
+                         {"cai", "-D", "saved-id", "-i", "prompt"},
+                         {"cai", "-D", "--resume"},
+                         {"cai", "-D", "--new"},
+                         {"cai", "-D", "--list"},
+                         {"cai", "-D", "--temp"},
+                         {"cai", "-D", "saved-id", "--review"},
+                         {"cai", "-D", "saved-id", "--login"},
+                         {"cai", "--delete", ""}};
+  int lengths[] = {2, 2, 2, 3, 3, 3, 4, 5, 3, 3, 3, 3, 4, 4, 3};
+  cai_cli_options options;
+  char *args[6];
+  size_t i, j;
+  for (i = 0U; i < sizeof(lengths) / sizeof(lengths[0]); i++) {
+    for (j = 0U; j < (size_t)lengths[i]; j++)
+      args[j] = cases[i][j];
+    if ((cai_cli_parse_options(lengths[i], args, &options) == 1) != (i < 7U))
+      return 1;
+    if (i < 7U && (options.delete_list != (i < 3U || i == 6U) ||
+                   (i >= 3U && i <= 5U && options.delete_id == NULL)))
+      return 1;
+  }
+  return 0;
+}
+
 static int storage_options(void) {
   cai_cli_options options;
   char arguments[][64] = {"cai",
@@ -693,7 +725,7 @@ int main(void) {
       cai_cli_parse_options(3, invalid_legacy_workspace, &options) != -1)
     return 1;
   return value_option_instructions() || config_option_precedence() ||
-         replay_options() || resume_alias_options() ||
+         replay_options() || resume_alias_options() || delete_options() ||
          short_argument_options() || grouped_value_options() ||
          help_columns() || shell_options() || storage_options() ||
          tool_options() || capture_options() || messaging_options();

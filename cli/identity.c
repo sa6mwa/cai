@@ -1,12 +1,51 @@
 #define _POSIX_C_SOURCE 200809L
 #include "identity.h"
 #include "pouch_stream.h"
+#include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+int cai_cli_remove_at(int parent, const char *name) {
+  struct stat st;
+  struct dirent *entry;
+  DIR *directory;
+  int fd, saved = 0;
+  if (fstatat(parent, name, &st, AT_SYMLINK_NOFOLLOW) != 0)
+    return errno == ENOENT ? 0 : -1;
+  if (!S_ISDIR(st.st_mode))
+    return unlinkat(parent, name, 0);
+  fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0)
+    return -1;
+  if (fchmod(fd, 0700) != 0 || (directory = fdopendir(fd)) == NULL) {
+    saved = errno;
+    close(fd);
+    errno = saved;
+    return -1;
+  }
+  errno = 0;
+  while ((entry = readdir(directory)) != NULL) {
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+      continue;
+    if (cai_cli_remove_at(fd, entry->d_name) != 0 && saved == 0)
+      saved = errno;
+    errno = 0;
+  }
+  if (errno != 0 && saved == 0)
+    saved = errno;
+  if (closedir(directory) != 0 && saved == 0)
+    saved = errno;
+  if (saved != 0) {
+    errno = saved;
+    return -1;
+  }
+  return unlinkat(parent, name, AT_REMOVEDIR);
+}
 
 int cai_cli_identity_valid(const char *name) {
   return name != NULL && name[0] >= 'a' && name[0] <= 'z' &&

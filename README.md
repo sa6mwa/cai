@@ -206,11 +206,12 @@ setting and `AGENT_EVENT_INPUT_BOUNDARY` constant.
 
 Interactive prompt recall uses Softline's native store under
 `$XDG_STATE_HOME/cai/history/`, falling back to
-`$HOME/.local/state/cai/history/`. The canonical workspace path is the key;
-its SHA-256 determines the `.history` filename. Recall keeps the newest 1000
-entries for this directory, across conversations and restarts. Accepted prompts
+`$HOME/.local/state/cai/history/`. Each conversation has its own ID subdirectory;
+Softline hashes that ID for the `.history` filename. Recall keeps the newest 1000
+entries for that conversation across restarts. Accepted prompts
 and local commands append immediately, including steering; replay and Ctrl-R
-selection do not append. `/new` preserves recall. These owner-only plaintext
+selection do not append. `/new` starts fresh recall; `/resume` restores the
+selected conversation's recall. These owner-only plaintext
 files are separate from encrypted conversation/auth storage: directories are
 0700, files and locks 0600. The store is append-only, without an exit-time save
 or per-prompt fsync. Ctrl-R Enter selects a match for editing; Enter again sends.
@@ -218,6 +219,17 @@ or per-prompt fsync. Ctrl-R Enter selects a match for editing; Enter again sends
 without submitting it. After restarting in the same workspace, press Up to
 recall it. Empty drafts add nothing; an identical last entry is not duplicated.
 If saving fails, CAI stays open with the draft intact and reports the error.
+
+`-D` / `--delete` lists numbered conversations eligible for deletion in the
+current directory. `-D ID` or `-D NUMBER` deletes that conversation, its child
+and review collections, metadata, managed exports, prompt history, session
+logs and delivered inbox messages. Numbers refer to the deletion list; exact
+numeric IDs take precedence.
+Open conversations are omitted and cannot be deleted until closed. Filesystem
+locks on the shared Pouch root release automatically on process exit/crash.
+Shared authentication, boards, mailboxes and workspace files remain separate.
+Deletion is logical; Pouch reclaims dropped collection storage during maintenance.
+Previously shared workspace prompt history is not migrated into conversations.
 
 Exact `!sh` and `/shell` commands hand the real terminal to `$SHELL -i`
 (`/bin/sh -i` when unset or empty) between turns. They require terminal input

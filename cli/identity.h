@@ -33,4 +33,7 @@ int cai_cli_environment_prefix(const cai_app_config *app, char out[65],
 int cai_cli_xdg_path(char *out, size_t size, const char *variable,
                      const char *fallback, const char *name, cai_error *error);
 int cai_cli_private_directory(const char *path, cai_error *error);
+/* Remove one caller-owned child tree without following symlinks. Missing is
+ * success; errors use errno. parent is a borrowed directory descriptor. */
+int cai_cli_remove_at(int parent, const char *name);
 #endif

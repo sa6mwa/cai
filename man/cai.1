@@ -275,6 +275,18 @@ An exact numeric ID takes precedence over interpreting it as a row number.
 Cannot be combined with
 .BR \-\-new .
 .TP
+.BR \-D , " " \-\-delete " [ID|NUMBER]"
+List numbered conversations eligible for deletion in the current directory,
+or delete the selected ID/number from that deletion list. Exact numeric IDs take
+precedence over row numbers. Open conversations are omitted and cannot be
+deleted until closed. Removes conversation and child/review collections,
+metadata, session logs, per-conversation prompt history, managed exports and
+delivered inbox messages, including when messaging uses a separate store.
+Shared authentication, boards, queues and workspace files are separate.
+Pouch collection removal is logical; physical reclamation occurs in maintenance.
+No model requests or authentication login are required. Cannot be combined with
+session work or another utility operation.
+.TP
 .BR \-C , " " \-\-directory " " DIR
 Change to
 .I DIR
@@ -986,11 +998,12 @@ and its UI warning notices while adding a file. LOG_LEVEL=warn filters out
 ordinary conversation messages.
 .SH PROMPT HISTORY
 Interactive recall uses $XDG_STATE_HOME/cai/history, falling back to
-$HOME/.local/state/cai/history. The canonical workspace path is hashed with
-SHA-256 into a .history filename. Recall retains the newest 1000 prompts and
-commands for this directory across conversations and restarts. Accepted input
+$HOME/.local/state/cai/history. Each conversation has an ID subdirectory;
+Softline hashes that ID into a .history filename. Recall retains the newest
+1000 prompts and commands for that conversation across restarts. Accepted input
 appends immediately, including steering; replay and Ctrl-R selection do not
-append. /new preserves recall. Ctrl-R Enter selects a match for editing;
+append. /new starts fresh recall; /resume restores the selected conversation's
+recall. Existing shared workspace history is not migrated. Ctrl-R Enter selects a match for editing;
 a subsequent Enter submits it.
 .PP
 Alt-Q saves the active draft as the newest prompt-history entry and exits

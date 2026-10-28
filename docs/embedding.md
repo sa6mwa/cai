@@ -55,6 +55,13 @@ completed batch/review work, or failure. On CAI_OK its output exit code has the
 normal CLI meaning (0/1/2). Invocation and restoration failures return a CAI
 status and `cai_error` instead.
 
+The C and Lua receivers accept `-D` / `--delete` through the same argument
+parser. With no value it lists eligible conversations in the selected workspace;
+an ID or list number deletes the conversation and its owned child history,
+prompt recall, logs, exports and delivered inbox messages. An open conversation
+is omitted and cannot be deleted. Shared stores and workspace files remain.
+Prompt recall is per-conversation, so switching sessions also switches recall.
+
 The initialized config selects CAI defaults, including automatic XDG paths and
 ChatGPT/provider/model defaults. `config_file`, `config_directory`, `no_config`
 select startup configuration. The `settings` array accepts the full INI schema,

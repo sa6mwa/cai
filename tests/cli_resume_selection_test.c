@@ -4,7 +4,17 @@
 #include <string.h>
 
 static cai_cli_pouch store;
-static int queries, fail_query;
+static int queries, fail_query, block_newest;
+int __wrap_cai_cli_pouch_deletable(cai_cli_pouch *pouch, const char *id,
+                                   int *eligible, cai_error *error);
+int __wrap_cai_cli_pouch_deletable(cai_cli_pouch *pouch, const char *id,
+                                   int *eligible, cai_error *error) {
+  (void)error;
+  assert(pouch == &store);
+  *eligible =
+      !block_newest || strcmp(id, block_newest == 1 ? "newest" : "2") != 0;
+  return CAI_OK;
+}
 int __wrap_cai_cli_pouch_list(cai_cli_pouch *pouch, const char *scope,
                               cai_cli_session **out, size_t *count,
                               cai_error *error);
@@ -54,5 +64,23 @@ int main(void) {
   select_choice(long_id, NULL, CAI_ERR_INVALID);
   fail_query = 1;
   select_choice("1", NULL, CAI_ERR_TRANSPORT);
+  fail_query = 0;
+  block_newest = 1;
+  {
+    cai_error error;
+    char id[CAI_AGENT_SESSION_ID_MAX];
+    cai_error_init(&error);
+    assert(cai_cli_session_select_delete(&store, "/project", "1", id, &error) ==
+           CAI_OK);
+    assert(strcmp(id, "previous") == 0);
+    assert(cai_cli_session_select_delete(&store, "/project", "2", id, &error) ==
+           CAI_OK);
+    assert(strcmp(id, "2") == 0);
+    block_newest = 2;
+    assert(cai_cli_session_select_delete(&store, "/project", "2", id, &error) ==
+           CAI_OK);
+    assert(strcmp(id, "2") == 0);
+    cai_error_cleanup(&error);
+  }
   return 0;
 }

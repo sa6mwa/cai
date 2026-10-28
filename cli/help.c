@@ -63,6 +63,8 @@ static const cai_app_option options[] = {
      0, 0},
     {"--resume", 'R', CAI_APP_OPTIONAL_STRING, "ID|NUMBER",
      "List directory sessions or resume an ID/list number", 0, 0},
+    {"--delete", 'D', CAI_APP_OPTIONAL_STRING, "ID|NUMBER",
+     "List deletable directory sessions or delete an ID/list number", 0, 0},
     {"--list", 'l', CAI_APP_FLAG, NULL, "List conversations in all directories",
      0, 0},
     {"--export", '\0', CAI_APP_STRING, "ID",

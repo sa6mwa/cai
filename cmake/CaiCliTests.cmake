@@ -328,7 +328,7 @@
     add_executable(cai_cli_resume_selection_test tests/cli_resume_selection_test.c)
     target_link_libraries(cai_cli_resume_selection_test PRIVATE cai_cli_support)
     target_link_options(cai_cli_resume_selection_test PRIVATE
-      "-Wl,--wrap=cai_cli_pouch_list")
+      "-Wl,--wrap=cai_cli_pouch_list" "-Wl,--wrap=cai_cli_pouch_deletable")
     cai_configure_cli_target(cai_cli_resume_selection_test)
     target_compile_options(cai_cli_resume_selection_test PRIVATE -UNDEBUG)
     add_test(NAME cai_cli_resume_selection COMMAND cai_cli_resume_selection_test)
@@ -370,6 +370,15 @@
     add_test(NAME cai_cli_yolo COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_yolo_test.sh" "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_yolo PROPERTIES TIMEOUT 15)
+    add_test(NAME cai_cli_delete COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_delete_test.sh" "$<TARGET_FILE:cai_cli_mock_fixture>")
+    set_tests_properties(cai_cli_delete PROPERTIES TIMEOUT 20)
+    add_executable(cai_cli_pouch_delete_test tests/cli_pouch_delete_test.c)
+    target_link_libraries(cai_cli_pouch_delete_test PRIVATE cai_cli_support)
+    cai_configure_cli_target(cai_cli_pouch_delete_test)
+    target_compile_options(cai_cli_pouch_delete_test PRIVATE -UNDEBUG)
+    add_test(NAME cai_cli_pouch_delete COMMAND cai_cli_pouch_delete_test "${CMAKE_CURRENT_BINARY_DIR}")
+    set_tests_properties(cai_cli_pouch_delete PROPERTIES TIMEOUT 5)
     foreach(_steering_protocol responses chat_completions)
       add_test(NAME cai_cli_yolo_live_${_steering_protocol} COMMAND bash
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_yolo_live_test.sh"
