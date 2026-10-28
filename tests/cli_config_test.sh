@@ -62,7 +62,7 @@ contains "$config" "# skills_dir = \"$root/config/cai/skills\""
 contains "$config" "# export_dir = \"$root/data/cai/exports\""
 contains "$config" '# tool_output = "compact"'
 contains "$config" '# todo_layout = "board"'
-contains "$config" '# replay_turns = 20'
+contains "$config" '# replay_turns = 10'
 contains "$config" '# status_fields = "model:ctx:dir:branch:weekly:crd:yolo:goal"'
 contains "$config" '# subagent_steering = true'
 contains "$config" '[messaging]'

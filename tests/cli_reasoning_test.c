@@ -498,6 +498,10 @@ static int test_output_failure(int operation) {
   } else if (operation == 7) {
     rc = cli_markdown(&state, "Output unavailable") != 0 ? CAI_ERR_TRANSPORT
                                                          : CAI_OK;
+  } else if (operation == 17) {
+    replay.type = "reasoning_summary";
+    replay.data = "Heading\n\nOutput unavailable.\n\n";
+    rc = cli_replay_render(&state, &replay, NULL);
   } else if (operation >= 15) {
     event.type = CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF;
     event.subagent_name = "review";
@@ -796,6 +800,71 @@ static int test_literal_tokens(void) {
   return rc;
 }
 
+static int test_reasoning_replay(void) {
+  static const char *const types[] = {
+      "assistant_text_delta",      "reasoning_summary_started",
+      "reasoning_summary",         "reasoning_summary",
+      "reasoning_summary",         "reasoning_summary_started",
+      "reasoning_summary",         "assistant_text_end",
+      "assistant_text_delta",      "assistant_text_end",
+      "reasoning_summary_started", "reasoning_summary",
+      "assistant_text_end"};
+  static const char *const values[] = {"Commentary.",
+                                       NULL,
+                                       "**First heading**\r",
+                                       "\n\nBody **one** λ ",
+                                       "continues.",
+                                       NULL,
+                                       "**Second heading**\n\nBody two.",
+                                       NULL,
+                                       "Answer.",
+                                       NULL,
+                                       NULL,
+                                       "**Title only**",
+                                       NULL};
+  cli_state state;
+  cai_agent_session_event event;
+  reasoning_capture capture;
+  mdf_options options;
+  mdf_sink sink;
+  size_t i;
+  int rc = CAI_OK;
+  memset(&state, 0, sizeof(state));
+  memset(&event, 0, sizeof(event));
+  memset(&capture, 0, sizeof(capture));
+  state.width = 80;
+  mdf_options_init(&options);
+  options.width = state.width;
+  options.margin_left = 2;
+  options.ansi_mode = MDF_ANSI_OFF;
+  if (mdf_create(MDF_FORMAT_ANSI, &options, &state.renderer) != MDF_OK)
+    return 1;
+  sink.userdata = &capture;
+  sink.write = reasoning_capture_body;
+  if (state.renderer->set_sink(state.renderer, &sink) != MDF_OK)
+    rc = CAI_ERR_TRANSPORT;
+  for (i = 0U; rc == CAI_OK && i < sizeof(types) / sizeof(types[0]); i++) {
+    event.type = types[i];
+    event.data = values[i];
+    event.sequence = (unsigned long long)i + 1U;
+    rc = cli_replay_render(&state, &event, NULL);
+  }
+  state.renderer->destroy(state.renderer);
+  /* This sink captures Markdown rendering alone. Softline block spacing is
+   * exercised separately by the real-terminal replay regression. */
+  if (rc != CAI_OK || state.reasoning_open || state.reasoning.started ||
+      state.documents_rendered != 4 ||
+      strstr(capture.bytes, "  Commentary.\n  > Body one λ continues.") ==
+          NULL ||
+      strstr(capture.bytes, "  > Body two.\n  Answer.") == NULL ||
+      strstr(capture.bytes, "heading") != NULL ||
+      strstr(capture.bytes, "Title only") != NULL) {
+    fprintf(stderr, "reasoning replay lost sections: %s\n", capture.bytes);
+    return 1;
+  }
+  return 0;
+}
+
 int main(void) {
   cli_state state;
   cai_agent_runtime_event event;
@@ -820,13 +889,13 @@ int main(void) {
   struct timespec before = {400, 499999999L};
   struct timespec boundary = {400, 500000000L};
 
-  for (rc = 0; rc < 17; rc++)
+  for (rc = 0; rc < 18; rc++)
     if (test_output_failure(rc) != 0)
       return 1;
   if (test_command_queue_modes() != 0 || test_goal_handoff() != 0 ||
       test_shared_auth() != 0 || test_event_logging() != 0 ||
       test_reasoning_sections() != 0 || test_literal_tokens() != 0 ||
-      test_reasoning_quotes() != 0)
+      test_reasoning_quotes() != 0 || test_reasoning_replay() != 0)
     return 1;
   memset(&state, 0, sizeof(state));
   if (!cai_cli_quota_due(0, start, start, 0) ||

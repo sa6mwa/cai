@@ -248,6 +248,11 @@
     add_test(NAME cai_cli_replay_tools COMMAND cai_cli_replay_tools_test)
     set_tests_properties(cai_cli_replay_tools PROPERTIES LABELS "cli;local;offline" TIMEOUT 5)
     foreach(_replay_protocol responses chat_completions)
+      add_test(NAME cai_cli_reasoning_replay_${_replay_protocol} COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_reasoning_replay_test.sh"
+        "$<TARGET_FILE:cai_cli_mock_fixture>" "${_replay_protocol}")
+      set_tests_properties(cai_cli_reasoning_replay_${_replay_protocol} PROPERTIES
+        LABELS "cli;local;offline" TIMEOUT 20)
       add_test(NAME cai_cli_tool_replay_${_replay_protocol} COMMAND bash
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_tool_replay_test.sh"
         "$<TARGET_FILE:cai_cli_mock_fixture>" "${_replay_protocol}")
@@ -255,6 +260,12 @@
         LABELS "cli;local;offline" TIMEOUT 15)
     endforeach()
     set_tests_properties(cai_cli_replay_unit PROPERTIES TIMEOUT 5)
+    add_test(NAME cai_app_reasoning_replay COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_reasoning_replay_test.sh"
+      "$<TARGET_FILE:cai_app_host>" responses host)
+    set_tests_properties(cai_app_reasoning_replay PROPERTIES
+      LABELS "cli;local;offline" TIMEOUT 20
+      ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
     add_test(NAME cai_cli_replay_tail COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_replay_tail_test.sh"
       "$<TARGET_FILE:cai_cli_mock_fixture>")

@@ -68,7 +68,7 @@ void cai_cli_options_init(cai_cli_options *options) {
   options->mcp = 1;
   options->messaging = 0;
   options->message_ack_timeout_ms = 300000L;
-  options->replay_turns = 20L;
+  options->replay_turns = 10L;
   options->prompt_history_limit = 200;
   options->conversation_retention_days = 30L;
   options->read_file = options->list_files = options->apply_patch = 1;

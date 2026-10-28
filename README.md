@@ -904,7 +904,7 @@ Resume falls back to
 metadata when a writer holds the directory guard, rather than waiting for it.
 Writers durably mark an index dirty before changing a commit or
 publication. Runtime recovery consumes the complete journal in sequence order.
-Console replay defaults to the newest 20 whole turns (standalone shell entries
+Console replay defaults to the newest 10 whole turns (standalone shell entries
 also count); steering and tools stay with their turn. `--replay-turns N`,
 `CAI_REPLAY_TURNS`, or `[ui] replay_turns` selects the limit. Use `0` to hide
 console replay and `-1` to display all history. Older omitted turns remain in

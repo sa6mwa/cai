@@ -149,7 +149,7 @@ static const cli_field fields[] = {
     {"ui", "replay_turns", offsetof(cai_cli_options, replay_turns),
      CAI_CONFIG_INTEGER, CAI_CONFIG_SIGNED, NULL,
      "Console replay only: newest whole turns and standalone shell entries. "
-     "Default 20; 0 hides replay; -1 shows all. Agent context is unchanged."},
+     "Default 10; 0 hides replay; -1 shows all. Agent context is unchanged."},
     {"ui", "prompt_history_limit",
      offsetof(cai_cli_options, prompt_history_limit), CAI_CONFIG_INTEGER, 0U,
      NULL,
@@ -577,7 +577,7 @@ int cai_cli_app_schema(cai_config **out, cai_error *error) {
   if (rc == CAI_OK)
     rc = cai_config_set_default(*out, "ui", "theme", defaults.theme, error);
   if (rc == CAI_OK)
-    rc = cai_config_set_default(*out, "ui", "replay_turns", "20", error);
+    rc = cai_config_set_default(*out, "ui", "replay_turns", "10", error);
   if (rc == CAI_OK)
     rc = cai_config_set_default(*out, "ui", "prompt_history_limit", "200",
                                 error);
@@ -954,7 +954,7 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   }
   defaults.config_file = early.config_file;
   {
-    long long replay = cai_config_get_integer(cfg, "ui", "replay_turns", 20LL);
+    long long replay = cai_config_get_integer(cfg, "ui", "replay_turns", 10LL);
     if (replay < -1LL || replay > LONG_MAX)
       return fail(error, NULL,
                   "ui.replay_turns requires -1, 0 or a positive count");

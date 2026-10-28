@@ -233,6 +233,17 @@ int main(void) {
   assert(cai_cli_replay_contains(r, 2U) && cai_cli_replay_contains(r, 4U));
   assert(cai_cli_replay_contains(r, 5U) && cai_cli_replay_contains(r, 7U));
   cai_cli_replay_close(r);
+  /* Reasoning-only output is replayable even without a retained input/text
+   * marker, and its section markers remain part of one complete entry. */
+  assert(cai_cli_replay_open(1U, &r, &error) == CAI_OK);
+  feed(r, 1U, "reasoning_summary_started", NULL, &error);
+  feed(r, 2U, "reasoning_summary", "Heading\n\nBody", &error);
+  feed(r, 3U, "assistant_text_end", NULL, &error);
+  assert(cai_cli_replay_finish(r, &error) == CAI_OK);
+  assert(cai_cli_replay_contains(r, 1U) && cai_cli_replay_contains(r, 2U));
+  assert(cai_cli_replay_contains(r, 3U));
+  assert(cai_cli_replay_omitted(r) == 0U);
+  cai_cli_replay_close(r);
   cai_error_cleanup(&error);
   return 0;
 }

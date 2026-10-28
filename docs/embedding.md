@@ -330,13 +330,18 @@ tools or submit prompts. Return `CAI_OK`, or a CAI error with `cai_error` detail
 to stop the run. Observers may use the receiver's `control` and `get_status`
 methods, but must not reenter `run`, close the app, or operate on its runtime.
 
-Console replay defaults to 20 whole turns or standalone shell entries. Set
+Console replay defaults to 10 whole turns or standalone shell entries. Set
 `ui.replay_turns` through `cai_app_setting` or Lua
-`settings = {ui = {replay_turns = 20}}`; `--replay-turns` and the application
+`settings = {ui = {replay_turns = 10}}`; `--replay-turns` and the application
 environment prefix plus `REPLAY_TURNS` also apply. Zero hides replay and -1
 shows all. This affects console output only: C `replay_callback` and Lua
 `on_replay` still receive each retained journal event once, including omitted
 console turns. Logs, exports, and the full restored agent context are unchanged.
+
+Provider-supplied reasoning summaries are retained as ordered presentation
+events and replayed through the live renderer: headings use the status line,
+and multiline bodies use Markdown blockquotes. They follow the same turn limit
+as replies and tools. These journal events add no synthetic model input.
 
 Local execution policy is configured with `[agent] yolo`, `CAI_YOLO`, or
 `--yolo`/`--no-yolo`, defaulting to false. An embedded application supplies

@@ -214,6 +214,8 @@ int cai_cli_replay_feed(cai_cli_replay *r, const cai_agent_session_event *event,
   }
   if (rc == CAI_OK && r->last == NULL &&
       (strcmp(type, "assistant_text_delta") == 0 ||
+       strcmp(type, "reasoning_summary_started") == 0 ||
+       strcmp(type, "reasoning_summary") == 0 ||
        strcmp(type, "policy_diagnostic") == 0 ||
        strcmp(type, "subagent") == 0 || strcmp(type, "execution") == 0))
     rc = entry_begin(r, error);

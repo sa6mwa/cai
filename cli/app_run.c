@@ -2358,9 +2358,11 @@ static int cli_replay_output_raw(cli_state *state,
        strcmp(event->type, "turn_submitted") == 0 ||
        strcmp(event->type, "turn_queued") == 0 ||
        strcmp(event->type, "steering_queued") == 0 ||
+       strcmp(event->type, "reasoning_summary") == 0 ||
        strcmp(event->type, "assistant_text_delta") == 0)) {
     pslog_field fields[2];
-    int assistant = strcmp(event->type, "assistant_text_delta") == 0;
+    int assistant = strcmp(event->type, "assistant_text_delta") == 0 ||
+                    strcmp(event->type, "reasoning_summary") == 0;
     fields[0] = pslog_bool("replay", 1);
     fields[1] = pslog_str(
         "prompt_kind",
@@ -2409,8 +2411,24 @@ static int cli_replay_output_raw(cli_state *state,
                ? CAI_OK
                : CAI_ERR_TRANSPORT;
   }
+  if (strcmp(event->type, "reasoning_summary_started") == 0) {
+    if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
+      return CAI_ERR_TRANSPORT;
+    cai_cli_reasoning_reset(&state->reasoning);
+  } else if (strcmp(event->type, "reasoning_summary") == 0 &&
+             event->data != NULL) {
+    return cai_cli_reasoning_feed(&state->reasoning, event->data,
+                                  strlen(event->data), cli_reasoning_body,
+                                  state) == 0
+               ? CAI_OK
+               : CAI_ERR_TRANSPORT;
+  }
   if (strcmp(event->type, "assistant_text_end") == 0) {
-    return cli_finish_response(state) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+    int rc = cli_finish_response(state) == 0 && cli_finish_reasoning(state) == 0
+                 ? CAI_OK
+                 : CAI_ERR_TRANSPORT;
+    cai_cli_reasoning_end(&state->reasoning);
+    return rc;
   }
   return CAI_OK;
 }
@@ -2859,7 +2877,10 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
     }
     state->has_watch = 1;
   }
-  rc = cli_finish_response(state) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+  /* A crash can leave the last replayed summary without an end marker. */
+  rc = cli_finish_response(state) == 0 && cli_finish_reasoning(state) == 0
+           ? CAI_OK
+           : CAI_ERR_TRANSPORT;
   if (rc == CAI_OK) {
     rc = cli_sync_status(state, error);
   }

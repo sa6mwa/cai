@@ -3942,7 +3942,7 @@ static int cai_runtime_reasoning_summary_write(void *context, const void *bytes,
   pthread_mutex_lock(&runtime->lock);
   rc = CAI_OK;
   if (runtime->reasoning_summary_start_pending) {
-    if (runtime->record_transcript && runtime->journal_parent != NULL)
+    if (runtime->record_transcript)
       rc = cai_runtime_append_journal_event_locked(
           runtime, "reasoning_summary_started", NULL, NULL, error);
     if (rc == CAI_OK)
@@ -3952,11 +3952,11 @@ static int cai_runtime_reasoning_summary_write(void *context, const void *bytes,
     if (rc == CAI_OK)
       runtime->reasoning_summary_start_pending = 0;
   }
-  if (rc == CAI_OK && runtime->record_transcript &&
-      runtime->journal_parent != NULL) {
+  if (rc == CAI_OK && runtime->record_transcript) {
     char *summary = cai_strndup(NULL, bytes, count);
     if (summary == NULL)
-      rc = cai_set_error(error, CAI_ERR_NOMEM, "retain subagent summary chunk");
+      rc =
+          cai_set_error(error, CAI_ERR_NOMEM, "retain reasoning summary chunk");
     else
       rc = cai_runtime_append_journal_event_locked(runtime, "reasoning_summary",
                                                    summary, NULL, error);

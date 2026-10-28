@@ -5,6 +5,21 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-067: Parent reasoning summaries disappear on replay
+
+- **Status:** fixed.
+- **Cause:** the runtime journaled provider-supplied reasoning summaries only
+  for child runtimes, and the console replay renderer ignored parent summary
+  events. Live reasoning bodies therefore vanished after reopening.
+- **Resolution:** record parent summary boundaries/chunks as presentation
+  events and replay them through the live blockquote renderer. Heading-only
+  summaries retain their status-line treatment. Existing journals that never
+  recorded these summaries cannot supply them on replay.
+- **Verification:** both local provider protocols cover storage/export,
+  multiple responses, title-only sections, chunked CRLF/Unicode bodies, tools,
+  limited/all/disabled replay and reopening without inference. Native checks
+  cover section boundaries, reasoning-only entries and output failures.
+
 ## BUG-066: Managed Git commands can wait in an interactive pager
 
 - **Status:** fixed.

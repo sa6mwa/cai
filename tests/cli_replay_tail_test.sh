@@ -62,10 +62,10 @@ id=$(stdout_text)
 before=$(requests)
 terminal_start --resume "$id"
 expect ANSWER24; expect PARTB
-contains "$term/text" 'Showing the latest 20 turns.'
-absent "$term/text" PROMPT04; absent "$term/text" ANSWER04
-contains "$term/text" PROMPT05; contains "$term/text" ANSWER05
-[[ $(grep -c 'ANSWER[0-9][0-9] PARTA PARTB' "$term/text") == 20 ]]
+contains "$term/text" 'Showing the latest 10 turns.'
+absent "$term/text" PROMPT14; absent "$term/text" ANSWER14
+contains "$term/text" PROMPT15; contains "$term/text" ANSWER15
+[[ $(grep -c 'ANSWER[0-9][0-9] PARTA PARTB' "$term/text") == 10 ]]
 terminal_close
 [[ $(requests) == "$before" ]]
 jq -se '[.[] | select(.event == "assistant_text_delta" and .replay == true)] | length == 50' "$root/cache/cai/$id.log" >/dev/null
