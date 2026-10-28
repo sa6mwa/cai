@@ -2,8 +2,8 @@
 source "$(dirname "$0")/cli_test_common.sh"
 peer_start
 export LOG_LEVEL=warn
-only=${1:-all}
-if [[ "$only" == all ]]; then
+only=${1:-batch}
+if [[ "$only" == batch ]]; then
 export CAI_TEST_APP_CONTROL=queue
 plan '{"plan":["Initial reply","Host queued reply","Last host reply"]}'
 run -Nni initial; ok
@@ -29,8 +29,9 @@ export CAI_TEST_APP_CONTROL=reject
 plan '{"plan":["Completed turn"]}'
 run -Nni initial; ok
 fi
-modes=(stop stopqueued startup_stop cancel cancelqueued steer overflow goals resume_cancel)
-if [[ "$only" != all ]]; then modes=("$only"); fi
+modes=("$only")
+if [[ "$only" == turns ]]; then modes=(stop stopqueued startup_stop cancel cancelqueued steer overflow goals resume_cancel); fi
+if [[ "$only" == batch || "$only" == interactive ]]; then modes=(); fi
 if [[ "$only" == edges ]]; then modes=(review_stop queue_goal close_ack); fi
 if [[ "$only" == interactive_stop || "$only" == observer_interactive ]]; then modes=(); fi
 if [[ "$only" == boundaries ]]; then modes=(); fi
@@ -100,7 +101,7 @@ if [[ "$only" == edges || "$only" == interactive_stop || "$only" == observer_int
     unset CAI_TEST_TERMINAL_EVENT_FD
   done
 fi
-if [[ "$only" == all ]]; then
+if [[ "$only" == interactive ]]; then
   unset CAI_TEST_APP_RELEASE
   export CAI_TEST_APP_CONTROL=interactive
   plan '{"plan":["Initial interactive reply","Approved host reply"]}'

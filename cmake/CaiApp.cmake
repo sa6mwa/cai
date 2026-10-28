@@ -113,10 +113,14 @@ if(CAI_BUILD_TESTS)
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_identity_cli_test.sh" "$<TARGET_FILE:cai_app_host>")
     set_tests_properties(cai_app_identity_cli PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
       ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
-    add_test(NAME cai_app_controls COMMAND bash
-      "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_controls_test.sh" "$<TARGET_FILE:cai_app_controls_host>")
-    set_tests_properties(cai_app_controls PROPERTIES LABELS "cli;local;offline" TIMEOUT 15
-      ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
+    foreach(_control_case batch turns interactive)
+      add_test(NAME cai_app_controls_${_control_case} COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_controls_test.sh"
+        "$<TARGET_FILE:cai_app_controls_host>" "${_control_case}")
+      set_tests_properties(cai_app_controls_${_control_case} PROPERTIES
+        LABELS "cli;local;offline" TIMEOUT 15
+        ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
+    endforeach()
     add_test(NAME cai_app_control_edges COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/app_controls_test.sh" "$<TARGET_FILE:cai_app_controls_host>" edges)
     set_tests_properties(cai_app_control_edges PROPERTIES LABELS "cli;local;offline" TIMEOUT 10
