@@ -65,40 +65,6 @@ static const lonejson_field argument_fields[] = {
                                 LONEJSON_OVERFLOW_FAIL),
     LONEJSON_FIELD_STRING_ALLOC_OMIT_NULL(send_args, text, "text")};
 LONEJSON_MAP_DEFINE(arguments_map, send_args, argument_fields);
-typedef struct delivery_result {
-  char status[16], recipient[129];
-} delivery_result;
-static const lonejson_field delivery_fields[] = {
-    LONEJSON_FIELD_STRING_FIXED_REQ(delivery_result, status, "status",
-                                    LONEJSON_OVERFLOW_FAIL),
-    LONEJSON_FIELD_STRING_FIXED_REQ(delivery_result, recipient, "recipient",
-                                    LONEJSON_OVERFLOW_FAIL)};
-LONEJSON_MAP_DEFINE(delivery_map, delivery_result, delivery_fields);
-
-int cai_cli_message_delivery_markdown(const char *data, size_t length,
-                                      char *out, size_t capacity) {
-  delivery_result result;
-  lonejson_error error;
-  lonejson *json;
-  int n, valid;
-  if (data == NULL || out == NULL || capacity == 0U)
-    return 0;
-  memset(&result, 0, sizeof(result));
-  json = lonejson_new(NULL, &error);
-  if (json == NULL)
-    return 0;
-  valid = lonejson_parse_buffer(json, &delivery_map, &result, data, length,
-                                &error) == LONEJSON_STATUS_OK &&
-          strcmp(result.status, "delivered") == 0 &&
-          result.recipient[0] != '\0' &&
-          strspn(result.recipient, "abcdefghijklmnopqrstuvwxyz0123456789._-") ==
-              strlen(result.recipient);
-  lonejson_free(json);
-  if (!valid)
-    return 0;
-  n = snprintf(out, capacity, "Message delivered to `%s`.\n", result.recipient);
-  return n >= 0 && (size_t)n < capacity;
-}
 typedef struct message_link {
   struct message_link *next;
   sl_prompt_id_t prompt_id;
@@ -1004,6 +970,25 @@ done:
   return rc;
 }
 
+static int mailbox_cell(cai_sink *output, const char *text, cai_error *error) {
+  const unsigned char *p = (const unsigned char *)text;
+  int rc = CAI_OK;
+  for (; rc == CAI_OK && *p != '\0'; p++) {
+    if (*p < 32U || *p == 127U)
+      rc = cai_sink_write(output, " ", 1U, error);
+    else if (*p == 0xc2U && p[1] >= 0x80U && p[1] <= 0x9fU) {
+      rc = cai_sink_write(output, " ", 1U, error);
+      p++;
+    } else {
+      if (strchr("\\|`*_[]<>!#~", *p) != NULL)
+        rc = cai_sink_write(output, "\\", 1U, error);
+      if (rc == CAI_OK)
+        rc = cai_sink_write(output, p, 1U, error);
+    }
+  }
+  return rc;
+}
+
 static int list_mailboxes(cai_cli_messages *m, cai_sink *output,
                           cai_error *error) {
   lc_query_req query;
@@ -1020,13 +1005,14 @@ static int list_mailboxes(cai_cli_messages *m, cai_sink *output,
     return cai_cli_error(error, CAI_ERR_NOMEM, "allocate mailbox listing");
   lc_error_init(&local);
   {
-    static const char heading[] = "This application's mailbox: ";
+    static const char heading[] = "## Message queues\n\nCurrent queue: ";
     static const char columns[] =
-        "\nKnown destinations (queue, directory, last-bound conversation; not "
-        "an online guarantee):\n";
+        "\n\nKnown destinations; registration does not guarantee they are "
+        "online."
+        "\n\n| Queue | Workspace | Conversation |\n| --- | --- | --- |\n";
     rc = cai_sink_write(output, heading, sizeof(heading) - 1U, error);
     if (rc == CAI_OK)
-      rc = cai_sink_write(output, m->queue, strlen(m->queue), error);
+      rc = mailbox_cell(output, m->queue, error);
     if (rc == CAI_OK)
       rc = cai_sink_write(output, columns, sizeof(columns) - 1U, error);
     if (rc != CAI_OK) {
@@ -1060,16 +1046,19 @@ static int list_mailboxes(cai_cli_messages *m, cai_sink *output,
     for (i = 0U; rc == CAI_OK && i < page.count; i++) {
       rc = load_doc(m, page.keys[i], doc, error);
       if (rc == CAI_OK) {
-        const char *parts[6];
-        size_t part;
-        parts[0] = doc->recipient;
-        parts[1] = "  ";
-        parts[2] = doc->workspace;
-        parts[3] = "  ";
-        parts[4] = doc->sender_session;
-        parts[5] = "\n";
-        for (part = 0U; rc == CAI_OK && part < 6U; part++)
-          rc = cai_sink_write(output, parts[part], strlen(parts[part]), error);
+        rc = cai_sink_write(output, "| ", 2U, error);
+        if (rc == CAI_OK)
+          rc = mailbox_cell(output, doc->recipient, error);
+        if (rc == CAI_OK)
+          rc = cai_sink_write(output, " | ", 3U, error);
+        if (rc == CAI_OK)
+          rc = mailbox_cell(output, doc->workspace, error);
+        if (rc == CAI_OK)
+          rc = cai_sink_write(output, " | ", 3U, error);
+        if (rc == CAI_OK)
+          rc = mailbox_cell(output, doc->sender_session, error);
+        if (rc == CAI_OK)
+          rc = cai_sink_write(output, " |\n", 3U, error);
       }
       lonejson_cleanup(&message_map, doc);
     }

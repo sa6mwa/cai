@@ -634,7 +634,7 @@ int main(void) {
   size_t offset;
   static const char *tool_results[] = {"{\"ok\":true}", "failed output\n",
                                        "already separated\n\n",
-                                       "before reasoning"};
+                                       "before reasoning", "ok"};
   struct timespec start = {100, 500000000L};
   struct timespec before = {400, 499999999L};
   struct timespec boundary = {400, 500000000L};
@@ -771,11 +771,11 @@ int main(void) {
    * including failures, pre-separated output and streamed reasoning bodies. */
   if (cli_tool_display_init(&state, NULL) != CAI_OK)
     return 1;
-  for (scenario = 0; scenario < 4; scenario++) {
+  for (scenario = 0; scenario < 5; scenario++) {
     const char *answer = "Answer after tool.\n";
     memset(&event, 0, sizeof(event));
     event.type = CAI_AGENT_EVENT_TOOL_CALL_STARTED;
-    event.tool_name = "todo_kanban";
+    event.tool_name = scenario == 4 ? "set_reasoning" : "todo_kanban";
     event.tool_call_id = "spacing-call";
     event.tool_action = CAI_AGENT_TOOL_ACTION_EXTERNAL;
     if (rc == CAI_OK)
@@ -857,6 +857,9 @@ int main(void) {
       strstr(output, "failed output\n\n  Answer after tool.\n") == NULL ||
       strstr(output, "already separated\n\n  Answer after tool.\n") == NULL ||
       strstr(output, "before reasoning\n\n  > Reasoning after tool\n") ==
+          NULL ||
+      strstr(output,
+             "* Accepted reasoning request\n\n  Answer after tool.\n") ==
           NULL) {
     fprintf(stderr, "missing tool/model block spacing: %s\n", output);
     return 1;

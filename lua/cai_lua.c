@@ -12047,16 +12047,24 @@ static lua_Integer cai_lua_display_integer(lua_State *L, int index,
   lua_pop(L, 1);
   return value;
 }
-static int cai_lua_display_event(lua_State *L) {
+static int cai_lua_display_event_common(lua_State *L, int summary) {
   cai_lua_display *self =
       (cai_lua_display *)luaL_checkudata(L, 1, "cai.tool_display");
   cai_agent_runtime_event event;
   cai_error error;
   int snapshot, rc;
+  const char *verb = NULL, *label = NULL;
+  int success = 0;
   luaL_argcheck(L, self->ptr != NULL, 1, "closed tool display");
   luaL_argcheck(L, !self->active, 1,
                 "tool display cannot reenter its callback");
   luaL_checktype(L, 2, LUA_TTABLE);
+  if (summary) {
+    verb = luaL_checkstring(L, 3);
+    label = luaL_checkstring(L, 4);
+    luaL_checktype(L, 5, LUA_TBOOLEAN);
+    success = lua_toboolean(L, 5);
+  }
   memset(&event, 0, sizeof(event));
   lua_newtable(L);
   snapshot = lua_gettop(L);
@@ -12085,9 +12093,17 @@ static int cai_lua_display_event(lua_State *L) {
       (long long)cai_lua_display_integer(L, 2, "terminal_signal", 0);
   cai_error_init(&error);
   self->active++;
-  rc = cai_tool_display_event(self->ptr, &event, &error);
+  rc = summary ? cai_tool_display_summary(self->ptr, &event, verb, label,
+                                          success, &error)
+               : cai_tool_display_event(self->ptr, &event, &error);
   self->active--;
   return cai_lua_bool_result(L, rc, &error);
+}
+static int cai_lua_display_event(lua_State *L) {
+  return cai_lua_display_event_common(L, 0);
+}
+static int cai_lua_display_summary(lua_State *L) {
+  return cai_lua_display_event_common(L, 1);
 }
 static int cai_lua_display_new(lua_State *L) {
   cai_lua_display *self;
@@ -12145,6 +12161,7 @@ static int cai_lua_patch_render(lua_State *L) {
 }
 static const luaL_Reg cai_lua_display_methods[] = {
     {"event", cai_lua_display_event},
+    {"summary", cai_lua_display_summary},
     {"set_mode", cai_lua_display_set_mode},
     {"set_width", cai_lua_display_set_width},
     {"close", cai_lua_display_close},

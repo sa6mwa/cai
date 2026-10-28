@@ -33,6 +33,16 @@ static cai_sink *new_capture(capture *out) {
   cai_error_cleanup(&error);
   return sink;
 }
+static void mailbox_presentation(void) {
+  capture out;
+  cai_sink *sink = new_capture(&out);
+  cai_error error;
+  cai_error_init(&error);
+  assert(mailbox_cell(sink, "a|b`c\n\033[2J\302\233", &error) == CAI_OK);
+  assert(strcmp(out.text, "a\\|b\\`c  \\[2J ") == 0);
+  cai_sink_close(sink);
+  cai_error_cleanup(&error);
+}
 static int run_send(cai_cli_messages *m, const char *args, capture *out,
                     cai_error *error) {
   cai_sink *sink = new_capture(out);
@@ -541,8 +551,7 @@ static void workspace_mailboxes(cai_cli_pouch *pouch, const char *root) {
   lonejson_cleanup(&message_map, &doc);
   assert(run_send(sender, "{\"operation\":\"list\"}", &output, &error) ==
          CAI_OK);
-  assert(strstr(output.text, "This application's mailbox: test-sender") !=
-         NULL);
+  assert(strstr(output.text, "Current queue: test-sender") != NULL);
   assert(strstr(output.text, name) != NULL &&
          strstr(output.text, other->queue) != NULL);
   cai_cli_messages_close(new_owner);
@@ -765,7 +774,7 @@ static void queue_overrides(cai_cli_pouch *pouch, const char *workspace) {
   assert(sl_prompt_queue_count(sl) == 2U);
   assert(run_send(receiver, "{\"operation\":\"list\"}", &output, &error) ==
          CAI_OK);
-  assert(strstr(output.text, "This application's mailbox: full-name") != NULL);
+  assert(strstr(output.text, "Current queue: full-name") != NULL);
   assert(cai_cli_messages_new(pouch, 2000L, &other, &error) == CAI_OK);
   assert(cai_cli_messages_start(other, "takes-over", workspace, "full-name",
                                 &error) == CAI_OK);
@@ -849,32 +858,6 @@ static void delete_conversation_inbox(cai_cli_pouch *pouch) {
   cai_error_cleanup(&error);
 }
 
-static void delivery_presentation(void) {
-  static const char *const invalid[] = {
-      "",
-      "not json",
-      "{}",
-      "{\"status\":\"delivered\"}",
-      "{\"status\":\"failed\",\"recipient\":\"cai.y\"}",
-      "{\"status\":\"delivered\",\"recipient\":\"bad`queue\"}",
-      "{\"status\":\"delivered\",\"recipient\":12}",
-      "{\"status\":\"delivered\",\"recipient\":\"\"}"};
-  static const char receipt[] =
-      "{\"message_id\":\"dbgkj0jvs68jpmusptdg\",\"status\":\"delivered\","
-      "\"recipient\":\"cai.y\"}";
-  char out[192];
-  size_t i;
-  assert(cai_cli_message_delivery_markdown(receipt, sizeof(receipt) - 1U, out,
-                                           sizeof(out)) == 1);
-  assert(strcmp(out, "Message delivered to `cai.y`.\n") == 0);
-  assert(cai_cli_message_delivery_markdown(receipt, sizeof(receipt) - 1U, out,
-                                           1U) == 0);
-  for (i = 0U; i < sizeof(invalid) / sizeof(invalid[0]); i++)
-    assert(cai_cli_message_delivery_markdown(invalid[i], strlen(invalid[i]),
-                                             out, sizeof(out)) == 0);
-  assert(cai_cli_message_delivery_markdown(NULL, 0U, out, sizeof(out)) == 0);
-}
-
 int main(int argc, char **argv) {
   cai_cli_pouch a, b;
   cai_cli_messages *sender = NULL, *receiver = NULL;
@@ -888,7 +871,7 @@ int main(int argc, char **argv) {
   char expired_text[] = "expired";
   char controls[] = "illegal\033[31m terminal control";
   assert(argc == 2 || (argc == 3 && strcmp(argv[2], "startup") == 0));
-  delivery_presentation();
+  mailbox_presentation();
   if (argc == 2 && strcmp(argv[1], "--names-only") == 0) {
     naming_prefixes();
     naming_rules();

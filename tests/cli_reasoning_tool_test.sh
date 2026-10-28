@@ -75,8 +75,10 @@ send '/reasoning-tool high high\r'; expect 'High effort'
 send '/reasoning-tool on\r'; expect 'on'
 plan "{\"chat\":$chat,\"plan\":[{\"pause\":true,\"tool\":\"set_reasoning\",\"arguments\":{\"mode\":\"high\"}},\"HOST WINS\"]}"
 send 'respect manual control\r'; expect 'STREAM in flight'
-send '/reasoning-tool off\033\r'; expect 'Q 1. /reasoning-tool off'
-send '/reasoning low\033\r'; expect 'S 2. /reasoning low'
+# Queue the explicit effort steer before the whole-turn tool change.
+# Native FIFO must not let it bypass an earlier ineligible command.
+send '/reasoning low\033\r'; expect 'S 1. /reasoning low'
+send '/reasoning-tool off\r'; expect 'Q 2. /reasoning-tool off'
 release; expect_assistant 'HOST WINS'; expect 'Worked for'
 absent "$term/feed" 'Configure the reasoning tool between turns'
 send '/reasoning-tool\r'; expect 'off'
@@ -85,6 +87,8 @@ acknowledged
 send '/reasoning-tool on\r'; expect 'on'
 plan "{\"chat\":$chat,\"plan\":[{\"tool\":\"set_reasoning\",\"arguments\":{\"mode\":\"high\"}},\"TUI HIGH\"]}"
 prompt complex 'TUI HIGH'; efforts '["low","high"]'
+contains "$term/feed" '* Accepted reasoning request'
+absent "$term/feed" '* Completed set_reasoning'
 acknowledged
 send '/reasoning-tool off\r'; expect 'off'
 plan "{\"chat\":$chat,\"plan\":[\"TOOL OFF\"]}"

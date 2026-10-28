@@ -424,6 +424,7 @@ cai_tool_display_event
 cai_tool_display_new
 cai_tool_display_set_mode
 cai_tool_display_set_width
+cai_tool_display_summary
 cai_tool_event_write_arguments
 cai_tool_event_write_output
 cai_tool_registry_add_to_response_params

@@ -25,6 +25,7 @@
 #include "temp.h"
 #include "theme.h"
 #include "todo.h"
+#include "tool_result.h"
 #include <cai/chrome.h>
 #include <locale.h>
 
@@ -655,6 +656,10 @@ static int cli_literal_prepare(cli_state *state) {
              ? 0
              : -1;
 }
+static int cli_tool_markdown(void *context, const char *text, size_t length) {
+  return cli_text(context, text, length);
+}
+
 static int cli_markdown(cli_state *state, const char *text) {
   if (cli_flush_command(state, 1) != 0 || cli_finish_response(state) != 0 ||
       cli_finish_reasoning(state) != 0)
@@ -1596,28 +1601,25 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     if (cli_finish_response(state) != 0 || cli_finish_reasoning(state) != 0)
       return CAI_ERR_TRANSPORT;
     {
-      cai_agent_runtime_event presented = *event;
-      char delivery[192];
-      int message =
-          event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED &&
-          event->tool_name != NULL &&
-          strcmp(event->tool_name, "agent_message") == 0 &&
-          cai_cli_message_delivery_markdown(event->data, event->data_length,
-                                            delivery, sizeof(delivery));
+      cai_cli_tool_result *result = NULL;
       int width = cli_render_width();
       int rc = cai_tool_display_set_width(state->tool_display,
                                           (size_t)(width < 32     ? 0
                                                    : width > 4096 ? 4096
                                                                   : width),
                                           error);
-      if (message) {
-        presented.data = NULL;
-        presented.data_length = 0U;
-      }
       if (rc == CAI_OK)
-        rc = cai_tool_display_event(state->tool_display, &presented, error);
-      if (rc == CAI_OK && message && cli_markdown(state, delivery) != 0)
+        rc = cai_cli_tool_result_open(event, &result, error);
+      if (rc == CAI_OK && result != NULL)
+        rc = cai_cli_tool_result_heading(result, state->tool_display, event,
+                                         error);
+      else if (rc == CAI_OK)
+        rc = cai_tool_display_event(state->tool_display, event, error);
+      if (rc == CAI_OK && result != NULL)
+        rc = cai_cli_tool_result_write(result, cli_tool_markdown, state, error);
+      if (rc == CAI_OK && result != NULL && cli_finish_response(state) != 0)
         rc = CAI_ERR_TRANSPORT;
+      cai_cli_tool_result_close(result);
       return rc;
     }
   } else if (event->type == CAI_AGENT_EVENT_REASONING_SUMMARY_STARTED) {

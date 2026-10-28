@@ -250,13 +250,15 @@ static int display_marker(cai_tool_display *d, int result, const char *verb,
   if (rc == CAI_OK && d->config.color)
     rc = display_text(d, "\033[0;36m", error);
   if (rc == CAI_OK)
-    rc = display_text(d, verb, error);
+    rc = display_safe(d, verb, strlen(verb), error);
   if (rc == CAI_OK && n != 0U)
     rc = display_text(d, " ", error);
   if (rc == CAI_OK && n != 0U && d->config.color)
     rc = display_text(d, "\033[1;96m", error);
   if (rc == CAI_OK)
     rc = display_safe(d, text, n, error);
+  if (rc == CAI_OK)
+    rc = display_flush_utf8(d, error);
   if (rc == CAI_OK && d->config.color)
     rc = display_text(d, "\033[0m", error);
   if (rc == CAI_OK)
@@ -1313,6 +1315,23 @@ int cai_tool_display_event(cai_tool_display *d,
     display_remove(d, c);
   return rc;
 }
+int cai_tool_display_summary(cai_tool_display *d,
+                             const cai_agent_runtime_event *e, const char *verb,
+                             const char *label, int success, cai_error *error) {
+  cai_display_call *call;
+  int rc;
+  if (d == NULL || e == NULL || verb == NULL || label == NULL ||
+      (e->type != CAI_AGENT_EVENT_TOOL_CALL_COMPLETED &&
+       e->type != CAI_AGENT_EVENT_TOOL_CALL_FAILED))
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool summary requires a completion and plain labels");
+  call = display_find(d, e);
+  rc = display_marker(d, success != 0, verb, label, strlen(label), error);
+  if (call != NULL)
+    display_remove(d, call);
+  return rc;
+}
+
 void cai_tool_display_close(cai_tool_display *d) {
   cai_display_call *c;
   if (d == NULL)

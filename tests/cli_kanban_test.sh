@@ -26,6 +26,9 @@ send '/todo\r'; expect 'Kanban: saved'
 # Agent changes and human changes share one selected board and commit.
 plan '{"plan":[{"tool":"todo_kanban","arguments":{"operation":"select_board","board_name":"startup"}},"SELECTED STARTUP"]}'
 prompt 'select startup' 'SELECTED STARTUP'
+contains "$term/feed" '* Selected board startup'
+absent "$term/feed" '* Completed todo_kanban'
+absent "$term/feed" '"operation":"select_board"'
 send '/todo\r'; expect 'PERSISTENT BOARD CARD'
 terminal_close
 terminal_start
@@ -33,7 +36,7 @@ send '/todo\r'; expect 'PERSISTENT BOARD CARD'
 # Busy board changes remain queued until a complete turn boundary.
 plan '{"plan":[{"pause":true,"text":"BUSY DONE"}]}'
 send 'busy\r'; expect 'STREAM in flight'
-send '/todo new deferred\033\r'; expect 'Q 1. /todo new deferred'
+send '/todo new deferred\033\r'; expect 'S 1. /todo new deferred'
 release
 expect 'BUSY DONE'
 expect 'Kanban: deferred'

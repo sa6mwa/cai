@@ -64,6 +64,16 @@ int cai_tool_display_set_width(cai_tool_display *display, size_t width,
 int cai_tool_display_event(cai_tool_display *display,
                            const cai_agent_runtime_event *event,
                            cai_error *error);
+/** Present a host-formatted tool completion instead of its raw result.
+ * event must be a completed/failed tool event. verb and label are plain text,
+ * escaped by the renderer; success selects the marker color. Releases the
+ * originating display call just like normal completion. Hosts can then render
+ * structured details through their own Markdown renderer. The original event
+ * and model-visible tool result are never modified. */
+int cai_tool_display_summary(cai_tool_display *display,
+                             const cai_agent_runtime_event *event,
+                             const char *verb, const char *label, int success,
+                             cai_error *error);
 /** Release the renderer and retained state. NULL is accepted; the sink is
  * left open. Do not call from its sink callback.
  */

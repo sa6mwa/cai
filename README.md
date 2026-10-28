@@ -1328,6 +1328,14 @@ SDK hosts can use `<cai/display.h>` without softline or libmdf. Create a
 `cai_tool_display_config` (compact, five preview lines, no colors), feed it
 owner-thread runtime events with `cai_tool_display_event`, then close it with
 `cai_tool_display_close`. `cai_tool_display_set_mode` affects future calls.
+Hosts with structured tool presenters can use `cai_tool_display_summary` instead
+of the generic completion event, then feed details to their Markdown renderer.
+It emits a colored success/failure marker with escaped plain-text labels and
+releases the originating display call. Lua exposes
+`display:summary(event, verb, label, success)` with the same behavior.
+CAI's interactive presenter uses this for reasoning requests, messaging,
+kanban, local search and reverse geocoding. It renders details through libmdf;
+the original tool results remain in model context, structured logs and exports.
 `cai_tool_display_set_width(display, columns, &error)` enables the numbered,
 wrapped layout (32..4096 columns; zero restores unwrapped output). Hosts set
 `LC_CTYPE` to their UTF-8 locale for glyph widths. Width changes apply to the

@@ -56,6 +56,10 @@ lua_queue=cai.lua-work
 plan '{"plan":[{"tool":"agent_message","arguments":{"operation":"list"}},"DESTINATIONS LISTED"]}'
 select_app 0
 prompt 'list message destinations' 'DESTINATIONS LISTED'
+contains "$term/feed" '* Listed message queues'
+contains "$term/feed" '│ Queue'
+contains "$term/feed" 'Workspace'
+absent "$term/feed" '* Completed agent_message'
 tail -1 "$root/peer/requests.jsonl" >"$root/request"
 contains "$root/request" "$c_id"
 contains "$root/request" "$lua_id"
@@ -65,7 +69,7 @@ contains "$root/request" "$lua_queue"
 plan "$(jq -n --arg id "$lua_queue" '{plan:[{tool:"agent_message",arguments:{operation:"send",recipient:$id,text:"PING FROM C"}},"C PING DELIVERED"]}')"
 before=$(requests)
 prompt 'send a ping to Lua' 'C PING DELIVERED'
-contains "$term/feed" "Message delivered to $lua_queue."
+contains "$term/feed" "* Delivered message to $lua_queue"
 absent "$term/feed" '"status":"delivered"'
 [[ $(requests) == $((before+2)) ]]
 tail -1 "$root/peer/requests.jsonl" >"$root/request"
@@ -78,7 +82,7 @@ contains "$term/text" 'PING FROM C'
 plan "$(jq -n --arg id "$c_queue" '{plan:[{tool:"agent_message",arguments:{operation:"send",recipient:$id,text:"PONG FROM LUA"}},"LUA REPLY DELIVERED"]}')"
 offset=$(wc -c <"$term/text")
 send '\033a\033y'; expect_turn "$offset" 'LUA REPLY DELIVERED'
-contains "$term/feed" "Message delivered to $c_queue."
+contains "$term/feed" "* Delivered message to $c_queue"
 absent "$term/feed" '"status":"delivered"'
 [[ $(requests) == $((before+4)) ]]
 tail -1 "$root/peer/requests.jsonl" >"$root/request"

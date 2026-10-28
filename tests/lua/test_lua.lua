@@ -2734,6 +2734,17 @@ do
   emit(cai.AGENT_EVENT_TOOL_PATCH, "*** Update File: x\n@@\n-old\n+new\n")
   emit(cai.AGENT_EVENT_TOOL_PATCH, "")
   assert(table.concat(output):find(" 280 -old\n 290 +new\n", 1, true))
+  output = {}
+  emit(cai.AGENT_EVENT_TOOL_CALL_STARTED, nil, cai.AGENT_TOOL_ACTION_EXTERNAL)
+  assert_not_ok(display:summary({type = cai.AGENT_EVENT_TEXT_DELTA}, "Accepted", "request", true))
+  ev = {type = cai.AGENT_EVENT_TOOL_CALL_COMPLETED, tool_call_id = "patch", runtime_session_id = "lua", data = "ok"}
+  assert_ok(display:summary(ev, "Accepted", "reasoning request", true))
+  assert(table.concat(output):find("* Accepted reasoning request\n", 1, true))
+  assert(not table.concat(output):find("ok", 1, true))
+  emit(cai.AGENT_EVENT_TOOL_CALL_STARTED, nil, cai.AGENT_TOOL_ACTION_EXTERNAL)
+  ev.type = cai.AGENT_EVENT_TOOL_CALL_COMPLETED
+  assert_ok(display:summary(ev, "Declined", "unsafe\27[2Jlabel", false))
+  assert(table.concat(output):find("unsafe\\x1b[2Jlabel", 1, true))
   assert_ok(display:close())
   assert_throws(function() display:event({}) end)
 end
