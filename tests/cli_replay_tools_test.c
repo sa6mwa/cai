@@ -114,14 +114,15 @@ static void commands(int full, size_t step) {
     FEED("parent", "b", "write_stdin", "tool.completed", NULL, "", step);
     FEED("parent", "b", "write_stdin", "tool.output", "data",
          "{\"session_id\":\"terminal-1\",\"output\":\"later\\n\",\"exit_code\":"
-         "7,\"signal\":0}",
+         "7,\"signal\":0,\"duration_ms\":63000}",
          step);
   }
-  assert(strstr(f.text, "* Ran printf 'hello'\none\ntwo\nthree\nfour\nfive\n"));
+  assert(strstr(
+      f.text, "* Ran for 1m3s printf 'hello'\none\ntwo\nthree\nfour\nfive\n"));
   assert(strstr(f.text, "exit=7 signal=0"));
-  assert(strstr(f.text, "* Ran child command\nchild\n"));
-  assert(strstr(strstr(f.text, "* Ran printf 'hello'") + 1,
-                "* Ran printf 'hello'") == NULL);
+  assert(strstr(f.text, "* Ran for 0s child command\nchild\n"));
+  assert(strstr(strstr(f.text, "* Ran for 1m3s printf 'hello'") + 1,
+                "* Ran for 1m3s printf 'hello'") == NULL);
   assert(!strstr(f.text, "Running"));
   assert(!strstr(f.text, "Tool completed"));
   assert(!strstr(f.text, "session_id"));
@@ -150,6 +151,8 @@ static void native_tools(void) {
          "private file content", 2U);
     FEED("s", "reason", "set_reasoning", "tool.completed", NULL, "", 10U);
     FEED("s", "reason", "set_reasoning", "tool.output", "data", "ok", 10U);
+    FEED("s", "reason", "set_reasoning", "reasoning.receipt", NULL,
+         "requested high (high): medium -> high", 4096U);
     FEED("s", "patch", "apply_patch", "tool.arguments", "data",
          "*** Begin Patch\n*** Update File: x.c\n@@\n-old\n+new\n*** End "
          "Patch\n",
@@ -189,7 +192,10 @@ static void native_tools(void) {
   }
   assert(strstr(f.text, "* Read src/main.c\n"));
   assert(!strstr(f.text, "private file content"));
-  assert(strstr(f.text, "* Accepted reasoning request\n"));
+  assert(strstr(f.text, "* Reasoning requested high (high): medium -> high\n"));
+  assert(!strstr(f.text, "Accepted reasoning request"));
+  assert(!strstr(f.text, "Completed set_reasoning"));
+  assert(!strstr(f.text, "\nok\n"));
   assert(strstr(f.text, "* Edited x.c"));
   assert(strstr(f.text, "  21 -old"));
   assert(strstr(f.text, "  21 +new"));
@@ -276,7 +282,7 @@ static void large_output(void) {
       }
     }
   }
-  assert(strstr(f.text, "* Ran large output\nrow\n"));
+  assert(strstr(f.text, "* Ran for 0s large output\nrow\n"));
   assert(strstr(f.text, "output omitted"));
   assert(f.length < 1024U);
   assert(cai_cli_replay_tools_finish(f.tools, &f.error) == CAI_OK);

@@ -233,6 +233,19 @@ static size_t patch_flush_length(const char *s, size_t n) {
                                               : 1U;
   return start + expected > n ? start : n;
 }
+static void display_command_verb(char out[80], const char *verb,
+                                 unsigned long long duration_ms) {
+  unsigned long long seconds = duration_ms / 1000U;
+  const char *elapsed = strcmp(verb, "Cancelled") == 0 ? "after" : "for";
+  if (seconds >= 3600U)
+    snprintf(out, 80U, "%s %s %lluh%llum%llus", verb, elapsed, seconds / 3600U,
+             (seconds / 60U) % 60U, seconds % 60U);
+  else if (seconds >= 60U)
+    snprintf(out, 80U, "%s %s %llum%llus", verb, elapsed, seconds / 60U,
+             seconds % 60U);
+  else
+    snprintf(out, 80U, "%s %s %llus", verb, elapsed, seconds);
+}
 static int display_marker(cai_tool_display *d, int result, const char *verb,
                           const char *text, size_t n, cai_error *error) {
   int rc;
@@ -1182,6 +1195,9 @@ int cai_tool_display_event(cai_tool_display *d,
   int rc, ok;
   if (d == NULL || e == NULL || (e->data == NULL && e->data_length != 0U))
     return cai_set_error(error, CAI_ERR_INVALID, "invalid tool display event");
+  if (e->type == CAI_AGENT_EVENT_REASONING_TOOL_RESULT)
+    return display_marker(d, 1, "Reasoning", e->data != NULL ? e->data : "",
+                          e->data_length, error);
   c = display_find(d, e);
   if (e->type == CAI_AGENT_EVENT_RUN_FAILED ||
       e->type == CAI_AGENT_EVENT_RUN_CANCELLED) {
@@ -1248,6 +1264,7 @@ int cai_tool_display_event(cai_tool_display *d,
                      : CAI_OK;
   if (e->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED ||
       e->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED) {
+    char completed[80];
     if (c == NULL)
       return CAI_OK;
     if (!c->command_active)
@@ -1263,12 +1280,15 @@ int cai_tool_display_event(cai_tool_display *d,
     ok = e->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED &&
          e->terminal_has_exit_code && e->terminal_exit_code == 0 &&
          (!e->terminal_has_signal || e->terminal_signal == 0);
-    if (rc == CAI_OK && !c->replay)
-      rc = display_marker(d, ok,
-                          e->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED
-                              ? "Cancelled"
-                              : "Ran",
-                          c->command, strlen(c->command), error);
+    if (rc == CAI_OK && !c->replay) {
+      display_command_verb(completed,
+                           e->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED
+                               ? "Cancelled"
+                               : "Ran",
+                           e->terminal_duration_ms);
+      rc = display_marker(d, ok, completed, c->command, strlen(c->command),
+                          error);
+    }
     if (rc == CAI_OK && !ok) {
       char status[96];
       snprintf(status, sizeof(status), "  exit=%lld signal=%lld\n",
@@ -1283,6 +1303,12 @@ int cai_tool_display_event(cai_tool_display *d,
       e->type != CAI_AGENT_EVENT_TOOL_CALL_FAILED)
     return CAI_OK;
   ok = e->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED;
+  if (ok && e->tool_name != NULL &&
+      strcmp(e->tool_name, "set_reasoning") == 0) {
+    if (c != NULL)
+      display_remove(d, c);
+    return CAI_OK; /* The user receipt describes its actual outcome. */
+  }
   if (ok && e->tool_action == CAI_AGENT_TOOL_ACTION_MCP &&
       display_mcp_failed(e))
     ok = 0;
@@ -1346,6 +1372,7 @@ int cai_tool_display_replay_begin(cai_tool_display *d,
                                   const char *verb, const char *label,
                                   int success, cai_error *error) {
   cai_display_call *call;
+  char completed[80];
   int rc;
   if (d == NULL || e == NULL || verb == NULL || label == NULL ||
       (e->type != CAI_AGENT_EVENT_TOOL_CALL_COMPLETED &&
@@ -1360,6 +1387,10 @@ int cai_tool_display_replay_begin(cai_tool_display *d,
     return rc;
   call->command_active = 1;
   call->replay = 1;
+  if (strcmp(verb, "Ran") == 0) {
+    display_command_verb(completed, verb, e->terminal_duration_ms);
+    verb = completed;
+  }
   return display_marker(d, success != 0, verb, label, strlen(label), error);
 }
 

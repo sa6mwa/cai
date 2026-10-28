@@ -286,6 +286,11 @@
     target_link_libraries(cai_cli_reasoning_test PRIVATE cai_cli_support)
     cai_configure_cli_target(cai_cli_reasoning_test)
     add_test(NAME cai_cli_reasoning COMMAND cai_cli_reasoning_test)
+    add_test(NAME cai_cli_auto_compact_status COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_auto_compact_status_test.sh"
+      "$<TARGET_FILE:cai_cli_mock_fixture>")
+    set_tests_properties(cai_cli_auto_compact_status PROPERTIES
+      LABELS "cli;local;offline" TIMEOUT 15)
     foreach(_review_fix_protocol responses chat_completions)
       add_test(NAME cai_cli_review_fix_tool_${_review_fix_protocol} COMMAND bash
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_review_fix_tool_test.sh"

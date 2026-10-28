@@ -53,6 +53,44 @@ static int cai_runtime_reasoning_supported(cai_agent_runtime *runtime,
   return supported;
 }
 
+static int
+cai_runtime_reasoning_receipt_locked(cai_agent_runtime *runtime, int mode,
+                                     const char *requested, const char *before,
+                                     const char *after, const char *reason,
+                                     const char *call, cai_error *error) {
+  cai_runtime_execution_stream receipt;
+  char text[512];
+  int length, rc = CAI_OK;
+  const char *from = before != NULL ? before : "provider default";
+  const char *to = after != NULL ? after : "provider default";
+  if (strcmp(from, to) == 0)
+    length =
+        snprintf(text, sizeof(text), "requested %s (%s): unchanged at %s%s%s%s",
+                 mode == 2 ? "high" : "normal", requested, to,
+                 reason != NULL ? " (" : "", reason != NULL ? reason : "",
+                 reason != NULL ? ")" : "");
+  else
+    length = snprintf(text, sizeof(text), "requested %s (%s): %s -> %s%s%s%s",
+                      mode == 2 ? "high" : "normal", requested, from, to,
+                      reason != NULL ? " (" : "", reason != NULL ? reason : "",
+                      reason != NULL ? ")" : "");
+  if (length < 0 || (size_t)length >= sizeof(text))
+    return cai_set_error(error, CAI_ERR_LIMIT,
+                         "reasoning receipt exceeds limit");
+  if (runtime->record_transcript) {
+    cai_runtime_execution_init(&receipt, runtime, "reasoning.receipt",
+                               "set_reasoning", call, NULL);
+    memcpy(receipt.bytes, text, (size_t)length);
+    receipt.length = (size_t)length;
+    rc = cai_runtime_execution_emit_locked(&receipt, receipt.length, 1, error);
+  }
+  if (rc == CAI_OK)
+    rc = cai_runtime_enqueue_locked(
+        runtime, CAI_AGENT_EVENT_REASONING_TOOL_RESULT, text, (size_t)length,
+        "set_reasoning", call, runtime->state, error);
+  return rc;
+}
+
 /* Caller holds runtime->lock, serializing warning identity and configuration.
  */
 static void cai_runtime_reasoning_warn(cai_agent_runtime *runtime,
@@ -124,6 +162,7 @@ static int cai_runtime_reasoning_tool(void *context, const char *arguments,
   cai_runtime_settings_owned candidate;
   cai_agent_runtime_settings selected;
   const char *model, *effort;
+  const char *unchanged = NULL;
   int high, rc = CAI_OK;
   memset(&args, 0, sizeof(args));
   memset(&candidate, 0, sizeof(candidate));
@@ -142,12 +181,15 @@ static int cai_runtime_reasoning_tool(void *context, const char *arguments,
       (runtime->pending_settings.present &
        CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT) != 0U) {
     /* An explicit host/user update wins over a model request. */
+    unchanged = "another settings change is pending or the tool is disabled";
   } else if (!cai_runtime_reasoning_supported(runtime, model, effort)) {
     cai_runtime_reasoning_warn(runtime, model, effort, high);
+    unchanged = "not advertised by model";
   } else if (high && cai_reasoning_rank(
                          CAI_AGENT_IMPL(runtime->agent)->reasoning_effort) >=
                          cai_reasoning_rank(effort)) {
     /* An escalation never lowers an effort already above the mapped high. */
+    unchanged = "already at or above requested effort";
   } else {
     selected = cai_runtime_settings_borrow(&runtime->pending_settings);
     selected.present |= CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT;
@@ -158,10 +200,27 @@ static int cai_runtime_reasoning_tool(void *context, const char *arguments,
       runtime->pending_settings = candidate;
       runtime->pending_settings_failed = 0;
       runtime->reasoning_tool_pending = high ? 2 : 1;
+      runtime->reasoning_receipt_mode = high ? 2 : 1;
+      snprintf(runtime->reasoning_receipt_before,
+               sizeof(runtime->reasoning_receipt_before), "%s",
+               CAI_AGENT_IMPL(runtime->agent)->reasoning_effort != NULL
+                   ? CAI_AGENT_IMPL(runtime->agent)->reasoning_effort
+                   : "provider default");
+      snprintf(runtime->reasoning_receipt_requested,
+               sizeof(runtime->reasoning_receipt_requested), "%s", effort);
+      cai_free_mem(NULL, runtime->reasoning_receipt_call);
+      runtime->reasoning_receipt_call = runtime->reasoning_current_call;
+      runtime->reasoning_current_call = NULL;
       runtime->pending_after_active = 1;
       pthread_cond_broadcast(&runtime->condition);
     }
   }
+  if (rc == CAI_OK && unchanged != NULL)
+    rc = cai_runtime_reasoning_receipt_locked(
+        runtime, high ? 2 : 1, effort,
+        CAI_AGENT_IMPL(runtime->agent)->reasoning_effort,
+        CAI_AGENT_IMPL(runtime->agent)->reasoning_effort, unchanged,
+        runtime->reasoning_current_call, error);
   pthread_mutex_unlock(&runtime->lock);
   if (rc != CAI_OK)
     return rc;

@@ -527,6 +527,9 @@ and high modes and is instructed to raise effort unless explicitly told to
 return to normal. It never automatically lowers a higher current effort when
 requesting high. Changes apply at the next durable tool boundary and the
 selected actual effort is restored on conversation resume.
+The interactive receipt identifies the requested mode, mapped effort and
+actual before/after result, including unchanged settings. This user-facing
+receipt is retained for replay and export, but never sent to the model.
 .TP
 .BI \-\-normal-reasoning-effort " LEVEL"
 Normal tool mapping, default medium, independent of -r. Also
@@ -653,6 +656,10 @@ context row, with a vertical ellipsis between separated changes.
 Full previews retain supplied command and MCP output and all patch context.
 Tool output limits still apply. Non-interactive activity remains complete
 pslog output on stderr, independent of this preview setting.
+Command completion headings include elapsed whole seconds, for example
+"Ran for 1m3s", with a dimmer activity/duration and brighter command.
+Replay includes one completion heading and the saved output even for fast
+commands that omit their live completion row.
 .TP
 .BR \-v , " " \-\-verbose
 Print runtime events; repeat for event sequence numbers.

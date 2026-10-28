@@ -423,6 +423,8 @@ provider requests or execute tools.
 stays in Softline's native editable queue. Alt-Enter becomes `Q` and cannot
 waive the whole-turn hold or steer the model. Escape cancels the task. Progress
 appears in the gray status line and completion in the Markdown feed.
+Automatic worker compaction also displays `Compacting context` in that status
+line until completion, failure or cancellation.
 
 The worker uses the same compactor as automatic compaction: streamed Responses
 V2 `compaction_trigger` for Responses providers, matching Codex's manual task,
@@ -1000,7 +1002,7 @@ summaries, and shows validated review findings as Markdown. Raw review JSON
 remains in the inspection timeline, not the normal findings display. Failed
 review prose and failure details remain available without a logfile. Successful
 tool calls use the live tool presentation with one completion heading. Commands
-show `* Ran COMMAND` followed by their saved output, without a `Running` row;
+show `* Ran for 1m3s COMMAND` followed by their saved output, without a `Running` row;
 `write_stdin` output stays attached to the original command and shares its
 preview limit. `--tool-output compact|full` controls replay just as it controls
 new calls. Saved patch previews retain confirmed line numbers and neighboring
@@ -1009,6 +1011,11 @@ context from files that have since changed. Startup policy notices precede
 replay; the idle message distinguishes a resumed conversation from a new
 conversation. Previously unrecorded child
 output cannot be recreated by this change.
+
+Live command completions use the same elapsed-time heading, with seconds,
+minutes or hours as needed. The activity and duration use normal cyan; the
+command remains bright cyan. Fast commands may omit the live completion row,
+but still have a saved completion and output on replay.
 
 Execution records and subagent envelopes never enter model context, recovery actions or compaction
 prompts. Context compaction preserves them; explicit history trimming excludes

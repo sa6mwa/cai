@@ -212,7 +212,11 @@ typedef enum cai_agent_runtime_event_type {
    * The turn stays active; cancellation/close interrupts the wait. */
   CAI_AGENT_EVENT_REQUEST_RETRY = 36,
   /** The capacity wait ended and the same pending request will be retried. */
-  CAI_AGENT_EVENT_REQUEST_RETRY_STARTED = 37
+  CAI_AGENT_EVENT_REQUEST_RETRY_STARTED = 37,
+  /** User-facing set_reasoning receipt: requested mode/mapped effort and
+   * actual before/after outcome, as plain text in data. Never model context.
+   * The tool's model-facing acknowledgement remains opaque. */
+  CAI_AGENT_EVENT_REASONING_TOOL_RESULT = 38
 } cai_agent_runtime_event_type;
 
 /**

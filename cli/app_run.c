@@ -146,6 +146,7 @@ typedef struct cli_state {
   int was_busy;
   int awaiting_turn;
   int manual_compaction;
+  int compaction_active;
   int show_welcome;
   int suppress_replay;
   cai_cli_replay *replay;
@@ -1410,7 +1411,8 @@ static void cli_log_event(cli_state *state,
                                       "input_boundary",
                                       "execution_record",
                                       "request_retry",
-                                      "request_retry_started"};
+                                      "request_retry_started",
+                                      "reasoning_tool_result"};
   pslog_field fields[16];
   size_t count;
   const char *name;
@@ -1529,6 +1531,14 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     }
   }
   cli_log_event(state, event);
+  if (event->type == CAI_AGENT_EVENT_COMPACTION_STARTED ||
+      event->type == CAI_AGENT_EVENT_COMPACTION_PROGRESS)
+    state->compaction_active = 1;
+  else if (event->type == CAI_AGENT_EVENT_COMPACTION_COMPLETED ||
+           event->type == CAI_AGENT_EVENT_RUN_COMPLETED ||
+           event->type == CAI_AGENT_EVENT_RUN_FAILED ||
+           event->type == CAI_AGENT_EVENT_RUN_CANCELLED)
+    state->compaction_active = 0;
   if (event->parent_tool_call_id == NULL && !state->batch) {
     int notified = cli_settings_notice(state, error);
     if (notified != CAI_OK)
@@ -1708,6 +1718,7 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
       (event->type >= CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED &&
        event->type <= CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED) ||
       event->type == CAI_AGENT_EVENT_TOOL_PATCH ||
+      event->type == CAI_AGENT_EVENT_REASONING_TOOL_RESULT ||
       event->type == CAI_AGENT_EVENT_TOOL_PATCH_LOCATIONS ||
       event->type == CAI_AGENT_EVENT_RUN_FAILED ||
       event->type == CAI_AGENT_EVENT_RUN_CANCELLED) {
@@ -1888,7 +1899,8 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
                      : &metrics;
   if (cai_cli_reasoning_title(&state->reasoning, &reasoning_title) != 0)
     return CAI_ERR_TRANSPORT;
-  if (state->manual_compaction && metrics.turn_active)
+  if (state->compaction_active ||
+      (state->manual_compaction && metrics.turn_active))
     reasoning_title = "Compacting context";
   if (state->capacity_retry_message[0] != '\0' && metrics.turn_active)
     reasoning_title = state->capacity_retry_message;
@@ -2856,6 +2868,7 @@ static int cli_prepare_clipboard(cli_state *state, cai_error *error) {
 
 static void cli_close_runtime(cli_state *state) {
   state->settings_notice_fields = 0U;
+  state->compaction_active = 0;
   if (state->has_review_watch) {
     (void)sl_watch_remove(state->sl, state->review_watch_id);
     state->has_review_watch = 0;

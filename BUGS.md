@@ -5,6 +5,26 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-061: Long delay after switching models, before request dispatch
+
+- **Status:** open; no context compaction found in the reported interval.
+- **Evidence:** session `dbgtfervs68i52ohr8gg`, 2026-10-28: model changes to
+  `gpt-reserve` at 19:02:24 and `gpt-6.1-sol` at 19:02:31 were committed.
+  The `hello` turn started at 19:02:33; the WS request-start log appeared at
+  19:03:33 with 1,124,954 request bytes, followed by handshake at 19:03:34 and
+  answer at 19:03:39. There were no context-compaction events in that interval.
+- **Remaining investigation:** isolate preparation, serialization and auth
+  work before transport dispatch. The existing log does not identify which
+  operation consumed the minute; do not attribute it to compaction or Pouch.
+- **Related UI fix:** automatic compaction now uses the gray `Compacting
+  context` status, like manual compaction, and clears it on success, failure
+  or cancellation. The focused mock-provider test checks these outcomes and
+  continued `/status` responsiveness without live inference.
+- **Related runtime fixes:** automatic preflight compaction honors turn
+  cancellation. A failed or cancelled preflight consumes its handled input
+  durably, so reopening does not unexpectedly resubmit it. The same test
+  verifies reopening without additional provider requests.
+
 ## BUG-060: Settings commands announce another queue after Softline delivery
 
 - **Status:** fixed.

@@ -12102,6 +12102,7 @@ static int cai_lua_display_event_common(lua_State *L, int summary) {
   cai_agent_runtime_event event;
   cai_error error;
   int snapshot, rc;
+  lua_Integer duration;
   const char *verb = NULL, *label = NULL;
   int success = 0;
   luaL_argcheck(L, self->ptr != NULL, 1, "closed tool display");
@@ -12140,6 +12141,10 @@ static int cai_lua_display_event_common(lua_State *L, int summary) {
       cai_lua_opt_bool_field(L, 2, "terminal_has_signal", 0);
   event.terminal_signal =
       (long long)cai_lua_display_integer(L, 2, "terminal_signal", 0);
+  duration = cai_lua_display_integer(L, 2, "terminal_duration_ms", 0);
+  luaL_argcheck(L, duration >= 0, 2,
+                "terminal_duration_ms must be nonnegative");
+  event.terminal_duration_ms = (unsigned long long)duration;
   cai_error_init(&error);
   self->active++;
   rc = summary == 2 ? cai_tool_display_replay_begin(self->ptr, &event, verb,
@@ -12834,6 +12839,8 @@ int luaopen_cai(lua_State *L) {
                       CAI_AGENT_EVENT_REQUEST_RETRY);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_REQUEST_RETRY_STARTED",
                       CAI_AGENT_EVENT_REQUEST_RETRY_STARTED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_REASONING_TOOL_RESULT",
+                      CAI_AGENT_EVENT_REASONING_TOOL_RESULT);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_EXECUTION_RECORD",
                       CAI_AGENT_EVENT_EXECUTION_RECORD);
   CAI_LUA_SET_INTEGER("AGENT_TOOL_ACTION_MCP", CAI_AGENT_TOOL_ACTION_MCP);

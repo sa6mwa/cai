@@ -20,6 +20,12 @@ acknowledged() {
     (if $chat then [.messages[]? | select(.role == "tool") | .content]
      else [.input[]? | select(.type == "function_call_output") | .output] end)
     | length > 0 and all(.[]; . == "ok")' >/dev/null
+  tail -1 "$root/peer/requests.jsonl" >"$root/acknowledged-request"
+  absent "$root/acknowledged-request" 'requested high ('
+  absent "$root/acknowledged-request" 'requested normal ('
+}
+receipt() {
+  jq -se --arg text "$1" 'any(.[]; .event == "reasoning_tool_result" and .msg == $text)' "$root/stderr" >/dev/null
 }
 metadata '["low","medium","high","xhigh"]'
 if [[ "$scenario" == persistence ]]; then
@@ -30,16 +36,28 @@ plan "{\"chat\":$chat,\"plan\":[{\"tool\":\"set_reasoning\",\"arguments\":{\"mod
 run -Nni complex --reasoning-tool; ok
 [[ $(stdout_text) == RAISED ]]; efforts '["medium","high"]'
 acknowledged
+receipt 'requested high (high): medium -> high'
+id=$(current_session_id)
+before=$(requests)
+terminal_start --resume "$id"
+expect 'Conversation resumed.'
+contains "$term/text" '* Reasoning requested high (high): medium -> high'
+absent "$term/text" 'Accepted reasoning request'
+absent "$term/text" 'Completed set_reasoning'
+terminal_close
+[[ $(requests) == "$before" ]]
 plan "{\"chat\":$chat,\"plan\":[\"STILL HIGH\"]}"
 run -ni continue; ok; efforts '["high"]'
 plan "{\"chat\":$chat,\"plan\":[{\"tool\":\"set_reasoning\",\"arguments\":{\"mode\":\"normal\"}},\"NORMAL\"]}"
 run -ni 'explicitly return to normal' --reasoning-tool; ok
 efforts '["high","medium"]'
 acknowledged
+receipt 'requested normal (medium): high -> medium'
 plan "{\"chat\":$chat,\"plan\":[{\"tool\":\"set_reasoning\",\"arguments\":{\"mode\":\"high\"}},\"KEEP HIGHER\"]}"
 run -Nni complex -r xhigh --reasoning-tool; ok
 efforts '["xhigh","xhigh"]'
 acknowledged
+receipt 'requested high (high): unchanged at xhigh (already at or above requested effort)'
 fi
 if [[ "$scenario" == unsupported ]]; then
 export CAI_TEST_VOLATILE_SESSION=1
@@ -58,6 +76,8 @@ for supported in '["low"]' '[]' null; do
   absent "$root/request" --high-reasoning-effort
   absent "$root/request" 'has no effect'
   acknowledged
+  receipt 'requested high (high): unchanged at low (not advertised by model)'
+  receipt 'requested normal (medium): unchanged at low (not advertised by model)'
 done
 fi
 if [[ "$scenario" == interactive ]]; then
@@ -68,6 +88,7 @@ export CAI_NORMAL_REASONING_EFFORT=medium CAI_HIGH_REASONING_EFFORT=high
 plan "{\"chat\":$chat,\"plan\":[{\"tool\":\"set_reasoning\",\"arguments\":{\"mode\":\"high\"}},\"MAPPED\"]}"
 run -Nni mapped --high-reasoning-effort xhigh; ok; efforts '["medium","xhigh"]'
 acknowledged
+receipt 'requested high (xhigh): medium -> xhigh'
 unset CAI_NORMAL_REASONING_EFFORT CAI_HIGH_REASONING_EFFORT
 terminal_start -N --no-reasoning-tool
 send '/reasoning-tool\r'; expect 'off'
@@ -80,6 +101,7 @@ send 'respect manual control\r'; expect 'STREAM in flight'
 send '/reasoning-tool off\033\r'; expect 'Q 1. /reasoning-tool off'
 send '/reasoning low\033\r'; expect 'S 2. /reasoning low'
 release; expect_assistant 'HOST WINS'; expect 'Worked for'
+contains "$term/text" '* Reasoning requested high (high):'
 absent "$term/feed" 'Configure the reasoning tool between turns'
 send '/reasoning-tool\r'; expect 'off'
 efforts '["medium","low"]'
@@ -87,8 +109,9 @@ acknowledged
 send '/reasoning-tool on\r'; expect 'on'
 plan "{\"chat\":$chat,\"plan\":[{\"tool\":\"set_reasoning\",\"arguments\":{\"mode\":\"high\"}},\"TUI HIGH\"]}"
 prompt complex 'TUI HIGH'; efforts '["low","high"]'
-contains "$term/feed" '* Accepted reasoning request'
-absent "$term/feed" '* Completed set_reasoning'
+contains "$term/text" '* Reasoning requested high (high): low -> high'
+absent "$term/text" '* Accepted reasoning request'
+absent "$term/text" '* Completed set_reasoning'
 acknowledged
 send '/reasoning-tool off\r'; expect 'off'
 plan "{\"chat\":$chat,\"plan\":[\"TOOL OFF\"]}"

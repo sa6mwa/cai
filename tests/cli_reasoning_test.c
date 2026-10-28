@@ -950,6 +950,13 @@ int main(void) {
     event.data_length = strlen(event.data);
     if (rc == CAI_OK)
       rc = cli_event(&state, &event, NULL);
+    if (scenario == 4) {
+      event.type = CAI_AGENT_EVENT_REASONING_TOOL_RESULT;
+      event.data = "requested high (high): medium -> high";
+      event.data_length = strlen(event.data);
+      if (rc == CAI_OK)
+        rc = cli_event(&state, &event, NULL);
+    }
     if (scenario == 3) {
       event.type = CAI_AGENT_EVENT_REASONING_SUMMARY;
       event.data = "**Tool follow-up**\n\nReasoning after tool\n";
@@ -1022,9 +1029,8 @@ int main(void) {
       strstr(output, "already separated\n\n  Answer after tool.\n") == NULL ||
       strstr(output, "before reasoning\n\n  > Reasoning after tool\n") ==
           NULL ||
-      strstr(output,
-             "* Accepted reasoning request\n\n  Answer after tool.\n") ==
-          NULL) {
+      strstr(output, "* Reasoning requested high (high): medium -> high\n\n"
+                     "  Answer after tool.\n") == NULL) {
     fprintf(stderr, "missing tool/model block spacing: %s\n", output);
     return 1;
   }

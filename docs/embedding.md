@@ -503,6 +503,10 @@ effective effort or confirm that a change took effect. Unsupported or unavailabl
 advertised effort lists produce a host/user warning only; no recovery prompt or
 provider request is generated for an unsupported change. Supply metadata through
 the existing provider catalog when choices are unavailable.
+Hosts receive `CAI_AGENT_EVENT_REASONING_TOOL_RESULT` with a user-facing receipt
+identifying the requested mode, mapped effort, previous effort and actual result.
+Unchanged settings include a reason. These receipts also appear in replay and
+exports as `reasoning.receipt` execution records; they never enter model context.
 Mappings and tool enablement come from configuration, not conversation storage;
 manual `-r` and `/reasoning` remain independent of the normal mapping.
 `/reasoning-tool [on|off|normal LEVEL|high LEVEL]` configures the current app

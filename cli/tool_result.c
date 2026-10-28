@@ -84,8 +84,7 @@ int cai_cli_tool_result_open(const cai_agent_runtime_event *e,
   }
   if (e->type != CAI_AGENT_EVENT_TOOL_CALL_COMPLETED ||
       e->tool_action != CAI_AGENT_TOOL_ACTION_EXTERNAL || e->data == NULL ||
-      (!same(e->tool_name, "set_reasoning") &&
-       !same(e->tool_name, "run_review_and_fix") &&
+      (!same(e->tool_name, "run_review_and_fix") &&
        !same(e->tool_name, "agent_message") &&
        !same(e->tool_name, "todo_kanban") &&
        !same(e->tool_name, "searxng_search") &&
@@ -95,15 +94,9 @@ int cai_cli_tool_result_open(const cai_agent_runtime_event *e,
   if (r == NULL)
     return cai_cli_error(error, CAI_ERR_NOMEM, "prepare tool presentation");
   r->success = 1;
-  if (same(e->tool_name, "set_reasoning")) {
-    if (e->data_length != 2U || memcmp(e->data, "ok", 2U) != 0)
-      goto unrecognized;
-    /* Acknowledged does not imply that the effective effort changed. */
-    r->verb = "Accepted";
-    r->label = "reasoning request";
-  } else if (same(e->tool_name, "agent_message") &&
-             e->data_length >= sizeof(queue_heading) - 1U &&
-             memcmp(e->data, queue_heading, sizeof(queue_heading) - 1U) == 0) {
+  if (same(e->tool_name, "agent_message") &&
+      e->data_length >= sizeof(queue_heading) - 1U &&
+      memcmp(e->data, queue_heading, sizeof(queue_heading) - 1U) == 0) {
     r->verb = "Listed";
     r->label = "message queues";
     r->markdown = e->data;

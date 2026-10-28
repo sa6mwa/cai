@@ -64,7 +64,10 @@ int cai_tool_display_set_width(cai_tool_display *display, size_t width,
  * normalized; standalone CR starts a new transcript line. Incomplete controls
  * are discarded. Malformed UTF-8 and non-control binary bytes are escaped;
  * other tool labels, results and patch contents continue to escape control
- * bytes literally.
+ * bytes literally. Completed command headings include terminal_duration_ms as
+ * whole elapsed seconds (e.g. "Ran for 1m3s"); the duration shares the activity
+ * verb's color. REASONING_TOOL_RESULT renders the user-facing outcome without
+ * altering the model's tool result.
  */
 int cai_tool_display_event(cai_tool_display *display,
                            const cai_agent_runtime_event *event,
@@ -84,7 +87,8 @@ int cai_tool_display_summary(cai_tool_display *display,
  * TERMINAL_OUTPUT events and a TERMINAL_COMMAND_COMPLETED event (empty data)
  * to flush and release it, without another heading. The completion's terminal
  * status is used by that final event for command failures. No output is saved
- * or executed. Labels and success follow summary() semantics. */
+ * or executed. A "Ran" verb includes event->terminal_duration_ms in the
+ * heading. Labels and success follow summary() semantics. */
 int cai_tool_display_replay_begin(cai_tool_display *display,
                                   const cai_agent_runtime_event *event,
                                   const char *verb, const char *label,

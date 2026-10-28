@@ -1072,6 +1072,10 @@ if(CAI_BUILD_LUA)
       set_tests_properties(cai_lua_review_fix PROPERTIES LABELS "cli;local;offline"
         TIMEOUT 5 WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         ENVIRONMENT "${CAI_LUA_TEST_ENV}")
+      add_test(NAME cai_lua_display_duration COMMAND ${CAI_LUA_EXECUTABLE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua/display_duration_test.lua")
+      set_tests_properties(cai_lua_display_duration PROPERTIES LABELS "cli;local;offline"
+        TIMEOUT 5 ENVIRONMENT "${CAI_LUA_TEST_ENV}")
       set_tests_properties(cai_app_lua_exports PROPERTIES LABELS "cli;local;offline" TIMEOUT 5)
       if(CAI_BUILD_CLI)
         add_test(NAME cai_app_lua_home COMMAND bash

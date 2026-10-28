@@ -89,9 +89,7 @@ int main(void) {
       "{\"status\":\"delivered\",\"recipient\":12}",
       "{\"status\":\"delivered\",\"recipient\":\"\"}",
       "{\"status\":\"delivered\",\"recipient\":\"q\"} trailing"};
-  assert(result(&c, "set_reasoning", "ok"));
-  assert(strstr(c.text, "Accepted ") && strstr(c.text, "reasoning request"));
-  assert(!strstr(c.text, "\nok") && !strstr(c.text, "Completed"));
+  assert(!result(&c, "set_reasoning", "ok"));
   assert(!result(&c, "set_reasoning", "not ok"));
   assert(result(&c, "agent_message",
                 "{\"status\":\"delivered\",\"recipient\":\"cai.y\",\"message_"

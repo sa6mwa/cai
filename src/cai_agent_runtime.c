@@ -558,6 +558,10 @@ struct cai_agent_runtime {
   int model_switching;
   int settings_applying;
   int pending_settings_failed;
+  char *reasoning_current_call;
+  char *reasoning_receipt_call;
+  int reasoning_receipt_mode;
+  char reasoning_receipt_before[32], reasoning_receipt_requested[32];
   int reasoning_tool_pending;
   struct {
     int enabled;
@@ -833,6 +837,11 @@ static void cai_runtime_reasoning_warn(cai_agent_runtime *runtime,
                                        int high);
 static int cai_runtime_apply_pending_settings(cai_agent_runtime *runtime,
                                               cai_error *error);
+static int
+cai_runtime_reasoning_receipt_locked(cai_agent_runtime *runtime, int mode,
+                                     const char *requested, const char *before,
+                                     const char *after, const char *reason,
+                                     const char *call, cai_error *error);
 static int cai_runtime_append_journal_event_locked(
     cai_agent_runtime *runtime, const char *type, const char *data,
     unsigned long long *out_sequence, cai_error *error);
@@ -931,7 +940,8 @@ static int cai_runtime_cancel_requested(void *context) {
 
   pthread_mutex_lock(&runtime->lock);
   requested = runtime->stopping ||
-              (runtime->turn_cancel_requested && runtime->turn_cancel_armed);
+              (runtime->turn_cancel_requested &&
+               (runtime->turn_cancel_armed || runtime->compacting));
   pthread_mutex_unlock(&runtime->lock);
   return requested;
 }
@@ -4576,6 +4586,18 @@ static int cai_runtime_tool_event(void *context, const cai_tool_event *event,
   runtime->state = CAI_AGENT_DISPATCHING_TOOL;
   runtime->goal_turn_has_activity = 1;
   if (event->type == CAI_TOOL_EVENT_START && event->name != NULL &&
+      strcmp(event->name, "set_reasoning") == 0) {
+    cai_free_mem(NULL, runtime->reasoning_current_call);
+    runtime->reasoning_current_call = cai_strdup(NULL, event->call_id);
+    if (event->call_id != NULL && runtime->reasoning_current_call == NULL) {
+      pthread_mutex_unlock(&runtime->lock);
+      cai_free_mem(NULL, data);
+      cai_free_mem(NULL, tool_path);
+      return cai_set_error(error, CAI_ERR_NOMEM,
+                           "retain reasoning call identity");
+    }
+  }
+  if (event->type == CAI_TOOL_EVENT_START && event->name != NULL &&
       strcmp(event->name, CAI_TERMINAL_EXEC_TOOL_NAME) == 0) {
     char *origin;
 
@@ -5747,6 +5769,33 @@ static void *cai_runtime_worker(void *context) {
     }
     if (rc == CAI_OK) {
       rc = cai_runtime_compact_before_request(runtime, &error);
+    }
+    if (rc != CAI_OK) {
+      cai_error consumed_error;
+      int consumed_rc;
+      /* A failed/cancelled preflight has handled this input, even though it
+       * never entered model history. Do not resurrect it on the next open. */
+      cai_error_init(&consumed_error);
+      consumed_sequence = 0U;
+      pthread_mutex_lock(&runtime->lock);
+      consumed_rc = cai_runtime_mark_input_consumed_locked(
+          runtime, input->journal_sequence, &consumed_sequence,
+          &consumed_error);
+      if (consumed_rc == CAI_OK)
+        cai_runtime_mark_commit_event_locked(runtime, consumed_sequence);
+      pthread_mutex_unlock(&runtime->lock);
+      if (consumed_rc == CAI_OK)
+        consumed_rc = cai_runtime_commit(runtime, 1, &consumed_error);
+      if (consumed_rc != CAI_OK) {
+        cai_error_cleanup(&error);
+        error = consumed_error;
+        cai_error_init(&consumed_error);
+        rc = consumed_rc;
+      }
+      cai_error_cleanup(&consumed_error);
+      cai_runtime_input_node_free(input);
+      budget_limited = 0;
+      goto finish_turn;
     }
     if (rc == CAI_OK) {
       unsigned long long start = 0U;
@@ -8992,6 +9041,19 @@ static int cai_runtime_apply_pending_settings(cai_agent_runtime *runtime,
     runtime->reasoning_tool_pending = 0;
   }
   if (runtime->pending_settings.present == 0U) {
+    if (runtime->reasoning_receipt_mode != 0) {
+      rc = cai_runtime_reasoning_receipt_locked(
+          runtime, runtime->reasoning_receipt_mode,
+          runtime->reasoning_receipt_requested,
+          runtime->reasoning_receipt_before,
+          CAI_AGENT_IMPL(runtime->agent)->reasoning_effort,
+          "not advertised by model", runtime->reasoning_receipt_call, error);
+      runtime->reasoning_receipt_mode = 0;
+      if (rc != CAI_OK) {
+        pthread_mutex_unlock(&runtime->lock);
+        return rc;
+      }
+    }
     runtime->pending_after_active = 0;
     pthread_mutex_unlock(&runtime->lock);
     return CAI_OK;
@@ -9006,6 +9068,26 @@ static int cai_runtime_apply_pending_settings(cai_agent_runtime *runtime,
   if (rc == CAI_OK) {
     cai_runtime_settings_clear(&runtime->pending_settings);
     runtime->pending_after_active = 0;
+  }
+  if (runtime->reasoning_receipt_mode != 0) {
+    const char *actual = CAI_AGENT_IMPL(runtime->agent)->reasoning_effort;
+    cai_error receipt_error;
+    int receipt_rc;
+    const char *reason =
+        rc != CAI_OK ? "change failed"
+        : actual == NULL ||
+                strcmp(actual, runtime->reasoning_receipt_requested) != 0
+            ? "overridden or unsupported"
+            : NULL;
+    cai_error_init(&receipt_error);
+    receipt_rc = cai_runtime_reasoning_receipt_locked(
+        runtime, runtime->reasoning_receipt_mode,
+        runtime->reasoning_receipt_requested, runtime->reasoning_receipt_before,
+        actual, reason, runtime->reasoning_receipt_call, &receipt_error);
+    runtime->reasoning_receipt_mode = 0;
+    if (rc == CAI_OK && receipt_rc != CAI_OK)
+      rc = cai_set_error(error, receipt_rc, "record reasoning outcome");
+    cai_error_cleanup(&receipt_error);
   }
   pthread_cond_broadcast(&runtime->condition);
   pthread_mutex_unlock(&runtime->lock);
@@ -13258,6 +13340,8 @@ static void cai_agent_runtime_destroy(cai_agent_runtime *runtime) {
     cai_runtime_goal_control_node_free(control);
   }
   cai_runtime_settings_clear(&runtime->pending_settings);
+  cai_free_mem(NULL, runtime->reasoning_current_call);
+  cai_free_mem(NULL, runtime->reasoning_receipt_call);
   cai_runtime_settings_clear(&runtime->settings_view_effective);
   cai_runtime_settings_clear(&runtime->settings_view_pending);
   cai_free_mem(NULL, runtime->reasoning_tool.normal_effort);
