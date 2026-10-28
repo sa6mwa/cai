@@ -86,6 +86,7 @@ typedef struct cai_cli_options {
   const char *resume_id;
   const char *delete_id;
   const char *export_id;
+  const char *export_out;
   const char *export_dir;
   const char *import_file;
   const char *lockd;

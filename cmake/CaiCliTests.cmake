@@ -98,6 +98,10 @@
       "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_home PROPERTIES TIMEOUT 15)
     set_tests_properties(cai_cli_config PROPERTIES TIMEOUT 45)
+    add_test(NAME cai_cli_export_paths COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_export_paths_test.sh"
+      "$<TARGET_FILE:cai_cli_mock_fixture>")
+    set_tests_properties(cai_cli_export_paths PROPERTIES TIMEOUT 15)
     foreach(_final_protocol responses chat_completions)
       add_test(NAME cai_cli_final_output_${_final_protocol} COMMAND bash
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_final_output_test.sh"

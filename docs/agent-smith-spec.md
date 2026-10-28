@@ -1641,10 +1641,14 @@ calling the default-file helper with app name `cai`, which writes
 `cai-session-<xid>.md` in the canonical workspace. A downstream TUI can bind
 the same receiver to a menu, a file picker, or a clipboard sink without CAI
 depending on libmdf, softline, or a desktop clipboard implementation.
-`libcai_app` separately implements `/export [ID]` and `--export ID`, writing
-resumable JSONL plus this Markdown handover and the separate execution timeline
-under its configured export root. The core handover remains free of side-band
-execution records intended for human inspection.
+`libcai_app` separately implements `/export [BASENAME]` for the active conversation
+and `--export ID [--export-out BASENAME]` for an explicit conversation. With no
+basename it writes paired JSONL and Markdown files under the configured export
+root. An exact `.md` or `.jsonl` suffix selects one format at the supplied path;
+otherwise both suffixes are appended. Relative paths use the selected workspace.
+Application Markdown exports contain this handover followed by the separate
+execution timeline. JSONL retains resumable state and journal events. The core
+handover remains free of side-band execution records intended for human inspection.
 
 The handover contract is `cai-agent-handover/1`, headed `# CAI agent handover`.
 It is deliberately **not** a serialization or resume format: the durable

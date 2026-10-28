@@ -4327,8 +4327,9 @@ static int cli_handle_command(cli_state *state, const char *line,
         "| `/resume NUMBER` | Resume a listed conversation and replay prompts "
         "and assistant text. |\n"
         "| `/new` | Start a fresh conversation in this directory. |\n"
-        "| `/export [ID]` | Export the current or selected conversation as "
-        "Markdown and resumable JSONL. |\n"
+        "| `/export [BASENAME]` | Export this conversation. `.md` or `.jsonl` "
+        "selects one format; other names get both suffixes. No name uses the "
+        "default export directory. |\n"
         "| `/quit`, `/exit` | Exit the application. |\n\n",
         "## Prompt keys\n\n"
         "| Key | Action |\n"
@@ -4472,12 +4473,22 @@ static int cli_handle_command(cli_state *state, const char *line,
     }
     return CAI_OK;
   }
-  if (strcmp(line, "/export") == 0 || strncmp(line, "/export ", 8U) == 0) {
+  if (strcmp(line, "/export") == 0 || strncmp(line, "/export ", 8U) == 0 ||
+      strncmp(line, "/export\t", 8U) == 0) {
     cai_sink_callbacks callbacks;
     cai_sink *destination;
-    const char *id;
-    id = line[7] == '\0' ? cai_agent_runtime_session_id(state->runtime)
-                         : line + 8U;
+    const char *id = cai_agent_runtime_session_id(state->runtime);
+    char basename[PATH_MAX];
+    size_t length;
+    arg = line + 7U;
+    arg += strspn(arg, " \t");
+    length = strlen(arg);
+    while (length > 0U && strchr(" \t", arg[length - 1U]) != NULL)
+      length--;
+    if (length >= sizeof(basename))
+      return cai_cli_error(error, CAI_ERR_INVALID, "export file path too long");
+    memcpy(basename, arg, length);
+    basename[length] = '\0';
     state->list_line_start = 1;
     if (cli_text(state, "## Conversation export\n\n", 24U) != 0)
       return CAI_ERR_TRANSPORT;
@@ -4487,12 +4498,9 @@ static int cli_handle_command(cli_state *state, const char *line,
     destination = NULL;
     rc = cai_sink_from_callbacks(&callbacks, &destination, error);
     if (rc == CAI_OK)
-      rc = cai_cli_session_export(
-          &state->pouch, id, state->options.export_dir,
-          strcmp(id, cai_agent_runtime_session_id(state->runtime)) == 0
-              ? state->runtime
-              : NULL,
-          destination, error);
+      rc = cai_cli_session_export(&state->pouch, id, state->options.export_dir,
+                                  length != 0U ? basename : NULL,
+                                  state->runtime, destination, error);
     cai_sink_close(destination);
     if (cli_finish_response(state) != 0 && rc == CAI_OK)
       rc = CAI_ERR_TRANSPORT;
@@ -5098,9 +5106,9 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
     destination = NULL;
     rc = cai_sink_stdout(&destination, &error);
     if (rc == CAI_OK)
-      rc = cai_cli_session_export(&state.pouch, state.options.export_id,
-                                  state.options.export_dir, NULL, destination,
-                                  &error);
+      rc = cai_cli_session_export(
+          &state.pouch, state.options.export_id, state.options.export_dir,
+          state.options.export_out, NULL, destination, &error);
     cai_sink_close(destination);
     if (rc != CAI_OK)
       cli_print_error(&state, "export conversation", &error);

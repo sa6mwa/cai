@@ -400,6 +400,13 @@ Export resumable JSONL and Markdown for a conversation and exit. Markdown uses
 libcai's existing exporter, including instructions and runtime/goal metadata.
 No model requests or tools run during export. Files are plaintext, mode 0600.
 .TP
+.BI \-\-export-out " BASENAME"
+Override the output path for --export ID. An exact .md or .jsonl suffix writes
+only that format. Any other name gets both suffixes appended. Relative names
+use the selected workspace. Empty or omitted uses the default export root.
+Missing parents are created; existing directory permissions are preserved.
+Existing output files are replaced after the selected streams are written.
+.TP
 .BI \-\-export-dir " DIR"
 Override the export root. Default: $XDG_DATA_HOME/cai/exports, falling back to
 ~/.local/share/cai/exports.
@@ -676,8 +683,15 @@ List saved sessions for the current workspace, newest first.
 Load the numbered session from that list and replay saved user prompts and
 assistant text without repeating tool side effects.
 .TP
-.BI /export " [ID]"
-Export the active session, or the supplied ID, as JSONL and Markdown.
+.BI /export " [BASENAME]"
+Export the active conversation. Without a basename, write paired ID.jsonl and
+ID.md files in the default export directory. A basename ending in .md or .jsonl
+writes only that format at exactly the supplied path. Otherwise append both
+suffixes: output/conversation produces output/conversation.md and
+output/conversation.jsonl; something.else produces something.else.md and
+something.else.jsonl. Relative names use the workspace. Missing parent
+directories are created without changing existing directory permissions.
+The entire argument is a literal path, including embedded spaces.
 .TP
 .B /new
 Start a new session in the current workspace and show its ID and workspace

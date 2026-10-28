@@ -409,6 +409,8 @@ static int cli_read_options(int argc, char *const *argv,
       field = &options->delete_id;
     else if (strcmp(flag, "--export") == 0)
       field = &options->export_id;
+    else if (strcmp(flag, "--export-out") == 0)
+      field = &options->export_out;
     else if (strcmp(flag, "--export-dir") == 0)
       field = &options->export_dir;
     else if (strcmp(flag, "--state-dir") == 0)
@@ -535,12 +537,14 @@ static int cli_read_options(int argc, char *const *argv,
       cai_cli_option_error(options, "unknown option: %s\n", flag);
       return -1;
     }
-    if (++i >= argc || argv[i][0] == '\0') {
+    if (++i >= argc || (argv[i][0] == '\0' && field != &options->export_out)) {
       cai_cli_option_error(options, "%s requires a value\n", flag);
       return -1;
     }
     value = argv[i];
     *field = value;
+    if (field == &options->export_out && value[0] == '\0')
+      *field = NULL;
     if (field == &options->config_file)
       options->config_explicit = 1;
     if (field == &options->todo_layout && strcmp(value, "board") != 0 &&
@@ -591,6 +595,10 @@ int cai_cli_validate_options(cai_cli_options *options) {
   if (options->force && !options->temporary && options->install_skill == NULL) {
     cai_cli_option_error(options, "%s",
                          "--yes/--force requires --temp or --install-skill");
+    return -1;
+  }
+  if (options->export_out != NULL && options->export_id == NULL) {
+    cai_cli_option_error(options, "--export-out requires --export ID");
     return -1;
   }
   if (options->temporary &&

@@ -852,10 +852,20 @@ present in the directory, takes precedence over a row number.
 Saved prompts, assistant text and concise execution summaries replay without
 repeating tool side effects.
 
-`--export ID` and `/export [ID]` write paired `ID.jsonl` and `ID.md` files
+`--export ID` and `/export` write paired `ID.jsonl` and `ID.md` files
 under `$XDG_DATA_HOME/cai/exports/ID` by default (falling back to
 `~/.local/share/cai/exports/ID`). `/export` selects the active
-session. `--export-dir DIR` overrides the export root. JSONL contains the
+session. `--export-dir DIR` overrides the export root. `/export BASENAME`
+exports the active conversation to the named path; `--export ID --export-out
+BASENAME` does the same for an explicit ID. An exact `.md` or `.jsonl` suffix
+selects only that format. Otherwise both suffixes are appended, so
+`/export output/conversation` creates `output/conversation.md` and
+`output/conversation.jsonl`; `something.else` creates `something.else.md` and
+`something.else.jsonl`. Relative paths use the workspace; missing parent
+directories are created without changing existing directory permissions.
+Existing files are replaced after the selected streams have been written.
+Omitting the basename (or leaving `--export-out` empty) retains the default
+export location. JSONL contains the
 complete resumable checkpoint and journal; Markdown uses libcai's existing
 Markdown exporter, including its instructions, conversation, runtime, and
 goal sections, followed by a structured execution timeline. Export performs no

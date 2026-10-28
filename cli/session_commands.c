@@ -380,7 +380,7 @@ static int export_path(const cai_cli_pouch *pouch, char *path, size_t capacity,
   return CAI_OK;
 }
 
-static int export_directory(char *path, cai_error *error) {
+static int export_directory(char *path, int require_private, cai_error *error) {
   char *cursor;
   struct stat status;
   for (cursor = path + 1;; cursor++) {
@@ -401,36 +401,125 @@ static int export_directory(char *path, cai_error *error) {
       break;
     }
   }
-  if (lstat(path, &status) != 0 || !S_ISDIR(status.st_mode) ||
-      status.st_uid != geteuid() || (status.st_mode & 077U) != 0U)
+  if ((require_private ? lstat(path, &status) : stat(path, &status)) != 0 ||
+      !S_ISDIR(status.st_mode))
+    return cai_cli_error(error, CAI_ERR_INVALID,
+                         "export parent is not a directory");
+  if (require_private &&
+      (status.st_uid != geteuid() || (status.st_mode & 077U) != 0U))
     return cai_cli_error(
         error, CAI_ERR_INVALID,
         "session export directory must be private (mode 0700)");
   return CAI_OK;
 }
 
-static int export_file(const char *directory, const char *id,
-                       const char *suffix, char *temporary, size_t capacity,
+static int export_file(const char *path, char *temporary, size_t capacity,
                        FILE **out, cai_error *error) {
-  int fd;
-  if (snprintf(temporary, capacity, "%s/%s.%s.tmp.XXXXXX", directory, id,
-               suffix) >= (int)capacity)
+  const char *slash = strrchr(path, '/');
+  int fd, n;
+  /* A fixed sibling name supports long destination basenames without
+   * exceeding the filesystem's per-component limit just for staging. */
+  n = slash == NULL ? snprintf(temporary, capacity, ".export-XXXXXX")
+                    : snprintf(temporary, capacity, "%.*s/.export-XXXXXX",
+                               (int)(slash - path), path);
+  if (n < 0 || (size_t)n >= capacity) {
+    temporary[0] = '\0';
     return cai_cli_error(error, CAI_ERR_INVALID, "export path too long");
+  }
   fd = mkstemp(temporary);
-  if (fd < 0)
+  if (fd < 0) {
+    temporary[0] = '\0';
     return cai_cli_error(error, CAI_ERR_TRANSPORT,
                          "create private export file");
+  }
   *out = fdopen(fd, "wb");
   if (*out == NULL) {
     close(fd);
     unlink(temporary);
+    temporary[0] = '\0';
     return cai_cli_error(error, CAI_ERR_TRANSPORT, "open export output stream");
   }
   return CAI_OK;
 }
 
+/* Named destinations are workspace-relative, independent of the managed
+ * export root. Only an exact .md/.jsonl suffix selects one projection. */
+static int export_targets(const cai_cli_pouch *pouch, const char *root,
+                          const char *id, const char *basename,
+                          char paths[2][PATH_MAX], cai_error *error) {
+  static const char *const suffixes[] = {".md", ".jsonl"};
+  char directory[PATH_MAX];
+  char *slash;
+  size_t length, i;
+  int selected = -1, n, rc;
+  struct stat status;
+  memset(paths, 0, 2U * PATH_MAX);
+  if (basename == NULL) {
+    rc = export_path(pouch, directory, sizeof(directory), root, id, error);
+    if (rc == CAI_OK)
+      rc = export_directory(directory, 1, error);
+    if (rc != CAI_OK)
+      return rc;
+    for (i = 0U; i < 2U; i++) {
+      n = snprintf(paths[i], PATH_MAX, "%s/%s%s", directory, id, suffixes[i]);
+      if (n < 0 || n >= PATH_MAX)
+        return cai_cli_error(error, CAI_ERR_INVALID,
+                             "export file path too long");
+    }
+  } else {
+    length = strlen(basename);
+    slash = strrchr(basename, '/');
+    if (length == 0U || length >= PATH_MAX || basename[length - 1U] == '/' ||
+        strcmp(slash != NULL ? slash + 1U : basename, ".") == 0 ||
+        strcmp(slash != NULL ? slash + 1U : basename, "..") == 0)
+      return cai_cli_error(error, CAI_ERR_INVALID,
+                           "export basename must name a file");
+    for (i = 0U; i < 2U; i++) {
+      size_t suffix_length = strlen(suffixes[i]);
+      if (length >= suffix_length &&
+          strcmp(basename + length - suffix_length, suffixes[i]) == 0)
+        selected = (int)i;
+    }
+    for (i = 0U; i < 2U; i++) {
+      if (selected != -1 && selected != (int)i)
+        continue;
+      n = snprintf(paths[i], PATH_MAX, "%s%s", basename,
+                   selected == -1 ? suffixes[i] : "");
+      if (n < 0 || n >= PATH_MAX)
+        return cai_cli_error(error, CAI_ERR_INVALID,
+                             "export file path too long");
+    }
+    strcpy(directory, basename);
+    slash = strrchr(directory, '/');
+    if (slash == directory)
+      slash[1] = '\0';
+    else if (slash != NULL)
+      *slash = '\0';
+    else
+      strcpy(directory, ".");
+    rc = export_directory(directory, 0, error);
+    if (rc != CAI_OK)
+      return rc;
+  }
+  /* Catch invalid destinations before publishing either projection. Existing
+   * regular files are replaced via rename; their contents are never truncated
+   * while an export is still being generated. */
+  for (i = 0U; i < 2U; i++) {
+    if (paths[i][0] == '\0')
+      continue;
+    if (lstat(paths[i], &status) == 0) {
+      if (!S_ISREG(status.st_mode) && !S_ISLNK(status.st_mode))
+        return cai_cli_error(error, CAI_ERR_INVALID,
+                             "export destination must be a file");
+    } else if (errno != ENOENT)
+      return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                           "cannot inspect export destination");
+  }
+  return CAI_OK;
+}
+
 int cai_cli_session_export(cai_cli_pouch *pouch, const char *id,
-                           const char *export_root,
+                           const char *export_root, const char *basename,
                            cai_agent_runtime *active_runtime,
                            cai_sink *destination, cai_error *error) {
   cai_cli_session metadata;
@@ -439,16 +528,14 @@ int cai_cli_session_export(cai_cli_pouch *pouch, const char *id,
   cai_client *client;
   cai_agent_runtime *runtime;
   cai_sink *sink;
-  char directory[PATH_MAX];
-  char json_path[PATH_MAX];
-  char md_path[PATH_MAX];
-  char json_tmp[PATH_MAX];
-  char md_tmp[PATH_MAX];
+  char paths[2][PATH_MAX];
+  char temporary[2][PATH_MAX];
   struct cai_cli_session_guard *use = NULL;
   const char *cursor;
   FILE *file;
   lc_lease *lease;
   int rc;
+  size_t i;
   for (cursor = id; *cursor != '\0'; cursor++) {
     if (!((*cursor >= 'a' && *cursor <= 'z') ||
           (*cursor >= 'A' && *cursor <= 'Z') ||
@@ -464,8 +551,7 @@ int cai_cli_session_export(cai_cli_pouch *pouch, const char *id,
   runtime = active_runtime;
   sink = NULL;
   file = NULL;
-  json_tmp[0] = '\0';
-  md_tmp[0] = '\0';
+  memset(temporary, 0, sizeof(temporary));
   lease = NULL;
   /* Hold one document lease across both exports so their checkpoint and
    * journal cannot change between the Markdown and JSONL reads. */
@@ -477,71 +563,55 @@ int cai_cli_session_export(cai_cli_pouch *pouch, const char *id,
   if (rc == CAI_OK && active_runtime == NULL)
     rc = offline_runtime(pouch, id, &metadata, &storage, &callbacks, &client,
                          &runtime, error);
-  if (rc == CAI_OK) {
-    rc = export_path(pouch, directory, sizeof(directory), export_root, id,
-                     error);
-    if (rc == CAI_OK)
-      rc = export_directory(directory, error);
-  }
-  if (rc == CAI_OK && (snprintf(json_path, sizeof(json_path), "%s/%s.jsonl",
-                                directory, id) >= (int)sizeof(json_path) ||
-                       snprintf(md_path, sizeof(md_path), "%s/%s.md", directory,
-                                id) >= (int)sizeof(md_path)))
-    rc = cai_cli_error(error, CAI_ERR_INVALID, "export file path too long");
-  /* Complete both temporary streams before replacing either published export.
-   */
   if (rc == CAI_OK)
-    rc = export_file(directory, id, "md", md_tmp, sizeof(md_tmp), &file, error);
-  if (rc == CAI_OK)
-    rc = cai_sink_file(file, 0, &sink, error);
-  if (rc == CAI_OK)
-    rc = cai_agent_runtime_export_markdown(runtime, sink, error);
-  if (rc == CAI_OK)
-    rc = cai_agent_runtime_export_execution_markdown(runtime, sink, error);
-  cai_sink_close(sink);
-  sink = NULL;
-  if (file != NULL) {
-    if (fflush(file) != 0 || fsync(fileno(file)) != 0)
-      rc = cai_cli_error(error, CAI_ERR_TRANSPORT, "sync Markdown export");
-    if (fclose(file) != 0 && rc == CAI_OK)
-      rc = cai_cli_error(error, CAI_ERR_TRANSPORT, "close Markdown export");
-    file = NULL;
-  }
-  if (rc == CAI_OK)
-    rc = export_file(directory, id, "jsonl", json_tmp, sizeof(json_tmp), &file,
-                     error);
-  if (rc == CAI_OK)
-    rc = cai_sink_file(file, 0, &sink, error);
-  if (rc == CAI_OK)
-    rc = cai_cli_pouch_export(pouch, id, runtime, sink, error);
-  cai_sink_close(sink);
-  if (file != NULL) {
-    if (fflush(file) != 0 || fsync(fileno(file)) != 0)
-      rc = cai_cli_error(error, CAI_ERR_TRANSPORT, "sync JSONL export");
-    if (fclose(file) != 0 && rc == CAI_OK)
-      rc = cai_cli_error(error, CAI_ERR_TRANSPORT, "close JSONL export");
-  }
-  if (rc == CAI_OK &&
-      (rename(json_tmp, json_path) != 0 || rename(md_tmp, md_path) != 0))
+    rc = export_targets(pouch, export_root, id, basename, paths, error);
+  /* Finish every selected stream before publishing any output. */
+  for (i = 0U; rc == CAI_OK && i < 2U; i++) {
+    if (paths[i][0] == '\0')
+      continue;
     rc =
-        cai_cli_error(error, CAI_ERR_TRANSPORT, "publish conversation exports");
-  if (json_tmp[0] != '\0')
-    unlink(json_tmp);
-  if (md_tmp[0] != '\0')
-    unlink(md_tmp);
+        export_file(paths[i], temporary[i], sizeof(temporary[i]), &file, error);
+    if (rc == CAI_OK)
+      rc = cai_sink_file(file, 0, &sink, error);
+    if (rc == CAI_OK && i == 0U)
+      rc = cai_agent_runtime_export_markdown(runtime, sink, error);
+    if (rc == CAI_OK && i == 0U)
+      rc = cai_agent_runtime_export_execution_markdown(runtime, sink, error);
+    if (rc == CAI_OK && i == 1U)
+      rc = cai_cli_pouch_export(pouch, id, runtime, sink, error);
+    cai_sink_close(sink);
+    sink = NULL;
+    if (file != NULL) {
+      if (rc == CAI_OK && (fflush(file) != 0 || fsync(fileno(file)) != 0))
+        rc =
+            cai_cli_error(error, CAI_ERR_TRANSPORT, "sync conversation export");
+      if (fclose(file) != 0 && rc == CAI_OK)
+        rc = cai_cli_error(error, CAI_ERR_TRANSPORT,
+                           "close conversation export");
+      file = NULL;
+    }
+  }
+  for (i = 0U; rc == CAI_OK && i < 2U; i++)
+    if (paths[i][0] != '\0' && rename(temporary[i], paths[i]) != 0)
+      rc = cai_cli_error(error, CAI_ERR_TRANSPORT,
+                         "publish conversation export");
+  for (i = 0U; i < 2U; i++)
+    if (temporary[i][0] != '\0')
+      unlink(temporary[i]);
   if (active_runtime == NULL && runtime != NULL)
     cai_agent_runtime_close(runtime);
   if (client != NULL)
     client->close(client);
   rc = cai_cli_pouch_unlock(lease, rc, error);
-  if (rc == CAI_OK)
-    rc = cai_sink_write(destination, json_path, strlen(json_path), error);
-  if (rc == CAI_OK)
-    rc = cai_sink_write(destination, "\n", 1U, error);
-  if (rc == CAI_OK)
-    rc = cai_sink_write(destination, md_path, strlen(md_path), error);
-  if (rc == CAI_OK)
-    rc = cai_sink_write(destination, "\n", 1U, error);
+  /* Preserve the CLI utility's JSONL-then-Markdown listing order. */
+  for (i = 2U; rc == CAI_OK && i > 0U; i--) {
+    const char *path = paths[i - 1U];
+    if (path[0] != '\0') {
+      rc = cai_sink_write(destination, path, strlen(path), error);
+      if (rc == CAI_OK)
+        rc = cai_sink_write(destination, "\n", 1U, error);
+    }
+  }
   cai_cli_pouch_end_read(use);
   return rc;
 }

@@ -69,6 +69,8 @@ static const cai_app_option options[] = {
      0, 0},
     {"--export", '\0', CAI_APP_STRING, "ID",
      "Export resumable JSONL and Markdown", 0, 0},
+    {"--export-out", '\0', CAI_APP_STRING, "BASENAME",
+     "Export path: .md/.jsonl selects one format; other names get both", 0, 0},
     {"--import", '\0', CAI_APP_STRING, "FILE",
      "Import JSONL as a new session and exit", 0, 0},
     {"--export-dir", '\0', CAI_APP_STRING, "DIR",
