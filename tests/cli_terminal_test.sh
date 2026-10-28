@@ -17,7 +17,7 @@ probes=$(grep -ao $'\033\[6n' "$term/raw" | wc -l || true)
 began=$SECONDS
 send '/help\r'; expect 'startup options'
 [[ $((SECONDS-began)) -lt 2 ]]
-for marker in 'Help' 'Slash commands' 'Prompt keys' '/resume NUMBER' '/export [ID]' Ctrl-V; do contains "$term/text" "$marker"; done
+for marker in 'Help' 'Slash commands' 'Prompt keys' '/resume NUMBER' '/export [BASENAME]' Ctrl-V; do contains "$term/text" "$marker"; done
 absent "$term/text" '| --- |'
 [[ $(requests) == 0 ]]
 send 'inspect this \026'

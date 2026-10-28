@@ -27,8 +27,7 @@ static void save(cai_cli_pouch *pouch, const char *scope, const char *id,
   callbacks.context = &offset;
   callbacks.read = read_state;
   assert(cai_source_from_callbacks(&callbacks, &source, error) == CAI_OK);
-  assert(pouch->store.checkpoint(pouch, scope, id, source, 1U, error) ==
-         CAI_OK);
+  assert(pouch->store.commit(pouch, scope, id, source, 1U, error) == CAI_OK);
   cai_source_close(source);
 }
 static int collection(void *context, const lc_collection_info *info,
@@ -192,21 +191,21 @@ int main(int argc, char **argv) {
   event.data = "review-child";
   assert(pouch.store.append_event(&pouch, "/workspace", "parent", &event,
                                   &error) == CAI_OK);
-  assert(collections(&pouch) == 10);
+  assert(collections(&pouch) == 5);
   assert(cai_cli_pouch_deletable(&pouch, "parent", &eligible, &error) ==
              CAI_OK &&
          !eligible);
   memset(&state, 0, sizeof(state));
   assert(cai_cli_pouch_delete(&pouch, "/workspace", "parent", cleanup, &state,
                               &error) == CAI_ERR_INVALID);
-  assert(state.calls == 0 && collections(&pouch) == 10);
+  assert(state.calls == 0 && collections(&pouch) == 5);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   cai_cli_pouch_end_use(&pouch);
   metadata_identity(&pouch, "parent", "/workspace", "survivor");
   assert(cai_cli_pouch_delete(&pouch, "/workspace", "parent", cleanup, &state,
                               &error) == CAI_ERR_INVALID);
-  assert(state.calls == 0 && collections(&pouch) == 10);
+  assert(state.calls == 0 && collections(&pouch) == 5);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   metadata_identity(&pouch, "parent", "/workspace", "parent");
@@ -215,7 +214,7 @@ int main(int argc, char **argv) {
                     "survivor");
   assert(cai_cli_pouch_delete(&pouch, "/workspace", "parent", cleanup, &state,
                               &error) == CAI_ERR_INVALID);
-  assert(state.calls == 0 && collections(&pouch) == 10);
+  assert(state.calls == 0 && collections(&pouch) == 5);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   metadata_identity(&pouch, "review-child", "smith-review:/workspace",
@@ -224,14 +223,14 @@ int main(int argc, char **argv) {
   state.fail = 1;
   assert(cai_cli_pouch_delete(&pouch, "/workspace", "parent", cleanup, &state,
                               &error) == CAI_ERR_TRANSPORT);
-  assert(state.calls == 1 && collections(&pouch) == 10);
+  assert(state.calls == 1 && collections(&pouch) == 5);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   assert(cai_cli_pouch_session(&pouch, "parent", &metadata, &error) == CAI_OK);
   state.fail = state.calls = 0;
   assert(cai_cli_pouch_delete(&pouch, "/workspace", "parent", cleanup, &state,
                               &error) == CAI_OK);
-  assert(state.calls == 4 && state.seen == 15 && collections(&pouch) == 2);
+  assert(state.calls == 4 && state.seen == 15 && collections(&pouch) == 1);
   assert(cai_cli_pouch_session(&pouch, "parent", &metadata, &error) != CAI_OK);
   assert(cai_cli_pouch_session(&pouch, "review-child", &metadata, &error) !=
          CAI_OK);

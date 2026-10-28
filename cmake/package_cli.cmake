@@ -36,6 +36,7 @@ foreach(required_doc
         "share/doc/libcai/docs/embedding.md"
         "share/doc/libcai/docs/agent-messaging.md"
         "share/doc/libcai/docs/kanban.md"
+        "share/doc/libcai/docs/journal.md"
         "share/doc/libcai/examples/main.c"
         "share/doc/libcai/examples/app.lua")
   if(NOT EXISTS "${package_root}/${required_doc}")

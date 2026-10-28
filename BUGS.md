@@ -5,6 +5,20 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-050: SDK LQL collection selectors exceed default musl pthread stacks
+
+- **Status:** CAI journal restoration fixed; upstream liblql issue remains.
+- **Evidence:** liblockdc 0.23.0 / liblql 0.3.0 selector execution uses a
+  178,808-byte scanner frame. A standalone public-SDK probe with one tiny
+  document faults on a default musl pthread and passes with a 2 MiB stack.
+- **Resolution:** restoration now reads the ordered collection directly. Its
+  parser already handles commits and incrementally ignores observations;
+  removing the redundant selector also removes a second parse.
+- **Verification:** static musl journal restart/export/import round trip,
+  including large context, compression and rejected imports. Other SDK callers
+  using LQL on small stacks still need the upstream correction. See
+  [the investigation](docs/liblockdc-lql-musl-stack.md).
+
 ## BUG-049: Review replay loses child output and obscures conversation text
 
 - **Status:** fixed.

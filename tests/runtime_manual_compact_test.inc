@@ -1,5 +1,5 @@
 /* Manual compaction must commit its replacement before reporting success.
- * Inject a checkpoint failure and prove the next request uses old history. */
+ * Inject a commit failure and prove the next request uses old history. */
 static cai_agent_run_state manual_compact_settle(test_state *state,
                                                  cai_agent_runtime *runtime) {
   cai_agent_run_state run = CAI_AGENT_IDLE;
@@ -31,14 +31,14 @@ static void test_agent_runtime_manual_compaction(test_state *state) {
       "data: "
       "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{"
       "\"id\":\"cmp_manual\",\"type\":\"compaction\",\"encrypted_content\":"
-      "\"MANUAL_CHECKPOINT_OPAQUE\"}}\n\n"
+      "\"MANUAL_COMMIT_OPAQUE\"}}\n\n"
       "data: "
       "{\"type\":\"response.completed\",\"response\":{\"id\":\"resp_manual_"
       "compact\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"total_"
       "tokens\":15}}}\n\n";
   static const char *compact_required[] = {"compaction_trigger",
-                                           "manual checkpoint source"};
-  static const char *opaque[] = {"MANUAL_CHECKPOINT_OPAQUE"};
+                                           "manual commit source"};
+  static const char *opaque[] = {"MANUAL_COMMIT_OPAQUE"};
   static const char *original[] = {"MANUAL_ORIGINAL_ANSWER"};
   cai_client_config client_config;
   cai_agent_runtime_config config;
@@ -72,7 +72,7 @@ static void test_agent_runtime_manual_compaction(test_state *state) {
     script[2].required_count = 1U;
     script[2].forbidden = fail ? opaque : original;
     script[2].forbidden_count = 1U;
-    if (http_mock_server_open_script(state, "manual_checkpoint", script, 3U,
+    if (http_mock_server_open_script(state, "manual_commit", script, 3U,
                                      &server) != 0)
       return;
     memset(&saved, 0, sizeof(saved));
@@ -80,7 +80,7 @@ static void test_agent_runtime_manual_compaction(test_state *state) {
     memset(&store, 0, sizeof(store));
     events.owner = pthread_self();
     store.context = &saved;
-    store.checkpoint = test_runtime_session_store_checkpoint;
+    store.commit = test_runtime_session_store_commit;
     store.load_latest = test_runtime_session_store_load;
     store.append_event = test_runtime_session_store_append_event;
     store.load_events_after = test_runtime_session_store_load_events_after;
@@ -92,7 +92,7 @@ static void test_agent_runtime_manual_compaction(test_state *state) {
     client_config.timeout_ms = 2000L;
     client = NULL;
     runtime = NULL;
-    expect_int(state, "manual_checkpoint_client",
+    expect_int(state, "manual_commit_client",
                cai_client_open(&client_config, &client, &error), CAI_OK);
     cai_agent_runtime_config_init(&config);
     config.workspace_directory = "/tmp";
@@ -101,43 +101,42 @@ static void test_agent_runtime_manual_compaction(test_state *state) {
     config.session_store = &store;
     config.event_callback = test_runtime_event;
     config.event_context = &events;
-    expect_int(state, "manual_checkpoint_open",
+    expect_int(state, "manual_commit_open",
                cai_agent_runtime_open(client, &config, &runtime, &error),
                CAI_OK);
     if (runtime != NULL) {
       expect_int(
-          state, "manual_checkpoint_submit",
-          cai_agent_runtime_submit(runtime, "manual checkpoint source", &error),
+          state, "manual_commit_submit",
+          cai_agent_runtime_submit(runtime, "manual commit source", &error),
           CAI_OK);
-      expect_int(state, "manual_checkpoint_first",
+      expect_int(state, "manual_commit_first",
                  manual_compact_settle(state, runtime), CAI_AGENT_COMPLETED);
       if (fail) {
-        saved.fail_checkpoint_once = 1;
-        strcpy(saved.fail_checkpoint_session_id,
+        saved.fail_commit_once = 1;
+        strcpy(saved.fail_commit_session_id,
                cai_agent_runtime_session_id(runtime));
       }
-      expect_int(state, "manual_checkpoint_ready",
+      expect_int(state, "manual_commit_ready",
                  cai_agent_runtime_can_compact(runtime, &ready, &error),
                  CAI_OK);
-      expect_int(state, "manual_checkpoint_ready_value", ready, 1);
-      expect_int(state, "manual_checkpoint_request",
+      expect_int(state, "manual_commit_ready_value", ready, 1);
+      expect_int(state, "manual_commit_request",
                  cai_agent_runtime_compact(runtime, &error), CAI_OK);
-      expect_int(state, "manual_checkpoint_finished",
+      expect_int(state, "manual_commit_finished",
                  manual_compact_settle(state, runtime),
                  fail ? CAI_AGENT_FAILED : CAI_AGENT_COMPLETED);
-      expect_substr(state, "manual_checkpoint_history", saved.saved_checkpoint,
-                    fail ? "MANUAL_ORIGINAL_ANSWER"
-                         : "MANUAL_CHECKPOINT_OPAQUE");
-      expect_int(state, "manual_checkpoint_metrics",
+      expect_substr(state, "manual_commit_history", saved.saved_commit,
+                    fail ? "MANUAL_ORIGINAL_ANSWER" : "MANUAL_COMMIT_OPAQUE");
+      expect_int(state, "manual_commit_metrics",
                  cai_agent_runtime_get_metrics(runtime, &metrics, &error),
                  CAI_OK);
-      expect_int(state, "manual_checkpoint_usage",
+      expect_int(state, "manual_commit_usage",
                  metrics.session_usage.usage.total_tokens, 27L);
       cai_agent_goal_request_init(&goal_request);
       goal_request.objective = "Exercise an explicit fixture goal budget";
       goal_request.has_token_budget = 1;
       goal_request.token_budget = 1LL;
-      expect_int(state, "manual_checkpoint_create_goal",
+      expect_int(state, "manual_commit_create_goal",
                  cai_agent_runtime_create_goal(runtime, &goal_request, &error),
                  CAI_OK);
       for (i = 0; i < 100; i++) {
@@ -147,30 +146,28 @@ static void test_agent_runtime_manual_compaction(test_state *state) {
         if (goal.has_goal && ready)
           break;
       }
-      expect_int(state, "manual_checkpoint_goal_ready", goal.has_goal && ready,
-                 1);
-      expect_int(state, "manual_checkpoint_followup",
+      expect_int(state, "manual_commit_goal_ready", goal.has_goal && ready, 1);
+      expect_int(state, "manual_commit_followup",
                  cai_agent_runtime_submit(
                      runtime, "continue after manual compaction", &error),
                  CAI_OK);
-      expect_int(state, "manual_checkpoint_followup_done",
+      expect_int(state, "manual_commit_followup_done",
                  manual_compact_settle(state, runtime), CAI_AGENT_COMPLETED);
-      expect_int(state, "manual_checkpoint_final_metrics",
+      expect_int(state, "manual_commit_final_metrics",
                  cai_agent_runtime_get_metrics(runtime, &metrics, &error),
                  CAI_OK);
-      expect_int(state, "manual_checkpoint_final_usage",
+      expect_int(state, "manual_commit_final_usage",
                  metrics.session_usage.usage.total_tokens, 39L);
-      expect_int(state, "manual_checkpoint_budget_goal",
+      expect_int(state, "manual_commit_budget_goal",
                  cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
-      expect_str(state, "manual_checkpoint_budget_limited", goal.status,
+      expect_str(state, "manual_commit_budget_limited", goal.status,
                  "budget_limited");
-      expect_int(state, "manual_checkpoint_budget_reject",
+      expect_int(state, "manual_commit_budget_reject",
                  cai_agent_runtime_compact(runtime, &error), CAI_ERR_LIMIT);
     }
     cai_agent_runtime_close(runtime);
     cai_client_close(client);
     cai_error_cleanup(&error);
-    expect_child_exit(state, "manual_checkpoint", server.pid,
-                      &server.child_status);
+    expect_child_exit(state, "manual_commit", server.pid, &server.child_status);
   }
 }

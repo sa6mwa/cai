@@ -21,7 +21,7 @@ remains off by default: enable `--todo`, `CAI_TODO=true`, or `[agent] todo=true`
 | `/todo help` | Show command help. |
 
 The usual `[env]` precedence policy applies to `CAI_BOARD`. Explicit flags win.
-The selected board is checkpointed with the conversation. Resume restores it;
+The selected board is committed with the conversation. Resume restores it;
 `/new` uses the configured initial board. Changing one conversation's selection
 does not change another's. `/status` includes the selected board or `disabled`.
 Names are case-sensitive UTF-8, 1–256 bytes, without ASCII control characters.
@@ -115,7 +115,7 @@ use pslog `LOG_` configuration with a warn default; supplied loggers bypass
 logger initialization from the environment.
 
 Runtime owners use `cai_agent_runtime_select_board` between turns for an immediate
-checkpoint. `cai_agent_runtime_todo` borrows the live receiver for inspection;
+commit. `cai_agent_runtime_todo` borrows the live receiver for inspection;
 mutation should go through the runtime API or the registered tool. Borrowed
 receivers expire when the runtime closes. Lua runtimes expose `select_board`
 and `todo_board` for these controls.

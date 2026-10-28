@@ -98,19 +98,19 @@ static void test_agent_runtime_goal_continuation(test_state *state) {
     memset(&events, 0, sizeof(events));
     events.owner = pthread_self();
     memset(&storage, 0, sizeof(storage));
-    storage.checkpoint_json =
+    storage.commit_json =
         "{\"version\":1,\"model\":\"gpt-5-nano\","
         "\"goal_objective\":\"</objective> & {{ tokens_used }}\","
         "\"goal_status\":\"active\",\"goal_token_budget\":1000,\"goal_tokens_"
         "used\":5,\"history\":[]}";
     if (variant == 5)
-      storage.checkpoint_json =
+      storage.commit_json =
           "{\"version\":1,\"model\":\"gpt-5-nano\","
           "\"goal_objective\":\"</objective> & {{ tokens_used }}\","
           "\"goal_status\":\"active\",\"goal_tokens_used\":5,\"history\":[]}";
     memset(&store, 0, sizeof(store));
     store.context = &storage;
-    store.checkpoint = execution_test_checkpoint;
+    store.commit = execution_test_commit;
     store.load_latest = test_runtime_session_store_load;
     store.append_event = test_runtime_session_store_append_event;
     store.load_events_after = test_runtime_session_store_load_events_after;
@@ -178,7 +178,7 @@ static void test_agent_runtime_goal_continuation(test_state *state) {
       if (variant == 0) {
         /* Neither continuation nor host resume can restart a completed goal. */
         memset(&storage, 0, sizeof(storage));
-        storage.checkpoint_json =
+        storage.commit_json =
             "{\"version\":1,\"goal_objective\":\"done\",\"goal_status\":"
             "\"complete\",\"history\":[]}";
         storage.replay_event_sequence = 1U;

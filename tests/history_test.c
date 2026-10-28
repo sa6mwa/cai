@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "../src/cai_internal.h"
+#include "session_journal_fixture.inc"
 #include <assert.h>
 #include <cai/agent_runtime.h>
 #include <stdlib.h>
@@ -8,9 +9,12 @@
 
 typedef struct fixture {
   char *state;
+  char *journal;
+  char input[32768];
   size_t offset;
   unsigned long long watermark;
-  int fail_checkpoint;
+  int fail_commit;
+  int expect_prefix_edit;
   size_t seen;
   size_t entries;
   int reject;
@@ -19,11 +23,11 @@ typedef struct fixture {
 static size_t read_state(void *context, void *bytes, size_t count,
                          cai_error *error) {
   fixture *f = context;
-  size_t left = strlen(f->state) - f->offset;
+  size_t left = strlen(f->input) - f->offset;
   (void)error;
   if (count > left)
     count = left;
-  memcpy(bytes, f->state + f->offset, count);
+  memcpy(bytes, f->input + f->offset, count);
   f->offset += count;
   return count;
 }
@@ -36,24 +40,28 @@ static int load(void *context, const char *scope, char *id, size_t capacity,
   assert(capacity > 8U);
   strcpy(id, "history");
   *watermark = f->watermark;
+  assert(test_journal_fixture(f->state, 0, f->watermark, f->input,
+                              sizeof(f->input), error) == CAI_OK);
+  free(f->journal);
+  f->journal = strdup(f->input);
   f->offset = 0U;
   memset(&callbacks, 0, sizeof(callbacks));
   callbacks.read = read_state;
   callbacks.context = f;
   return cai_source_from_callbacks(&callbacks, out, error);
 }
-static int checkpoint(void *context, const char *scope, const char *id,
-                      cai_source *source, unsigned long long watermark,
-                      cai_error *error) {
+static int commit(void *context, const char *scope, const char *id,
+                  cai_source *source, unsigned long long watermark,
+                  cai_error *error) {
   fixture *f = context;
   char bytes[4096];
   char *state = NULL;
   size_t used = 0U, n;
   (void)scope;
   (void)id;
-  if (f->fail_checkpoint)
+  if (f->fail_commit)
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "injected history checkpoint failure");
+                         "injected history commit failure");
   while ((n = cai_source_read(source, bytes, sizeof(bytes), error)) != 0U) {
     state = realloc(state, used + n + 1U);
     assert(state != NULL);
@@ -62,8 +70,26 @@ static int checkpoint(void *context, const char *scope, const char *id,
     state[used] = '\0';
   }
   assert(state != NULL);
-  free(f->state);
-  f->state = state;
+  if (f->expect_prefix_edit) {
+    assert(strstr(state, "\"history_append\":\"\"") != NULL);
+    f->expect_prefix_edit = 0;
+  }
+  {
+    size_t old = f->journal != NULL ? strlen(f->journal) : 0U;
+    if (strstr(state, "\"revision\":1,") != NULL)
+      old = 0U;
+    f->journal = realloc(f->journal, old + used + 100U);
+    assert(f->journal != NULL);
+    snprintf(f->journal + old, used + 100U,
+             "{\"record_type\":\"commit\",\"applied_event_sequence\":%llu,"
+             "\"state\":%s}\n",
+             watermark, state);
+    f->state = realloc(f->state, 32768U);
+    assert(f->state != NULL);
+    assert(test_journal_fixture(f->journal, 1, 0U, f->state, 32768U, error) ==
+           CAI_OK);
+    free(state);
+  }
   f->watermark = watermark;
   return CAI_OK;
 }
@@ -161,41 +187,7 @@ static size_t count(cai_agent_runtime *runtime, fixture *f, size_t limit,
   return f->entries;
 }
 
-static void test_acknowledgement_parsing(void) {
-  static const char *types[] = {"input_consumed",
-                                "user_shell_context_consumed"};
-  static const char *valid[] = {"1", "18446744073709551615"};
-  static const char *invalid[] = {"",
-                                  "0",
-                                  "-1",
-                                  "+1",
-                                  "12x",
-                                  "18446744073709551616",
-                                  "999999999999999999999999999999999999"};
-  cai_history_rebuild *rebuild;
-  cai_agent_session_event event;
-  cai_error error;
-  size_t i, j;
-  cai_error_init(&error);
-  assert(cai_history_rebuild_open(&rebuild, &error) == CAI_OK);
-  memset(&event, 0, sizeof(event));
-  event.sequence = 1U;
-  for (i = 0U; i < sizeof(types) / sizeof(types[0]); i++) {
-    event.type = types[i];
-    for (j = 0U; j < sizeof(valid) / sizeof(valid[0]); j++) {
-      event.data = valid[j];
-      assert(cai_history_rebuild_feed(rebuild, &event, 1U, &error) == CAI_OK);
-    }
-    for (j = 0U; j < sizeof(invalid) / sizeof(invalid[0]); j++) {
-      event.data = invalid[j];
-      assert(cai_history_rebuild_feed(rebuild, &event, 1U, &error) ==
-             CAI_ERR_INVALID);
-      clear(&error);
-    }
-  }
-  cai_history_rebuild_close(rebuild);
-  cai_error_cleanup(&error);
-}
+#include "journal_test.inc"
 
 int main(void) {
   const char *const initial[] = {
@@ -231,23 +223,18 @@ int main(void) {
   char *before;
   int protocol, i, rc;
   struct timespec delay;
-  test_acknowledgement_parsing();
-  for (protocol = 0; protocol < 4; protocol++) {
+  test_journal_edits();
+  for (protocol = 0; protocol < 2; protocol++) {
     memset(&f, 0, sizeof(f));
     f.state = cai_alloc(NULL, 2048U);
     assert(f.state != NULL);
     f.state[0] = '\0';
     for (i = 0; i < (int)(sizeof(initial) / sizeof(initial[0])); i++)
       strcat(f.state, initial[i]);
-    if (protocol >= 2) {
-      char *metadata = strstr(f.state, ",\"history_blocks\"");
-      assert(metadata != NULL);
-      strcpy(metadata, "}");
-    }
     f.watermark = 16U;
     memset(&store, 0, sizeof(store));
     store.context = &f;
-    store.checkpoint = checkpoint;
+    store.commit = commit;
     store.load_latest = load;
     store.append_event = append;
     store.load_events_after = events;
@@ -286,12 +273,13 @@ int main(void) {
     assert(cai_agent_runtime_trim_history(runtime, 4U, &error) ==
            CAI_ERR_INVALID);
     clear(&error);
-    f.fail_checkpoint = 1;
+    f.fail_commit = 1;
     assert(cai_agent_runtime_trim_history(runtime, 1U, &error) ==
            CAI_ERR_TRANSPORT);
     clear(&error);
     assert(count(runtime, &f, 0U, &error) == 3U);
-    f.fail_checkpoint = 0;
+    f.fail_commit = 0;
+    f.expect_prefix_edit = 1;
     assert(cai_agent_runtime_trim_history(runtime, 1U, &error) == CAI_OK);
     assert(count(runtime, &f, 0U, &error) == 2U);
     assert(strstr(f.state, "shell-output") == NULL);
@@ -354,6 +342,7 @@ int main(void) {
     cai_agent_runtime_close(runtime);
     cai_client_close(client);
     free(f.state);
+    free(f.journal);
     cai_error_cleanup(&error);
   }
   return 0;

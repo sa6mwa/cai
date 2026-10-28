@@ -742,7 +742,8 @@ static int open_kanban(lua_State *L) {
       const char *key =
           lua_type(L, -2) == LUA_TSTRING ? plain_string(L, -2) : NULL;
       int known = key != NULL && (strcmp(key, "logger") == 0 ||
-                                  strcmp(key, "max_result_items") == 0);
+                                  strcmp(key, "max_result_items") == 0 ||
+                                  strcmp(key, "disable_compression") == 0);
       for (i = 0U; key != NULL && i < sizeof(names) / sizeof(names[0]); i++)
         if (strcmp(key, names[i]) == 0)
           known = 1;
@@ -759,6 +760,11 @@ static int open_kanban(lua_State *L) {
       }
       lua_pop(L, 1);
     }
+    lua_getfield(L, 1, "disable_compression");
+    if (!lua_isnil(L, -1) && !lua_isboolean(L, -1))
+      return failure(L, "disable_compression must be a boolean");
+    config.disable_compression = lua_toboolean(L, -1);
+    lua_pop(L, 1);
     lua_getfield(L, 1, "max_result_items");
     if (!lua_isnil(L, -1)) {
       if (!lua_isinteger(L, -1) || lua_tointeger(L, -1) < 0 ||

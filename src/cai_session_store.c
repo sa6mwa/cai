@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <openssl/sha.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,10 +25,36 @@
 
 typedef struct cai_local_session_store {
   char *root_directory;
+  pthread_mutex_t lock;
+  int lock_initialized;
+  int write_uncertain;
 } cai_local_session_store;
+
+static int cai_store_can_write(cai_local_session_store *store,
+                               cai_error *error) {
+  int blocked;
+  pthread_mutex_lock(&store->lock);
+  blocked = store->write_uncertain;
+  pthread_mutex_unlock(&store->lock);
+  return blocked
+             ? cai_set_error(error, CAI_ERR_TRANSPORT,
+                             "Session journal sync failed after a complete "
+                             "record; reopen the store before writing again")
+             : CAI_OK;
+}
+static void cai_store_uncertain(cai_local_session_store *store) {
+  pthread_mutex_lock(&store->lock);
+  store->write_uncertain = 1;
+  pthread_mutex_unlock(&store->lock);
+}
 
 #if defined(CAI_TESTING)
 static int cai_session_store_test_fail_scope_parent_sync_enabled;
+static int cai_session_store_test_fail_record_sync_enabled;
+
+void cai_session_store_test_set_fail_record_sync(int enabled) {
+  cai_session_store_test_fail_record_sync_enabled = enabled != 0;
+}
 
 void cai_session_store_test_set_fail_scope_parent_sync(int enabled) {
   cai_session_store_test_fail_scope_parent_sync_enabled = enabled != 0 ? 1 : 0;
@@ -38,11 +65,21 @@ static int cai_session_store_test_fail_scope_parent_sync(void) {
 }
 #endif
 
-typedef struct cai_local_checkpoint_source {
+static int cai_store_sync_record(int fd) {
+#ifdef CAI_TESTING
+  if (cai_session_store_test_fail_record_sync_enabled) {
+    errno = EIO;
+    return -1;
+  }
+#endif
+  return fsync(fd);
+}
+
+typedef struct cai_local_commit_source {
   FILE *fp;
   long start;
   long end;
-} cai_local_checkpoint_source;
+} cai_local_commit_source;
 
 typedef struct cai_local_event_doc {
   char *record_type;
@@ -161,29 +198,29 @@ static int cai_store_make_directory(const char *path, cai_error *error) {
 }
 
 /*
- * Persist checkpoint recency in the checkpoint itself.  A journal's mtime
+ * Persist commit recency in the commit itself.  A journal's mtime
  * cannot represent this: a later event append intentionally advances it
  * without creating resumable state.
  */
-static int cai_store_checkpoint_created_at_ns(unsigned long long *out,
-                                              cai_error *error) {
+static int cai_store_commit_created_at_ns(unsigned long long *out,
+                                          cai_error *error) {
   struct timespec now;
   unsigned long long seconds;
 
   if (out == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "checkpoint timestamp output is required");
+                         "commit timestamp output is required");
   }
   if (clock_gettime(CLOCK_REALTIME, &now) != 0 || now.tv_sec < 0 ||
       now.tv_nsec < 0 || now.tv_nsec >= 1000000000L) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to obtain checkpoint timestamp");
+                         "failed to obtain commit timestamp");
   }
   seconds = (unsigned long long)now.tv_sec;
   if (seconds > ((unsigned long long)-1 - (unsigned long long)now.tv_nsec) /
                     1000000000U) {
     return cai_set_error(error, CAI_ERR_LIMIT,
-                         "checkpoint timestamp is out of range");
+                         "commit timestamp is out of range");
   }
   *out = seconds * 1000000000U + (unsigned long long)now.tv_nsec;
   return CAI_OK;
@@ -493,7 +530,7 @@ static int cai_store_write_all(int fd, const void *data, size_t length,
     }
     if (written <= 0) {
       return cai_set_error(error, CAI_ERR_TRANSPORT,
-                           "failed to write session checkpoint");
+                           "failed to write session commit");
     }
     cursor += (size_t)written;
     length -= (size_t)written;
@@ -501,7 +538,7 @@ static int cai_store_write_all(int fd, const void *data, size_t length,
   return CAI_OK;
 }
 
-/* Find the last complete top-level JSON object before before_end. Checkpoints
+/* Find the last complete top-level JSON object before before_end. Commits
  * contain arbitrary JSON state and may therefore span several physical lines;
  * line-oriented recovery would mistake a state newline for a record boundary.
  */
@@ -522,14 +559,14 @@ static int cai_local_find_last_record_before(int fd, long before_end,
   if (out_start == NULL || out_end == NULL || out_complete_end == NULL ||
       out_found == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "session checkpoint record outputs are required");
+                         "session commit record outputs are required");
   }
   *out_found = 0;
   *out_complete_end = 0L;
   end = before_end > 0L ? (off_t)before_end : lseek(fd, 0, SEEK_END);
   if (end < 0) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to seek session checkpoint log");
+                         "failed to seek session commit log");
   }
   offset = 0;
   record_start = -1L;
@@ -547,12 +584,12 @@ static int cai_local_find_last_record_before(int fd, long before_end,
                         : (size_t)(end - offset);
     if (lseek(fd, offset, SEEK_SET) < 0) {
       return cai_set_error(error, CAI_ERR_TRANSPORT,
-                           "failed to seek session checkpoint log");
+                           "failed to seek session commit log");
     }
     nread = read(fd, buffer, amount);
     if (nread != (ssize_t)amount) {
       return cai_set_error(error, CAI_ERR_TRANSPORT,
-                           "failed to read session checkpoint log");
+                           "failed to read session commit log");
     }
     for (i = 0U; i < amount; i++, offset++) {
       char ch = buffer[i];
@@ -610,7 +647,7 @@ static int cai_local_find_last_record_before(int fd, long before_end,
 typedef int (*cai_local_record_fn)(void *context, int fd, long record_start,
                                    long record_end, cai_error *error);
 
-/* Visit complete top-level JSON objects in journal order. Checkpoint state is
+/* Visit complete top-level JSON objects in journal order. Commit state is
  * arbitrary JSON and can span physical lines, so only object framing—not a
  * line prefix—can distinguish one journal record from its embedded state. */
 static int cai_local_visit_complete_records(int fd,
@@ -633,7 +670,7 @@ static int cai_local_visit_complete_records(int fd,
   end = lseek(fd, 0, SEEK_END);
   if (end < 0) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to seek session checkpoint log");
+                         "failed to seek session commit log");
   }
   offset = 0;
   record_start = -1L;
@@ -651,12 +688,12 @@ static int cai_local_visit_complete_records(int fd,
                                                   : (size_t)(end - offset);
     if (lseek(fd, offset, SEEK_SET) < 0) {
       return cai_set_error(error, CAI_ERR_TRANSPORT,
-                           "failed to seek session checkpoint log");
+                           "failed to seek session commit log");
     }
     nread = read(fd, buffer, amount);
     if (nread != (ssize_t)amount) {
       return cai_set_error(error, CAI_ERR_TRANSPORT,
-                           "failed to read session checkpoint log");
+                           "failed to read session commit log");
     }
     for (index = 0U; index < amount; index++, offset++) {
       char ch;
@@ -725,7 +762,7 @@ static int cai_store_repair_incomplete_tail(int fd, cai_error *error) {
   end = lseek(fd, 0, SEEK_END);
   if (end < 0) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to seek session checkpoint log");
+                         "failed to seek session commit log");
   }
   rc = cai_local_find_last_record_before(fd, 0L, &start, &record_end,
                                          &complete_end, &found, error);
@@ -735,18 +772,19 @@ static int cai_store_repair_incomplete_tail(int fd, cai_error *error) {
   if ((off_t)complete_end != end &&
       ftruncate(fd, found ? (off_t)complete_end : 0) != 0) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to remove incomplete session checkpoint");
+                         "failed to remove incomplete session commit");
   }
   if (lseek(fd, 0, SEEK_END) < 0) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to seek repaired session checkpoint log");
+                         "failed to seek repaired session commit log");
   }
   return CAI_OK;
 }
 
-static int cai_local_session_checkpoint(
-    void *context, const char *scope, const char *session_id, cai_source *state,
-    unsigned long long applied_event_sequence, cai_error *error) {
+static int cai_local_session_commit(void *context, const char *scope,
+                                    const char *session_id, cai_source *state,
+                                    unsigned long long applied_event_sequence,
+                                    cai_error *error) {
   cai_local_session_store *store;
   char hash[65];
   char filename[CAI_STORE_SESSION_FILENAME_MAX];
@@ -756,14 +794,17 @@ static int cai_local_session_checkpoint(
   int scope_fd;
   int fd;
   int rc;
+  int complete = 0;
 
   if (context == NULL || state == NULL ||
       !cai_store_session_id_valid(session_id)) {
-    return cai_set_error(
-        error, CAI_ERR_INVALID,
-        "valid session store checkpoint arguments are required");
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "valid session store commit arguments are required");
   }
   store = (cai_local_session_store *)context;
+  rc = cai_store_can_write(store, error);
+  if (rc != CAI_OK)
+    return rc;
   scope_fd = -1;
   fd = -1;
   created_at_ns = 0U;
@@ -775,30 +816,29 @@ static int cai_local_session_checkpoint(
                 O_RDWR | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd < 0) {
       rc = cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to open session checkpoint log");
+                         "failed to open session commit log");
     }
   }
   if (rc == CAI_OK)
     rc = cai_store_validate_private_regular_fd(fd, error);
   if (rc == CAI_OK && flock(fd, LOCK_EX) != 0) {
     rc = cai_set_error(error, CAI_ERR_TRANSPORT,
-                       "failed to lock session checkpoint log");
+                       "failed to lock session commit log");
   }
   if (rc == CAI_OK) {
     rc = cai_store_repair_incomplete_tail(fd, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_store_checkpoint_created_at_ns(&created_at_ns, error);
+    rc = cai_store_commit_created_at_ns(&created_at_ns, error);
   }
   if (rc == CAI_OK &&
-      snprintf(
-          record_prefix, sizeof(record_prefix),
-          "{\"record_type\":\"checkpoint\",\"checkpoint_created_at_ns\":%llu,"
-          "\"applied_event_sequence\":%llu,\"state\":",
-          created_at_ns,
-          applied_event_sequence) >= (int)sizeof(record_prefix)) {
+      snprintf(record_prefix, sizeof(record_prefix),
+               "{\"record_type\":\"commit\",\"commit_created_at_ns\":%llu,"
+               "\"applied_event_sequence\":%llu,\"state\":",
+               created_at_ns,
+               applied_event_sequence) >= (int)sizeof(record_prefix)) {
     rc = cai_set_error(error, CAI_ERR_TRANSPORT,
-                       "failed to format session checkpoint record");
+                       "failed to format session commit record");
   }
   if (rc == CAI_OK) {
     rc = cai_store_write_all(fd, record_prefix, strlen(record_prefix), error);
@@ -817,14 +857,15 @@ static int cai_local_session_checkpoint(
   }
   if (rc == CAI_OK) {
     rc = cai_store_write_all(fd, "}\n", 2U, error);
+    complete = rc == CAI_OK;
   }
-  if (rc == CAI_OK && fsync(fd) != 0) {
+  if (rc == CAI_OK && cai_store_sync_record(fd) != 0) {
     rc = cai_set_error(error, CAI_ERR_TRANSPORT,
-                       "failed to sync session checkpoint log");
+                       "failed to sync session commit log");
   }
   if (rc == CAI_OK && fsync(scope_fd) != 0) {
     rc = cai_set_error(error, CAI_ERR_TRANSPORT,
-                       "failed to sync session checkpoint directory");
+                       "failed to sync session commit directory");
   }
   if (fd >= 0) {
     (void)flock(fd, LOCK_UN);
@@ -833,6 +874,8 @@ static int cai_local_session_checkpoint(
   if (scope_fd >= 0) {
     close(scope_fd);
   }
+  if (complete && rc != CAI_OK)
+    cai_store_uncertain(store);
   return rc;
 }
 
@@ -855,6 +898,8 @@ static int cai_local_session_append_event(void *context, const char *scope,
                          "valid session event arguments are required");
   }
   store = (cai_local_session_store *)context;
+  if (cai_store_can_write(store, error) != CAI_OK)
+    return CAI_ERR_TRANSPORT;
   memset(&builder, 0, sizeof(builder));
   scope_fd = -1;
   fd = -1;
@@ -912,11 +957,13 @@ static int cai_local_session_append_event(void *context, const char *scope,
   if (rc == CAI_OK) {
     rc = cai_store_write_all(fd, builder.data, builder.length, error);
   }
-  if (rc == CAI_OK && fsync(fd) != 0) {
+  if (rc == CAI_OK && cai_store_sync_record(fd) != 0) {
+    cai_store_uncertain(store);
     rc = cai_set_error(error, CAI_ERR_TRANSPORT,
                        "failed to sync session event log");
   }
   if (rc == CAI_OK && fsync(scope_fd) != 0) {
+    cai_store_uncertain(store);
     rc = cai_set_error(error, CAI_ERR_TRANSPORT,
                        "failed to sync session event directory");
   }
@@ -1096,13 +1143,13 @@ done:
   return rc;
 }
 
-static size_t cai_local_checkpoint_read(void *context, void *buffer,
-                                        size_t count, cai_error *error) {
-  cai_local_checkpoint_source *source;
+static size_t cai_local_commit_read(void *context, void *buffer, size_t count,
+                                    cai_error *error) {
+  cai_local_commit_source *source;
   long remaining;
   size_t nread;
 
-  source = (cai_local_checkpoint_source *)context;
+  source = (cai_local_commit_source *)context;
   if (source == NULL || source->fp == NULL || buffer == NULL || count == 0U) {
     return 0U;
   }
@@ -1116,28 +1163,28 @@ static size_t cai_local_checkpoint_read(void *context, void *buffer,
   nread = fread(buffer, 1U, count, source->fp);
   if (nread == 0U && ferror(source->fp)) {
     cai_set_error(error, CAI_ERR_TRANSPORT,
-                  "failed to read session checkpoint log");
+                  "failed to read session commit log");
   }
   return nread;
 }
 
-static int cai_local_checkpoint_reset(void *context, cai_error *error) {
-  cai_local_checkpoint_source *source;
+static int cai_local_commit_reset(void *context, cai_error *error) {
+  cai_local_commit_source *source;
 
-  source = (cai_local_checkpoint_source *)context;
+  source = (cai_local_commit_source *)context;
   if (source == NULL || source->fp == NULL ||
       fseek(source->fp, source->start, SEEK_SET) != 0) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to rewind session checkpoint");
+                         "failed to rewind session commit");
   }
   clearerr(source->fp);
   return CAI_OK;
 }
 
-static void cai_local_checkpoint_close(void *context) {
-  cai_local_checkpoint_source *source;
+static void cai_local_commit_close(void *context) {
+  cai_local_commit_source *source;
 
-  source = (cai_local_checkpoint_source *)context;
+  source = (cai_local_commit_source *)context;
   if (source == NULL) {
     return;
   }
@@ -1148,17 +1195,16 @@ static void cai_local_checkpoint_close(void *context) {
   cai_free_mem(NULL, source);
 }
 
-static int cai_local_checkpoint_source_open(int fd, long start, long end,
-                                            cai_source **out,
-                                            cai_error *error) {
-  cai_local_checkpoint_source *context;
+static int cai_local_commit_source_open(int fd, long start, long end,
+                                        cai_source **out, cai_error *error) {
+  cai_local_commit_source *context;
   cai_source_callbacks callbacks;
 
-  context = (cai_local_checkpoint_source *)cai_alloc(NULL, sizeof(*context));
+  context = (cai_local_commit_source *)cai_alloc(NULL, sizeof(*context));
   if (context == NULL) {
     close(fd);
     return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to allocate session checkpoint source");
+                         "failed to allocate session commit source");
   }
   context->fp = fdopen(fd, "rb");
   context->start = start;
@@ -1167,32 +1213,33 @@ static int cai_local_checkpoint_source_open(int fd, long start, long end,
     close(fd);
     cai_free_mem(NULL, context);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to open session checkpoint source");
+                         "failed to open session commit source");
   }
   if (fseek(context->fp, start, SEEK_SET) != 0) {
-    cai_local_checkpoint_close(context);
+    cai_local_commit_close(context);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to seek session checkpoint source");
+                         "failed to seek session commit source");
   }
   memset(&callbacks, 0, sizeof(callbacks));
-  callbacks.read = cai_local_checkpoint_read;
-  callbacks.reset = cai_local_checkpoint_reset;
-  callbacks.close = cai_local_checkpoint_close;
+  callbacks.read = cai_local_commit_read;
+  callbacks.reset = cai_local_commit_reset;
+  callbacks.close = cai_local_commit_close;
   callbacks.context = context;
   if (cai_source_from_callbacks(&callbacks, out, error) != CAI_OK) {
-    cai_local_checkpoint_close(context);
+    cai_local_commit_close(context);
     return error != NULL ? error->code : CAI_ERR_NOMEM;
   }
   return CAI_OK;
 }
 
-static int cai_local_checkpoint_record_bounds(
-    int fd, long record_start, long record_end, long *out_state_start,
-    long *out_state_end, unsigned long long *out_applied_event_sequence,
-    unsigned long long *out_created_at_ns, int *out_has_created_at_ns,
-    cai_error *error) {
-  static const char prefix[] = "{\"record_type\":\"checkpoint\",";
-  static const char timestamp_prefix[] = "\"checkpoint_created_at_ns\":";
+static int
+cai_local_commit_record_bounds(int fd, long record_start, long record_end,
+                               long *out_state_start, long *out_state_end,
+                               unsigned long long *out_applied_event_sequence,
+                               unsigned long long *out_created_at_ns,
+                               int *out_has_created_at_ns, cai_error *error) {
+  static const char prefix[] = "{\"record_type\":\"commit\",";
+  static const char timestamp_prefix[] = "\"commit_created_at_ns\":";
   static const char sequence_prefix[] = "\"applied_event_sequence\":";
   char header[192];
   char *cursor;
@@ -1205,25 +1252,24 @@ static int cai_local_checkpoint_record_bounds(
       out_applied_event_sequence == NULL || out_created_at_ns == NULL ||
       out_has_created_at_ns == NULL || record_end <= record_start) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "session checkpoint record bounds are required");
+                         "session commit record bounds are required");
   }
   nread = pread(fd, header, sizeof(header) - 1U, (off_t)record_start);
   if (nread <= 0) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to read session checkpoint record");
+                         "failed to read session commit record");
   }
   header[nread] = '\0';
   if (strncmp(header, prefix, sizeof(prefix) - 1U) != 0) {
-    *out_state_start = record_start;
-    *out_state_end = record_end;
-    *out_applied_event_sequence = 0U;
-    *out_created_at_ns = 0U;
-    *out_has_created_at_ns = 0;
-    return CAI_OK;
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "invalid session journal commit envelope");
   }
   cursor = header + sizeof(prefix) - 1U;
   created_at_ns = 0U;
   *out_has_created_at_ns = 0;
+  if (strncmp(cursor, timestamp_prefix, sizeof(timestamp_prefix) - 1U) != 0)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "session journal commit timestamp is required");
   if (strncmp(cursor, timestamp_prefix, sizeof(timestamp_prefix) - 1U) == 0) {
     cursor += sizeof(timestamp_prefix) - 1U;
     end = cursor;
@@ -1233,21 +1279,21 @@ static int cai_local_checkpoint_record_bounds(
       digit = (unsigned long long)(*end - '0');
       if (created_at_ns > ((unsigned long long)-1 - digit) / 10U) {
         return cai_set_error(error, CAI_ERR_INVALID,
-                             "invalid session checkpoint record");
+                             "invalid session commit record");
       }
       created_at_ns = created_at_ns * 10U + digit;
       end++;
     }
     if (end == cursor || strncmp(end, ",", 1U) != 0) {
       return cai_set_error(error, CAI_ERR_INVALID,
-                           "invalid session checkpoint record");
+                           "invalid session commit record");
     }
     cursor = end + 1;
     *out_has_created_at_ns = 1;
   }
   if (strncmp(cursor, sequence_prefix, sizeof(sequence_prefix) - 1U) != 0) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "invalid session checkpoint record");
+                         "invalid session commit record");
   }
   cursor += sizeof(sequence_prefix) - 1U;
   sequence = 0U;
@@ -1258,7 +1304,7 @@ static int cai_local_checkpoint_record_bounds(
     digit = (unsigned long long)(*end - '0');
     if (sequence > ((unsigned long long)-1 - digit) / 10U) {
       return cai_set_error(error, CAI_ERR_INVALID,
-                           "invalid session checkpoint record");
+                           "invalid session commit record");
     }
     sequence = sequence * 10U + digit;
     end++;
@@ -1266,7 +1312,7 @@ static int cai_local_checkpoint_record_bounds(
   if (end == cursor || strncmp(end, ",\"state\":", 9U) != 0 ||
       record_end - record_start < (long)(end - header) + 11L) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "invalid session checkpoint record");
+                         "invalid session commit record");
   }
   *out_state_start = record_start + (long)(end - header) + 9L;
   *out_state_end = record_end - 1L;
@@ -1276,15 +1322,16 @@ static int cai_local_checkpoint_record_bounds(
 }
 
 /*
- * Find the newest complete checkpoint record in one journal.  Journal events
- * are deliberately allowed to precede the first checkpoint: such a journal
+ * Find the newest complete commit record in one journal.  Journal events
+ * are deliberately allowed to precede the first commit: such a journal
  * records durable intent, but cannot itself resume an agent session.
  */
-static int cai_local_find_latest_checkpoint(
-    int fd, long *out_state_start, long *out_state_end,
-    unsigned long long *out_applied_event_sequence,
-    unsigned long long *out_created_at_ns, int *out_has_created_at_ns,
-    int *out_found, cai_error *error) {
+static int
+cai_local_find_latest_commit(int fd, long *out_state_start, long *out_state_end,
+                             unsigned long long *out_applied_event_sequence,
+                             unsigned long long *out_created_at_ns,
+                             int *out_has_created_at_ns, int *out_found,
+                             cai_error *error) {
   static const char event_prefix[] = "{\"record_type\":\"event\",";
   char record_prefix[sizeof(event_prefix)];
   long start;
@@ -1299,7 +1346,7 @@ static int cai_local_find_latest_checkpoint(
       out_applied_event_sequence == NULL || out_created_at_ns == NULL ||
       out_has_created_at_ns == NULL || out_found == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "session checkpoint search outputs are required");
+                         "session commit search outputs are required");
   }
   *out_state_start = 0L;
   *out_state_end = 0L;
@@ -1320,7 +1367,7 @@ static int cai_local_find_latest_checkpoint(
     nread = pread(fd, record_prefix, sizeof(record_prefix) - 1U, (off_t)start);
     if (nread < 0) {
       return cai_set_error(error, CAI_ERR_TRANSPORT,
-                           "failed to read session checkpoint record");
+                           "failed to read session commit record");
     }
     if (nread > 0) {
       record_prefix[nread] = '\0';
@@ -1333,7 +1380,7 @@ static int cai_local_find_latest_checkpoint(
       before_end = start;
       continue;
     }
-    rc = cai_local_checkpoint_record_bounds(
+    rc = cai_local_commit_record_bounds(
         fd, start, end, out_state_start, out_state_end,
         out_applied_event_sequence, out_created_at_ns, out_has_created_at_ns,
         error);
@@ -1342,31 +1389,6 @@ static int cai_local_find_latest_checkpoint(
     }
     return rc;
   }
-}
-
-static unsigned long long cai_store_stat_mtime_ns(const struct stat *st) {
-  unsigned long long seconds;
-  long nanoseconds;
-
-#ifdef __APPLE__
-  if (st->st_mtimespec.tv_sec < 0 || st->st_mtimespec.tv_nsec < 0) {
-    return 0U;
-  }
-  seconds = (unsigned long long)st->st_mtimespec.tv_sec;
-  nanoseconds = st->st_mtimespec.tv_nsec;
-#else
-  if (st->st_mtim.tv_sec < 0 || st->st_mtim.tv_nsec < 0) {
-    return 0U;
-  }
-  seconds = (unsigned long long)st->st_mtim.tv_sec;
-  nanoseconds = st->st_mtim.tv_nsec;
-#endif
-  if (nanoseconds >= 1000000000L ||
-      seconds > ((unsigned long long)-1 - (unsigned long long)nanoseconds) /
-                    1000000000U) {
-    return (unsigned long long)-1;
-  }
-  return seconds * 1000000000U + (unsigned long long)nanoseconds;
 }
 
 static int cai_store_candidate_is_newer(
@@ -1378,17 +1400,6 @@ static int cai_store_candidate_is_newer(
   /* Generated XIDs sort chronologically, so this deterministic fallback also
    * selects the newer generated session on filesystems with tied timestamps. */
   return strcmp(candidate_name, current_name) > 0;
-}
-
-static unsigned long long
-cai_store_checkpoint_order(unsigned long long created_at_ns,
-                           int has_created_at_ns,
-                           const struct stat *journal_stat) {
-  if (has_created_at_ns) {
-    return created_at_ns;
-  }
-  /* Journals written by older CAI versions have no checkpoint timestamp. */
-  return cai_store_stat_mtime_ns(journal_stat);
 }
 
 static int cai_local_session_load_latest(
@@ -1409,7 +1420,7 @@ static int cai_local_session_load_latest(
   if (out == NULL || session_id == NULL || session_id_capacity == 0U ||
       out_applied_event_sequence == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "session checkpoint outputs are required");
+                         "session commit outputs are required");
   }
   *out = NULL;
   *out_applied_event_sequence = 0U;
@@ -1430,7 +1441,7 @@ static int cai_local_session_load_latest(
   if (directory == NULL) {
     close(scope_fd);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to enumerate session checkpoint logs");
+                         "failed to enumerate session commit logs");
   }
   while ((entry = readdir(directory)) != NULL) {
     struct stat st;
@@ -1438,9 +1449,9 @@ static int cai_local_session_load_latest(
     long state_end;
     unsigned long long applied_event_sequence;
     unsigned long long created_at_ns;
-    unsigned long long checkpoint_order;
+    unsigned long long commit_order;
     int journal_fd;
-    int found_checkpoint;
+    int found_commit;
     int has_created_at_ns;
     size_t length;
     char entry_session_id[CAI_AGENT_SESSION_ID_MAX];
@@ -1459,7 +1470,7 @@ static int cai_local_session_load_latest(
         openat(scope_fd, entry->d_name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (journal_fd < 0) {
       rc = cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to open session checkpoint log");
+                         "failed to open session commit log");
       break;
     }
     rc = cai_store_validate_private_regular_fd(journal_fd, error);
@@ -1470,30 +1481,29 @@ static int cai_local_session_load_latest(
     if (flock(journal_fd, LOCK_SH) != 0) {
       close(journal_fd);
       rc = cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to lock session checkpoint log");
+                         "failed to lock session commit log");
       break;
     }
-    rc = cai_local_find_latest_checkpoint(
-        journal_fd, &state_start, &state_end, &applied_event_sequence,
-        &created_at_ns, &has_created_at_ns, &found_checkpoint, error);
+    rc = cai_local_find_latest_commit(journal_fd, &state_start, &state_end,
+                                      &applied_event_sequence, &created_at_ns,
+                                      &has_created_at_ns, &found_commit, error);
     (void)flock(journal_fd, LOCK_UN);
     close(journal_fd);
     if (rc != CAI_OK) {
       break;
     }
-    if (!found_checkpoint) {
+    if (!found_commit) {
       continue;
     }
-    checkpoint_order =
-        cai_store_checkpoint_order(created_at_ns, has_created_at_ns, &st);
+    commit_order = created_at_ns;
     if (candidate[0] == '\0' ||
-        cai_store_candidate_is_newer(checkpoint_order, entry_session_id,
+        cai_store_candidate_is_newer(commit_order, entry_session_id,
                                      candidate_created_at_ns,
                                      candidate_session_id)) {
       memcpy(candidate, entry->d_name, length + 1U);
       memcpy(candidate_session_id, entry_session_id,
              strlen(entry_session_id) + 1U);
-      candidate_created_at_ns = checkpoint_order;
+      candidate_created_at_ns = commit_order;
     }
   }
   closedir(directory);
@@ -1516,7 +1526,7 @@ static int cai_local_session_load_latest(
   close(scope_fd);
   if (fd < 0) {
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to open latest session checkpoint log");
+                         "failed to open latest session commit log");
   }
   rc = cai_store_validate_private_regular_fd(fd, error);
   if (rc != CAI_OK) {
@@ -1527,21 +1537,20 @@ static int cai_local_session_load_latest(
   if (flock(fd, LOCK_SH) != 0) {
     close(fd);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to lock latest session checkpoint log");
+                         "failed to lock latest session commit log");
   }
   {
     long state_start;
     long state_end;
     unsigned long long created_at_ns;
-    int found_checkpoint;
+    int found_commit;
     int has_created_at_ns;
 
-    rc = cai_local_find_latest_checkpoint(
+    rc = cai_local_find_latest_commit(
         fd, &state_start, &state_end, out_applied_event_sequence,
-        &created_at_ns, &has_created_at_ns, &found_checkpoint, error);
-    if (rc == CAI_OK && found_checkpoint) {
-      rc = cai_local_checkpoint_source_open(fd, state_start, state_end, out,
-                                            error);
+        &created_at_ns, &has_created_at_ns, &found_commit, error);
+    if (rc == CAI_OK && found_commit) {
+      rc = cai_local_commit_source_open(fd, 0L, state_end + 2L, out, error);
       fd = -1;
     }
   }
@@ -1565,14 +1574,14 @@ static int cai_local_session_load_id(
   long state_end;
   unsigned long long created_at_ns;
   int has_created_at_ns;
-  int found_checkpoint;
+  int found_commit;
   int scope_fd;
   int fd;
   int rc;
 
   if (context == NULL || out == NULL || out_applied_event_sequence == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "session checkpoint lookup arguments are required");
+                         "session commit lookup arguments are required");
   }
   *out = NULL;
   *out_applied_event_sequence = 0U;
@@ -1587,7 +1596,7 @@ static int cai_local_session_load_id(
     fd = openat(scope_fd, filename, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (fd < 0) {
       rc = cai_set_error(error, CAI_ERR_INVALID,
-                         "requested session has no checkpoint");
+                         "requested session has no commit");
     }
   }
   if (rc == CAI_OK) {
@@ -1595,19 +1604,18 @@ static int cai_local_session_load_id(
   }
   if (rc == CAI_OK && flock(fd, LOCK_SH) != 0) {
     rc = cai_set_error(error, CAI_ERR_TRANSPORT,
-                       "failed to lock requested session checkpoint");
+                       "failed to lock requested session commit");
   }
   if (rc == CAI_OK) {
-    rc = cai_local_find_latest_checkpoint(
+    rc = cai_local_find_latest_commit(
         fd, &state_start, &state_end, out_applied_event_sequence,
-        &created_at_ns, &has_created_at_ns, &found_checkpoint, error);
-    if (rc == CAI_OK && !found_checkpoint) {
+        &created_at_ns, &has_created_at_ns, &found_commit, error);
+    if (rc == CAI_OK && !found_commit) {
       rc = cai_set_error(error, CAI_ERR_INVALID,
-                         "requested session has no complete checkpoint");
+                         "requested session has no complete commit");
     }
     if (rc == CAI_OK) {
-      rc = cai_local_checkpoint_source_open(fd, state_start, state_end, out,
-                                            error);
+      rc = cai_local_commit_source_open(fd, 0L, state_end + 2L, out, error);
       if (rc == CAI_OK) {
         fd = -1;
       }
@@ -1649,7 +1657,7 @@ int cai_agent_local_session_store_list(
   if (directory == NULL) {
     close(scope_fd);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to enumerate session checkpoints");
+                         "failed to enumerate session commits");
   }
   while ((entry = readdir(directory)) != NULL) {
     struct stat st;
@@ -1659,7 +1667,7 @@ int cai_agent_local_session_store_list(
     unsigned long long applied_event_sequence;
     unsigned long long created_at_ns;
     int has_created_at_ns;
-    int found_checkpoint;
+    int found_commit;
     int fd;
 
     if (!cai_store_session_filename_decode(entry->d_name, session_id) ||
@@ -1671,29 +1679,26 @@ int cai_agent_local_session_store_list(
     fd = openat(scope_fd, entry->d_name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (fd < 0) {
       rc = cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to open session checkpoint log");
+                         "failed to open session commit log");
       break;
     }
     rc = cai_store_validate_private_regular_fd(fd, error);
     if (rc == CAI_OK && flock(fd, LOCK_SH) != 0) {
       rc = cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "failed to lock session checkpoint log");
+                         "failed to lock session commit log");
     }
     if (rc == CAI_OK) {
-      rc = cai_local_find_latest_checkpoint(
+      rc = cai_local_find_latest_commit(
           fd, &state_start, &state_end, &applied_event_sequence, &created_at_ns,
-          &has_created_at_ns, &found_checkpoint, error);
+          &has_created_at_ns, &found_commit, error);
     }
     (void)flock(fd, LOCK_UN);
     close(fd);
     if (rc != CAI_OK) {
       break;
     }
-    if (found_checkpoint) {
-      rc = visit(
-          context, session_id,
-          cai_store_checkpoint_order(created_at_ns, has_created_at_ns, &st),
-          error);
+    if (found_commit) {
+      rc = visit(context, session_id, created_at_ns, error);
       if (rc != CAI_OK) {
         break;
       }
@@ -1712,6 +1717,8 @@ static void cai_local_session_store_destroy(void *context) {
     return;
   }
   cai_free_mem(NULL, store->root_directory);
+  if (store->lock_initialized)
+    pthread_mutex_destroy(&store->lock);
   cai_free_mem(NULL, store);
 }
 
@@ -1782,13 +1789,19 @@ int cai_agent_local_session_store_open(
                          "failed to allocate local session store");
   }
   memset(store, 0, sizeof(*store));
+  if (pthread_mutex_init(&store->lock, NULL) != 0) {
+    cai_free_mem(NULL, store);
+    return cai_set_error(error, CAI_ERR_TRANSPORT,
+                         "initialize session store lock");
+  }
+  store->lock_initialized = 1;
   store->root_directory = cai_strdup(NULL, root);
   if (store->root_directory == NULL) {
     cai_local_session_store_destroy(store);
     return cai_set_error(error, CAI_ERR_NOMEM,
                          "failed to copy local session store path");
   }
-  out->checkpoint = cai_local_session_checkpoint;
+  out->commit = cai_local_session_commit;
   out->load_latest = cai_local_session_load_latest;
   out->append_event = cai_local_session_append_event;
   out->load_events_after = cai_local_session_load_events_after;
@@ -1801,7 +1814,7 @@ void cai_agent_local_session_store_close(cai_agent_session_store *store) {
   if (store == NULL) {
     return;
   }
-  if (store->checkpoint == cai_local_session_checkpoint &&
+  if (store->commit == cai_local_session_commit &&
       store->load_latest == cai_local_session_load_latest &&
       store->append_event == cai_local_session_append_event &&
       store->load_events_after == cai_local_session_load_events_after) {

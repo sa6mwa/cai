@@ -1,4 +1,4 @@
-/* Covered input acknowledgements may repeat after interrupted checkpoints. */
+/* Covered input acknowledgements may repeat after interrupted commits. */
 static void test_agent_runtime_input_ack(test_state *state) {
   static const char *const kinds[] = {"turn_submitted", "turn_queued",
                                       "steering_queued", "goal_continuation"};
@@ -35,7 +35,7 @@ static void test_agent_runtime_input_ack(test_state *state) {
   preset.developer_instructions = "Keep saved conversation context.";
   for (variant = 0; variant < 4U + 5U; variant++) {
     memset(&storage, 0, sizeof(storage));
-    storage.checkpoint_json =
+    storage.commit_json =
         "{\"version\":1,\"history\":[{\"type\":\"message\",\"role\":\"user\","
         "\"content\":[{\"type\":\"input_text\",\"text\":\"Saved question\"}]},"
         "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{"
@@ -56,7 +56,7 @@ static void test_agent_runtime_input_ack(test_state *state) {
       strcpy(storage.replay_event_data_items[2], invalid[variant - 4U]);
     memset(&store, 0, sizeof(store));
     store.context = &storage;
-    store.checkpoint = test_runtime_session_store_checkpoint;
+    store.commit = test_runtime_session_store_commit;
     store.load_latest = test_runtime_session_store_load;
     store.load_events_after = test_runtime_session_store_load_events_after;
     store.append_event = test_runtime_session_store_append_event;

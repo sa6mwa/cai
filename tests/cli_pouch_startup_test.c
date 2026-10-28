@@ -39,7 +39,7 @@ static void save(cai_cli_pouch *pouch, const char *scope, const char *id,
   callbacks.read = read_state;
   callbacks.context = &offset;
   assert(cai_source_from_callbacks(&callbacks, &source, error) == CAI_OK);
-  rc = pouch->store.checkpoint(pouch, scope, id, source, 1U, error);
+  rc = pouch->store.commit(pouch, scope, id, source, 1U, error);
   if (rc != CAI_OK)
     fprintf(stderr, "save %s: %s\n", id, error->message);
   assert(rc == CAI_OK);
@@ -327,8 +327,8 @@ static void replay_limits(cai_cli_pouch *pouch, cai_error *error) {
     lc_collection *collection = NULL;
     assert(history_collection(pouch, "oversized", "events", 0, &collection,
                               error) == CAI_OK);
-    rc = collection_append_source(collection, "event-00000000000001000004",
-                                  source, NULL, error);
+    rc = collection_append_source(
+        pouch, collection, "event-00000000000001000004", source, NULL, error);
     collection->close(collection);
     assert(rc == CAI_OK);
   }
@@ -351,12 +351,12 @@ static int collection_range_event(void *context,
   *last = event->sequence;
   return CAI_OK;
 }
-static size_t broken_checkpoint(void *context, void *bytes, size_t capacity,
-                                cai_error *error) {
+static size_t broken_commit(void *context, void *bytes, size_t capacity,
+                            cai_error *error) {
   (void)context;
   (void)bytes;
   (void)capacity;
-  cai_cli_error(error, CAI_ERR_TRANSPORT, "checkpoint source failed");
+  cai_cli_error(error, CAI_ERR_TRANSPORT, "commit source failed");
   return 0U;
 }
 static int unavailable_collections(lc_client *client,
@@ -381,7 +381,7 @@ static void collection_regressions(cai_cli_pouch *pouch, cai_error *error) {
   unsigned long long last, sequence;
   unsigned long long numbers[3];
   size_t i, used, count;
-  char bytes[8];
+  char bytes[1024] = {0};
   int (*capabilities)(lc_client *, lc_collection_capabilities *, lc_error *);
   save(pouch, "/work/collections", "collection-test", error);
   assert(cai_cli_pouch_session(pouch, "collection-test", &before, error) ==
@@ -421,7 +421,7 @@ static void collection_regressions(cai_cli_pouch *pouch, cai_error *error) {
   assert(history_collection(pouch, "collection-test", "events", 0, &collection,
                             error) == CAI_OK);
   assert(collection->describe(collection, &info, &local) == LC_OK);
-  assert(info.live_count == 3U);
+  assert(info.live_count == 4U);
   collection->close(collection);
   lc_attachment_list_req_init(&request);
   memset(&attachments, 0, sizeof(attachments));
@@ -433,17 +433,17 @@ static void collection_regressions(cai_cli_pouch *pouch, cai_error *error) {
   assert(attachments.count == 0U);
   lc_attachment_list_cleanup(&attachments);
   memset(&callbacks, 0, sizeof(callbacks));
-  callbacks.read = broken_checkpoint;
+  callbacks.read = broken_commit;
   assert(cai_source_from_callbacks(&callbacks, &source, error) == CAI_OK);
-  assert(checkpoint(pouch, "/work/collections", "collection-test", source, 90U,
-                    error) != CAI_OK);
+  assert(commit(pouch, "/work/collections", "collection-test", source, 90U,
+                error) != CAI_OK);
   cai_source_close(source);
   source = NULL;
   cai_error_cleanup(error);
   cai_error_init(error);
   assert(cai_cli_pouch_session(pouch, "collection-test", &after, error) ==
          CAI_OK);
-  assert(before.checkpoint_position == after.checkpoint_position);
+  assert(before.commit_position == after.commit_position);
   assert(before.applied_sequence == after.applied_sequence);
   assert(load_id(pouch, "/work/collections", "collection-test", &source,
                  &sequence, error) == CAI_OK);
@@ -451,11 +451,13 @@ static void collection_regressions(cai_cli_pouch *pouch, cai_error *error) {
   while ((count = cai_source_read(source, bytes + used, sizeof(bytes) - used,
                                   error)) != 0U)
     used += count;
-  assert(used == 3U && error->code == CAI_OK);
-  assert(memcmp(bytes, "{}\n", 3U) == 0);
+  assert(used > 3U && used < sizeof(bytes) && error->code == CAI_OK);
+  bytes[used] = '\0';
+  assert(strstr(bytes, "\"record_type\":\"commit\"") != NULL);
+  assert(strstr(bytes, "\"state\":{}") != NULL);
   cai_source_close(source);
   /* A retired metadata record is rejected, never silently treated as a
-   * usable checkpoint or converted during resume. */
+   * usable commit or converted during resume. */
   assert(acquire(pouch, "retired-session", &lease, error) == CAI_OK);
   memset(&after, 0, sizeof(after));
   strcpy(after.id, "retired-session");
@@ -496,6 +498,8 @@ static void collection_regressions(cai_cli_pouch *pouch, cai_error *error) {
   cai_error_init(error);
   lc_error_cleanup(&local);
 }
+
+#include "pouch_journal_fault_test.inc"
 
 int main(int argc, char **argv) {
   char directory[PATH_MAX];
@@ -587,7 +591,7 @@ int main(int argc, char **argv) {
   lease = NULL;
   assert(acquire(&pouch, "first", &lease, &error) == CAI_OK);
   assert(get_session(lease, "/work/a", "first", &session, &error) == CAI_OK);
-  session.checkpoint_ns = index.latest.checkpoint_ns + 1U;
+  session.commit_ns = index.latest.commit_ns + 1U;
   assert(update_session(lease, &session, &error) == CAI_OK);
   assert(release(lease, CAI_OK, &error) == CAI_OK);
   lease = NULL;
@@ -599,22 +603,22 @@ int main(int argc, char **argv) {
   /* Tie-breaking matches the explicit session listing. */
   assert(acquire(&pouch, "second", &lease, &error) == CAI_OK);
   assert(get_session(lease, "/work/a", "second", &session, &error) == CAI_OK);
-  session.checkpoint_ns = index.latest.checkpoint_ns + 1U;
+  session.commit_ns = index.latest.commit_ns + 1U;
   assert(update_session(lease, &session, &error) == CAI_OK);
   assert(release(lease, CAI_OK, &error) == CAI_OK);
   assert(cai_cli_pouch_publish(&pouch, "second", 1, &error) == CAI_OK);
   newest(&pouch, "/work/a", "second", &error);
   /* If wall time moves backwards, replacing the selected session's newest
-   * checkpoint can make a different session newest. Cache and listing agree. */
+   * commit can make a different session newest. Cache and listing agree. */
   lease = NULL;
   assert(latest_open(&pouch, "/work/a", &lease, &index, &error) == CAI_OK);
-  index.latest.checkpoint_ns += 1000000000000ULL;
+  index.latest.commit_ns += 1000000000000ULL;
   {
     lc_lease *session_lease = NULL;
     assert(acquire(&pouch, "second", &session_lease, &error) == CAI_OK);
     assert(get_session(session_lease, "/work/a", "second", &session, &error) ==
            CAI_OK);
-    session.checkpoint_ns = index.latest.checkpoint_ns;
+    session.commit_ns = index.latest.commit_ns;
     index.latest = session;
     assert(update_session(session_lease, &session, &error) == CAI_OK);
     assert(release(session_lease, CAI_OK, &error) == CAI_OK);
@@ -622,7 +626,7 @@ int main(int argc, char **argv) {
     assert(acquire(&pouch, "first", &session_lease, &error) == CAI_OK);
     assert(get_session(session_lease, "/work/a", "first", &session, &error) ==
            CAI_OK);
-    session.checkpoint_ns = index.latest.checkpoint_ns - 1U;
+    session.commit_ns = index.latest.commit_ns - 1U;
     assert(update_session(session_lease, &session, &error) == CAI_OK);
     assert(release(session_lease, CAI_OK, &error) == CAI_OK);
   }
@@ -693,6 +697,7 @@ int main(int argc, char **argv) {
   collection_regressions(&pouch, &error);
   todo_transactions(&pouch, &error);
   replay_limits(&pouch, &error);
+  journal_faults(&pouch, &error);
   cai_cli_pouch_close(&pouch);
   cai_error_cleanup(&error);
   interrupted_idle_writer();

@@ -940,6 +940,7 @@ if(CAI_BUILD_CLI)
       "${CMAKE_CURRENT_SOURCE_DIR}/docs/embedding.md"
       "${CMAKE_CURRENT_SOURCE_DIR}/docs/agent-messaging.md"
       "${CMAKE_CURRENT_SOURCE_DIR}/docs/kanban.md"
+      "${CMAKE_CURRENT_SOURCE_DIR}/docs/journal.md"
       DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/docs"
       COMPONENT cai-cli EXCLUDE_FROM_ALL)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/cli/main.c"
@@ -1427,6 +1428,7 @@ if(CAI_INSTALL)
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/embedding.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/agent-messaging.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/docs/kanban.md"
+    "${CMAKE_CURRENT_SOURCE_DIR}/docs/journal.md"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/libcai/docs")
   install(FILES "${CMAKE_CURRENT_BINARY_DIR}/dependencies.json"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/cai")

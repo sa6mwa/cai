@@ -153,7 +153,6 @@ typedef struct cai_history_owned_event {
   long long entry;
   long long sequence;
 } cai_history_owned_event;
-typedef struct cai_history_rebuild cai_history_rebuild;
 
 typedef struct cai_session_impl {
   cai_agent *agent;
@@ -206,6 +205,19 @@ typedef struct cai_session_impl {
   lonejson_object_array history_owned_events;
   size_t history_items;
   int history_items_known;
+  /* Durable journal cursor. Replacements explicitly retain only a prefix;
+   * ordinary appends never serialize already committed history bytes. */
+  size_t journal_history_bytes;
+  size_t journal_keep_bytes;
+  unsigned long long journal_revision;
+  unsigned long long journal_applied_sequence;
+  int journal_replace;
+  lonejson_object_array journal_blocks;
+  lonejson_object_array journal_hidden;
+  lonejson_object_array journal_owned;
+  lonejson_object_array journal_next_blocks, journal_next_hidden,
+      journal_next_owned;
+  int journal_prepared;
   cai_session_input *inputs;
   size_t input_count;
   size_t input_capacity;
@@ -232,13 +244,11 @@ void cai_session_history_summary_delta(cai_session *session, const char *bytes,
 int cai_session_history_own_event(cai_session *session,
                                   unsigned long long sequence,
                                   cai_error *error);
-int cai_history_rebuild_open(cai_history_rebuild **out, cai_error *error);
-int cai_history_rebuild_feed(cai_history_rebuild *rebuild,
-                             const cai_agent_session_event *event,
-                             unsigned long long watermark, cai_error *error);
-int cai_history_rebuild_finish(cai_history_rebuild *rebuild,
-                               cai_session *session, cai_error *error);
-void cai_history_rebuild_close(cai_history_rebuild *rebuild);
+int cai_session_journal_source(cai_session *session, cai_source **out,
+                               cai_error *error);
+int cai_session_journal_seed_source(cai_session *session, cai_source **out,
+                                    cai_error *error);
+int cai_session_journal_accept(cai_session *session, cai_error *error);
 
 #define CAI_CLIENT_IMPL(client) ((cai_client_impl *)((client)->impl))
 #define CAI_AGENT_IMPL(agent) ((cai_agent_impl *)((agent)->impl))
@@ -419,9 +429,10 @@ int cai_chat_create_response(cai_client *client,
 #ifdef CAI_TESTING
 int cai_test_response_request_upload_active(void);
 void cai_session_store_test_set_fail_scope_parent_sync(int enabled);
+void cai_session_store_test_set_fail_record_sync(int enabled);
 void cai_agent_runtime_test_set_fail_goal_status_replace(int enabled);
 unsigned int cai_agent_runtime_test_goal_status_replace_failures(void);
-void cai_agent_runtime_test_set_fail_checkpoint_event_reservation(int enabled);
+void cai_agent_runtime_test_set_fail_commit_event_reservation(int enabled);
 typedef void (*cai_agent_runtime_test_export_cleanup_fn)(const char *path,
                                                          void *context);
 void cai_agent_runtime_test_set_export_cleanup_hook(

@@ -91,6 +91,7 @@ typedef struct cai_cli_options {
   const char *import_file;
   const char *lockd;
   const char *lockd_client_pem;
+  int disable_compression;
   char *const *argv;
   int argc;
   size_t instruction_count;

@@ -8,7 +8,7 @@ typedef struct status_test {
   cai_app_bridge *bridge;
   cai_agent_runtime *runtime;
   cai_app_status before;
-  unsigned int checkpoints;
+  unsigned int commits;
   int armed;
 } status_test;
 
@@ -35,9 +35,9 @@ static void same_snapshot(const cai_app_status *a, const cai_app_status *b) {
          0);
 }
 
-static int checkpoint(void *context, const char *scope, const char *id,
-                      cai_source *source, unsigned long long sequence,
-                      cai_error *error) {
+static int commit(void *context, const char *scope, const char *id,
+                  cai_source *source, unsigned long long sequence,
+                  cai_error *error) {
   status_test *test = context;
   cai_app_status after;
   cai_agent_runtime_settings effective;
@@ -47,14 +47,14 @@ static int checkpoint(void *context, const char *scope, const char *id,
   (void)scope;
   (void)id;
   (void)sequence;
-  /* Consume the real checkpoint source without storing a complete document. */
+  /* Consume the real commit source without storing a complete document. */
   while ((bytes = cai_source_read(source, chunk, sizeof(chunk), error)) > 0) {
   }
   if (bytes < 0)
     return error->code;
   if (!test->armed)
     return CAI_OK;
-  test->checkpoints++;
+  test->commits++;
   cai_error_init(&local);
   cai_app_status_init(&after);
   /* Settings are deliberately unreadable while this durable change commits.
@@ -136,7 +136,7 @@ int main(int argc, char **argv) {
   assert(argc == 2);
   memset(&test, 0, sizeof(test));
   memset(&store, 0, sizeof(store));
-  store.checkpoint = checkpoint;
+  store.commit = commit;
   store.load_latest = load;
   store.append_event = append;
   store.load_events_after = events;
@@ -188,7 +188,7 @@ int main(int argc, char **argv) {
     assert(strcmp(test.before.effective.model,
                   mode == 0U ? "status-a" : "status-b") == 0);
   }
-  assert(test.checkpoints == 2U);
+  assert(test.commits == 2U);
   assert(pthread_create(&thread, NULL, wrong_thread, &test) == 0);
   assert(pthread_join(thread, NULL) == 0);
   deny_allocations = 1;

@@ -28,25 +28,34 @@ if [[ "$scope" == host ]]; then
 fi
 run --export "$original"; ok
 seed="$root/data/cai/exports/$original/$original.jsonl"
-# Real checkpoint/provider item templates, synthetic completed journal turns.
+# Real provider item templates, synthetic completed journal turns.
 # No inference loop or delays are needed to construct a long conversation.
-jq -cs '
-  .[0] as $checkpoint |
-  ($checkpoint.state.history | map(select(.role == "user")) | last) as $user |
-  ($checkpoint.state.history | map(select(.role == "assistant")) | last) as $assistant |
+jq -L "$support/fixtures" -cs '
+  include "journal";
+  ([.[] | select(.record_type == "commit")][-1]) as $commit |
+  cai_history as $history |
+  ($history | map(select(.role == "user")) | last) as $user |
+  ($history | map(select(.role == "assistant")) | last) as $assistant |
   def marker($prefix; $n): $prefix + (if $n < 10 then "0" else "" end) + ($n|tostring);
-  ($checkpoint | .applied_event_sequence = 126 |
-   del(.state.history_blocks, .state.history_owned_events, .state.history_hidden_events) |
-   .state.history = [range(0;25) as $i |
+  ([range(0;25) as $i |
      ($user | walk(if type == "object" and has("text") then .text = marker("PROMPT"; $i) else . end)),
-     ($assistant | walk(if type == "object" and has("text") then .text = marker("ANSWER"; $i) + " PARTA PARTB" else . end))]),
+     ($assistant | walk(if type == "object" and has("text") then .text = marker("ANSWER"; $i) + " PARTA PARTB" else . end))] |
+     map([.] | tojson | (utf8bytelength|tostring) + "\n" + . + "\n") | add) as $context |
   {record_type:"event", sequence:1, type:"input_journal_v2", data:null},
   (range(0;25) as $i | ($i*5+2) as $start |
     {record_type:"event", sequence:$start, type:"turn_submitted", data:marker("PROMPT"; $i)},
     {record_type:"event", sequence:($start+1), type:"input_consumed", data:($start|tostring)},
     {record_type:"event", sequence:($start+2), type:"assistant_text_delta", data:(marker("ANSWER"; $i)+" PARTA")},
     {record_type:"event", sequence:($start+3), type:"assistant_text_delta", data:" PARTB"},
-    {record_type:"event", sequence:($start+4), type:"assistant_text_end", data:null})
+    {record_type:"event", sequence:($start+4), type:"assistant_text_end", data:null}),
+  ($commit | .applied_event_sequence=126 |
+    .state.revision=1 | .state.base_bytes=0 | .state.end_bytes=($context|utf8bytelength) |
+    .state.blocks_keep=0 | .state.hidden_keep=0 | .state.owned_keep=0 |
+    .state.history_append=$context |
+    .state.metadata.history_hidden_events=[] | .state.metadata.history_owned_events=[] |
+    .state.metadata.history_blocks=[range(0;25) as $i |
+      {first_item:($i*2), event_start:($i*5+2), input_sequence:($i*5+2), kind:1,
+       summary:(marker("ANSWER"; $i) + " PARTA PARTB")}])
 ' "$seed" >"$root/long.jsonl"
 run --import "$root/long.jsonl"; ok
 id=$(stdout_text)

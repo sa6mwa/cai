@@ -9,7 +9,7 @@ surface; sections marked **Target** remain design intent. “MUST”,
 
 The first implementation is intentionally smaller than the full target design
 in this document. The delivered surface is the owner-thread runtime, local or
-callback-backed checkpoints, steering, goals, Smith and Smith-review presets,
+callback-backed commits, steering, goals, Smith and Smith-review presets,
 the local file/patch/image tools, one managed terminal slot, live-runtime
 streaming handover export, and C/Lua reference renderers. Sections explicitly
 labelled **Target** describe the next compatible increments; they are not claims
@@ -52,10 +52,10 @@ when `supports_review` is enabled.
 `cai_agent_runtime_config.preset_descriptor` snapshots the descriptor during
 open, so C callers may use stack storage and the Lua facade may accept an
 ordinary table safely. Smith remains the built-in `preset = "smith"`
-convenience. The durable checkpoint and Markdown handover record the selected
-preset name and prompt revision. On resume, CAI rejects a checkpoint that
-names a different preset or prompt revision; legacy checkpoints without this
-metadata remain resumable and are upgraded at their next checkpoint.
+convenience. The durable commit and Markdown handover record the selected
+preset name and prompt revision. On resume, CAI rejects a commit that
+names a different preset or prompt revision; legacy commits without this
+metadata remain resumable and are upgraded at their next commit.
 
 For example, a host can derive a Vectis profile without duplicating Smith's
 tool policy:
@@ -356,12 +356,12 @@ review/subagent pause. It updates the active parent model that future turns and
 inherited subagent defaults use. For ChatGPT auth, CAI obtains model metadata
 from Codex's `/models` endpoint and uses its opaque compatibility hashes:
 different declared hashes compact non-empty local history, while equal or
-missing hashes retain it. The successful selection is checkpointed with the
+missing hashes retain it. The successful selection is committed with the
 compacted history, if any.
 
 `update_settings` accepts model, reasoning effort, reasoning-summary mode, and
 service tier
-together. Applied selections are checkpointed atomically; a checkpoint failure
+together. Applied selections are committed atomically; a commit failure
 restores the previous effective settings. During an active turn, changes merge
 into pending settings and apply at the next durable tool-round or turn boundary.
 Pending settings are discarded on close. Durable state records the active
@@ -394,7 +394,7 @@ Events are explicit objects delivered through a registration callback and a
 bounded queue. The delivered set includes `RUN_STARTED`, `RUN_STATE_CHANGED`,
 `RUN_COMPLETED`, `RUN_FAILED`, `TEXT_DELTA`, `TOOL_CALL_STARTED`,
 `TOOL_CALL_COMPLETED`, `TOOL_CALL_FAILED`, `STEERING_QUEUED`, `TURN_QUEUED`,
-`STEERING_DELIVERED`, `SESSION_CHECKPOINTED`, and the terminal lifecycle
+`STEERING_DELIVERED`, `SESSION_COMMITTED`, and the terminal lifecycle
 events `TERMINAL_COMMAND_STARTED`, `TERMINAL_OUTPUT`, `TERMINAL_WAITING`,
 `TERMINAL_COMMAND_COMPLETED`, and `TERMINAL_COMMAND_CANCELLED`. Each carries
 a monotonic sequence and state snapshot; text data is bytes plus an explicit
@@ -595,7 +595,7 @@ sessions.
 Changing model replaces only the captured model-owned prefix at the existing
 safe runtime boundary. The capability overlay, repository policy, skill catalog,
 subagent guidance and host extension remain captured in the session's agent;
-switching models does not reread files or create new tool processes. Checkpoint
+switching models does not reread files or create new tool processes. Commit
 failure rolls back the model, reasoning settings and prompt together. Resume
 restores the model selection and chooses its bundled base before inference.
 The public C API, shared-library ABI and independently versioned session format
@@ -625,7 +625,7 @@ The Smith renderer produces, in order:
 5. host-supplied developer extension fragment, if configured;
 6. the user input or internal context fragment.
 
-Checkpoints record the preset name and prompt revision. Resume validates them
+Commits record the preset name and prompt revision. Resume validates them
 against the selected runtime preset; mismatches fail rather than migrating
 prompt assets automatically. Build-time prompt hashes belong to the bundled
 asset manifest, not to a runtime prompt-migration API. Resume reconstructs the
@@ -720,9 +720,9 @@ inputs are rejected so its local history cannot become a second review's hidden
 context. Steering can refine the active review at a response/tool boundary;
 `disable_subagent_steering` queues parent input instead. `smith-review` rejects both `session_id` and
 `resume_latest`; it generates a fresh ID, never imports or overwrites a
-caller-selected session checkpoint, and persists under a reserved namespace
+caller-selected session commit, and persists under a reserved namespace
 derived from its requested scope. A normal Smith runtime therefore cannot
-select a review checkpoint through `resume_latest`; CAI rejects the reserved
+select a review commit through `resume_latest`; CAI rejects the reserved
 `smith-review:` namespace for normal Smith runtimes.
 
 The reviewer registers `read_file`, `list_files`, `exec_command`,
@@ -780,7 +780,7 @@ and is deliberately still host-pumped: CAI never constrains a TUI, GUI, or
 embedding event loop to one rendering model. The inherited event receiver can
 distinguish the source through `event.runtime_session_id`.
 
-Once started, the parent is paused. CAI journals and checkpoints that pause
+Once started, the parent is paused. CAI journals and commits that pause
 before `start_review` returns. Immediate parent turns are rejected, while
 interactive/steering input targets the foreground child at its next safe
 response/tool boundary. With `disable_subagent_steering` set, that input becomes
@@ -792,16 +792,16 @@ handoff; it never resumes queued parent work without review context.
 The host must call `finish_review` only after the child reaches `COMPLETED`,
 `FAILED`, or `CANCELLED`. For success, CAI first inserts a generated,
 delimited handoff containing the exact schema-validated review JSON into the
-parent’s local history, commits it, journals the resolution, checkpoints the
+parent’s local history, commits it, journals the resolution, commits the
 parent session, and only then emits `CAI_AGENT_EVENT_REVIEW_HANDED_OFF` and
-releases queued turns. The checkpoint atomically covers the developer-role
+releases queued turns. The commit atomically covers the developer-role
 handoff and its resolution marker for recovery purposes: a crash before that
-checkpoint retains the pause. The next parent model request therefore sees the
+commit retains the pause. The next parent model request therefore sees the
 report as provenance-labelled internal review context rather than a synthetic
 user instruction. A failed or cancelled child produces a durable no-report
 handoff marker and also releases queued turns.
 
-Checkpoint failure is a hard handoff boundary: the parent remains paused and
+Commit failure is a hard handoff boundary: the parent remains paused and
 `finish_review` may be retried without inserting the handoff twice. CAI does
 not automatically ask the parent to fix findings; the host/user supplies an
 ordinary next turn, or allows a turn queued during review to proceed. The
@@ -810,15 +810,15 @@ before closing its parent. Lua deliberately retains that child/parent link
 until child close so queued child events cannot call a released callback.
 
 The start boundary is equally strict. If the review-pending journal record was
-accepted but the checkpoint fails, `start_review` returns the checkpoint error
+accepted but the commit fails, `start_review` returns the commit error
 with its child output populated and leaves the parent paused. The host retains
 that child: it may finish its terminal review and retry the handoff, or close
 the child and parent before reopening the durable parent with a replacement
-review. CAI never silently clears such a pause, because a later checkpoint
+review. CAI never silently clears such a pause, because a later commit
 could otherwise make the recorded pending review visible after restart without
 a reachable child. The Lua binding preserves that reachability by returning
 `review, err` in this exceptional case (rather than its usual `nil, err`
-failure shape); callers that inspect `err` can surface the checkpoint failure
+failure shape); callers that inspect `err` can surface the commit failure
 while retaining the child needed to resolve it. If recovery is impossible,
 Lua permits closing that unfinished child as the documented abandon path; it
 then marks the parent abandoned, rejects all operations other than `close`, and
@@ -952,7 +952,7 @@ concise descriptions. CAI does not parse slash commands: a host UI may map
 `/review …` to the direct review API or let an ordinary parent turn call
 `run_review`.
 
-Starting a child journals and checkpoints the parent pause before the tool
+Starting a child journals and commits the parent pause before the tool
 reports success. Parent immediate submissions are rejected while the child is
 active; steering targets that foreground child by default, or becomes queued
 parent work with `disable_subagent_steering`. Queued turns remain durable but
@@ -1002,16 +1002,16 @@ handover; raw review JSON must not be shown as the user's only result.
 
 Before CAI returns the tool output or resumes the parent, it appends a
 provenance-delimited assistant-context handover to the parent local history,
-journals the resolution, and checkpoints the parent. Thus the next parent
+journals the resolution, and commits the parent. Thus the next parent
 request sees the child outcome even across a crash. The same handover becomes
 the generated subagent-tool result and is sent through lifecycle events for the
-host renderer. A checkpoint failure leaves the parent paused and makes handover
+host renderer. A commit failure leaves the parent paused and makes handover
 completion retryable without duplicate injection.
 
-If a process restarts after a durable `subagent_pending` checkpoint but before
+If a process restarts after a durable `subagent_pending` commit but before
 the child can hand over, CAI does not attempt to resurrect the child. It writes
 a synthetic failed handover and the matching parent function-call output, then
-checkpoints that recovery before allowing queued parent work to proceed. The
+commits that recovery before allowing queued parent work to proceed. The
 pending record therefore includes both the validated profile name and the
 originating parent tool-call ID.
 
@@ -1264,13 +1264,13 @@ libmdf output in Softline's gray `! ` message line.
 
 One submitted user message creates one logical turn. The runtime:
 
-1. checkpoints the input and start state;
+1. commits the input and start state;
 2. determines whether compaction is required;
 3. renders instructions, context, history, tools, and queued internal inputs;
 4. streams a model response;
 5. persists raw model output and emits deltas;
 6. serially validates and executes at most one model tool call;
-7. checkpoints tool start, progress, and final output;
+7. commits tool start, progress, and final output;
 8. creates the next request with tool result plus any eligible steering;
 9. completes when the model returns no tool call or fails/cancels definitively.
 
@@ -1293,8 +1293,8 @@ not Vectis:
    all count as a completion boundary.
 3. Because Smith serializes calls, when that boundary is reached CAI appends
    the steering input after the tool output and before the next model request.
-   CAI checkpoints the completed tool/response state first, then emits
-   `STEERING_DELIVERED`; a subsequent checkpoint advances its durable watermark
+   CAI commits the completed tool/response state first, then emits
+   `STEERING_DELIVERED`; a subsequent commit advances its durable watermark
    only after that injected input is part of session state.
 4. If the active response finishes without another tool call, CAI delivers the
    steering as the next user input immediately after that logical turn reaches
@@ -1311,9 +1311,9 @@ call `submit_interactive`, while hosts that need an explicit state contract use
 Normal future work belongs on `submit_queued`, which persists `turn_queued`,
 emits `TURN_QUEUED`, and is consumed FIFO only after the current turn reaches
 `COMPLETED`, `FAILED`, or `CANCELLED`. Its accepted event remains pending across
-checkpoints until the runtime records that particular input as incorporated.
+commits until the runtime records that particular input as incorporated.
 If a budgeted goal becomes exhausted before a queued turn can start, CAI emits
-an explicit terminal rejection and checkpoints that rejection rather than
+an explicit terminal rejection and commits that rejection rather than
 silently consuming the turn. A host may expose these two API paths however it
 chooses, but must not fake either by injecting text directly into the renderer
 or transport.
@@ -1412,9 +1412,9 @@ rejected without advancing the count; an intervening active-goal turn that
 does not qualify as blocked resets it. The tool contract and developer prompt
 remain responsible for the semantic requirement that the external blocker is
 the same one on all three turns.
-The runtime records one goal-accounting checkpoint at each model response and
+The runtime records one goal-accounting commit at each model response and
 tool round. When a budgeted active goal reaches its token budget, the runtime
-atomically records `budget_limited`, checkpoints that terminal state, and
+atomically records `budget_limited`, commits that terminal state, and
 prevents the next model request. It does **not** auto-continue indefinitely:
 after a completed model turn, a host must call `pump`/submit according to the
 normal runtime policy.
@@ -1433,28 +1433,29 @@ as internal context rather than presenting them as user prose.
 ### 11.1 Store contract
 
 `cai_agent_session_store` is an append-oriented callback interface. CAI owns
-the durable-state schema, passes checkpoints through `cai_source`, and
+the durable-state schema, passes commits through `cai_source`, and
 represents journal updates as structured `cai_agent_session_event` values; a
 backend does not need CAI’s allocator or filesystem. Its callback table
 contains the backend context and has four required operations:
 
-- `checkpoint(context, scope, session_id, state_source,
-  applied_event_sequence)`, which synchronously consumes a complete runtime
-  snapshot;
+- `commit(context, scope, session_id, state_source,
+  applied_event_sequence)`, which synchronously consumes one incremental state
+  edit and appends it atomically;
 - `load_latest(context, scope, session_id_out, state_source_out,
-  applied_event_sequence_out)`, which returns the newest snapshot or a
+  applied_event_sequence_out)`, which returns the selected session's complete
+  ordered commit journal or a
   successful `NULL` source when none exists;
 - `append_event(context, scope, session_id, event)`, which durably records one
   ordered journal event; and
 - `load_events_after(context, scope, session_id, sequence, callback)`, which
   replays subsequent events in strict order.
 
-Snapshots and events are opaque UTF-8 JSON payloads defined by CAI. A
-checkpoint source is owned by CAI and must be consumed synchronously without
+State edits and events are opaque UTF-8 JSON payloads defined by CAI. A
+commit source is owned by CAI and must be consumed synchronously without
 being retained or closed. A source returned by `load_latest` is newly allocated
 for CAI to consume and close. The store must make a successful event append
 visible before it returns, preserve event order, and never expose a torn
-checkpoint. CAI assumes one active writer per session; remote locking, leases,
+commit. CAI assumes one active writer per session; remote locking, leases,
 or CAS remain backend policy.
 
 ### 11.2 Default local backend
@@ -1471,29 +1472,30 @@ canonical [XID](https://github.com/rs/xid)-compatible 20-character,
 lowercase-base32 values (`[0-9a-v]{20}`): a sortable timestamp, machine
 component, process ID, and randomized-start counter. They are opaque storage
 keys, not authorization secrets. Identity and model/preset metadata belong to
-the checkpoint state, not a separate `session_created` header record. The
+the commit state, not a separate `session_created` header record. The
 scope hash is a file-layout component, not the selection key; the canonical
 workspace path remains the default scope.
 
-Each complete checkpoint record carries its own creation timestamp. Latest
-selection compares that checkpoint timestamp rather than the journal file's
-mtime, since durable input-event appends may occur after a checkpoint without
-changing the resumable snapshot. Existing records without the timestamp use
-their journal mtime only as a compatibility fallback.
+Each complete commit record carries its own creation timestamp. Latest
+selection compares that commit timestamp rather than the journal file's
+mtime, since durable input-event appends may occur after a commit without
+changing committed state. Timestamps are required; old snapshot journals are
+not migrated.
 
-Writes append checkpoint and event records to the same JSONL stream under a
+Writes append commit and event records to the same JSONL stream under a
 file lock and fsync accepted records before acknowledging them. Startup scans
 complete records defensively, ignores only an
 incomplete trailing line caused by a crash, and refuses malformed committed
 records. No global database or separate index is required for correctness.
 
-`resume_latest` loads the newest checkpoint in the selected scope; merely
+`resume_latest` selects the most recently committed session and restores all
+its ordered edits in the selected scope; merely
 opening a runtime does not display a session list. By default that scope is the
 canonical workspace, so resume never silently crosses directories. A host may
 provide `session_scope` for a deliberate shared namespace; that exact supplied
 opaque key then replaces the directory key. The local JSONL store hashes every
 non-empty key without interpreting
-it as a filesystem path. If checkpoint timestamps tie, it chooses the
+it as a filesystem path. If commit timestamps tie, it chooses the
 lexicographically later session ID; generated XIDs preserve chronological order
 under that deterministic fallback.
 
@@ -1511,9 +1513,12 @@ type and optional string data; for example:
 }
 ```
 
-A checkpoint contains `record_type: "checkpoint"`,
-`checkpoint_created_at_ns`, `applied_event_sequence`, and the complete `state`
-JSON value consumed from the runtime's source. Scope and session ID are backend
+A commit contains `record_type: "commit"`,
+`commit_created_at_ns`, `applied_event_sequence`, and the incremental `state`
+JSON value consumed from the runtime's source. An edit carries a consecutive
+revision, retained byte prefix, new context bytes, cumulative usage and small
+metadata/index edits; it is not an independent snapshot. See
+[session journals](journal.md). Scope and session ID are backend
 lookup keys; they are not repeated in every envelope. The state has its own
 schema and metadata. Callback stores consume the same state source and typed
 events without needing this file envelope.
@@ -1522,8 +1527,9 @@ Journal event types include `steering_queued`, `turn_queued`,
 `input_journal_v2`, `input_consumed`, `execution`, and transcript/review/shell records. They
 are distinct from `CAI_AGENT_EVENT_*` presentation callbacks; not every UI event
 is a durable journal entry. Typed image artifacts use the configured artifact
-backend. The application's portable JSONL import/export has a separate envelope;
-it is not interchangeable with a core local-store file.
+backend. Portable exports use the same commit/event envelopes: visible
+observations followed by one initialization edit of the retained context.
+They exclude trimmed content and can initialize a fresh conversation.
 
 The canonical state reconstructs model-visible history exactly, including
 function calls and outputs, internal context inputs, model/preset information,
@@ -1545,37 +1551,37 @@ Markdown exports compose the existing handover exporter with the separate
 exclude execution records. JSONL preserves their exact structured data
 independently of pslog files.
 
-### 11.3.1 Journal/checkpoint atomicity
+### 11.3.1 Journal/commit atomicity
 
 Steering and queued normal turns are accepted from a non-owner thread while the
 worker may be streaming, so acceptance cannot read or snapshot mutable session
 state. The storage ABI therefore has two coordinated operations: an append-only
-input event write and a checkpoint write with an `applied_event_sequence`
+input event write and a commit write with an `applied_event_sequence`
 high-watermark. A successful `steering_queued` or `turn_queued` append is
 fsync-visible before CAI reports acceptance to the caller. At a safe boundary,
 the owner thread injects an input, appends an `input_consumed` marker naming the
-input event, then writes a replacement checkpoint whose watermark covers that
-marker. The checkpoint therefore preserves completed tool history even when an
+input event, then appends a state edit whose watermark covers that
+marker. The commit therefore preserves completed tool history even when an
 earlier normal turn is still pending.
 
-When a durable store opens a new session, CAI first writes an empty checkpoint
+When a durable store opens a new session, CAI first writes an empty commit
 with watermark zero. This silent anchor lets a default latest-session lookup
 find an acknowledged first `turn_queued` event even if the process stops before
-the worker reaches its first normal checkpoint.
+the worker reaches its first normal commit.
 
-On resume CAI imports the latest checkpoint and replays the complete input
+On resume CAI restores all ordered state edits and replays the complete input
 journal to reconstruct only still-pending inputs. An `input_consumed` marker is
-authoritative only when its own sequence is at or below the checkpoint
-watermark; it then suppresses the named input because that checkpoint contains
+authoritative only when its own sequence is at or below the commit
+watermark; it then suppresses the named input because that commit contains
 it. A marker after the watermark may have been written immediately before a
 crash, so CAI deliberately ignores it and replays its input. Thus a crash never
 loses accepted input, while completed non-idempotent tool results are never
 discarded merely because a later steering input and an earlier queued normal
 turn interleave. `STEERING_DELIVERED` remains observational only. A callback
-backend must provide this append-before-checkpoint ordering contract.
+backend must provide this append-before-commit ordering contract.
 On its first resume of a pre-v2 journal, CAI appends `input_journal_v2`;
 records before that boundary retain the former watermark-only replay rule, so
-upgrading does not replay steering already represented by an older checkpoint.
+upgrading does not replay steering already represented by an older commit.
 
 ### 11.4 Vectis adapter
 
@@ -1652,7 +1658,7 @@ handover remains free of side-band execution records intended for human inspecti
 
 The handover contract is `cai-agent-handover/1`, headed `# CAI agent handover`.
 It is deliberately **not** a serialization or resume format: the durable
-session checkpoint remains authoritative for continuation. The document first
+session commit remains authoritative for continuation. The document first
 records the active preset and prompt version, active model/reasoning effort
 (and the recorded history model when it differs), stable session XID, workspace
 and session scope, tool capabilities, durable goal status/objective/accounting,
@@ -1713,7 +1719,7 @@ Before every model request CAI evaluates:
 Runtime settings updates are accepted on the owner thread and applied by the
 worker at the next durable tool-round or turn boundary. In-flight requests and
 tools complete with their original settings. Completed tool results are
-checkpointed before a queued model change can compact history; the next
+committed before a queued model change can compact history; the next
 continuation request refreshes its model and reasoning settings. Failed
 applications preserve the pending settings and block further turns until the
 host replaces them. cai exposes model selection through `/model [MODEL]`.
@@ -1736,7 +1742,7 @@ limit preserves partial assistant text before compaction and continuation.
 CAI atomically replaces active context with the compacted history, then persists
 the replacement before reporting completion.
 The durable event history remains available to the host separately. If the
-request or checkpoint fails, CAI preserves the original context and reports the
+request or commit fails, CAI preserves the original context and reports the
 error; it never silently truncates arbitrary history as a substitute for
 compaction. `response.compaction.compacting` becomes a runtime progress event,
 whose default presentation is “Making room to continue”.
@@ -1750,7 +1756,7 @@ Model-visible tool errors are compact actionable strings; host
 events retain technical detail.
 
 Cancellation stops model streaming, prevents a new tool from starting, applies
-the terminal termination sequence if necessary, persists a checkpoint, and
+the terminal termination sequence if necessary, persists a commit, and
 emits one final cancelled state. It is idempotent. Store failure after external
 tool execution is a hard stop: CAI reports an indeterminate durable state and
 does not continue the model loop.
@@ -1770,7 +1776,7 @@ it is not an outstanding-task list. Current work is tracked in
    pump API, serial tool scheduling, and stream-to-event adapter over existing
    CAI agent/session functions.
 2. **Storage and resume.** Add callback store ABI, local JSONL backend,
-   directory scope selection, checkpoints, recovery, and session event schema.
+   directory scope selection, commits, recovery, and session event schema.
 3. **Smith prompt/profile.** Add prompt asset manifest/import tooling, identity
    renderer, GPT-5.6 terra/luna profile metadata, request snapshots, and
    `smith` preset construction.

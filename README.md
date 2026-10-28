@@ -56,7 +56,7 @@ points for existing event loops, HTTP servers, loggers, and dependency stacks.
 ## Agent Runtimes and Smith
 
 `cai_agent_runtime` is CAI's host-neutral agent-mode loop: it owns the worker,
-serial tool dispatch, durable checkpoints, and an event queue, while the host
+serial tool dispatch, durable commits, and an event queue, while the host
 owns input, rendering, and its application event loop. An event callback is
 delivered only when the owner thread calls `cai_agent_runtime_pump`; a
 poll-only runtime deliberately suppresses presentation events and exposes state
@@ -109,13 +109,13 @@ account catalog, including the opaque compaction compatibility hash. CAI uses
 that metadata for switches: equal hashes preserve context, differing declared
 hashes compact retained local history before the selection changes, and missing
 metadata does not cause CAI to invent a compatibility decision. The selected
-model, reasoning effort, and reasoning-summary mode are checkpointed together.
+model, reasoning effort, and reasoning-summary mode are committed together.
 Resume restores them unless explicit runtime configuration overrides the
 corresponding fields.
 
 Context reporting uses the effective provider window, rather than a compiled
 API model maximum for a signed-in ChatGPT account. Before discovery it is
-unknown; a checkpoint retains the last known window for the selected model so
+unknown; a commit retains the last known window for the selected model so
 resume can report it without blocking startup on the catalog. Current catalog
 metadata supersedes that saved value. Runtime metrics and compaction use the
 same window. Lua exposes these metrics through `runtime:metrics()`, including
@@ -333,14 +333,14 @@ A turn includes its reasoning, steering, tool calls and tool results. A
 standalone recorded shell execution is one entry; an execution started during
 a model turn belongs to that turn. Compacted context is one indivisible entry,
 including any tail retained by the compactor. It is never expanded into the
-original turns. Boundaries are recovered from the active session's own journal
-when needed; steering records remain part of their turn.
+original turns. Boundaries are persisted as incremental journal metadata;
+steering records remain part of their turn.
 
 Listing and removal require an idle runtime with no queued work, open shell,
-pending settings, or review handoff. Removal checkpoints the retained context
-and journal visibility together. A checkpoint failure restores the live history.
+pending settings, or review handoff. Removal commits the retained context
+and journal visibility together. A commit failure restores the live history.
 Restart, subsequent provider requests, and conversation exports exclude trimmed
-entries. Older storage checkpoints and diagnostic logs are not erased. Changes
+entries. Older journal records and diagnostic logs are not erased. Changes
 to files, tool stores, selected settings, goals, and incurred usage are not undone.
 CAI clears provider continuation handles so discarded context cannot return via
 an earlier response or conversation ID.
@@ -377,7 +377,7 @@ The worker uses the same compactor as automatic compaction: streamed Responses
 V2 `compaction_trigger` for Responses providers, matching Codex's manual task,
 or client-side summarization for Chat Completions. It does not submit a user
 prompt, execute tools or generate a follow-up answer. A successful replacement
-is checkpointed before completion, retains instruction files for subsequent
+is committed before completion, retains instruction files for subsequent
 requests, and appears as one indivisible history entry. Failure or cancellation
 before the replacement commits preserves the prior history. An unfinished
 manual request is not automatically retried after a crash.
@@ -601,6 +601,12 @@ responsibility. `--temp` substitutes only the conversation store; configured
 auth and messaging stores remain available, including communication with normal
 runs. Its kanban data stays with the private conversation store.
 
+Conversation storage uses an [ordered incremental journal](docs/journal.md),
+with zlib compression enabled by default for Pouch. Set
+`[storage] disable_compression = true`, `CAI_DISABLE_COMPRESSION=true`, or
+`--disable-compression` to disable it. The mode must match an existing root.
+Normal durable boundaries append changes rather than full conversation copies.
+
 Berget uses its OpenAI-compatible Chat Completions endpoint. The CLI streams
 text, image URLs, and function tools, including `apply_patch` and MCP tools,
 through libcai's normal agent and session runtime. It resumes conversations
@@ -755,7 +761,7 @@ selected explicitly.
 
 Idle changes apply immediately; active requests and tools finish before the
 change applies at the next durable tool-round or turn boundary. Subsequent
-changes merge into pending settings. Applied settings are checkpointed
+changes merge into pending settings. Applied settings are committed
 atomically and restored on automatic or explicit resume; explicit `-m`, `-r`,
 and `--reasoning-summary` independently override saved values. `/new` uses the
 startup defaults. Catalog discovery uses a separate client and a five-minute
@@ -789,11 +795,14 @@ Install under `/usr` to place the man page at `/usr/share/man/man1/cai.1`.
 By default, the cai binary stores sessions and ChatGPT credentials in one
 encrypted liblockdc Pouch root at `$XDG_STATE_HOME/cai/pouch`, or
 `~/.local/state/cai/pouch`. Session metadata is indexed in `cai.sessions`;
-checkpoints and journal events are immutable entries in separate ordered
-collections per conversation, streamed through the native collections API.
+incremental state commits and observation events share one ordered collection
+per conversation, streamed through the native collections API. Ordinary commits
+append new context only; trim retains a prefix and compaction writes its new
+replacement context once. There are no recurring full conversation snapshots.
+See [session journals](docs/journal.md) for the C/Lua store contract and exports.
 Session history requires Pouch; remote lockd collections are not available yet.
-Attachment-backed development sessions are no longer supported; use `--new`
-to start a conversation. No migration or compatibility backend is included.
+Old attachment/snapshot development stores are not migrated; use a fresh root.
+No migration or compatibility backend is included.
 Credentials are stored separately in `cai.auth`.
 Pouch's query indexes are derived caches. Local startup prepares the session and workspace
 indexes through liblockdc's wait flush, repairing missing or invalid manifests
@@ -805,9 +814,10 @@ index warning alone does not identify the cause of a preceding process crash.
 One lockd client per selected root serves its namespaces. A derived `cai.scopes`
 index records the newest published session per directory, so normal auto-resume loads one session
 without enumerating the directory's conversations. Missing or dirty directory
-indexes are rebuilt from authoritative session metadata. Resume falls back to
+indexes are rebuilt from session identities and committed journal headers.
+Resume falls back to
 metadata when a writer holds the directory guard, rather than waiting for it.
-Writers durably mark an index dirty before changing a checkpoint or
+Writers durably mark an index dirty before changing a commit or
 publication. Runtime recovery consumes the complete journal in sequence order.
 Console replay defaults to the newest 20 whole turns (standalone shell entries
 also count); steering and tools stay with their turn. `--replay-turns N`,
@@ -866,7 +876,7 @@ directories are created without changing existing directory permissions.
 Existing files are replaced after the selected streams have been written.
 Omitting the basename (or leaving `--export-out` empty) retains the default
 export location. JSONL contains the
-complete resumable checkpoint and journal; Markdown uses libcai's existing
+complete resumable commit and journal; Markdown uses libcai's existing
 Markdown exporter, including its instructions, conversation, runtime, and
 goal sections, followed by a structured execution timeline. Export performs no
 model requests or tool execution. These
@@ -1926,7 +1936,7 @@ and request ID), so HTTP 200 inference errors, invalid streams, and failed
 callbacks remain visible. Cancellation is debug-level; output cutoffs and
 compaction/continuation attempts are info-level. Exhausted recovery attempts
 and failed compactions are warn-level. Runtime compaction completion is logged
-after checkpoint/rollback handling. Model catalog source/cache selection is
+after commit/rollback handling. Model catalog source/cache selection is
 debug-level; failed refreshes and fallback to configured metadata are warn-level.
 These diagnostics exclude normal conversation content; cai's CLI separately
 logs conversation events as described above.
@@ -1942,7 +1952,7 @@ instructions and the isolated review rubric remain authoritative.
 Model changes replace the model-owned instruction prefix at the existing safe
 settings boundary, preserving the captured tool policy, repository instructions,
 skills and developer extension. Resume selects the saved model's instructions;
-a failed checkpoint restores both the model and its prior prompt. CAI adapts
+a failed commit restores both the model and its prior prompt. CAI adapts
 Codex's channels, serial tool dispatch, questions, skills and connector assumptions
 through its capability overlay. Builds use committed assets only. The import
 helper `bash scripts/import_smith_prompts.sh CODEX_CHECKOUT` updates sources and
@@ -2999,7 +3009,7 @@ test for `cai_agent_runtime`, using a disposable workspace and local JSONL
 store.
 It proves Smith's runtime event loop, read/patch/read-back flow, one-slot PTY
 terminal start/wait/completion lifecycle, steering delivery after a tool round,
-durable checkpoints, and `resume_latest` continuation. All live Smith tests
+durable commits, and `resume_latest` continuation. All live Smith tests
 use ChatGPT subscription authentication and GPT-5.6 Luna; they never consume
 an OpenAI API-key budget.
 

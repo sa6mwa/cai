@@ -90,8 +90,8 @@ int main(void) {
                                    &error) == CAI_OK);
   cai_source_close(input);
   input = source(&error, &position);
-  assert(first.store.checkpoint(&first, "/workspace", "first", input, 1U,
-                                &error) == CAI_OK);
+  assert(first.store.commit(&first, "/workspace", "first", input, 1U, &error) ==
+         CAI_OK);
   cai_source_close(input);
   snprintf(endpoint, sizeof(endpoint), "pouch://%s/pouch",
            first.state_directory);

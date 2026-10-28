@@ -67,13 +67,19 @@ It stays in Softline's editable normal queue until the parent conversation has
 no active turn, reviewer, pending control, or shell execution. Application event
 observers receive the normal run and compaction lifecycle events; manual
 compaction's `RUN_STARTED` has a NULL prompt payload. Escape or host cancellation
-interrupts the request. The next turn uses the checkpointed replacement context.
+interrupts the request. The next turn uses the committed replacement context.
 
 The initialized config selects CAI defaults, including automatic XDG paths and
 ChatGPT/provider/model defaults. `config_file`, `config_directory`, `no_config`
 select startup configuration. The `settings` array accepts the full INI schema,
 including `[mcp.NAME]` and `[env]`, without duplicating its validation rules.
 Values use INI's parsed value form: e.g. `true`, without surrounding quotes.
+
+Sessions use an incremental ordered collection journal, with Pouch zlib
+compression enabled by default. `[storage] disable_compression`, the matching
+environment variable and flag, or an application `settings` entry can disable
+it; the mode must match the existing root. See [session journals](journal.md)
+for recovery, portable exports and the dependency-free C/Lua core APIs.
 
 `program_name` is the application identity, default `"cai"`. Set it once before
 `open`; the receiver copies it. It must be a lowercase identifier, at most 32
@@ -296,7 +302,7 @@ mode and any queued change. Changes remain editable in Softline until the
 runtime is idle: the active turn, child runtimes, shell capture and managed
 terminal processes must finish first. Esc preserves Softline's stopped queue.
 The selected mode applies to later tools and new children; it is not stored in
-the conversation checkpoint. Restarting the application uses startup settings.
+the conversation commit. Restarting the application uses startup settings.
 
 C hosts use the owner-thread `cai_agent_runtime_get_yolo(runtime, &enabled,
 &can_change, error)` and `cai_agent_runtime_try_set_yolo(runtime, enabled,

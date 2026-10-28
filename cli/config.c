@@ -125,6 +125,9 @@ static const cli_field fields[] = {
       "explicit values are lockd endpoint URLs."),
     S("storage", "sessions_store", sessions_store, 0U,
       "Named store for conversations. --temp uses its own private store."),
+    B("storage", "disable_compression", disable_compression,
+      "Disable streaming zlib compression for Pouch roots. Default false. "
+      "The compression mode must match the existing root."),
     S("storage", "auth_store", auth_store, 0U,
       "Named authentication store; retained in --temp runs."),
     S("storage", "messaging_store", messaging_store, 0U,
@@ -668,6 +671,7 @@ static int tool_environment(cai_config *cfg, const char *prefix,
         {"CLIPBOARD_DIR", "paths", "clipboard_dir"},
         {"LOG_DIR", "paths", "log_dir"},
         {"POUCH_KEY_FILE", "store.default", "key_file"},
+        {"DISABLE_COMPRESSION", "storage", "disable_compression"},
         {"EXPORT_DIR", "paths", "export_dir"},
         {"AGENTS_MD", "paths", "agents_md"},
         {"SKILLS_DIR", "paths", "skills_dir"},
@@ -969,6 +973,8 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   defaults.chrome =
       cai_config_get_bool(cfg, "chrome", "enabled", defaults.chrome);
   defaults.todo = cai_config_get_bool(cfg, "agent", "todo", defaults.todo);
+  defaults.disable_compression = cai_config_get_bool(
+      cfg, "storage", "disable_compression", defaults.disable_compression);
   optional_string(cfg, "todo", "default_board", &defaults.board);
   defaults.messaging =
       cai_config_get_bool(cfg, "messaging", "enabled", defaults.messaging);

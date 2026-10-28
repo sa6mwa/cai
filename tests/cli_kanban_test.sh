@@ -23,7 +23,7 @@ send '/todo new saved\r'; expect 'Kanban: saved'
 terminal_close
 terminal_start
 send '/todo\r'; expect 'Kanban: saved'
-# Agent changes and human changes share one selected board and checkpoint.
+# Agent changes and human changes share one selected board and commit.
 plan '{"plan":[{"tool":"todo_kanban","arguments":{"operation":"select_board","board_name":"startup"}},"SELECTED STARTUP"]}'
 prompt 'select startup' 'SELECTED STARTUP'
 send '/todo\r'; expect 'PERSISTENT BOARD CARD'

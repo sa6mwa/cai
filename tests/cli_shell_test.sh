@@ -64,7 +64,6 @@ terminal_close
 # storage, but imported/native-host records can contain encoded C1 controls.
 # The hex form splits one scalar across events; the tail form flushes at once.
 cat >"$root/c1-replay.jsonl" <<'JSON'
-{"record_type":"checkpoint","checkpoint_created_at_ns":1,"applied_event_sequence":7,"state":{"version":1}}
 {"record_type":"event","sequence":1,"type":"user_shell_started","data":"touch c1-replay-must-not-run"}
 {"record_type":"event","sequence":2,"type":"user_shell_output_hex","data":"5245504c41592d43313a20c2"}
 {"record_type":"event","sequence":3,"type":"user_shell_output_hex","data":"9b0a"}
@@ -72,6 +71,7 @@ cat >"$root/c1-replay.jsonl" <<'JSON'
 {"record_type":"event","sequence":5,"type":"user_shell_started","data":"touch c1-tail-must-not-run"}
 {"record_type":"event","sequence":6,"type":"user_shell_output_tail","data":"REPLAY-TAIL: \u0080\u009f Ü€🛫\n"}
 {"record_type":"event","sequence":7,"type":"user_shell_completed","data":"0"}
+{"record_type":"commit","commit_created_at_ns":1,"applied_event_sequence":7,"state":{"revision":1,"base_bytes":0,"end_bytes":0,"blocks_keep":0,"hidden_keep":0,"owned_keep":0,"metadata":{"version":1},"history_append":""}}
 JSON
 run --import "$root/c1-replay.jsonl"; ok
 imported=$(stdout_text)

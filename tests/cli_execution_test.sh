@@ -27,7 +27,7 @@ json "$root/execution.json" 'any(.[]; .kind=="tool.failed" and .code!=0)'
 json "$root/execution.json" 'any(.[]; .kind=="tool.failed" and .field=="message" and (.data|length)>0)'
 json "$root/execution.json" 'any(.[]; .kind=="tool.output" and (.data|contains("execution result")))'
 json "$root/execution.json" 'any(.[]; .kind=="turn.completed")'
-jq -se '.[0].state | [..|objects|select(.kind?=="tool.failed")] | length==0' "$jsonl" >/dev/null
+jq -L "$support/fixtures" -se 'include "journal"; cai_history | [..|objects|select(.kind?=="tool.failed")] | length==0' "$jsonl" >/dev/null
 contains "$markdown" '## Execution history'
 contains "$markdown" 'Tool arguments'
 contains "$markdown" 'Tool failed'
@@ -126,5 +126,5 @@ json "$root/failure.json" 'any(.[]; .kind=="turn.failed" and (.field=="message" 
 json "$root/failure.json" 'any(.[]; .kind=="turn.failed" and .field=="provider_code" and .data=="execution_failure")'
 json "$root/failure.json" 'any(.[]; .kind=="turn.failed" and .field=="request_id" and .data=="req_execution")'
 if [[ "${2:-}" == lua ]]; then
-  jq -se 'any(.[]; .kind=="tool.failed" and .tool_name=="read_file")' "$root/observed.jsonl" >/dev/null
+  jq -L "/fixtures" -se 'any(.[]; .kind=="tool.failed" and .tool_name=="read_file")' "$root/observed.jsonl" >/dev/null
 fi

@@ -1,7 +1,6 @@
 /* Public runtime/store/tool integration: no event receiver is required. */
-static int execution_test_checkpoint(void *, const char *, const char *,
-                                     cai_source *, unsigned long long,
-                                     cai_error *);
+static int execution_test_commit(void *, const char *, const char *,
+                                 cai_source *, unsigned long long, cai_error *);
 static void test_execution_record(test_state *state) {
   static const char valid[] =
       "{\"kind\":\"tool.partial_output\",\"session_"
@@ -179,7 +178,7 @@ static void test_execution_poll_review(test_state *state) {
   pthread_cond_init(&s.ready, NULL);
   memset(&store, 0, sizeof(store));
   store.context = &s;
-  store.checkpoint = execution_test_checkpoint;
+  store.commit = execution_test_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = execution_review_append;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -414,10 +413,10 @@ static int execution_test_inspect(void *context, const void *bytes,
     out->controls = 1;
   return CAI_OK;
 }
-static int execution_test_checkpoint(void *context, const char *scope,
-                                     const char *id, cai_source *source,
-                                     unsigned long long sequence,
-                                     cai_error *error) {
+static int execution_test_commit(void *context, const char *scope,
+                                 const char *id, cai_source *source,
+                                 unsigned long long sequence,
+                                 cai_error *error) {
   char bytes[4096];
   (void)context;
   (void)scope;
@@ -515,7 +514,7 @@ static void test_agent_runtime_execution(test_state *state) {
       break;
     memset(&store, 0, sizeof(store));
     store.context = &s;
-    store.checkpoint = execution_test_checkpoint;
+    store.commit = execution_test_commit;
     store.load_latest = test_runtime_session_store_load;
     store.append_event = execution_test_append;
     store.load_events_after = execution_test_load;
@@ -655,7 +654,7 @@ static void test_execution_compaction(test_state *state) {
     s.mode = mode == 2 ? 4 : 0;
     memset(&store, 0, sizeof(store));
     store.context = &s;
-    store.checkpoint = execution_test_checkpoint;
+    store.commit = execution_test_commit;
     store.load_latest = test_runtime_session_store_load;
     store.append_event = execution_test_append;
     store.load_events_after = execution_test_load;

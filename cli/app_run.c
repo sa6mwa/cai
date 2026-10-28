@@ -1286,7 +1286,7 @@ static void cli_log_event(cli_state *state,
                                       "steering_delivered",
                                       "run_completed",
                                       "run_failed",
-                                      "session_checkpointed",
+                                      "session_committed",
                                       "terminal_command_started",
                                       "terminal_output",
                                       "terminal_waiting",
@@ -2486,7 +2486,7 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
   }
   cai_cli_apply_runtime_options(&state->options, &config, &preset, &skills);
   if (state->suppress_replay) {
-    /* A live catalog change must restore the current checkpoint settings,
+    /* A live catalog change must restore the current commit settings,
      * rather than reapply the invocation's original explicit overrides. */
     config.model = NULL;
     config.reasoning_effort = NULL;
@@ -4128,7 +4128,7 @@ static int cli_handle_command(cli_state *state, const char *line,
       strcpy(message, cai_cli_messages_name(state->messages));
       rc = cai_cli_messages_set_queue(state->messages, name, error);
       /* A selected name survives /new and /resume in this app, never in
-       * config.ini or the conversation checkpoint. */
+       * config.ini or the conversation commit. */
       if (rc == CAI_OK ||
           strcmp(cai_cli_messages_name(state->messages), message) != 0) {
         strcpy(state->message_queue_override,
@@ -4680,7 +4680,7 @@ static int cli_advance_automation(cli_state *state, cai_error *error) {
     }
   }
   /* Pursuit belongs to the durable goal, not to the UI path that created it.
-   * This also covers model-created goals and resumed active checkpoints.
+   * This also covers model-created goals and resumed active commits.
    * Cancellation/failure above requires a new user turn or explicit resume.
    */
   if (state->options.goals) {

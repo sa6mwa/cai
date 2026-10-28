@@ -281,6 +281,8 @@ typedef struct cai_app_kanban_config {
   const char *default_board;
   /** Maximum returned cards/boards; zero selects 100. */
   size_t max_result_items;
+  /** Disable Pouch zlib compression. Zero enables it; must match the root. */
+  int disable_compression;
   /** Borrowed native logger, valid through the final receiver close. */
   struct pslog_logger *logger;
 } cai_app_kanban_config;

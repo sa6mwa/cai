@@ -56,7 +56,7 @@ static cai_agent_runtime_test_export_cleanup_fn
     cai_runtime_test_export_cleanup_hook;
 static void *cai_runtime_test_export_cleanup_context;
 static int cai_runtime_test_fail_goal_status_replace_enabled;
-static int cai_runtime_test_fail_checkpoint_event_reservation_enabled;
+static int cai_runtime_test_fail_commit_event_reservation_enabled;
 static unsigned int cai_runtime_test_goal_status_replace_failures;
 static pthread_mutex_t cai_runtime_test_goal_status_replace_lock =
     PTHREAD_MUTEX_INITIALIZER;
@@ -76,10 +76,9 @@ void cai_agent_runtime_test_set_fail_goal_status_replace(int enabled) {
   pthread_mutex_unlock(&cai_runtime_test_goal_status_replace_lock);
 }
 
-void cai_agent_runtime_test_set_fail_checkpoint_event_reservation(int enabled) {
+void cai_agent_runtime_test_set_fail_commit_event_reservation(int enabled) {
   pthread_mutex_lock(&cai_runtime_test_goal_status_replace_lock);
-  cai_runtime_test_fail_checkpoint_event_reservation_enabled =
-      enabled != 0 ? 1 : 0;
+  cai_runtime_test_fail_commit_event_reservation_enabled = enabled != 0 ? 1 : 0;
   pthread_mutex_unlock(&cai_runtime_test_goal_status_replace_lock);
 }
 
@@ -104,12 +103,12 @@ static int cai_runtime_test_fail_goal_status_replace(void) {
   return enabled;
 }
 
-static int cai_runtime_test_take_fail_checkpoint_event_reservation(void) {
+static int cai_runtime_test_take_fail_commit_event_reservation(void) {
   int enabled;
 
   pthread_mutex_lock(&cai_runtime_test_goal_status_replace_lock);
-  enabled = cai_runtime_test_fail_checkpoint_event_reservation_enabled;
-  cai_runtime_test_fail_checkpoint_event_reservation_enabled = 0;
+  enabled = cai_runtime_test_fail_commit_event_reservation_enabled;
+  cai_runtime_test_fail_commit_event_reservation_enabled = 0;
   pthread_mutex_unlock(&cai_runtime_test_goal_status_replace_lock);
   return enabled;
 }
@@ -566,7 +565,6 @@ struct cai_agent_runtime {
   void *replay_context;
   int history_summary_started;
   int history_turn_open;
-  cai_history_rebuild *history_rebuild;
   int owns_local_store;
   /* Provider-declared metadata recorded for the active model selection. */
   char *model_compaction_hash;
@@ -604,7 +602,7 @@ struct cai_agent_runtime {
   /* Highest durable journal record whose effect is reflected in the current
    * runtime/session state. Accepted queue entries deliberately do not advance
    * this watermark until the worker applies them. */
-  unsigned long long checkpoint_event_sequence;
+  unsigned long long commit_event_sequence;
   unsigned long long applied_event_sequence;
   unsigned long long next_event_sequence;
   unsigned long long journal_v2_start_sequence;
@@ -653,7 +651,7 @@ struct cai_agent_runtime {
   unsigned long long user_shell_tail_sequence;
   size_t goal_control_limit;
   size_t goal_control_count;
-  /* A control remains in flight until its session mutation is checkpointed. */
+  /* A control remains in flight until its session mutation is committed. */
   size_t goal_control_inflight;
   int goal_control_failed;
   cai_runtime_goal_control_node *goal_control_head;
@@ -718,7 +716,7 @@ struct cai_agent_runtime {
    * only with the parent tool round that persists the matching tool output. */
   int subagent_handoff_resolution_pending;
   char *active_subagent_parent_tool_call_id;
-  /* A checkpointed synchronous child cannot survive a process restart. Keep
+  /* A committed synchronous child cannot survive a process restart. Keep
    * its durable launch identity only until recovery has synthesized the failed
    * handover and matching parent tool result. */
   char *resumed_subagent_profile;
@@ -730,7 +728,7 @@ struct cai_agent_runtime {
    * parent->lock protects published child pointers and admission pins. */
   struct cai_agent_runtime *parent_runtime;
   int review_launching;
-  /* A review pause is journaled and checkpointed independently of the live
+  /* A review pause is journaled and committed independently of the live
    * child pointer.  That makes queued parent work stay held across a crash. */
   int review_pause_pending;
   char *review_handoff;
@@ -2601,7 +2599,7 @@ static int cai_runtime_validate_resumed_preset(cai_agent_runtime *runtime,
       strcmp(session->state_preset_prompt_version,
              runtime->preset_prompt_version) != 0) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "session checkpoint preset does not match runtime "
+                         "session commit preset does not match runtime "
                          "preset");
   }
   return CAI_OK;
@@ -2670,11 +2668,10 @@ static int cai_runtime_append_journal_event_locked(
 
 #include "cai_runtime_execution.inc"
 
-static void
-cai_runtime_mark_checkpoint_event_locked(cai_agent_runtime *runtime,
-                                         unsigned long long sequence) {
-  if (sequence > runtime->checkpoint_event_sequence) {
-    runtime->checkpoint_event_sequence = sequence;
+static void cai_runtime_mark_commit_event_locked(cai_agent_runtime *runtime,
+                                                 unsigned long long sequence) {
+  if (sequence > runtime->commit_event_sequence) {
+    runtime->commit_event_sequence = sequence;
   }
 }
 
@@ -2694,7 +2691,7 @@ static int cai_runtime_mark_input_consumed_locked(
   }
   /* This marker is deliberately appended before the snapshot that contains
    * the input.  On recovery it is authoritative only when its own sequence
-   * is covered by that snapshot's watermark; a crash before the checkpoint
+   * is covered by that snapshot's watermark; a crash before the commit
    * therefore replays the input instead of losing it. */
   rc = cai_runtime_append_journal_event_locked(runtime, "input_consumed", data,
                                                out_sequence, error);
@@ -2897,14 +2894,14 @@ cai_runtime_generate_session_id(char output[CAI_AGENT_SESSION_ID_MAX],
   return rc;
 }
 
-static int cai_runtime_reserve_checkpoint_event(cai_agent_runtime *runtime,
-                                                cai_runtime_event_node **out,
-                                                cai_error *error) {
+static int cai_runtime_reserve_commit_event(cai_agent_runtime *runtime,
+                                            cai_runtime_event_node **out,
+                                            cai_error *error) {
   int rc;
 
   if (out == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "checkpoint event output is required");
+                         "commit event output is required");
   }
   *out = NULL;
   if (runtime->session_store == NULL || runtime->event_callback == NULL) {
@@ -2912,14 +2909,14 @@ static int cai_runtime_reserve_checkpoint_event(cai_agent_runtime *runtime,
   }
   pthread_mutex_lock(&runtime->lock);
 #if defined(CAI_TESTING)
-  if (cai_runtime_test_take_fail_checkpoint_event_reservation() != 0) {
+  if (cai_runtime_test_take_fail_commit_event_reservation() != 0) {
     rc = cai_set_error(error, CAI_ERR_NOMEM,
-                       "failed to allocate checkpoint notification");
+                       "failed to allocate commit notification");
   } else {
 #endif
     rc = cai_runtime_reserve_event_locked(
         runtime, pthread_equal(pthread_self(), runtime->owner_thread),
-        CAI_AGENT_EVENT_SESSION_CHECKPOINTED, runtime->session_id,
+        CAI_AGENT_EVENT_SESSION_COMMITTED, runtime->session_id,
         strlen(runtime->session_id), NULL, NULL, runtime->state, out, error);
 #if defined(CAI_TESTING)
   }
@@ -2928,13 +2925,13 @@ static int cai_runtime_reserve_checkpoint_event(cai_agent_runtime *runtime,
   return rc;
 }
 
-static int
-cai_runtime_checkpoint_reserved(cai_agent_runtime *runtime, int emit_event,
-                                cai_runtime_event_node *checkpoint_event,
-                                cai_error *error) {
+static int cai_runtime_commit_reserved(cai_agent_runtime *runtime,
+                                       int emit_event,
+                                       cai_runtime_event_node *commit_event,
+                                       cai_error *error) {
   cai_source *state;
-  const char *checkpoint_model;
-  const char *checkpoint_model_compaction_hash;
+  const char *commit_model;
+  const char *commit_model_compaction_hash;
   char *model;
   char *model_compaction_hash;
   unsigned long long applied_event_sequence;
@@ -2944,46 +2941,45 @@ cai_runtime_checkpoint_reserved(cai_agent_runtime *runtime, int emit_event,
   if (runtime->session_store == NULL) {
     return CAI_OK;
   }
-  if (checkpoint_event == NULL && emit_event) {
-    rc =
-        cai_runtime_reserve_checkpoint_event(runtime, &checkpoint_event, error);
+  if (commit_event == NULL && emit_event) {
+    rc = cai_runtime_reserve_commit_event(runtime, &commit_event, error);
     if (rc != CAI_OK) {
       return rc;
     }
   }
   pthread_mutex_lock(&runtime->lock);
-  applied_event_sequence = runtime->checkpoint_event_sequence;
+  applied_event_sequence = runtime->commit_event_sequence;
   pthread_mutex_unlock(&runtime->lock);
   state = NULL;
   model_compaction_hash = NULL;
   preserve_history_model_metadata =
       runtime->history_compaction_pending &&
       CAI_SESSION_IMPL(runtime->session)->state_model != NULL;
-  checkpoint_model = preserve_history_model_metadata
-                         ? CAI_SESSION_IMPL(runtime->session)->state_model
-                         : CAI_SESSION_AGENT_IMPL(runtime->session)->model;
-  checkpoint_model_compaction_hash =
+  commit_model = preserve_history_model_metadata
+                     ? CAI_SESSION_IMPL(runtime->session)->state_model
+                     : CAI_SESSION_AGENT_IMPL(runtime->session)->model;
+  commit_model_compaction_hash =
       preserve_history_model_metadata
           ? CAI_SESSION_IMPL(runtime->session)->state_model_compaction_hash
           : runtime->model_compaction_hash;
   model = cai_strdup(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
-                     checkpoint_model);
+                     commit_model);
   if (model == NULL) {
     pthread_mutex_lock(&runtime->lock);
-    cai_runtime_cancel_event_reservation_locked(runtime, checkpoint_event);
+    cai_runtime_cancel_event_reservation_locked(runtime, commit_event);
     pthread_mutex_unlock(&runtime->lock);
     return cai_set_error(error, CAI_ERR_NOMEM,
-                         "failed to preserve session model for checkpoint");
+                         "failed to preserve session model for commit");
   }
-  if (checkpoint_model_compaction_hash != NULL) {
+  if (commit_model_compaction_hash != NULL) {
     model_compaction_hash =
         cai_strdup(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
-                   checkpoint_model_compaction_hash);
+                   commit_model_compaction_hash);
     if (model_compaction_hash == NULL) {
       cai_free_mem(&CAI_SESSION_CLIENT_IMPL(runtime->session)->allocator,
                    model);
       pthread_mutex_lock(&runtime->lock);
-      cai_runtime_cancel_event_reservation_locked(runtime, checkpoint_event);
+      cai_runtime_cancel_event_reservation_locked(runtime, commit_event);
       pthread_mutex_unlock(&runtime->lock);
       return cai_set_error(error, CAI_ERR_NOMEM,
                            "failed to preserve model compatibility hash");
@@ -2996,29 +2992,31 @@ cai_runtime_checkpoint_reserved(cai_agent_runtime *runtime, int emit_event,
   CAI_SESSION_IMPL(runtime->session)->state_model = model;
   CAI_SESSION_IMPL(runtime->session)->state_model_compaction_hash =
       model_compaction_hash;
-  rc = cai_session_export_state_source(runtime->session, &state, error);
+  rc = cai_session_journal_source(runtime->session, &state, error);
   if (rc == CAI_OK) {
-    rc = runtime->session_store->checkpoint(
+    rc = runtime->session_store->commit(
         runtime->session_store->context, runtime->session_scope,
         runtime->session_id, state, applied_event_sequence, error);
   }
   cai_source_close(state);
+  if (rc == CAI_OK)
+    rc = cai_session_journal_accept(runtime->session, error);
   if (rc == CAI_OK) {
     pthread_mutex_lock(&runtime->lock);
     runtime->applied_event_sequence = applied_event_sequence;
-    cai_runtime_append_reserved_event_node_locked(runtime, checkpoint_event);
+    cai_runtime_append_reserved_event_node_locked(runtime, commit_event);
     pthread_mutex_unlock(&runtime->lock);
   } else {
     pthread_mutex_lock(&runtime->lock);
-    cai_runtime_cancel_event_reservation_locked(runtime, checkpoint_event);
+    cai_runtime_cancel_event_reservation_locked(runtime, commit_event);
     pthread_mutex_unlock(&runtime->lock);
   }
   return rc;
 }
 
-static int cai_runtime_checkpoint(cai_agent_runtime *runtime, int emit_event,
-                                  cai_error *error) {
-  return cai_runtime_checkpoint_reserved(runtime, emit_event, NULL, error);
+static int cai_runtime_commit(cai_agent_runtime *runtime, int emit_event,
+                              cai_error *error) {
+  return cai_runtime_commit_reserved(runtime, emit_event, NULL, error);
 }
 
 /* The worker (or open before spawning it) owns history. These are context
@@ -3069,7 +3067,7 @@ static int cai_runtime_deliver_shell_context(cai_agent_runtime *runtime,
           error);
     }
     if (rc == CAI_OK) {
-      cai_runtime_mark_checkpoint_event_locked(runtime, consumed);
+      cai_runtime_mark_commit_event_locked(runtime, consumed);
       runtime->shell_context_head = input->next;
       if (runtime->shell_context_head == NULL)
         runtime->shell_context_tail = NULL;
@@ -3080,7 +3078,7 @@ static int cai_runtime_deliver_shell_context(cai_agent_runtime *runtime,
   }
   pthread_mutex_unlock(&runtime->lock);
   if (rc == CAI_OK && changed)
-    rc = cai_runtime_checkpoint(runtime, 1, error);
+    rc = cai_runtime_commit(runtime, 1, error);
   return rc;
 }
 
@@ -3385,8 +3383,7 @@ cai_runtime_apply_goal_control(cai_agent_runtime *runtime,
   if (control->kind == CAI_RUNTIME_GOAL_CANCEL_PAUSE &&
       (goal->goal_status == NULL || strcmp(goal->goal_status, "active") != 0)) {
     pthread_mutex_lock(&runtime->lock);
-    cai_runtime_mark_checkpoint_event_locked(runtime,
-                                             control->journal_sequence);
+    cai_runtime_mark_commit_event_locked(runtime, control->journal_sequence);
     pthread_mutex_unlock(&runtime->lock);
     return CAI_OK;
   }
@@ -3542,8 +3539,7 @@ cai_runtime_apply_goal_control(cai_agent_runtime *runtime,
   }
   if (rc == CAI_OK && control->journal_sequence != 0U) {
     pthread_mutex_lock(&runtime->lock);
-    cai_runtime_mark_checkpoint_event_locked(runtime,
-                                             control->journal_sequence);
+    cai_runtime_mark_commit_event_locked(runtime, control->journal_sequence);
     pthread_mutex_unlock(&runtime->lock);
   }
   if (rc == CAI_OK &&
@@ -3579,13 +3575,13 @@ static int cai_runtime_apply_queued_goal_controls(cai_agent_runtime *runtime,
     }
     rc = cai_runtime_apply_goal_control(runtime, control, error);
     if (rc == CAI_OK) {
-      rc = cai_runtime_checkpoint(runtime, 1, error);
+      rc = cai_runtime_commit(runtime, 1, error);
     }
     cai_runtime_goal_control_node_free(control);
     pthread_mutex_lock(&runtime->lock);
     runtime->goal_control_inflight--;
     runtime->goal_control_failed = rc != CAI_OK;
-    /* The owner may have consumed GOAL_CHANGED and the checkpoint while this
+    /* The owner may have consumed GOAL_CHANGED and the commit while this
      * control was still in flight. Wake it after publishing readiness, so
      * goal continuation and editable idle-only commands are retried. */
     cai_runtime_wakeup_notify_locked(runtime);
@@ -3966,17 +3962,19 @@ static int cai_runtime_compaction_progress(void *context, cai_error *error) {
 static int cai_runtime_compact(cai_agent_runtime *runtime,
                                int *out_budget_limited, cai_error *error) {
   cai_stream_sinks sinks;
-  cai_runtime_event_node *checkpoint_event;
+  cai_runtime_event_node *commit_event;
   cai_source *snapshot;
   cai_error rollback_error;
   int compaction_committed;
   int budget_limited;
   int rc;
+  int journal_replace = CAI_SESSION_IMPL(runtime->session)->journal_replace;
+  size_t journal_keep = CAI_SESSION_IMPL(runtime->session)->journal_keep_bytes;
 
   if (out_budget_limited != NULL) {
     *out_budget_limited = 0;
   }
-  checkpoint_event = NULL;
+  commit_event = NULL;
   snapshot = NULL;
   compaction_committed = 0;
   budget_limited = 0;
@@ -3985,16 +3983,15 @@ static int cai_runtime_compact(cai_agent_runtime *runtime,
     return rc;
   cai_runtime_log_compaction(runtime, 1, CAI_OK, NULL);
   if (runtime->session_store != NULL) {
-    /* Responses V2 replaces live history before the durable checkpoint. Keep
-     * a complete state snapshot until that checkpoint commits so a failed
+    /* Responses V2 replaces live history before the durable commit. Keep
+     * a complete state snapshot until that commit commits so a failed
      * persistence operation cannot leave live and durable histories split. */
     rc = cai_session_export_state_source(runtime->session, &snapshot, error);
     if (rc == CAI_OK) {
-      /* The checkpoint notification is part of this state transition. Reserve
+      /* The commit notification is part of this state transition. Reserve
        * it before optional progress events, because the owner cannot pump
        * while a synchronous model selection is compacting. */
-      rc = cai_runtime_reserve_checkpoint_event(runtime, &checkpoint_event,
-                                                error);
+      rc = cai_runtime_reserve_commit_event(runtime, &commit_event, error);
     }
     if (rc != CAI_OK) {
       cai_source_close(snapshot);
@@ -4016,25 +4013,25 @@ static int cai_runtime_compact(cai_agent_runtime *runtime,
   if (rc == CAI_OK) {
     compaction_committed = 1;
     /* Compaction replaces history and consumes usage as one durable state
-     * transition. Account for that usage before exporting its checkpoint so a
-     * resumed goal cannot lose the charge between two checkpoints. */
+     * transition. Account for that usage before exporting its commit so a
+     * resumed goal cannot lose the charge between two commits. */
     rc = cai_runtime_account_goal(runtime, &budget_limited, error);
   }
   if (rc == CAI_OK) {
     rc = cai_runtime_refresh_goal_projection(runtime, error);
   }
   if (rc == CAI_OK) {
-    rc = cai_runtime_checkpoint_reserved(runtime, 1, checkpoint_event, error);
-    checkpoint_event = NULL;
+    rc = cai_runtime_commit_reserved(runtime, 1, commit_event, error);
+    commit_event = NULL;
     if (out_budget_limited != NULL) {
       *out_budget_limited = budget_limited;
     }
   }
-  if (rc != CAI_OK && checkpoint_event != NULL) {
+  if (rc != CAI_OK && commit_event != NULL) {
     pthread_mutex_lock(&runtime->lock);
-    cai_runtime_cancel_event_reservation_locked(runtime, checkpoint_event);
+    cai_runtime_cancel_event_reservation_locked(runtime, commit_event);
     pthread_mutex_unlock(&runtime->lock);
-    checkpoint_event = NULL;
+    commit_event = NULL;
   }
   if (rc != CAI_OK && compaction_committed && snapshot != NULL) {
     int rollback_rc;
@@ -4044,6 +4041,10 @@ static int cai_runtime_compact(cai_agent_runtime *runtime,
     if (rollback_rc == CAI_OK) {
       rollback_rc = cai_session_import_state_source(runtime->session, snapshot,
                                                     &rollback_error);
+      if (rollback_rc == CAI_OK) {
+        CAI_SESSION_IMPL(runtime->session)->journal_replace = journal_replace;
+        CAI_SESSION_IMPL(runtime->session)->journal_keep_bytes = journal_keep;
+      }
     }
     if (rollback_rc == CAI_OK) {
       rollback_rc =
@@ -4051,7 +4052,7 @@ static int cai_runtime_compact(cai_agent_runtime *runtime,
     }
     if (rollback_rc != CAI_OK) {
       rc = cai_set_error_detail(error, rollback_rc,
-                                "compaction checkpoint failed and original "
+                                "compaction commit failed and original "
                                 "state could not be restored",
                                 rollback_error.message != NULL
                                     ? rollback_error.message
@@ -4642,7 +4643,7 @@ static int cai_runtime_deliver_steering(void *context, cai_session *session,
   pthread_mutex_unlock(&runtime->lock);
   /* Preserve completed tool/response history before injecting steering. */
   if (has_steering) {
-    rc = cai_runtime_checkpoint(runtime, 1, error);
+    rc = cai_runtime_commit(runtime, 1, error);
   }
   pthread_mutex_lock(&runtime->lock);
   while (rc == CAI_OK && runtime->steering_head != NULL) {
@@ -4659,7 +4660,7 @@ static int cai_runtime_deliver_steering(void *context, cai_session *session,
       rc = cai_runtime_mark_input_consumed_locked(
           runtime, input->journal_sequence, &consumed_sequence, error);
       if (rc == CAI_OK) {
-        cai_runtime_mark_checkpoint_event_locked(runtime, consumed_sequence);
+        cai_runtime_mark_commit_event_locked(runtime, consumed_sequence);
       }
       if (rc == CAI_OK) {
         rc = cai_runtime_child_input_projection_locked(runtime, input->text,
@@ -4700,7 +4701,7 @@ static int cai_runtime_deliver_steering(void *context, cai_session *session,
     return cai_set_error(error, CAI_ERR_CANCELLED,
                          "goal paused at a safe model boundary");
   }
-  /* The tool-loop durable boundary checkpoints only after it has committed
+  /* The tool-loop durable boundary commits only after it has committed
    * the safe tool result that accompanies this round. */
   return rc;
 }
@@ -4714,9 +4715,9 @@ static int cai_runtime_deliver_steering_after_tool_round(void *context,
                       : cai_runtime_deliver_steering(runtime, session, error);
 }
 
-static int cai_runtime_checkpoint_durable_tool_round(void *context,
-                                                     cai_session *session,
-                                                     cai_error *error) {
+static int cai_runtime_commit_durable_tool_round(void *context,
+                                                 cai_session *session,
+                                                 cai_error *error) {
   cai_agent_runtime *runtime;
   unsigned long long handoff_marker_sequence;
   int resolve_subagent;
@@ -4735,8 +4736,7 @@ static int cai_runtime_checkpoint_durable_tool_round(void *context,
         runtime, "subagent_handoff_committed", "tool_round",
         &handoff_marker_sequence, error);
     if (rc == CAI_OK) {
-      cai_runtime_mark_checkpoint_event_locked(runtime,
-                                               handoff_marker_sequence);
+      cai_runtime_mark_commit_event_locked(runtime, handoff_marker_sequence);
       runtime->subagent_handoff_resolution_pending = 0;
       resolve_subagent = 1;
     }
@@ -4747,11 +4747,11 @@ static int cai_runtime_checkpoint_durable_tool_round(void *context,
   if (rc != CAI_OK) {
     return rc;
   }
-  rc = cai_runtime_checkpoint(runtime, 1, error);
+  rc = cai_runtime_commit(runtime, 1, error);
   while (rc == CAI_ERR_TRANSPORT && resolve_subagent) {
     rc = cai_runtime_wait_for_handoff_retry(runtime, error);
     if (rc == CAI_OK) {
-      rc = cai_runtime_checkpoint(runtime, 1, error);
+      rc = cai_runtime_commit(runtime, 1, error);
     }
   }
   if (rc == CAI_OK)
@@ -4794,7 +4794,7 @@ cai_runtime_deliver_steering_after_response(cai_agent_runtime *runtime,
   has_pending = runtime->pending_settings.present != 0U;
   pthread_mutex_unlock(&runtime->lock);
   if (rc == CAI_OK && has_pending) {
-    rc = cai_runtime_checkpoint(runtime, 1, error);
+    rc = cai_runtime_commit(runtime, 1, error);
     if (rc == CAI_OK)
       rc = cai_runtime_apply_pending_settings(runtime, error);
   }
@@ -4897,14 +4897,14 @@ cai_runtime_replay_consumed_input(cai_agent_runtime *runtime,
         error, CAI_ERR_INVALID,
         "input-consumed journal event has an invalid input sequence");
   }
-  /* The marker precedes the checkpoint that makes an injected input durable.
-   * A marker beyond the loaded checkpoint's watermark may have survived a
-   * crash before that checkpoint, so it must not suppress replay. */
+  /* The marker precedes the commit that makes an injected input durable.
+   * A marker beyond the loaded commit's watermark may have survived a
+   * crash before that commit, so it must not suppress replay. */
   if (event->sequence > runtime->applied_event_sequence) {
     return CAI_OK;
   }
   /* A v2 consumption marker may acknowledge a legacy input while migrating an
-   * existing session. That input continues to use the legacy checkpoint
+   * existing session. That input continues to use the legacy commit
    * watermark rule, so it is absent from the replay queues by design. */
   if (input_sequence < runtime->journal_v2_start_sequence) {
     return CAI_OK;
@@ -4917,9 +4917,9 @@ cai_runtime_replay_consumed_input(cai_agent_runtime *runtime,
         &runtime->turn_head, &runtime->turn_tail, &runtime->turn_count,
         input_sequence);
   }
-  /* Replaying an input after an interrupted checkpoint writes a fresh marker.
-   * A later checkpoint can cover both markers. The second acknowledgement is
-   * then a no-op, just like user_shell_context_consumed; the checkpoint is
+  /* Replaying an input after an interrupted commit writes a fresh marker.
+   * A later commit can cover both markers. The second acknowledgement is
+   * then a no-op, just like user_shell_context_consumed; the commit is
    * authoritative and no model input should be injected a second time. */
   return CAI_OK;
 }
@@ -5010,13 +5010,6 @@ static int cai_runtime_replay_journal_event(
                ? runtime->replay_callback(runtime->replay_context, event, error)
                : CAI_OK;
   }
-  if (runtime->history_rebuild != NULL) {
-    int rebuild_rc =
-        cai_history_rebuild_feed(runtime->history_rebuild, event,
-                                 runtime->applied_event_sequence, error);
-    if (rebuild_rc != CAI_OK)
-      return rebuild_rc;
-  }
   if (runtime->replay_callback != NULL) {
     int replay_rc =
         runtime->replay_callback(runtime->replay_context, event, error);
@@ -5054,7 +5047,7 @@ static int cai_runtime_replay_journal_event(
         *end != '\0' || sequence == 0U || sequence >= event->sequence)
       return cai_set_error(error, CAI_ERR_INVALID,
                            "invalid shell context acknowledgement");
-    /* An acknowledgement can survive a failed checkpoint, then be written
+    /* An acknowledgement can survive a failed commit, then be written
      * again on recovery. Covered acknowledgements are deliberately idempotent;
      * uncovered ones cannot suppress the completed result's recovery. */
     if (event->sequence <= runtime->applied_event_sequence)
@@ -5069,10 +5062,10 @@ static int cai_runtime_replay_journal_event(
   }
   if (strcmp(event->type, "review_pending") == 0 ||
       strcmp(event->type, "review_handoff_committed") == 0) {
-    /* A review transition takes effect only once the checkpoint that records
+    /* A review transition takes effect only once the commit that records
      * it is durable.  In particular, a handoff marker left beyond the loaded
-     * checkpoint watermark must not release queued work whose developer
-     * context may have been lost with the interrupted checkpoint. */
+     * commit watermark must not release queued work whose developer
+     * context may have been lost with the interrupted commit. */
     if (event->sequence <= runtime->applied_event_sequence) {
       runtime->review_pause_pending =
           strcmp(event->type, "review_pending") == 0;
@@ -5188,7 +5181,7 @@ static int cai_runtime_replay_journal_event(
   if (strcmp(event->type, "user_shell_unshared") == 0 &&
       event->sequence <= runtime->applied_event_sequence)
     return CAI_OK;
-  /* Journals written before input_journal_v2 used the checkpoint watermark as
+  /* Journals written before input_journal_v2 used the commit watermark as
    * their acknowledgement. Keep that recovery rule for their records so an
    * upgrade never replays a steering instruction already in old state. */
   if (event->sequence < runtime->journal_v2_start_sequence &&
@@ -5285,21 +5278,21 @@ static void cai_runtime_promote_resumed_steering(cai_agent_runtime *runtime) {
   runtime->steering_count = 0U;
 }
 
-static int cai_runtime_policy_checkpoint(void *context, cai_session *session,
-                                         cai_error *error) {
+static int cai_runtime_policy_commit(void *context, cai_session *session,
+                                     cai_error *error) {
   cai_agent_runtime *runtime = (cai_agent_runtime *)context;
   (void)session;
   if (cai_runtime_cancel_requested(runtime))
     return cai_set_error(error, CAI_ERR_CANCELLED,
                          "policy diagnostic was cancelled");
-  return cai_runtime_checkpoint(runtime, 1, error);
+  return cai_runtime_commit(runtime, 1, error);
 }
 
 static void cai_runtime_policy_diagnostic(cai_agent_runtime *runtime,
                                           const cai_error *failure,
                                           const cai_stream_sinks *sinks) {
   cai_error error;
-  cai_error checkpoint_error;
+  cai_error commit_error;
   cai_run_options options;
   char prompt[4096];
   unsigned long long sequence = 0U;
@@ -5323,7 +5316,7 @@ static void cai_runtime_policy_diagnostic(cai_agent_runtime *runtime,
       "Return only the diagnostic explanation, then stop.\n";
   int length;
   int rc;
-  int checkpoint_rc;
+  int commit_rc;
 
   if (failure->code != CAI_ERR_SERVER || failure->server_code == NULL ||
       (strcmp(failure->server_code, "cyber_policy") != 0 &&
@@ -5361,11 +5354,11 @@ static void cai_runtime_policy_diagnostic(cai_agent_runtime *runtime,
     rc = cai_runtime_append_journal_event_locked(runtime, "policy_diagnostic",
                                                  prompt, &sequence, &error);
     if (rc == CAI_OK)
-      cai_runtime_mark_checkpoint_event_locked(runtime, sequence);
+      cai_runtime_mark_commit_event_locked(runtime, sequence);
     pthread_mutex_unlock(&runtime->lock);
   }
   if (rc == CAI_OK)
-    rc = cai_runtime_checkpoint(runtime, 1, &error);
+    rc = cai_runtime_commit(runtime, 1, &error);
   if (rc == CAI_OK) {
     pthread_mutex_lock(&runtime->lock);
     rc = cai_runtime_enqueue_locked(
@@ -5377,25 +5370,24 @@ static void cai_runtime_policy_diagnostic(cai_agent_runtime *runtime,
     cai_run_options_init(&options);
     options.tool_event = cai_runtime_tool_event;
     options.tool_event_context = runtime;
-    options.tool_round_durable = cai_runtime_policy_checkpoint;
+    options.tool_round_durable = cai_runtime_policy_commit;
     options.tool_round_durable_context = runtime;
     rc = cai_session_stream_policy_diagnostic(runtime->session, &options, sinks,
                                               &error);
   }
   /* Successful inspections can consume usage and change history even when
    * a later response fails or reaches the diagnostic limit. */
-  cai_error_init(&checkpoint_error);
-  checkpoint_rc =
-      cai_runtime_refresh_goal_projection(runtime, &checkpoint_error);
-  if (checkpoint_rc == CAI_OK)
-    checkpoint_rc = cai_runtime_checkpoint(runtime, 1, &checkpoint_error);
-  if (checkpoint_rc != CAI_OK) {
+  cai_error_init(&commit_error);
+  commit_rc = cai_runtime_refresh_goal_projection(runtime, &commit_error);
+  if (commit_rc == CAI_OK)
+    commit_rc = cai_runtime_commit(runtime, 1, &commit_error);
+  if (commit_rc != CAI_OK) {
     cai_error_cleanup(&error);
-    error = checkpoint_error;
-    cai_error_init(&checkpoint_error);
-    rc = checkpoint_rc;
+    error = commit_error;
+    cai_error_init(&commit_error);
+    rc = commit_rc;
   }
-  cai_error_cleanup(&checkpoint_error);
+  cai_error_cleanup(&commit_error);
   if (!runtime->logger_disabled && runtime->logger != NULL) {
     if (rc == CAI_OK && runtime->logger->infof != NULL)
       runtime->logger->infof(
@@ -5483,7 +5475,7 @@ static void *cai_runtime_worker(void *context) {
   options.tool_event_context = runtime;
   options.tool_round_completed = cai_runtime_deliver_steering_after_tool_round;
   options.tool_round_completed_context = runtime;
-  options.tool_round_durable = cai_runtime_checkpoint_durable_tool_round;
+  options.tool_round_durable = cai_runtime_commit_durable_tool_round;
   options.tool_round_durable_context = runtime;
   for (;;) {
     manual_compaction = 0;
@@ -5630,7 +5622,7 @@ static void *cai_runtime_worker(void *context) {
       rc = cai_runtime_mark_input_consumed_locked(
           runtime, input->journal_sequence, &consumed_sequence, &error);
       if (rc == CAI_OK)
-        cai_runtime_mark_checkpoint_event_locked(runtime, consumed_sequence);
+        cai_runtime_mark_commit_event_locked(runtime, consumed_sequence);
       pthread_mutex_unlock(&runtime->lock);
       cai_runtime_input_node_free(input);
       budget_limited = 0;
@@ -5645,11 +5637,11 @@ static void *cai_runtime_worker(void *context) {
       rc = cai_runtime_mark_input_consumed_locked(
           runtime, input->journal_sequence, &consumed_sequence, &error);
       if (rc == CAI_OK) {
-        cai_runtime_mark_checkpoint_event_locked(runtime, consumed_sequence);
+        cai_runtime_mark_commit_event_locked(runtime, consumed_sequence);
       }
       pthread_mutex_unlock(&runtime->lock);
       if (rc == CAI_OK) {
-        rc = cai_runtime_checkpoint(runtime, 1, &error);
+        rc = cai_runtime_commit(runtime, 1, &error);
       }
       pthread_mutex_lock(&runtime->lock);
       runtime->accepting_steering = 0;
@@ -5738,7 +5730,7 @@ static void *cai_runtime_worker(void *context) {
         blocks[CAI_SESSION_IMPL(runtime->session)->history_blocks.count - 1U]
             .event_start = (long long)consumed_sequence;
       }
-      cai_runtime_mark_checkpoint_event_locked(runtime, consumed_sequence);
+      cai_runtime_mark_commit_event_locked(runtime, consumed_sequence);
       pthread_mutex_unlock(&runtime->lock);
     }
     budget_limited = 0;
@@ -5749,7 +5741,7 @@ static void *cai_runtime_worker(void *context) {
       rc = cai_runtime_refresh_goal_projection(runtime, &error);
     }
     if (rc == CAI_OK) {
-      rc = cai_runtime_checkpoint(runtime, 1, &error);
+      rc = cai_runtime_commit(runtime, 1, &error);
     }
     if (rc == CAI_OK) {
       pthread_mutex_lock(&runtime->lock);
@@ -5906,13 +5898,13 @@ static void *cai_runtime_worker(void *context) {
        * exact state durable before reporting the next-request boundary. */
       cai_error_cleanup(&error);
       cai_error_init(&error);
-      rc = cai_runtime_checkpoint(runtime, 1, &error);
+      rc = cai_runtime_commit(runtime, 1, &error);
     } else if (rc == CAI_ERR_LIMIT) {
       int usage_limited_goal = 0;
       int persist_rc;
 
       /* Preserve the limit error for the host while synchronously making a
-       * goal affected by a session/client cap resumable from its checkpoint. */
+       * goal affected by a session/client cap resumable from its commit. */
       persist_rc = cai_runtime_record_usage_limited_goal(
           runtime, &usage_limited_goal, &error);
       if (persist_rc == CAI_OK && usage_limited_goal) {
@@ -5922,7 +5914,7 @@ static void *cai_runtime_worker(void *context) {
         /* A length-limited Chat stream may have committed partial assistant
          * text even when no usage cap or goal is active. Persist that state
          * before reporting the exhausted continuation attempt. */
-        persist_rc = cai_runtime_checkpoint(runtime, 1, &error);
+        persist_rc = cai_runtime_commit(runtime, 1, &error);
       }
       if (persist_rc != CAI_OK) {
         rc = persist_rc;
@@ -5937,7 +5929,7 @@ static void *cai_runtime_worker(void *context) {
       rc = cai_runtime_refresh_goal_projection(runtime, &error);
     }
     if (rc == CAI_OK) {
-      rc = cai_runtime_checkpoint(runtime, 1, &error);
+      rc = cai_runtime_commit(runtime, 1, &error);
     }
     if (rc == CAI_OK && runtime->review_mode) {
       char *markdown = NULL;
@@ -5965,10 +5957,10 @@ static void *cai_runtime_worker(void *context) {
     if (manual_compaction)
       runtime->compacting = 0;
     /* Keep cancellation admission and terminal publication under the same
-     * lock: a request accepted during the final checkpoint must settle too. */
+     * lock: a request accepted during the final commit must settle too. */
     if (runtime->turn_cancel_requested) {
-      cai_error checkpoint_error;
-      int checkpoint_rc;
+      cai_error commit_error;
+      int commit_rc;
 
       if (rc == CAI_OK)
         rc = cai_set_error(&error, CAI_ERR_CANCELLED,
@@ -5976,33 +5968,33 @@ static void *cai_runtime_worker(void *context) {
       if (rc == CAI_ERR_CANCELLED)
         cai_runtime_promote_resumed_steering(runtime);
       pthread_mutex_unlock(&runtime->lock);
-      cai_error_init(&checkpoint_error);
-      checkpoint_rc =
-          cai_runtime_apply_queued_goal_controls(runtime, &checkpoint_error);
-      if (checkpoint_rc == CAI_OK &&
+      cai_error_init(&commit_error);
+      commit_rc =
+          cai_runtime_apply_queued_goal_controls(runtime, &commit_error);
+      if (commit_rc == CAI_OK &&
           CAI_SESSION_IMPL(runtime->session)->goal_status != NULL &&
           strcmp(CAI_SESSION_IMPL(runtime->session)->goal_status, "active") ==
               0) {
         int ignored_limit;
-        checkpoint_rc = cai_runtime_account_goal(runtime, &ignored_limit,
-                                                 &checkpoint_error);
-        if (checkpoint_rc == CAI_OK)
-          checkpoint_rc = cai_runtime_enqueue_goal_control(
+        commit_rc =
+            cai_runtime_account_goal(runtime, &ignored_limit, &commit_error);
+        if (commit_rc == CAI_OK)
+          commit_rc = cai_runtime_enqueue_goal_control(
               runtime, CAI_RUNTIME_GOAL_CANCEL_PAUSE, NULL, 0, 0LL,
-              &checkpoint_error);
-        if (checkpoint_rc == CAI_OK)
-          checkpoint_rc = cai_runtime_apply_queued_goal_controls(
-              runtime, &checkpoint_error);
+              &commit_error);
+        if (commit_rc == CAI_OK)
+          commit_rc =
+              cai_runtime_apply_queued_goal_controls(runtime, &commit_error);
       }
-      if (checkpoint_rc == CAI_OK)
-        checkpoint_rc = cai_runtime_checkpoint(runtime, 1, &checkpoint_error);
-      if (checkpoint_rc != CAI_OK) {
+      if (commit_rc == CAI_OK)
+        commit_rc = cai_runtime_commit(runtime, 1, &commit_error);
+      if (commit_rc != CAI_OK) {
         cai_error_cleanup(&error);
-        error = checkpoint_error;
-        cai_error_init(&checkpoint_error);
-        rc = checkpoint_rc;
+        error = commit_error;
+        cai_error_init(&commit_error);
+        rc = commit_rc;
       }
-      cai_error_cleanup(&checkpoint_error);
+      cai_error_cleanup(&commit_error);
       pthread_mutex_lock(&runtime->lock);
     }
     cai_runtime_turn_finish_locked(runtime);
@@ -6896,7 +6888,7 @@ static int cai_runtime_export_handover_markdown(cai_agent_runtime *runtime,
       &exporter, "> **Format:** `cai-agent-handover/1`\n>\n> ");
   (void)cai_runtime_export_literal(
       &exporter,
-      "This is a non-resumable handover document, not a session checkpoint. "
+      "This is a non-resumable handover document, not a session commit. "
       "It preserves durable conversation context and active developer "
       "instructions available to this runtime.\n\n");
   (void)cai_runtime_export_literal(&exporter, "## Runtime\n\n");
@@ -6987,7 +6979,7 @@ static int cai_runtime_export_handover_markdown(cai_agent_runtime *runtime,
   (void)cai_runtime_export_literal(
       &exporter,
       "- This Markdown does not resume or authenticate a CAI session; the "
-      "durable session checkpoint remains authoritative for continuation.\n"
+      "durable session commit remains authoritative for continuation.\n"
       "- No live terminal process, PTY state, in-flight model/tool call, or "
       "queued host input is included.\n"
       "- Non-text attachments are represented as omission markers; raw binary "
@@ -7142,13 +7134,17 @@ int cai_agent_runtime_trim_history(cai_agent_runtime *runtime, size_t count,
   unsigned long long old_watermark;
   unsigned long long through;
   int changed = 0;
+  int journal_replace;
+  size_t journal_keep;
   int rc = cai_runtime_owner(runtime, error);
   if (rc != CAI_OK || count == 0U)
     return rc;
   pthread_mutex_lock(&runtime->lock);
   rc = cai_runtime_history_ready(runtime, error);
-  old_watermark = runtime->checkpoint_event_sequence;
+  old_watermark = runtime->commit_event_sequence;
   through = runtime->next_event_sequence;
+  journal_replace = CAI_SESSION_IMPL(runtime->session)->journal_replace;
+  journal_keep = CAI_SESSION_IMPL(runtime->session)->journal_keep_bytes;
   if (rc == CAI_OK) {
     runtime->settings_applying = 1;
     runtime->model_switching = 1;
@@ -7166,9 +7162,9 @@ int cai_agent_runtime_trim_history(cai_agent_runtime *runtime, size_t count,
   }
   if (rc == CAI_OK) {
     pthread_mutex_lock(&runtime->lock);
-    cai_runtime_mark_checkpoint_event_locked(runtime, through);
+    cai_runtime_mark_commit_event_locked(runtime, through);
     pthread_mutex_unlock(&runtime->lock);
-    rc = cai_runtime_checkpoint(runtime, 1, error);
+    rc = cai_runtime_commit(runtime, 1, error);
   }
   if (rc != CAI_OK && changed) {
     int rollback_rc;
@@ -7177,12 +7173,16 @@ int cai_agent_runtime_trim_history(cai_agent_runtime *runtime, size_t count,
     if (rollback_rc == CAI_OK)
       rollback_rc = cai_session_import_state_source(runtime->session, snapshot,
                                                     &rollback_error);
+    if (rollback_rc == CAI_OK) {
+      CAI_SESSION_IMPL(runtime->session)->journal_replace = journal_replace;
+      CAI_SESSION_IMPL(runtime->session)->journal_keep_bytes = journal_keep;
+    }
     if (rollback_rc == CAI_OK)
       rollback_rc =
           cai_runtime_refresh_goal_projection(runtime, &rollback_error);
     if (rollback_rc != CAI_OK)
       rc = cai_set_error_detail(error, rollback_rc,
-                                "trim checkpoint failed and original history "
+                                "trim commit failed and original history "
                                 "could not be restored; reopen the session",
                                 rollback_error.message);
     cai_error_cleanup(&rollback_error);
@@ -7190,7 +7190,7 @@ int cai_agent_runtime_trim_history(cai_agent_runtime *runtime, size_t count,
   cai_source_close(snapshot);
   pthread_mutex_lock(&runtime->lock);
   if (rc != CAI_OK)
-    runtime->checkpoint_event_sequence = old_watermark;
+    runtime->commit_event_sequence = old_watermark;
   else if (CAI_SESSION_IMPL(runtime->session)->history_items == 0U)
     runtime->history_compaction_pending = 0;
   runtime->settings_applying = 0;
@@ -7257,18 +7257,17 @@ int cai_agent_runtime_select_board(cai_agent_runtime *runtime, const char *name,
     changed = rc == CAI_OK;
   }
   if (rc == CAI_OK)
-    rc = cai_runtime_checkpoint(runtime, 1, error);
+    rc = cai_runtime_commit(runtime, 1, error);
   if (rc != CAI_OK && changed) {
     cai_error_init(&rollback);
     if (cai_todo_select(runtime->todo, previous, 1, &rollback) != CAI_OK) {
       pthread_mutex_lock(&runtime->lock);
       runtime->pending_settings_failed = 1;
       pthread_mutex_unlock(&runtime->lock);
-      rc =
-          cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                               "Board checkpoint failed and previous selection "
-                               "could not be restored; reopen the session",
-                               rollback.message);
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "Board commit failed and previous selection "
+                                "could not be restored; reopen the session",
+                                rollback.message);
     }
     cai_error_cleanup(&rollback);
   }
@@ -7567,7 +7566,7 @@ int cai_agent_runtime_open(cai_client *client,
   char *subagent_instructions;
   char *combined_instructions;
   int review_mode;
-  int resumed_checkpoint;
+  int resumed_commit;
   size_t i;
   int rc;
 
@@ -7620,7 +7619,7 @@ int cai_agent_runtime_open(cai_client *client,
                          "synchronized input requires an event callback");
   review_mode = config->preset != NULL &&
                 strcmp(config->preset, CAI_SMITH_REVIEW_PRESET) == 0;
-  resumed_checkpoint = 0;
+  resumed_commit = 0;
   if (config->preset != NULL && strcmp(config->preset, CAI_SMITH_PRESET) != 0 &&
       !review_mode) {
     return cai_set_error(error, CAI_ERR_INVALID, "unsupported agent preset");
@@ -7939,7 +7938,7 @@ int cai_agent_runtime_open(cai_client *client,
                : cai_runtime_copy_string(scope, &runtime->session_scope, error);
     }
     if (rc == CAI_OK && config->session_store != NULL) {
-      if (config->session_store->checkpoint == NULL ||
+      if (config->session_store->commit == NULL ||
           config->session_store->load_latest == NULL ||
           config->session_store->append_event == NULL ||
           config->session_store->load_events_after == NULL) {
@@ -7975,7 +7974,7 @@ int cai_agent_runtime_open(cai_client *client,
               &runtime->applied_event_sequence, error);
           if (rc == CAI_OK && state == NULL) {
             rc = cai_set_error(error, CAI_ERR_INVALID,
-                               "requested session has no checkpoint");
+                               "requested session has no commit");
           } else if (rc == CAI_OK) {
             memcpy(session_id, config->resume_session_id,
                    strlen(config->resume_session_id) + 1U);
@@ -7988,8 +7987,13 @@ int cai_agent_runtime_open(cai_client *client,
             error);
       }
       if (rc == CAI_OK && state != NULL) {
-        runtime->checkpoint_event_sequence = runtime->applied_event_sequence;
-        rc = cai_session_import_state_source(runtime->session, state, error);
+        runtime->commit_event_sequence = runtime->applied_event_sequence;
+        rc = cai_session_restore_journal_source(runtime->session, state, error);
+        if (rc == CAI_OK) {
+          runtime->applied_event_sequence =
+              CAI_SESSION_IMPL(runtime->session)->journal_applied_sequence;
+          runtime->commit_event_sequence = runtime->applied_event_sequence;
+        }
         if (rc == CAI_OK) {
           rc = cai_runtime_validate_resumed_preset(runtime, error);
         }
@@ -8079,7 +8083,7 @@ int cai_agent_runtime_open(cai_client *client,
           rc = cai_runtime_copy_string(session_id, &runtime->session_id, error);
           if (rc == CAI_OK) {
             runtime->history_compaction_pending = 1;
-            resumed_checkpoint = 1;
+            resumed_commit = 1;
           }
         }
       }
@@ -8100,21 +8104,11 @@ int cai_agent_runtime_open(cai_client *client,
         (config->resume_latest || config->resume_session_id != NULL)) {
       runtime->next_event_sequence = runtime->applied_event_sequence;
       runtime->journal_v2_start_sequence = ULLONG_MAX;
-      if (CAI_SESSION_IMPL(runtime->session)->history_blocks.count == 0U &&
-          CAI_SESSION_IMPL(runtime->session)
-                  ->history.size_fn(
-                      &CAI_SESSION_IMPL(runtime->session)->history) != 0U)
-        rc = cai_history_rebuild_open(&runtime->history_rebuild, error);
       if (rc == CAI_OK)
         rc = runtime->session_store->load_events_after(
             runtime->session_store->context, runtime->session_scope,
             runtime->session_id, 0U, cai_runtime_replay_journal_event, runtime,
             error);
-      if (rc == CAI_OK && runtime->history_rebuild != NULL)
-        rc = cai_history_rebuild_finish(runtime->history_rebuild,
-                                        runtime->session, error);
-      cai_history_rebuild_close(runtime->history_rebuild);
-      runtime->history_rebuild = NULL;
       if (rc == CAI_OK) {
         cai_runtime_promote_resumed_steering(runtime);
       }
@@ -8124,7 +8118,7 @@ int cai_agent_runtime_open(cai_client *client,
             runtime, "input_journal_v2", NULL,
             &runtime->journal_v2_start_sequence, error);
         if (rc == CAI_OK) {
-          cai_runtime_mark_checkpoint_event_locked(
+          cai_runtime_mark_commit_event_locked(
               runtime, runtime->journal_v2_start_sequence);
         }
         pthread_mutex_unlock(&runtime->lock);
@@ -8135,15 +8129,15 @@ int cai_agent_runtime_open(cai_client *client,
       rc = cai_todo_select(runtime->todo,
                            CAI_SESSION_IMPL(runtime->session)->state_todo_board,
                            1, error);
-    if (rc == CAI_OK && resumed_checkpoint) {
+    if (rc == CAI_OK && resumed_commit) {
       rc = cai_runtime_recover_interrupted_subagent(runtime, error);
     }
     if (rc == CAI_OK)
       rc = cai_runtime_deliver_shell_context(runtime, error);
-    /* A durable journal is v2 from its first checkpoint.  In particular,
+    /* A durable journal is v2 from its first commit.  In particular,
      * an input accepted after this empty anchor must not be treated as a
      * legacy watermark-only record if the process crashes before its own
-     * checkpoint. */
+     * commit. */
     if (rc == CAI_OK && runtime->session_store != NULL &&
         !config->resume_latest && config->resume_session_id == NULL) {
       pthread_mutex_lock(&runtime->lock);
@@ -8151,22 +8145,22 @@ int cai_agent_runtime_open(cai_client *client,
           runtime, "input_journal_v2", NULL,
           &runtime->journal_v2_start_sequence, error);
       if (rc == CAI_OK) {
-        cai_runtime_mark_checkpoint_event_locked(
+        cai_runtime_mark_commit_event_locked(
             runtime, runtime->journal_v2_start_sequence);
       }
       pthread_mutex_unlock(&runtime->lock);
     }
-    /* The local JSONL backend discovers sessions through checkpoints.  Create
+    /* The local JSONL backend discovers sessions through commits.  Create
      * a silent empty anchor before the worker can acknowledge a first durable
      * queued turn, so that a crash in that first-turn window remains resumable.
      */
-    if (rc == CAI_OK && runtime->session_store != NULL && !resumed_checkpoint) {
-      rc = cai_runtime_checkpoint(runtime, 0, error);
+    if (rc == CAI_OK && runtime->session_store != NULL && !resumed_commit) {
+      rc = cai_runtime_commit(runtime, 0, error);
     }
   }
   /* Settle replayed controls before hosts inspect the goal and decide whether
    * to start pursuit. In particular, a journaled cancellation must not expose
-   * the older active checkpoint as a resumable goal. */
+   * the older active commit as a resumable goal. */
   if (rc == CAI_OK) {
     rc = cai_runtime_apply_queued_goal_controls(runtime, error);
   }
@@ -8381,7 +8375,7 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
     return cai_set_error(error, CAI_ERR_LIMIT,
                          "goal token budget is exhausted");
   }
-  /* Do not accept work in the interval before start_review has checkpointed
+  /* Do not accept work in the interval before start_review has committed
    * its durable pause marker.  Once the live/persisted pause is established,
    * queued turns are accepted and held normally. */
   if (kind == CAI_RUNTIME_INPUT_QUEUED_TURN && runtime->review_launching) {
@@ -8455,7 +8449,7 @@ static int cai_runtime_enqueue_input(cai_agent_runtime *runtime,
   }
   /* This synchronous append is the acceptance point. In particular, do not
    * report an immediate turn as accepted until it can survive a process crash
-   * before the worker reaches its first checkpoint. */
+   * before the worker reaches its first commit. */
   rc = cai_runtime_append_journal_event_locked(
       runtime, journal_type, node->text, &node->journal_sequence, error);
   if (rc != CAI_OK) {
@@ -8582,7 +8576,7 @@ static int cai_runtime_set_model_internal(
   if (rc == CAI_OK && runtime->session_store != NULL &&
       runtime->event_callback != NULL) {
     /* The owner must never wait for an event it alone can pump.  Reserve the
-     * checkpoint notification slot before mutating the selected model. */
+     * commit notification slot before mutating the selected model. */
     rc = cai_runtime_require_event_capacity_locked(runtime, error);
   }
   if (rc == CAI_OK) {
@@ -8785,7 +8779,7 @@ static int cai_runtime_set_model_internal(
    * compare it with the selected model. */
   if (model_changed)
     runtime->history_compaction_pending = preserve_history_compatibility;
-  rc = cai_runtime_checkpoint(runtime, requires_compaction ? 0 : 1, error);
+  rc = cai_runtime_commit(runtime, requires_compaction ? 0 : 1, error);
   if (next_instructions != NULL) {
     if (rc != CAI_OK) {
       cai_free_mem(&CAI_CLIENT_IMPL(runtime->client)->allocator,
@@ -9926,7 +9920,7 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
                                                  &pause_marker_sequence, error);
     if (rc == CAI_OK && parent->session_store != NULL) {
       pause_marker_appended = 1;
-      cai_runtime_mark_checkpoint_event_locked(parent, pause_marker_sequence);
+      cai_runtime_mark_commit_event_locked(parent, pause_marker_sequence);
     }
   } else if (rc == CAI_OK) {
     rc = cai_set_error(error, CAI_ERR_CANCELLED,
@@ -9935,9 +9929,9 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
   pthread_mutex_unlock(&parent->lock);
   /* Do not let callers queue work until a resumed parent can reconstruct the
    * pause.  The live review_launching gate remains set through this silent
-   * checkpoint. */
+   * commit. */
   if (rc == CAI_OK) {
-    rc = cai_runtime_checkpoint(parent, 0, error);
+    rc = cai_runtime_commit(parent, 0, error);
   }
 
   pthread_mutex_lock(&parent->lock);
@@ -9962,9 +9956,9 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
   pthread_mutex_unlock(&parent->lock);
   if (rc != CAI_OK) {
     if (pause_marker_appended) {
-      /* The journal may outlive this failed checkpoint. Keep the same child
-       * and pause reachable so a later handoff checkpoint can resolve it;
-       * otherwise an unrelated checkpoint could make a phantom review pause
+      /* The journal may outlive this failed commit. Keep the same child
+       * and pause reachable so a later handoff commit can resolve it;
+       * otherwise an unrelated commit could make a phantom review pause
        * durable on the next resume. */
       *out_review = review;
       return rc;
@@ -10141,17 +10135,17 @@ static int cai_runtime_finish_review_internal(cai_agent_runtime *parent,
         &handoff_marker_sequence, error);
     if (rc == CAI_OK) {
       parent->review_handoff_resolved = 1;
-      cai_runtime_mark_checkpoint_event_locked(parent, handoff_marker_sequence);
+      cai_runtime_mark_commit_event_locked(parent, handoff_marker_sequence);
     }
     pthread_mutex_unlock(&parent->lock);
     if (rc != CAI_OK) {
       return rc;
     }
   }
-  /* The checkpoint covers both the developer-role handoff and its resolution
+  /* The commit covers both the developer-role handoff and its resolution
    * marker. A crash before it completes therefore restores the pause instead
    * of releasing queued work without the handoff context. */
-  rc = cai_runtime_checkpoint(parent, 0, error);
+  rc = cai_runtime_commit(parent, 0, error);
   if (rc != CAI_OK) {
     return rc;
   }
@@ -10640,13 +10634,13 @@ static int cai_runtime_run_subagent(void *context, const void *params,
                                                pending_data,
                                                &pending_marker_sequence, error);
   if (rc == CAI_OK) {
-    cai_runtime_mark_checkpoint_event_locked(parent, pending_marker_sequence);
+    cai_runtime_mark_commit_event_locked(parent, pending_marker_sequence);
     parent->subagent_handoff_resolution_pending = 1;
   }
   pthread_mutex_unlock(&parent->lock);
   cai_free_mem(NULL, pending_data);
   if (rc == CAI_OK)
-    rc = cai_runtime_checkpoint(parent, 0, error);
+    rc = cai_runtime_commit(parent, 0, error);
   if (rc != CAI_OK) {
     pthread_mutex_lock(&parent->lock);
     parent->subagent_active = 0;
@@ -10984,13 +10978,12 @@ static int cai_runtime_recover_interrupted_subagent(cai_agent_runtime *runtime,
         runtime, "subagent_handoff_committed", child_session_id,
         &handoff_marker_sequence, error);
     if (rc == CAI_OK) {
-      cai_runtime_mark_checkpoint_event_locked(runtime,
-                                               handoff_marker_sequence);
+      cai_runtime_mark_commit_event_locked(runtime, handoff_marker_sequence);
     }
     pthread_mutex_unlock(&runtime->lock);
   }
   if (rc == CAI_OK) {
-    rc = cai_runtime_checkpoint(runtime, 0, error);
+    rc = cai_runtime_commit(runtime, 0, error);
   }
   if (rc == CAI_OK) {
     pthread_mutex_lock(&runtime->lock);
@@ -12741,6 +12734,42 @@ int cai_agent_runtime_get_metrics(cai_agent_runtime *runtime,
 
 const char *cai_agent_runtime_session_id(const cai_agent_runtime *runtime) {
   return runtime != NULL ? runtime->session_id : NULL;
+}
+
+int cai_agent_runtime_export_journal_state(cai_agent_runtime *runtime,
+                                           cai_sink *sink, cai_error *error) {
+  cai_source *source = NULL;
+  struct timespec now;
+  char header[192];
+  int count, rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (sink == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "journal export sink is required");
+  pthread_mutex_lock(&runtime->lock);
+  rc = cai_runtime_export_idle_locked(runtime, error);
+  if (rc == CAI_OK && clock_gettime(CLOCK_REALTIME, &now) != 0)
+    rc = cai_set_error(error, CAI_ERR_TRANSPORT,
+                       "read journal export timestamp");
+  if (rc == CAI_OK)
+    rc = cai_session_journal_seed_source(runtime->session, &source, error);
+  if (rc == CAI_OK) {
+    count = snprintf(header, sizeof(header),
+                     "{\"record_type\":\"commit\",\"commit_created_at_ns\":%"
+                     "llu,\"applied_event_sequence\":%llu,\"state\":",
+                     (unsigned long long)now.tv_sec * 1000000000ULL +
+                         (unsigned long long)now.tv_nsec,
+                     runtime->applied_event_sequence);
+    rc = cai_sink_write(sink, header, (size_t)count, error);
+  }
+  if (rc == CAI_OK)
+    rc = cai_source_copy_to_sink(source, sink, error);
+  if (rc == CAI_OK)
+    rc = cai_sink_write(sink, "}\n", 2U, error);
+  cai_source_close(source);
+  pthread_mutex_unlock(&runtime->lock);
+  return rc;
 }
 
 int cai_agent_runtime_export_markdown(cai_agent_runtime *runtime,

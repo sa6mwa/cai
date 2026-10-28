@@ -51,6 +51,7 @@ int cai_app_kanban_open(const cai_app_kanban_config *config, cai_todo **out,
   options.state_dir = config->state_directory;
   options.lockd = config->lockd;
   options.lockd_client_pem = config->lockd_client_pem;
+  options.disable_compression = config->disable_compression;
   if (rc == CAI_OK)
     rc = cai_cli_pouch_open_options(&store->pouch, &options, store->log->logger,
                                     error);

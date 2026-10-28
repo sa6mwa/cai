@@ -395,6 +395,11 @@ settings. Remote encryption and access policy are managed by the server.
 Enable remote mTLS with a combined client certificate, private key, and CA
 PEM bundle. HTTPS verifies server certificates.
 .TP
+.B \-\-disable-compression
+Disable Pouch zlib compression (enabled by default). The configured mode must
+match an existing root. Also configured with CAI_DISABLE_COMPRESSION or
+[storage] disable_compression in config.ini. Remote lockd is unaffected.
+.TP
 .BI \-\-export " ID"
 Export resumable JSONL and Markdown for a conversation and exit. Markdown uses
 libcai's existing exporter, including instructions and runtime/goal metadata.
@@ -1066,10 +1071,12 @@ Preferred ChatGPT authentication file when present.
 .I $XDG_STATE_HOME/cai/pouch
 Encrypted default Pouch root containing cai.sessions and cai.auth namespaces,
 plus a derived cai.scopes index for newest-session lookup. Missing or interrupted
-directory indexes are rebuilt from session metadata.
-Conversation checkpoints and journal events are immutable entries in separate
-ordered collections. Attachment-backed development sessions are unsupported;
-start a new conversation with --new. No automatic migration is performed.
+directory indexes are rebuilt from session identities and journal headers.
+Incremental state commits and observation events share one ordered collection
+per conversation. Normal commits append only new context; trim retains a prefix,
+and compaction replaces context once. No recurring full conversation snapshots
+are written. Old snapshot/attachment stores are unsupported; use a fresh root.
+No automatic migration is performed. Pouch compression defaults to zlib.
 Uses ~/.local/state/cai/pouch when XDG_STATE_HOME is unset.
 .TP
 .I $XDG_STATE_HOME/cai/pouch.key
@@ -1079,7 +1086,8 @@ replacement for an existing root. Uses ~/.local/state/cai/pouch.key when
 XDG_STATE_HOME is unset. The cai state directory must be private (mode 0700).
 .TP
 .I $XDG_DATA_HOME/cai/exports/ID/ID.jsonl
-Default resumable conversation export, including checkpoint and journal.
+Default resumable conversation export: visible journal events and one
+initialization commit of retained context. Trimmed content is excluded.
 Uses ~/.local/share/cai/exports/ID/ID.jsonl when XDG_DATA_HOME is unset, empty,
 or relative.
 .TP

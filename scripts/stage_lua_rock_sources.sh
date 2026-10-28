@@ -60,6 +60,7 @@ files=(
   docs/embedding.md
   docs/agent-messaging.md
   docs/kanban.md
+  docs/journal.md
   examples/app.lua
   cli/main.c
   cai.rockspec.in

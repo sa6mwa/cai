@@ -360,6 +360,7 @@ int cai_session_history_trim(cai_session *session, size_t count,
   rc = cai_history_prefix(session, keep, &next, NULL, error);
   if (rc == CAI_OK) {
     cai_history_replace(session, &next);
+    impl->journal_keep_bytes = impl->history.size_fn(&impl->history);
     impl->history_items = keep;
     impl->history_items_known = 1;
     impl->history_blocks.count = first;

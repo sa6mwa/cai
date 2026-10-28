@@ -498,7 +498,7 @@ if(CAI_BUILD_TESTS)
     agent_runtime_failed_subagent_resume
     agent_runtime_poll_only_subagent
     agent_runtime_review_subagent
-    smith_review_pause_checkpoint_failure
+    smith_review_pause_commit_failure
     agent_runtime_lifecycle
     agent_runtime_ids
     agent_runtime_skills
@@ -518,7 +518,7 @@ if(CAI_BUILD_TESTS)
     agent_runtime_host_goal_controls
     agent_runtime_goal_replace
     agent_runtime_goal_replace_queued_failure
-    agent_runtime_goal_checkpoint_watermark
+    agent_runtime_goal_commit_watermark
     agent_runtime_goal_create_status_allocation_failure
     agent_runtime_goal_budget
     agent_runtime_goal_usage_limit

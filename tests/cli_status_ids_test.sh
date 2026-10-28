@@ -14,7 +14,7 @@ run --list; ok
 id=$(awk 'NR==1 {print $1}' "$root/stdout")
 run --export "$id"; ok
 exported="$root/data/cai/exports/$id/$id.jsonl"
-response=$(jq -r 'select(.record_type == "checkpoint") | .state.previous_response_id' "$exported")
+response=$(jq -r 'select(.record_type == "commit") | .state.metadata.previous_response_id' "$exported")
 [[ -n "$response" && "$response" != null ]]
 before=$(requests)
 send '/status\r'; expect "$id"; expect "$response"; expect 'Use /tools'
@@ -25,7 +25,7 @@ send '/status\r'; expect "$id"; expect "$response"; expect 'Use /tools'
 release; expect_turn "$send_offset" 'ID SECOND'
 terminal_close
 run --export "$id"; ok
-latest=$(jq -r 'select(.record_type == "checkpoint") | .state.previous_response_id' "$exported")
+latest=$(jq -r 'select(.record_type == "commit") | .state.metadata.previous_response_id' "$exported")
 [[ -n "$latest" && "$latest" != null ]]
 if [[ "$chat" == false ]]; then [[ "$latest" != "$response" ]]; fi
 before=$(requests)

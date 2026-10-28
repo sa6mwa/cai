@@ -242,19 +242,19 @@ typedef struct runtime_close_steering_callback_state {
 } runtime_close_steering_callback_state;
 
 typedef struct runtime_session_store_state {
-  const char *checkpoint_json;
+  const char *commit_json;
   read_state reader;
   int loads;
   int journal_loads;
-  int checkpoints;
+  int commits;
   int load_only_saved_scope;
-  int fail_checkpoint_once;
-  int fail_checkpoint_after;
-  int saw_goal_checkpoint_without_tool_output;
-  int saw_steering_checkpoint_before_watermark;
-  const char *first_compaction_checkpoint_required;
-  int saw_first_compaction_checkpoint;
-  int first_compaction_checkpoint_matches;
+  int fail_commit_once;
+  int fail_commit_after;
+  int saw_goal_commit_without_tool_output;
+  int saw_steering_commit_before_watermark;
+  const char *first_compaction_commit_required;
+  int saw_first_compaction_commit;
+  int first_compaction_commit_matches;
   int appended_events;
   int fail_append_once;
   unsigned long long load_applied_event_sequence;
@@ -269,19 +269,24 @@ typedef struct runtime_session_store_state {
   char scope[128];
   char session_id[CAI_AGENT_SESSION_ID_MAX];
   char loaded_session_id[CAI_AGENT_SESSION_ID_MAX];
-  char fail_checkpoint_session_id[CAI_AGENT_SESSION_ID_MAX];
-  char saved_checkpoint[8192];
+  char fail_commit_session_id[CAI_AGENT_SESSION_ID_MAX];
+  char saved_commit[8192];
+  /* Fixed fixture journals: no disk or provider calls. Snapshots below remain
+   * assertion fixtures for the explicit state import/export API only. */
+  char journals[8][65536];
+  char journal_ids[8][CAI_AGENT_SESSION_ID_MAX];
+  char loaded_journal[32768];
 } runtime_session_store_state;
 
-typedef struct runtime_goal_checkpoint_race_state {
+typedef struct runtime_goal_commit_race_state {
   runtime_session_store_state store;
   pthread_mutex_t lock;
   pthread_cond_t condition;
-  int block_checkpoint;
-  int checkpoint_waiting;
-  int checkpoint_released;
+  int block_commit;
+  int commit_waiting;
+  int commit_released;
   unsigned long long blocked_applied_event_sequence;
-} runtime_goal_checkpoint_race_state;
+} runtime_goal_commit_race_state;
 
 typedef struct session_event_capture_state {
   int count;
@@ -2346,7 +2351,9 @@ static int test_runtime_close_from_terminal_event(
   return CAI_OK;
 }
 
-static int test_runtime_session_store_checkpoint(
+#include "session_journal_fixture.inc"
+
+static int test_runtime_session_store_commit(
     void *context, const char *scope, const char *session_id, cai_source *state,
     unsigned long long applied_event_sequence, cai_error *error) {
   runtime_session_store_state *store;
@@ -2355,85 +2362,109 @@ static int test_runtime_session_store_checkpoint(
   store = (runtime_session_store_state *)context;
   if (store == NULL || state == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "runtime test checkpoint state is required");
+                         "runtime test commit state is required");
   }
-  if (store->fail_checkpoint_once > 0 &&
-      strcmp(session_id, store->fail_checkpoint_session_id) == 0) {
-    if (store->fail_checkpoint_after > 0) {
-      store->fail_checkpoint_after--;
+  if (store->fail_commit_once > 0 &&
+      strcmp(session_id, store->fail_commit_session_id) == 0) {
+    if (store->fail_commit_after > 0) {
+      store->fail_commit_after--;
     } else {
-      store->fail_checkpoint_once--;
+      store->fail_commit_once--;
       return cai_set_error(error, CAI_ERR_TRANSPORT,
-                           "injected runtime checkpoint failure");
+                           "injected runtime commit failure");
     }
   }
-  store->checkpoints++;
+  store->commits++;
   store->saved_applied_event_sequence = applied_event_sequence;
   (void)snprintf(store->scope, sizeof(store->scope), "%s", scope);
   (void)snprintf(store->session_id, sizeof(store->session_id), "%s",
                  session_id);
   offset = 0U;
-  while (offset + 1U < sizeof(store->saved_checkpoint)) {
+  while (offset + 1U < sizeof(store->saved_commit)) {
     size_t count;
 
-    count =
-        cai_source_read(state, store->saved_checkpoint + offset,
-                        sizeof(store->saved_checkpoint) - offset - 1U, error);
+    count = cai_source_read(state, store->saved_commit + offset,
+                            sizeof(store->saved_commit) - offset - 1U, error);
     if (count == 0U) {
       break;
     }
     offset += count;
   }
-  if (offset + 1U == sizeof(store->saved_checkpoint)) {
+  if (offset + 1U == sizeof(store->saved_commit)) {
     return cai_set_error(error, CAI_ERR_LIMIT,
-                         "runtime test checkpoint buffer is too small");
+                         "runtime test commit buffer is too small");
   }
-  store->saved_checkpoint[offset] = '\0';
-  if (strstr(store->saved_checkpoint, "interleaved steering") != NULL &&
+  store->saved_commit[offset] = '\0';
+  {
+    size_t slot, used;
+    int rc;
+    for (slot = 0U; slot < 8U; slot++)
+      if (store->journal_ids[slot][0] == '\0' ||
+          strcmp(store->journal_ids[slot], session_id) == 0)
+        break;
+    if (slot == 8U)
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "test session journal slots exhausted");
+    snprintf(store->journal_ids[slot], sizeof(store->journal_ids[slot]), "%s",
+             session_id);
+    used = strlen(store->journals[slot]);
+    if (used + offset + 100U >= sizeof(store->journals[slot]))
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "test session journal exhausted");
+    snprintf(store->journals[slot] + used, sizeof(store->journals[slot]) - used,
+             "{\"record_type\":\"commit\",\"applied_event_sequence\":%llu,"
+             "\"state\":%s}\n",
+             applied_event_sequence, store->saved_commit);
+    rc = test_journal_fixture(store->journals[slot], 1, 0U, store->saved_commit,
+                              sizeof(store->saved_commit), error);
+    if (rc != CAI_OK)
+      return rc;
+  }
+  if (strstr(store->saved_commit, "interleaved steering") != NULL &&
       applied_event_sequence < 2U) {
-    store->saw_steering_checkpoint_before_watermark = 1;
+    store->saw_steering_commit_before_watermark = 1;
   }
-  if (strstr(store->saved_checkpoint, "\"goal_status\":\"budget_limited\"") !=
+  if (strstr(store->saved_commit, "\"goal_status\":\"budget_limited\"") !=
           NULL &&
-      strstr(store->saved_checkpoint, "\"type\":\"function_call_output\"") ==
+      strstr(store->saved_commit, "\"type\":\"function_call_output\"") ==
           NULL) {
-    store->saw_goal_checkpoint_without_tool_output = 1;
+    store->saw_goal_commit_without_tool_output = 1;
   }
-  if (!store->saw_first_compaction_checkpoint &&
-      strstr(store->saved_checkpoint, "opaque-summary") != NULL) {
-    store->saw_first_compaction_checkpoint = 1;
-    store->first_compaction_checkpoint_matches =
-        store->first_compaction_checkpoint_required == NULL ||
-        strstr(store->saved_checkpoint,
-               store->first_compaction_checkpoint_required) != NULL;
+  if (!store->saw_first_compaction_commit &&
+      strstr(store->saved_commit, "opaque-summary") != NULL) {
+    store->saw_first_compaction_commit = 1;
+    store->first_compaction_commit_matches =
+        store->first_compaction_commit_required == NULL ||
+        strstr(store->saved_commit, store->first_compaction_commit_required) !=
+            NULL;
   }
   return CAI_OK;
 }
 
-static int test_runtime_goal_race_checkpoint(
+static int test_runtime_goal_race_commit(
     void *context, const char *scope, const char *session_id, cai_source *state,
     unsigned long long applied_event_sequence, cai_error *error) {
-  runtime_goal_checkpoint_race_state *race;
+  runtime_goal_commit_race_state *race;
   int should_block;
   int rc;
 
-  race = (runtime_goal_checkpoint_race_state *)context;
+  race = (runtime_goal_commit_race_state *)context;
   if (race == NULL) {
     return cai_set_error(error, CAI_ERR_INVALID,
-                         "goal checkpoint race state is required");
+                         "goal commit race state is required");
   }
-  rc = test_runtime_session_store_checkpoint(
-      &race->store, scope, session_id, state, applied_event_sequence, error);
+  rc = test_runtime_session_store_commit(&race->store, scope, session_id, state,
+                                         applied_event_sequence, error);
   if (rc != CAI_OK) {
     return rc;
   }
   pthread_mutex_lock(&race->lock);
-  should_block = race->block_checkpoint && !race->checkpoint_waiting;
+  should_block = race->block_commit && !race->commit_waiting;
   if (should_block) {
     race->blocked_applied_event_sequence = applied_event_sequence;
-    race->checkpoint_waiting = 1;
+    race->commit_waiting = 1;
     pthread_cond_broadcast(&race->condition);
-    while (!race->checkpoint_released) {
+    while (!race->commit_released) {
       pthread_cond_wait(&race->condition, &race->lock);
     }
   }
@@ -2469,7 +2500,29 @@ static int test_runtime_session_store_load(
   }
   (void)snprintf(store->scope, sizeof(store->scope), "%s", scope);
   (void)snprintf(session_id, session_id_capacity, "%s", loaded_session_id);
-  store->reader.text = store->checkpoint_json;
+  if (store->commit_json != NULL) {
+    int rc = test_journal_fixture(
+        store->commit_json, 0, store->load_applied_event_sequence,
+        store->loaded_journal, sizeof(store->loaded_journal), error);
+    size_t slot;
+    if (rc != CAI_OK)
+      return rc;
+    for (slot = 0U; slot < 8U; slot++)
+      if (store->journal_ids[slot][0] == '\0' ||
+          strcmp(store->journal_ids[slot], loaded_session_id) == 0)
+        break;
+    if (slot == 8U)
+      return cai_set_error(error, CAI_ERR_LIMIT,
+                           "test session journal slots exhausted");
+    snprintf(store->journal_ids[slot], sizeof(store->journal_ids[slot]), "%s",
+             loaded_session_id);
+    snprintf(store->journals[slot], sizeof(store->journals[slot]), "%s",
+             store->loaded_journal);
+    store->reader.text = store->loaded_journal;
+  } else {
+    *out = NULL;
+    return CAI_OK;
+  }
   store->reader.offset = 0U;
   store->reader.closed = 0;
   memset(&callbacks, 0, sizeof(callbacks));
@@ -26218,7 +26271,7 @@ static void test_smith_profile(test_state *state) {
              mkdtemp(runtime_workspace) != NULL, 1L);
   runtime_config.workspace_directory = runtime_workspace;
   runtime_config.preset_descriptor = &preset;
-  runtime_store.checkpoint = test_runtime_session_store_checkpoint;
+  runtime_store.commit = test_runtime_session_store_commit;
   runtime_store.load_latest = test_runtime_session_store_load;
   runtime_store.append_event = test_runtime_session_store_append_event;
   runtime_store.load_events_after =
@@ -26234,11 +26287,11 @@ static void test_smith_profile(test_state *state) {
     expect_int(state, "custom_preset_runtime_open", open_rc, CAI_OK);
   }
   if (runtime != NULL) {
-    expect_substr(state, "custom_preset_checkpoint_name",
-                  runtime_store_state.saved_checkpoint,
+    expect_substr(state, "custom_preset_commit_name",
+                  runtime_store_state.saved_commit,
                   "\"preset_name\":\"vectis-engineer\"");
-    expect_substr(state, "custom_preset_checkpoint_revision",
-                  runtime_store_state.saved_checkpoint,
+    expect_substr(state, "custom_preset_commit_revision",
+                  runtime_store_state.saved_commit,
                   "\"preset_prompt_version\":\"vectis-engineer-1\"");
     cai_agent_review_request_init(&review_request);
     review_request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
@@ -26421,7 +26474,7 @@ static void test_smith_review_runtime(test_state *state) {
   normal_runtime = NULL;
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -26739,7 +26792,7 @@ static void test_smith_review_parent_handoff(test_state *state) {
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
   memset(&events, 0, sizeof(events));
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -26806,10 +26859,10 @@ static void test_smith_review_parent_handoff(test_state *state) {
                events.saw_review_report, 1L);
     expect_int(state, "smith_review_parent_finish",
                cai_agent_runtime_finish_review(parent, review, &error), CAI_OK);
-    expect_substr(state, "smith_review_parent_checkpoint_handoff",
-                  store_state.saved_checkpoint, "<review_handoff");
-    expect_substr(state, "smith_review_parent_checkpoint_report",
-                  store_state.saved_checkpoint, "No qualifying defects.");
+    expect_substr(state, "smith_review_parent_commit_handoff",
+                  store_state.saved_commit, "<review_handoff");
+    expect_substr(state, "smith_review_parent_commit_report",
+                  store_state.saved_commit, "No qualifying defects.");
     run_state = CAI_AGENT_IDLE;
     for (i = 0; i < 20 && run_state != CAI_AGENT_COMPLETED &&
                 run_state != CAI_AGENT_FAILED;
@@ -27066,7 +27119,7 @@ static void test_agent_runtime_subagent(test_state *state) {
   memset(&prepare_state, 0, sizeof(prepare_state));
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -27077,7 +27130,7 @@ static void test_agent_runtime_subagent(test_state *state) {
   config.preset_descriptor = &parent_preset;
   config.disable_default_session_store = 1;
   config.session_store = &store;
-  config.session_scope = "subagent-handoff-checkpoint-retry";
+  config.session_scope = "subagent-handoff-commit-retry";
   config.disable_read_file = config.disable_list_files = 1;
   config.disable_apply_patch = config.disable_view_image = 1;
   config.disable_goals = config.disable_skills = 1;
@@ -27093,11 +27146,11 @@ static void test_agent_runtime_subagent(test_state *state) {
              cai_agent_runtime_open(mock.client, &config, &runtime, &error),
              CAI_OK);
   if (runtime != NULL) {
-    (void)snprintf(store_state.fail_checkpoint_session_id,
-                   sizeof(store_state.fail_checkpoint_session_id), "%s",
+    (void)snprintf(store_state.fail_commit_session_id,
+                   sizeof(store_state.fail_commit_session_id), "%s",
                    cai_agent_runtime_session_id(runtime));
-    store_state.fail_checkpoint_once = 1;
-    store_state.fail_checkpoint_after = 2;
+    store_state.fail_commit_once = 1;
+    store_state.fail_commit_after = 2;
     expect_int(state, "agent_runtime_subagent_submit",
                cai_agent_runtime_submit(runtime, "delegate this task", &error),
                CAI_OK);
@@ -27140,8 +27193,8 @@ static void test_agent_runtime_subagent(test_state *state) {
                g_test_subagent_started_kvfmt,
                "session_id=%s profile=%s child_session_id=%s "
                "instruction_bytes=%lu");
-    expect_int(state, "agent_runtime_subagent_handoff_checkpoint_retried",
-               store_state.fail_checkpoint_once, 0L);
+    expect_int(state, "agent_runtime_subagent_handoff_commit_retried",
+               store_state.fail_commit_once, 0L);
     cai_agent_runtime_close(runtime);
   }
   g_test_infof_count = 0;
@@ -27381,7 +27434,7 @@ static void test_agent_runtime_failed_subagent_resume(test_state *state) {
   memset(&events, 0, sizeof(events));
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -27420,7 +27473,7 @@ static void test_agent_runtime_failed_subagent_resume(test_state *state) {
     expect_int(state, "agent_runtime_failed_subagent_completed", run_state,
                CAI_AGENT_COMPLETED);
     expect_int(state, "agent_runtime_failed_subagent_output_count",
-               (long)test_count_substrings(store_state.saved_checkpoint,
+               (long)test_count_substrings(store_state.saved_commit,
                                            "\"type\":\"function_call_output\""),
                1L);
     saw_handoff_marker = 0;
@@ -27446,7 +27499,7 @@ static void test_agent_runtime_failed_subagent_resume(test_state *state) {
                saw_handoff_marker, 1L);
     expect_int(state, "agent_runtime_transcript_text", saw_assistant_text, 1L);
     expect_int(state, "agent_runtime_transcript_end", saw_assistant_end, 1L);
-    store_state.checkpoint_json = store_state.saved_checkpoint;
+    store_state.commit_json = store_state.saved_commit;
     store_state.load_applied_event_sequence =
         store_state.saved_applied_event_sequence;
     cai_agent_runtime_close(runtime);
@@ -27459,7 +27512,7 @@ static void test_agent_runtime_failed_subagent_resume(test_state *state) {
                cai_agent_runtime_open(mock.client, &config, &runtime, &error),
                CAI_OK);
     expect_int(state, "agent_runtime_failed_subagent_resume_output_count",
-               (long)test_count_substrings(store_state.saved_checkpoint,
+               (long)test_count_substrings(store_state.saved_commit,
                                            "\"type\":\"function_call_output\""),
                1L);
     cai_agent_runtime_close(runtime);
@@ -27772,7 +27825,7 @@ static void test_agent_runtime_review_subagent(test_state *state) {
   cai_error_cleanup(&error);
 }
 
-static void test_smith_review_pause_checkpoint_failure(test_state *state) {
+static void test_smith_review_pause_commit_failure(test_state *state) {
   cai_client_config client_config;
   cai_agent_runtime_config config;
   cai_agent_review_request request;
@@ -27791,7 +27844,7 @@ static void test_smith_review_pause_checkpoint_failure(test_state *state) {
   review = NULL;
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -27807,14 +27860,14 @@ static void test_smith_review_pause_checkpoint_failure(test_state *state) {
   config.workspace_directory = "/tmp";
   config.session_store = &store;
   config.disable_default_session_store = 1;
-  config.session_scope = "review-pause-checkpoint-failure";
+  config.session_scope = "review-pause-commit-failure";
   expect_int(state, "smith_review_pause_failure_parent_open",
              cai_agent_runtime_open(client, &config, &parent, &error), CAI_OK);
   if (parent != NULL) {
-    (void)snprintf(store_state.fail_checkpoint_session_id,
-                   sizeof(store_state.fail_checkpoint_session_id), "%s",
+    (void)snprintf(store_state.fail_commit_session_id,
+                   sizeof(store_state.fail_commit_session_id), "%s",
                    cai_agent_runtime_session_id(parent));
-    store_state.fail_checkpoint_once = 1;
+    store_state.fail_commit_once = 1;
     cai_agent_review_request_init(&request);
     request.target = CAI_AGENT_REVIEW_UNCOMMITTED;
     expect_int(
@@ -27975,7 +28028,7 @@ static void test_agent_runtime_skills(test_state *state) {
     memset(&storage, 0, sizeof(storage));
     memset(&store, 0, sizeof(store));
     store.context = &storage;
-    store.checkpoint = test_runtime_session_store_checkpoint;
+    store.commit = test_runtime_session_store_commit;
     store.load_latest = test_runtime_session_store_load;
     store.append_event = test_runtime_session_store_append_event;
     store.load_events_after = test_runtime_session_store_load_events_after;
@@ -28043,7 +28096,7 @@ static void test_agent_runtime_skills(test_state *state) {
 }
 
 static void test_agent_runtime_ids(test_state *state) {
-  static const char *const checkpoints[] = {
+  static const char *const commits[] = {
       "{\"version\":1}",
       "{\"version\":1,\"previous_response_id\":\"resp_restored\"}",
       "{\"version\":1,\"conversation_id\":\"conv_restored\"}"};
@@ -28069,9 +28122,9 @@ static void test_agent_runtime_ids(test_state *state) {
   for (i = 0U; client != NULL && i < 3U; i++) {
     memset(&storage, 0, sizeof(storage));
     memset(&store, 0, sizeof(store));
-    storage.checkpoint_json = checkpoints[i];
+    storage.commit_json = commits[i];
     store.context = &storage;
-    store.checkpoint = test_runtime_session_store_checkpoint;
+    store.commit = test_runtime_session_store_commit;
     store.load_latest = test_runtime_session_store_load;
     store.append_event = test_runtime_session_store_append_event;
     store.load_events_after = test_runtime_session_store_load_events_after;
@@ -28147,7 +28200,7 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   memset(&close_steering_state, 0, sizeof(close_steering_state));
   memset(&store_state, 0, sizeof(store_state));
   memset(&store, 0, sizeof(store));
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -28235,8 +28288,7 @@ static void test_agent_runtime_lifecycle(test_state *state) {
                                                  &has_context, &error),
                CAI_OK);
     expect_int(state, "runtime_empty_context_unknown", has_context, 0L);
-    expect_int(state, "runtime_empty_session_anchor", store_state.checkpoints,
-               1L);
+    expect_int(state, "runtime_empty_session_anchor", store_state.commits, 1L);
     expect_int(state, "runtime_empty_session_anchor_watermark",
                (long)store_state.saved_applied_event_sequence, 1L);
     expect_str(state, "runtime_empty_session_journal_v2",
@@ -28276,8 +28328,7 @@ static void test_agent_runtime_lifecycle(test_state *state) {
                CAI_ERR_INVALID);
     cai_error_cleanup(&error);
     cai_error_init(&error);
-    for (i = 0;
-         i < 10 && (store_state.checkpoints < 2 || events.saw_started == 0);
+    for (i = 0; i < 10 && (store_state.commits < 2 || events.saw_started == 0);
          i++) {
       expect_int(state, "runtime_pump",
                  cai_agent_runtime_pump(runtime, 100L, &error), CAI_OK);
@@ -28285,11 +28336,10 @@ static void test_agent_runtime_lifecycle(test_state *state) {
     expect_int(state, "runtime_event_started", events.saw_started, 1L);
     expect_int(state, "runtime_event_turn_queued", events.saw_turn_queued, 1L);
     expect_int(state, "runtime_events_owner_thread", events.wrong_thread, 0L);
-    expect_int(state, "runtime_input_checkpoint", store_state.checkpoints, 2L);
-    expect_str(state, "runtime_input_checkpoint_scope", store_state.scope,
-               "/tmp");
-    expect_substr(state, "runtime_input_checkpoint_turn",
-                  store_state.saved_checkpoint, "offline turn");
+    expect_int(state, "runtime_input_commit", store_state.commits, 2L);
+    expect_str(state, "runtime_input_commit_scope", store_state.scope, "/tmp");
+    expect_substr(state, "runtime_input_commit_turn", store_state.saved_commit,
+                  "offline turn");
     cai_agent_runtime_close(runtime);
     runtime = NULL;
   }
@@ -28307,7 +28357,7 @@ static void test_agent_runtime_lifecycle(test_state *state) {
                cai_agent_runtime_submit(runtime, "close from event", &error),
                CAI_OK);
     /*
-     * Let the worker queue its checkpoint/state events behind RUN_STARTED.
+     * Let the worker queue its commit/state events behind RUN_STARTED.
      * Closing from the first callback must discard those queued events rather
      * than invoking a callback whose context may already be released.
      */
@@ -28346,7 +28396,7 @@ static void test_agent_runtime_lifecycle(test_state *state) {
   runtime_config.session_store = &store;
   runtime_config.resume_session_id = "missing";
   store.load_id = test_runtime_session_store_load_id_empty;
-  expect_int(state, "runtime_exact_resume_missing_checkpoint",
+  expect_int(state, "runtime_exact_resume_missing_commit",
              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
              CAI_ERR_INVALID);
   expect_int(state, "runtime_exact_resume_missing_runtime", runtime == NULL,
@@ -28405,7 +28455,7 @@ static void test_agent_runtime_controls(test_state *state) {
     cai_error_cleanup(&error);
     return;
   }
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -28577,7 +28627,7 @@ static void test_agent_runtime_controls(test_state *state) {
   expect_str(state, "runtime_control_cancel_goal_paused", goal_snapshot.status,
              "paused");
   expect_substr(state, "runtime_control_cancel_pause_saved",
-                store_state.saved_checkpoint, "\"goal_status\":\"paused\"");
+                store_state.saved_commit, "\"goal_status\":\"paused\"");
   expect_int(state, "runtime_control_cancel_before_next_start",
              events.next_started_sequence > events.cancel_sequence, 1L);
   expect_int(
@@ -28593,16 +28643,15 @@ static void test_agent_runtime_controls(test_state *state) {
   expect_int(state, "runtime_control_pending_cleared", pending.present, 0L);
   expect_str(state, "runtime_control_session_stable",
              cai_agent_runtime_session_id(runtime), session_id);
-  expect_int(state, "runtime_control_durable_checkpoints",
-             store_state.checkpoints > 0, 1L);
+  expect_int(state, "runtime_control_durable_commits", store_state.commits > 0,
+             1L);
   expect_substr(state, "runtime_control_saved_request_model",
-                store_state.saved_checkpoint,
-                "\"request_model\":\"gpt-6-astra\"");
-  expect_substr(state, "runtime_control_saved_effort",
-                store_state.saved_checkpoint, "\"reasoning_effort\":\"high\"");
-  snprintf(store_state.fail_checkpoint_session_id,
-           sizeof(store_state.fail_checkpoint_session_id), "%s", session_id);
-  store_state.fail_checkpoint_once = 1;
+                store_state.saved_commit, "\"request_model\":\"gpt-6-astra\"");
+  expect_substr(state, "runtime_control_saved_effort", store_state.saved_commit,
+                "\"reasoning_effort\":\"high\"");
+  snprintf(store_state.fail_commit_session_id,
+           sizeof(store_state.fail_commit_session_id), "%s", session_id);
+  store_state.fail_commit_once = 1;
   memset(&requested, 0, sizeof(requested));
   requested.present = CAI_AGENT_RUNTIME_SETTING_MODEL |
                       CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT |
@@ -28613,23 +28662,23 @@ static void test_agent_runtime_controls(test_state *state) {
   requested.reasoning_effort = CAI_REASONING_EFFORT_LOW;
   requested.reasoning_summary = CAI_REASONING_SUMMARY_DETAILED;
   expect_int(
-      state, "runtime_control_checkpoint_failure_atomic",
+      state, "runtime_control_commit_failure_atomic",
       cai_agent_runtime_update_settings(runtime, &requested, NULL, &error),
       CAI_ERR_TRANSPORT);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   expect_int(
-      state, "runtime_control_checkpoint_failure_query",
+      state, "runtime_control_commit_failure_query",
       cai_agent_runtime_get_settings(runtime, &effective, &pending, &error),
       CAI_OK);
-  expect_str(state, "runtime_control_checkpoint_keeps_model", effective.model,
+  expect_str(state, "runtime_control_commit_keeps_model", effective.model,
              CAI_MODEL_GPT_6_ASTRA);
-  expect_str(state, "runtime_control_checkpoint_keeps_effort",
+  expect_str(state, "runtime_control_commit_keeps_effort",
              effective.reasoning_effort, CAI_REASONING_EFFORT_HIGH);
-  expect_str(state, "runtime_control_checkpoint_keeps_summary",
+  expect_str(state, "runtime_control_commit_keeps_summary",
              effective.reasoning_summary, CAI_REASONING_SUMMARY_CONCISE);
-  expect_str(state, "runtime_control_checkpoint_keeps_tier",
-             effective.service_tier, "priority");
+  expect_str(state, "runtime_control_commit_keeps_tier", effective.service_tier,
+             "priority");
   requested.present = CAI_AGENT_RUNTIME_SETTING_SERVICE_TIER;
   requested.service_tier = "bad tier";
   expect_int(
@@ -28638,9 +28687,9 @@ static void test_agent_runtime_controls(test_state *state) {
       CAI_ERR_INVALID);
   requested.present = CAI_AGENT_RUNTIME_SETTING_REASONING_EFFORT;
   requested.reasoning_effort = CAI_REASONING_EFFORT_XHIGH;
-  store_state.fail_checkpoint_once = 1;
+  store_state.fail_commit_once = 1;
   expect_int(
-      state, "runtime_control_effort_checkpoint_failure",
+      state, "runtime_control_effort_commit_failure",
       cai_agent_runtime_update_settings(runtime, &requested, NULL, &error),
       CAI_ERR_TRANSPORT);
   cai_error_cleanup(&error);
@@ -28650,8 +28699,8 @@ static void test_agent_runtime_controls(test_state *state) {
       cai_agent_runtime_update_settings(runtime, &requested, NULL, &error),
       CAI_OK);
   expect_substr(state, "runtime_control_idle_effort_saved",
-                store_state.saved_checkpoint, "\"reasoning_effort\":\"xhigh\"");
-  store_state.checkpoint_json = store_state.saved_checkpoint;
+                store_state.saved_commit, "\"reasoning_effort\":\"xhigh\"");
+  store_state.commit_json = store_state.saved_commit;
   store_state.load_applied_event_sequence =
       store_state.saved_applied_event_sequence;
   (void)snprintf(store_state.loaded_session_id,
@@ -28674,7 +28723,7 @@ static void test_agent_runtime_controls(test_state *state) {
     expect_str(state, "runtime_control_resume_goal_stays_paused",
                goal_snapshot.status, "paused");
     expect_substr(state, "runtime_control_resume_history",
-                  store_state.saved_checkpoint, "turn B");
+                  store_state.saved_commit, "turn B");
     expect_int(
         state, "runtime_control_resume_settings",
         cai_agent_runtime_get_settings(runtime, &effective, &pending, &error),
@@ -28843,7 +28892,7 @@ static void test_agent_runtime_cancel_terminal(test_state *state) {
   close(pipe_fds[0]);
   snprintf(server.base_url, sizeof(server.base_url), "http://127.0.0.1:%d/v1",
            port);
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -28902,8 +28951,8 @@ static void test_agent_runtime_cancel_terminal(test_state *state) {
              events.next_started_sequence > events.cancel_sequence, 1L);
   expect_int(state, "runtime_terminal_cancel_next_completed",
              events.completed_count, 1L);
-  expect_int(state, "runtime_terminal_cancel_checkpointed",
-             store_state.checkpoints > 0, 1L);
+  expect_int(state, "runtime_terminal_cancel_committed",
+             store_state.commits > 0, 1L);
 done:
   if (runtime != NULL) {
     cai_agent_runtime_close(runtime);
@@ -28989,7 +29038,7 @@ static void test_agent_runtime_model_switch(test_state *state) {
   cai_agent_run_state run_state;
   cai_agent_goal_request goal_request;
   struct timespec delay;
-  int checkpoints_before;
+  int commits_before;
   int i;
 
   cai_error_init(&error);
@@ -29010,7 +29059,7 @@ static void test_agent_runtime_model_switch(test_state *state) {
   }
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -29072,8 +29121,8 @@ static void test_agent_runtime_model_switch(test_state *state) {
     }
     expect_int(state, "runtime_model_metadata_capture_completed", run_state,
                CAI_AGENT_COMPLETED);
-    expect_substr(state, "runtime_model_metadata_capture_checkpoint_hash",
-                  store_state.saved_checkpoint,
+    expect_substr(state, "runtime_model_metadata_capture_commit_hash",
+                  store_state.saved_commit,
                   "\"model_compaction_hash\":\"provider-3000\"");
     expect_int(
         state, "runtime_model_switch_compatible",
@@ -29083,15 +29132,15 @@ static void test_agent_runtime_model_switch(test_state *state) {
                cai_agent_runtime_model(runtime), CAI_MODEL_GPT_6_ASTRA);
     expect_runtime_prompt(state, runtime,
                           "Default to using clear, concise paragraphs");
-    expect_substr(state, "runtime_model_switch_compatible_checkpoint",
-                  store_state.saved_checkpoint, CAI_MODEL_GPT_6_ASTRA);
-    expect_substr(state, "runtime_model_switch_compatible_checkpoint_hash",
-                  store_state.saved_checkpoint,
+    expect_substr(state, "runtime_model_switch_compatible_commit",
+                  store_state.saved_commit, CAI_MODEL_GPT_6_ASTRA);
+    expect_substr(state, "runtime_model_switch_compatible_commit_hash",
+                  store_state.saved_commit,
                   "\"model_compaction_hash\":\"provider-3000\"");
     cai_agent_runtime_close(runtime);
     runtime = NULL;
     memset(&store_state, 0, sizeof(store_state));
-    store_state.checkpoint_json =
+    store_state.commit_json =
         "{\"version\":1,\"model\":\"gpt-5.5\","
         "\"model_compaction_hash\":\"provider-2911\",\"history\":[{\"type\":"
         "\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\","
@@ -29121,7 +29170,7 @@ static void test_agent_runtime_model_switch(test_state *state) {
     runtime = NULL;
   }
   memset(&store_state, 0, sizeof(store_state));
-  store_state.checkpoint_json =
+  store_state.commit_json =
       "{\"version\":1,\"model\":\"gpt-5.5\","
       "\"model_compaction_hash\":\"provider-2911\",\"history\":[{\"type\":"
       "\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\","
@@ -29157,7 +29206,7 @@ static void test_agent_runtime_model_switch(test_state *state) {
     runtime = NULL;
   }
   memset(&store_state, 0, sizeof(store_state));
-  store_state.checkpoint_json =
+  store_state.commit_json =
       "{\"version\":1,\"model\":\"gpt-5.5\","
       "\"model_compaction_hash\":\"provider-2911\",\"history\":[{\"type\":"
       "\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\","
@@ -29169,19 +29218,19 @@ static void test_agent_runtime_model_switch(test_state *state) {
              CAI_OK);
   if (runtime != NULL) {
     cai_agent_goal_request_init(&goal_request);
-    goal_request.objective = "checkpoint imported model metadata";
+    goal_request.objective = "commit imported model metadata";
     expect_int(state, "runtime_model_switch_resume_goal_create",
                cai_agent_runtime_create_goal(runtime, &goal_request, &error),
                CAI_OK);
-    for (i = 0; i < 100 && strstr(store_state.saved_checkpoint,
-                                  "checkpoint imported model metadata") == NULL;
+    for (i = 0; i < 100 && strstr(store_state.saved_commit,
+                                  "commit imported model metadata") == NULL;
          i++) {
       (void)nanosleep(&delay, NULL);
     }
-    expect_substr(state, "runtime_model_switch_resume_goal_checkpoint_model",
-                  store_state.saved_checkpoint, "\"model\":\"gpt-5.5\"");
-    expect_substr(state, "runtime_model_switch_resume_goal_checkpoint_hash",
-                  store_state.saved_checkpoint,
+    expect_substr(state, "runtime_model_switch_resume_goal_commit_model",
+                  store_state.saved_commit, "\"model\":\"gpt-5.5\"");
+    expect_substr(state, "runtime_model_switch_resume_goal_commit_hash",
+                  store_state.saved_commit,
                   "\"model_compaction_hash\":\"provider-2911\"");
     expect_int(
         state, "runtime_model_switch_resume_goal_retry_compaction",
@@ -29206,18 +29255,18 @@ static void test_agent_runtime_model_switch(test_state *state) {
              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
              CAI_OK);
   if (runtime != NULL) {
-    checkpoints_before = store_state.checkpoints;
-    cai_agent_runtime_test_set_fail_checkpoint_event_reservation(1);
+    commits_before = store_state.commits;
+    cai_agent_runtime_test_set_fail_commit_event_reservation(1);
     expect_int(
         state, "runtime_model_switch_event_reservation_failure",
         cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_6_ASTRA, &error),
         CAI_ERR_NOMEM);
     expect_str(state, "runtime_model_switch_event_reservation_live_model",
                cai_agent_runtime_model(runtime), CAI_MODEL_GPT_5_6_LUNA);
-    expect_int(state, "runtime_model_switch_event_reservation_checkpoint",
-               store_state.checkpoints, checkpoints_before);
+    expect_int(state, "runtime_model_switch_event_reservation_commit",
+               store_state.commits, commits_before);
     expect_substr(state, "runtime_model_switch_event_reservation_saved_model",
-                  store_state.saved_checkpoint, CAI_MODEL_GPT_5_6_LUNA);
+                  store_state.saved_commit, CAI_MODEL_GPT_5_6_LUNA);
     cai_error_cleanup(&error);
     cai_error_init(&error);
     expect_int(
@@ -29236,7 +29285,7 @@ static void test_agent_runtime_model_switch(test_state *state) {
   memset(&store_state, 0, sizeof(store_state));
   memset(&events, 0, sizeof(events));
   events.owner = pthread_self();
-  store_state.checkpoint_json =
+  store_state.commit_json =
       "{\"version\":1,\"model\":\"gpt-5.5\","
       "\"model_compaction_hash\":\"provider-2911\",\"history\":[{"
       "\"type\":\"message\",\"role\":\"assistant\",\"content\":[{"
@@ -29246,20 +29295,20 @@ static void test_agent_runtime_model_switch(test_state *state) {
       "\"goal_token_usage_baseline\":0,\"goal_tokens_used\":0}";
   runtime_config.model = CAI_MODEL_GPT_6_ASTRA;
   runtime_config.resume_latest = 1;
-  runtime_config.session_id = "compaction-checkpoint";
+  runtime_config.session_id = "compaction-commit";
   runtime_config.event_callback = test_runtime_event;
   runtime_config.event_context = &events;
   runtime_config.event_queue_limit = 1U;
-  expect_int(state, "runtime_model_switch_compact_checkpoint_open",
+  expect_int(state, "runtime_model_switch_compact_commit_open",
              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
              CAI_OK);
   if (runtime != NULL) {
-    store_state.fail_checkpoint_once = 1;
-    (void)snprintf(store_state.fail_checkpoint_session_id,
-                   sizeof(store_state.fail_checkpoint_session_id), "%s",
+    store_state.fail_commit_once = 1;
+    (void)snprintf(store_state.fail_commit_session_id,
+                   sizeof(store_state.fail_commit_session_id), "%s",
                    cai_agent_runtime_session_id(runtime));
     expect_int(
-        state, "runtime_model_switch_compact_checkpoint_failure",
+        state, "runtime_model_switch_compact_commit_failure",
         cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_5_6_LUNA, &error),
         CAI_ERR_TRANSPORT);
     expect_str(state, "runtime_model_switch_compact_failure_model",
@@ -29268,14 +29317,14 @@ static void test_agent_runtime_model_switch(test_state *state) {
     cai_error_cleanup(&error);
     cai_error_init(&error);
     expect_int(
-        state, "runtime_model_switch_compact_checkpoint_retry",
+        state, "runtime_model_switch_compact_commit_retry",
         cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_5_6_LUNA, &error),
         CAI_OK);
     expect_str(state, "runtime_model_switch_compact_capacity_model",
                cai_agent_runtime_model(runtime), CAI_MODEL_GPT_5_6_LUNA);
     expect_runtime_prompt(state, runtime, "an agent based on GPT-5.");
     expect_substr(state, "runtime_model_switch_compact_goal_usage",
-                  store_state.saved_checkpoint, "\"goal_tokens_used\":24");
+                  store_state.saved_commit, "\"goal_tokens_used\":24");
     cai_agent_runtime_close(runtime);
     runtime = NULL;
   }
@@ -29337,12 +29386,12 @@ test_agent_runtime_model_switch_catalog_recovery(test_state *state) {
   }
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
-  store_state.checkpoint_json =
+  store_state.commit_json =
       "{\"version\":1,\"model\":\"gpt-5.5\","
       "\"model_compaction_hash\":\"provider-2911\",\"history\":[{\"type\":"
       "\"message\",\"role\":\"user\",\"content\":[{\"type\":"
       "\"input_text\",\"text\":\"retained context\"}]}]}";
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -29374,11 +29423,10 @@ test_agent_runtime_model_switch_catalog_recovery(test_state *state) {
     expect_str(state, "runtime_model_switch_catalog_unavailable_live_model",
                cai_agent_runtime_model(runtime), CAI_MODEL_GPT_5_6_LUNA);
     expect_substr(state,
-                  "runtime_model_switch_catalog_unavailable_checkpoint_model",
-                  store_state.saved_checkpoint, "\"model\":\"gpt-5.5\"");
-    expect_substr(state,
-                  "runtime_model_switch_catalog_unavailable_checkpoint_hash",
-                  store_state.saved_checkpoint,
+                  "runtime_model_switch_catalog_unavailable_commit_model",
+                  store_state.saved_commit, "\"model\":\"gpt-5.5\"");
+    expect_substr(state, "runtime_model_switch_catalog_unavailable_commit_hash",
+                  store_state.saved_commit,
                   "\"model_compaction_hash\":\"provider-2911\"");
     {
       cai_model_catalog *catalog = NULL;
@@ -29470,7 +29518,7 @@ test_agent_runtime_model_switch_live_catalog_outage(test_state *state) {
   }
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -29515,15 +29563,15 @@ test_agent_runtime_model_switch_live_catalog_outage(test_state *state) {
         cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_6_ASTRA, &error),
         CAI_ERR_SERVER);
     /* Stale live metadata still supplies the declared incompatible hashes.
-     * Failed compaction must leave the selection and checkpoint unchanged. */
+     * Failed compaction must leave the selection and commit unchanged. */
     expect_str(state, "runtime_live_catalog_outage_preserves_model",
                cai_agent_runtime_model(runtime), CAI_MODEL_GPT_5_5);
     expect_int(state, "runtime_live_catalog_outage_stale",
                CAI_CLIENT_IMPL(client)->model_catalog->is_stale, 1L);
-    expect_substr(state, "runtime_live_catalog_outage_checkpoint_model",
-                  store_state.saved_checkpoint, "\"model\":\"gpt-5.5\"");
-    expect_substr(state, "runtime_live_catalog_outage_checkpoint_hash",
-                  store_state.saved_checkpoint,
+    expect_substr(state, "runtime_live_catalog_outage_commit_model",
+                  store_state.saved_commit, "\"model\":\"gpt-5.5\"");
+    expect_substr(state, "runtime_live_catalog_outage_commit_hash",
+                  store_state.saved_commit,
                   "\"model_compaction_hash\":\"provider-2911\"");
     cai_error_cleanup(&error);
     cai_error_init(&error);
@@ -29584,12 +29632,12 @@ test_agent_runtime_model_switch_api_key_metadata_policy(test_state *state) {
   }
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
-  store_state.checkpoint_json =
+  store_state.commit_json =
       "{\"version\":1,\"model\":\"gpt-5.5\","
       "\"model_compaction_hash\":\"provider-2911\",\"history\":[{\"type\":"
       "\"message\",\"role\":\"user\",\"content\":[{\"type\":"
       "\"input_text\",\"text\":\"retained context\"}]}]}";
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -29615,8 +29663,8 @@ test_agent_runtime_model_switch_api_key_metadata_policy(test_state *state) {
         state, "runtime_api_key_metadata_policy_select",
         cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_6_ASTRA, &error),
         CAI_OK);
-    expect_substr(state, "runtime_api_key_metadata_policy_selected_checkpoint",
-                  store_state.saved_checkpoint, "\"model\":\"gpt-6-astra\"");
+    expect_substr(state, "runtime_api_key_metadata_policy_selected_commit",
+                  store_state.saved_commit, "\"model\":\"gpt-6-astra\"");
     expect_int(state, "runtime_api_key_metadata_policy_submit",
                cai_agent_runtime_submit(runtime, "continue", &error), CAI_OK);
     delay.tv_sec = 0;
@@ -29631,8 +29679,8 @@ test_agent_runtime_model_switch_api_key_metadata_policy(test_state *state) {
     }
     expect_int(state, "runtime_api_key_metadata_policy_completed", run_state,
                CAI_AGENT_COMPLETED);
-    expect_substr(state, "runtime_api_key_metadata_policy_turn_checkpoint",
-                  store_state.saved_checkpoint, "\"model\":\"gpt-6-astra\"");
+    expect_substr(state, "runtime_api_key_metadata_policy_turn_commit",
+                  store_state.saved_commit, "\"model\":\"gpt-6-astra\"");
     cai_agent_runtime_close(runtime);
     runtime = NULL;
   }
@@ -29999,13 +30047,13 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
   }
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
-  store_state.checkpoint_json =
+  store_state.commit_json =
       "{\"version\":1,\"model\":\"gpt-5-nano\","
       "\"goal_objective\":\"bounded automatic compaction\","
       "\"goal_status\":\"active\",\"goal_token_budget\":1,"
       "\"goal_token_usage_baseline\":0,\"goal_tokens_used\":0,"
       "\"history\":[]}";
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -30053,12 +30101,12 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
     expect_int(state, "runtime_auto_compact_budget_completed", run_state,
                CAI_AGENT_COMPLETED);
     expect_substr(state, "runtime_auto_compact_budget_status",
-                  store_state.saved_checkpoint,
+                  store_state.saved_commit,
                   "\"goal_status\":\"budget_limited\"");
     expect_substr(state, "runtime_auto_compact_budget_usage",
-                  store_state.saved_checkpoint, "\"goal_tokens_used\":330010");
-    expect_substr(state, "runtime_auto_compact_budget_steering_checkpoint",
-                  store_state.saved_checkpoint,
+                  store_state.saved_commit, "\"goal_tokens_used\":330010");
+    expect_substr(state, "runtime_auto_compact_budget_steering_commit",
+                  store_state.saved_commit,
                   "persist steering at the tool budget boundary");
     cai_agent_runtime_close(runtime);
     runtime = NULL;
@@ -30080,15 +30128,14 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
   }
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
-  store_state.first_compaction_checkpoint_required =
-      "\"goal_tokens_used\":660040";
-  store_state.checkpoint_json =
+  store_state.first_compaction_commit_required = "\"goal_tokens_used\":660040";
+  store_state.commit_json =
       "{\"version\":1,\"model\":\"gpt-5-nano\","
       "\"goal_objective\":\"charge automatic compaction\","
       "\"goal_status\":\"active\",\"goal_token_budget\":330020,"
       "\"goal_token_usage_baseline\":0,\"goal_tokens_used\":0,"
       "\"history\":[]}";
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -30135,14 +30182,14 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
                 events.failure_message);
     }
     expect_substr(state, "runtime_auto_compact_budget_after_status",
-                  store_state.saved_checkpoint,
+                  store_state.saved_commit,
                   "\"goal_status\":\"budget_limited\"");
     expect_substr(state, "runtime_auto_compact_budget_after_usage",
-                  store_state.saved_checkpoint, "\"goal_tokens_used\":660040");
-    expect_int(state, "runtime_auto_compact_budget_after_compaction_checkpoint",
-               store_state.saw_first_compaction_checkpoint, 1);
+                  store_state.saved_commit, "\"goal_tokens_used\":660040");
+    expect_int(state, "runtime_auto_compact_budget_after_compaction_commit",
+               store_state.saw_first_compaction_commit, 1);
     expect_int(state, "runtime_auto_compact_budget_after_atomic_charge",
-               store_state.first_compaction_checkpoint_matches, 1);
+               store_state.first_compaction_commit_matches, 1);
     cai_agent_runtime_close(runtime);
     runtime = NULL;
   }
@@ -30161,7 +30208,7 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
   }
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
-  store_state.checkpoint_json =
+  store_state.commit_json =
       "{\"version\":1,\"history\":[{\"type\":\"message\",\"role\":"
       "\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":"
       "\"retained context\"}]}],\"last_usage_input_tokens\":330000,"
@@ -30173,7 +30220,7 @@ static void test_agent_runtime_auto_compaction_boundaries(test_state *state) {
       "\"context_usage_output_tokens\":10,\"context_usage_output_reasoning_"
       "tokens\":0,"
       "\"context_usage_total_tokens\":330010}";
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -30385,7 +30432,7 @@ static void test_agent_runtime_queued_turns(test_state *state) {
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
   events.owner = pthread_self();
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -30456,14 +30503,14 @@ static void test_agent_runtime_queued_turns(test_state *state) {
                store_state.replay_event_type, "input_consumed");
     expect_int(state, "runtime_queued_journal_watermark",
                (long)store_state.saved_applied_event_sequence, 7L);
-    expect_int(state, "runtime_queued_steering_checkpoint_durable",
-               store_state.saw_steering_checkpoint_before_watermark, 0L);
-    expect_substr(state, "runtime_queued_checkpoint_first",
-                  store_state.saved_checkpoint, "first queued turn");
-    expect_substr(state, "runtime_queued_checkpoint_second",
-                  store_state.saved_checkpoint, "second queued turn");
-    expect_substr(state, "runtime_queued_checkpoint_steering",
-                  store_state.saved_checkpoint, "interleaved steering");
+    expect_int(state, "runtime_queued_steering_commit_durable",
+               store_state.saw_steering_commit_before_watermark, 0L);
+    expect_substr(state, "runtime_queued_commit_first",
+                  store_state.saved_commit, "first queued turn");
+    expect_substr(state, "runtime_queued_commit_second",
+                  store_state.saved_commit, "second queued turn");
+    expect_substr(state, "runtime_queued_commit_steering",
+                  store_state.saved_commit, "interleaved steering");
     cai_agent_runtime_close(runtime);
   }
   if (client != NULL) {
@@ -30870,7 +30917,7 @@ static void test_agent_runtime_goal_replace(test_state *state) {
   events.owner = pthread_self();
   memset(&store, 0, sizeof(store));
   store.context = &storage;
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -30962,8 +31009,8 @@ static void test_agent_runtime_goal_replace(test_state *state) {
     cai_agent_runtime_close(runtime);
     runtime = NULL;
 
-    /* Simulate an accepted replacement beyond the checkpoint watermark. */
-    storage.checkpoint_json = storage.saved_checkpoint;
+    /* Simulate an accepted replacement beyond the commit watermark. */
+    storage.commit_json = storage.saved_commit;
     storage.load_applied_event_sequence = storage.saved_applied_event_sequence;
     storage.replay_event_count = 0U;
     event.sequence = storage.saved_applied_event_sequence + 1U;
@@ -31021,7 +31068,7 @@ static void test_agent_runtime_goal_replace_queued_failure(test_state *state) {
   cai_client_config client_config;
   cai_agent_runtime_config config;
   cai_agent_session_store store;
-  runtime_goal_checkpoint_race_state race;
+  runtime_goal_commit_race_state race;
   runtime_event_state events;
   cai_agent_runtime *runtime = NULL;
   cai_client *client = NULL;
@@ -31042,7 +31089,7 @@ static void test_agent_runtime_goal_replace_queued_failure(test_state *state) {
   pthread_cond_init(&race.condition, NULL);
   cai_error_init(&error);
   store.context = &race;
-  store.checkpoint = test_runtime_goal_race_checkpoint;
+  store.commit = test_runtime_goal_race_commit;
   store.append_event = test_runtime_session_store_append_event;
   store.load_latest = test_runtime_session_store_load;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -31062,17 +31109,17 @@ static void test_agent_runtime_goal_replace_queued_failure(test_state *state) {
              cai_agent_runtime_open(client, &config, &runtime, &error), CAI_OK);
   if (runtime != NULL) {
     pthread_mutex_lock(&race.lock);
-    race.block_checkpoint = 1;
+    race.block_commit = 1;
     pthread_mutex_unlock(&race.lock);
     expect_int(state, "goal_queued_failure_hold",
                cai_agent_runtime_clear_goal(runtime, &error), CAI_OK);
     for (i = 0; i < 30 && !waiting; i++) {
       cai_agent_runtime_pump(runtime, 10L, &error);
       pthread_mutex_lock(&race.lock);
-      waiting = race.checkpoint_waiting;
+      waiting = race.commit_waiting;
       pthread_mutex_unlock(&race.lock);
     }
-    expect_int(state, "goal_queued_failure_checkpoint_waiting", waiting, 1);
+    expect_int(state, "goal_queued_failure_commit_waiting", waiting, 1);
     cai_agent_runtime_test_set_fail_goal_status_replace(1);
     expect_int(state, "goal_queued_failure_replace",
                cai_agent_runtime_replace_goal(
@@ -31083,7 +31130,7 @@ static void test_agent_runtime_goal_replace_queued_failure(test_state *state) {
                    runtime, "must stay queued if replacement fails", &error),
                CAI_OK);
     pthread_mutex_lock(&race.lock);
-    race.checkpoint_released = 1;
+    race.commit_released = 1;
     pthread_cond_broadcast(&race.condition);
     pthread_mutex_unlock(&race.lock);
     for (i = 0; i < 30 && events.failed_count == 0; i++)
@@ -31116,7 +31163,7 @@ static void test_agent_runtime_goal_replace_queued_failure(test_state *state) {
   rmdir(workspace);
 }
 
-static void test_agent_runtime_goal_checkpoint_watermark(test_state *state) {
+static void test_agent_runtime_goal_commit_watermark(test_state *state) {
   char workspace[] =
       CAI_TEST_BINARY_DIR "/test-tmp/cai-runtime-goal-watermark-XXXXXX";
   cai_client_config client_config;
@@ -31124,7 +31171,7 @@ static void test_agent_runtime_goal_checkpoint_watermark(test_state *state) {
   cai_agent_goal_request request;
   cai_agent_runtime *runtime;
   cai_agent_session_store store;
-  runtime_goal_checkpoint_race_state race;
+  runtime_goal_commit_race_state race;
   cai_client *client;
   cai_error error;
   struct timespec delay;
@@ -31147,7 +31194,7 @@ static void test_agent_runtime_goal_checkpoint_watermark(test_state *state) {
     cai_error_cleanup(&error);
     return;
   }
-  store.checkpoint = test_runtime_goal_race_checkpoint;
+  store.commit = test_runtime_goal_race_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -31168,37 +31215,36 @@ static void test_agent_runtime_goal_checkpoint_watermark(test_state *state) {
              cai_agent_runtime_open(client, &config, &runtime, &error), CAI_OK);
   if (runtime != NULL) {
     pthread_mutex_lock(&race.lock);
-    race.block_checkpoint = 1;
+    race.block_commit = 1;
     pthread_mutex_unlock(&race.lock);
-    expect_int(
-        state, "runtime_goal_watermark_submit",
-        cai_agent_runtime_submit(runtime, "checkpoint race turn", &error),
-        CAI_OK);
+    expect_int(state, "runtime_goal_watermark_submit",
+               cai_agent_runtime_submit(runtime, "commit race turn", &error),
+               CAI_OK);
     delay.tv_sec = 0;
     delay.tv_nsec = 10000000L;
     waiting = 0;
     for (i = 0; i < 100 && !waiting; i++) {
       pthread_mutex_lock(&race.lock);
-      waiting = race.checkpoint_waiting;
+      waiting = race.commit_waiting;
       pthread_mutex_unlock(&race.lock);
       if (!waiting) {
         (void)nanosleep(&delay, NULL);
       }
     }
-    expect_int(state, "runtime_goal_watermark_checkpoint_waiting", waiting, 1L);
+    expect_int(state, "runtime_goal_watermark_commit_waiting", waiting, 1L);
     expect_int(
         state, "runtime_goal_watermark_reject_switch_inflight_goal",
         cai_agent_runtime_set_model(runtime, CAI_MODEL_GPT_6_ASTRA, &error),
         CAI_ERR_INVALID);
     cai_agent_goal_request_init(&request);
-    request.objective = "must survive checkpoint race";
+    request.objective = "must survive commit race";
     expect_int(state, "runtime_goal_watermark_create",
                cai_agent_runtime_create_goal(runtime, &request, &error),
                CAI_OK);
     expect_int(state, "runtime_goal_watermark_goal_event_sequence",
                (long)race.store.replay_event_sequence, 4L);
     pthread_mutex_lock(&race.lock);
-    race.checkpoint_released = 1;
+    race.commit_released = 1;
     pthread_cond_broadcast(&race.condition);
     pthread_mutex_unlock(&race.lock);
     expect_int(state, "runtime_goal_watermark_snapshot_sequence",
@@ -31241,10 +31287,10 @@ test_agent_runtime_goal_create_status_allocation_failure(test_state *state) {
   memset(&goal, 0, sizeof(goal));
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
-  store_state.checkpoint_json = "{\"version\":1,\"model\":\"gpt-5-nano\","
-                                "\"goal_objective\":\"completed objective\","
-                                "\"goal_status\":\"complete\",\"history\":[]}";
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store_state.commit_json = "{\"version\":1,\"model\":\"gpt-5-nano\","
+                            "\"goal_objective\":\"completed objective\","
+                            "\"goal_status\":\"complete\",\"history\":[]}";
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -31367,13 +31413,13 @@ static void test_agent_runtime_goal_budget(test_state *state) {
   events.owner = pthread_self();
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
-  store_state.checkpoint_json =
+  store_state.commit_json =
       "{\"version\":1,\"model\":\"gpt-5-nano\","
       "\"goal_objective\":\"bounded test goal\","
       "\"goal_status\":\"active\",\"goal_token_budget\":1,"
       "\"goal_token_usage_baseline\":0,\"goal_tokens_used\":0,"
       "\"history\":[]}";
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -31428,14 +31474,13 @@ static void test_agent_runtime_goal_budget(test_state *state) {
     expect_str(
         state, "runtime_goal_budget_rejection", events.failure_message,
         "queued user turn rejected because the goal token budget is exhausted");
-    expect_substr(state, "runtime_goal_budget_status",
-                  store_state.saved_checkpoint,
+    expect_substr(state, "runtime_goal_budget_status", store_state.saved_commit,
                   "\"goal_status\":\"budget_limited\"");
-    expect_substr(state, "runtime_goal_budget_usage",
-                  store_state.saved_checkpoint, "\"goal_tokens_used\":3");
-    expect_substr(state, "runtime_goal_budget_steering_checkpoint",
-                  store_state.saved_checkpoint, "queued at budget boundary");
-    expect_int(state, "runtime_goal_budget_rejected_checkpoint_watermark",
+    expect_substr(state, "runtime_goal_budget_usage", store_state.saved_commit,
+                  "\"goal_tokens_used\":3");
+    expect_substr(state, "runtime_goal_budget_steering_commit",
+                  store_state.saved_commit, "queued at budget boundary");
+    expect_int(state, "runtime_goal_budget_rejected_commit_watermark",
                (long)store_state.saved_applied_event_sequence, 7L);
     expect_int(state, "runtime_goal_budget_published_snapshot",
                cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
@@ -31526,10 +31571,10 @@ static void test_agent_runtime_goal_usage_limit(test_state *state) {
   events.owner = pthread_self();
   memset(&store, 0, sizeof(store));
   memset(&store_state, 0, sizeof(store_state));
-  store_state.checkpoint_json = "{\"version\":1,\"model\":\"gpt-5-nano\","
-                                "\"goal_objective\":\"capped test goal\","
-                                "\"goal_status\":\"active\",\"history\":[]}";
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store_state.commit_json = "{\"version\":1,\"model\":\"gpt-5-nano\","
+                            "\"goal_objective\":\"capped test goal\","
+                            "\"goal_status\":\"active\",\"history\":[]}";
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -31578,8 +31623,8 @@ static void test_agent_runtime_goal_usage_limit(test_state *state) {
     expect_str(state, "runtime_goal_usage_limit_failure",
                events.failure_message,
                "configured usage or spend limit exceeded");
-    expect_substr(state, "runtime_goal_usage_limit_checkpoint",
-                  store_state.saved_checkpoint,
+    expect_substr(state, "runtime_goal_usage_limit_commit",
+                  store_state.saved_commit,
                   "\"goal_status\":\"usage_limited\"");
     expect_int(state, "runtime_goal_usage_limit_snapshot",
                cai_agent_runtime_get_goal(runtime, &goal, &error), CAI_OK);
@@ -31622,7 +31667,7 @@ static void test_agent_local_session_store(test_state *state) {
   char template_directory[] =
       CAI_TEST_BINARY_DIR "/test-tmp/cai-session-store-XXXXXX";
   char session_id[CAI_AGENT_SESSION_ID_MAX];
-  char buffer[128];
+  char buffer[4096];
   char scope_path[PATH_MAX];
   char file_path[PATH_MAX];
   char opaque_scope_path[PATH_MAX];
@@ -31682,11 +31727,11 @@ static void test_agent_local_session_store(test_state *state) {
   expect_int(state, "local_session_store_first_source",
              cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
   if (source != NULL) {
-    expect_int(state, "local_session_store_first_checkpoint",
-               store.checkpoint(store.context,
-                                CAI_TEST_BINARY_DIR
-                                "/test-tmp/cai-session-store-scope",
-                                "session_one", source, 0U, &error),
+    expect_int(state, "local_session_store_first_commit",
+               store.commit(store.context,
+                            CAI_TEST_BINARY_DIR
+                            "/test-tmp/cai-session-store-scope",
+                            "session_one", source, 0U, &error),
                CAI_OK);
   }
   cai_source_close(source);
@@ -31697,11 +31742,11 @@ static void test_agent_local_session_store(test_state *state) {
   expect_int(state, "local_session_store_second_source",
              cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
   if (source != NULL) {
-    expect_int(state, "local_session_store_second_checkpoint",
-               store.checkpoint(store.context,
-                                CAI_TEST_BINARY_DIR
-                                "/test-tmp/cai-session-store-scope",
-                                "session_one", source, 7U, &error),
+    expect_int(state, "local_session_store_second_commit",
+               store.commit(store.context,
+                            CAI_TEST_BINARY_DIR
+                            "/test-tmp/cai-session-store-scope",
+                            "session_one", source, 7U, &error),
                CAI_OK);
   }
   cai_source_close(source);
@@ -31721,7 +31766,7 @@ static void test_agent_local_session_store(test_state *state) {
   if (fp == NULL || fwrite("{\"partial\"", 1U, strlen("{\"partial\""), fp) !=
                         strlen("{\"partial\"")) {
     test_fail(state, "local_session_store_partial_write",
-              "failed to append interrupted checkpoint");
+              "failed to append interrupted commit");
   }
   if (fp != NULL) {
     fclose(fp);
@@ -31732,11 +31777,11 @@ static void test_agent_local_session_store(test_state *state) {
   expect_int(state, "local_session_store_repair_source",
              cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
   if (source != NULL) {
-    expect_int(state, "local_session_store_repair_checkpoint",
-               store.checkpoint(store.context,
-                                CAI_TEST_BINARY_DIR
-                                "/test-tmp/cai-session-store-scope",
-                                "session_one", source, 7U, &error),
+    expect_int(state, "local_session_store_repair_commit",
+               store.commit(store.context,
+                            CAI_TEST_BINARY_DIR
+                            "/test-tmp/cai-session-store-scope",
+                            "session_one", source, 7U, &error),
                CAI_OK);
   }
   cai_source_close(source);
@@ -31780,13 +31825,13 @@ static void test_agent_local_session_store(test_state *state) {
                  "%s/%s/%s", template_directory, scope_path, "bad!.jsonl");
   fp = fopen(invalid_session_file_path, "wb");
   if (fp == NULL ||
-      fwrite("{\"record_type\":\"checkpoint\","
+      fwrite("{\"record_type\":\"commit\","
              "\"applied_event_sequence\":0,\"state\":{\"bad\":true}}\n",
              1U,
-             strlen("{\"record_type\":\"checkpoint\","
+             strlen("{\"record_type\":\"commit\","
                     "\"applied_event_sequence\":0,\"state\":{\"bad\":true}}\n"),
              fp) !=
-          strlen("{\"record_type\":\"checkpoint\","
+          strlen("{\"record_type\":\"commit\","
                  "\"applied_event_sequence\":0,\"state\":{\"bad\":true}}\n")) {
     test_fail(state, "local_session_store_invalid_id_write",
               "failed to create invalid session journal");
@@ -31809,15 +31854,18 @@ static void test_agent_local_session_store(test_state *state) {
   expect_str(state, "local_session_store_id", session_id, "session_one");
   expect_int(state, "local_session_store_watermark", (long)loaded_sequence, 7L);
   if (loaded == NULL) {
-    test_fail(state, "local_session_store_load", "latest checkpoint missing");
+    test_fail(state, "local_session_store_load", "latest commit missing");
   } else {
     memset(buffer, 0, sizeof(buffer));
     expect_int(
         state, "local_session_store_read",
-        (long)cai_source_read(loaded, buffer, sizeof(buffer) - 1U, &error),
-        (long)strlen("{\n  \"version\": 3,\n  \"nested\": {\"ok\": true}\n}"));
-    expect_str(state, "local_session_store_latest_value", buffer,
-               "{\n  \"version\": 3,\n  \"nested\": {\"ok\": true}\n}");
+        cai_source_read(loaded, buffer, sizeof(buffer) - 1U, &error) > 0U, 1L);
+    expect_substr(state, "local_session_store_first_edit_retained", buffer,
+                  "\"version\":1");
+    expect_substr(state, "local_session_store_second_edit_retained", buffer,
+                  "\"version\":2");
+    expect_substr(state, "local_session_store_latest_edit_retained", buffer,
+                  "{\n  \"version\": 3,\n  \"nested\": {\"ok\": true}\n}");
     expect_int(state, "local_session_store_reset",
                cai_source_reset(loaded, &error), CAI_OK);
   }
@@ -31849,11 +31897,11 @@ static void test_agent_local_session_store(test_state *state) {
   expect_int(state, "local_session_store_multiline_source",
              cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
   if (source != NULL) {
-    expect_int(state, "local_session_store_multiline_checkpoint",
-               store.checkpoint(store.context,
-                                CAI_TEST_BINARY_DIR
-                                "/test-tmp/cai-session-store-scope",
-                                "multiline-events", source, 8U, &error),
+    expect_int(state, "local_session_store_multiline_commit",
+               store.commit(store.context,
+                            CAI_TEST_BINARY_DIR
+                            "/test-tmp/cai-session-store-scope",
+                            "multiline-events", source, 8U, &error),
                CAI_OK);
   }
   cai_source_close(source);
@@ -31914,15 +31962,15 @@ static void test_agent_local_session_store(test_state *state) {
                 error.message, "strictly increasing");
   cai_error_cleanup(&error);
   cai_error_init(&error);
-  reader.text = "{\"checkpoint\":\"older\"}";
+  reader.text = "{\"commit\":\"older\"}";
   reader.offset = 0U;
   reader.closed = 0;
   expect_int(state, "local_session_store_recency_older_source",
              cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
   if (source != NULL) {
-    expect_int(state, "local_session_store_recency_older_checkpoint",
-               store.checkpoint(store.context, "checkpoint-recency",
-                                "older-checkpoint", source, 0U, &error),
+    expect_int(state, "local_session_store_recency_older_commit",
+               store.commit(store.context, "commit-recency", "older-commit",
+                            source, 0U, &error),
                CAI_OK);
   }
   cai_source_close(source);
@@ -31934,15 +31982,15 @@ static void test_agent_local_session_store(test_state *state) {
     pause_time.tv_nsec = 10000000L;
     (void)nanosleep(&pause_time, NULL);
   }
-  reader.text = "{\"checkpoint\":\"newer\"}";
+  reader.text = "{\"commit\":\"newer\"}";
   reader.offset = 0U;
   reader.closed = 0;
   expect_int(state, "local_session_store_recency_newer_source",
              cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
   if (source != NULL) {
-    expect_int(state, "local_session_store_recency_newer_checkpoint",
-               store.checkpoint(store.context, "checkpoint-recency",
-                                "newer-checkpoint", source, 0U, &error),
+    expect_int(state, "local_session_store_recency_newer_commit",
+               store.commit(store.context, "commit-recency", "newer-commit",
+                            source, 0U, &error),
                CAI_OK);
   }
   cai_source_close(source);
@@ -31951,19 +31999,19 @@ static void test_agent_local_session_store(test_state *state) {
   event.type = "turn_queued";
   event.data = "later journal event";
   expect_int(state, "local_session_store_recency_later_event",
-             store.append_event(store.context, "checkpoint-recency",
-                                "older-checkpoint", &event, &error),
+             store.append_event(store.context, "commit-recency", "older-commit",
+                                &event, &error),
              CAI_OK);
   memset(session_id, 0, sizeof(session_id));
   expect_int(state, "local_session_store_recency_load",
-             store.load_latest(store.context, "checkpoint-recency", session_id,
+             store.load_latest(store.context, "commit-recency", session_id,
                                sizeof(session_id), &loaded, &loaded_sequence,
                                &error),
              CAI_OK);
   expect_str(state, "local_session_store_recency_id", session_id,
-             "newer-checkpoint");
+             "newer-commit");
   expect_int(state, "local_session_store_list",
-             cai_agent_local_session_store_list(&store, "checkpoint-recency",
+             cai_agent_local_session_store_list(&store, "commit-recency",
                                                 test_session_list_capture,
                                                 &list_capture, &error),
              CAI_OK);
@@ -31972,45 +32020,42 @@ static void test_agent_local_session_store(test_state *state) {
              list_capture.newest_timestamp != 0U, 1L);
   if (loaded == NULL) {
     test_fail(state, "local_session_store_recency_load",
-              "newest checkpoint missing");
+              "newest commit missing");
   } else {
     memset(buffer, 0, sizeof(buffer));
     expect_int(
         state, "local_session_store_recency_read",
-        (long)cai_source_read(loaded, buffer, sizeof(buffer) - 1U, &error),
-        (long)strlen("{\"checkpoint\":\"newer\"}"));
-    expect_str(state, "local_session_store_recency_value", buffer,
-               "{\"checkpoint\":\"newer\"}");
+        cai_source_read(loaded, buffer, sizeof(buffer) - 1U, &error) > 0U, 1L);
+    expect_substr(state, "local_session_store_recency_value", buffer,
+                  "{\"commit\":\"newer\"}");
   }
   cai_source_close(loaded);
   loaded = NULL;
   expect_int(state, "local_session_store_load_id",
-             store.load_id(store.context, "checkpoint-recency",
-                           "older-checkpoint", &loaded, &loaded_sequence,
-                           &error),
+             store.load_id(store.context, "commit-recency", "older-commit",
+                           &loaded, &loaded_sequence, &error),
              CAI_OK);
   if (loaded != NULL) {
     memset(buffer, 0, sizeof(buffer));
     expect_int(
         state, "local_session_store_load_id_read",
-        (long)cai_source_read(loaded, buffer, sizeof(buffer) - 1U, &error),
-        (long)strlen("{\"checkpoint\":\"older\"}"));
-    expect_str(state, "local_session_store_load_id_value", buffer,
-               "{\"checkpoint\":\"older\"}");
+        cai_source_read(loaded, buffer, sizeof(buffer) - 1U, &error) > 0U, 1L);
+    expect_substr(state, "local_session_store_load_id_value", buffer,
+                  "{\"commit\":\"older\"}");
   }
   cai_source_close(loaded);
   loaded = NULL;
   expect_int(state, "local_session_store_load_id_missing",
-             store.load_id(store.context, "checkpoint-recency", "missing",
-                           &loaded, &loaded_sequence, &error),
+             store.load_id(store.context, "commit-recency", "missing", &loaded,
+                           &loaded_sequence, &error),
              CAI_ERR_INVALID);
   cai_error_cleanup(&error);
   cai_error_init(&error);
   memset(&list_capture, 0, sizeof(list_capture));
   expect_int(state, "local_session_store_list_other_scope",
-             cai_agent_local_session_store_list(
-                 &store, "checkpoint-recency-empty", test_session_list_capture,
-                 &list_capture, &error),
+             cai_agent_local_session_store_list(&store, "commit-recency-empty",
+                                                test_session_list_capture,
+                                                &list_capture, &error),
              CAI_OK);
   expect_int(state, "local_session_store_list_other_scope_count",
              list_capture.count, 0L);
@@ -32020,9 +32065,9 @@ static void test_agent_local_session_store(test_state *state) {
   expect_int(state, "local_session_store_opaque_alpha_source",
              cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
   if (source != NULL) {
-    expect_int(state, "local_session_store_opaque_alpha_checkpoint",
-               store.checkpoint(store.context, "team-alpha", "a-tied-session",
-                                source, 0U, &error),
+    expect_int(state, "local_session_store_opaque_alpha_commit",
+               store.commit(store.context, "team-alpha", "a-tied-session",
+                            source, 0U, &error),
                CAI_OK);
   }
   cai_source_close(source);
@@ -32033,9 +32078,9 @@ static void test_agent_local_session_store(test_state *state) {
   expect_int(state, "local_session_store_opaque_omega_source",
              cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
   if (source != NULL) {
-    expect_int(state, "local_session_store_opaque_omega_checkpoint",
-               store.checkpoint(store.context, "team-alpha", "z-tied-session",
-                                source, 0U, &error),
+    expect_int(state, "local_session_store_opaque_omega_commit",
+               store.commit(store.context, "team-alpha", "z-tied-session",
+                            source, 0U, &error),
                CAI_OK);
   }
   cai_source_close(source);
@@ -32119,7 +32164,7 @@ static void test_agent_local_session_store(test_state *state) {
   loaded = NULL;
   event.sequence = 1U;
   event.type = "steering_queued";
-  event.data = "event before first checkpoint";
+  event.data = "event before first commit";
   expect_int(state, "local_session_store_event_only_append",
              store.append_event(store.context,
                                 CAI_TEST_BINARY_DIR
@@ -32144,67 +32189,56 @@ static void test_agent_local_session_store(test_state *state) {
           store.context, CAI_TEST_BINARY_DIR "/test-tmp/cai-session-event-only",
           session_id, sizeof(session_id), &loaded, &loaded_sequence, &error),
       CAI_OK);
-  expect_int(state, "local_session_store_event_only_no_checkpoint",
-             loaded == NULL, 1L);
+  expect_int(state, "local_session_store_event_only_no_commit", loaded == NULL,
+             1L);
   expect_str(state, "local_session_store_event_only_no_session", session_id,
              "");
   fp = fopen(file_path, "ab");
   if (fp == NULL ||
       fwrite(
-          "{\"record_type\":\"checkpoint\","
+          "{\"record_type\":\"commit\","
           "\"applied_event_sequence\":9,\"state\":{\"version\":6}}\n",
           1U,
-          strlen("{\"record_type\":\"checkpoint\","
+          strlen("{\"record_type\":\"commit\","
                  "\"applied_event_sequence\":9,\"state\":{\"version\":6}}\n"),
           fp) !=
-          strlen("{\"record_type\":\"checkpoint\","
+          strlen("{\"record_type\":\"commit\","
                  "\"applied_event_sequence\":9,\"state\":{\"version\":6}}\n")) {
-    test_fail(state, "local_session_store_legacy_checkpoint_write",
-              "failed to append legacy checkpoint");
+    test_fail(state, "local_session_store_legacy_commit_write",
+              "failed to append legacy commit");
   }
   if (fp != NULL) {
     fclose(fp);
   }
   memset(session_id, 0, sizeof(session_id));
-  expect_int(state, "local_session_store_legacy_checkpoint_load",
+  expect_int(state, "local_session_store_missing_timestamp_rejected",
              store.load_latest(store.context,
                                CAI_TEST_BINARY_DIR
                                "/test-tmp/cai-session-store-scope",
                                session_id, sizeof(session_id), &loaded,
                                &loaded_sequence, &error),
-             CAI_OK);
-  expect_str(state, "local_session_store_legacy_checkpoint_id", session_id,
-             "session_one");
-  expect_int(state, "local_session_store_legacy_checkpoint_watermark",
-             (long)loaded_sequence, 9L);
-  if (loaded == NULL) {
-    test_fail(state, "local_session_store_legacy_checkpoint_load",
-              "legacy checkpoint missing");
-  } else {
-    memset(buffer, 0, sizeof(buffer));
-    expect_int(
-        state, "local_session_store_legacy_checkpoint_read",
-        (long)cai_source_read(loaded, buffer, sizeof(buffer) - 1U, &error),
-        (long)strlen("{\"version\":6}"));
-    expect_str(state, "local_session_store_legacy_checkpoint_value", buffer,
-               "{\"version\":6}");
-  }
+             CAI_ERR_INVALID);
   cai_source_close(loaded);
   loaded = NULL;
+  cai_error_cleanup(&error);
+  cai_error_init(&error);
   fp = fopen(file_path, "ab");
   if (fp == NULL ||
-      fwrite("{\"record_type\":\"checkpoint\","
-             "\"applied_event_sequence\":18446744073709551616,"
+      fwrite("{\"record_type\":\"commit\","
+             "\"commit_created_at_ns\":1,\"applied_event_sequence\":"
+             "18446744073709551616,"
              "\"state\":{}}\n",
              1U,
-             strlen("{\"record_type\":\"checkpoint\","
-                    "\"applied_event_sequence\":18446744073709551616,"
+             strlen("{\"record_type\":\"commit\","
+                    "\"commit_created_at_ns\":1,\"applied_event_sequence\":"
+                    "18446744073709551616,"
                     "\"state\":{}}\n"),
-             fp) != strlen("{\"record_type\":\"checkpoint\","
-                           "\"applied_event_sequence\":18446744073709551616,"
+             fp) != strlen("{\"record_type\":\"commit\","
+                           "\"commit_created_at_ns\":1,\"applied_event_"
+                           "sequence\":18446744073709551616,"
                            "\"state\":{}}\n")) {
     test_fail(state, "local_session_store_overflow_write",
-              "failed to append overflowing checkpoint");
+              "failed to append overflowing commit");
   }
   if (fp != NULL) {
     fclose(fp);
@@ -32415,8 +32449,8 @@ test_agent_local_session_store_scope_parent_sync(test_state *state) {
   cai_session_store_test_set_fail_scope_parent_sync(1);
   if (source != NULL) {
     expect_int(state, "local_session_store_sync_failure",
-               store.checkpoint(store.context, "scope-parent-sync", "session",
-                                source, 0U, &error),
+               store.commit(store.context, "scope-parent-sync", "session",
+                            source, 0U, &error),
                CAI_ERR_TRANSPORT);
   }
   cai_session_store_test_set_fail_scope_parent_sync(0);
@@ -32424,9 +32458,59 @@ test_agent_local_session_store_scope_parent_sync(test_state *state) {
   cai_error_init(&error);
   if (source != NULL) {
     expect_int(state, "local_session_store_sync_recovery",
-               store.checkpoint(store.context, "scope-parent-sync", "session",
-                                source, 0U, &error),
+               store.commit(store.context, "scope-parent-sync", "session",
+                            source, 0U, &error),
                CAI_OK);
+    expect_int(state, "local_session_store_reset_before_sync_fault",
+               cai_source_reset(source, &error), CAI_OK);
+    cai_session_store_test_set_fail_record_sync(1);
+    expect_int(state, "local_session_store_complete_record_sync_failure",
+               store.commit(store.context, "scope-parent-sync", "session",
+                            source, 1U, &error),
+               CAI_ERR_TRANSPORT);
+    cai_session_store_test_set_fail_record_sync(0);
+    cai_error_cleanup(&error);
+    expect_int(state, "local_session_store_reset_after_sync_fault",
+               cai_source_reset(source, &error), CAI_OK);
+    expect_int(state, "local_session_store_ambiguous_write_blocked",
+               store.commit(store.context, "scope-parent-sync", "session",
+                            source, 2U, &error),
+               CAI_ERR_TRANSPORT);
+    expect_substr(state, "local_session_store_ambiguous_write_explanation",
+                  error.message, "reopen the store");
+    expect_int(state, "local_session_store_blocked_before_source_read",
+               reader.offset, 0L);
+    cai_error_cleanup(&error);
+    cai_agent_local_session_store_close(&store);
+    expect_int(state, "local_session_store_reopen_after_sync_fault",
+               cai_agent_local_session_store_open(&config, &store, &error),
+               CAI_OK);
+    {
+      cai_source *recovered = NULL;
+      unsigned long long watermark;
+      char bytes[4096];
+      size_t used = 0U, count;
+      const char *first, *second;
+      expect_int(state, "local_session_store_recover_complete_record",
+                 store.load_id(store.context, "scope-parent-sync", "session",
+                               &recovered, &watermark, &error),
+                 CAI_OK);
+      while (recovered != NULL &&
+             (count = cai_source_read(recovered, bytes + used,
+                                      sizeof(bytes) - used - 1U, &error)) != 0U)
+        used += count;
+      bytes[used] = '\0';
+      first = strstr(bytes, "\"record_type\":\"commit\"");
+      second = first != NULL ? strstr(first + 1, "\"record_type\":\"commit\"")
+                             : NULL;
+      expect_int(state, "local_session_store_no_duplicate_after_sync_failure",
+                 second != NULL &&
+                     strstr(second + 1, "\"record_type\":\"commit\"") == NULL,
+                 1L);
+      expect_int(state, "local_session_store_recovered_watermark", watermark,
+                 1L);
+      cai_source_close(recovered);
+    }
   }
   cai_source_close(source);
   cai_agent_local_session_store_close(&store);
@@ -32629,8 +32713,8 @@ test_agent_local_session_store_rejects_unsafe_scope(test_state *state) {
              cai_source_from_callbacks(&callbacks, &source, &error), CAI_OK);
   if (source != NULL) {
     expect_int(state, "local_session_store_unsafe_scope_rejected",
-               store.checkpoint(store.context, "unsafe-scope", "session_one",
-                                source, 0U, &error),
+               store.commit(store.context, "unsafe-scope", "session_one",
+                            source, 0U, &error),
                CAI_ERR_TRANSPORT);
   }
   cai_source_close(source);
@@ -32662,7 +32746,7 @@ static void test_agent_runtime_resume(test_state *state) {
   memset(&store_state, 0, sizeof(store_state));
   memset(&events, 0, sizeof(events));
   events.owner = pthread_self();
-  store_state.checkpoint_json =
+  store_state.commit_json =
       "{\"version\":1,\"model\":\"custom-resumed-model\","
       "\"previous_response_id\":\"resp_saved\",\"history\":[]}";
   store_state.load_applied_event_sequence = 8U;
@@ -32691,7 +32775,7 @@ static void test_agent_runtime_resume(test_state *state) {
                  "input_consumed");
   (void)snprintf(store_state.replay_event_data_items[3],
                  sizeof(store_state.replay_event_data_items[3]), "%s", "9");
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -32732,17 +32816,17 @@ static void test_agent_runtime_resume(test_state *state) {
     expect_int(state, "runtime_resume_replayed_event", events.saw_failed, 1L);
     expect_int(state, "runtime_resume_replayed_failures", events.failed_count,
                2L);
-    expect_int(state, "runtime_resume_replayed_checkpoint",
-               store_state.checkpoints > 0, 1L);
+    expect_int(state, "runtime_resume_replayed_commit", store_state.commits > 0,
+               1L);
     expect_int(state, "runtime_resume_replayed_watermark",
                (long)store_state.saved_applied_event_sequence, 13L);
     expect_substr(state, "runtime_resume_replayed_text",
-                  store_state.saved_checkpoint, "resume priority steering");
+                  store_state.saved_commit, "resume priority steering");
     expect_substr(state, "runtime_resume_replayed_normal_after_ack",
-                  store_state.saved_checkpoint, "resume queued normal turn");
+                  store_state.saved_commit, "resume queued normal turn");
     cai_agent_runtime_close(runtime);
   }
-  /* A covered consumption marker means the checkpoint already contains the
+  /* A covered consumption marker means the commit already contains the
    * steering input. The earlier normal turn must still be reconstructed, but
    * replay must not inject the steering text a second time. */
   runtime = NULL;
@@ -32768,25 +32852,24 @@ static void test_agent_runtime_resume(test_state *state) {
     expect_int(state, "runtime_resume_covered_marker_failures",
                events.failed_count, 1L);
     expect_substr(state, "runtime_resume_covered_marker_normal_turn",
-                  store_state.saved_checkpoint, "resume queued normal turn");
-    if (strstr(store_state.saved_checkpoint, "resume priority steering") !=
-        NULL) {
+                  store_state.saved_commit, "resume queued normal turn");
+    if (strstr(store_state.saved_commit, "resume priority steering") != NULL) {
       test_fail(state, "runtime_resume_covered_marker_no_duplicate_steering",
-                "covered steering input was replayed into the checkpoint");
+                "covered steering input was replayed into the commit");
     }
     expect_int(state, "runtime_resume_covered_marker_watermark",
                (long)store_state.saved_applied_event_sequence, 14L);
     cai_agent_runtime_close(runtime);
   }
   /* A migrated v2 marker can acknowledge a legacy input. Once the legacy
-   * input is covered by the checkpoint it is intentionally absent on replay;
+   * input is covered by the commit it is intentionally absent on replay;
    * reopening the upgraded session must ignore that marker instead of treating
    * it as corrupt. */
   runtime = NULL;
   memset(&events, 0, sizeof(events));
   events.owner = pthread_self();
   memset(&store_state, 0, sizeof(store_state));
-  store_state.checkpoint_json =
+  store_state.commit_json =
       "{\"version\":1,\"model\":\"custom-resumed-model\","
       "\"previous_response_id\":\"resp_saved\",\"history\":[]}";
   store_state.load_applied_event_sequence = 6U;
@@ -32840,7 +32923,7 @@ static void test_agent_runtime_resume(test_state *state) {
   memset(&events, 0, sizeof(events));
   events.owner = pthread_self();
   memset(&store_state, 0, sizeof(store_state));
-  store_state.checkpoint_json =
+  store_state.commit_json =
       "{\"version\":1,\"model\":\"custom-resumed-model\","
       "\"previous_response_id\":\"resp_saved\",\"history\":[]}";
   store_state.load_applied_event_sequence = 2U;
@@ -32860,8 +32943,8 @@ static void test_agent_runtime_resume(test_state *state) {
   expect_int(state, "runtime_resume_subagent_recovery_open",
              cai_agent_runtime_open(client, &runtime_config, &runtime, &error),
              CAI_OK);
-  expect_int(state, "runtime_resume_subagent_recovery_checkpoint",
-             store_state.checkpoints > 0, 1L);
+  expect_int(state, "runtime_resume_subagent_recovery_commit",
+             store_state.commits > 0, 1L);
   expect_int(state, "runtime_resume_subagent_recovery_watermark",
              (long)store_state.saved_applied_event_sequence, 3L);
   expect_int(state, "runtime_resume_subagent_recovery_event_sequence",
@@ -32869,17 +32952,16 @@ static void test_agent_runtime_resume(test_state *state) {
   expect_str(state, "runtime_resume_subagent_recovery_event_type",
              store_state.replay_event_types[2], "subagent_handoff_committed");
   expect_substr(state, "runtime_resume_subagent_recovery_context",
-                store_state.saved_checkpoint,
+                store_state.saved_commit,
                 "<subagent_handoff profile=\\\"worker\\\"");
   expect_substr(state, "runtime_resume_subagent_recovery_tool_output",
-                store_state.saved_checkpoint,
-                "\"call_id\":\"call_interrupted\"");
+                store_state.saved_commit, "\"call_id\":\"call_interrupted\"");
   expect_substr(state, "runtime_resume_subagent_recovery_failed_status",
-                store_state.saved_checkpoint, "\\\"status\\\":\\\"failed\\\"");
+                store_state.saved_commit, "\\\"status\\\":\\\"failed\\\"");
   if (runtime != NULL) {
     cai_agent_runtime_close(runtime);
   }
-  /* A checkpointed review pause is recovered before replayed normal input can
+  /* A committed review pause is recovered before replayed normal input can
    * reach the worker.  Simulate the crash window after a parent accepted a
    * queued follow-up and before its child was handed off. */
   runtime = NULL;
@@ -32887,7 +32969,7 @@ static void test_agent_runtime_resume(test_state *state) {
   memset(&events, 0, sizeof(events));
   events.owner = pthread_self();
   memset(&store_state, 0, sizeof(store_state));
-  store_state.checkpoint_json =
+  store_state.commit_json =
       "{\"version\":1,\"model\":\"custom-resumed-model\","
       "\"previous_response_id\":\"resp_saved\",\"history\":[]}";
   store_state.load_applied_event_sequence = 3U;
@@ -32975,7 +33057,7 @@ static void test_agent_runtime_markdown_export(test_state *state) {
   char moved_path[PATH_MAX];
   char replacement_source_path[PATH_MAX];
   char file_text[65536];
-  char checkpoint_json[4096];
+  char commit_json[4096];
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
   cai_agent_session_store store;
@@ -33011,7 +33093,7 @@ static void test_agent_runtime_markdown_export(test_state *state) {
   memset(&store_state, 0, sizeof(store_state));
   memset(&captured, 0, sizeof(captured));
   memset(&replacement_state, 0, sizeof(replacement_state));
-  (void)snprintf(checkpoint_json, sizeof(checkpoint_json), "%s%s%s%s",
+  (void)snprintf(commit_json, sizeof(commit_json), "%s%s%s%s",
                  "{\"version\":1,\"model\":\"gpt-5-nano\","
                  "\"goal_objective\":\"finish the handover\","
                  "\"goal_status\":\"active\","
@@ -33038,8 +33120,8 @@ static void test_agent_runtime_markdown_export(test_state *state) {
                  "{\"type\":\"message\",\"role\":\"user\",\"content\":[{"
                  "\"type\":\"input_image\",\"image_url\":\"data:image/"
                  "png;base64,abc\"}]}]}");
-  store_state.checkpoint_json = checkpoint_json;
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  store_state.commit_json = commit_json;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -43435,7 +43517,7 @@ static void test_chat_runtime_case(test_state *state, const char *name,
                                    size_t script_count, const char *prompt,
                                    cai_agent_run_state expected_state,
                                    int expected_text_deltas,
-                                   int expect_partial_checkpoint) {
+                                   int expect_partial_commit) {
   http_mock_server server;
   cai_client_config client_config;
   cai_agent_runtime_config runtime_config;
@@ -43477,8 +43559,8 @@ static void test_chat_runtime_case(test_state *state, const char *name,
   runtime_config.disable_terminal = 1;
   runtime_config.event_callback = test_runtime_event;
   runtime_config.event_context = &events;
-  if (expect_partial_checkpoint) {
-    store.checkpoint = test_runtime_session_store_checkpoint;
+  if (expect_partial_commit) {
+    store.commit = test_runtime_session_store_commit;
     store.load_latest = test_runtime_session_store_load;
     store.append_event = test_runtime_session_store_append_event;
     store.load_events_after = test_runtime_session_store_load_events_after;
@@ -43504,11 +43586,11 @@ static void test_chat_runtime_case(test_state *state, const char *name,
   expect_int(state, name, events.saw_failed,
              expected_state == CAI_AGENT_FAILED);
   expect_int(state, name, events.text_delta_count, expected_text_deltas);
-  if (expect_partial_checkpoint) {
-    expect_int(state, "chat_partial_checkpoint_written",
-               store_state.checkpoints > 0, 1L);
-    expect_substr(state, "chat_partial_checkpoint_text",
-                  store_state.saved_checkpoint, "partial text");
+  if (expect_partial_commit) {
+    expect_int(state, "chat_partial_commit_written", store_state.commits > 0,
+               1L);
+    expect_substr(state, "chat_partial_commit_text", store_state.saved_commit,
+                  "partial text");
   }
   cai_agent_runtime_close(runtime);
   if (strcmp(name, "chat_repeated_overflow") == 0) {
@@ -54506,8 +54588,8 @@ static const test_entry test_entries[] = {
      test_agent_runtime_failed_subagent_resume},
     {"agent_runtime_poll_only_subagent", test_agent_runtime_poll_only_subagent},
     {"agent_runtime_review_subagent", test_agent_runtime_review_subagent},
-    {"smith_review_pause_checkpoint_failure",
-     test_smith_review_pause_checkpoint_failure},
+    {"smith_review_pause_commit_failure",
+     test_smith_review_pause_commit_failure},
     {"agent_runtime_lifecycle", test_agent_runtime_lifecycle},
     {"agent_runtime_ids", test_agent_runtime_ids},
     {"agent_runtime_skills", test_agent_runtime_skills},
@@ -54532,8 +54614,8 @@ static const test_entry test_entries[] = {
     {"agent_runtime_goal_replace", test_agent_runtime_goal_replace},
     {"agent_runtime_goal_replace_queued_failure",
      test_agent_runtime_goal_replace_queued_failure},
-    {"agent_runtime_goal_checkpoint_watermark",
-     test_agent_runtime_goal_checkpoint_watermark},
+    {"agent_runtime_goal_commit_watermark",
+     test_agent_runtime_goal_commit_watermark},
     {"agent_runtime_goal_create_status_allocation_failure",
      test_agent_runtime_goal_create_status_allocation_failure},
     {"agent_runtime_goal_budget", test_agent_runtime_goal_budget},

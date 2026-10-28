@@ -488,7 +488,7 @@ typedef struct integration_smith_runtime_event_state {
   int steering_submitted;
   int steering_queued;
   int steering_delivered;
-  int session_checkpointed;
+  int session_committed;
   int run_completed;
   int run_failed;
   unsigned long long first_read_completed_sequence;
@@ -821,8 +821,8 @@ static int integration_smith_runtime_event(void *context,
     state->steering_queued++;
   } else if (event->type == CAI_AGENT_EVENT_STEERING_DELIVERED) {
     state->steering_delivered++;
-  } else if (event->type == CAI_AGENT_EVENT_SESSION_CHECKPOINTED) {
-    state->session_checkpointed++;
+  } else if (event->type == CAI_AGENT_EVENT_SESSION_COMMITTED) {
+    state->session_committed++;
   } else if (event->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED) {
     state->terminal_started++;
     if (state->terminal_started_sequence == 0U) {
@@ -5005,7 +5005,7 @@ static int run_chatgpt_smith_runtime_regression(void) {
   if (events.read_completed < 2 || events.execute_completed < 1 ||
       events.write_stdin_completed < 1 || events.terminal_started != 1 ||
       events.terminal_completed != 1 || events.terminal_exit_zero != 1 ||
-      events.session_checkpointed < 1 ||
+      events.session_committed < 1 ||
       !integration_text_contains(events.terminal_command,
                                  "grep -Fx 'state: complete' task.txt") ||
       !integration_text_contains(events.terminal_output.buffer,
@@ -5013,11 +5013,11 @@ static int run_chatgpt_smith_runtime_regression(void) {
     fprintf(stderr,
             "Smith runtime terminal evidence failed (reads=%d execute=%d "
             "write_stdin=%d started=%d waiting=%d completed=%d exit_zero=%d "
-            "checkpoints=%d command=%s output=%s)\n",
+            "commits=%d command=%s output=%s)\n",
             events.read_completed, events.execute_completed,
             events.write_stdin_completed, events.terminal_started,
             events.terminal_waiting, events.terminal_completed,
-            events.terminal_exit_zero, events.session_checkpointed,
+            events.terminal_exit_zero, events.session_committed,
             events.terminal_command, events.terminal_output.buffer);
     rc = integration_set_error(
         &error, CAI_ERR_PROTOCOL,
@@ -5106,10 +5106,10 @@ static int run_chatgpt_smith_runtime_regression(void) {
   }
   fprintf(stderr,
           "[integration-chatgpt-smith-runtime] model=%s mode=%s reads=%d "
-          "patches=%d terminal_waits=%d checkpoints=%d resume=%s\n",
+          "patches=%d terminal_waits=%d commits=%d resume=%s\n",
           model, "luna-acceptance", events.read_completed,
           events.patch_completed, events.terminal_waiting,
-          events.session_checkpointed, "verified");
+          events.session_committed, "verified");
   rc = CAI_OK;
 
 done:

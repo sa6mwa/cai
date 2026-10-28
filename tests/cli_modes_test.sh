@@ -34,7 +34,7 @@ run --export "$id"; ok
 jsonl="$root/data/cai/exports/$id/$id.jsonl"; markdown="$root/data/cai/exports/$id/$id.md"
 [[ -f "$jsonl" && -f "$markdown" && ! -e "$root/state/cai/exports" ]]
 [[ $(stat -c %a "$jsonl") == 600 && $(stat -c %a "$markdown") == 600 ]]
-jq -se '.[0].record_type == "checkpoint" and .[0].applied_event_sequence > 0 and any(.[]; .record_type == "event")' "$jsonl" >/dev/null
+jq -se 'any(.[]; .record_type == "commit" and .applied_event_sequence > 0) and any(.[]; .record_type == "event")' "$jsonl" >/dev/null
 contains "$markdown" '## User'; contains "$markdown" 'first task'; contains "$markdown" 'resumed reply'
 [[ $(requests) == "$count" ]]
 run --export "$id" --export-dir relative-exports; ok; [[ -f "$work/relative-exports/$id/$id.md" ]]

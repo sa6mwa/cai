@@ -1,6 +1,6 @@
-#include "cai_decimal.h"
 #include "cai_internal.h"
 #include <cai/tools/todo.h>
+#include <float.h>
 
 #include <pslog.h>
 
@@ -856,6 +856,10 @@ int cai_client_new_agent(cai_client *client, const cai_agent_config *config,
     lonejson_config runtime_config;
 
     runtime_config = lonejson_default_config();
+    /* Provider context and journal suffixes are visited in bounded chunks;
+     * they are not dynamically allocated mapped strings. */
+    runtime_config.json_value_max_total_bytes = 0U;
+    runtime_config.json_value_max_string_bytes = 0U;
     runtime_config.spool_default.memory_limit = impl->history_memory_limit;
     runtime_config.spool_blob.memory_limit = impl->history_memory_limit;
     runtime_config.spool_large_text.memory_limit = impl->history_memory_limit;
@@ -2634,12 +2638,20 @@ static void cai_history_replace(cai_session *session,
   old_history = CAI_SESSION_IMPL(session)->history;
   CAI_SESSION_IMPL(session)->history = *next_history;
   CAI_SESSION_IMPL(session)->history_items_known = 0;
+  CAI_SESSION_IMPL(session)->journal_replace = 1;
+  CAI_SESSION_IMPL(session)->journal_keep_bytes = 0U;
   memset(next_history, 0, sizeof(*next_history));
   old_history.cleanup(&old_history);
 }
 
 static void cai_history_cleanup(cai_session *session) {
   if (session != NULL) {
+    cai_free_mem(NULL, CAI_SESSION_IMPL(session)->journal_blocks.items);
+    cai_free_mem(NULL, CAI_SESSION_IMPL(session)->journal_hidden.items);
+    cai_free_mem(NULL, CAI_SESSION_IMPL(session)->journal_owned.items);
+    cai_free_mem(NULL, CAI_SESSION_IMPL(session)->journal_next_blocks.items);
+    cai_free_mem(NULL, CAI_SESSION_IMPL(session)->journal_next_hidden.items);
+    cai_free_mem(NULL, CAI_SESSION_IMPL(session)->journal_next_owned.items);
     CAI_SESSION_IMPL(session)->history.cleanup(
         &CAI_SESSION_IMPL(session)->history);
   }
@@ -3257,7 +3269,7 @@ static int cai_history_read_record_length(cai_spooled_record_reader *reader,
   }
   item_length = 0UL;
   do {
-    if (item_length > (ULONG_MAX / 10UL)) {
+    if (item_length > (ULONG_MAX - (unsigned long)(ch - '0')) / 10UL) {
       return cai_set_error(error, CAI_ERR_PROTOCOL,
                            "history record length overflow");
     }
@@ -4442,7 +4454,7 @@ static int cai_session_commit_pending_history(cai_session *session,
 }
 
 /*
- * Smith checkpoints must be able to survive after accepting a user turn but
+ * Smith commits must be able to survive after accepting a user turn but
  * before sending its first request.  Session inputs normally remain pending
  * until a response succeeds, so fold them into the local history explicitly
  * at that durable boundary.  This is intentionally an internal primitive:
@@ -4490,10 +4502,10 @@ int cai_session_commit_pending_inputs(cai_session *session, cai_error *error) {
  * Persist a safe snapshot of pending inputs without consuming them. Server
  * continuity must keep callback steering available until its continuation
  * request succeeds, while the durable tool-round hook must be able to
- * checkpoint that steering before the request is made.
+ * commit that steering before the request is made.
  */
-static int cai_session_checkpoint_pending_inputs(cai_session *session,
-                                                 cai_error *error) {
+static int cai_session_preserve_pending_inputs(cai_session *session,
+                                               cai_error *error) {
   cai_response_create_params *params;
   lonejson_spooled pending_items;
   int has_pending_items;
@@ -6196,7 +6208,7 @@ static int cai_session_run_tool_round(cai_session *session,
   }
   /*
    * The client-history tool result is durable now.  A completed callback may
-   * fail while delivering steering or checkpointing, but that must never make
+   * fail while delivering steering or committing, but that must never make
    * an executed (and potentially non-idempotent) tool call replayable.
    */
   if (rc == CAI_OK && options->tool_round_completed != NULL) {
@@ -6214,7 +6226,7 @@ static int cai_session_run_tool_round(cai_session *session,
         CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
       rc = cai_session_commit_pending_inputs(session, error);
     } else {
-      rc = cai_session_checkpoint_pending_inputs(session, error);
+      rc = cai_session_preserve_pending_inputs(session, error);
     }
   }
   if (rc == CAI_OK && options->tool_round_durable != NULL) {
@@ -6798,7 +6810,7 @@ static int cai_session_stream_tool_round(
         CAI_SESSION_CONTINUITY_CLIENT_HISTORY) {
       rc = cai_session_commit_pending_inputs(session, error);
     } else {
-      rc = cai_session_checkpoint_pending_inputs(session, error);
+      rc = cai_session_preserve_pending_inputs(session, error);
     }
   }
   if (rc == CAI_OK && options->tool_round_durable != NULL) {
@@ -7539,6 +7551,95 @@ int cai_session_import_history_source(cai_session *session, cai_source *source,
   return rc;
 }
 
+static int
+cai_session_state_fill(cai_session *session, cai_session_state_doc *doc,
+                       char selected_board[CAI_TODO_BOARD_NAME_MAX + 1U],
+                       cai_error *error) {
+  int rc;
+  doc->version = 1LL;
+  doc->history_blocks = CAI_SESSION_IMPL(session)->history_blocks;
+  doc->history_hidden_events = CAI_SESSION_IMPL(session)->history_hidden_events;
+  doc->history_owned_events = CAI_SESSION_IMPL(session)->history_owned_events;
+  doc->model = CAI_SESSION_IMPL(session)->state_model != NULL
+                   ? CAI_SESSION_IMPL(session)->state_model
+                   : CAI_SESSION_AGENT_IMPL(session)->model;
+  doc->model_compaction_hash =
+      CAI_SESSION_IMPL(session)->state_model_compaction_hash;
+  doc->request_model = CAI_SESSION_AGENT_IMPL(session)->model;
+  doc->context_window_tokens = cai_session_context_window_tokens(session);
+  doc->reasoning_effort = CAI_SESSION_AGENT_IMPL(session)->reasoning_effort;
+  doc->service_tier = CAI_SESSION_AGENT_IMPL(session)->service_tier;
+  doc->todo_board = CAI_SESSION_IMPL(session)->state_todo_board;
+  if (CAI_SESSION_IMPL(session)->todo != NULL) {
+    rc = cai_todo_get_board(CAI_SESSION_IMPL(session)->todo, selected_board,
+                            CAI_TODO_BOARD_NAME_MAX + 1U, error);
+    if (rc != CAI_OK)
+      return rc;
+    doc->todo_board = selected_board;
+  }
+  doc->reasoning_summary = CAI_SESSION_AGENT_IMPL(session)->reasoning_summary;
+  doc->preset_name = CAI_SESSION_IMPL(session)->state_preset_name;
+  doc->preset_prompt_version =
+      CAI_SESSION_IMPL(session)->state_preset_prompt_version;
+  doc->goal_objective = CAI_SESSION_IMPL(session)->goal_objective;
+  doc->goal_status = CAI_SESSION_IMPL(session)->goal_status;
+  doc->goal_token_budget = CAI_SESSION_IMPL(session)->goal_token_budget;
+  doc->has_goal_token_budget = CAI_SESSION_IMPL(session)->goal_has_token_budget;
+  doc->goal_token_usage_baseline =
+      CAI_SESSION_IMPL(session)->goal_token_usage_baseline;
+  doc->goal_tokens_used = CAI_SESSION_IMPL(session)->goal_tokens_used;
+  doc->goal_elapsed_seconds = CAI_SESSION_IMPL(session)->goal_elapsed_seconds;
+  doc->goal_active_started_at =
+      CAI_SESSION_IMPL(session)->goal_active_started_at;
+  doc->has_goal_active_started_at =
+      CAI_SESSION_IMPL(session)->goal_active_started_at > 0LL;
+  doc->goal_created_at = CAI_SESSION_IMPL(session)->goal_created_at;
+  doc->goal_updated_at = CAI_SESSION_IMPL(session)->goal_updated_at;
+  doc->last_usage_input_tokens =
+      CAI_SESSION_IMPL(session)->last_usage.input_tokens;
+  doc->has_last_usage_input_tokens = CAI_SESSION_IMPL(session)->has_last_usage;
+  doc->last_usage_input_cached_tokens =
+      CAI_SESSION_IMPL(session)->last_usage.input_cached_tokens;
+  doc->has_last_usage_input_cached_tokens =
+      CAI_SESSION_IMPL(session)->has_last_usage;
+  doc->last_usage_output_tokens =
+      CAI_SESSION_IMPL(session)->last_usage.output_tokens;
+  doc->has_last_usage_output_tokens = CAI_SESSION_IMPL(session)->has_last_usage;
+  doc->last_usage_output_reasoning_tokens =
+      CAI_SESSION_IMPL(session)->last_usage.output_reasoning_tokens;
+  doc->has_last_usage_output_reasoning_tokens =
+      CAI_SESSION_IMPL(session)->has_last_usage;
+  doc->last_usage_total_tokens =
+      CAI_SESSION_IMPL(session)->last_usage.total_tokens;
+  doc->has_last_usage_total_tokens = CAI_SESSION_IMPL(session)->has_last_usage;
+  doc->context_usage_input_tokens =
+      CAI_SESSION_IMPL(session)->context_usage.input_tokens;
+  doc->has_context_usage_input_tokens =
+      CAI_SESSION_IMPL(session)->has_context_usage;
+  doc->context_usage_input_cached_tokens =
+      CAI_SESSION_IMPL(session)->context_usage.input_cached_tokens;
+  doc->has_context_usage_input_cached_tokens =
+      CAI_SESSION_IMPL(session)->has_context_usage;
+  doc->context_usage_output_tokens =
+      CAI_SESSION_IMPL(session)->context_usage.output_tokens;
+  doc->has_context_usage_output_tokens =
+      CAI_SESSION_IMPL(session)->has_context_usage;
+  doc->context_usage_output_reasoning_tokens =
+      CAI_SESSION_IMPL(session)->context_usage.output_reasoning_tokens;
+  doc->has_context_usage_output_reasoning_tokens =
+      CAI_SESSION_IMPL(session)->has_context_usage;
+  doc->context_usage_total_tokens =
+      CAI_SESSION_IMPL(session)->context_usage.total_tokens;
+  doc->has_context_usage_total_tokens =
+      CAI_SESSION_IMPL(session)->has_context_usage;
+  if (CAI_SESSION_IMPL(session)->conversation_id != NULL) {
+    doc->conversation_id = CAI_SESSION_IMPL(session)->conversation_id;
+  } else {
+    doc->previous_response_id = CAI_SESSION_IMPL(session)->previous_response_id;
+  }
+  return CAI_OK;
+}
+
 int cai_session_export_state_source(cai_session *session, cai_source **out,
                                     cai_error *error) {
   cai_session_state_doc doc;
@@ -7568,87 +7669,9 @@ int cai_session_export_state_source(cai_session *session, cai_source **out,
   has_history_json = 0;
   include_history = 0;
   rc = CAI_OK;
-  doc.version = 1LL;
-  doc.history_blocks = CAI_SESSION_IMPL(session)->history_blocks;
-  doc.history_hidden_events = CAI_SESSION_IMPL(session)->history_hidden_events;
-  doc.history_owned_events = CAI_SESSION_IMPL(session)->history_owned_events;
-  doc.model = CAI_SESSION_IMPL(session)->state_model != NULL
-                  ? CAI_SESSION_IMPL(session)->state_model
-                  : CAI_SESSION_AGENT_IMPL(session)->model;
-  doc.model_compaction_hash =
-      CAI_SESSION_IMPL(session)->state_model_compaction_hash;
-  doc.request_model = CAI_SESSION_AGENT_IMPL(session)->model;
-  doc.context_window_tokens = cai_session_context_window_tokens(session);
-  doc.reasoning_effort = CAI_SESSION_AGENT_IMPL(session)->reasoning_effort;
-  doc.service_tier = CAI_SESSION_AGENT_IMPL(session)->service_tier;
-  doc.todo_board = CAI_SESSION_IMPL(session)->state_todo_board;
-  if (CAI_SESSION_IMPL(session)->todo != NULL) {
-    rc = cai_todo_get_board(CAI_SESSION_IMPL(session)->todo, selected_board,
-                            sizeof(selected_board), error);
-    if (rc != CAI_OK)
-      return rc;
-    doc.todo_board = selected_board;
-  }
-  doc.reasoning_summary = CAI_SESSION_AGENT_IMPL(session)->reasoning_summary;
-  doc.preset_name = CAI_SESSION_IMPL(session)->state_preset_name;
-  doc.preset_prompt_version =
-      CAI_SESSION_IMPL(session)->state_preset_prompt_version;
-  doc.goal_objective = CAI_SESSION_IMPL(session)->goal_objective;
-  doc.goal_status = CAI_SESSION_IMPL(session)->goal_status;
-  doc.goal_token_budget = CAI_SESSION_IMPL(session)->goal_token_budget;
-  doc.has_goal_token_budget = CAI_SESSION_IMPL(session)->goal_has_token_budget;
-  doc.goal_token_usage_baseline =
-      CAI_SESSION_IMPL(session)->goal_token_usage_baseline;
-  doc.goal_tokens_used = CAI_SESSION_IMPL(session)->goal_tokens_used;
-  doc.goal_elapsed_seconds = CAI_SESSION_IMPL(session)->goal_elapsed_seconds;
-  doc.goal_active_started_at =
-      CAI_SESSION_IMPL(session)->goal_active_started_at;
-  doc.has_goal_active_started_at =
-      CAI_SESSION_IMPL(session)->goal_active_started_at > 0LL;
-  doc.goal_created_at = CAI_SESSION_IMPL(session)->goal_created_at;
-  doc.goal_updated_at = CAI_SESSION_IMPL(session)->goal_updated_at;
-  doc.last_usage_input_tokens =
-      CAI_SESSION_IMPL(session)->last_usage.input_tokens;
-  doc.has_last_usage_input_tokens = CAI_SESSION_IMPL(session)->has_last_usage;
-  doc.last_usage_input_cached_tokens =
-      CAI_SESSION_IMPL(session)->last_usage.input_cached_tokens;
-  doc.has_last_usage_input_cached_tokens =
-      CAI_SESSION_IMPL(session)->has_last_usage;
-  doc.last_usage_output_tokens =
-      CAI_SESSION_IMPL(session)->last_usage.output_tokens;
-  doc.has_last_usage_output_tokens = CAI_SESSION_IMPL(session)->has_last_usage;
-  doc.last_usage_output_reasoning_tokens =
-      CAI_SESSION_IMPL(session)->last_usage.output_reasoning_tokens;
-  doc.has_last_usage_output_reasoning_tokens =
-      CAI_SESSION_IMPL(session)->has_last_usage;
-  doc.last_usage_total_tokens =
-      CAI_SESSION_IMPL(session)->last_usage.total_tokens;
-  doc.has_last_usage_total_tokens = CAI_SESSION_IMPL(session)->has_last_usage;
-  doc.context_usage_input_tokens =
-      CAI_SESSION_IMPL(session)->context_usage.input_tokens;
-  doc.has_context_usage_input_tokens =
-      CAI_SESSION_IMPL(session)->has_context_usage;
-  doc.context_usage_input_cached_tokens =
-      CAI_SESSION_IMPL(session)->context_usage.input_cached_tokens;
-  doc.has_context_usage_input_cached_tokens =
-      CAI_SESSION_IMPL(session)->has_context_usage;
-  doc.context_usage_output_tokens =
-      CAI_SESSION_IMPL(session)->context_usage.output_tokens;
-  doc.has_context_usage_output_tokens =
-      CAI_SESSION_IMPL(session)->has_context_usage;
-  doc.context_usage_output_reasoning_tokens =
-      CAI_SESSION_IMPL(session)->context_usage.output_reasoning_tokens;
-  doc.has_context_usage_output_reasoning_tokens =
-      CAI_SESSION_IMPL(session)->has_context_usage;
-  doc.context_usage_total_tokens =
-      CAI_SESSION_IMPL(session)->context_usage.total_tokens;
-  doc.has_context_usage_total_tokens =
-      CAI_SESSION_IMPL(session)->has_context_usage;
-  if (CAI_SESSION_IMPL(session)->conversation_id != NULL) {
-    doc.conversation_id = CAI_SESSION_IMPL(session)->conversation_id;
-  } else {
-    doc.previous_response_id = CAI_SESSION_IMPL(session)->previous_response_id;
-  }
+  rc = cai_session_state_fill(session, &doc, selected_board, error);
+  if (rc != CAI_OK)
+    return rc;
   CAI_LJ->json_value_init(CAI_LJ, &doc.history);
   if (CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
     rc = cai_history_to_array_spool(session, &history_json, error);
@@ -7731,7 +7754,8 @@ static int cai_history_metadata_copy(const lonejson_object_array *source,
   return CAI_OK;
 }
 
-int cai_session_import_state_source(cai_session *session, cai_source *source,
+static int cai_session_import_state(cai_session *session, cai_source *source,
+                                    const cai_session_state_doc *metadata,
                                     cai_error *error) {
   cai_session_state_doc doc;
   lonejson_spooled history_json;
@@ -7756,7 +7780,7 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   char *next_goal_status;
   int rc;
 
-  if (session == NULL || source == NULL) {
+  if (session == NULL || (source == NULL && metadata == NULL)) {
     return cai_set_error(error, CAI_ERR_INVALID,
                          "session and state source are required");
   }
@@ -7772,30 +7796,34 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   next_goal_objective = NULL;
   next_goal_status = NULL;
   rc = CAI_OK;
-  cai_history_init_spooled(session, &history_json);
-  has_history_json = 1;
-  CAI_LJ->json_value_init(CAI_LJ, &doc.history);
-  lonejson_error_init(&json_error);
-  if (doc.history.methods->set_parse_sink(&doc.history, cai_state_spooled_sink,
-                                          &history_json,
-                                          &json_error) != LONEJSON_STATUS_OK) {
-    rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
-                              "failed to prepare state history parser",
-                              json_error.message);
-    goto done;
-  }
-  reader_context.source = source;
-  reader_context.error = error;
-  reader_context.failed = 0;
-  lonejson_error_init(&json_error);
-  if (CAI_LJ_PRESERVE->parse_reader(CAI_LJ_PRESERVE, &cai_session_state_map,
-                                    &doc, cai_state_source_reader,
-                                    &reader_context,
-                                    &json_error) != LONEJSON_STATUS_OK) {
-    rc = cai_set_error_detail(error, CAI_ERR_INVALID,
-                              "failed to parse session state JSON",
-                              json_error.message);
-    goto done;
+  if (metadata != NULL) {
+    doc = *metadata;
+  } else {
+    cai_history_init_spooled(session, &history_json);
+    has_history_json = 1;
+    CAI_LJ->json_value_init(CAI_LJ, &doc.history);
+    lonejson_error_init(&json_error);
+    if (doc.history.methods->set_parse_sink(
+            &doc.history, cai_state_spooled_sink, &history_json, &json_error) !=
+        LONEJSON_STATUS_OK) {
+      rc = cai_set_error_detail(error, CAI_ERR_TRANSPORT,
+                                "failed to prepare state history parser",
+                                json_error.message);
+      goto done;
+    }
+    reader_context.source = source;
+    reader_context.error = error;
+    reader_context.failed = 0;
+    lonejson_error_init(&json_error);
+    if (CAI_LJ_PRESERVE->parse_reader(CAI_LJ_PRESERVE, &cai_session_state_map,
+                                      &doc, cai_state_source_reader,
+                                      &reader_context,
+                                      &json_error) != LONEJSON_STATUS_OK) {
+      rc = cai_set_error_detail(error, CAI_ERR_INVALID,
+                                "failed to parse session state JSON",
+                                json_error.message);
+      goto done;
+    }
   }
   if (doc.version != 1LL) {
     rc = cai_set_error(error, CAI_ERR_INVALID,
@@ -7972,28 +8000,30 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
                        "session state has invalid retained context usage");
     goto done;
   }
-  if (CAI_SESSION_AGENT_IMPL(session)->local_history_enabled &&
+  if (metadata == NULL &&
+      CAI_SESSION_AGENT_IMPL(session)->local_history_enabled &&
       history_json.size_fn(&history_json) > 0U) {
     rc = cai_spooled_json_is_array(&history_json, error);
   }
-  if (rc == CAI_OK && CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
+  if (rc == CAI_OK && metadata == NULL &&
+      CAI_SESSION_AGENT_IMPL(session)->local_history_enabled) {
     cai_history_init_spooled(session, &next_history);
     has_next_history = 1;
-    if (history_json.size_fn(&history_json) > 0U) {
+    if (metadata == NULL && history_json.size_fn(&history_json) > 0U) {
       rc = cai_history_append_array_record_to_spool(session, &next_history,
                                                     &history_json, error);
     }
   }
   if (rc == CAI_OK && has_next_history)
     rc = cai_history_validate_metadata(session, &next_history, &doc, error);
-  if (rc == CAI_OK)
+  if (rc == CAI_OK && metadata == NULL)
     rc = cai_history_metadata_copy(
         &doc.history_blocks, sizeof(cai_history_block), &next_blocks, error);
-  if (rc == CAI_OK)
+  if (rc == CAI_OK && metadata == NULL)
     rc = cai_history_metadata_copy(&doc.history_hidden_events,
                                    sizeof(cai_history_hidden_range),
                                    &next_hidden, error);
-  if (rc == CAI_OK)
+  if (rc == CAI_OK && metadata == NULL)
     rc = cai_history_metadata_copy(&doc.history_owned_events,
                                    sizeof(cai_history_owned_event), &next_owned,
                                    error);
@@ -8012,15 +8042,18 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
     has_next_history = 0;
   }
   if (rc == CAI_OK) {
-    cai_free_mem(NULL, CAI_SESSION_IMPL(session)->history_blocks.items);
-    cai_free_mem(NULL, CAI_SESSION_IMPL(session)->history_hidden_events.items);
-    cai_free_mem(NULL, CAI_SESSION_IMPL(session)->history_owned_events.items);
-    CAI_SESSION_IMPL(session)->history_blocks = next_blocks;
-    CAI_SESSION_IMPL(session)->history_hidden_events = next_hidden;
-    CAI_SESSION_IMPL(session)->history_owned_events = next_owned;
-    memset(&next_blocks, 0, sizeof(next_blocks));
-    memset(&next_hidden, 0, sizeof(next_hidden));
-    memset(&next_owned, 0, sizeof(next_owned));
+    if (metadata == NULL) {
+      cai_free_mem(NULL, CAI_SESSION_IMPL(session)->history_blocks.items);
+      cai_free_mem(NULL,
+                   CAI_SESSION_IMPL(session)->history_hidden_events.items);
+      cai_free_mem(NULL, CAI_SESSION_IMPL(session)->history_owned_events.items);
+      CAI_SESSION_IMPL(session)->history_blocks = next_blocks;
+      CAI_SESSION_IMPL(session)->history_hidden_events = next_hidden;
+      CAI_SESSION_IMPL(session)->history_owned_events = next_owned;
+      memset(&next_blocks, 0, sizeof(next_blocks));
+      memset(&next_hidden, 0, sizeof(next_hidden));
+      memset(&next_owned, 0, sizeof(next_owned));
+    }
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
                  CAI_SESSION_IMPL(session)->state_model);
     cai_free_mem(&CAI_SESSION_CLIENT_IMPL(session)->allocator,
@@ -8113,7 +8146,8 @@ int cai_session_import_state_source(cai_session *session, cai_source *source,
   }
 
 done:
-  CAI_LJ->cleanup(CAI_LJ, &cai_session_state_map, &doc);
+  if (metadata == NULL)
+    CAI_LJ->cleanup(CAI_LJ, &cai_session_state_map, &doc);
   cai_free_mem(NULL, next_blocks.items);
   cai_free_mem(NULL, next_hidden.items);
   cai_free_mem(NULL, next_owned.items);
@@ -8212,7 +8246,6 @@ int cai_session_load_state_path(cai_session *session, const char *path,
 }
 
 #include "cai_agent_history.inc"
-#include "cai_agent_history_rebuild.inc"
 
 static void cai_agent_init_methods(cai_agent *agent) {
   agent->register_tool = cai_agent_register_tool;
@@ -8285,6 +8318,7 @@ static void cai_session_init_methods(cai_session *session) {
   session->import_history_source = cai_session_import_history_source;
   session->export_state_source = cai_session_export_state_source;
   session->import_state_source = cai_session_import_state_source;
+  session->restore_journal_source = cai_session_restore_journal_source;
   session->save_state_path = cai_session_save_state_path;
   session->load_state_path = cai_session_load_state_path;
   session->close = cai_session_destroy;
@@ -8613,3 +8647,10 @@ static int cai_agent_context_percent(const cai_agent *agent, double *out,
   }
   return cai_session_context_percent(impl->default_session, out, error);
 }
+
+int cai_session_import_state_source(cai_session *session, cai_source *source,
+                                    cai_error *error) {
+  return cai_session_import_state(session, source, NULL, error);
+}
+
+#include "cai_agent_journal.inc"

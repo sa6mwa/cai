@@ -6,24 +6,24 @@ typedef struct goal_cancel_test_state {
   int failure;
   pthread_mutex_t lock;
   pthread_cond_t ready;
-  int checkpoint_armed, checkpoint_waiting, release_checkpoint;
+  int commit_armed, commit_waiting, release_commit;
 } goal_cancel_test_state;
 
-static int test_goal_cancel_checkpoint(void *context, const char *scope,
-                                       const char *id, cai_source *source,
-                                       unsigned long long sequence,
-                                       cai_error *error) {
+static int test_goal_cancel_commit(void *context, const char *scope,
+                                   const char *id, cai_source *source,
+                                   unsigned long long sequence,
+                                   cai_error *error) {
   goal_cancel_test_state *test = context;
   pthread_mutex_lock(&test->lock);
-  if (test->checkpoint_armed && !test->release_checkpoint) {
-    test->checkpoint_waiting = 1;
+  if (test->commit_armed && !test->release_commit) {
+    test->commit_waiting = 1;
     pthread_cond_broadcast(&test->ready);
-    while (!test->release_checkpoint)
+    while (!test->release_commit)
       pthread_cond_wait(&test->ready, &test->lock);
   }
   pthread_mutex_unlock(&test->lock);
-  return test_runtime_session_store_checkpoint(&test->store, scope, id, source,
-                                               sequence, error);
+  return test_runtime_session_store_commit(&test->store, scope, id, source,
+                                           sequence, error);
 }
 
 static int test_goal_cancel_append(void *context, const char *scope,
@@ -46,16 +46,16 @@ static int test_goal_cancel_event(void *context,
     return rc;
   if (test->failure == 4) {
     pthread_mutex_lock(&test->lock);
-    test->checkpoint_armed = 1;
+    test->commit_armed = 1;
     pthread_mutex_unlock(&test->lock);
     return CAI_OK;
   }
   if (test->failure == 2)
     cai_agent_runtime_test_set_fail_goal_status_replace(1);
   if (test->failure == 3) {
-    test->store.fail_checkpoint_once = 1;
-    snprintf(test->store.fail_checkpoint_session_id,
-             sizeof(test->store.fail_checkpoint_session_id), "%s",
+    test->store.fail_commit_once = 1;
+    snprintf(test->store.fail_commit_session_id,
+             sizeof(test->store.fail_commit_session_id), "%s",
              cai_agent_runtime_session_id(test->runtime));
   }
   return cai_agent_runtime_cancel_turn(test->runtime, error);
@@ -88,12 +88,12 @@ static void test_agent_runtime_goal_cancel(test_state *state) {
     pthread_cond_init(&test.ready, NULL);
     test.failure = failure;
     test.events.owner = pthread_self();
-    test.store.checkpoint_json = "{\"version\":1,\"model\":\"gpt-5-nano\","
-                                 "\"goal_objective\":\"finish work\","
-                                 "\"goal_status\":\"active\",\"history\":[]}";
+    test.store.commit_json = "{\"version\":1,\"model\":\"gpt-5-nano\","
+                             "\"goal_objective\":\"finish work\","
+                             "\"goal_status\":\"active\",\"history\":[]}";
     store.context = &test;
     /* The generic fixture state is the first member. */
-    store.checkpoint = test_goal_cancel_checkpoint;
+    store.commit = test_goal_cancel_commit;
     store.load_latest = test_runtime_session_store_load;
     store.load_events_after = test_runtime_session_store_load_events_after;
     store.append_event = test_goal_cancel_append;
@@ -120,24 +120,24 @@ static void test_agent_runtime_goal_cancel(test_state *state) {
            i++) {
         expect_int(state, "goal_cancel_pump",
                    cai_agent_runtime_pump(test.runtime, 100L, &error), CAI_OK);
-        if (failure == 4 && test.checkpoint_armed && !test.release_checkpoint) {
+        if (failure == 4 && test.commit_armed && !test.release_commit) {
           struct timespec deadline;
           int ready;
           clock_gettime(CLOCK_REALTIME, &deadline);
           deadline.tv_sec += 2;
           pthread_mutex_lock(&test.lock);
-          while (!test.checkpoint_waiting &&
+          while (!test.commit_waiting &&
                  pthread_cond_timedwait(&test.ready, &test.lock, &deadline) ==
                      0) {
           }
-          ready = test.checkpoint_waiting;
+          ready = test.commit_waiting;
           pthread_mutex_unlock(&test.lock);
-          expect_int(state, "goal_cancel_final_checkpoint_waiting", ready, 1L);
-          expect_int(state, "goal_cancel_final_checkpoint_request",
+          expect_int(state, "goal_cancel_final_commit_waiting", ready, 1L);
+          expect_int(state, "goal_cancel_final_commit_request",
                      cai_agent_runtime_cancel_turn(test.runtime, &error),
                      CAI_OK);
           pthread_mutex_lock(&test.lock);
-          test.release_checkpoint = 1;
+          test.release_commit = 1;
           pthread_cond_broadcast(&test.ready);
           pthread_mutex_unlock(&test.lock);
         }
@@ -150,9 +150,8 @@ static void test_agent_runtime_goal_cancel(test_state *state) {
                    CAI_OK);
         expect_str(state, "goal_cancel_paused_before_event", goal.status,
                    "paused");
-        expect_substr(state, "goal_cancel_pause_checkpoint",
-                      test.store.saved_checkpoint,
-                      "\"goal_status\":\"paused\"");
+        expect_substr(state, "goal_cancel_pause_commit",
+                      test.store.saved_commit, "\"goal_status\":\"paused\"");
       } else {
         expect_int(state, "goal_cancel_failure_not_success",
                    test.events.cancelled_count, 0L);
@@ -163,10 +162,10 @@ static void test_agent_runtime_goal_cancel(test_state *state) {
       test.runtime = NULL;
     }
     cai_agent_runtime_test_set_fail_goal_status_replace(0);
-    /* A durable cancellation journal must recover even when its checkpoint
+    /* A durable cancellation journal must recover even when its commit
      * failed. Hosts must see paused on open, before deciding to pursue. */
-    if (failure != 1 && test.store.saved_checkpoint[0] != '\0') {
-      test.store.checkpoint_json = test.store.saved_checkpoint;
+    if (failure != 1 && test.store.saved_commit[0] != '\0') {
+      test.store.commit_json = test.store.saved_commit;
       test.store.load_applied_event_sequence =
           test.store.saved_applied_event_sequence;
       test.failure = 0;

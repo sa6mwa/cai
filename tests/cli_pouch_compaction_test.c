@@ -129,6 +129,7 @@ static void wait_snapshot(cai_cli_pouch *pouch) {
 
 int main(int argc, char **argv) {
   cai_cli_pouch pouch;
+  cai_cli_options options;
   cai_error error;
   cai_source *source;
   char endpoint[PATH_MAX + 160];
@@ -141,7 +142,12 @@ int main(int argc, char **argv) {
                   "disable_compaction_throttling=true",
                   argv[1]) < (int)sizeof(endpoint));
   cai_error_init(&error);
-  assert(cai_cli_pouch_open(&pouch, endpoint, NULL, NULL, &error) == CAI_OK);
+  memset(&options, 0, sizeof(options));
+  options.lockd = endpoint;
+  /* This fixture deliberately crosses the SDK's physical 64 MiB trigger.
+   * Compression is independently exercised by the journal round-trip test. */
+  options.disable_compression = 1;
+  assert(cai_cli_pouch_open_options(&pouch, &options, NULL, &error) == CAI_OK);
   source = document_source(&offset, &error);
   assert(pouch.credentials.replace(&pouch, "fixture.json", source, &error) ==
          CAI_OK);
@@ -156,7 +162,7 @@ int main(int argc, char **argv) {
     write_document(&pouch, "compaction-fixture", &error);
   wait_snapshot(&pouch);
   cai_cli_pouch_close(&pouch);
-  assert(cai_cli_pouch_open(&pouch, endpoint, NULL, NULL, &error) == CAI_OK);
+  assert(cai_cli_pouch_open_options(&pouch, &options, NULL, &error) == CAI_OK);
   source = NULL;
   assert(download_source(&pouch, "compaction-fixture", NULL, &source, &error) ==
          CAI_OK);

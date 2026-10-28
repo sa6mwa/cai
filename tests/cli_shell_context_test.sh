@@ -10,10 +10,15 @@ for chat in false true; do
   plan "{\"chat\":$chat,\"plan\":[{\"pause\":true,\"tool\":\"read_file\",\"arguments\":{\"path\":\"data.txt\"}},\"BOUNDARY done\"]}"
   terminal_start -N
   send 'begin tool boundary test\r'; expect 'STREAM in flight'
-  send '!printf shell-boundary-marker\r'; expect 'Shell command exited 0'
+  send '!printf shell-boundary-marker\r'; expect '!printf shell-boundary-marker'
   [[ $(requests) == $((before+1)) ]]
-  release; expect_assistant 'BOUNDARY done'; expect 'Worked for'
+  # User commands stay editable until the active turn ends. Do not deadlock
+  # this fixture by waiting for a queued command while holding its stream.
+  release; expect_assistant 'BOUNDARY done'; expect 'Shell command exited 0'
   [[ $(requests) == $((before+2)) ]]
+  plan "{\"chat\":$chat,\"plan\":[\"CONTEXT retained\"]}"
+  send 'continue with command context\r'; expect_assistant 'CONTEXT retained'
+  [[ $(requests) == $((before+3)) ]]
   tail -1 "$root/peer/requests.jsonl" >"$root/request"
   contains "$root/request" shell-boundary-marker
   contains "$root/request" tool-output-marker

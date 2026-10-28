@@ -30,7 +30,7 @@ check_files() {
     local jsonl=$absolute
     [[ "$mode" == jsonl ]] || jsonl+=.jsonl
     [[ -s "$jsonl" && $(stat -c %a "$jsonl") == 600 ]]
-    jq -se '.[0].record_type=="checkpoint" and .[0].state!=null' "$jsonl" >/dev/null
+    jq -se 'any(.[]; .record_type=="commit" and .state.metadata.version==1) and all(.[]; .record_type!="checkpoint")' "$jsonl" >/dev/null
   fi
   if [[ "$mode" == md ]]; then
     [[ ! -e "$absolute.jsonl" && ! -e "${absolute%.md}.jsonl" ]]

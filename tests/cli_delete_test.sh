@@ -54,7 +54,7 @@ run -C "$root/elsewhere" -D "$second"; bad
 contains "$root/stderr" 'another directory'
 [[ $(session_id) == "$second" ]]
 
-# Deleting the newest repairs auto-resume to the remaining checkpoint.
+# Deleting the newest repairs auto-resume to the remaining commit.
 terminal_start -N
 newest=$(session_id)
 terminal_close

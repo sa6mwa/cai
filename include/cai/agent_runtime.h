@@ -23,11 +23,11 @@ typedef struct cai_agent_runtime cai_agent_runtime;
 
 /** Borrow the runtime's thread-safe kanban receiver until runtime close.
  * NULL means the tool is disabled. Use select_board below for an immediately
- * checkpointed owner-thread change; tool selection is saved at turn seams. */
+ * committed owner-thread change; tool selection is saved at turn seams. */
 cai_todo *cai_agent_runtime_todo(cai_agent_runtime *runtime);
 /** Between-turn board selection; create also creates a missing named board.
  * Selection is recorded with this conversation, independently of other agents.
- * New boards remain in the shared store if checkpointing subsequently fails. */
+ * New boards remain in the shared store if committing subsequently fails. */
 int cai_agent_runtime_select_board(cai_agent_runtime *runtime, const char *name,
                                    int create, cai_error *error);
 
@@ -132,8 +132,8 @@ typedef enum cai_agent_runtime_event_type {
   CAI_AGENT_EVENT_RUN_COMPLETED = 9,
   /** The active turn failed. */
   CAI_AGENT_EVENT_RUN_FAILED = 10,
-  /** A durable session checkpoint completed. */
-  CAI_AGENT_EVENT_SESSION_CHECKPOINTED = 11,
+  /** A durable session commit completed. */
+  CAI_AGENT_EVENT_SESSION_COMMITTED = 11,
   /** The managed terminal began a command. */
   CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED = 12,
   /** The managed terminal emitted output. */
@@ -172,7 +172,7 @@ typedef enum cai_agent_runtime_event_type {
   CAI_AGENT_EVENT_COMPACTION_STARTED = 26,
   /** The provider is sampling the compaction summary. */
   CAI_AGENT_EVENT_COMPACTION_PROGRESS = 27,
-  /** Compacted history and its checkpoint were committed. */
+  /** Compacted history and its commit were committed. */
   CAI_AGENT_EVENT_COMPACTION_COMPLETED = 28,
   /** Active turn stopped and its durable state was settled. */
   CAI_AGENT_EVENT_RUN_CANCELLED = 29,
@@ -662,7 +662,7 @@ typedef struct cai_agent_runtime_config {
    * Optional opaque storage namespace; NULL uses the canonical workspace
    * directory. The local store hashes this value and does not interpret it as
    * a filesystem path. smith-review derives a reserved private namespace from
-   * this value so its checkpoints are not eligible for normal Smith resume;
+   * this value so its commits are not eligible for normal Smith resume;
    * normal Smith rejects the reserved smith-review: prefix.
    */
   const char *session_scope;
@@ -673,7 +673,7 @@ typedef struct cai_agent_runtime_config {
    */
   const char *session_id;
   /**
-   * Resume the newest checkpoint for the configured session scope. smith-review
+   * Resume the newest commit for the configured session scope. smith-review
    * rejects this to preserve review-session isolation.
    */
   int resume_latest;
@@ -802,7 +802,7 @@ int cai_agent_runtime_open(cai_client *client,
  * model catalog and compacts retained local history only when both selections
  * declare different compatibility hashes, or a context downshift has reached
  * the new model's threshold. Missing metadata follows Codex's no-inference
- * policy. The selected model is included in the next durable checkpoint.
+ * policy. The selected model is included in the next durable commit.
  */
 int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
                                 cai_error *error);
@@ -816,7 +816,7 @@ int cai_agent_runtime_can_compact(cai_agent_runtime *runtime, int *ready,
  * and the existing summary compactor for Chat Completions. Pump normal run and
  * compaction lifecycle events through completion/failure/cancellation; the
  * RUN_STARTED payload is NULL for this non-prompt task. Successful replacement
- * is checkpointed before completion; a failed replacement preserves history.
+ * is committed before completion; a failed replacement preserves history.
  * A crash does not automatically retry an unfinished manual request. */
 int cai_agent_runtime_compact(cai_agent_runtime *runtime, cai_error *error);
 /** Visit the newest retained whole entries, newest first. Zero limit selects
@@ -828,13 +828,13 @@ int cai_agent_runtime_visit_history(cai_agent_runtime *runtime, size_t limit,
 /** Remove exactly count newest whole entries, including their tool calls,
  * results and steering. Zero is a no-op; an excessive count fails unchanged.
  * Owner-thread-only, idle runtime, no pending inputs or open shell execution.
- * The change is checkpointed before success. Failure restores live history.
+ * The change is committed before success. Failure restores live history.
  * Does not undo external effects, selected settings, or incurred usage/cost.
  * Compacted history is removed as a whole, without recovering older turns. */
 int cai_agent_runtime_trim_history(cai_agent_runtime *runtime, size_t count,
                                    cai_error *error);
 /** Return whether a journal event belongs to retained history. Owner-thread
- * query for hosts exporting a stable checkpoint and its journal together.
+ * query for hosts exporting a stable commit and its journal together.
  * NULL runtime returns false. Never use this to renumber journal sequences. */
 int cai_agent_runtime_history_event_visible(const cai_agent_runtime *runtime,
                                             unsigned long long sequence);
@@ -859,7 +859,7 @@ int cai_agent_runtime_get_settings(cai_agent_runtime *runtime,
  * stable boundary the update applies immediately; during a turn or with queued
  * input it remains pending until the next durable tool-round boundary or turn
  * boundary, before another model request. In-flight requests and tools finish
- * with their original settings. Applied settings are checkpointed together.
+ * with their original settings. Applied settings are committed together.
  * A failed application restores previous effective settings, leaves the pending
  * request visible, and blocks later turns until replaced.
  * A pending request is discarded on close. Returned views have the same
@@ -890,7 +890,7 @@ int cai_agent_runtime_get_yolo(cai_agent_runtime *runtime, int *enabled,
  * busy; the host retains the request and retries at a later idle boundary.
  * A no-op is immediately applied. On error the previous policy is retained.
  * Terminal handles/output and unrelated tools are preserved. New children
- * inherit the policy; it is neither checkpointed nor restored on resume.
+ * inherit the policy; it is neither committed nor restored on resume.
  * Owner-thread-only. applied is required and cleared before validation. */
 int cai_agent_runtime_try_set_yolo(cai_agent_runtime *runtime, int enabled,
                                    int *applied, cai_error *error);
@@ -957,11 +957,11 @@ int cai_agent_runtime_submit_review(cai_agent_runtime *runtime,
  * runtime. While a review child is active, interactive/steering parent input
  * is forwarded to that child unless disable_subagent_steering is set. Normal
  * queued turns remain durable and wait for
- * cai_agent_runtime_finish_review. CAI checkpoints that pause before this
+ * cai_agent_runtime_finish_review. CAI commits that pause before this
  * function returns, so recovery keeps queued turns held until a replacement
  * review is started and handed off. The caller owns the child and must finish
  * its review handoff, then close the child before closing its parent.
- * If the pause journal record was accepted but its checkpoint fails, this
+ * If the pause journal record was accepted but its commit fails, this
  * function returns that error with out_review populated and keeps the parent
  * paused; the caller must retain and finish that child, or close both child
  * and parent before reopening the durable parent for a replacement review.
@@ -974,9 +974,9 @@ int cai_agent_runtime_start_review(cai_agent_runtime *parent,
  * Persist a completed review report, or a reviewer failure marker, as trusted
  * handoff context in parent before releasing its queued normal turns. review
  * must be the active child returned by cai_agent_runtime_start_review and be
- * in a terminal state. A failed durable checkpoint leaves the parent paused
+ * in a terminal state. A failed durable commit leaves the parent paused
  * so the caller may retry this function without duplicating the handoff. The
- * resolution marker and developer-role handoff are checkpointed together.
+ * resolution marker and developer-role handoff are committed together.
  */
 int cai_agent_runtime_finish_review(cai_agent_runtime *parent,
                                     cai_agent_runtime *review,
@@ -1193,6 +1193,12 @@ const char *cai_agent_runtime_session_id(const cai_agent_runtime *runtime);
  */
 int cai_agent_runtime_export_markdown(cai_agent_runtime *runtime,
                                       cai_sink *sink, cai_error *error);
+/** Stream one initialization commit for the retained context as JSONL.
+ * Portable exporters may prepend visible journal events. This does not change
+ * persistence cursors or write a store snapshot. Requires the same stable,
+ * owner-thread boundary and non-reentrant sink as export_markdown. */
+int cai_agent_runtime_export_journal_state(cai_agent_runtime *runtime,
+                                           cai_sink *sink, cai_error *error);
 /** Stream stored execution records as a human-inspection Markdown timeline.
  * Requires the same owner-thread stable boundary as export_markdown; the sink
  * must not re-enter this runtime. No model requests or tool execution occur.

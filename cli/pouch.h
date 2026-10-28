@@ -19,8 +19,8 @@ typedef struct cai_cli_session {
   char workspace[PATH_MAX];
   char first_prompt[512];
   char history_backend[16];
-  lonejson_uint64 checkpoint_position;
-  lonejson_uint64 checkpoint_ns;
+  lonejson_uint64 commit_position;
+  lonejson_uint64 commit_ns;
   lonejson_uint64 applied_sequence;
   lonejson_int64 published;
 } cai_cli_session;
@@ -28,8 +28,9 @@ typedef struct cai_cli_session {
 typedef struct cai_cli_pouch {
   lc_client *sessions;
   struct cai_cli_pouch_client *connection;
-  /* Anchors keep active partitions open; operation receivers are owned. */
-  lc_collection *history_anchors[2];
+  /* Keep the active journal open; operation receivers are independently owned.
+   */
+  lc_collection *history_anchor;
   pthread_mutex_t history_lock;
   int history_lock_initialized;
   char program_name[33], queue_prefix[33];
@@ -99,8 +100,8 @@ int cai_cli_pouch_unlock(lc_lease *lease, int result, cai_error *error);
  * Intermediate rewrites stay in encrypted attachments until transaction commit.
  */
 const cai_todo_store_callbacks *cai_cli_pouch_todo_callbacks(void);
-/* Stream JSONL containing the current complete checkpoint and all journal
- * events. */
+/* Stream visible observation events and one retained-context initialization
+ * commit. Trimmed content is excluded; no inference or tool execution. */
 int cai_cli_pouch_export(cai_cli_pouch *pouch, const char *id,
                          cai_agent_runtime *runtime, cai_sink *sink,
                          cai_error *error);

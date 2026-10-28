@@ -30,12 +30,12 @@ typedef struct record {
 } record;
 typedef struct fixture {
   pthread_mutex_t lock;
-  buffer checkpoint;
+  buffer commit;
   unsigned long long watermark;
   record records[256];
   size_t count;
   const char *fail_type;
-  int fail_checkpoint;
+  int fail_commit;
   size_t output_bytes;
   size_t output_events;
   int turns;
@@ -68,26 +68,33 @@ static size_t source_read(void *context, void *bytes, size_t count,
   b->offset += count;
   return count;
 }
-static int checkpoint(void *context, const char *scope, const char *id,
-                      cai_source *source, unsigned long long watermark,
-                      cai_error *error) {
+static int commit(void *context, const char *scope, const char *id,
+                  cai_source *source, unsigned long long watermark,
+                  cai_error *error) {
   fixture *f = context;
   buffer next;
   char bytes[4096];
+  char header[128];
   size_t count;
   (void)scope;
   (void)id;
   memset(&next, 0, sizeof(next));
   pthread_mutex_lock(&f->lock);
-  if (f->fail_checkpoint) {
+  if (f->fail_commit) {
     pthread_mutex_unlock(&f->lock);
     return cai_set_error(error, CAI_ERR_TRANSPORT,
-                         "injected shell checkpoint failure");
+                         "injected shell commit failure");
   }
   while ((count = cai_source_read(source, bytes, sizeof(bytes), error)) != 0U)
     CHECK(capture(&next, bytes, count, error) == CAI_OK);
-  free(f->checkpoint.data);
-  f->checkpoint = next;
+  snprintf(
+      header, sizeof(header),
+      "{\"record_type\":\"commit\",\"applied_event_sequence\":%llu,\"state\":",
+      watermark);
+  CHECK(capture(&f->commit, header, strlen(header), error) == CAI_OK);
+  CHECK(capture(&f->commit, next.data, next.length, error) == CAI_OK);
+  CHECK(capture(&f->commit, "}\n", 2U, error) == CAI_OK);
+  free(next.data);
   f->watermark = watermark;
   pthread_mutex_unlock(&f->lock);
   return error->code;
@@ -101,10 +108,10 @@ static int load(void *context, const char *scope, char *id, size_t capacity,
   CHECK(capacity > strlen("shell-test"));
   strcpy(id, "shell-test");
   *watermark = f->watermark;
-  f->checkpoint.offset = 0U;
+  f->commit.offset = 0U;
   memset(&callbacks, 0, sizeof(callbacks));
   callbacks.read = source_read;
-  callbacks.context = &f->checkpoint;
+  callbacks.context = &f->commit;
   return cai_source_from_callbacks(&callbacks, out, error);
 }
 static int append(void *context, const char *scope, const char *id,
@@ -236,7 +243,7 @@ int main(int argc, char **argv) {
     memset(&exported, 0, sizeof(exported));
     CHECK(pthread_mutex_init(&f.lock, NULL) == 0);
     memset(&store, 0, sizeof(store));
-    store.checkpoint = checkpoint;
+    store.commit = commit;
     store.load_latest = load;
     store.append_event = append;
     store.load_events_after = replay;
@@ -337,10 +344,10 @@ int main(int argc, char **argv) {
           CAI_OK);
     wait_export(runtime, &exported, &error);
 
-    /* A completed record survives a failed checkpoint. A consumption marker
+    /* A completed record survives a failed commit. A consumption marker
      * beyond the saved watermark must not suppress recovery or start a turn. */
     pthread_mutex_lock(&f.lock);
-    f.fail_checkpoint = 1;
+    f.fail_commit = 1;
     pthread_mutex_unlock(&f.lock);
     CHECK(cai_agent_runtime_user_shell_begin(runtime, "recover-command", 1,
                                              &error) == CAI_OK);
@@ -360,7 +367,7 @@ int main(int argc, char **argv) {
     CHECK(i < 2000U && f.failed == 1);
     cai_agent_runtime_close(runtime);
     runtime = NULL;
-    f.fail_checkpoint = 0;
+    f.fail_commit = 0;
     config.resume_latest = 1;
     clear_error(&error);
     rc = cai_agent_runtime_open(client, &config, &runtime, &error);
@@ -432,7 +439,7 @@ int main(int argc, char **argv) {
     client = NULL;
     cai_error_cleanup(&error);
     free(exported.data);
-    free(f.checkpoint.data);
+    free(f.commit.data);
     for (i = 0U; i < f.count; i++) {
       free(f.records[i].type);
       free(f.records[i].data);

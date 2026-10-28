@@ -16,7 +16,7 @@ typedef struct native_todo_store_state {
 } native_todo_store_state;
 
 typedef struct native_session_store_state {
-  int checkpoint_count;
+  int commit_count;
   int mcp_create_count;
   int mcp_load_count;
   int mcp_save_count;
@@ -113,7 +113,7 @@ static cai_todo_store_callbacks native_todo_store_callbacks = {
     native_todo_store_commit_write, native_todo_store_commit,
     native_todo_store_rollback,     native_todo_store_destroy};
 
-static int native_agent_session_checkpoint(
+static int native_agent_session_commit(
     void *context, const char *scope, const char *session_id, cai_source *state,
     unsigned long long applied_event_sequence, cai_error *error) {
   native_session_store_state *store;
@@ -125,7 +125,7 @@ static int native_agent_session_checkpoint(
   if (error->code != CAI_OK) {
     return error->code;
   }
-  store->checkpoint_count++;
+  store->commit_count++;
   (void)scope;
   (void)session_id;
   (void)state;
@@ -175,7 +175,7 @@ static int native_agent_session_load_events_after(
 }
 
 static cai_agent_session_store native_agent_session_store = {
-    native_agent_session_checkpoint,
+    native_agent_session_commit,
     native_agent_session_load_latest,
     native_agent_session_append_event,
     native_agent_session_load_events_after,
@@ -420,8 +420,8 @@ static int native_todo_store_destroy_count(lua_State *L) {
   return 1;
 }
 
-static int native_session_store_checkpoint_count(lua_State *L) {
-  lua_pushinteger(L, (lua_Integer)native_session_store.checkpoint_count);
+static int native_session_store_commit_count(lua_State *L) {
+  lua_pushinteger(L, (lua_Integer)native_session_store.commit_count);
   return 1;
 }
 
@@ -472,7 +472,7 @@ int luaopen_cai_native_todo_store_test(lua_State *L) {
       {"new_subagent_prepare_backend", native_subagent_prepare_backend_new},
       {"reset_sessions", native_session_store_reset},
       {"reset_blob", native_blob_store_reset},
-      {"checkpoint_count", native_session_store_checkpoint_count},
+      {"commit_count", native_session_store_commit_count},
       {"cleanup_count", native_session_store_cleanup_count},
       {"mcp_create_count", native_session_store_mcp_create_count},
       {"mcp_load_count", native_session_store_mcp_load_count},

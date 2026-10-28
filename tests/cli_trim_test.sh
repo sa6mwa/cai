@@ -45,10 +45,8 @@ for chat in false true; do
   contains "$markdown" KEEPRESPONSE
   absent "$markdown" DROPRESPONSE
   original_id=$(basename "$journal" .jsonl)
-  # Exercise a saved active conversation without the new entry index. The
-  # actual journal still identifies turns, steering and shell executions.
-  jq -c 'if .record_type == "checkpoint" then .state |= del(.history_blocks, .history_owned_events) else . end' "$journal" >"$root/unindexed.jsonl"
-  run --import "$root/unindexed.jsonl"; ok
+  # Imported journals preserve exact turn/steering/shell ownership boundaries.
+  run --import "$journal"; ok
   plan "{\"chat\":$chat,\"plan\":[\"AFTERTRIM\"]}"
   terminal_start
   absent "$term/text" DROPRESPONSE

@@ -13,7 +13,7 @@ compact='{"output_items":[{"type":"compaction","id":"cmp_manual","encrypted_cont
 set_plan() { plan "$(jq -nc --argjson chat "$chat" --argjson p "$1" '{chat:$chat,plan:$p}')"; }
 history_state() {
   run --export "$id"; ok
-  jq -sc '[.[] | select(.record_type == "checkpoint")][-1].state.history' \
+  jq -L "$support/fixtures" -sc 'include "journal"; cai_history' \
     "$root/data/cai/exports/$id/$id.jsonl" >"$1"
 }
 

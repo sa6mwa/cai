@@ -3,6 +3,7 @@ helper=$(realpath "$2")
 source "$(dirname "$0")/cli_test_common.sh"
 ulimit -c 0
 peer_start
+base+=(--disable-compression)
 plan '{"plan":["DURABLE COMPACTION ANSWER"]}'
 run -Nni 'durable compaction prompt'; ok
 run --list; ok
@@ -19,7 +20,11 @@ cp "$root/state/cai/pouch.key" "$root/original-key"
 run --list; ok
 cmp "$root/stdout" "$root/list"
 run --export "$id"; ok
-cmp "$root/data/cai/exports/$id/$id.jsonl" "$root/original.jsonl"
+# Export initialization has its own current timestamp; stored event timestamps
+# and every other byte of semantic state must survive storage compaction.
+jq -sc 'map(if .record_type=="commit" then .commit_created_at_ns=0 else . end)' "$root/original.jsonl" >"$root/original-normalized.json"
+jq -sc 'map(if .record_type=="commit" then .commit_created_at_ns=0 else . end)' "$root/data/cai/exports/$id/$id.jsonl" >"$root/current-normalized.json"
+cmp "$root/current-normalized.json" "$root/original-normalized.json"
 cmp "$root/data/cai/exports/$id/$id.md" "$root/original.md"
 cmp "$root/state/cai/pouch.key" "$root/original-key"
 plan '{"plan":["RESUMED AFTER COMPACTION"]}'

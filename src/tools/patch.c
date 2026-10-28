@@ -2112,7 +2112,7 @@ static int cai_patch_commit(const cai_patch_context *ctx, cai_patch_plan *plan,
   /* The file data is synced before it is published, but rename/link/unlink
    * changes live in the parent directory. Do not report a completed patch
    * until each affected directory entry is durable too: a later session
-   * checkpoint can otherwise claim an edit that a crash rolls back. */
+   * commit can otherwise claim an edit that a crash rolls back. */
   for (i = 0U; i < plan->count; i++) {
     cai_patch_change *change;
     int target_parent_fd;

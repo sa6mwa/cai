@@ -3,6 +3,8 @@
 #include <string.h>
 
 static const cai_app_option options[] = {
+    {"--disable-compression", '\0', CAI_APP_FLAG, NULL,
+     "Disable Pouch compression (default: zlib enabled)", 0, 0},
     {"--home", '\0', CAI_APP_STRING, "DIR",
      "Unified application home; individual path overrides take precedence", 0,
      0},

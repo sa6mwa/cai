@@ -28,6 +28,8 @@ typedef struct cai_cli_pouch_client {
   cai_cli_log *logging;
   size_t references;
   int local;
+  int compression;
+  int write_uncertain;
   dev_t device, key_device;
   ino_t inode, key_inode;
   char *endpoint, *client_pem;
@@ -61,15 +63,18 @@ static int shared_client_open(cai_cli_pouch *pouch,
                : strcmp(entry->endpoint, config->endpoints[0]) != 0))
       continue;
     if ((local &&
-         (stat(pouch->key_path, &key) != 0 || key.st_dev != entry->key_device ||
+         (entry->compression !=
+              (strcmp(config->pouch_settings->compression, "zlib") == 0) ||
+          stat(pouch->key_path, &key) != 0 || key.st_dev != entry->key_device ||
           key.st_ino != entry->key_inode ||
           !same_pouch_options(entry->endpoint, config->endpoints[0]))) ||
         (!local && strcmp(entry->client_pem,
                           client_pem != NULL ? client_pem : "") != 0)) {
       pthread_mutex_unlock(&clients_lock);
-      return cai_cli_error(error, CAI_ERR_INVALID,
-                           "conflicting key or TLS configuration for an "
-                           "already open store; select the same key file");
+      return cai_cli_error(
+          error, CAI_ERR_INVALID,
+          "conflicting key, compression or TLS configuration for an "
+          "already open store; select the same key file");
     }
     entry->references++;
     pouch->connection = entry;
@@ -119,6 +124,8 @@ static int shared_client_open(cai_cli_pouch *pouch,
     return rc;
   }
   entry->local = local;
+  entry->compression =
+      local && strcmp(config->pouch_settings->compression, "zlib") == 0;
   if (local) {
     entry->device = directory.st_dev;
     entry->inode = directory.st_ino;
@@ -144,15 +151,14 @@ static const lonejson_field session_fields[] = {
                                 LONEJSON_OVERFLOW_FAIL),
     LONEJSON_FIELD_STRING_FIXED(cai_cli_session, history_backend,
                                 "history_backend", LONEJSON_OVERFLOW_FAIL),
-    LONEJSON_FIELD_U64(cai_cli_session, checkpoint_position,
-                       "checkpoint_position"),
-    LONEJSON_FIELD_U64(cai_cli_session, checkpoint_ns, "checkpoint_ns"),
+    LONEJSON_FIELD_U64(cai_cli_session, commit_position, "commit_position"),
+    LONEJSON_FIELD_U64(cai_cli_session, commit_ns, "commit_ns"),
     LONEJSON_FIELD_U64(cai_cli_session, applied_sequence, "applied_sequence"),
     LONEJSON_FIELD_I64(cai_cli_session, published, "published")};
 LONEJSON_MAP_DEFINE(session_map, cai_cli_session, session_fields);
 
 /* A derived directory index, kept separately from conversation documents.
- * Dirty is durable before a checkpoint/publication changes; an interrupted
+ * Dirty is durable before a commit/publication changes; an interrupted
  * writer therefore causes reconstruction from authoritative session metadata.
  */
 typedef struct latest_index {
@@ -173,6 +179,7 @@ static int latest_write(cai_cli_pouch *, lc_lease *, latest_index *,
 static int session_exists(cai_cli_pouch *, const char *, int *, cai_error *);
 static int latest_rebuild(cai_cli_pouch *, latest_index *, cai_error *);
 static int session_compare(const void *, const void *);
+static int session_refresh(cai_cli_pouch *, cai_cli_session *, cai_error *);
 static int latest_key(const char *, char[65], cai_error *);
 
 typedef struct scope_predicate {
@@ -197,10 +204,11 @@ typedef struct cli_record {
   char record_type[24];
   lonejson_uint64 sequence;
   lonejson_uint64 applied_event_sequence;
-  lonejson_uint64 checkpoint_created_at_ns;
+  lonejson_uint64 commit_created_at_ns;
   const char *type;
   const char *data;
   lonejson_json_value state;
+  lonejson_json_value data_value;
 } cli_record;
 static const lonejson_field event_fields[] = {
     LONEJSON_FIELD_STRING_FIXED_REQ(cli_record, record_type, "record_type",
@@ -209,26 +217,26 @@ static const lonejson_field event_fields[] = {
     LONEJSON_FIELD_STRING_ALLOC_REQ(cli_record, type, "type"),
     LONEJSON_FIELD_STRING_ALLOC(cli_record, data, "data")};
 LONEJSON_MAP_DEFINE(event_map, cli_record, event_fields);
-static const lonejson_field checkpoint_fields[] = {
+static const lonejson_field commit_fields[] = {
     LONEJSON_FIELD_STRING_FIXED_REQ(cli_record, record_type, "record_type",
                                     LONEJSON_OVERFLOW_FAIL),
-    LONEJSON_FIELD_U64_REQ(cli_record, checkpoint_created_at_ns,
-                           "checkpoint_created_at_ns"),
+    LONEJSON_FIELD_U64_REQ(cli_record, commit_created_at_ns,
+                           "commit_created_at_ns"),
     LONEJSON_FIELD_U64_REQ(cli_record, applied_event_sequence,
                            "applied_event_sequence"),
     LONEJSON_FIELD_JSON_VALUE_REQ(cli_record, state, "state")};
-LONEJSON_MAP_DEFINE(checkpoint_map, cli_record, checkpoint_fields);
+LONEJSON_MAP_DEFINE(commit_map, cli_record, commit_fields);
 
 static const lonejson_field import_fields[] = {
     LONEJSON_FIELD_STRING_FIXED_REQ(cli_record, record_type, "record_type",
                                     LONEJSON_OVERFLOW_FAIL),
     LONEJSON_FIELD_U64(cli_record, sequence, "sequence"),
-    LONEJSON_FIELD_U64(cli_record, checkpoint_created_at_ns,
-                       "checkpoint_created_at_ns"),
+    LONEJSON_FIELD_U64(cli_record, commit_created_at_ns,
+                       "commit_created_at_ns"),
     LONEJSON_FIELD_U64(cli_record, applied_event_sequence,
                        "applied_event_sequence"),
     LONEJSON_FIELD_STRING_ALLOC(cli_record, type, "type"),
-    LONEJSON_FIELD_STRING_ALLOC(cli_record, data, "data"),
+    LONEJSON_FIELD_JSON_VALUE(cli_record, data_value, "data"),
     LONEJSON_FIELD_JSON_VALUE(cli_record, state, "state")};
 LONEJSON_MAP_DEFINE(import_map, cli_record, import_fields);
 
@@ -536,15 +544,14 @@ static int open_history_collection(cai_cli_pouch *pouch, const char *id,
   return rc;
 }
 
-/* Last-receiver close checkpoints the collection. Keep an anchor per active
- * partition until a different conversation uses its slot or the store closes.
+/* Last-receiver close commits the collection. Keep the active journal open
+ * until a different conversation uses it or the store closes.
  * Callers still own independent receivers, including streaming readers. */
 static int history_collection(cai_cli_pouch *pouch, const char *id,
                               const char *kind, int create, lc_collection **out,
                               cai_error *error) {
   lc_collection *anchor = NULL;
   char name[192];
-  size_t slot = strcmp(kind, "events") == 0 ? 0U : 1U;
   int rc;
   *out = NULL;
   rc = history_supported(pouch, error);
@@ -552,13 +559,13 @@ static int history_collection(cai_cli_pouch *pouch, const char *id,
     return rc;
   snprintf(name, sizeof(name), "%s.%s", kind, id);
   pthread_mutex_lock(&pouch->history_lock);
-  if (pouch->history_anchors[slot] == NULL ||
-      strcmp(pouch->history_anchors[slot]->name, name) != 0) {
+  if (pouch->history_anchor == NULL ||
+      strcmp(pouch->history_anchor->name, name) != 0) {
     rc = open_history_collection(pouch, id, kind, create, &anchor, error);
     if (rc == CAI_OK) {
-      if (pouch->history_anchors[slot] != NULL)
-        pouch->history_anchors[slot]->close(pouch->history_anchors[slot]);
-      pouch->history_anchors[slot] = anchor;
+      if (pouch->history_anchor != NULL)
+        pouch->history_anchor->close(pouch->history_anchor);
+      pouch->history_anchor = anchor;
     }
   }
   if (rc == CAI_OK)
@@ -567,7 +574,8 @@ static int history_collection(cai_cli_pouch *pouch, const char *id,
   return rc;
 }
 
-static int collection_append_source(lc_collection *collection,
+static int collection_append_source(cai_cli_pouch *pouch,
+                                    lc_collection *collection,
                                     const char *append_id, cai_source *source,
                                     unsigned long long *position,
                                     cai_error *error) {
@@ -575,19 +583,46 @@ static int collection_append_source(lc_collection *collection,
   lc_collection_append_res result;
   lc_source *input = NULL;
   lc_error local;
-  int rc;
+  int rc, uncertain;
+  pthread_mutex_lock(&clients_lock);
+  uncertain = pouch->connection != NULL && pouch->connection->write_uncertain;
+  pthread_mutex_unlock(&clients_lock);
+  if (uncertain)
+    return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                         "A journal append has an unresolved outcome; reopen "
+                         "the store before writing again");
   lc_error_init(&local);
   lc_collection_append_req_init(&request);
   request.append_id = append_id;
   rc = cai_cli_lc_source(source, &input, error);
   if (rc == CAI_OK) {
     rc = collection->append(collection, &request, input, &result, &local);
+    if (rc == LC_ERR_TRANSPORT || rc == LC_ERR_TIMEOUT) {
+      lc_collection_append_status_res status;
+      lc_error observed;
+      lc_error_init(&observed);
+      if (collection->append_status(collection, append_id, &status,
+                                    &observed) == LC_OK) {
+        if (status.state == LC_COLLECTION_APPEND_COMMITTED) {
+          result = status.entry;
+          rc = LC_OK;
+          cai_error_cleanup(error);
+          cai_error_init(error);
+        }
+      } else {
+        pthread_mutex_lock(&clients_lock);
+        if (pouch->connection != NULL)
+          pouch->connection->write_uncertain = 1;
+        pthread_mutex_unlock(&clients_lock);
+      }
+      lc_error_cleanup(&observed);
+    }
     if (rc != LC_OK)
       rc = cai_cli_lc_error(error, &local);
-    else if (result.deleted)
+    if (rc == LC_OK && result.deleted)
       rc = cai_cli_error(error, CAI_ERR_INVALID,
                          "session append identity was already deleted");
-    else if (position != NULL)
+    else if (rc == LC_OK && position != NULL)
       *position = result.position;
   }
   lc_source_close(input);
@@ -595,8 +630,9 @@ static int collection_append_source(lc_collection *collection,
   return rc;
 }
 
-static int collection_copy(lc_collection *collection, uint64_t after,
-                           uint64_t through, cai_sink *sink, cai_error *error) {
+static int collection_copy_selected(lc_collection *collection, uint64_t after,
+                                    uint64_t through, const char *selector,
+                                    cai_sink *sink, cai_error *error) {
   lc_collection_read_opts options;
   lc_collection_read_res result;
   lc_sink *output = NULL;
@@ -609,49 +645,53 @@ static int collection_copy(lc_collection *collection, uint64_t after,
   options.after = after;
   options.has_through = 1;
   options.through = through;
+  options.selector_lql = selector;
   rc = cai_cli_lc_sink(sink, &output, error);
   if (rc == CAI_OK &&
       collection->read(collection, &options, output, &result, &local) != LC_OK)
     rc = cai_cli_lc_error(error, &local);
   if (rc == CAI_OK && through > after && result.completed_records == 0U)
     rc = cai_cli_error(error, CAI_ERR_INVALID,
-                       "session checkpoint or journal range is missing");
+                       "session commit or journal range is missing");
   lc_sink_close(output);
   lc_collection_read_res_cleanup(&result);
   lc_error_cleanup(&local);
   return rc;
 }
-
-typedef struct checkpoint_download {
-  lc_collection *collection;
-  uint64_t position;
-} checkpoint_download;
-
-static int checkpoint_download_write(void *context, cai_sink *sink,
-                                     cai_error *error) {
-  checkpoint_download *request = context;
-  return collection_copy(request->collection, request->position - 1U,
-                         request->position, sink, error);
+static int collection_copy(lc_collection *collection, uint64_t after,
+                           uint64_t through, cai_sink *sink, cai_error *error) {
+  return collection_copy_selected(collection, after, through, NULL, sink,
+                                  error);
 }
-static void checkpoint_download_close(void *context) {
-  checkpoint_download *request = context;
+
+typedef struct commit_download {
+  lc_collection *collection;
+} commit_download;
+
+static int commit_download_write(void *context, cai_sink *sink,
+                                 cai_error *error) {
+  commit_download *request = context;
+  /* The journal parser consumes commits and discards observation payloads
+   * incrementally. Read the ordered collection without a redundant selector
+   * pass; the SDK LQL scanner also exceeds musl's default worker stack. */
+  return collection_copy(request->collection, 0U, UINT64_MAX, sink, error);
+}
+static void commit_download_close(void *context) {
+  commit_download *request = context;
   request->collection->close(request->collection);
   free(request);
 }
-static int checkpoint_source(cai_cli_pouch *pouch, const char *id,
-                             uint64_t position, cai_source **out,
-                             cai_error *error) {
-  checkpoint_download *request;
+static int commit_source(cai_cli_pouch *pouch, const char *id, cai_source **out,
+                         cai_error *error) {
+  commit_download *request;
   int rc;
   request = calloc(1U, sizeof(*request));
   if (request == NULL)
-    return cai_cli_error(error, CAI_ERR_NOMEM, "allocate checkpoint reader");
-  request->position = position;
-  rc = history_collection(pouch, id, "checkpoints", 0, &request->collection,
-                          error);
+    return cai_cli_error(error, CAI_ERR_NOMEM, "allocate commit reader");
+  rc = history_collection(pouch, id, "events", 0, &request->collection, error);
   if (rc == CAI_OK)
-    rc = cai_cli_stream_source(checkpoint_download_write, request,
-                               checkpoint_download_close, out, error);
+    rc = cai_cli_stream_source(commit_download_write, request,
+                               commit_download_close, out, error);
   if (rc != CAI_OK) {
     if (request->collection != NULL)
       request->collection->close(request->collection);
@@ -807,9 +847,9 @@ static int get_session(lc_lease *lease, const char *scope, const char *id,
 
 #include "pouch_guard.inc"
 
-static int checkpoint(void *context, const char *scope, const char *id,
-                      cai_source *state, unsigned long long sequence,
-                      cai_error *error) {
+static int commit(void *context, const char *scope, const char *id,
+                  cai_source *state, unsigned long long sequence,
+                  cai_error *error) {
   cai_cli_pouch *pouch;
   cai_cli_session session;
   lc_lease *lease;
@@ -819,10 +859,14 @@ static int checkpoint(void *context, const char *scope, const char *id,
   unsigned long long position = 0U;
   latest_index index;
   struct timespec now;
-  int rc;
+  cli_record record;
+  cai_source *source = NULL;
+  int rc, durable = 0;
+  memset(&record, 0, sizeof(record));
   pouch = (cai_cli_pouch *)context;
   lease = NULL;
   directory = NULL;
+  memset(&record, 0, sizeof(record));
   rc = session_claim(pouch, id, error);
   if (rc == CAI_OK)
     rc = history_collection(pouch, id, "events", 1, &collection, error);
@@ -840,28 +884,52 @@ static int checkpoint(void *context, const char *scope, const char *id,
     rc = acquire(pouch, id, &lease, error);
   if (rc == CAI_OK)
     rc = get_session(lease, scope, id, &session, error);
-  if (rc == CAI_OK && clock_gettime(CLOCK_REALTIME, &now) != 0)
-    rc = cai_cli_error(error, CAI_ERR_TRANSPORT, "read checkpoint timestamp");
-  if (rc == CAI_OK) {
-    session.checkpoint_ns = (lonejson_uint64)now.tv_sec * 1000000000ULL +
-                            (lonejson_uint64)now.tv_nsec;
-    session.applied_sequence = sequence;
-    snprintf(append_id, sizeof(append_id), "checkpoint-%020llu-%020llu",
-             (unsigned long long)session.checkpoint_ns, sequence);
-    rc = history_collection(pouch, id, "checkpoints", 1, &collection, error);
+  /* Publish the small identity before the first journal append. Recovery must
+   * be able to find a durable append even if its later index update fails. */
+  if (rc == CAI_OK &&
+      (lease->state_etag == NULL || lease->state_etag[0] == '\0')) {
+    rc = update_session(lease, &session, error);
+    rc = release(lease, rc, error);
+    lease = NULL;
     if (rc == CAI_OK)
-      rc = collection_append_source(collection, append_id, state, &position,
-                                    error);
-    session.checkpoint_position = position;
+      rc = acquire(pouch, id, &lease, error);
+  }
+  if (rc == CAI_OK && clock_gettime(CLOCK_REALTIME, &now) != 0)
+    rc = cai_cli_error(error, CAI_ERR_TRANSPORT, "read commit timestamp");
+  if (rc == CAI_OK) {
+    session.commit_ns = (lonejson_uint64)now.tv_sec * 1000000000ULL +
+                        (lonejson_uint64)now.tv_nsec;
+    session.applied_sequence = sequence;
+    snprintf(append_id, sizeof(append_id), "commit-%020llu-%020llu",
+             (unsigned long long)session.commit_ns, sequence);
+    memset(&record, 0, sizeof(record));
+    strcpy(record.record_type, "commit");
+    record.commit_created_at_ns = session.commit_ns;
+    record.applied_event_sequence = sequence;
+    lonejson_json_value_init(NULL, &record.state);
+    if (lonejson_json_value_set_reader(&record.state, cai_cli_json_read, state,
+                                       NULL) != LONEJSON_STATUS_OK)
+      rc = cai_cli_error(error, CAI_ERR_TRANSPORT, "prepare journal edit");
+    if (rc == CAI_OK)
+      rc = cai_cli_mapped_source(&commit_map, &record, &source, error);
+    if (rc == CAI_OK)
+      rc = history_collection(pouch, id, "events", 1, &collection, error);
+    if (rc == CAI_OK)
+      rc = collection_append_source(pouch, collection, append_id, source,
+                                    &position, error);
+    durable = rc == CAI_OK;
+    session.commit_position = position;
     if (rc == CAI_OK)
       rc = update_session(lease, &session, error);
   }
   if (collection != NULL)
     collection->close(collection);
+  cai_source_close(source);
+  lonejson_json_value_cleanup(&record.state);
   rc = release(lease, rc, error);
   if (rc == CAI_OK) {
     if (session.published && strcmp(session.id, index.latest.id) == 0 &&
-        session.checkpoint_ns < index.latest.checkpoint_ns)
+        session.commit_ns < index.latest.commit_ns)
       rc = latest_rebuild(pouch, &index, error);
     else if (session.published &&
              (index.latest.id[0] == '\0' ||
@@ -873,7 +941,24 @@ static int checkpoint(void *context, const char *scope, const char *id,
       rc = latest_write(pouch, directory, &index, error);
     }
   }
-  return release(directory, rc, error);
+  rc = release(directory, rc, error);
+  if (durable && rc != CAI_OK) {
+    if (pouch->logger != NULL) {
+      pslog_field fields[2];
+      fields[0] = pslog_str("session_id", id);
+      fields[1] = pslog_str("detail", error->message != NULL
+                                          ? error->message
+                                          : "metadata update failed");
+      pouch->logger->warn(
+          pouch->logger,
+          "Journal commit is durable; session index metadata will be recovered",
+          fields, 2U);
+    }
+    cai_error_cleanup(error);
+    cai_error_init(error);
+    rc = CAI_OK;
+  }
+  return rc;
 }
 
 static int load_id(void *context, const char *scope, const char *id,
@@ -898,10 +983,13 @@ static int load_id(void *context, const char *scope, const char *id,
     return cai_cli_error(error, CAI_ERR_INVALID,
                          "Session uses retired attachment-backed history; "
                          "start a new conversation with --new");
-  if (session.checkpoint_position == 0U)
-    return CAI_OK;
+  if (session.commit_position == 0U) {
+    rc = session_refresh(pouch, &session, error);
+    if (rc != CAI_OK)
+      return rc;
+  }
   *sequence = session.applied_sequence;
-  return checkpoint_source(pouch, id, session.checkpoint_position, out, error);
+  return commit_source(pouch, id, out, error);
 }
 
 static int session_compare(const void *left, const void *right) {
@@ -909,8 +997,8 @@ static int session_compare(const void *left, const void *right) {
   const cai_cli_session *b;
   a = (const cai_cli_session *)left;
   b = (const cai_cli_session *)right;
-  if (a->checkpoint_ns != b->checkpoint_ns)
-    return a->checkpoint_ns > b->checkpoint_ns ? -1 : 1;
+  if (a->commit_ns != b->commit_ns)
+    return a->commit_ns > b->commit_ns ? -1 : 1;
   return strcmp(b->id, a->id);
 }
 
@@ -1025,9 +1113,15 @@ static int session_list(cai_cli_pouch *pouch, const char *scope, int visible,
         continue;
       if (rc != CAI_OK)
         break;
-      if ((visible &&
-           (!session.published || session.checkpoint_position == 0U)) ||
+      if ((visible && !session.published) ||
           (scope != NULL && strcmp(scope, session.workspace) != 0))
+        continue;
+      if (visible == 2 || (visible && session.commit_position == 0U)) {
+        rc = session_refresh(pouch, &session, error);
+        if (rc != CAI_OK)
+          break;
+      }
+      if (visible && session.commit_position == 0U)
         continue;
       if (strcmp(session.id, page->keys[i]) != 0) {
         rc = cai_cli_error(
@@ -1084,8 +1178,7 @@ static int latest_rebuild(cai_cli_pouch *pouch, latest_index *index,
                           cai_error *error) {
   cai_cli_session *sessions = NULL;
   size_t count = 0U;
-  int rc =
-      cai_cli_pouch_list(pouch, index->workspace, &sessions, &count, error);
+  int rc = session_list(pouch, index->workspace, 2, &sessions, &count, error);
   if (rc == CAI_OK) {
     memset(&index->latest, 0, sizeof(index->latest));
     if (count != 0U)
@@ -1290,7 +1383,7 @@ static int append_event(void *context, const char *scope, const char *id,
   if (rc == CAI_OK)
     rc = history_collection(pouch, id, "events", 1, &collection, error);
   if (rc == CAI_OK)
-    rc = collection_append_source(collection, name, source, NULL, error);
+    rc = collection_append_source(pouch, collection, name, source, NULL, error);
   if (rc == CAI_OK && session.first_prompt[0] == '\0' && event->data != NULL &&
       (strcmp(event->type, "turn_submitted") == 0 ||
        strcmp(event->type, "turn_queued") == 0)) {
@@ -1460,6 +1553,89 @@ collection_event_boundary(void *context,
   collection_event_cleanup(read);
   read->limited = 0;
   return read->rc == CAI_OK ? LC_OK : LC_ERR_INVALID;
+}
+
+typedef struct commit_refresh {
+  collection_events read;
+  cai_cli_session *session;
+} commit_refresh;
+static int commit_refresh_boundary(void *context,
+                                   const lc_collection_read_metadata *metadata,
+                                   lc_error *error) {
+  commit_refresh *refresh = context;
+  collection_events *read = &refresh->read;
+  (void)error;
+  if (metadata->kind != LC_COLLECTION_READ_METADATA_ENTRY)
+    return LC_OK;
+  if (lonejson_curl_parse_finish(&read->parser) != LONEJSON_STATUS_OK)
+    read->rc = cai_cli_lj_error(read->error, &read->parser.error);
+  if (read->rc == CAI_OK && strcmp(read->record.record_type, "commit") != 0)
+    read->rc = cai_cli_error(read->error, CAI_ERR_INVALID,
+                             "invalid journal commit record");
+  if (read->rc == CAI_OK) {
+    refresh->session->commit_position = metadata->position;
+    refresh->session->applied_sequence = read->record.applied_event_sequence;
+    if (read->record.commit_created_at_ns > refresh->session->commit_ns)
+      refresh->session->commit_ns = read->record.commit_created_at_ns;
+  }
+  collection_event_cleanup(read);
+  return read->rc == CAI_OK ? LC_OK : LC_ERR_INVALID;
+}
+/* Only dirty-index recovery scans committed headers. The normal startup/list
+ * path keeps its small metadata lookup; payloads are discarded incrementally.
+ */
+static int session_refresh(cai_cli_pouch *pouch, cai_cli_session *session,
+                           cai_error *error) {
+  commit_refresh refresh;
+  lc_collection *collection = NULL;
+  lc_collection_read_opts options;
+  lc_collection_read_res result;
+  lc_sink sink;
+  lc_error detail;
+  lonejson_error local;
+  lonejson_config config = lonejson_default_config();
+  int rc;
+  memset(&refresh, 0, sizeof(refresh));
+  memset(&sink, 0, sizeof(sink));
+  lc_error_init(&detail);
+  lc_collection_read_opts_init(&options);
+  lc_collection_read_res_init(&result);
+  config.clear_destination_by_default = 0;
+  refresh.read.map = &commit_map;
+  refresh.read.discard_data = 1;
+  refresh.read.error = error;
+  config.json_value_max_total_bytes = 0U;
+  config.json_value_max_string_bytes = 0U;
+  refresh.session = session;
+  refresh.read.json = lonejson_new(&config, &local);
+  rc = refresh.read.json != NULL ? CAI_OK : cai_cli_lj_error(error, &local);
+  if (rc == CAI_OK)
+    rc =
+        history_collection(pouch, session->id, "events", 0, &collection, error);
+  if (rc != CAI_OK && error->http_status == 404) {
+    cai_error_cleanup(error);
+    cai_error_init(error);
+    rc = CAI_OK;
+  }
+  session->commit_position = 0U;
+  if (rc == CAI_OK && collection != NULL) {
+    options.selector_lql = "eq{field=/record_type,value=\"commit\"}";
+    options.on_metadata = commit_refresh_boundary;
+    options.metadata_context = &refresh;
+    sink.write = collection_event_write;
+    sink.impl = &refresh.read;
+    if (collection->read(collection, &options, &sink, &result, &detail) !=
+        LC_OK)
+      rc = refresh.read.rc != CAI_OK ? refresh.read.rc
+                                     : cai_cli_lc_error(error, &detail);
+  }
+  collection_event_cleanup(&refresh.read);
+  lonejson_free(refresh.read.json);
+  if (collection != NULL)
+    collection->close(collection);
+  lc_collection_read_res_cleanup(&result);
+  lc_error_cleanup(&detail);
+  return rc;
 }
 
 static int read_events(void *context, const char *scope, const char *id,
@@ -1799,7 +1975,7 @@ static int ensure_parents(char *path, cai_error *error) {
   return CAI_OK;
 }
 
-/* Auto-resume reads the directory cache and checkpoint directly, so it need
+/* Auto-resume reads the directory cache and commit directly, so it need
  * not execute a query that repairs a retired/corrupt search index. The public
  * wait flush keeps a healthy index's trusted fast path and repairs derived
  * state when needed. Failure must not prevent direct conversation replay. */
@@ -1993,7 +2169,9 @@ int cai_cli_pouch_open_options(cai_cli_pouch *pouch,
       LC_POUCH_SETTING_SINGLE_WRITER | LC_POUCH_SETTING_DURABLE_SYNC |
       LC_POUCH_SETTING_QUERY_INDEXING | LC_POUCH_SETTING_QUERY_ENGINE |
       LC_POUCH_SETTING_CRYPTO_KEY_FILE |
-      LC_POUCH_SETTING_CRYPTO_GENERATE_KEY_FILE | LC_POUCH_SETTING_QUEUE_WATCH;
+      LC_POUCH_SETTING_CRYPTO_GENERATE_KEY_FILE | LC_POUCH_SETTING_QUEUE_WATCH |
+      LC_POUCH_SETTING_COMPRESSION;
+  settings.compression = options->disable_compression ? "none" : "zlib";
   settings.single_writer = 0;
   settings.queue_watch = 1;
   settings.durable_sync = 1;
@@ -2034,7 +2212,7 @@ int cai_cli_pouch_open_options(cai_cli_pouch *pouch,
   if (local_pouch)
     prepare_session_indexes(pouch);
   pouch->store.context = pouch;
-  pouch->store.checkpoint = checkpoint;
+  pouch->store.commit = commit;
   pouch->store.load_latest = load_latest;
   pouch->store.load_id = load_id;
   pouch->store.append_event = append_event;
@@ -2047,14 +2225,11 @@ int cai_cli_pouch_open_options(cai_cli_pouch *pouch,
 
 void cai_cli_pouch_close(cai_cli_pouch *pouch) {
   cai_cli_pouch_client **link, *entry;
-  size_t slot;
   cai_cli_pouch_end_use(pouch);
   if (pouch->history_lock_initialized) {
-    for (slot = 0U; slot < 2U; slot++) {
-      if (pouch->history_anchors[slot] != NULL)
-        pouch->history_anchors[slot]->close(pouch->history_anchors[slot]);
-      pouch->history_anchors[slot] = NULL;
-    }
+    if (pouch->history_anchor != NULL)
+      pouch->history_anchor->close(pouch->history_anchor);
+    pouch->history_anchor = NULL;
     pthread_mutex_destroy(&pouch->history_lock);
     pouch->history_lock_initialized = 0;
   }
@@ -2197,7 +2372,7 @@ int cai_cli_pouch_publish(cai_cli_pouch *pouch, const char *id, int published,
   if (rc == CAI_OK) {
     if (!published && strcmp(index.latest.id, id) == 0)
       rc = latest_rebuild(pouch, &index, error);
-    else if (published && session.checkpoint_position != 0U &&
+    else if (published && session.commit_position != 0U &&
              (index.latest.id[0] == '\0' ||
               session_compare(&session, &index.latest) < 0))
       index.latest = session;
@@ -2227,173 +2402,10 @@ static const lonejson_field export_identity_fields[] = {
     LONEJSON_FIELD_U64_REQ(cli_record, sequence, "sequence"),
     LONEJSON_FIELD_JSON_VALUE(cli_record, state, "data")};
 LONEJSON_MAP_DEFINE(export_identity_map, cli_record, export_identity_fields);
-typedef struct export_span {
-  struct export_span *next;
-  uint64_t after, through;
-} export_span;
-typedef struct export_selection {
-  collection_events *read;
-  cai_agent_runtime *runtime;
-  export_span *first, *last;
-  int adjacent;
-} export_selection;
-static int export_select(void *context, const cai_agent_session_event *event,
-                         cai_error *error) {
-  export_selection *selection = context;
-  export_span *span;
-  if (!cai_agent_runtime_history_event_visible(selection->runtime,
-                                               event->sequence)) {
-    selection->adjacent = 0;
-    return CAI_OK;
-  }
-  if (!selection->adjacent) {
-    span = calloc(1U, sizeof(*span));
-    if (span == NULL)
-      return cai_cli_error(error, CAI_ERR_NOMEM, "allocate export range");
-    span->after = selection->read->position - 1U;
-    if (selection->last != NULL)
-      selection->last->next = span;
-    else
-      selection->first = span;
-    selection->last = span;
-  }
-  selection->last->through = selection->read->position;
-  selection->adjacent = 1;
-  return CAI_OK;
-}
+#include "pouch_export.inc"
 
-int cai_cli_pouch_export(cai_cli_pouch *pouch, const char *id,
-                         cai_agent_runtime *runtime, cai_sink *sink,
-                         cai_error *error) {
-  cai_cli_session session;
-  cli_record record;
-  cai_source *state = NULL, *source = NULL;
-  lc_collection *collection = NULL;
-  collection_events read;
-  export_selection selection;
-  export_span *span;
-  lc_collection_read_opts options;
-  lc_collection_read_res result;
-  lc_sink output;
-  lc_error detail;
-  lonejson_error local;
-  lonejson_config config;
-  int rc;
-  memset(&record, 0, sizeof(record));
-  memset(&read, 0, sizeof(read));
-  memset(&selection, 0, sizeof(selection));
-  memset(&output, 0, sizeof(output));
-  lc_collection_read_opts_init(&options);
-  lc_collection_read_res_init(&result);
-  lc_error_init(&detail);
-  read.map = &export_identity_map;
-  read.discard_data = 1;
-  read.pouch = pouch;
-  read.id = id;
-  read.error = error;
-  read.visit = export_select;
-  read.visitor = &selection;
-  selection.read = &read;
-  selection.runtime = runtime;
-  rc = cai_cli_pouch_session(pouch, id, &session, error);
-  if (rc == CAI_OK && session.checkpoint_position == 0U)
-    rc = cai_cli_error(error, CAI_ERR_INVALID,
-                       "session has no collections checkpoint");
-  if (rc == CAI_OK)
-    rc = checkpoint_source(pouch, id, session.checkpoint_position, &state,
-                           error);
-  if (rc == CAI_OK) {
-    strcpy(record.record_type, "checkpoint");
-    record.checkpoint_created_at_ns = session.checkpoint_ns;
-    record.applied_event_sequence = session.applied_sequence;
-    lonejson_json_value_init(NULL, &record.state);
-    if (lonejson_json_value_set_reader(&record.state, cai_cli_json_read, state,
-                                       &local) != LONEJSON_STATUS_OK)
-      rc = cai_cli_lj_error(error, &local);
-    else
-      rc = cai_cli_mapped_source(&checkpoint_map, &record, &source, error);
-  }
-  if (rc == CAI_OK)
-    rc = cai_source_copy_to_sink(source, sink, error);
-  cai_source_close(source);
-  cai_source_close(state);
-  lonejson_json_value_cleanup(&record.state);
-  if (rc == CAI_OK)
-    rc = cai_sink_write(sink, "\n", 1U, error);
-  if (rc == CAI_OK)
-    rc = history_collection(pouch, id, "events", 0, &collection, error);
-  if (rc == CAI_OK) {
-    config = lonejson_default_config();
-    config.clear_destination_by_default = 0;
-    read.json = lonejson_new(&config, &local);
-    if (read.json == NULL)
-      rc = cai_cli_lj_error(error, &local);
-  }
-  if (rc == CAI_OK) {
-    output.write = collection_event_write;
-    output.impl = &read;
-    options.on_metadata = collection_event_boundary;
-    options.metadata_context = &read;
-    if (collection->read(collection, &options, &output, &result, &detail) !=
-        LC_OK)
-      rc = read.rc != CAI_OK ? read.rc : cai_cli_lc_error(error, &detail);
-  }
-  collection_event_cleanup(&read);
-  lonejson_free(read.json);
-  while (selection.first != NULL) {
-    span = selection.first;
-    if (rc == CAI_OK)
-      rc = collection_copy(collection, span->after, span->through, sink, error);
-    selection.first = span->next;
-    free(span);
-  }
-  if (collection != NULL)
-    collection->close(collection);
-  lc_collection_read_res_cleanup(&result);
-  lc_error_cleanup(&detail);
-  return rc;
-}
-
-typedef struct import_context {
-  lonejson *json;
-  lonejson_stream *stream;
-  cli_record record;
-  size_t state_bytes;
-  cai_sink *sink;
-} import_context;
-
-static lonejson_status import_state_write(void *context, const void *bytes,
-                                          size_t count, lonejson_error *error) {
-  import_context *input;
-  input = (import_context *)context;
-  input->state_bytes += count;
-  return cai_cli_json_write(input->sink, bytes, count, error);
-}
-
-static int import_checkpoint(void *context, cai_sink *sink, cai_error *error) {
-  import_context *input;
-  lonejson_error local;
-  input = (import_context *)context;
-  input->sink = sink;
-  if (lonejson_json_value_set_parse_sink(&input->record.state,
-                                         import_state_write, input,
-                                         &local) != LONEJSON_STATUS_OK)
-    return cai_cli_lj_error(error, &local);
-  if (lonejson_stream_next(input->stream, &input->record, &local) !=
-      LONEJSON_STREAM_OBJECT)
-    return cai_cli_error(
-        error, CAI_ERR_INVALID,
-        "JSONL import must start with a complete checkpoint record");
-  if (strcmp(input->record.record_type, "checkpoint") != 0 ||
-      input->state_bytes == 0U)
-    return cai_cli_error(
-        error, CAI_ERR_INVALID,
-        "JSONL import must start with a checkpoint containing state");
-  return CAI_OK;
-}
-
-static int validate_checkpoint(cai_cli_pouch *pouch, const char *id,
-                               const char *workspace, cai_error *error) {
+static int validate_commit(cai_cli_pouch *pouch, const char *id,
+                           const char *workspace, cai_error *error) {
   cai_client_config client_config;
   cai_agent_config agent_config;
   cai_client *client;
@@ -2421,7 +2433,7 @@ static int validate_checkpoint(cai_cli_pouch *pouch, const char *id,
   if (rc == CAI_OK)
     rc = load_id(pouch, workspace, id, &state, &sequence, error);
   if (rc == CAI_OK)
-    rc = cai_session_import_state_source(session, state, error);
+    rc = cai_session_restore_journal_source(session, state, error);
   cai_source_close(state);
   if (session != NULL)
     session->close(session);
@@ -2432,135 +2444,4 @@ static int validate_checkpoint(cai_cli_pouch *pouch, const char *id,
   return rc;
 }
 
-int cai_cli_pouch_import(cai_cli_pouch *pouch, const char *path,
-                         const char *workspace, char *id, size_t capacity,
-                         cai_error *error) {
-  import_context input;
-  lonejson_config config;
-  lonejson_error local;
-  lonejson_stream_result result;
-  cai_cli_session session;
-  cai_agent_session_event event;
-  lc_lease *lease;
-  cai_source *source;
-  unsigned char random[16];
-  unsigned long long previous;
-  size_t i;
-  int rc;
-  int created;
-  if (capacity < 33U || strlen(workspace) >= sizeof(session.workspace))
-    return cai_cli_error(error, CAI_ERR_INVALID,
-                         "import output or workspace too long");
-  if (RAND_bytes(random, sizeof(random)) != 1)
-    return cai_cli_error(error, CAI_ERR_TRANSPORT,
-                         "generate imported session ID");
-  for (i = 0U; i < sizeof(random); i++)
-    snprintf(id + i * 2U, capacity - i * 2U, "%02x", (unsigned int)random[i]);
-  memset(&input, 0, sizeof(input));
-  memset(&session, 0, sizeof(session));
-  config = lonejson_default_config();
-  config.clear_destination_by_default = 0;
-  input.json = lonejson_new(&config, &local);
-  if (input.json == NULL)
-    return cai_cli_lj_error(error, &local);
-  lonejson_init(input.json, &import_map, &input.record);
-  input.stream =
-      lonejson_stream_open_path(input.json, &import_map, path, &local);
-  rc = input.stream != NULL ? CAI_OK : cai_cli_lj_error(error, &local);
-  lease = NULL;
-  source = NULL;
-  created = 0;
-  if (rc == CAI_OK)
-    rc = acquire(pouch, id, &lease, error);
-  if (rc == CAI_OK) {
-    if ((lease->state_etag != NULL && lease->state_etag[0] != '\0'))
-      rc = cai_cli_error(error, CAI_ERR_INVALID,
-                         "generated session ID already exists");
-    else {
-      strcpy(session.id, id);
-      strcpy(session.workspace, workspace);
-      strcpy(session.history_backend, "collections");
-      session.published = 0;
-      rc = update_session(lease, &session, error);
-      created = rc == CAI_OK;
-    }
-  }
-  rc = release(lease, rc, error);
-  if (rc == CAI_OK)
-    rc = cai_cli_stream_source(import_checkpoint, &input, NULL, &source, error);
-  if (rc == CAI_OK)
-    rc = checkpoint(pouch, workspace, id, source, 0U, error);
-  /* close joins the JSON parser before its mapped checkpoint metadata is read.
-   */
-  cai_source_close(source);
-  if (rc == CAI_OK) {
-    lease = NULL;
-    rc = acquire(pouch, id, &lease, error);
-    if (rc == CAI_OK)
-      rc = get_session(lease, workspace, id, &session, error);
-    if (rc == CAI_OK) {
-      session.applied_sequence = input.record.applied_event_sequence;
-      rc = update_session(lease, &session, error);
-    }
-    rc = release(lease, rc, error);
-  }
-  previous = 0U;
-  while (rc == CAI_OK) {
-    lonejson_cleanup(&import_map, &input.record);
-    lonejson_init(input.json, &import_map, &input.record);
-    result = lonejson_stream_next(input.stream, &input.record, &local);
-    if (result == LONEJSON_STREAM_EOF)
-      break;
-    if (result != LONEJSON_STREAM_OBJECT) {
-      rc = cai_cli_lj_error(error, &local);
-      break;
-    }
-    if (strcmp(input.record.record_type, "event") != 0 ||
-        input.record.type == NULL || input.record.type[0] == '\0' ||
-        input.record.sequence <= previous) {
-      rc = cai_cli_error(error, CAI_ERR_INVALID,
-                         "imported journal events must have nonempty types and "
-                         "strictly increasing positive sequences");
-      break;
-    }
-    previous = input.record.sequence;
-    event.sequence = input.record.sequence;
-    event.type = input.record.type;
-    event.data = input.record.data;
-    rc = append_event(pouch, workspace, id, &event, error);
-  }
-  if (rc == CAI_OK)
-    rc = validate_checkpoint(pouch, id, workspace, error);
-  if (rc == CAI_OK)
-    rc = cai_cli_pouch_publish(pouch, id, 1, error);
-  if (rc != CAI_OK && created) {
-    cai_error ignored;
-    lc_error ignored_lc;
-    lc_collection *collection;
-    const char *kinds[2];
-    size_t kind;
-    kinds[0] = "events";
-    kinds[1] = "checkpoints";
-    cai_error_init(&ignored);
-    lc_error_init(&ignored_lc);
-    lease = NULL;
-    if (acquire(pouch, id, &lease, &ignored) == CAI_OK) {
-      for (kind = 0U; kind < 2U; kind++) {
-        collection = NULL;
-        if (history_collection(pouch, id, kinds[kind], 0, &collection,
-                               &ignored) == CAI_OK) {
-          (void)collection->drop(collection, &ignored_lc);
-          collection->close(collection);
-        }
-      }
-      (void)lease->remove(lease, NULL, &ignored_lc);
-      (void)release(lease, CAI_OK, &ignored);
-    }
-    lc_error_cleanup(&ignored_lc);
-    cai_error_cleanup(&ignored);
-  }
-  lonejson_cleanup(&import_map, &input.record);
-  lonejson_stream_close(input.stream);
-  lonejson_free(input.json);
-  return rc;
-}
+#include "pouch_import.inc"

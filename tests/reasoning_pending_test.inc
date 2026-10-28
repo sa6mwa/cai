@@ -1,4 +1,4 @@
-/* A real tool-round boundary, without sleeps: checkpointing waits while the
+/* A real tool-round boundary, without sleeps: committing waits while the
  * owner switches models after set_reasoning has queued its raise. */
 typedef struct reasoning_boundary {
   runtime_session_store_state store;
@@ -7,14 +7,14 @@ typedef struct reasoning_boundary {
   int entered, release;
 } reasoning_boundary;
 
-static int reasoning_checkpoint(void *context, const char *scope,
-                                const char *session_id, cai_source *source,
-                                unsigned long long sequence, cai_error *error) {
+static int reasoning_commit(void *context, const char *scope,
+                            const char *session_id, cai_source *source,
+                            unsigned long long sequence, cai_error *error) {
   reasoning_boundary *barrier = context;
-  int rc = test_runtime_session_store_checkpoint(
-      &barrier->store, scope, session_id, source, sequence, error);
+  int rc = test_runtime_session_store_commit(&barrier->store, scope, session_id,
+                                             source, sequence, error);
   if (rc != CAI_OK ||
-      strstr(barrier->store.saved_checkpoint, "function_call_output") == NULL)
+      strstr(barrier->store.saved_commit, "function_call_output") == NULL)
     return rc;
   pthread_mutex_lock(&barrier->lock);
   if (!barrier->entered) {
@@ -67,7 +67,7 @@ static void test_reasoning_model_boundary(test_state *state) {
   memset(&barrier, 0, sizeof(barrier));
   memset(&store, 0, sizeof(store));
   store.context = &barrier;
-  store.checkpoint = reasoning_checkpoint;
+  store.commit = reasoning_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;

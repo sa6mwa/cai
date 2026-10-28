@@ -81,7 +81,7 @@ for mode in cyber_policy cyber_notice http read list outside bounded disabled to
   run --export "$id"; ok
   jsonl="$root/data/cai/exports/$id/$id.jsonl"
   markdown="$root/data/cai/exports/$id/$id.md"
-  jq -se '.[0].state.goal_status == "active"' "$jsonl" >/dev/null
+  jq -se '[.[] | select(.record_type == "commit")][-1].state.metadata.goal_status == "active"' "$jsonl" >/dev/null
   if [[ "$mode" == bounded ]]; then contains "$jsonl" 'Source inspection limit reached'; fi
   contains "$markdown" 'CAI automatic policy diagnostic'
   if [[ "$mode" != bounded && "$mode" != tool && "$mode" != failure && "$mode" != empty ]]; then contains "$markdown" 'Diagnostic explanation only.'; fi

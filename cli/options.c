@@ -217,6 +217,11 @@ static int cli_read_options(int argc, char *const *argv,
       options->chrome_setup = 1;
       continue;
     }
+    if (strcmp(flag, "--disable-compression") == 0 ||
+        strcmp(flag, "--no-disable-compression") == 0) {
+      options->disable_compression = strcmp(flag, "--disable-compression") == 0;
+      continue;
+    }
     if (strcmp(flag, "--messaging") == 0 ||
         strcmp(flag, "--no-messaging") == 0) {
       options->messaging = strcmp(flag, "--messaging") == 0;

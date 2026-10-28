@@ -276,7 +276,7 @@ static int export_events(void *context, const char *scope, const char *id,
   export_execution_visit visit;
   (void)scope;
   /* The Markdown exporter uses durable conversation history from the
-   * checkpoint. Recovering pending journal inputs would start work and is
+   * commit. Recovering pending journal inputs would start work and is
    * forbidden here. */
   visit.callback = callback;
   visit.context = visitor;
@@ -284,9 +284,9 @@ static int export_events(void *context, const char *scope, const char *id,
                               export_execution_event, &visit, error);
 }
 
-static int export_checkpoint(void *context, const char *scope, const char *id,
-                             cai_source *source, unsigned long long sequence,
-                             cai_error *error) {
+static int export_commit(void *context, const char *scope, const char *id,
+                         cai_source *source, unsigned long long sequence,
+                         cai_error *error) {
   (void)context;
   (void)scope;
   (void)id;
@@ -331,7 +331,7 @@ static int offline_runtime(cai_cli_pouch *pouch, const char *id,
   callbacks->load_id = export_load;
   callbacks->load_latest = export_latest;
   callbacks->load_events_after = export_events;
-  callbacks->checkpoint = export_checkpoint;
+  callbacks->commit = export_commit;
   callbacks->append_event = export_append;
   cai_agent_runtime_config_init(&config);
   config.session_store = callbacks;
@@ -553,7 +553,7 @@ int cai_cli_session_export(cai_cli_pouch *pouch, const char *id,
   file = NULL;
   memset(temporary, 0, sizeof(temporary));
   lease = NULL;
-  /* Hold one document lease across both exports so their checkpoint and
+  /* Hold one document lease across both exports so their commit and
    * journal cannot change between the Markdown and JSONL reads. */
   rc = cai_cli_pouch_begin_read(pouch, id, &use, error);
   if (rc == CAI_OK)

@@ -176,7 +176,7 @@ static void test_chat_length_goal_budget(test_state *state, size_t attempts) {
   cai_agent_goal_snapshot goal;
   cai_agent_runtime_metrics metrics;
   cai_error error;
-  char body[2048], checkpoint[512];
+  char body[2048], commit[512];
   int rc, i;
   size_t n;
   const char *name = "chat_cutoff_goal_budget";
@@ -197,14 +197,14 @@ static void test_chat_length_goal_budget(test_state *state, size_t attempts) {
   memset(&store, 0, sizeof(store));
   memset(&events, 0, sizeof(events));
   snprintf(
-      checkpoint, sizeof(checkpoint),
+      commit, sizeof(commit),
       "{\"version\":1,\"model\":\"test-model\","
       "\"goal_objective\":\"bounded reasoning\",\"goal_status\":\"active\","
       "\"goal_token_budget\":%d,\"goal_token_usage_baseline\":0,"
       "\"goal_tokens_used\":0,\"history\":[]}",
       attempts == 1U ? 20 : 100);
-  saved.checkpoint_json = checkpoint;
-  store.checkpoint = test_runtime_session_store_checkpoint;
+  saved.commit_json = commit;
+  store.commit = test_runtime_session_store_commit;
   store.load_latest = test_runtime_session_store_load;
   store.append_event = test_runtime_session_store_append_event;
   store.load_events_after = test_runtime_session_store_load_events_after;
@@ -249,7 +249,7 @@ static void test_chat_length_goal_budget(test_state *state, size_t attempts) {
                CAI_OK);
     expect_int(state, name, metrics.session_usage.usage.total_tokens,
                (long)attempts * 28L);
-    expect_substr(state, name, saved.saved_checkpoint,
+    expect_substr(state, name, saved.saved_commit,
                   "\"goal_status\":\"budget_limited\"");
     expect_int(state, name, cai_agent_runtime_submit(runtime, "More", &error),
                CAI_ERR_LIMIT);

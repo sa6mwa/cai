@@ -4703,7 +4703,7 @@ static int cai_lua_agent_runtime_close(lua_State *L) {
   if (self->review_parent_ref != LUA_NOREF && !self->review_finished) {
     /*
      * The C recovery contract permits abandoning a child whose durable
-     * handoff cannot be checkpointed, provided its parent is closed and
+     * handoff cannot be committed, provided its parent is closed and
      * reopened for a replacement review. Make that escape hatch explicit in
      * Lua without leaving a parent that can still be used with a dangling C
      * child pointer.
@@ -5356,11 +5356,11 @@ static int cai_lua_agent_runtime_start_review(lua_State *L) {
   if (rc != CAI_OK) {
     /*
      * The C API can return a live reviewer alongside the error when the
-     * durable review-pause checkpoint failed after its journal record was
+     * durable review-pause commit failed after its journal record was
      * accepted. Keep the child reachable: the host must be able to finish its
      * review handoff (or close it with the parent) while the parent remains
      * paused. Returning the child first preserves the normal Lua ownership
-     * model; the second result reports the checkpoint failure to callers that
+     * model; the second result reports the commit failure to callers that
      * need to surface it.
      */
     cai_lua_push_error(L, rc, &error);
@@ -5844,9 +5844,12 @@ static int cai_lua_agent_runtime_export_markdown_common(lua_State *L,
   rc = cai_lua_make_sink(L, 2, &sink_ctx, &sink, &error);
   if (rc == CAI_OK) {
     cai_lua_agent_runtime_enter(self);
-    rc = execution ? cai_agent_runtime_export_execution_markdown(self->ptr,
-                                                                 sink, &error)
-                   : cai_agent_runtime_export_markdown(self->ptr, sink, &error);
+    rc = execution == 2
+             ? cai_agent_runtime_export_journal_state(self->ptr, sink, &error)
+         : execution
+             ? cai_agent_runtime_export_execution_markdown(self->ptr, sink,
+                                                           &error)
+             : cai_agent_runtime_export_markdown(self->ptr, sink, &error);
     cai_lua_agent_runtime_leave(self);
   }
   if (sink != NULL) {
@@ -5863,6 +5866,9 @@ static int cai_lua_agent_runtime_export_markdown(lua_State *L) {
 }
 static int cai_lua_agent_runtime_export_execution_markdown(lua_State *L) {
   return cai_lua_agent_runtime_export_markdown_common(L, 1);
+}
+static int cai_lua_agent_runtime_export_journal_state(lua_State *L) {
+  return cai_lua_agent_runtime_export_markdown_common(L, 2);
 }
 
 static int cai_lua_agent_runtime_export_markdown_file(lua_State *L) {
@@ -7170,7 +7176,7 @@ static int cai_lua_native_store_agent_session(lua_State *L, int store_index,
         &error);
   }
   callbacks = (const cai_agent_session_store *)lua_touserdata(L, store_index);
-  if (callbacks == NULL || callbacks->checkpoint == NULL ||
+  if (callbacks == NULL || callbacks->commit == NULL ||
       callbacks->load_latest == NULL || callbacks->append_event == NULL ||
       callbacks->load_events_after == NULL) {
     return cai_lua_fail(
@@ -8288,7 +8294,7 @@ static int cai_lua_session_export_state(lua_State *L) {
   return cai_lua_bool_result(L, rc, &error);
 }
 
-static int cai_lua_session_import_state(lua_State *L) {
+static int cai_lua_session_import(lua_State *L, int journal) {
   cai_lua_session *self;
   cai_source *source;
   cai_lua_source_ctx source_ctx;
@@ -8300,7 +8306,8 @@ static int cai_lua_session_import_state(lua_State *L) {
   rc = cai_lua_make_source(L, 2, &source_ctx, &source, &error);
   if (rc == CAI_OK) {
     cai_lua_session_enter(self);
-    rc = self->ptr->import_state_source(self->ptr, source, &error);
+    rc = journal ? self->ptr->restore_journal_source(self->ptr, source, &error)
+                 : self->ptr->import_state_source(self->ptr, source, &error);
     cai_lua_session_leave(self);
   }
   if (source != NULL) {
@@ -8310,6 +8317,13 @@ static int cai_lua_session_import_state(lua_State *L) {
     luaL_unref(L, LUA_REGISTRYINDEX, source_ctx.callback_ref);
   }
   return cai_lua_bool_result(L, rc, &error);
+}
+
+static int cai_lua_session_import_state(lua_State *L) {
+  return cai_lua_session_import(L, 0);
+}
+static int cai_lua_session_restore_journal(lua_State *L) {
+  return cai_lua_session_import(L, 1);
 }
 
 static int cai_lua_session_export_history(lua_State *L) {
@@ -12207,6 +12221,7 @@ static const luaL_Reg cai_lua_agent_runtime_methods[] = {
     {"session_id", cai_lua_agent_runtime_session_id},
     {"model", cai_lua_agent_runtime_model},
     {"export_markdown", cai_lua_agent_runtime_export_markdown},
+    {"export_journal_state", cai_lua_agent_runtime_export_journal_state},
     {"export_execution_markdown",
      cai_lua_agent_runtime_export_execution_markdown},
     {"export_markdown_file", cai_lua_agent_runtime_export_markdown_file},
@@ -12282,6 +12297,7 @@ static const luaL_Reg cai_lua_session_methods[] = {
     {"context", cai_lua_session_context},
     {"export_state", cai_lua_session_export_state},
     {"import_state", cai_lua_session_import_state},
+    {"restore_journal", cai_lua_session_restore_journal},
     {"export_history", cai_lua_session_export_history},
     {"import_history", cai_lua_session_import_history},
     {"save_state_path", cai_lua_session_save_state_path},
@@ -12686,8 +12702,8 @@ int luaopen_cai(lua_State *L) {
   CAI_LUA_SET_INTEGER("AGENT_EVENT_RUN_STARTED", CAI_AGENT_EVENT_RUN_STARTED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_RUN_COMPLETED",
                       CAI_AGENT_EVENT_RUN_COMPLETED);
-  CAI_LUA_SET_INTEGER("AGENT_EVENT_SESSION_CHECKPOINTED",
-                      CAI_AGENT_EVENT_SESSION_CHECKPOINTED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_SESSION_COMMITTED",
+                      CAI_AGENT_EVENT_SESSION_COMMITTED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TOOL_CALL_STARTED",
                       CAI_AGENT_EVENT_TOOL_CALL_STARTED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TOOL_CALL_FAILED",

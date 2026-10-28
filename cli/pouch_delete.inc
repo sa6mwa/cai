@@ -1,5 +1,5 @@
 /* Discover ownership from indexed child scopes and bounded review launch
- * markers. No model/context replay, checkpoint decoding or tool execution. */
+ * markers. No model/context replay, commit decoding or tool execution. */
 typedef struct session_deletion {
   cai_cli_pouch *pouch;
   cai_cli_session *items;
@@ -156,8 +156,6 @@ static int deletion_one(cai_cli_pouch *pouch, const cai_cli_session *item,
     rc = acquire(pouch, item->id, &lease, error);
   if (rc == CAI_OK)
     rc = deletion_drop(pouch, item->id, "events", error);
-  if (rc == CAI_OK)
-    rc = deletion_drop(pouch, item->id, "checkpoints", error);
   if (rc == CAI_OK &&
       lease->delete_all_attachments(lease, &deleted, &local) != LC_OK)
     rc = cai_cli_lc_error(error, &local);

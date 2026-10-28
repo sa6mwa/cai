@@ -1568,8 +1568,8 @@ do
       "Lua Smith runtime export path without app name")
     os.remove(export_path)
   end
-  assert(native_store_test.checkpoint_count() > 0,
-    "native agent session store must receive runtime checkpoints")
+  assert(native_store_test.commit_count() > 0,
+    "native agent session store must receive runtime commits")
   assert_not_ok(native_session_store:close(),
     "native session store must remain pinned by a live runtime")
   do

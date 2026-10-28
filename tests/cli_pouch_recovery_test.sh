@@ -37,7 +37,7 @@ tail -1 "$root/peer/requests.jsonl" >"$root/request"
 contains "$root/request" 'durable conversation prompt'
 contains "$root/request" 'DURABLE CONVERSATION ANSWER'
 # Auto-resume followed immediately by /quit must complete recovery without
-# a user prompt, /resume listing, or a checkpoint-producing model turn.
+# a user prompt, /resume listing, or a commit-producing model turn.
 count=$(requests)
 # An unusable derived-index path must report the repair failure without
 # preventing direct auto-resume of the intact conversation.

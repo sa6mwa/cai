@@ -102,6 +102,14 @@
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_export_paths_test.sh"
       "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_export_paths PROPERTIES TIMEOUT 15)
+    set(_cai_journal_lua_args)
+    if(CAI_BUILD_LUA_RUNNER AND CAI_BUILD_LUA)
+      list(APPEND _cai_journal_lua_args "$<TARGET_FILE:cai_lua_runner>" "${CMAKE_CURRENT_BINARY_DIR}/lua")
+    endif()
+    add_test(NAME cai_cli_journal COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_journal_test.sh"
+      "$<TARGET_FILE:cai_cli_mock_fixture>" ${_cai_journal_lua_args})
+    set_tests_properties(cai_cli_journal PROPERTIES TIMEOUT 20)
     foreach(_final_protocol responses chat_completions)
       add_test(NAME cai_cli_final_output_${_final_protocol} COMMAND bash
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_final_output_test.sh"
@@ -511,7 +519,7 @@
     set_tests_properties(${_cai_cli_tests} PROPERTIES LABELS "cli;local;offline"
       ENVIRONMENT "CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>;CAI_TEST_PYTHON=${CAI_TEST_PYTHON};CAI_TEST_JQ=${CAI_TEST_JQ};CAI_TEST_TMUX=${CAI_TEST_TMUX}")
     # These cases assert CLI presentation/tool wiring, not stored history.
-    # Stateful cases retain real encrypted checkpoint/replay/export coverage.
+    # Stateful cases retain real encrypted commit/replay/export coverage.
     set_property(TEST cai_cli_mcp_inventory_responses
       cai_cli_mcp_inventory_chat_completions cai_cli_tool_policy_responses
       cai_cli_tool_policy_chat_completions cai_cli_skills cai_cli_skills_inventory cai_cli_commands

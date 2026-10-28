@@ -956,7 +956,7 @@ typedef int (*cai_stream_output_text_delta_fn)(
  *
  * Session streaming invokes this after recording history/usage and clearing
  * committed pending input. This is a response boundary, not a whole tool-loop
- * or turn boundary, and does not promise a filesystem/storage checkpoint.
+ * or turn boundary, and does not promise a filesystem/storage commit.
  */
 typedef int (*cai_stream_response_completed_fn)(void *context,
                                                 cai_error *error);
@@ -1404,12 +1404,18 @@ struct cai_session {
   /** Import local history from a streaming source. */
   int (*import_history_source)(cai_session *session, cai_source *source,
                                cai_error *error);
-  /** Export complete session state as a streaming source. */
+  /** Export an explicit complete-state snapshot through a spool-backed source.
+   * Durable runtime persistence uses incremental journal edits instead. */
   int (*export_state_source)(cai_session *session, cai_source **out,
                              cai_error *error);
   /** Import complete session state from a streaming source. */
   int (*import_state_source)(cai_session *session, cai_source *source,
                              cai_error *error);
+  /** Restore an ordered append-only journal into a fresh session; does not
+   * execute tools. Discard the session on failure; valid earlier edits may
+   * already have been applied. */
+  int (*restore_journal_source)(cai_session *session, cai_source *source,
+                                cai_error *error);
   /** Save complete session state to a filesystem path. */
   int (*save_state_path)(cai_session *session, const char *path,
                          cai_error *error);
@@ -1878,12 +1884,19 @@ int cai_session_export_history_source(cai_session *session, cai_source **out,
 /** Import local history from a streaming source. */
 int cai_session_import_history_source(cai_session *session, cai_source *source,
                                       cai_error *error);
-/** Export complete session state as a streaming source. */
+/** Export an explicit complete-state snapshot through a spool-backed source.
+ * This is separate from append-only runtime persistence. */
 int cai_session_export_state_source(cai_session *session, cai_source **out,
                                     cai_error *error);
 /** Import complete session state from a streaming source. */
 int cai_session_import_state_source(cai_session *session, cai_source *source,
                                     cai_error *error);
+/** Restore committed state edits from ordered JSONL. History additions are
+ * decoded directly into retained context with bounded parser buffers. This
+ * replaces this session's context; use a fresh session for recovery and discard
+ * it on failure (valid earlier edits may already have been applied). */
+int cai_session_restore_journal_source(cai_session *session, cai_source *source,
+                                       cai_error *error);
 /** Save complete session state to a filesystem path. */
 int cai_session_save_state_path(cai_session *session, const char *path,
                                 cai_error *error);
