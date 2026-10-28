@@ -52,8 +52,9 @@ send '/shell\r'; expect 'Q 1. /shell'
 send '\033e'; expect_prompt /shell
 send '\025/shellshare\r'; expect 'Q 1. /shellshare'
 send '\033e'; expect_prompt /shellshare
-send '\025!sh+\t'; expect 'Use Enter to queue the shell handoff'
-send '\033\r'; expect 'Q 1. !sh+'
+send '\025!sh+\t'; expect_prompt '!sh+'
+send '\r'; expect 'Q 1. !sh+'
+send '\033\r'; expect 'S 1. !sh+'
 [[ $(wc -c <"$root/launches") == "$count" ]]
 release; expect BusyHandoffDone
 expect SHELL_HANDOFF_READY # Shared handoff owns a child PTY, not the outer TTY.

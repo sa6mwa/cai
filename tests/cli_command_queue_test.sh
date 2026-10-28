@@ -55,13 +55,13 @@ command_plan '[{pause:true,pause_text:"TurnBoundaryBegin\n\n",tool:"get_goal",ar
   {pause:true,pause_gate:"release-after-seam",pause_text:"AfterToolSeam\n\n",text:"TurnBoundaryDone"}]'
 terminal_start -N
 send 'Wait across the tool seam\r'; expect TurnBoundaryBegin
-send '/theme plain\033\r'; expect 'Q 1. /theme plain'
+send '/theme plain\033\r'; expect 'S 1. /theme plain'
 send '\033\r'
 release; expect AfterToolSeam
-expect 'Q 1. /theme plain'
+contains "$term/text" 'S 1. /theme plain'
 absent "$term/feed" 'Change themes between turns'
 send '\033e'; expect_prompt '/theme plain'
-send '\025/theme dracula\r'; expect 'Q 1. /theme dracula'
+send '\025/theme dracula\r'; expect 'S 1. /theme dracula'
 touch "$root/peer/release-after-seam"
 expect TurnBoundaryDone; expect 'Theme changed to dracula:dracula.'
 absent "$root/peer/requests.jsonl" '/theme dracula'
@@ -154,7 +154,7 @@ send '/goal\r'; expect 'No goal.'
 send '/status\r'; expect 'Use /tools for the full inventory.'
 [[ $(requests) == $((before+1)) ]]
 send '\033e'; expect_prompt '/goal new Must remain queued'
-send '\025/output full\r'; expect 'applies from the next tool call'
+send '\025/output full\033\r'; expect 'applies from the next tool call'
 [[ $(requests) == $((before+1)) ]]
 terminal_close
 

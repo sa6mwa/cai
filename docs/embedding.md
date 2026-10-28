@@ -74,7 +74,7 @@ is omitted and cannot be deleted. Shared stores and workspace files remain.
 Prompt recall is per-conversation, so switching sessions also switches recall.
 
 `/compact` uses the agent worker, leaving the application event loop responsive.
-It stays in Softline's editable normal queue until the parent conversation has
+It stays in Softline's native editable queue until the parent conversation has
 no active turn, reviewer, pending control, or shell execution. Application event
 observers receive the normal run and compaction lifecycle events; manual
 compaction's `RUN_STARTED` has a NULL prompt payload. Escape or host cancellation

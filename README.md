@@ -141,7 +141,7 @@ runtime, review, storage, and presentation contracts.
 
 The musl SDK presets build the terminal coding agent as a statically linked
 Linux x86_64, aarch64 or armhf executable. The `cai` convenience preset selects
-the same x86_64 musl producer. It adds pinned softline 0.13.0 for the prompt and
+the same x86_64 musl producer. It adds pinned softline 0.14.0 for the prompt and
 libmdf 0.15.0 for streamed Markdown rendering, and liblockdc 0.23.0 with
 liblql 0.3.0 for durable storage. It uses libpslog 0.12.0 for logging.
 The native dependency SDK is cpkt 0.5.2 from
@@ -188,9 +188,13 @@ queues them after the current turn; Alt-Enter keeps them editable until the
 next response/tool boundary, where CAI applies them locally. Commands never
 become model steering text. `/quit` follows the same queue; Alt-Q saves the
 draft and exits directly.
-Explicit `!COMMAND` execution remains a direct local operation; its results
-enter model context at the runtime's next safe boundary. Editing a queued entry
-into a pipe command retains that entry's native delivery intent.
+All typed slash and `!COMMAND` inputs enter Softline's visible, editable queue,
+including while idle. Its native policy keeps approval, execution readiness and
+Escape's stopped backlog separate. A fresh `/goal resume` can run after Escape
+without releasing old stopped entries. Editing an old stopped entry retains
+its stop; Alt-Enter explicitly promotes that entry. Whole-turn commands such as
+`/review`, `/compact` and `/shell` stay queued until idle, even with steering
+intent. Local `!COMMAND` results enter model context at the next safe boundary.
 A steering prompt appears in the
 conversation feed only when the runtime inserts it after the current response
 or tool round. It never interrupts streamed assistant text. Resume uses those
@@ -393,8 +397,8 @@ provider requests or execute tools.
 ### Manual context compaction
 
 `/compact` starts a standalone compaction task between turns. While busy it
-stays in Softline's normal editable queue, including when entered with
-Alt-Enter; it never becomes model steering. Escape cancels the task. Progress
+stays in Softline's native editable queue. Alt-Enter retains its steering label
+but cannot waive the whole-turn hold or steer the model. Escape cancels the task. Progress
 appears in the gray status line and completion in the Markdown feed.
 
 The worker uses the same compactor as automatic compaction: streamed Responses

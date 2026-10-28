@@ -34,8 +34,6 @@ int cai_cli_messages_consumed(cai_cli_messages *messages, sl_prompt_id_t id,
                               cai_error *error);
 int cai_cli_messages_is_message(const cai_cli_messages *messages,
                                 sl_prompt_id_t id);
-void cai_cli_messages_rebind(cai_cli_messages *messages, sl_prompt_id_t old_id,
-                             sl_prompt_id_t new_id);
 void cai_cli_messages_detach(cai_cli_messages *messages, sl_t *sl);
 void cai_cli_messages_stop(cai_cli_messages *messages);
 /* Cancel sends already in progress, including lease acquisition and enqueue.

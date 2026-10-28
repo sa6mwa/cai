@@ -81,6 +81,6 @@ release
 send '/yolo\r'; expect 'off (restricted)'; expect 'Pending:'
 absent "$term/feed" '$ /yolo on'
 send '\033e'; expect_prompt '/yolo on'
-send '\025/yolo\r'; expect 'off (restricted)'
+send '\025/yolo\033\r'; expect 'off (restricted)'
 terminal_close
 cmp "$root/policy.ini" "$root/policy.original"

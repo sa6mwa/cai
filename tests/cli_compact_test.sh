@@ -23,15 +23,15 @@ send '/compact extra\r'; expect 'Usage: /compact'
 send '/compact\r'; expect 'history'; expect 'Worked for'
 [[ $(requests) == 0 ]]
 
-# Compaction is an editable normal queue entry, even with Alt-Enter. It must
-# not interrupt streamed text, become a steer, or add a synthetic user prompt.
+# Compaction retains native Q/S intent but is executable only between turns.
+# It must not interrupt text, steer the model, or add a synthetic user prompt.
 set_plan "[{\"pause\":true,\"text\":\"ToolSeamBeforeCompact\",\"tool\":\"get_goal\",\"arguments\":{}},\"BeforeCompactAnswer\",$compact]"
 send 'COMPACT_SOURCE_PROMPT\r'; expect 'STREAM in flight'
-send '/compact\033\r'; expect 'Q 1. /compact'
+send '/compact\033\r'; expect 'S 1. /compact'
 tail -c +$((send_feed_offset+1)) "$term/feed" >"$root/queued-feed"
 absent "$root/queued-feed" '$ /compact'
 send '\033e'; expect_prompt '/compact'
-send '\025/compact\r'; expect 'Q 1. /compact'
+send '\025/compact\r'; expect 'S 1. /compact'
 [[ $(requests) == 1 ]]
 # Empty Alt-Enter promotes the newest native queue entry without going
 # through the draft hook. It must still wait past the upcoming tool seam.
@@ -63,7 +63,7 @@ if [[ "$chat" == false ]]; then
   send '/review Inspect the fixture\r'
   review_requested() { [[ $(requests) == $((before+1)) ]]; }
   wait_for review_requested
-  send '/compact\033\r'; expect 'Q 1. /compact'
+  send '/compact\033\r'; expect 'S 1. /compact'
   [[ $(requests) == $((before+1)) ]]
   release; expect 'Context compacted.'
   [[ $(requests) == $((before+2)) ]]

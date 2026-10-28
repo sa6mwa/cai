@@ -77,8 +77,8 @@ run --list; ok
 # goal continuation. It must not wait for the entire goal to finish.
 plan '{"plan":[{"pause":true,"text":"BUSY TURN DONE"}]}'
 send '/goal new coordinate with the sender\r'; expect 'STREAM in flight'
-send '/queue not-between-turns\033\r'; expect 'Q 1. /queue not-between-turns'
-send '/queue off\033\r'; expect 'Q 2. /queue off'
+send '/queue not-between-turns\033\r'; expect 'S 1. /queue not-between-turns'
+send '/queue off\033\r'; expect 'S 2. /queue off'
 send '/queue\r'; expect 'Message queue: receiver-workspace'
 send '\033e'; expect_prompt '/queue off'
 send '\025/output compact\r'; expect 'applies from the next tool call'
@@ -124,6 +124,20 @@ expect 'approval'
 send '\033a\033n'
 send '/status\r'; expect 'Metric'
 [[ $(requests) == "$count" ]]
+send_message 'Edit this message into a local command' new-receiver
+expect 'approval'
+send '\033a\033e'; expect_prompt 'Edit this message into a local command'
+# The injected draft has a metadata line, blank line and body. Four Ctrl-U
+# operations remove those three logical lines without bypassing native editing.
+send '\025\025\025\025!printf accepted >> accepted-message-command\r'; expect 'approval'
+send '\033a\033y'; expect 'Shell command exited 0'
+[[ $(cat "$work/accepted-message-command") == accepted && $(requests) == "$count" ]]
+send_message 'Edit this message into a context-changing command' new-receiver
+expect 'approval'
+send '\033a\033e'; expect_prompt 'Edit this message into a context-changing command'
+send '\025\025\025\025/queue off\r'; expect 'approval'
+send '\033a\033y'; expect 'Messaging is disabled'
+send '/queue on\r'; expect 'Message queue: new-receiver'
 send '/new\r'; expect 'Message queue:'; expect 'new-receiver'; expect 'ID:'
 absent "$term/feed" '**ID:**'
 send '/queue\r'; expect 'Message queue: new-receiver'
@@ -134,6 +148,8 @@ base+=(--messaging)
 terminal_start --resume "$receiver"
 send '/status\r'; expect 'Metric'
 [[ $(requests) == "$count" ]]
+send '/queue off\r'; expect 'Messaging is disabled'
+[[ $(cat "$work/accepted-message-command") == accepted ]]
 terminal_close
 logs
 jq -se 'any(.[]; .event=="agent_message_received" and .role=="agent" and .msg=="External hello one")' "$root/logs.jsonl" >/dev/null

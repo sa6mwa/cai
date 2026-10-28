@@ -632,6 +632,11 @@ Enter queues them after the current turn, and Alt-Enter keeps them editable
 until the next response/tool boundary. Commands execute locally and never
 become model steering text. /quit follows the same queue; Alt-Q saves the
 draft and exits directly.
+Typed slash and shell commands enter the native queue even while idle.
+Execution readiness is separate from approval, editing and cancellation.
+A fresh /goal resume can run after Escape while the old backlog remains stopped.
+Editing old stopped work retains its stop until explicit Alt-Enter promotion.
+Whole-turn commands retain their native Q/S intent but cannot run mid-turn.
 .TP
 .BI \-\-tool-output " MODE"
 Select interactive tool previews: compact (default) or full.
@@ -653,7 +658,8 @@ Show the version.
 .TP
 .B /compact
 Compact conversation context between turns. While busy, the command stays in
-the normal editable Softline queue, including with Alt-Enter. Escape cancels.
+the native editable Softline queue. Alt-Enter retains steering intent but does
+not waive the whole-turn execution hold or steer the model. Escape cancels.
 Responses providers use streamed V2 compaction; Chat Completions providers use
 client-side summarization. No user prompt, tool execution or follow-up answer
 is generated. Successful replacement is checkpointed before completion;

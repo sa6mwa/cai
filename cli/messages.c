@@ -1086,13 +1086,6 @@ int cai_cli_messages_is_message(const cai_cli_messages *m, sl_prompt_id_t id) {
       return 1;
   return 0;
 }
-void cai_cli_messages_rebind(cai_cli_messages *m, sl_prompt_id_t old_id,
-                             sl_prompt_id_t new_id) {
-  message_link *link;
-  for (link = m != NULL ? m->links : NULL; link != NULL; link = link->next)
-    if (link->prompt_id == old_id)
-      link->prompt_id = new_id;
-}
 void cai_cli_messages_detach(cai_cli_messages *m, sl_t *sl) {
   sl_prompt_queue_entry_info_t info;
   size_t i = 0U;

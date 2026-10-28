@@ -12,12 +12,16 @@ retain that ownership through tool seams even after empty-editor Alt-Enter.
 `/todo layout board|list` is now feed-local. Approval holds and queue edits are
 preserved. Tests cover both Responses and Chat Completions with local fixtures.
 
-Uniform idle command admission is **deferred**, not complete. Softline 0.13.0
-offers passive draft enqueue, but only direct submission/promotion resumes its
-stopped FIFO after Escape. Making every idle agent command use passive enqueue
-would strand `/goal resume`. The upstream request is the local artifact
-`stash/softline-command-queue-policies-cr.md`. There is no fake submission,
-profile reset, application-owned queue or dependency patch in this cutover.
+Softline 0.14.0 completes uniform idle command admission. Its native classifier
+queues every typed slash/shell command; CAI declares execution readiness by
+identity and consumes only entries marked eligible. Independent feed-local
+queries can pass blocked work. Whole-turn commands retain steering intent but
+wait until idle. Enter/Alt-Enter/Tab are no longer intercepted by CAI.
+Fresh managed commands can execute after Escape while the old backlog remains
+stopped. Re-editing old work retains its stop until explicit promotion. There
+is no global delivery-mode workaround, queue reinsert/rebinding, fake submission,
+profile reset or second application queue. The completed upstream request is
+`stash/softline-command-queue-policies-cr.md`.
 
 Trusted host controls (`CAI_APP_STEER` and goal operations), startup instructions
 and non-interactive invocations keep their documented API behavior. They are

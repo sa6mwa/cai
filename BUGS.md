@@ -74,24 +74,19 @@ commit and verification evidence.
 
 ## BUG-048: Interactive command queue cutover is incomplete
 
-- **Status:** partially fixed; uniform idle command admission awaits upstream
-  Softline queue policy support. Historical audit baseline: `fce46cb`.
-- **Implemented:** remove forced busy `!COMMAND` submission; include user-shell
-  activity in native busy state; retain idle-only commands through tool seams
-  rather than popping/rejecting them; allow `/todo layout` changes at feed seams.
-- **Upstream boundary:** passive draft enqueue in Softline 0.13.0 cannot resume
-  a stopped FIFO after Escape. Preserve native idle direct submission for agent
-  commands so a fresh `/goal resume` still works. The requested policy is in
-  `stash/softline-command-queue-policies-cr.md` (local change-request artifact).
-- **Remaining admission:** idle `/review` and most setting/session slash
-  commands still return directly from `sl_next_prompt`; feed-local, YOLO and
-  compaction commands retain their existing explicit enqueue behavior.
-- **Verification:** event-gated mock-provider tests cover busy command admission
-  and editing, queue retention through an intermediate tool seam, and editable
-  ordinary prompts behind a live pipe command. Approval and stopped-queue
-  behavior remain native Softline policies.
-- **Historical evidence:** event-gated static-binary probes reproduce review preparation
-  blocking the CAI owner thread and hidden input behind a pipe command.
+- **Status:** fixed with Softline 0.14.0 native queue policies (2026-10-28).
+- **Admission:** all typed slash and shell commands enter the native queue,
+  including while idle. Enter, Alt-Enter and Tab retain Softline's behavior.
+- **Delivery:** native execution holds and `eligible` inspection separate feed,
+  model/tool and whole-turn boundaries without popping ineligible entries or
+  replacing their identity. Independent queries pass blocked commands.
+- **Cancellation:** fresh commands can run after Escape without resuming old
+  stopped entries. Editing old stopped work retains its stop; explicit
+  promotion releases only the selected managed entry. Stopped entries do not
+  prevent a fresh `/goal resume` from starting pursuit.
+- **Verification:** event-gated local-provider tests cover both wire protocols,
+  idle/busy command editing, tool seams, cancellation/resumption, shell activity
+  and message approval. No inference or simulated typing delays are required.
 - **Full audit:** [command matrix and execution-path inventory](docs/interactive-command-audit.md).
   Synchronous execution after delivery is distinct from queue admission.
 

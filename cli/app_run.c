@@ -142,8 +142,6 @@ typedef struct cli_state {
   int feed_ansi;
   int exit_requested;
   int was_busy;
-  int command_delivery_held;
-  int queue_delivery_manual;
   int awaiting_turn;
   int manual_compaction;
   int show_welcome;
@@ -198,7 +196,7 @@ static int cli_submit_automation(cli_state *state, const char *instruction,
 static int cli_continue_goal(cli_state *state, cai_error *error);
 static int cli_host_process(cli_state *state, cai_error *error);
 static int cli_pump(cli_state *state, long timeout, cai_error *error);
-static int cli_command_delivery(cli_state *state, cai_error *error);
+static int cli_sync_queue(cli_state *state, int at_boundary, cai_error *error);
 static int cli_sync_status(cli_state *state, cai_error *error);
 static int cli_review_event(void *context, const cai_agent_runtime_event *event,
                             cai_error *error);
@@ -1059,120 +1057,104 @@ static int cli_yolo_pending(cli_state *state, int *enabled) {
   return 0;
 }
 
-/* A running terminal can outlive its turn. Prevent native FIFO release of
- * ineligible commands, without hiding them in a second queue.
- * Native Esc/approval/edit state is preserved when automatic delivery returns.
- */
-static int cli_command_delivery(cli_state *state, cai_error *error) {
-  size_t i;
-  int hold = 0, effective, ready, requested, rc;
-  if (!state->interactive || state->runtime == NULL)
+/* Softline owns admission, identity, approval, ordering and cancellation.
+ * CAI only declares which execution boundary is currently available. */
+static int cli_prompt_ready(cli_state *state, const char *text,
+                            sl_prompt_queue_mode_t mode, int at_boundary,
+                            int *ready, cai_error *error) {
+  int rc;
+  *ready = 0;
+  if (cli_command_at_feed_boundary(text)) {
+    *ready = 1;
     return CAI_OK;
-  if (!state->command_delivery_held && sl_prompt_queue_count(state->sl) == 0U)
+  }
+  if (state->runtime == NULL)
     return CAI_OK;
-  rc = cai_agent_runtime_get_yolo(state->runtime, &effective, &ready, error);
+  rc = cli_command_turn_ready(state, ready, error);
   if (rc != CAI_OK)
     return rc;
+  if (cli_is_compact(text)) {
+    int compact_ready = 0;
+    if (*ready)
+      rc = cai_agent_runtime_can_compact(state->runtime, &compact_ready, error);
+    *ready = *ready && compact_ready;
+    return rc;
+  }
+  if (cli_command_at_turn_boundary(text) || state->shell.pid > 0)
+    return CAI_OK;
+  if (!*ready && mode == SL_PROMPT_QUEUE_MODE_STEER && at_boundary &&
+      (state->options.subagent_steering ||
+       (state->review_runtime == NULL && !state->foreground_subagent)))
+    *ready = 1;
+  if (*ready && cli_is_yolo(text)) {
+    int requested, effective, change_ready;
+    if (cli_yolo_value(text, &requested)) {
+      rc = cai_agent_runtime_get_yolo(state->runtime, &effective, &change_ready,
+                                      error);
+      if (rc == CAI_OK && requested != effective && !change_ready)
+        *ready = 0;
+    }
+  }
+  return rc;
+}
+
+static int cli_prompt_policy(sl_t *sl, const char *text,
+                             sl_prompt_queue_mode_t mode,
+                             sl_prompt_queue_policy_t *policy, void *context) {
+  cli_state *state = context;
+  cai_error error;
+  int rc;
+  (void)sl;
+  policy->enqueue = text[0] == '/' || text[0] == '!';
+  policy->independent = cli_command_at_feed_boundary(text);
+  cai_error_init(&error);
+  rc = cli_prompt_ready(state, text, mode, 0, &policy->executable, &error);
+  cai_error_cleanup(&error);
+  return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
+}
+
+static int cli_sync_queue(cli_state *state, int at_boundary, cai_error *error) {
+  sl_prompt_queue_entry_info_t info;
+  size_t i;
+  int ready, rc;
+  if (!state->interactive || state->runtime == NULL)
+    return CAI_OK;
+  if (sl_prompt_queue_draft_info(state->sl, &info) != SL_OK)
+    return CAI_ERR_TRANSPORT;
+  if (info.id != 0) {
+    rc = cli_prompt_ready(state, sl_buffer(state->sl), info.mode, at_boundary,
+                          &ready, error);
+    if (rc != CAI_OK)
+      return rc;
+    if (sl_prompt_queue_set_executable(state->sl, info.id, ready) != SL_OK)
+      return CAI_ERR_TRANSPORT;
+  }
   for (i = 0U; i < sl_prompt_queue_count(state->sl); i++) {
-    sl_prompt_queue_entry_info_t info;
     char *text = NULL;
-    if (sl_prompt_queue_info(state->sl, i, &info) != SL_OK)
+    if (sl_prompt_queue_info(state->sl, i, &info) != SL_OK ||
+        sl_prompt_queue_peek(state->sl, i, &text) != SL_OK)
       return CAI_ERR_TRANSPORT;
-    if (info.held || info.mode != SL_PROMPT_QUEUE_MODE_QUEUED)
-      continue;
-    if (sl_prompt_queue_peek(state->sl, i, &text) != SL_OK)
-      return CAI_ERR_TRANSPORT;
-    if (cli_is_compact(text)) {
-      rc = cai_agent_runtime_can_compact(state->runtime, &ready, error);
-      hold = !ready || state->shell.pid > 0 || state->review_runtime != NULL;
-    } else if (cli_command_at_turn_boundary(text)) {
-      rc = cli_command_turn_ready(state, &ready, error);
-      hold = !ready;
-    } else
-      hold =
-          cli_yolo_value(text, &requested) && requested != effective && !ready;
-    if (!cli_command_at_feed_boundary(text) && state->shell.pid > 0)
-      hold = 1;
+    /* With child steering disabled, an attempted child steer belongs to the
+     * parent's next turn. Execution holds never otherwise change Q/S intent. */
+    if (info.mode == SL_PROMPT_QUEUE_MODE_STEER &&
+        !cli_command_at_feed_boundary(text) &&
+        !state->options.subagent_steering &&
+        (state->review_runtime != NULL || state->foreground_subagent)) {
+      if (sl_prompt_queue_set_mode(state->sl, i, SL_PROMPT_QUEUE_MODE_QUEUED) !=
+          SL_OK) {
+        sl_free_string(state->sl, text);
+        return CAI_ERR_TRANSPORT;
+      }
+      info.mode = SL_PROMPT_QUEUE_MODE_QUEUED;
+    }
+    rc = cli_prompt_ready(state, text, info.mode, at_boundary, &ready, error);
     sl_free_string(state->sl, text);
     if (rc != CAI_OK)
       return rc;
-    break;
+    if (sl_prompt_queue_set_executable(state->sl, info.id, ready) != SL_OK)
+      return CAI_ERR_TRANSPORT;
   }
-  /* enqueue_draft retains the editor but does not schedule idle delivery.
-   * Let Softline resynchronize its FIFO, including its native Esc stop. */
-  if (sl_set_prompt_queue_delivery(
-          state->sl, hold || state->queue_delivery_manual
-                         ? SL_PROMPT_QUEUE_DELIVERY_MANUAL
-                         : SL_PROMPT_QUEUE_DELIVERY_AUTO) != SL_OK)
-    return CAI_ERR_TRANSPORT;
-  state->command_delivery_held = hold;
   return CAI_OK;
-}
-
-/* Keep local inspections in Softline too. Enqueueing the native draft avoids
- * declaring a new user turn (and restarting stopped FIFO release after Esc).
- * Their consumer can take them between feeds, unlike model/tool steering. */
-static int cli_editor_key(sl_t *sl, sl_key_t key, void *context,
-                          sl_key_action_t *action) {
-  cli_state *state = context;
-  const char *text = sl_buffer(sl);
-  cai_error error;
-  int rc = SL_OK;
-  *action = SL_KEY_ACTION_PASS;
-  if (sl_history_search_active(sl))
-    return SL_OK;
-  if ((key == SL_KEY_ENTER || key == SL_KEY_ALT_ENTER) &&
-      (text[0] == '/' || text[0] == '!')) {
-    sl_prompt_queue_entry_info_t draft;
-    size_t index;
-    int whole_turn = cli_command_at_turn_boundary(text);
-    if (sl_prompt_queue_draft_info(sl, &draft) != SL_OK)
-      return SL_ERROR_IO;
-    /* Preserve native explicit-submit resumption after Escape until Softline
-     * can distinguish a fresh queued user command from a passive draft enqueue.
-     * Do not fake a submit or reset the profile to unpause its stopped FIFO.
-     * See stash/softline-command-queue-policies-cr.md. */
-    if (!state->was_busy && draft.id == 0 &&
-        !cli_command_at_feed_boundary(text) && !cli_is_yolo(text) &&
-        !cli_is_compact(text))
-      return SL_OK;
-    *action = SL_KEY_ACTION_HANDLED;
-    rc = sl_prompt_queue_enqueue_draft(sl);
-    if (rc == SL_OK) {
-      if (key == SL_KEY_ALT_ENTER || whole_turn) {
-        index = sl_prompt_queue_count(sl) - 1U;
-        if (draft.id != 0) {
-          sl_prompt_queue_entry_info_t info;
-          for (index = 0U; index < sl_prompt_queue_count(sl); index++) {
-            if (sl_prompt_queue_info(sl, index, &info) != SL_OK)
-              return SL_ERROR_IO;
-            if (info.id == draft.id)
-              break;
-          }
-        }
-        if (sl_prompt_queue_set_mode(sl, index,
-                                     whole_turn
-                                         ? SL_PROMPT_QUEUE_MODE_QUEUED
-                                         : SL_PROMPT_QUEUE_MODE_STEER) != SL_OK)
-          return SL_ERROR_IO;
-      }
-      cai_error_init(&error);
-      rc = cli_command_delivery(state, &error);
-      cai_error_cleanup(&error);
-      return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
-    }
-    return rc == SL_ERROR_FULL
-               ? sl_set_status_message(sl,
-                                       "Prompt queue is full; draft retained.")
-               : rc;
-  }
-  if (!cli_is_terminal_shell(text))
-    return SL_OK;
-  if (key == SL_KEY_TAB) {
-    *action = SL_KEY_ACTION_HANDLED;
-    rc = sl_set_status_message(sl, "Use Enter to queue the shell handoff.");
-  }
-  return rc;
 }
 
 static int cli_terminal_shell_output(void *context, const char *bytes,
@@ -1761,7 +1743,7 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
   busy = metrics.turn_active || state->awaiting_turn || state->shell.pid > 0 ||
          state->review_runtime != NULL || run_state == CAI_AGENT_SAMPLING ||
          run_state == CAI_AGENT_DISPATCHING_TOOL;
-  rc = cli_command_delivery(state, error);
+  rc = cli_sync_queue(state, 0, error);
   if (rc != CAI_OK)
     return rc;
   /* Softline resets its animation clock/frame on every setter call, even
@@ -1838,13 +1820,11 @@ static int cli_timer_wakeup(sl_t *sl, const sl_watch_event_t *event,
   return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
 }
 
-/* One native queue, three delivery boundaries: local inspections between
- * feeds, steering at synchronized model/tool seams, and ordinary FIFO turns
- * through Softline's busy lifecycle. Editing and approval retain ownership. */
+/* Only eligible independent inspections and seam steers are owner-consumed.
+ * All ordinary turns and whole-turn commands use native next_prompt delivery.
+ */
 static int cli_messages_process(cli_state *state, int at_boundary,
                                 cai_error *error) {
-  cai_agent_runtime_metrics metrics;
-  cai_agent_run_state run_state;
   sl_prompt_queue_entry_info_t info;
   size_t index;
   char *text;
@@ -1852,86 +1832,24 @@ static int cli_messages_process(cli_state *state, int at_boundary,
   if (state->exit_requested || state->batch || state->runtime == NULL)
     return CAI_OK;
   rc = cai_cli_messages_sync(state->messages, state->sl, error);
-  if (rc != CAI_OK)
-    return rc;
-  rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
   if (rc == CAI_OK)
-    rc = cai_agent_runtime_state(state->runtime, &run_state, error);
+    rc = cli_sync_queue(state, at_boundary, error);
   if (rc != CAI_OK)
     return rc;
   for (index = 0U; index < sl_prompt_queue_count(state->sl);) {
     if (sl_prompt_queue_info(state->sl, index, &info) != SL_OK)
       return cai_cli_error(error, CAI_ERR_TRANSPORT, "inspect queued prompt");
-    if (info.held) {
+    if (!info.eligible) {
       index++;
       continue;
     }
     text = NULL;
     if (sl_prompt_queue_peek(state->sl, index, &text) != SL_OK)
       return cai_cli_error(error, CAI_ERR_TRANSPORT,
-                           "read approved queued prompt");
-    /* Empty Alt-Enter can promote the newest native entry to STEER without
-     * visiting the draft key hook. Idle-only commands still require a whole
-     * turn boundary; retain them instead of consuming them at a tool seam.
-     */
-    if (cli_command_at_turn_boundary(text) &&
-        info.mode == SL_PROMPT_QUEUE_MODE_STEER) {
-      if (sl_prompt_queue_set_mode(state->sl, index,
-                                   SL_PROMPT_QUEUE_MODE_QUEUED) != SL_OK) {
-        sl_free_string(state->sl, text);
-        return CAI_ERR_TRANSPORT;
-      }
-      info.mode = SL_PROMPT_QUEUE_MODE_QUEUED;
-    }
-    local = cli_command_at_feed_boundary(text) || cli_is_yolo(text);
-    if (cli_is_yolo(text)) {
-      int requested, effective, ready;
-      if (cli_yolo_value(text, &requested)) {
-        /* Ordinary changes use native FIFO release, including its stopped
-         * state after Esc. Only explicit steers are taken by this consumer. */
-        if (info.mode == SL_PROMPT_QUEUE_MODE_QUEUED) {
-          sl_free_string(state->sl, text);
-          index++;
-          continue;
-        }
-        rc = cai_agent_runtime_get_yolo(state->runtime, &effective, &ready,
-                                        error);
-        if (rc == CAI_OK && requested != effective && !ready) {
-          sl_free_string(state->sl, text);
-          index++;
-          continue;
-        }
-        if (rc != CAI_OK) {
-          sl_free_string(state->sl, text);
-          return rc;
-        }
-      }
-    }
-    if (!local && info.mode == SL_PROMPT_QUEUE_MODE_STEER &&
-        !state->options.subagent_steering &&
-        (state->review_runtime != NULL || state->foreground_subagent)) {
-      if (sl_prompt_queue_set_mode(state->sl, index,
-                                   SL_PROMPT_QUEUE_MODE_QUEUED) != SL_OK) {
-        sl_free_string(state->sl, text);
-        return cai_cli_error(error, CAI_ERR_TRANSPORT, "queue parent prompt");
-      }
-      info.mode = SL_PROMPT_QUEUE_MODE_QUEUED;
-    }
-    if (!local &&
-        (info.mode == SL_PROMPT_QUEUE_MODE_QUEUED || state->shell.pid > 0)) {
-      sl_free_string(state->sl, text);
-      index++;
-      continue;
-    }
-    if (!local && !at_boundary) {
-      if (state->review_runtime == NULL && !metrics.turn_active &&
-          !state->awaiting_turn && run_state != CAI_AGENT_SAMPLING &&
-          run_state != CAI_AGENT_DISPATCHING_TOOL &&
-          sl_prompt_queue_set_mode(state->sl, index,
-                                   SL_PROMPT_QUEUE_MODE_QUEUED) != SL_OK) {
-        sl_free_string(state->sl, text);
-        return cai_cli_error(error, CAI_ERR_TRANSPORT, "promote idle steering");
-      }
+                           "read eligible queued prompt");
+    local = cli_command_at_feed_boundary(text);
+    if (!local && (!at_boundary || info.mode != SL_PROMPT_QUEUE_MODE_STEER ||
+                   cli_command_at_turn_boundary(text))) {
       sl_free_string(state->sl, text);
       index++;
       continue;
@@ -1940,16 +1858,14 @@ static int cli_messages_process(cli_state *state, int at_boundary,
       char *taken = NULL;
       int handled;
       sl_free_string(state->sl, text);
-      /* The eligible boundary depends on the command, not its Q/S label.
-       * Never send commands to the model as steering text, or abort a turn
-       * on a command validation error.
-       */
       if (sl_prompt_queue_take(state->sl, index, &taken) != SL_OK)
-        return cai_cli_error(error, CAI_ERR_TRANSPORT, "take queued command");
-      rc = cli_dispatch_command(state, taken, error, &handled);
-      sl_free_string(state->sl, taken);
+        return cai_cli_error(error, CAI_ERR_TRANSPORT, "take eligible command");
+      /* Acceptance removes this native identity. A command can reopen the
+       * session/messages context, so settle its originating inbox first. */
+      rc = cai_cli_messages_consumed(state->messages, info.id, error);
       if (rc == CAI_OK)
-        rc = cai_cli_messages_consumed(state->messages, info.id, error);
+        rc = cli_dispatch_command(state, taken, error, &handled);
+      sl_free_string(state->sl, taken);
       if (rc != CAI_OK) {
         cli_print_error(state, "input", error);
         if (rc == CAI_ERR_TRANSPORT || rc == CAI_ERR_NOMEM ||
@@ -1960,33 +1876,33 @@ static int cli_messages_process(cli_state *state, int at_boundary,
       }
       if (state->exit_requested)
         return sl_cancel(state->sl) == SL_OK ? CAI_OK : CAI_ERR_TRANSPORT;
-      continue;
-    }
-    rc = cai_agent_runtime_submit_steering(state->runtime, text, error);
-    if (rc == CAI_OK) {
-      char *taken = NULL;
-      if (sl_prompt_queue_take(state->sl, index, &taken) != SL_OK)
-        rc = cai_cli_error(error, CAI_ERR_TRANSPORT, "take delivered steering");
-      else {
-        sl_free_string(state->sl, taken);
-        rc = cai_cli_messages_consumed(state->messages, info.id, error);
+    } else {
+      rc = cai_agent_runtime_submit_steering(state->runtime, text, error);
+      sl_free_string(state->sl, text);
+      if (rc == CAI_ERR_INVALID || rc == CAI_ERR_LIMIT) {
+        /* A launching child or full runtime can briefly reject admission.
+         * Keep the original native entry, including its approval and ID. */
+        cai_error_cleanup(error);
+        cai_error_init(error);
+        break;
       }
+      if (rc != CAI_OK)
+        return rc;
+      if (sl_prompt_queue_take(state->sl, index, &text) != SL_OK)
+        return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                             "take delivered steering");
+      sl_free_string(state->sl, text);
+      rc = cai_cli_messages_consumed(state->messages, info.id, error);
+      if (rc != CAI_OK)
+        return rc;
     }
-    sl_free_string(state->sl, text);
-    if (info.mode == SL_PROMPT_QUEUE_MODE_STEER &&
-        (rc == CAI_ERR_INVALID || rc == CAI_ERR_LIMIT)) {
-      /* A launching/finishing/compacting child can briefly have no steerable
-       * seam, or admission can be full. Leave native queued input editable
-       * and retry on the next event.
-       */
-      cai_error_cleanup(error);
-      cai_error_init(error);
-      return CAI_OK;
-    }
+    /* Dispatch can start work or reopen the runtime. Refresh all remaining
+     * execution holds before inspecting the next native identity. */
+    rc = cli_sync_queue(state, at_boundary, error);
     if (rc != CAI_OK)
       return rc;
   }
-  return cli_command_delivery(state, error);
+  return cli_sync_queue(state, 0, error);
 }
 static int cli_message_wakeup(sl_t *sl, const sl_watch_event_t *event,
                               void *context) {
@@ -2726,7 +2642,6 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
     rc = cli_sync_status(state, error);
   }
   if (rc == CAI_OK && state->interactive) {
-    state->queue_delivery_manual = state->command_delivery_held = 0;
     if (sl_set_auto_approval(state->sl, state->options.enable_auto_enqueue) !=
             SL_OK ||
         sl_set_prompt_queue_delivery(state->sl,
@@ -4823,12 +4738,12 @@ static int cli_advance_automation(cli_state *state, cai_error *error) {
     sl_prompt_queue_entry_info_t info;
     if (sl_prompt_queue_draft_info(state->sl, &info) != SL_OK)
       return CAI_ERR_TRANSPORT;
-    if (info.id != 0 && !info.held)
+    if (info.id != 0 && !info.held && !info.stopped)
       return CAI_OK;
     for (index = 0U; index < sl_prompt_queue_count(state->sl); index++) {
       if (sl_prompt_queue_info(state->sl, index, &info) != SL_OK)
         return CAI_ERR_TRANSPORT;
-      if (!info.held)
+      if (!info.held && !info.stopped)
         return CAI_OK;
     }
   }
@@ -5029,6 +4944,7 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   cai_error error;
   sl_readline_status_t prompt_status;
   sl_prompt_source_t prompt_source;
+  sl_prompt_id_t prompt_id;
   char auth_path[PATH_MAX];
   const char *auth_file;
   char *metadata_json;
@@ -5371,10 +5287,8 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   if (state.interactive) {
     if (sl_set_prompt_queue_profile(
             state.sl, SL_PROMPT_QUEUE_PROFILE_QUEUED_TURNS) != SL_OK ||
-        sl_bind_key(state.sl, SL_KEY_ENTER, cli_editor_key, &state) != SL_OK ||
-        sl_bind_key(state.sl, SL_KEY_ALT_ENTER, cli_editor_key, &state) !=
+        sl_set_prompt_queue_policy(state.sl, cli_prompt_policy, &state) !=
             SL_OK ||
-        sl_bind_key(state.sl, SL_KEY_TAB, cli_editor_key, &state) != SL_OK ||
         sl_bind_key(state.sl, SL_KEY_ALT_BASE + 's', cli_shell_editor_key,
                     &state) != SL_OK ||
         sl_bind_key(state.sl, SL_KEY_ALT_BASE + 'q', cli_draft_quit_key,
@@ -5622,30 +5536,23 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
       break;
     }
     if (line[0] != '\0') {
-      rc = cli_dispatch_command(&state, line, &error, &handled);
+      prompt_id = sl_last_prompt_id(state.sl);
+      rc = line[0] == '/' || line[0] == '!'
+               ? cai_cli_messages_consumed(state.messages, prompt_id, &error)
+               : CAI_OK;
+      if (rc == CAI_OK)
+        rc = cli_dispatch_command(&state, line, &error, &handled);
       if (rc == CAI_OK && !handled) {
         if (prompt_source == SL_PROMPT_SOURCE_QUEUED ||
-            cai_cli_messages_is_message(state.messages,
-                                        sl_last_prompt_id(state.sl)))
+            cai_cli_messages_is_message(state.messages, prompt_id))
           rc = cai_agent_runtime_submit_queued(state.runtime, line, &error);
         else
           rc =
               cai_agent_runtime_submit_interactive(state.runtime, line, &error);
         if (rc == CAI_OK)
-          rc = cai_cli_messages_consumed(state.messages,
-                                         sl_last_prompt_id(state.sl), &error);
+          rc = cai_cli_messages_consumed(state.messages, prompt_id, &error);
       }
       if (rc != CAI_OK) {
-        if (!handled && prompt_source == SL_PROMPT_SOURCE_QUEUED) {
-          sl_prompt_id_t replacement;
-          sl_prompt_id_t previous = sl_last_prompt_id(state.sl);
-          if (sl_prompt_queue_insert(state.sl, 0U, line, 0, &replacement) ==
-              SL_OK)
-            cai_cli_messages_rebind(state.messages, previous, replacement);
-          (void)sl_set_prompt_queue_delivery(state.sl,
-                                             SL_PROMPT_QUEUE_DELIVERY_MANUAL);
-          state.queue_delivery_manual = 1;
-        }
         cli_print_error(&state, "input", &error);
         if (state.runtime == NULL || state.exit_requested) {
           sl_free_string(state.sl, line);

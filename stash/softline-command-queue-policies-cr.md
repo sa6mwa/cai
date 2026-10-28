@@ -1,6 +1,9 @@
 # Change request: native queue policies for agent commands
 
-Status: proposal for upstream Softline; no dependency patch is included here.
+Status: implemented upstream in Softline 0.14.0 and integrated into libcai_app.
+CAI uses `sl_set_prompt_queue_policy`, `sl_prompt_queue_set_executable` and
+native `eligible`/`stopped` inspection. The requirements and 0.13.0 diagnosis
+below are retained as historical design context; no dependency patch is used.
 Reference: Softline v0.13.0 public C API, implementation and `examples/chat.c`.
 Relevant upstream sources: [queue implementation](https://github.com/sa6mwa/softline/blob/v0.13.0/src/softline.c)
 and [chat example](https://github.com/sa6mwa/softline/blob/v0.13.0/examples/chat.c).
