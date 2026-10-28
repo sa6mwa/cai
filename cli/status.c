@@ -1,18 +1,21 @@
 #define _POSIX_C_SOURCE 200809L
+#define _XOPEN_SOURCE 700
 
 #include "status.h"
 
+#include <errno.h>
 #include <fcntl.h>
-#include <spawn.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
-#include <sys/wait.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
-extern char **environ;
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 enum {
   FIELD_MODEL,
@@ -88,7 +91,8 @@ const char *cai_cli_status_fields_parse(const char *text,
   return NULL;
 }
 
-static void cai_cli_status_copy(char *out, size_t capacity, const char *text) {
+static void status_copy(char *out, size_t capacity, const char *text,
+                        int branch) {
   size_t i;
   size_t written;
   if (text == NULL) {
@@ -135,6 +139,19 @@ static void cai_cli_status_copy(char *out, size_t capacity, const char *text) {
       i++;
       continue;
     }
+    if (branch && ((codepoint >= 0x80U && codepoint <= 0x9fU) ||
+                   codepoint == 0xadU || codepoint == 0x61cU ||
+                   (codepoint >= 0x200bU && codepoint <= 0x200fU) ||
+                   (codepoint >= 0x2028U && codepoint <= 0x202eU) ||
+                   (codepoint >= 0x2060U && codepoint <= 0x206fU) ||
+                   codepoint == 0xfeffU)) {
+      if (written + 6U >= capacity)
+        break;
+      snprintf(out + written, capacity - written, "\\u%04x", codepoint);
+      written += 6U;
+      i += sequence;
+      continue;
+    }
     if (codepoint >= 0x80U && codepoint <= 0x9fU) {
       out[written++] = ' ';
       i += sequence;
@@ -148,6 +165,10 @@ static void cai_cli_status_copy(char *out, size_t capacity, const char *text) {
     i += sequence;
   }
   out[written] = '\0';
+}
+
+static void cai_cli_status_copy(char *out, size_t capacity, const char *text) {
+  status_copy(out, capacity, text, 0);
 }
 
 void cai_cli_status_init(cai_cli_status *status, const char *workspace,
@@ -190,85 +211,161 @@ void cai_cli_status_init(cai_cli_status *status, const char *workspace,
   cai_cli_status_refresh_branch(status, workspace);
 }
 
+static int status_git_path(char *out, const char *directory, const char *name) {
+  int count = snprintf(out, PATH_MAX, "%s%s%s", directory,
+                       strcmp(directory, "/") == 0 ? "" : "/", name);
+  return count >= 0 && count < PATH_MAX;
+}
+
+/* Only small regular metadata files are read. Nonblocking open also avoids
+ * hanging the UI if a broken repository replaces HEAD/gitfile with a FIFO. */
+static int status_git_line(const char *path, char *out, size_t capacity) {
+  struct stat info;
+  size_t used = 0U;
+  ssize_t count = 0;
+  int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+  if (fd < 0)
+    return 0;
+  if (fstat(fd, &info) != 0 || !S_ISREG(info.st_mode)) {
+    close(fd);
+    return 0;
+  }
+  while (used + 1U < capacity) {
+    count = read(fd, out + used, capacity - used - 1U);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      break;
+    used += (size_t)count;
+  }
+  close(fd);
+  if (count < 0 || used + 1U == capacity || memchr(out, '\0', used) != NULL)
+    return 0;
+  while (used != 0U && (out[used - 1U] == '\n' || out[used - 1U] == '\r'))
+    used--;
+  out[used] = '\0';
+  return used != 0U && strpbrk(out, "\r\n") == NULL;
+}
+
+static void status_git_head(cai_cli_status *status, const char *directory) {
+  static const char prefix[] = "ref: refs/heads/";
+  char path[PATH_MAX], line[PATH_MAX];
+  const unsigned char *p;
+  if (!status_git_path(path, directory, "HEAD") ||
+      !status_git_line(path, line, sizeof(line)) ||
+      strncmp(line, prefix, sizeof(prefix) - 1U) != 0 ||
+      line[sizeof(prefix) - 1U] == '\0')
+    return;
+  for (p = (const unsigned char *)line + sizeof(prefix) - 1U; *p; p++)
+    if (*p <= 32U || *p == 127U || strchr("~^:?*[\\", *p) != NULL)
+      return;
+  status_copy(status->branch, sizeof(status->branch),
+              line + sizeof(prefix) - 1U, 1);
+}
+
+static int status_git_ceiling(const char *directory) {
+  const char *entry = getenv("GIT_CEILING_DIRECTORIES"), *end;
+  size_t length = strlen(directory);
+  while (entry != NULL && *entry != '\0') {
+    end = strchr(entry, ':');
+    if ((end != NULL ? (size_t)(end - entry) : strlen(entry)) == length &&
+        strncmp(directory, entry, length) == 0)
+      return 1;
+    entry = end != NULL ? end + 1U : NULL;
+  }
+  return 0;
+}
+
+static void status_git_discover(cai_cli_status *status, const char *workspace) {
+  char directory[PATH_MAX], marker[PATH_MAX], line[PATH_MAX];
+  char *parent;
+  const char *explicit_directory = getenv("GIT_DIR");
+  struct stat info;
+  status->branch[0] = '\0';
+  if (workspace == NULL || realpath(workspace, directory) == NULL)
+    return;
+  if (explicit_directory != NULL && explicit_directory[0] != '\0') {
+    if (explicit_directory[0] == '/')
+      status_git_head(status, explicit_directory);
+    else if (status_git_path(marker, directory, explicit_directory))
+      status_git_head(status, marker);
+    return;
+  }
+  for (;;) {
+    if (!status_git_path(marker, directory, ".git"))
+      return;
+    if (lstat(marker, &info) == 0) {
+      if (stat(marker, &info) != 0)
+        return;
+      if (S_ISDIR(info.st_mode))
+        status_git_head(status, marker);
+      else if (S_ISREG(info.st_mode) &&
+               status_git_line(marker, line, sizeof(line)) &&
+               strncmp(line, "gitdir: ", 8U) == 0) {
+        if (line[8] == '/')
+          status_git_head(status, line + 8U);
+        else if (line[8] != '\0' &&
+                 status_git_path(marker, directory, line + 8U))
+          status_git_head(status, marker);
+      }
+      return;
+    }
+    if (errno != ENOENT && errno != ENOTDIR)
+      return;
+    /* Bare repositories have HEAD, objects and refs directly in this folder. */
+    if (status_git_path(marker, directory, "objects") &&
+        stat(marker, &info) == 0 && S_ISDIR(info.st_mode) &&
+        status_git_path(marker, directory, "refs") &&
+        stat(marker, &info) == 0 && S_ISDIR(info.st_mode) &&
+        status_git_path(marker, directory, "HEAD") &&
+        stat(marker, &info) == 0 && S_ISREG(info.st_mode)) {
+      status_git_head(status, directory);
+      return;
+    }
+    if (strcmp(directory, "/") == 0)
+      return;
+    parent = strrchr(directory, '/');
+    if (parent == directory)
+      directory[1] = '\0';
+    else
+      *parent = '\0';
+    if (status_git_ceiling(directory))
+      return;
+  }
+}
+
+int cai_cli_status_refresh_branch_at(cai_cli_status *status,
+                                     const char *workspace,
+                                     long long monotonic_ms, int force) {
+  if (!force && status->branch_checked &&
+      (monotonic_ms < status->branch_checked_ms ||
+       monotonic_ms - status->branch_checked_ms < 60000LL))
+    return 0;
+  status_git_discover(status, workspace);
+  status->branch_checked_ms = monotonic_ms;
+  status->branch_checked = 1;
+  return 1;
+}
+
+static void status_branch_refresh(cai_cli_status *status, const char *workspace,
+                                  int force) {
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) == 0)
+    (void)cai_cli_status_refresh_branch_at(
+        status, workspace,
+        (long long)now.tv_sec * 1000LL + now.tv_nsec / 1000000L, force);
+  else if (force)
+    status_git_discover(status, workspace);
+}
+
 void cai_cli_status_refresh_branch(cai_cli_status *status,
                                    const char *workspace) {
-  int descriptors[2];
-  pid_t child;
-  ssize_t count;
-  int wait_status;
-  int action_status;
-  posix_spawn_file_actions_t actions;
-  char *workspace_arg;
-  char git[] = "git";
-  char flag_c[] = "-C";
-  char symbolic_ref[] = "symbolic-ref";
-  char quiet[] = "--quiet";
-  char short_flag[] = "--short";
-  char head[] = "HEAD";
-  char *arguments[8];
-  char branch[sizeof(status->branch)];
-  status->branch[0] = '\0';
-  if (pipe(descriptors) != 0) {
-    return;
-  }
-  workspace_arg = strdup(workspace);
-  if (workspace_arg == NULL) {
-    close(descriptors[0]);
-    close(descriptors[1]);
-    return;
-  }
-  arguments[0] = git;
-  arguments[1] = flag_c;
-  arguments[2] = workspace_arg;
-  arguments[3] = symbolic_ref;
-  arguments[4] = quiet;
-  arguments[5] = short_flag;
-  arguments[6] = head;
-  arguments[7] = NULL;
-  if (posix_spawn_file_actions_init(&actions) != 0) {
-    free(workspace_arg);
-    close(descriptors[0]);
-    close(descriptors[1]);
-    return;
-  }
-  action_status =
-      posix_spawn_file_actions_adddup2(&actions, descriptors[1], STDOUT_FILENO);
-  if (action_status == 0) {
-    action_status = posix_spawn_file_actions_addclose(&actions, descriptors[0]);
-  }
-  if (action_status == 0) {
-    action_status = posix_spawn_file_actions_addclose(&actions, descriptors[1]);
-  }
-  if (action_status == 0) {
-    action_status = posix_spawn_file_actions_addopen(&actions, STDERR_FILENO,
-                                                     "/dev/null", O_WRONLY, 0);
-  }
-  if (action_status != 0) {
-    posix_spawn_file_actions_destroy(&actions);
-    free(workspace_arg);
-    close(descriptors[0]);
-    close(descriptors[1]);
-    return;
-  }
-  wait_status = posix_spawnp(&child, git, &actions, NULL, arguments, environ);
-  posix_spawn_file_actions_destroy(&actions);
-  free(workspace_arg);
-  close(descriptors[1]);
-  if (wait_status != 0) {
-    close(descriptors[0]);
-    return;
-  }
-  count = read(descriptors[0], branch, sizeof(branch) - 1U);
-  close(descriptors[0]);
-  if (waitpid(child, &wait_status, 0) != child || !WIFEXITED(wait_status) ||
-      WEXITSTATUS(wait_status) != 0 || count <= 0) {
-    return;
-  }
-  branch[count] = '\0';
-  if (branch[count - 1] == '\n') {
-    branch[count - 1] = '\0';
-  }
-  cai_cli_status_copy(status->branch, sizeof(status->branch), branch);
+  status_branch_refresh(status, workspace, 1);
+}
+
+void cai_cli_status_maybe_refresh_branch(cai_cli_status *status,
+                                         const char *workspace) {
+  status_branch_refresh(status, workspace, 0);
 }
 
 void cai_cli_status_build(cai_cli_status *status, const char *model,

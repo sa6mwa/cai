@@ -29,9 +29,14 @@ to start a new session.
 .SH OPTIONS
 .TP
 .BI \-\-status-fields " FIELDS"
-Colon-separated status fields, default model:ctx:dir:weekly:crd:yolo:goal.
-The default token expands this list; provider:default:branch prepends the
-provider and appends the Git branch. Aliases: context=ctx,
+Colon-separated status fields, default model:ctx:dir:branch:weekly:crd:yolo:goal.
+The Git branch follows the directory and is omitted when unavailable, including
+outside Git repositories or with detached HEAD. Native metadata discovery
+supports ancestor repositories and linked worktrees without launching Git.
+Labels are literal sanitized UTF-8. Startup resolves once; tool/turn and shell
+boundaries use a 60-second debounce, with no idle polling. Explicit /status
+refreshes immediately. The default token expands this list; provider:default
+prepends the provider. Aliases: context=ctx,
 directory/folder/workspace=dir, w=weekly, credits=crd. Duplicate fields keep
 their first position. Names are lowercase. Unavailable values are hidden;
 yolo displays only YOLO while enabled. weekly includes shorter quota windows

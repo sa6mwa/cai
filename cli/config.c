@@ -147,12 +147,13 @@ static const cli_field fields[] = {
       "and default pairings. plain selects plain:ascii (non-colored "
       "Markdown)."),
     S("ui", "status_fields", status_fields, 0U,
-      "Colon-separated status order: model, ctx, dir, weekly, crd, yolo, "
-      "goal, branch, provider. default expands "
-      "model:ctx:dir:weekly:crd:yolo:goal. "
+      "Colon-separated status order: model, ctx, dir, branch, weekly, crd, "
+      "yolo, goal, provider. default expands "
+      "model:ctx:dir:branch:weekly:crd:yolo:goal. "
       "Aliases: context=ctx, directory/folder/workspace=dir, w=weekly, "
       "credits=crd. Duplicates keep their first position. Missing values and "
-      "YOLO when disabled are hidden. weekly includes short quota windows "
+      "YOLO when disabled are hidden. branch is hidden without a Git branch. "
+      "weekly includes short quota windows "
       "or the API cost estimate."),
     {"ui", "todo_layout", offsetof(cai_cli_options, todo_layout),
      CAI_CONFIG_STRING, 0U, "board|list",

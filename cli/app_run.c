@@ -782,6 +782,7 @@ static int cli_shell_pump(cli_state *state, cai_error *error) {
              (double)cai_cli_shell_elapsed(&state->shell) / 1000.0);
     cli_shell_unwatch(state);
     cai_cli_shell_close(&state->shell);
+    cai_cli_status_maybe_refresh_branch(&state->status, state->workspace);
     if (cli_markdown(state, message) != 0)
       return cai_cli_error(error, CAI_ERR_TRANSPORT,
                            "cannot display shell completion");
@@ -1232,7 +1233,7 @@ static int cli_terminal_shell(cli_state *state, int share, cai_error *error) {
         error, CAI_ERR_TRANSPORT,
         "restore application terminal after interactive shell");
   }
-  cai_cli_status_refresh_branch(&state->status, state->workspace);
+  cai_cli_status_maybe_refresh_branch(&state->status, state->workspace);
   if (share) {
     rc = cai_agent_runtime_user_shell_finish(
         state->runtime,
@@ -1428,6 +1429,15 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     }
   }
   cli_log_event(state, event);
+  if (state->interactive &&
+      (event->type == CAI_AGENT_EVENT_RUN_STARTED ||
+       event->type == CAI_AGENT_EVENT_RUN_COMPLETED ||
+       event->type == CAI_AGENT_EVENT_RUN_FAILED ||
+       event->type == CAI_AGENT_EVENT_RUN_CANCELLED ||
+       event->type == CAI_AGENT_EVENT_TOOL_CALL_COMPLETED ||
+       event->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED ||
+       event->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED))
+    cai_cli_status_maybe_refresh_branch(&state->status, state->workspace);
   if (event->type == CAI_AGENT_EVENT_INPUT_BOUNDARY) {
     int rc = cli_host_process(state, error);
     return rc != CAI_OK ? rc : cli_messages_process(state, 1, error);
@@ -1739,7 +1749,6 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
       return CAI_ERR_TRANSPORT;
     state->was_busy = busy;
     if (!busy) {
-      cai_cli_status_refresh_branch(&state->status, state->workspace);
       cli_refresh_quota(state, 0);
     }
   }
@@ -4418,6 +4427,7 @@ static int cli_handle_command(cli_state *state, const char *line,
     int yolo, pending_yolo, has_pending_yolo;
     const char *model = state->options.model;
     const char *effort = state->options.reasoning_effort;
+    cai_cli_status_refresh_branch(&state->status, state->workspace);
     memset(&settings, 0, sizeof(settings));
     cai_error_init(&optional_error);
     if (cai_agent_runtime_get_settings(state->runtime, &settings, NULL,

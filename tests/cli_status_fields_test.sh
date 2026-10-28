@@ -10,15 +10,18 @@ for value in '' ':model' 'model:' 'model::ctx' bogus; do
 done
 run --status-fields; bad; contains "$root/stderr" 'requires a value'
 peer_start
+export GIT_CEILING_DIRECTORIES="$root"
 width=220
-selection_args=(--status-fields provider:default:branch)
+selection_args=(--status-fields provider:default)
 if [[ "$scope" == host ]]; then
-  export CAI_TEST_APP_STATUS_FIELDS=provider:default:branch
+  export CAI_TEST_APP_STATUS_FIELDS=provider:default
   selection_args=()
 fi
 terminal_start -N "${selection_args[@]}" --no-yolo
 # The message file is the terminal's current sticky rows, not redraw history.
 wait_for has "$term/message" 'custom : gpt-5.6-luna medium : ctx --'
+contains "$term/message" 'ctx -- : ~/work : cost ?$'
+absent "$term/message" ' :  : '
 absent "$term/message" YOLO
 send '/yolo on\r'; expect 'YOLO enabled.'
 wait_for has "$term/message" 'YOLO'
@@ -27,12 +30,22 @@ no_yolo() { ! grep -Fq YOLO "$term/message"; }
 wait_for no_yolo
 [[ $(requests) == 0 ]]
 terminal_close
+git init --quiet --initial-branch=feature/status-branch "$work"
+terminal_start -N "${selection_args[@]}" --no-yolo
+wait_for has "$term/message" 'ctx -- : ~/work : feature/status-branch : cost ?$'
+git -C "$work" symbolic-ref HEAD refs/heads/feature/updated
+send '/goal\r'; expect 'No goal.'
+contains "$term/message" 'feature/status-branch'
+send '/status\r'; expect 'Metric'
+wait_for has "$term/message" 'ctx -- : ~/work : feature/updated : cost ?$'
+[[ $(requests) == 0 ]]
+terminal_close
 if [[ "$scope" == host ]]; then
   unset CAI_TEST_APP_STATUS_FIELDS
   export CAI_TEST_APP_NAME=smith SMITH_STATUS_FIELDS=bogus
   run --no-config --list; bad; contains "$root/stderr" status_fields
   run --no-config --status-fields model --list; ok
   run --dump-config "$root/smith-defaults.ini"; ok
-  contains "$root/smith-defaults.ini" '# status_fields = "model:ctx:dir:weekly:crd:yolo:goal"'
+  contains "$root/smith-defaults.ini" '# status_fields = "model:ctx:dir:branch:weekly:crd:yolo:goal"'
   contains "$root/smith-defaults.ini" "# config_dir = \"$root/config/smith\""
 fi

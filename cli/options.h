@@ -4,7 +4,8 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#define CAI_CLI_STATUS_DEFAULT_FIELDS "model:ctx:dir:weekly:crd:yolo:goal"
+#define CAI_CLI_STATUS_DEFAULT_FIELDS                                          \
+  "model:ctx:dir:branch:weekly:crd:yolo:goal"
 
 typedef struct cai_cli_options {
   const char *program_name;

@@ -6,7 +6,7 @@ run --help; ok; contains "$root/stdout" --config; [[ ! -e "$config" ]]
 run --version; ok; [[ ! -e "$config" ]]
 run --dump-config; ok; [[ ! -e "$config" && ! -e "$root/state" && ! -e "$root/cache" ]]
 contains "$root/stdout" '## Configuration.'
-contains "$root/stdout" '# status_fields = "model:ctx:dir:weekly:crd:yolo:goal"'
+contains "$root/stdout" '# status_fields = "model:ctx:dir:branch:weekly:crd:yolo:goal"'
 contains "$root/stdout" "# agents_md = \"$root/config/cai/AGENTS.md\""
 cp "$root/stdout" "$root/default.ini"
 printf 'invalid config!\n' >"$root/broken.ini"
@@ -60,7 +60,7 @@ contains "$config" "# export_dir = \"$root/data/cai/exports\""
 contains "$config" '# tool_output = "compact"'
 contains "$config" '# todo_layout = "board"'
 contains "$config" '# replay_turns = 20'
-contains "$config" '# status_fields = "model:ctx:dir:weekly:crd:yolo:goal"'
+contains "$config" '# status_fields = "model:ctx:dir:branch:weekly:crd:yolo:goal"'
 contains "$config" '# subagent_steering = true'
 contains "$config" '[messaging]'
 contains "$config" '# default_board = "default"'

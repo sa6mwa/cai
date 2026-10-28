@@ -320,6 +320,10 @@
       softline::softline_static)
     cai_configure_cli_target(cai_cli_status_test)
     add_test(NAME cai_cli_status COMMAND cai_cli_status_test)
+    add_test(NAME cai_cli_branch COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_branch_test.sh"
+      "$<TARGET_FILE:cai_cli_status_test>")
+    set_tests_properties(cai_cli_branch PROPERTIES TIMEOUT 10)
     add_test(NAME cai_cli_status_fields COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_status_fields_test.sh"
       "$<TARGET_FILE:cai_cli_mock_fixture>")

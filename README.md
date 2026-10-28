@@ -676,9 +676,15 @@ the effective initial delay must not exceed the maximum delay.
 
 Configure the status order with `--status-fields FIELDS`, `CAI_STATUS_FIELDS`,
 or `[ui] status_fields` in `config.ini` (also available through libcai_app's
-C/Lua settings). The default is `model:ctx:dir:weekly:crd:yolo:goal`.
-`default` expands that list: `--status-fields provider:default:branch`
-prepends the provider and appends the Git branch. Aliases are `context` for
+C/Lua settings). The default is `model:ctx:dir:branch:weekly:crd:yolo:goal`.
+The Git branch appears after the directory and is omitted when unavailable,
+including outside Git repositories or with detached HEAD. Discovery reads Git
+metadata in-process, including ancestor repositories and linked worktrees;
+it does not launch Git. Labels are literal, safely truncated UTF-8 with terminal
+and direction/format controls rejected or escaped. Discovery runs at startup,
+then at tool/turn or user-shell boundaries with a 60-second debounce. There is
+no idle polling; explicit `/status` refreshes immediately. `default` expands that list:
+`--status-fields provider:default` prepends the provider. Aliases are `context` for
 `ctx`, `directory`/`folder`/`workspace` for `dir`, `w` for `weekly`, and
 `credits` for `crd`. Names are lowercase; duplicates keep their first position.
 Unavailable values are omitted. `weekly` includes any short quota window,

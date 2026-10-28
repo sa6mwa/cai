@@ -69,6 +69,63 @@ static int test_ids(void) {
   return failures;
 }
 
+static int test_debounce(const char *directory) {
+  cai_cli_status status;
+  char head[4096];
+  FILE *file;
+  int failures = 0;
+  memset(&status, 0, sizeof(status));
+  if (snprintf(head, sizeof(head), "%s/.git/HEAD", directory) >=
+      (int)sizeof(head))
+    return 1;
+  failures +=
+      check(cai_cli_status_refresh_branch_at(&status, directory, 0LL, 1) == 1 &&
+                strcmp(status.branch, "main") == 0,
+            "startup resolves branch");
+  file = fopen(head, "w");
+  if (file == NULL)
+    return 1;
+  fputs("ref: refs/heads/changed\n", file);
+  if (fclose(file) != 0)
+    return 1;
+  failures += check(
+      cai_cli_status_refresh_branch_at(&status, directory, 59999LL, 0) == 0 &&
+          strcmp(status.branch, "main") == 0,
+      "work boundaries debounce changes for sixty seconds");
+  failures += check(
+      cai_cli_status_refresh_branch_at(&status, directory, 60000LL, 0) == 1 &&
+          strcmp(status.branch, "changed") == 0,
+      "next eligible work boundary refreshes branch");
+  file = fopen(head, "w");
+  if (file == NULL)
+    return 1;
+  fputs("detached or broken\n", file);
+  if (fclose(file) != 0)
+    return 1;
+  failures += check(
+      cai_cli_status_refresh_branch_at(&status, directory, 60001LL, 1) == 1 &&
+          status.branch[0] == '\0',
+      "explicit status bypasses debounce and clears stale labels");
+  file = fopen(head, "w");
+  if (file == NULL)
+    return 1;
+  fputs("ref: refs/heads/available-again\n", file);
+  if (fclose(file) != 0)
+    return 1;
+  failures += check(
+      cai_cli_status_refresh_branch_at(&status, directory, 120000LL, 0) == 0 &&
+          status.branch[0] == '\0',
+      "missing branches are debounced too");
+  failures += check(
+      cai_cli_status_refresh_branch_at(&status, directory, 120001LL, 0) == 1 &&
+          strcmp(status.branch, "available-again") == 0,
+      "branch can reappear at the next work boundary");
+  failures +=
+      check(cai_cli_status_refresh_branch_at(&status, directory, 1LL, 0) == 0,
+            "backward clocks do not cause repeated lookups");
+  return failures;
+}
+
 static int test_fields(void) {
   static const char *const invalid[] = {
       NULL, "", ":model", "model:", "model::ctx", "unknown", "DEFAULT"};
@@ -95,10 +152,13 @@ static int test_fields(void) {
   cai_cli_status_build(&status, "model", "medium", NULL, 0.0, 0, &quota, 0.0,
                        0.0, "chatgpt", &goal, 1);
   failures +=
-      check(status.count == 7U && strcmp(status.elements[4], "crd 42") == 0 &&
-                strcmp(status.elements[5], "YOLO") == 0 &&
-                strcmp(status.elements[6], "goal=active 0m") == 0,
-            "default puts YOLO after credits and omits branch");
+      check(status.count == 8U && strcmp(status.elements[2], "/proc") == 0 &&
+                strcmp(status.elements[3], "branch-name") == 0 &&
+                strcmp(status.elements[4], "w 72%") == 0 &&
+                strcmp(status.elements[5], "crd 42") == 0 &&
+                strcmp(status.elements[6], "YOLO") == 0 &&
+                strcmp(status.elements[7], "goal=active 0m") == 0,
+            "default puts branch after directory and YOLO after credits");
   failures += check(cai_cli_status_fields_parse("provider:default:branch",
                                                 &status.fields) == NULL,
                     "default expansion can be prefixed and extended");
@@ -106,9 +166,17 @@ static int test_fields(void) {
                        0.0, "chatgpt", &goal, 0);
   failures +=
       check(status.count == 8U && strcmp(status.elements[0], "chatgpt") == 0 &&
-                strcmp(status.elements[6], "goal=active 0m") == 0 &&
-                strcmp(status.elements[7], "branch-name") == 0,
-            "YOLO off adds no element or separator");
+                strcmp(status.elements[4], "branch-name") == 0 &&
+                strcmp(status.elements[7], "goal=active 0m") == 0,
+            "default expansion keeps branch position without duplication");
+  cai_cli_status_refresh_branch(&status, "/proc");
+  cai_cli_status_build(&status, "model", "medium", NULL, 0.0, 0, &quota, 0.0,
+                       0.0, "chatgpt", &goal, 0);
+  failures += check(status.branch[0] == '\0' && status.count == 7U &&
+                        strcmp(status.elements[3], "/proc") == 0 &&
+                        strcmp(status.elements[4], "w 72%") == 0,
+                    "non-repository clears a stale branch without an element");
+  strcpy(status.branch, "branch-name");
   for (i = 0U; i < sizeof(aliases) / sizeof(aliases[0]); i++) {
     failures +=
         check(cai_cli_status_fields_parse(aliases[i], &status.fields) == NULL &&
@@ -155,7 +223,7 @@ static int test_fields(void) {
   return failures;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
   cai_cli_status status;
   cai_agent_goal_snapshot goal;
   cai_agent_runtime_metrics metrics;
@@ -165,6 +233,14 @@ int main(void) {
   struct tm finished_local;
   sl_t *sl;
   int failures;
+  if (argc == 3 && strcmp(argv[1], "--branch") == 0) {
+    memset(&status, 0, sizeof(status));
+    cai_cli_status_refresh_branch(&status, argv[2]);
+    puts(status.branch);
+    return 0;
+  }
+  if (argc == 3 && strcmp(argv[1], "--debounce") == 0)
+    return test_debounce(argv[2]) != 0;
   failures = test_ids() + test_fields();
   memset(&goal, 0, sizeof(goal));
   memset(&metrics, 0, sizeof(metrics));

@@ -89,8 +89,9 @@ static const cai_app_option options[] = {
     {"--theme", 't', CAI_APP_STRING, "NAME|SOFTLINE:LIBMDF",
      "Prompt/Markdown themes (default default:default)", 0, 0},
     {"--status-fields", '\0', CAI_APP_STRING, "FIELDS",
-     "Status order (model:ctx:dir:weekly:crd:yolo:goal); default expands it", 0,
-     0},
+     "Status order (model:ctx:dir:branch:weekly:crd:yolo:goal); default "
+     "expands it",
+     0, 0},
     {"--instruction", 'i', CAI_APP_STRING, "TEXT",
      "Submit a prompt (repeatable)", 1, 0},
     {"--goal", 'g', CAI_APP_STRING, "TEXT", "Start or replace a durable goal",
