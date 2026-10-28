@@ -131,15 +131,9 @@ int main(void) {
   for (action = CAI_AGENT_TOOL_ACTION_NONE;
        action <= CAI_AGENT_TOOL_ACTION_CHROME; action++) {
     memset(&c, 0, sizeof(c));
-    if (action == CAI_AGENT_TOOL_ACTION_EXECUTE ||
-        action == CAI_AGENT_TOOL_ACTION_WRITE_STDIN)
-      assert(!format(&c, "fixture", action, CAI_AGENT_EVENT_TOOL_CALL_FAILED,
-                     "literal **failure**"));
-    else {
-      assert(format(&c, "fixture", action, CAI_AGENT_EVENT_TOOL_CALL_FAILED,
-                    "literal **failure**"));
-      assert(strstr(c.text, ">     literal **failure**"));
-    }
+    assert(format(&c, "fixture", action, CAI_AGENT_EVENT_TOOL_CALL_FAILED,
+                  "literal **failure**"));
+    assert(strstr(c.text, ">     literal **failure**"));
   }
   assert(result(&c, "agent_message",
                 "{\"status\":\"delivered\",\"recipient\":\"cai.y\",\"message_"
@@ -223,8 +217,9 @@ int main(void) {
   assert(strstr(c.text, "\033[91m*\033[0m") && strstr(c.text, "MCP failed"));
   assert(strstr(c.text, ">     bad **literal** request"));
   memset(&c, 0, sizeof(c));
-  assert(!format(&c, "exec_command", CAI_AGENT_TOOL_ACTION_EXECUTE,
-                 CAI_AGENT_EVENT_TOOL_CALL_FAILED, "command failure"));
+  assert(format(&c, "exec_command", CAI_AGENT_TOOL_ACTION_EXECUTE,
+                CAI_AGENT_EVENT_TOOL_CALL_FAILED, "command failure"));
+  assert(strstr(c.text, ">     command failure"));
   memset(&c, 0, sizeof(c));
   assert(format(&c, "apply_patch", CAI_AGENT_TOOL_ACTION_PATCH,
                 CAI_AGENT_EVENT_TOOL_CALL_FAILED,

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/cli_test_common.sh"
 peer_start
+base+=(--terminal)
 mkdir -p "$root/config/cai"
 printf '[mcp.alpha]\nendpoint = %s/mcp/alpha\n' "${endpoint%/v1}" >"$root/config/cai/config.ini"
 terminal_start -N
@@ -11,6 +12,14 @@ contains "$term/text" '* MCP mcp_5_alpha_echo'
 contains "$term/text" 'Rich MCP text'
 absent "$term/text" '**Rich MCP text**'
 absent "$term/text" '"content"'
+plan '{"plan":[{"tool":"exec_command","arguments":{"cmd":"printf forbidden","workdir":"/"}},{"tool":"write_stdin","arguments":{"session_id":"missing"}},{"tool":"exec_command","arguments":{"cmd":"printf raw-command-output"}},"COMMAND DIAGNOSTICS DONE"]}'
+prompt 'exercise runner failures and real command output' 'COMMAND DIAGNOSTICS DONE'
+contains "$term/text" '* Failed exec_command'
+contains "$term/text" '> terminal workdir must resolve below workspace root'
+contains "$term/text" '* Failed write_stdin'
+contains "$term/text" '> write_stdin session_id'
+contains "$term/text" 'raw-command-output'
+absent "$term/text" '> raw-command-output'
 plan '{"mcp":{"alpha":{"call_result":{"isError":true,"content":[{"type":"text","text":"Server **literal** failure"}]}}},"plan":[{"tool":"mcp_5_alpha_echo","arguments":{"text":"fail"}},"FAILURE TURN DONE"]}'
 prompt 'exercise MCP failure' 'FAILURE TURN DONE'
 contains "$term/text" '* MCP failed mcp_5_alpha_echo'
@@ -25,6 +34,10 @@ contains "$term/text" '* MCP mcp_5_alpha_echo'
 contains "$term/text" 'Rich MCP text'
 absent "$term/text" '**Rich MCP text**'
 contains "$term/text" '> Server **literal** failure'
+contains "$term/text" '> terminal workdir must resolve below workspace root'
+contains "$term/text" '> write_stdin session_id'
+contains "$term/text" 'raw-command-output'
+absent "$term/text" '> raw-command-output'
 absent "$term/text" '"content"'
 terminal_close
 [[ $(requests) == "$before" ]]

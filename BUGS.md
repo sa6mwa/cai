@@ -5,6 +5,34 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-066: Managed Git commands can wait in an interactive pager
+
+- **Status:** observed; terminal environment policy remains to be addressed.
+- **Evidence:** session `dbgtfervs68i52ohr8gg`, 2026-10-28 at 21:58 and 21:59:
+  Git diff output enters a pager (alternate-screen controls and a `:` prompt).
+  The command remains running, so another `exec_command` fails with
+  `single terminal already has a running command`. The reviewer exits its
+  pager using `write_stdin`; the parent later encounters the same behavior.
+- **Remaining investigation:** choose noninteractive pager defaults for managed
+  agent commands while preserving intentional interactive command behavior.
+
+## BUG-065: Completed model-invoked reviews show no findings in the live feed
+
+- **Status:** fixed.
+- **Evidence:** session `dbgtfervs68i52ohr8gg`, 2026-10-28 at 21:59:10:
+  `run_review` child `dbh63pbvs68kt8vqocug` emits a validated Markdown handoff,
+  and its tool result includes the report. The application ignores the handoff
+  event and prints only the tool-completed heading. `/review` and historical
+  replay have separate rendering paths and do show reports.
+- **Resolution:** display review-subagent handoffs through the normal Markdown
+  feed when they arrive, independently of the parent's next answer. Generic
+  workers retain their streamed text; batch stdout remains the parent's reply.
+- **Verification:** the small-stack encrypted-store regression now invokes a
+  review through the live TUI and requires its findings before releasing the
+  parent's response, then checks reopening/replay. Owner-thread renderer checks
+  cover Markdown formatting, cancelled/failed handoffs, output failure, and
+  suppression of duplicate worker output and batch output.
+
 ## BUG-064: libmdf corrupts escaped emphasis in literal Markdown text
 
 - **Status:** upstream issue; independently reproduced with one complete input
@@ -26,6 +54,12 @@ commit and verification evidence.
   malformed/unknown results, MCP error styling, literal diagnostics, small-chunk
   Markdown/JSON rendering and sink failures. A mock-provider TUI check verifies
   live and replayed file-tool failures and rich MCP success/failure content.
+- **Follow-up:** the raw command-output exception also covered `exec_command`
+  and `write_stdin` harness failures, even when no subprocess ran. Every tool
+  failure now takes the same Markdown path, including chunked replay failures
+  and malformed saved command output. Actual subprocess bytes alone retain
+  raw previews. Tests cover every tool-action discriminator plus live/replayed
+  command-runner failures and ordinary subprocess output.
 
 ## BUG-062: Synchronous review startup overflows the musl worker stack
 

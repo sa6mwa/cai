@@ -3,9 +3,10 @@
 #include <cai/display.h>
 
 typedef struct cai_cli_tool_result cai_cli_tool_result;
-/* Known receipts and the Markdown fallback for non-command results. NULL
- * selects a native heading/patch preview or command renderer. Event payloads
- * remain borrowed and model-visible results are never changed. */
+/* Known receipts, every tool failure, and the Markdown fallback for external
+ * results. Command-runner diagnostics are tool failures, never child output.
+ * NULL selects a native heading/patch preview or command renderer. Event
+ * payloads remain borrowed and model-visible results are never changed. */
 int cai_cli_tool_result_open(const cai_agent_runtime_event *event,
                              cai_cli_tool_result **out, cai_error *error);
 int cai_cli_tool_result_heading(cai_cli_tool_result *result,

@@ -23,9 +23,19 @@ id=$(current_session_id)
 # storage. Parent/child commit and replay paths must remain usable.
 plan "$(jq -nc --arg report "$report" '{plan:[
   {tool:"run_review",arguments:{target:"custom",instructions:"Inspect the fixture"}},
-  $report,"SECOND REVIEW SURVIVED"]}')"
-run -ni 'review once more'; ok
-[[ $(stdout_text) == 'SECOND REVIEW SURVIVED' && $(requests) == 7 ]]
+  $report,{pause:true,text:"SECOND REVIEW SURVIVED"}]}')"
+terminal_start --resume "$id"
+send 'review once more\r'
+# The report must reach the live Markdown feed before the parent supplies any
+# answer. A batch-only assertion previously missed this dropped handoff.
+expect 'Fix parser'
+expect 'Reject bad input'
+absent "$term/text" 'overall_correctness'
+absent "$term/text" 'handover_markdown'
+release
+expect 'SECOND REVIEW SURVIVED'; expect 'Worked for'
+[[ $(requests) == 7 ]]
+terminal_close
 before=$(requests)
 terminal_start --resume "$id"
 expect 'Conversation resumed.'

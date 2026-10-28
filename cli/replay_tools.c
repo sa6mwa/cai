@@ -396,8 +396,12 @@ int cai_cli_replay_tools_render(cai_cli_replay_tools *r,
   event_init(c);
   if (same(c->name, "set_reasoning") && !c->failed)
     return CAI_OK;
-  command = c->action == CAI_AGENT_TOOL_ACTION_EXECUTE ||
-            c->action == CAI_AGENT_TOOL_ACTION_WRITE_STDIN;
+  /* The runner's failure message is a diagnostic. Only its captured output
+   * value contains raw subprocess bytes, including partial output on failure.
+   */
+  command = (c->action == CAI_AGENT_TOOL_ACTION_EXECUTE ||
+             c->action == CAI_AGENT_TOOL_ACTION_WRITE_STDIN) &&
+            !same(record->kind, "tool.failed");
   origin = command && c->origin != NULL ? c->origin : c;
   if (command) {
     event_init(origin);
@@ -418,23 +422,17 @@ int cai_cli_replay_tools_render(cai_cli_replay_tools *r,
     if (record->offset != 0U)
       return CAI_OK;
     label = origin->label_length != 0U ? origin->label : c->name;
-    rc = cai_tool_display_replay_begin(display, &c->event, "Failed to replay",
-                                       label, 0, error);
-    if (rc == CAI_OK) {
-      c->event.type = CAI_AGENT_EVENT_TERMINAL_OUTPUT;
-      c->event.data = "Saved command output is incomplete or invalid. See the "
-                      "JSONL export.\n";
-      c->event.data_length = strlen(c->event.data);
-      rc = cai_tool_display_event(display, &c->event, error);
-    }
-    c->event.type = CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED;
-    c->event.data = NULL;
-    c->event.data_length = 0U;
-    c->event.terminal_has_exit_code = 1;
-    c->event.terminal_exit_code = 0;
-    c->event.terminal_has_signal = 0;
+    c->event.type = CAI_AGENT_EVENT_TOOL_CALL_FAILED;
+    c->event.data = "Saved command output is incomplete or invalid. See the "
+                    "JSONL export.\n";
+    c->event.data_length = strlen(c->event.data);
+    rc = cai_cli_tool_result_open(&c->event, &result, error);
     if (rc == CAI_OK)
-      rc = cai_tool_display_event(display, &c->event, error);
+      rc = cai_tool_display_summary(display, &c->event, "Failed to replay",
+                                    label, 0, error);
+    if (rc == CAI_OK)
+      rc = cai_cli_tool_result_write(result, markdown, context, error);
+    cai_cli_tool_result_close(result);
     return rc;
   }
   if (same(record->kind, "tool.patch_locations") ||

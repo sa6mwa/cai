@@ -70,9 +70,7 @@ int cai_cli_tool_result_open(const cai_agent_runtime_event *e,
   const char *op;
   int recognized = 0;
   *out = NULL;
-  if (e->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED &&
-      e->tool_action != CAI_AGENT_TOOL_ACTION_EXECUTE &&
-      e->tool_action != CAI_AGENT_TOOL_ACTION_WRITE_STDIN) {
+  if (e->type == CAI_AGENT_EVENT_TOOL_CALL_FAILED) {
     r = calloc(1U, sizeof(*r));
     if (r == NULL)
       return cai_cli_error(error, CAI_ERR_NOMEM, "prepare tool failure");

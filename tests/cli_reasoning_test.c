@@ -492,6 +492,12 @@ static int test_output_failure(int operation) {
   } else if (operation == 7) {
     rc = cli_markdown(&state, "Output unavailable") != 0 ? CAI_ERR_TRANSPORT
                                                          : CAI_OK;
+  } else if (operation >= 15) {
+    event.type = CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF;
+    event.subagent_name = "review";
+    event.parent_tool_call_id = "review-call";
+    state.batch = operation == 16;
+    rc = cli_event(&state, &event, NULL);
   } else if (operation >= 11) {
     event.type = operation == 11   ? CAI_AGENT_EVENT_RUN_STARTED
                  : operation == 12 ? CAI_AGENT_EVENT_STEERING_DELIVERED
@@ -517,9 +523,10 @@ cleanup:
   close(pipe_fd[0]);
   if (pipe_fd[1] >= 0)
     close(pipe_fd[1]);
-  if (rc != (operation == 10 || operation == 13 || operation == 14
-                 ? CAI_OK
-                 : CAI_ERR_TRANSPORT)) {
+  if (rc !=
+      (operation == 10 || operation == 13 || operation == 14 || operation == 16
+           ? CAI_OK
+           : CAI_ERR_TRANSPORT)) {
     fprintf(stderr, "unexpected output result for operation %d: %d\n",
             operation, rc);
     return 1;
@@ -793,16 +800,21 @@ int main(void) {
   char output[4096];
   const char *title;
   ssize_t count;
-  int rc, scenario;
+  int rc, scenario, documents;
   size_t offset;
   static const char *tool_results[] = {"{\"ok\":true}", "failed output\n",
                                        "already separated\n\n",
                                        "before reasoning", "ok"};
+  static const char *review_handoffs[] = {
+      "## Review result\n\n**Visible finding**\n\nFix this defect.\n",
+      "## Review result\n\nThe reviewer was cancelled.\n",
+      "## Review result\n\nThe reviewer failed before producing a valid "
+      "report.\n"};
   struct timespec start = {100, 500000000L};
   struct timespec before = {400, 499999999L};
   struct timespec boundary = {400, 500000000L};
 
-  for (rc = 0; rc < 15; rc++)
+  for (rc = 0; rc < 17; rc++)
     if (test_output_failure(rc) != 0)
       return 1;
   if (test_command_queue_modes() != 0 || test_goal_handoff() != 0 ||
@@ -976,6 +988,30 @@ int main(void) {
     if (rc == CAI_OK)
       rc = cli_event(&state, &event, NULL);
   }
+  for (scenario = 0; scenario < 3 && rc == CAI_OK; scenario++) {
+    memset(&event, 0, sizeof(event));
+    event.type = CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF;
+    event.subagent_name = "review";
+    event.parent_tool_call_id = "review-call";
+    event.data = review_handoffs[scenario];
+    event.data_length = strlen(event.data);
+    state.foreground_subagent = 1;
+    rc = cli_event(&state, &event, NULL);
+    if (state.foreground_subagent)
+      return 1;
+  }
+  /* Worker answers already streamed; batch stdout belongs to the parent. */
+  documents = state.documents_rendered;
+  event.subagent_name = "worker";
+  if (rc == CAI_OK)
+    rc = cli_event(&state, &event, NULL);
+  state.batch = 1;
+  event.subagent_name = "review";
+  if (rc == CAI_OK)
+    rc = cli_event(&state, &event, NULL);
+  state.batch = 0;
+  if (state.documents_rendered != documents)
+    return 1;
   cai_tool_display_close(state.tool_display);
   cai_sink_close(state.tool_sink);
   /* A split SGR sequence and a reset-only blank row never receive markers. */
@@ -1014,6 +1050,15 @@ int main(void) {
     return 1;
   }
   output[count] = '\0';
+  if (strstr(output, "Visible finding") == NULL ||
+      strstr(output, "**Visible finding**") != NULL ||
+      strstr(output, "Fix this defect.") == NULL ||
+      strstr(output, "The reviewer was cancelled.") == NULL ||
+      strstr(output, "The reviewer failed before producing a valid report.") ==
+          NULL) {
+    fprintf(stderr, "missing Markdown review handoff: %s\n", output);
+    return 1;
+  }
   if (strstr(output, "Commentary before reasoning.\n\n  > First body line") ==
           NULL ||
       strstr(output,

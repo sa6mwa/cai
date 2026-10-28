@@ -1693,6 +1693,19 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     }
     return CAI_OK;
   }
+  /* Tool-invoked reviewers suppress their machine-readable answer deltas.
+   * Their validated Markdown arrives on the handoff, independently of any
+   * subsequent parent answer. Generic workers already stream their text. */
+  if (event->type == CAI_AGENT_EVENT_SUBAGENT_HANDED_OFF &&
+      event->subagent_name != NULL &&
+      strcmp(event->subagent_name, "review") == 0 && event->data != NULL &&
+      event->data_length != 0U)
+    return cli_finish_response(state) == 0 &&
+                   cli_finish_reasoning(state) == 0 &&
+                   cli_text(state, event->data, event->data_length) == 0 &&
+                   cli_finish_response(state) == 0
+               ? CAI_OK
+               : CAI_ERR_TRANSPORT;
   if (event->data != NULL &&
       ((event->type == CAI_AGENT_EVENT_RUN_STARTED &&
         event->parent_tool_call_id == NULL) ||

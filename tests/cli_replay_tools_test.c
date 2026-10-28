@@ -174,7 +174,7 @@ static void native_tools(void) {
     FEED("s", "partial", "exec_command", "tool.arguments", "data",
          "{\"cmd\":\"interrupted command\"}", 2U);
     FEED("s", "partial", "exec_command", "tool.failed", "message",
-         "command interrupted", 100U);
+         "command interrupted", 2U);
     FEED("s", "partial", "exec_command", "tool.partial_output", "data",
          "{\"output\":\"partial command text\\n\"}", 2U);
     FEED("s", "original", "apply_patch", "tool.arguments", "data",
@@ -203,6 +203,7 @@ static void native_tools(void) {
   assert(strstr(f.text, "Patch does not match."));
   assert(strstr(f.text, "* Used web search\n"));
   assert(strstr(f.text, "* Partial output from interrupted command\n"));
+  assert(strstr(f.text, ">     command interrupted\n\n"));
   assert(strstr(f.text, "partial command text\n"));
   assert(strstr(f.text, "* Edited original.c\n"));
   assert(strstr(f.text, "+retained"));
@@ -323,6 +324,8 @@ static void invalid_output(void) {
   }
   assert(strstr(f.text, "* Failed to replay broken result"));
   assert(strstr(f.text, "Saved command output is incomplete or invalid."));
+  assert(
+      strstr(f.text, ">     Saved command output is incomplete or invalid."));
   assert(cai_cli_replay_tools_finish(f.tools, &f.error) == CAI_OK);
   close_fixture(&f);
 }
