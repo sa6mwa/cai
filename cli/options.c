@@ -50,6 +50,7 @@ void cai_cli_options_init(cai_cli_options *options) {
   options->reasoning_summary = "concise";
   options->todo_layout = "board";
   options->theme = "default";
+  options->status_fields = CAI_CLI_STATUS_DEFAULT_FIELDS;
   options->sessions_store = options->auth_store = options->messaging_store =
       "default";
   options->image_generation = 1;
@@ -306,6 +307,12 @@ static int cli_read_options(int argc, char *const *argv,
       options->list_themes = 1;
       return 0;
     }
+    if (strcmp(flag, "--dump-config") == 0) {
+      options->dump_config = 1;
+      if (i + 1 < argc && argv[i + 1][0] != '-')
+        options->dump_config_file = argv[++i];
+      continue;
+    }
     if (strcmp(flag, "-N") == 0 || strcmp(flag, "--new") == 0) {
       options->new_session = 1;
       continue;
@@ -394,6 +401,8 @@ static int cli_read_options(int argc, char *const *argv,
     }
     if (strcmp(flag, "-t") == 0 || strcmp(flag, "--theme") == 0)
       field = &options->theme;
+    if (strcmp(flag, "--status-fields") == 0)
+      field = &options->status_fields;
     else if (strcmp(flag, "--resume") == 0 || strcmp(flag, "-R") == 0)
       field = &options->resume_id;
     else if (strcmp(flag, "--delete") == 0 || strcmp(flag, "-D") == 0)
@@ -567,7 +576,7 @@ static int cli_read_options(int argc, char *const *argv,
       return -1;
     }
   }
-  return 1;
+  return options->dump_config ? 0 : 1;
 }
 
 int cai_cli_read_options(int argc, char *const *argv,

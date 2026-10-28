@@ -69,6 +69,92 @@ static int test_ids(void) {
   return failures;
 }
 
+static int test_fields(void) {
+  static const char *const invalid[] = {
+      NULL, "", ":model", "model:", "model::ctx", "unknown", "DEFAULT"};
+  static const char *const aliases[] = {
+      "provider:model:context:directory:w:credits:yolo:goal:branch",
+      "provider:model:ctx:folder:weekly:crd:yolo:goal:branch",
+      "provider:model:ctx:workspace:weekly:crd:yolo:goal:branch"};
+  cai_cli_status status;
+  cai_cli_status_fields before;
+  cai_agent_goal_snapshot goal;
+  cai_chatgpt_quota quota;
+  int failures = 0;
+  size_t i;
+  memset(&goal, 0, sizeof(goal));
+  memset(&quota, 0, sizeof(quota));
+  cai_cli_status_init(&status, "/proc", NULL);
+  strcpy(status.branch, "branch-name");
+  quota.has_credit_balance = 1;
+  quota.credit_balance = 42.0;
+  quota.has_weekly = 1;
+  quota.weekly_remaining_percent = 72.0;
+  goal.has_goal = 1;
+  goal.status = "active";
+  cai_cli_status_build(&status, "model", "medium", NULL, 0.0, 0, &quota, 0.0,
+                       0.0, "chatgpt", &goal, 1);
+  failures +=
+      check(status.count == 7U && strcmp(status.elements[4], "crd 42") == 0 &&
+                strcmp(status.elements[5], "YOLO") == 0 &&
+                strcmp(status.elements[6], "goal=active 0m") == 0,
+            "default puts YOLO after credits and omits branch");
+  failures += check(cai_cli_status_fields_parse("provider:default:branch",
+                                                &status.fields) == NULL,
+                    "default expansion can be prefixed and extended");
+  cai_cli_status_build(&status, "model", "medium", NULL, 0.0, 0, &quota, 0.0,
+                       0.0, "chatgpt", &goal, 0);
+  failures +=
+      check(status.count == 8U && strcmp(status.elements[0], "chatgpt") == 0 &&
+                strcmp(status.elements[6], "goal=active 0m") == 0 &&
+                strcmp(status.elements[7], "branch-name") == 0,
+            "YOLO off adds no element or separator");
+  for (i = 0U; i < sizeof(aliases) / sizeof(aliases[0]); i++) {
+    failures +=
+        check(cai_cli_status_fields_parse(aliases[i], &status.fields) == NULL &&
+                  status.fields.count == 9U,
+              "all field aliases accepted");
+    cai_cli_status_build(&status, "model", "medium", NULL, 0.0, 0, &quota, 0.0,
+                         0.0, "chatgpt", &goal, 1);
+    failures += check(status.count == 9U &&
+                          strcmp(status.elements[0], "chatgpt") == 0 &&
+                          strcmp(status.elements[3], "/proc") == 0 &&
+                          strcmp(status.elements[8], "branch-name") == 0,
+                      "aliases render in selected order");
+    {
+      sl_t *sl = sl_create();
+      failures += check(sl != NULL && cai_cli_status_apply(sl, &status) == 0,
+                        "softline accepts all fields");
+      if (sl != NULL)
+        sl_destroy(sl);
+    }
+  }
+  failures += check(cai_cli_status_fields_parse(
+                        "crd:credits:default:default:context:provider:branch",
+                        &status.fields) == NULL &&
+                        status.fields.count == 9U,
+                    "duplicates retain first occurrence within fixed bounds");
+  cai_cli_status_build(&status, "model", "medium", NULL, 0.0, 0, &quota, 0.0,
+                       0.0, "chatgpt", &goal, 1);
+  failures += check(strcmp(status.elements[0], "crd 42") == 0,
+                    "first occurrence controls ordering");
+  before = status.fields;
+  for (i = 0U; i < sizeof(invalid) / sizeof(invalid[0]); i++)
+    failures +=
+        check(cai_cli_status_fields_parse(invalid[i], &status.fields) != NULL &&
+                  memcmp(&before, &status.fields, sizeof(before)) == 0,
+              "invalid selections fail without changing selection");
+  failures += check(cai_cli_status_fields_parse("model", NULL) != NULL,
+                    "null field destination rejected");
+  (void)cai_cli_status_fields_parse("yolo:branch:goal:credits", &status.fields);
+  status.branch[0] = '\0';
+  goal.has_goal = 0;
+  cai_cli_status_build(&status, "model", "medium", NULL, 0.0, 0, NULL, 0.0, 0.0,
+                       "openai", &goal, 0);
+  failures += check(status.count == 0U, "unavailable selected fields hidden");
+  return failures;
+}
+
 int main(void) {
   cai_cli_status status;
   cai_agent_goal_snapshot goal;
@@ -79,14 +165,16 @@ int main(void) {
   struct tm finished_local;
   sl_t *sl;
   int failures;
-  failures = test_ids();
+  failures = test_ids() + test_fields();
   memset(&goal, 0, sizeof(goal));
   memset(&metrics, 0, sizeof(metrics));
   memset(&quota, 0, sizeof(quota));
   cai_cli_status_init(&status, "/home/alice/project", "/home/alice");
+  (void)cai_cli_status_fields_parse("model:ctx:dir:weekly:crd:branch:goal",
+                                    &status.fields);
   status.branch[0] = '\0';
   cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
-                       0.0, 0.0, "openai", &goal);
+                       0.0, 0.0, "openai", &goal, 0);
   failures += check(status.count == 3U, "unknown quota hidden");
   failures += check(strcmp(status.elements[0], "gpt-6-luna medium") == 0,
                     "model effort");
@@ -99,7 +187,7 @@ int main(void) {
     size_t i;
     for (i = 0U; i < sizeof(tiers) / sizeof(tiers[0]); i++) {
       cai_cli_status_build(&status, "gpt-6-luna", "high", tiers[i], 0.0, 0,
-                           &quota, 0.0, 0.0, "openai", &goal);
+                           &quota, 0.0, 0.0, "openai", &goal, 0);
       failures += check(strcmp(status.elements[0], expected[i]) == 0,
                         "selected tier suffix and sanitized label");
     }
@@ -168,33 +256,33 @@ int main(void) {
   quota.has_credit_balance = 1;
   quota.credit_balance = 42.75;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
-                       0.0, 0.0, "openai", &goal);
+                       0.0, 0.0, "openai", &goal, 0);
   failures +=
       check(status.count == 4U && status.usage[0] == '\0' &&
                 strcmp(status.elements[3], "crd 43") == 0,
             "available fractional credits round up without quota windows");
   quota.credit_balance = 42.0;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
-                       0.0, 0.0, "openai", &goal);
+                       0.0, 0.0, "openai", &goal, 0);
   failures +=
       check(status.count == 4U && strcmp(status.elements[3], "crd 42") == 0,
             "whole credits have no decimal suffix");
   quota.credit_balance = 42.25;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
-                       0.0, 0.0, "openai", &goal);
+                       0.0, 0.0, "openai", &goal, 0);
   failures +=
       check(status.count == 4U && strcmp(status.elements[3], "crd 42") == 0,
             "fractional credits round down");
   quota.credit_balance = 0.0;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
-                       0.0, 0.0, "openai", &goal);
+                       0.0, 0.0, "openai", &goal, 0);
   failures +=
       check(status.count == 4U && strcmp(status.elements[3], "crd 0") == 0,
             "zero credit balance remains visible");
   quota.credits_unlimited = 1;
   quota.has_credit_balance = 0;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
-                       0.0, 0.0, "openai", &goal);
+                       0.0, 0.0, "openai", &goal, 0);
   failures += check(status.count == 4U &&
                         strcmp(status.elements[3], "crd unlimited") == 0,
                     "unlimited credits without numeric balance");
@@ -211,7 +299,7 @@ int main(void) {
   quota.has_weekly = 1;
   quota.weekly_remaining_percent = 72.0;
   cai_cli_status_build(&status, "gpt-6-luna", "high", NULL, 37.4, 1, &quota,
-                       0.0, 0.0, "openai", &goal);
+                       0.0, 0.0, "openai", &goal, 0);
   failures += check(status.count == 7U, "full element count");
   failures +=
       check(strcmp(status.elements[1], "ctx 37%") == 0, "context rounded");
@@ -231,7 +319,7 @@ int main(void) {
   goal.objective = "Line\nBreak";
   memset(&quota, 0, sizeof(quota));
   cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
-                       0.0, 0.0, "openai", &goal);
+                       0.0, 0.0, "openai", &goal, 0);
   failures += check(status.count == 5U && status.credits[0] == '\0',
                     "unavailable credits cleared on refresh");
   failures += check(strcmp(status.elements[4], "goal=active 0m") == 0,
@@ -247,14 +335,14 @@ int main(void) {
     for (i = 0U; i < sizeof(seconds) / sizeof(seconds[0]); i++) {
       goal.elapsed_seconds = seconds[i];
       cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0,
-                           &quota, 0.0, 0.0, "openai", &goal);
+                           &quota, 0.0, 0.0, "openai", &goal, 0);
       failures += check(strcmp(status.elements[4], expected[i]) == 0,
                         "compact goal duration without seconds");
     }
     goal.status = "paused";
     goal.elapsed_seconds = 902700LL;
     cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
-                         0.0, 0.0, "openai", &goal);
+                         0.0, 0.0, "openai", &goal, 0);
     failures += check(strcmp(status.elements[4], "goal=paused 10d10h45m") == 0,
                       "paused goal retains elapsed time");
   }
@@ -262,48 +350,48 @@ int main(void) {
   failures += check(status.branch[0] == '\0', "nonrepository branch hidden");
   goal.status = "complete";
   cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
-                       0.0, 0.0, "openai", &goal);
+                       0.0, 0.0, "openai", &goal, 0);
   failures +=
       check(status.count == 4U &&
                 strcmp(status.elements[3], "goal=achieved 10d10h45m") == 0,
             "achieved goal shows final elapsed time");
   goal.has_goal = 0;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
-                       0.0, 0.0, "openai", &goal);
+                       0.0, 0.0, "openai", &goal, 0);
   failures += check(status.count == 3U, "cleared goal hidden");
   quota.has_weekly = 1;
   quota.weekly_remaining_percent = 73.0;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
-                       0.0, 0.0, "openai", &goal);
+                       0.0, 0.0, "openai", &goal, 0);
   failures += check(strcmp(status.usage, "w 73%") == 0, "weekly only");
   quota.has_short_window = 1;
   quota.short_window_seconds = 3600;
   quota.short_window_remaining_percent = 55.0;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
-                       0.0, 0.0, "openai", &goal);
+                       0.0, 0.0, "openai", &goal, 0);
   failures += check(strcmp(status.usage, "w 73% 1h 55%") == 0, "hourly label");
   quota.has_credit_balance = 1;
   quota.credit_balance = 42.5;
   cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, &quota,
-                       0.0, 0.0, "openai", &goal);
+                       0.0, 0.0, "openai", &goal, 0);
   failures += check(status.count == 5U && status.credits[0] != '\0',
                     "credits present before provider switch");
   cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 20.0, 1, NULL,
-                       1.25, 0.0, "openai", &goal);
+                       1.25, 0.0, "openai", &goal, 0);
   failures +=
       check(strcmp(status.usage, "cost ~$1.2500") == 0, "API cost status");
   failures += check(status.count == 4U, "API status element count");
   failures += check(status.credits[0] == '\0', "API provider hides credits");
   cai_cli_status_build(&status, "gpt-6-luna", "medium", NULL, 0.0, 0, NULL, 0.0,
-                       0.0, "openai", &goal);
+                       0.0, "openai", &goal, 0);
   failures += check(strcmp(status.usage, "cost ?$") == 0,
                     "unknown API cost placeholder");
   cai_cli_status_build(&status, "zai-org/GLM-5.3-Flash", "medium", NULL, 0.0, 0,
-                       NULL, 0.0, 1.25, "berget", &goal);
+                       NULL, 0.0, 1.25, "berget", &goal, 0);
   failures += check(strcmp(status.usage, "cost ~€1.2500") == 0,
                     "Berget cost status uses EUR");
   cai_cli_status_build(&status, "zai-org/GLM-5.3-Flash", "medium", NULL, 0.0, 0,
-                       NULL, 0.0, 0.0, "berget", &goal);
+                       NULL, 0.0, 0.0, "berget", &goal, 0);
   failures += check(strcmp(status.usage, "cost ?€") == 0,
                     "Berget unknown cost uses EUR");
   metrics.context_window_tokens = 200000;

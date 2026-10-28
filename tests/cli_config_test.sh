@@ -4,6 +4,23 @@ base=("$cli" -C "$work")
 config="$root/config/cai/config.ini"
 run --help; ok; contains "$root/stdout" --config; [[ ! -e "$config" ]]
 run --version; ok; [[ ! -e "$config" ]]
+run --dump-config; ok; [[ ! -e "$config" && ! -e "$root/state" && ! -e "$root/cache" ]]
+contains "$root/stdout" '## Configuration.'
+contains "$root/stdout" '# status_fields = "model:ctx:dir:weekly:crd:yolo:goal"'
+contains "$root/stdout" "# agents_md = \"$root/config/cai/AGENTS.md\""
+cp "$root/stdout" "$root/default.ini"
+printf 'invalid config!\n' >"$root/broken.ini"
+run --config "$root/broken.ini" --dump-config "$root/dumped.ini"; ok
+[[ ! -s "$root/stdout" && ! -e "$config" && ! -e "$root/state" ]]
+cmp "$root/default.ini" "$root/dumped.ini"
+run --dump-config "$root/dumped.ini"; ok
+cmp "$root/default.ini" "$root/dumped.ini"
+run --dump-config "$root/missing/output.ini"; bad
+contains "$root/stderr" 'cannot open configuration template output'
+run --dump-config /dev/full; bad
+run --dump-config --invalid-flag; bad
+run --no-config --dump-config; ok
+[[ ! -e "$config" ]]
 run --no-config --list; ok; [[ ! -e "$config" ]]
 (
   export CAI_CONFIG="$root/ignored.ini"
@@ -43,6 +60,7 @@ contains "$config" "# export_dir = \"$root/data/cai/exports\""
 contains "$config" '# tool_output = "compact"'
 contains "$config" '# todo_layout = "board"'
 contains "$config" '# replay_turns = 20'
+contains "$config" '# status_fields = "model:ctx:dir:weekly:crd:yolo:goal"'
 contains "$config" '# subagent_steering = true'
 contains "$config" '[messaging]'
 contains "$config" '# default_board = "default"'

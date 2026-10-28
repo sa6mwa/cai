@@ -2,6 +2,7 @@
 #include "config.h"
 #include "app_internal.h"
 #include "identity.h"
+#include "status.h"
 #include "theme.h"
 #include <cai/models.h>
 #include <cai/version.h>
@@ -142,6 +143,14 @@ static const cli_field fields[] = {
       "Softline theme alias or SOFTLINE:LIBMDF. Use --list-themes for names "
       "and default pairings. plain selects plain:ascii (non-colored "
       "Markdown)."),
+    S("ui", "status_fields", status_fields, 0U,
+      "Colon-separated status order: model, ctx, dir, weekly, crd, yolo, "
+      "goal, branch, provider. default expands "
+      "model:ctx:dir:weekly:crd:yolo:goal. "
+      "Aliases: context=ctx, directory/folder/workspace=dir, w=weekly, "
+      "credits=crd. Duplicates keep their first position. Missing values and "
+      "YOLO when disabled are hidden. weekly includes short quota windows "
+      "or the API cost estimate."),
     {"ui", "todo_layout", offsetof(cai_cli_options, todo_layout),
      CAI_CONFIG_STRING, 0U, "board|list",
      "Kanban presentation; board groups cards by column with titles capped at "
@@ -644,6 +653,7 @@ static int tool_environment(cai_config *cfg, const char *prefix,
     static const char *const aliases[][3] = {
         {"MODEL", "agent", "model"},
         {"THEME", "ui", "theme"},
+        {"STATUS_FIELDS", "ui", "status_fields"},
         {"PROVIDER", "client", "provider"},
         {"REASONING_EFFORT", "agent", "reasoning_effort"},
         {"API_KEY_ENV", "client", "api_key_env"},
@@ -783,7 +793,8 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
   rc = cai_cli_read_options(argc, argv, &defaults, &early);
   config_dir_flag = early.config_dir != defaults.config_dir;
   home_flag = early.home_dir != defaults.home_dir;
-  if (rc <= 0) {
+  if (rc < 0 || (rc == 0 && (!early.dump_config || early.help ||
+                             early.version || early.list_themes))) {
     *options = early;
     if (early.help)
       return cai_cli_help_print(defaults.program_name, defaults.invocation_name,
@@ -844,6 +855,32 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
     return -1;
   }
   *configuration = cfg;
+  if (early.dump_config) {
+    cai_sink *sink = NULL;
+    FILE *file = stdout;
+    documented = early;
+    documented.config_dir = config_root;
+    *options = early;
+    if (application_defaults(cfg, &documented, application, 1, error) != CAI_OK)
+      return -1;
+    if (early.dump_config_file != NULL) {
+      file = fopen(early.dump_config_file, "wb");
+      if (file == NULL)
+        return fail(error, early.dump_config_file,
+                    "cannot open configuration template output");
+    }
+    rc = cai_sink_file(file, 0, &sink, error);
+    if (rc == CAI_OK)
+      rc = cfg->write_template(cfg, sink, error);
+    cai_sink_close(sink);
+    if (fflush(file) != 0 && rc == CAI_OK)
+      rc = fail(error, early.dump_config_file,
+                "cannot flush configuration template output");
+    if (file != stdout && fclose(file) != 0 && rc == CAI_OK)
+      rc = fail(error, early.dump_config_file,
+                "cannot close configuration template output");
+    return rc == CAI_OK ? 0 : -1;
+  }
   if (!early.no_config) {
     if (early.config_file != NULL)
       rc = absolute_path(selected, sizeof(selected), early.config_file, error);
@@ -1032,6 +1069,13 @@ int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,
     const char *reason = cai_cli_theme_parse(options->theme, &theme);
     if (reason != NULL)
       return fail(error, options->theme, reason);
+  }
+  {
+    cai_cli_status_fields selection;
+    const char *reason =
+        cai_cli_status_fields_parse(options->status_fields, &selection);
+    if (reason != NULL)
+      return fail(error, "ui.status_fields", reason);
   }
   return 1;
 }

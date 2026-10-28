@@ -3,7 +3,9 @@
 #include "options.h"
 #include <cai/app.h>
 #include <cai/config.h>
-/* Help/version/theme listing bypass file effects. Owned configuration outlives
+/* Help/version/theme listing and default dumps bypass normal config loading
+ * and creation. A dump writes only its explicit destination or stdout.
+ * Owned configuration outlives
  * clients and runtimes borrowing its strings. Return 1=start, 0=utility,
  * -1=error. */
 int cai_cli_configure(int argc, char *const *argv, cai_cli_options *options,

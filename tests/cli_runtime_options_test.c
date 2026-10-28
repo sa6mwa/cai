@@ -454,6 +454,59 @@ static int yolo_settings(const char *path) {
   return failed;
 }
 
+static int status_fields_settings(char *path) {
+  cai_cli_options options;
+  cai_config *configuration = NULL;
+  cai_app_config app;
+  cai_app_setting setting;
+  cai_error error;
+  static char program[] = "cai", config_flag[] = "--config";
+  static char status_flag[] = "--status-fields",
+              selection[] = "provider:default";
+  char *args[] = {program, config_flag, NULL, status_flag, selection};
+  const char *expected[] = {"dir:model",    "ctx:model", "provider:default",
+                            "goal:default", "dir:model", NULL};
+  int i, rc, failed = 0;
+  FILE *file = fopen(path, "w");
+  if (file == NULL)
+    return 1;
+  fputs("[ui]\nstatus_fields = dir:model\n", file);
+  fclose(file);
+  args[2] = path;
+  cai_error_init(&error);
+  memset(&app, 0, sizeof(app));
+  setting.section = "ui";
+  setting.key = "status_fields";
+  setting.value = "goal:default";
+  app.settings = &setting;
+  app.setting_count = 1U;
+  unsetenv("CAI_STATUS_FIELDS");
+  unsetenv("CAI_UI_STATUS_FIELDS");
+  for (i = 0; i < 6; i++) {
+    if (i == 1)
+      setenv("CAI_STATUS_FIELDS", "ctx:model", 1);
+    if (i == 4)
+      unsetenv("CAI_STATUS_FIELDS");
+    if (i == 5)
+      setenv("CAI_STATUS_FIELDS", "model:bogus", 1);
+    rc = cai_cli_configure(i == 2 ? 5 : 3, args, &options, &configuration,
+                           i == 3 ? &app : NULL, &error);
+    if (i == 5 ? rc != -1 || error.message == NULL ||
+                     strstr(error.message, "status_fields") == NULL
+               : rc != 1 || options.status_fields == NULL ||
+                     strcmp(options.status_fields, expected[i]) != 0) {
+      fprintf(stderr, "status fields precedence case %d: %s\n", i,
+              error.message != NULL ? error.message : "unexpected value");
+      failed = 1;
+    }
+    cai_config_close(configuration);
+    configuration = NULL;
+    cai_error_cleanup(&error);
+  }
+  unsetenv("CAI_STATUS_FIELDS");
+  return failed;
+}
+
 int main(int argc, char **argv) {
   static const char *const env[] = {"CAI_TODO",       "CAI_CHROME",
                                     "CAI_WEB_SEARCH", "CAI_SEARXNG",
@@ -499,6 +552,7 @@ int main(int argc, char **argv) {
   failed |= retained_paths(path, argv[1]);
   failed |= chrome_directory_settings(path, argv[1]);
   failed |= yolo_settings(path);
+  failed |= status_fields_settings(path);
   unlink(path);
   return failed != 0;
 }

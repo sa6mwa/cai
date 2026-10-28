@@ -28,6 +28,22 @@ Use
 to start a new session.
 .SH OPTIONS
 .TP
+.BI \-\-status-fields " FIELDS"
+Colon-separated status fields, default model:ctx:dir:weekly:crd:yolo:goal.
+The default token expands this list; provider:default:branch prepends the
+provider and appends the Git branch. Aliases: context=ctx,
+directory/folder/workspace=dir, w=weekly, credits=crd. Duplicate fields keep
+their first position. Names are lowercase. Unavailable values are hidden;
+yolo displays only YOLO while enabled. weekly includes shorter quota windows
+or the API cost estimate. Also CAI_STATUS_FIELDS or [ui] status_fields.
+.TP
+.B \-\-dump-config [FILE]
+Write the documented, commented defaults template to FILE, or stdout if
+omitted. Overwrites an existing output file; its parent directory must exist.
+Does not load existing configuration, copy explicit settings or secrets, create
+the normal config.ini, or open storage. Application identity and path defaults
+still apply, including --home and embedding overrides.
+.TP
 .BI \-\-home " DIR"
 Derive unset application directories as DIR/config, DIR/state, DIR/cache,
 DIR/data and DIR/run. Individual path settings take precedence over these

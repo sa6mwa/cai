@@ -22,6 +22,8 @@ static int value_option_instructions(void) {
   for (i = 0U; i < cai_cli_help_count(); i++) {
     const cai_app_option *option = cai_cli_help_at(i);
     const char *value = marker;
+    if (strcmp(option->long_flag, "--dump-config") == 0)
+      continue; /* A standalone utility, not an agent invocation. */
     if (option->type != CAI_APP_STRING && option->type != CAI_APP_INTEGER &&
         option->type != CAI_APP_OPTIONAL_STRING)
       continue;

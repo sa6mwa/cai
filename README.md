@@ -666,9 +666,27 @@ retries, maximum 16), `chat_retry_initial_delay_ms`, and
 `chat_retry_max_delay_ms` (maximum 60000). Zero selects each field's default;
 the effective initial delay must not exceed the maximum delay.
 
+Configure the status order with `--status-fields FIELDS`, `CAI_STATUS_FIELDS`,
+or `[ui] status_fields` in `config.ini` (also available through libcai_app's
+C/Lua settings). The default is `model:ctx:dir:weekly:crd:yolo:goal`.
+`default` expands that list: `--status-fields provider:default:branch`
+prepends the provider and appends the Git branch. Aliases are `context` for
+`ctx`, `directory`/`folder`/`workspace` for `dir`, `w` for `weekly`, and
+`credits` for `crd`. Names are lowercase; duplicates keep their first position.
+Unavailable values are omitted. `weekly` includes any short quota window,
+or the API cost estimate for API-key providers. `YOLO` appears only while the
+effective mode is enabled, after credits in the default order.
+
+`cai --dump-config [FILE]` writes the same documented, commented defaults
+template generated at startup. Omit FILE to write to stdout. An existing
+output file is overwritten; its parent directory must exist. This utility
+does not load the selected config, copy secrets or explicit settings, create
+the normal config, or open storage. Application identity/path defaults still
+apply, including `--home` and embedding path overrides.
+
 The softline prompt is `> `. Its status bar shows model and reasoning effort,
 the last measured context percentage, a shortened workspace path, available
-ChatGPT subscription quota remaining and credits, the Git branch when present,
+ChatGPT subscription quota remaining and credits, `YOLO` when enabled,
 and goal status with elapsed active time, such as `goal=active 45m` or
 `goal=active 10d10h45m`, without the objective. Completed goals show
 `goal=achieved` with their final elapsed active time until replaced or cleared;

@@ -1726,7 +1726,7 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
                        has_context, state->auth != NULL ? &state->quota : NULL,
                        metrics.session_usage.estimated_spend_usd,
                        metrics.session_usage.estimated_spend_eur,
-                       state->options.provider, &goal);
+                       state->options.provider, &goal, state->options.yolo);
   if (sl_set_status_message(state->sl, turn_message) != SL_OK ||
       cai_cli_status_apply(state->sl, &state->status) != 0) {
     return CAI_ERR_TRANSPORT;
@@ -5102,6 +5102,8 @@ int cai_cli_app_run(int argc, char **argv, const cai_app_config *application,
   }
 
   cai_cli_status_init(&state.status, state.workspace, getenv("HOME"));
+  (void)cai_cli_status_fields_parse(state.options.status_fields,
+                                    &state.status.fields);
   result = 1;
   rc = cli_prepare_clipboard(&state, &error);
   if (rc != CAI_OK) {

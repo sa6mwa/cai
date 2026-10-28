@@ -14,6 +14,80 @@
 
 extern char **environ;
 
+enum {
+  FIELD_MODEL,
+  FIELD_CONTEXT,
+  FIELD_DIRECTORY,
+  FIELD_WEEKLY,
+  FIELD_CREDITS,
+  FIELD_YOLO,
+  FIELD_GOAL,
+  FIELD_BRANCH,
+  FIELD_PROVIDER
+};
+
+const char *cai_cli_status_fields_parse(const char *text,
+                                        cai_cli_status_fields *out) {
+  static const struct {
+    const char *name;
+    unsigned int id;
+  } names[] = {{"model", FIELD_MODEL},
+               {"ctx", FIELD_CONTEXT},
+               {"context", FIELD_CONTEXT},
+               {"dir", FIELD_DIRECTORY},
+               {"directory", FIELD_DIRECTORY},
+               {"folder", FIELD_DIRECTORY},
+               {"workspace", FIELD_DIRECTORY},
+               {"weekly", FIELD_WEEKLY},
+               {"w", FIELD_WEEKLY},
+               {"crd", FIELD_CREDITS},
+               {"credits", FIELD_CREDITS},
+               {"yolo", FIELD_YOLO},
+               {"goal", FIELD_GOAL},
+               {"branch", FIELD_BRANCH},
+               {"provider", FIELD_PROVIDER}};
+  cai_cli_status_fields selected, defaults;
+  const char *end;
+  size_t length, i, j;
+  unsigned int id;
+  memset(&selected, 0, sizeof(selected));
+  if (text == NULL || text[0] == '\0' || out == NULL)
+    return "status-fields requires a nonempty colon-separated field list";
+  for (;;) {
+    end = strchr(text, ':');
+    length = end != NULL ? (size_t)(end - text) : strlen(text);
+    if (length == 7U && strncmp(text, "default", length) == 0) {
+      (void)cai_cli_status_fields_parse(CAI_CLI_STATUS_DEFAULT_FIELDS,
+                                        &defaults);
+      for (i = 0U; i < defaults.count; i++) {
+        id = defaults.ids[i];
+        for (j = 0U; j < selected.count && selected.ids[j] != id; j++) {
+        }
+        if (j == selected.count)
+          selected.ids[selected.count++] = id;
+      }
+    } else {
+      for (i = 0U; i < sizeof(names) / sizeof(names[0]); i++)
+        if (strlen(names[i].name) == length &&
+            strncmp(text, names[i].name, length) == 0)
+          break;
+      if (i == sizeof(names) / sizeof(names[0]))
+        return "unknown or empty status field; use model, ctx, dir, weekly, "
+               "crd, yolo, goal, branch, provider or default";
+      id = names[i].id;
+      for (j = 0U; j < selected.count && selected.ids[j] != id; j++) {
+      }
+      if (j == selected.count)
+        selected.ids[selected.count++] = id;
+    }
+    if (end == NULL)
+      break;
+    text = end + 1U;
+  }
+  *out = selected;
+  return NULL;
+}
+
 static void cai_cli_status_copy(char *out, size_t capacity, const char *text) {
   size_t i;
   size_t written;
@@ -83,6 +157,8 @@ void cai_cli_status_init(cai_cli_status *status, const char *workspace,
   const char *parent;
   size_t home_length;
   memset(status, 0, sizeof(*status));
+  (void)cai_cli_status_fields_parse(CAI_CLI_STATUS_DEFAULT_FIELDS,
+                                    &status->fields);
   display = workspace;
   home_length = home != NULL ? strlen(home) : 0U;
   if (home_length > 0U && strncmp(workspace, home, home_length) == 0 &&
@@ -201,12 +277,14 @@ void cai_cli_status_build(cai_cli_status *status, const char *model,
                           const cai_chatgpt_quota *quota,
                           double estimated_spend_usd,
                           double estimated_spend_eur, const char *provider,
-                          const cai_agent_goal_snapshot *goal) {
+                          const cai_agent_goal_snapshot *goal, int yolo) {
   char safe_model[128];
   char safe_effort[32];
   char safe_tier[32];
   char safe_status[32];
   size_t n;
+  size_t i;
+  const char *values[CAI_CLI_STATUS_FIELD_COUNT];
   cai_cli_status_copy(safe_model, sizeof(safe_model), model);
   cai_cli_status_copy(safe_effort, sizeof(safe_effort), effort);
   cai_cli_status_copy(safe_tier, sizeof(safe_tier),
@@ -224,9 +302,6 @@ void cai_cli_status_build(cai_cli_status *status, const char *model,
     snprintf(status->context, sizeof(status->context), "ctx --");
   }
   status->count = 0U;
-  status->elements[status->count++] = status->model_effort;
-  status->elements[status->count++] = status->context;
-  status->elements[status->count++] = status->directory;
   status->usage[0] = '\0';
   if (quota == NULL) {
     if (provider != NULL && strcmp(provider, "berget") == 0) {
@@ -267,9 +342,6 @@ void cai_cli_status_build(cai_cli_status *status, const char *model,
                quota->short_window_remaining_percent);
     }
   }
-  if (status->usage[0] != '\0') {
-    status->elements[status->count++] = status->usage;
-  }
   status->credits[0] = '\0';
   if (quota != NULL && quota->credits_unlimited) {
     snprintf(status->credits, sizeof(status->credits), "crd unlimited");
@@ -277,12 +349,7 @@ void cai_cli_status_build(cai_cli_status *status, const char *model,
     snprintf(status->credits, sizeof(status->credits), "crd %.0f",
              quota->credit_balance);
   }
-  if (status->credits[0] != '\0') {
-    status->elements[status->count++] = status->credits;
-  }
-  if (status->branch[0] != '\0') {
-    status->elements[status->count++] = status->branch;
-  }
+  status->goal[0] = '\0';
   if (goal != NULL && goal->has_goal && goal->status != NULL) {
     long long minutes =
         goal->elapsed_seconds > 0LL ? goal->elapsed_seconds / 60LL : 0LL;
@@ -300,7 +367,21 @@ void cai_cli_status_build(cai_cli_status *status, const char *model,
                                                               : goal->status);
     snprintf(status->goal, sizeof(status->goal), "goal=%s %s", safe_status,
              duration);
-    status->elements[status->count++] = status->goal;
+  }
+  cai_cli_status_copy(status->provider, sizeof(status->provider), provider);
+  values[FIELD_MODEL] = status->model_effort;
+  values[FIELD_CONTEXT] = status->context;
+  values[FIELD_DIRECTORY] = status->directory;
+  values[FIELD_WEEKLY] = status->usage;
+  values[FIELD_CREDITS] = status->credits;
+  values[FIELD_YOLO] = yolo ? "YOLO" : "";
+  values[FIELD_GOAL] = status->goal;
+  values[FIELD_BRANCH] = status->branch;
+  values[FIELD_PROVIDER] = status->provider;
+  for (i = 0U; i < status->fields.count; i++) {
+    const char *value = values[status->fields.ids[i]];
+    if (value[0] != '\0')
+      status->elements[status->count++] = value;
   }
 }
 

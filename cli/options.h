@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdio.h>
 
+#define CAI_CLI_STATUS_DEFAULT_FIELDS "model:ctx:dir:weekly:crd:yolo:goal"
+
 typedef struct cai_cli_options {
   const char *program_name;
   const char *invocation_name;
@@ -19,6 +21,9 @@ typedef struct cai_cli_options {
   int help, version;
   int list_themes;
   const char *theme;
+  const char *status_fields;
+  int dump_config;
+  const char *dump_config_file;
   const char *provider;
   const char *config_file;
   int config_explicit;

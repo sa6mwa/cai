@@ -1,9 +1,21 @@
 #ifndef CAI_CLI_STATUS_H
 #define CAI_CLI_STATUS_H
 
+#include "options.h"
 #include <cai/agent_runtime.h>
 #include <cai/quota.h>
 #include <softline/softline.h>
+
+#define CAI_CLI_STATUS_FIELD_COUNT 9
+typedef struct cai_cli_status_fields {
+  unsigned int ids[CAI_CLI_STATUS_FIELD_COUNT];
+  size_t count;
+} cai_cli_status_fields;
+
+/* Expand default and aliases, keeping the first occurrence of each field.
+ * Invalid/empty selections leave out unchanged and return an explanation. */
+const char *cai_cli_status_fields_parse(const char *text,
+                                        cai_cli_status_fields *out);
 
 typedef struct cai_cli_status {
   char directory[160];
@@ -13,7 +25,9 @@ typedef struct cai_cli_status {
   char usage[64];
   char credits[64];
   char goal[192];
-  const char *elements[7];
+  char provider[64];
+  cai_cli_status_fields fields;
+  const char *elements[CAI_CLI_STATUS_FIELD_COUNT];
   size_t count;
 } cai_cli_status;
 
@@ -27,7 +41,7 @@ void cai_cli_status_build(cai_cli_status *status, const char *model,
                           const cai_chatgpt_quota *quota,
                           double estimated_spend_usd,
                           double estimated_spend_eur, const char *provider,
-                          const cai_agent_goal_snapshot *goal);
+                          const cai_agent_goal_snapshot *goal, int yolo);
 /** Write status rows, including captured instruction sources when supplied,
  * into one Markdown table; return 0 on success. */
 int cai_cli_status_markdown(char *out, size_t capacity,
