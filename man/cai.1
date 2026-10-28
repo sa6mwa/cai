@@ -604,6 +604,15 @@ Show command-line help.
 Show the version.
 .SH PROMPT COMMANDS
 .TP
+.B /compact
+Compact conversation context between turns. While busy, the command stays in
+the normal editable Softline queue, including with Alt-Enter. Escape cancels.
+Responses providers use streamed V2 compaction; Chat Completions providers use
+client-side summarization. No user prompt, tool execution or follow-up answer
+is generated. Successful replacement is checkpointed before completion;
+failure or cancellation before commit preserves prior context. An unfinished
+request is not automatically retried on restart.
+.TP
 .BR "/review" " [uncommitted|base REF|commit SHA|TEXT]"
 Run an isolated reviewer between turns and render Markdown findings. With no
 argument, compare against the Git default branch. Explicit uncommitted, base,

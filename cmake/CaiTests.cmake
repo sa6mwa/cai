@@ -509,6 +509,7 @@ if(CAI_BUILD_TESTS)
     agent_runtime_model_switch_live_catalog_outage
     agent_runtime_model_switch_api_key_metadata_policy
     agent_runtime_auto_compaction_boundaries
+    agent_runtime_manual_compaction
     agent_runtime_terminal_callback_close
     agent_runtime_queued_turns
     agent_runtime_semantic_events
@@ -1203,6 +1204,10 @@ if(CAI_BUILD_TESTS)
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_goal_continuation_test.sh" "${CAI_LUA_EXECUTABLE}")
     set_tests_properties(cai_lua_goal_continuation PROPERTIES
       LABELS "unit;local;offline" ENVIRONMENT "${CAI_LUA_TEST_ENV}" TIMEOUT 5)
+    add_test(NAME cai_lua_compact COMMAND bash
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_compact_test.sh" "${CAI_LUA_EXECUTABLE}")
+    set_tests_properties(cai_lua_compact PROPERTIES
+      LABELS "unit;local;offline" ENVIRONMENT "${CAI_LUA_TEST_ENV}" TIMEOUT 10)
     foreach(_cai_lua_context_protocol responses chat_completions)
       add_test(NAME cai_lua_context_instructions_${_cai_lua_context_protocol}
         COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/lua_context_instructions_test.sh"

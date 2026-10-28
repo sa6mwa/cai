@@ -111,7 +111,8 @@ typedef enum cai_agent_tool_action {
 
 /** Event emitted by an agent runtime. */
 typedef enum cai_agent_runtime_event_type {
-  /** A submitted turn started. */
+  /** A submitted turn or standalone manual compaction started. Manual
+   * compaction has no prompt payload (data is NULL). */
   CAI_AGENT_EVENT_RUN_STARTED = 1,
   /** The observable run state changed. */
   CAI_AGENT_EVENT_RUN_STATE_CHANGED = 2,
@@ -805,6 +806,19 @@ int cai_agent_runtime_open(cai_client *client,
  */
 int cai_agent_runtime_set_model(cai_agent_runtime *runtime, const char *model,
                                 cai_error *error);
+/** Owner-thread readiness query for manual compaction. Busy runtimes,
+ * pending controls, reviews and open shell executions report ready=0. */
+int cai_agent_runtime_can_compact(cai_agent_runtime *runtime, int *ready,
+                                  cai_error *error);
+/** Start a standalone, cancellable compaction task on the agent worker.
+ * Requires an idle runtime (can_compact). Does not submit a user prompt or
+ * execute tools. Uses Responses V2 compaction_trigger for Responses providers
+ * and the existing summary compactor for Chat Completions. Pump normal run and
+ * compaction lifecycle events through completion/failure/cancellation; the
+ * RUN_STARTED payload is NULL for this non-prompt task. Successful replacement
+ * is checkpointed before completion; a failed replacement preserves history.
+ * A crash does not automatically retry an unfinished manual request. */
+int cai_agent_runtime_compact(cai_agent_runtime *runtime, cai_error *error);
 /** Visit the newest retained whole entries, newest first. Zero limit selects
  * twenty. Owner-thread-only; requires an idle runtime with no pending work.
  * Compaction is one indivisible entry, never expanded into earlier turns. */

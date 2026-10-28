@@ -364,6 +364,30 @@ assert(runtime:trim_history(1)) -- remove the newest whole entry
 `kind` is `turn`, `shell`, or `compaction`. History and trimming do not issue
 provider requests or execute tools.
 
+### Manual context compaction
+
+`/compact` starts a standalone compaction task between turns. While busy it
+stays in Softline's normal editable queue, including when entered with
+Alt-Enter; it never becomes model steering. Escape cancels the task. Progress
+appears in the gray status line and completion in the Markdown feed.
+
+The worker uses the same compactor as automatic compaction: streamed Responses
+V2 `compaction_trigger` for Responses providers, matching Codex's manual task,
+or client-side summarization for Chat Completions. It does not submit a user
+prompt, execute tools or generate a follow-up answer. A successful replacement
+is checkpointed before completion, retains instruction files for subsequent
+requests, and appears as one indivisible history entry. Failure or cancellation
+before the replacement commits preserves the prior history. An unfinished
+manual request is not automatically retried after a crash.
+
+Native hosts call `cai_agent_runtime_can_compact(runtime, &ready, &error)`
+and `cai_agent_runtime_compact(runtime, &error)` on the owner thread. The latter
+starts asynchronous worker work; pump the usual run and compaction lifecycle
+events until completion, failure or cancellation. `RUN_STARTED` has no prompt
+payload for this task. Lua exposes `runtime:can_compact()` and
+`runtime:compact()` with the same behavior. These additions use the opaque
+runtime; no receiver layout or ABI changes are needed.
+
 ### Service tiers
 
 `/tier` cycles available tiers; `/tier list` displays choices and the selected

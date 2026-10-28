@@ -373,6 +373,12 @@
     add_test(NAME cai_cli_delete COMMAND bash
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_delete_test.sh" "$<TARGET_FILE:cai_cli_mock_fixture>")
     set_tests_properties(cai_cli_delete PROPERTIES TIMEOUT 20)
+    foreach(_compact_protocol responses chat_completions)
+      add_test(NAME cai_cli_compact_${_compact_protocol} COMMAND bash
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_compact_test.sh"
+        "$<TARGET_FILE:cai_cli_mock_fixture>" "${_compact_protocol}")
+      set_tests_properties(cai_cli_compact_${_compact_protocol} PROPERTIES TIMEOUT 30)
+    endforeach()
     add_executable(cai_cli_pouch_delete_test tests/cli_pouch_delete_test.c)
     target_link_libraries(cai_cli_pouch_delete_test PRIVATE cai_cli_support)
     cai_configure_cli_target(cai_cli_pouch_delete_test)

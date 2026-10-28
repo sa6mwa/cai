@@ -611,6 +611,7 @@ struct cai_agent_runtime {
   int history_compaction_pending;
   /* Inline compaction is a distinct non-steerable task, as in Codex. */
   int compacting;
+  int manual_compaction_pending;
   int accepting_steering;
   int synchronize_input_boundaries;
   unsigned long long input_boundary_sequence;
@@ -3584,6 +3585,10 @@ static int cai_runtime_apply_queued_goal_controls(cai_agent_runtime *runtime,
     pthread_mutex_lock(&runtime->lock);
     runtime->goal_control_inflight--;
     runtime->goal_control_failed = rc != CAI_OK;
+    /* The owner may have consumed GOAL_CHANGED and the checkpoint while this
+     * control was still in flight. Wake it after publishing readiness, so
+     * goal continuation and editable idle-only commands are retried. */
+    cai_runtime_wakeup_notify_locked(runtime);
     pthread_cond_broadcast(&runtime->condition);
     pthread_mutex_unlock(&runtime->lock);
     if (rc != CAI_OK) {
@@ -5423,6 +5428,7 @@ static void *cai_runtime_worker(void *context) {
   unsigned long long consumed_sequence;
   int budget_limited;
   int apply_pending_before_turn;
+  int manual_compaction;
   int settings_rc;
   int rc;
 
@@ -5480,6 +5486,7 @@ static void *cai_runtime_worker(void *context) {
   options.tool_round_durable = cai_runtime_checkpoint_durable_tool_round;
   options.tool_round_durable_context = runtime;
   for (;;) {
+    manual_compaction = 0;
     cai_error_init(&error);
     pthread_mutex_lock(&runtime->lock);
     while (!runtime->stopping &&
@@ -5489,7 +5496,9 @@ static void *cai_runtime_worker(void *context) {
              runtime->user_shell_command != NULL) ||
             (runtime->shell_context_head == NULL &&
              runtime->goal_control_head == NULL &&
-             (runtime->goal_control_failed || runtime->turn_head == NULL ||
+             (runtime->goal_control_failed ||
+              (runtime->turn_head == NULL &&
+               !runtime->manual_compaction_pending) ||
               runtime->subagent_active || runtime->active_review != NULL ||
               runtime->review_launching || runtime->review_pause_pending)))) {
       pthread_cond_wait(&runtime->condition, &runtime->lock);
@@ -5497,6 +5506,17 @@ static void *cai_runtime_worker(void *context) {
     if (runtime->stopping) {
       pthread_mutex_unlock(&runtime->lock);
       break;
+    }
+    if (runtime->manual_compaction_pending) {
+      runtime->manual_compaction_pending = 0;
+      manual_compaction = 1;
+      pthread_mutex_unlock(&runtime->lock);
+      budget_limited = 0;
+      rc = cai_runtime_goal_budget_limited(runtime)
+               ? cai_set_error(&error, CAI_ERR_LIMIT,
+                               "goal token budget exhausted before compaction")
+               : cai_runtime_compact(runtime, &budget_limited, &error);
+      goto finish_turn;
     }
     if (runtime->shell_context_head != NULL && !runtime->shell_context_failed) {
       runtime->shell_context_applying = 1;
@@ -5873,7 +5893,7 @@ static void *cai_runtime_worker(void *context) {
       }
       cai_error_cleanup(&cleanup_error);
     }
-    if (rc != CAI_OK)
+    if (rc != CAI_OK && !manual_compaction)
       cai_runtime_policy_diagnostic(runtime, &error, &sinks);
     pthread_mutex_lock(&runtime->lock);
     if (runtime->turn_cancel_requested && rc == CAI_OK) {
@@ -5911,7 +5931,7 @@ static void *cai_runtime_worker(void *context) {
     if (rc == CAI_OK) {
       rc = cai_runtime_account_goal(runtime, &budget_limited, &error);
     }
-    if (rc == CAI_OK)
+    if (rc == CAI_OK && !manual_compaction)
       rc = cai_runtime_goal_empty_finish(runtime, &error);
     if (rc == CAI_OK) {
       rc = cai_runtime_refresh_goal_projection(runtime, &error);
@@ -5942,6 +5962,8 @@ static void *cai_runtime_worker(void *context) {
     cai_error_cleanup(&settings_error);
     pthread_mutex_lock(&runtime->lock);
     runtime->accepting_steering = 0;
+    if (manual_compaction)
+      runtime->compacting = 0;
     /* Keep cancellation admission and terminal publication under the same
      * lock: a request accepted during the final checkpoint must settle too. */
     if (runtime->turn_cancel_requested) {
@@ -7027,6 +7049,59 @@ static int cai_runtime_history_ready(cai_agent_runtime *runtime,
                          "history inspection and trim require an idle runtime; "
                          "finish or cancel pending work first");
   return CAI_OK;
+}
+
+int cai_agent_runtime_can_compact(cai_agent_runtime *runtime, int *ready,
+                                  cai_error *error) {
+  int rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK)
+    return rc;
+  if (ready == NULL)
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "compaction readiness is required");
+  pthread_mutex_lock(&runtime->lock);
+  *ready = !runtime->review_mode && !runtime->terminal_event_pending &&
+           cai_runtime_history_ready(runtime, NULL) == CAI_OK;
+  pthread_mutex_unlock(&runtime->lock);
+  return CAI_OK;
+}
+
+int cai_agent_runtime_compact(cai_agent_runtime *runtime, cai_error *error) {
+  int rc = cai_runtime_owner(runtime, error);
+  if (rc != CAI_OK)
+    return rc;
+  pthread_mutex_lock(&runtime->lock);
+  rc = cai_runtime_history_ready(runtime, error);
+  if (rc == CAI_OK && runtime->terminal_event_pending)
+    rc = cai_set_error(error, CAI_ERR_INVALID,
+                       "pump the previous task completion before compacting");
+  if (rc == CAI_OK && runtime->review_mode)
+    rc = cai_set_error(
+        error, CAI_ERR_INVALID,
+        "manual compaction is not available in an isolated review");
+  if (rc == CAI_OK && runtime->goal_projection_status != NULL &&
+      strcmp(runtime->goal_projection_status, "budget_limited") == 0)
+    rc = cai_set_error(error, CAI_ERR_LIMIT,
+                       "goal token budget exhausted before manual compaction");
+  if (rc == CAI_OK && runtime->event_callback != NULL) {
+    rc = cai_runtime_require_event_capacity_locked(runtime, error);
+    if (rc == CAI_OK)
+      rc =
+          cai_runtime_enqueue_locked(runtime, CAI_AGENT_EVENT_RUN_STARTED, NULL,
+                                     0U, NULL, NULL, CAI_AGENT_SAMPLING, error);
+  }
+  if (rc == CAI_OK) {
+    runtime->manual_compaction_pending = 1;
+    runtime->compacting = 1;
+    runtime->accepting_steering = 0;
+    runtime->turn_cancel_requested = 0;
+    runtime->turn_cancel_armed = 1;
+    runtime->state = CAI_AGENT_SAMPLING;
+    cai_runtime_turn_start_locked(runtime);
+    pthread_cond_broadcast(&runtime->condition);
+  }
+  pthread_mutex_unlock(&runtime->lock);
+  return rc;
 }
 
 int cai_agent_runtime_visit_history(cai_agent_runtime *runtime, size_t limit,

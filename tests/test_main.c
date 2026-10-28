@@ -53875,7 +53875,10 @@ static void test_mcp_raw_input_transport_failures(test_state *state) {
 #include "reasoning_pending_test.inc"
 #include "yolo_test.inc"
 
+#include "runtime_manual_compact_test.inc"
+
 static const test_entry test_entries[] = {
+    {"agent_runtime_manual_compaction", test_agent_runtime_manual_compaction},
     {"runtime_yolo", test_runtime_yolo},
     {"yolo_environment", test_yolo_environment},
     {"yolo_tools", test_yolo_tools},

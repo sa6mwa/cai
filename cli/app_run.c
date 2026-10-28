@@ -141,9 +141,10 @@ typedef struct cli_state {
   int feed_ansi;
   int exit_requested;
   int was_busy;
-  int yolo_delivery_held;
+  int command_delivery_held;
   int queue_delivery_manual;
   int awaiting_turn;
+  int manual_compaction;
   int show_welcome;
   int suppress_replay;
   cai_cli_replay *replay;
@@ -196,7 +197,7 @@ static int cli_submit_automation(cli_state *state, const char *instruction,
 static int cli_continue_goal(cli_state *state, cai_error *error);
 static int cli_host_process(cli_state *state, cai_error *error);
 static int cli_pump(cli_state *state, long timeout, cai_error *error);
-static int cli_yolo_delivery(cli_state *state, cai_error *error);
+static int cli_command_delivery(cli_state *state, cai_error *error);
 static int cli_review_event(void *context, const cai_agent_runtime_event *event,
                             cai_error *error);
 
@@ -975,6 +976,11 @@ static int cli_is_yolo(const char *line) {
          (line[5] == '\0' || line[5] == ' ' || line[5] == '\t');
 }
 
+static int cli_is_compact(const char *line) {
+  return strncmp(line, "/compact", 8U) == 0 &&
+         (line[8] == '\0' || line[8] == ' ' || line[8] == '\t');
+}
+
 static int cli_yolo_value(const char *line, int *enabled) {
   const char *arg;
   size_t length;
@@ -1013,15 +1019,15 @@ static int cli_yolo_pending(cli_state *state, int *enabled) {
 }
 
 /* A running terminal can outlive its turn. Prevent native FIFO release of
- * an ineligible YOLO head, without removing it or hiding it in a second queue.
+ * ineligible policy/compaction commands, without hiding them in a second queue.
  * Native Esc/approval/edit state is preserved when automatic delivery returns.
  */
-static int cli_yolo_delivery(cli_state *state, cai_error *error) {
+static int cli_command_delivery(cli_state *state, cai_error *error) {
   size_t i;
   int hold = 0, effective, ready, requested, rc;
   if (!state->interactive || state->runtime == NULL)
     return CAI_OK;
-  if (!state->yolo_delivery_held && sl_prompt_queue_count(state->sl) == 0U)
+  if (!state->command_delivery_held && sl_prompt_queue_count(state->sl) == 0U)
     return CAI_OK;
   rc = cai_agent_runtime_get_yolo(state->runtime, &effective, &ready, error);
   if (rc != CAI_OK)
@@ -1035,8 +1041,15 @@ static int cli_yolo_delivery(cli_state *state, cai_error *error) {
       continue;
     if (sl_prompt_queue_peek(state->sl, i, &text) != SL_OK)
       return CAI_ERR_TRANSPORT;
-    hold = cli_yolo_value(text, &requested) && requested != effective && !ready;
+    if (cli_is_compact(text)) {
+      rc = cai_agent_runtime_can_compact(state->runtime, &ready, error);
+      hold = !ready || state->shell.pid > 0 || state->review_runtime != NULL;
+    } else
+      hold =
+          cli_yolo_value(text, &requested) && requested != effective && !ready;
     sl_free_string(state->sl, text);
+    if (rc != CAI_OK)
+      return rc;
     break;
   }
   /* enqueue_draft retains the editor but does not schedule idle delivery.
@@ -1046,7 +1059,7 @@ static int cli_yolo_delivery(cli_state *state, cai_error *error) {
                          ? SL_PROMPT_QUEUE_DELIVERY_MANUAL
                          : SL_PROMPT_QUEUE_DELIVERY_AUTO) != SL_OK)
     return CAI_ERR_TRANSPORT;
-  state->yolo_delivery_held = hold;
+  state->command_delivery_held = hold;
   return CAI_OK;
 }
 
@@ -1075,15 +1088,17 @@ static int cli_editor_key(sl_t *sl, sl_key_t key, void *context,
     return SL_OK;
   }
   if ((key == SL_KEY_ENTER || key == SL_KEY_ALT_ENTER) &&
-      (cli_command_at_feed_boundary(text) || cli_is_yolo(text))) {
+      (cli_command_at_feed_boundary(text) || cli_is_yolo(text) ||
+       cli_is_compact(text))) {
     sl_prompt_queue_entry_info_t draft;
     size_t index;
+    int compact = cli_is_compact(text);
     if (sl_prompt_queue_draft_info(sl, &draft) != SL_OK)
       return SL_ERROR_IO;
     *action = SL_KEY_ACTION_HANDLED;
     rc = sl_prompt_queue_enqueue_draft(sl);
     if (rc == SL_OK) {
-      if (key == SL_KEY_ALT_ENTER) {
+      if (key == SL_KEY_ALT_ENTER || compact) {
         index = sl_prompt_queue_count(sl) - 1U;
         if (draft.id != 0) {
           sl_prompt_queue_entry_info_t info;
@@ -1094,12 +1109,14 @@ static int cli_editor_key(sl_t *sl, sl_key_t key, void *context,
               break;
           }
         }
-        if (sl_prompt_queue_set_mode(sl, index, SL_PROMPT_QUEUE_MODE_STEER) !=
-            SL_OK)
+        if (sl_prompt_queue_set_mode(sl, index,
+                                     compact
+                                         ? SL_PROMPT_QUEUE_MODE_QUEUED
+                                         : SL_PROMPT_QUEUE_MODE_STEER) != SL_OK)
           return SL_ERROR_IO;
       }
       cai_error_init(&error);
-      rc = cli_yolo_delivery(state, &error);
+      rc = cli_command_delivery(state, &error);
       cai_error_cleanup(&error);
       return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
     }
@@ -1282,6 +1299,9 @@ static void cli_log_event(cli_state *state,
   if (event->type == CAI_AGENT_EVENT_POLICY_DIAGNOSTIC_STARTED) {
     role = "user";
     kind = "policy_diagnostic";
+  } else if (event->type == CAI_AGENT_EVENT_RUN_STARTED &&
+             event->data == NULL) {
+    kind = "compaction";
   } else if (event->type == CAI_AGENT_EVENT_RUN_STARTED ||
              event->type == CAI_AGENT_EVENT_TURN_QUEUED ||
              event->type == CAI_AGENT_EVENT_STEERING_QUEUED ||
@@ -1449,6 +1469,10 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
       state->goal_starts_pending--;
     if (event->type == CAI_AGENT_EVENT_RUN_COMPLETED)
       state->awaiting_turn = 0;
+    if (event->type == CAI_AGENT_EVENT_RUN_COMPLETED ||
+        event->type == CAI_AGENT_EVENT_RUN_FAILED ||
+        event->type == CAI_AGENT_EVENT_RUN_CANCELLED)
+      state->manual_compaction = 0;
     if (event->type == CAI_AGENT_EVENT_RUN_FAILED ||
         event->type == CAI_AGENT_EVENT_RUN_CANCELLED) {
       state->awaiting_turn = 0;
@@ -1493,10 +1517,15 @@ static int cli_event(void *context, const cai_agent_runtime_event *event,
     }
     return CAI_OK;
   }
-  if ((event->type == CAI_AGENT_EVENT_RUN_STARTED &&
-       event->parent_tool_call_id == NULL) ||
-      event->type == CAI_AGENT_EVENT_STEERING_DELIVERED)
+  if (event->data != NULL &&
+      ((event->type == CAI_AGENT_EVENT_RUN_STARTED &&
+        event->parent_tool_call_id == NULL) ||
+       event->type == CAI_AGENT_EVENT_STEERING_DELIVERED))
     return cli_prompt(state, event->data) == 0 ? CAI_OK : CAI_ERR_TRANSPORT;
+  if (event->type == CAI_AGENT_EVENT_COMPACTION_COMPLETED &&
+      state->manual_compaction && event->parent_tool_call_id == NULL)
+    return cli_markdown(state, "Context compacted.") == 0 ? CAI_OK
+                                                          : CAI_ERR_TRANSPORT;
   if (event->type == CAI_AGENT_EVENT_TEXT_DELTA)
     return cli_text(state, event->data, event->data_length) == 0
                ? CAI_OK
@@ -1651,7 +1680,7 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
     return rc;
   busy = metrics.turn_active || run_state == CAI_AGENT_SAMPLING ||
          run_state == CAI_AGENT_DISPATCHING_TOOL;
-  rc = cli_yolo_delivery(state, error);
+  rc = cli_command_delivery(state, error);
   if (rc != CAI_OK)
     return rc;
   /* Softline resets its animation clock/frame on every setter call, even
@@ -1680,8 +1709,11 @@ static int cli_sync_status(cli_state *state, cai_error *error) {
                          !metrics.turn_active
                      ? &state->last_review_metrics
                      : &metrics;
-  if (cai_cli_reasoning_title(&state->reasoning, &reasoning_title) != 0 ||
-      cai_cli_turn_status_message(turn_message, sizeof(turn_message),
+  if (cai_cli_reasoning_title(&state->reasoning, &reasoning_title) != 0)
+    return CAI_ERR_TRANSPORT;
+  if (state->manual_compaction && metrics.turn_active)
+    reasoning_title = "Compacting context";
+  if (cai_cli_turn_status_message(turn_message, sizeof(turn_message),
                                   reasoning_title, turn_metrics) != 0)
     return CAI_ERR_TRANSPORT;
   if (state->show_welcome && !metrics.turn_active)
@@ -1756,6 +1788,18 @@ static int cli_messages_process(cli_state *state, int at_boundary,
     if (sl_prompt_queue_peek(state->sl, index, &text) != SL_OK)
       return cai_cli_error(error, CAI_ERR_TRANSPORT,
                            "read approved queued prompt");
+    /* Empty Alt-Enter can promote the newest native entry to STEER without
+     * visiting the draft key hook. Compaction always requires a whole-turn
+     * boundary; retain it in Softline rather than consuming it at a tool seam.
+     */
+    if (cli_is_compact(text) && info.mode == SL_PROMPT_QUEUE_MODE_STEER) {
+      if (sl_prompt_queue_set_mode(state->sl, index,
+                                   SL_PROMPT_QUEUE_MODE_QUEUED) != SL_OK) {
+        sl_free_string(state->sl, text);
+        return CAI_ERR_TRANSPORT;
+      }
+      info.mode = SL_PROMPT_QUEUE_MODE_QUEUED;
+    }
     local = cli_command_at_feed_boundary(text) || cli_is_yolo(text);
     if (cli_is_yolo(text)) {
       int requested, effective, ready;
@@ -1859,7 +1903,7 @@ static int cli_messages_process(cli_state *state, int at_boundary,
     if (rc != CAI_OK)
       return rc;
   }
-  return cli_yolo_delivery(state, error);
+  return cli_command_delivery(state, error);
 }
 static int cli_message_wakeup(sl_t *sl, const sl_watch_event_t *event,
                               void *context) {
@@ -2549,7 +2593,7 @@ static int cli_open_runtime(cli_state *state, const char *resume_id,
     rc = cli_sync_status(state, error);
   }
   if (rc == CAI_OK && state->interactive) {
-    state->queue_delivery_manual = state->yolo_delivery_held = 0;
+    state->queue_delivery_manual = state->command_delivery_held = 0;
     if (sl_set_auto_approval(state->sl, state->options.enable_auto_enqueue) !=
             SL_OK ||
         sl_set_prompt_queue_delivery(state->sl,
@@ -3915,6 +3959,24 @@ static int cli_handle_command(cli_state *state, const char *line,
   unsigned long number;
   int rc;
   *handled = 1;
+  if (cli_is_compact(line)) {
+    arg = line + 8U;
+    arg += strspn(arg, " \t");
+    if (*arg != '\0')
+      return cli_markdown(state, "Usage: `/compact`") == 0 ? CAI_OK
+                                                           : CAI_ERR_TRANSPORT;
+    if (state->shell.pid > 0 || state->review_runtime != NULL)
+      return cai_cli_error(
+          error, CAI_ERR_INVALID,
+          "Compaction waits for the current shell or review to finish");
+    rc = cai_agent_runtime_compact(state->runtime, error);
+    if (rc == CAI_OK) {
+      state->manual_compaction = 1;
+      state->awaiting_turn = 1;
+      state->show_welcome = 0;
+    }
+    return rc;
+  }
   if (cli_is_yolo(line)) {
     int enabled, requested, applied, pending;
     char message[512];
@@ -4181,6 +4243,8 @@ static int cli_handle_command(cli_state *state, const char *line,
         "newest entries; 0 removes nothing. |\n"
         "| `/trim list [LIMIT]` | List a different number of entries; "
         "compaction is indivisible. |\n"
+        "| `/compact` | Compact conversation context between turns; Escape "
+        "cancels. The command remains editable in the queue until ready. |\n"
         "| `/goal [COMMAND]` | Show a goal; new TEXT replaces it, pause/resume "
         "control pursuit, clear removes it, help explains commands. Prefer "
         "asking the agent to manage goals. |\n",

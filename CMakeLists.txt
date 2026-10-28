@@ -1124,6 +1124,11 @@ if(CAI_BUILD_LUA)
           "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host")
         set_tests_properties(cai_app_lua_delete PROPERTIES LABELS "cli;local;offline" TIMEOUT 20
           ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
+        add_test(NAME cai_app_lua_compact COMMAND bash
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_compact_test.sh"
+          "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host" responses)
+        set_tests_properties(cai_app_lua_compact PROPERTIES LABELS "cli;local;offline" TIMEOUT 45
+          ENVIRONMENT "${CAI_LUA_TEST_ENV};CAI_TERMINAL_PEER=$<TARGET_FILE:cai_terminal_peer>")
         add_test(NAME cai_app_lua_skills_inventory COMMAND bash
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_skills_inventory_test.sh"
           "${CMAKE_CURRENT_BINARY_DIR}/app-lua-host" "${CAI_LUA_EXECUTABLE}"

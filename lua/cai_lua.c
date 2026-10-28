@@ -4843,6 +4843,32 @@ static int cai_lua_agent_runtime_history(lua_State *L) {
   return 1;
 }
 
+static int cai_lua_agent_runtime_can_compact(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  cai_error error;
+  int rc, ready;
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_can_compact(self->ptr, &ready, &error);
+  cai_lua_agent_runtime_leave(self);
+  if (rc != CAI_OK)
+    return cai_lua_fail(L, rc, &error);
+  cai_lua_error_cleanup(&error);
+  lua_pushboolean(L, ready);
+  return 1;
+}
+
+static int cai_lua_agent_runtime_compact(lua_State *L) {
+  cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
+  cai_error error;
+  int rc;
+  cai_error_init(&error);
+  cai_lua_agent_runtime_enter(self);
+  rc = cai_agent_runtime_compact(self->ptr, &error);
+  cai_lua_agent_runtime_leave(self);
+  return cai_lua_bool_result(L, rc, &error);
+}
+
 static int cai_lua_agent_runtime_trim_history(lua_State *L) {
   cai_lua_agent_runtime *self = cai_lua_check_agent_runtime(L, 1);
   lua_Integer count = luaL_checkinteger(L, 2);
@@ -12138,6 +12164,8 @@ static const luaL_Reg cai_lua_client_methods[] = {
     {NULL, NULL}};
 
 static const luaL_Reg cai_lua_agent_runtime_methods[] = {
+    {"can_compact", cai_lua_agent_runtime_can_compact},
+    {"compact", cai_lua_agent_runtime_compact},
     {"history", cai_lua_agent_runtime_history},
     {"trim_history", cai_lua_agent_runtime_trim_history},
     {"submit", cai_lua_agent_runtime_submit},
@@ -12655,6 +12683,11 @@ int luaopen_cai(lua_State *L) {
                       CAI_SESSION_CONTINUITY_CLIENT_HISTORY);
   CAI_LUA_SET_INTEGER("CONTINUITY_AUTO", CAI_SESSION_CONTINUITY_AUTO);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TEXT_DELTA", CAI_AGENT_EVENT_TEXT_DELTA);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_RUN_STARTED", CAI_AGENT_EVENT_RUN_STARTED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_RUN_COMPLETED",
+                      CAI_AGENT_EVENT_RUN_COMPLETED);
+  CAI_LUA_SET_INTEGER("AGENT_EVENT_SESSION_CHECKPOINTED",
+                      CAI_AGENT_EVENT_SESSION_CHECKPOINTED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TOOL_CALL_STARTED",
                       CAI_AGENT_EVENT_TOOL_CALL_STARTED);
   CAI_LUA_SET_INTEGER("AGENT_EVENT_TOOL_CALL_FAILED",

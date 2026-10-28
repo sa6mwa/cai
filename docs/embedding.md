@@ -62,6 +62,13 @@ prompt recall, logs, exports and delivered inbox messages. An open conversation
 is omitted and cannot be deleted. Shared stores and workspace files remain.
 Prompt recall is per-conversation, so switching sessions also switches recall.
 
+`/compact` uses the agent worker, leaving the application event loop responsive.
+It stays in Softline's editable normal queue until the parent conversation has
+no active turn, reviewer, pending control, or shell execution. Application event
+observers receive the normal run and compaction lifecycle events; manual
+compaction's `RUN_STARTED` has a NULL prompt payload. Escape or host cancellation
+interrupts the request. The next turn uses the checkpointed replacement context.
+
 The initialized config selects CAI defaults, including automatic XDG paths and
 ChatGPT/provider/model defaults. `config_file`, `config_directory`, `no_config`
 select startup configuration. The `settings` array accepts the full INI schema,

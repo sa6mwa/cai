@@ -426,6 +426,68 @@ static int cai_session_compaction_input_spool(cai_session *session,
                                               const lonejson_spooled *history,
                                               lonejson_spooled *out,
                                               cai_error *error);
+typedef struct cai_compaction_payload_check {
+  int strings, nonempty, invalid;
+} cai_compaction_payload_check;
+
+static int cai_compaction_payload_field(const lonejson_value_path *path) {
+  return path->segment_count == 1U && path->segments[0].len == 17U &&
+         memcmp(path->segments[0].data, "encrypted_content", 17U) == 0;
+}
+static lonejson_status
+cai_compaction_payload_string(void *context, const lonejson_value_path *path,
+                              lonejson_error *error) {
+  cai_compaction_payload_check *check = context;
+  (void)error;
+  if (cai_compaction_payload_field(path)) {
+    if (check->strings != 0)
+      check->invalid = 1;
+    check->strings = 1;
+  }
+  return LONEJSON_STATUS_OK;
+}
+static lonejson_status
+cai_compaction_payload_chunk(void *context, const lonejson_value_path *path,
+                             const char *data, size_t length,
+                             lonejson_error *error) {
+  cai_compaction_payload_check *check = context;
+  (void)error;
+  if (cai_compaction_payload_field(path)) {
+    if (length != 0U)
+      check->nonempty = 1;
+    if (memchr(data, '\0', length) != NULL)
+      check->invalid = 1;
+  }
+  return LONEJSON_STATUS_OK;
+}
+/* Inspect opaque content incrementally, without materializing or rewriting it.
+ * Codex's typed Compaction item requires encrypted_content to be a string. */
+static int cai_compaction_payload_valid(cai_session *session,
+                                        const lonejson_spooled *item,
+                                        cai_error *error) {
+  cai_compaction_payload_check check;
+  cai_spooled_reader_context reader;
+  lonejson_path_value_visitor visitor = lonejson_default_path_value_visitor();
+  lonejson_error local;
+  lonejson_status status;
+  memset(&check, 0, sizeof(check));
+  lonejson_error_init(&local);
+  reader.cursor = *item;
+  status = reader.cursor.rewind(&reader.cursor, &local);
+  visitor.string_begin = cai_compaction_payload_string;
+  visitor.string_chunk = cai_compaction_payload_chunk;
+  if (status == LONEJSON_STATUS_OK)
+    status = lonejson_visit_path_value_reader(
+        cai_agent_history_runtime(session), cai_history_spooled_reader, &reader,
+        &visitor, &check, &local);
+  if (status != LONEJSON_STATUS_OK || !check.strings || !check.nonempty ||
+      check.invalid)
+    return cai_set_error(error, CAI_ERR_PROTOCOL,
+                         "invalid compaction payload: encrypted_content must "
+                         "be a nonempty string");
+  return CAI_OK;
+}
+
 static int cai_session_compaction_capture_item(
     void *context, const char *item_id, int output_index, const char *type,
     const lonejson_spooled *item_json, cai_error *error);
@@ -4696,6 +4758,9 @@ static int cai_session_compaction_capture_item(
     return cai_set_error(error, CAI_ERR_PROTOCOL,
                          "compaction response must contain exactly one item");
   }
+  if (cai_compaction_payload_valid(capture->session, item_json, error) !=
+      CAI_OK)
+    return error != NULL ? error->code : CAI_ERR_PROTOCOL;
   cai_history_init_spooled(capture->session, &capture->item);
   capture->has_item = 1;
   sink_context.spool = &capture->item;
