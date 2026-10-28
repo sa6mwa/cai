@@ -5,6 +5,32 @@ needed to close each issue. An upstream cause must be reproduced independently
 before it is attributed to a dependency. Keep resolved entries with their fix
 commit and verification evidence.
 
+## BUG-054: Whole-turn theme gating strands later steering messages
+
+- **Status:** fixed.
+- **Evidence:** session `dbgtfervs68i52ohr8gg` showed `S 1. /theme
+  gruvbox:rose-pine-dawn` and a plain `S 2.` while multiple tool/input boundaries
+  passed without admission. A local-provider reproduction confirmed that the
+  next inference omitted the steer and the theme changed only after the turn.
+  CAI classified themes as whole-turn operations; Softline correctly preserved
+  the managed-command FIFO. No Softline change is required.
+- **Resolution:** theme changes submitted as steers execute at the runtime's
+  input boundary. Theme replacement retains the active tool display and updates
+  its color setting rather than discarding command identity/decoder/preview
+  state. Commands that cannot run at a steer seam are visibly reclassified Q;
+  while busy mutating commands use the native ordinary-turn lane so valid steers
+  retain Softline's existing seam priority. Idle commands still enter the
+  editable native queue. Read-only command policies and approval/stopped state
+  remain in Softline.
+- **Idle drain:** eligible steering that missed the last active seam starts
+  its own input at the idle boundary instead of waiting for a nonexistent
+  worker boundary and blocking later commands. The original S identity/mode
+  is consumed only after runtime admission. Approval, stopped backlog, editing,
+  active drafts, history search and manual delivery remain authoritative.
+- **Verification:** Debug classification coverage for whole-turn commands,
+  exact theme/steer ordering against both wire protocols, invalid/ASCII themes,
+  native and Lua color updates, and command state across palette changes.
+
 ## BUG-053: Patch context failures lack actionable diagnostics
 
 - **Status:** fixed.

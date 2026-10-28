@@ -140,7 +140,11 @@ if [[ "${2:-}" == worker ]]; then
     send 'Delegate to the worker\r'; expect WorkerStreamBegin
     send "WORKER_STEER_${enabled}\033\r"; expect "WORKER_STEER_${enabled}"
     absent "$term/feed" "WORKER_STEER_${enabled}"
-    expect "S 1. WORKER_STEER_${enabled}"
+    if [[ "$enabled" == true ]]; then
+      expect "S 1. WORKER_STEER_${enabled}"
+    else
+      expect "Q 1. WORKER_STEER_${enabled}"
+    fi
     release; expect ParentDirected; expect 'Worked for'
     [[ $(requests) == $((before+4)) ]]
     sed -n "$((before+3))p" "$root/peer/requests.jsonl" >"$root/request"

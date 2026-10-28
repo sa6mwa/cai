@@ -12028,6 +12028,17 @@ static int cai_lua_display_set_mode(lua_State *L) {
   return cai_lua_bool_result(
       L, cai_tool_display_set_mode(self->ptr, mode, &error), &error);
 }
+static int cai_lua_display_set_color(lua_State *L) {
+  cai_lua_display *self = luaL_checkudata(L, 1, "cai.tool_display");
+  cai_error error;
+  luaL_argcheck(L, self->ptr != NULL, 1, "closed tool display");
+  luaL_argcheck(L, !self->active, 1, "tool display is in an active callback");
+  luaL_checktype(L, 2, LUA_TBOOLEAN);
+  cai_error_init(&error);
+  return cai_lua_bool_result(
+      L, cai_tool_display_set_color(self->ptr, lua_toboolean(L, 2), &error),
+      &error);
+}
 static int cai_lua_display_set_width(lua_State *L) {
   cai_lua_display *self = luaL_checkudata(L, 1, "cai.tool_display");
   lua_Integer width = luaL_checkinteger(L, 2);
@@ -12163,6 +12174,7 @@ static const luaL_Reg cai_lua_display_methods[] = {
     {"event", cai_lua_display_event},
     {"summary", cai_lua_display_summary},
     {"set_mode", cai_lua_display_set_mode},
+    {"set_color", cai_lua_display_set_color},
     {"set_width", cai_lua_display_set_width},
     {"close", cai_lua_display_close},
     {NULL, NULL}};

@@ -995,9 +995,9 @@ static int cli_is_compact(const char *line) {
  * rather than whether Enter or Alt-Enter happened to produce a Q/S label. */
 static int cli_command_at_turn_boundary(const char *line) {
   static const char *const commands[] = {
-      "/new",   "/resume",     "/review", "/review-and-fix", "/theme",
-      "/queue", "/todo",       "/trim",   "/reasoning-tool", "/compact",
-      "/shell", "/shellshare", "/export", "/retention"};
+      "/new",        "/resume", "/review",         "/review-and-fix", "/queue",
+      "/todo",       "/trim",   "/reasoning-tool", "/compact",        "/shell",
+      "/shellshare", "/export", "/retention"};
   size_t i, length = strcspn(line, " \t");
   if (cli_command_at_feed_boundary(line))
     return 0;
@@ -1008,6 +1008,21 @@ static int cli_command_at_turn_boundary(const char *line) {
         strncmp(line, commands[i], length) == 0)
       return 1;
   return 0;
+}
+
+static sl_prompt_queue_mode_t cli_prompt_mode(cli_state *state,
+                                              const char *text,
+                                              sl_prompt_queue_mode_t mode) {
+  if (mode != SL_PROMPT_QUEUE_MODE_STEER)
+    return mode;
+  if (cli_command_at_turn_boundary(text))
+    return SL_PROMPT_QUEUE_MODE_QUEUED;
+  if (!cli_command_at_feed_boundary(text) &&
+      strncmp(text, "/theme ", 7U) != 0 && strncmp(text, "/theme\t", 7U) != 0 &&
+      !state->options.subagent_steering &&
+      (state->review_runtime != NULL || state->foreground_subagent))
+    return SL_PROMPT_QUEUE_MODE_QUEUED;
+  return mode;
 }
 
 static int cli_command_turn_ready(cli_state *state, int *ready,
@@ -1088,7 +1103,8 @@ static int cli_prompt_ready(cli_state *state, const char *text,
   if (cli_command_at_turn_boundary(text) || state->shell.pid > 0)
     return CAI_OK;
   if (!*ready && mode == SL_PROMPT_QUEUE_MODE_STEER && at_boundary &&
-      (state->options.subagent_steering ||
+      (strncmp(text, "/theme ", 7U) == 0 ||
+       strncmp(text, "/theme\t", 7U) == 0 || state->options.subagent_steering ||
        (state->review_runtime == NULL && !state->foreground_subagent)))
     *ready = 1;
   if (*ready && cli_is_yolo(text)) {
@@ -1110,8 +1126,14 @@ static int cli_prompt_policy(sl_t *sl, const char *text,
   cai_error error;
   int rc;
   (void)sl;
-  policy->enqueue = text[0] == '/' || text[0] == '!';
   policy->independent = cli_command_at_feed_boundary(text);
+  policy->enqueue = text[0] == '/' || text[0] == '!';
+  /* Busy Softline already admits ordinary turns through its native queue.
+   * Non-inspection commands use that lane, so seam steers retain their native
+   * priority over Q entries. Managed admission is still required while idle
+   * to keep every command editable before dispatch. */
+  if (state->was_busy && !policy->independent)
+    policy->enqueue = 0;
   cai_error_init(&error);
   rc = cli_prompt_ready(state, text, mode, 0, &policy->executable, &error);
   cai_error_cleanup(&error);
@@ -1139,18 +1161,16 @@ static int cli_sync_queue(cli_state *state, int at_boundary, cai_error *error) {
     if (sl_prompt_queue_info(state->sl, i, &info) != SL_OK ||
         sl_prompt_queue_peek(state->sl, i, &text) != SL_OK)
       return CAI_ERR_TRANSPORT;
-    /* With child steering disabled, an attempted child steer belongs to the
-     * parent's next turn. Execution holds never otherwise change Q/S intent. */
-    if (info.mode == SL_PROMPT_QUEUE_MODE_STEER &&
-        !cli_command_at_feed_boundary(text) &&
-        !state->options.subagent_steering &&
-        (state->review_runtime != NULL || state->foreground_subagent)) {
-      if (sl_prompt_queue_set_mode(state->sl, i, SL_PROMPT_QUEUE_MODE_QUEUED) !=
-          SL_OK) {
+    /* Commands that cannot execute at a steering seam must say Q, not remain
+     * indefinitely in the S lane. Preserve native identity/editing/approval. */
+    {
+      sl_prompt_queue_mode_t mode = cli_prompt_mode(state, text, info.mode);
+      if (mode != info.mode &&
+          sl_prompt_queue_set_mode(state->sl, i, mode) != SL_OK) {
         sl_free_string(state->sl, text);
         return CAI_ERR_TRANSPORT;
       }
-      info.mode = SL_PROMPT_QUEUE_MODE_QUEUED;
+      info.mode = mode;
     }
     rc = cli_prompt_ready(state, text, info.mode, at_boundary, &ready, error);
     sl_free_string(state->sl, text);
@@ -1822,15 +1842,38 @@ static int cli_timer_wakeup(sl_t *sl, const sl_watch_event_t *event,
   return rc == CAI_OK ? SL_OK : SL_ERROR_IO;
 }
 
+/* Match Softline's chat host: a steer that missed the final active seam can
+ * start work at an idle input boundary. Do not disturb a draft, search, edit,
+ * manual delivery, approval or cancellation's stopped backlog. */
+static int cli_idle_input_ready(cli_state *state, int *ready,
+                                cai_error *error) {
+  sl_prompt_queue_entry_info_t draft;
+  sl_prompt_queue_delivery_t delivery;
+  const char *buffer;
+  int rc = cli_command_turn_ready(state, ready, error);
+  if (rc != CAI_OK || !*ready)
+    return rc;
+  buffer = sl_buffer(state->sl);
+  *ready = 0;
+  if ((buffer != NULL && buffer[0] != '\0') ||
+      sl_history_search_active(state->sl))
+    return CAI_OK;
+  if (sl_prompt_queue_draft_info(state->sl, &draft) != SL_OK ||
+      sl_get_prompt_queue_delivery(state->sl, &delivery) != SL_OK)
+    return cai_cli_error(error, CAI_ERR_TRANSPORT,
+                         "inspect idle input boundary");
+  *ready = draft.id == 0U && delivery == SL_PROMPT_QUEUE_DELIVERY_AUTO;
+  return CAI_OK;
+}
+
 /* Only eligible independent inspections and seam steers are owner-consumed.
- * All ordinary turns and whole-turn commands use native next_prompt delivery.
- */
+ * Ordinary Q turns and whole-turn commands use native next_prompt delivery. */
 static int cli_messages_process(cli_state *state, int at_boundary,
                                 cai_error *error) {
   sl_prompt_queue_entry_info_t info;
   size_t index;
   char *text;
-  int rc, local;
+  int rc, local, idle;
   if (state->exit_requested || state->batch || state->runtime == NULL)
     return CAI_OK;
   rc = cai_cli_messages_sync(state->messages, state->sl, error);
@@ -1850,8 +1893,17 @@ static int cli_messages_process(cli_state *state, int at_boundary,
       return cai_cli_error(error, CAI_ERR_TRANSPORT,
                            "read eligible queued prompt");
     local = cli_command_at_feed_boundary(text);
-    if (!local && (!at_boundary || info.mode != SL_PROMPT_QUEUE_MODE_STEER ||
-                   cli_command_at_turn_boundary(text))) {
+    idle = 0;
+    if (!local && info.mode == SL_PROMPT_QUEUE_MODE_STEER && !at_boundary) {
+      rc = cli_idle_input_ready(state, &idle, error);
+      if (rc != CAI_OK) {
+        sl_free_string(state->sl, text);
+        return rc;
+      }
+    }
+    if (!local &&
+        ((!at_boundary && !idle) || info.mode != SL_PROMPT_QUEUE_MODE_STEER ||
+         cli_command_at_turn_boundary(text))) {
       sl_free_string(state->sl, text);
       index++;
       continue;
@@ -1879,7 +1931,10 @@ static int cli_messages_process(cli_state *state, int at_boundary,
       if (state->exit_requested)
         return sl_cancel(state->sl) == SL_OK ? CAI_OK : CAI_ERR_TRANSPORT;
     } else {
-      rc = cai_agent_runtime_submit_steering(state->runtime, text, error);
+      rc = idle
+               ? cai_agent_runtime_submit_interactive(state->runtime, text,
+                                                      error)
+               : cai_agent_runtime_submit_steering(state->runtime, text, error);
       sl_free_string(state->sl, text);
       if (rc == CAI_ERR_INVALID || rc == CAI_ERR_LIMIT) {
         /* A launching child or full runtime can briefly reject admission.
@@ -3679,10 +3734,7 @@ static int cli_theme_write(void *context, const void *bytes, size_t count,
 static int cli_theme_command(cli_state *state, const char *arguments,
                              cai_error *error) {
   cai_cli_theme selected;
-  cai_agent_runtime_metrics metrics;
-  cai_agent_run_state run_state;
   mdf *renderer = NULL;
-  cai_tool_display *display = NULL;
   cai_sink_callbacks callbacks;
   cai_sink *sink = NULL;
   char name[128], message[192];
@@ -3715,21 +3767,10 @@ static int cli_theme_command(cli_state *state, const char *arguments,
   reason = cai_cli_theme_parse(name, &selected);
   if (reason != NULL)
     return cai_cli_error(error, CAI_ERR_INVALID, reason);
-  rc = cai_agent_runtime_get_metrics(state->runtime, &metrics, error);
-  if (rc == CAI_OK)
-    rc = cai_agent_runtime_state(state->runtime, &run_state, error);
-  if (rc != CAI_OK)
-    return rc;
-  if (metrics.turn_active || state->awaiting_turn ||
-      state->review_runtime != NULL || state->shell.pid > 0 ||
-      run_state == CAI_AGENT_SAMPLING ||
-      run_state == CAI_AGENT_DISPATCHING_TOOL)
-    return cai_cli_error(error, CAI_ERR_INVALID,
-                         "Change themes between turns; use /theme to list "
-                         "the current selection and available themes.");
+  /* Queue policy admits a steering change at INPUT_BOUNDARY, with the
+   * worker paused. Ordinary queued changes retain their next-turn intent.
+   * The turn itself need not finish to replace a completed Markdown feed. */
   rc = cli_renderer_create(state, &selected, &renderer, error);
-  if (rc == CAI_OK)
-    rc = cli_tool_display_create(state, &selected, &display, error);
   if (rc == CAI_OK &&
       (cli_flush_command(state, 1) != 0 || cli_finish_response(state) != 0 ||
        cli_finish_reasoning(state) != 0 ||
@@ -3742,13 +3783,20 @@ static int cli_theme_command(cli_state *state, const char *arguments,
   if (rc != CAI_OK) {
     if (renderer != NULL)
       renderer->destroy(renderer);
-    cai_tool_display_close(display);
+    return rc;
+  }
+  /* A terminal call can span several write_stdin tools. Keep its identity,
+   * output limit, UTF-8/control decoder and pending command state intact. */
+  rc = cai_tool_display_set_color(state->tool_display,
+                                  state->interactive && !selected.ascii &&
+                                      getenv("NO_COLOR") == NULL,
+                                  error);
+  if (rc != CAI_OK) {
+    renderer->destroy(renderer);
     return rc;
   }
   state->renderer->destroy(state->renderer);
-  cai_tool_display_close(state->tool_display);
   state->renderer = renderer;
-  state->tool_display = display;
   state->theme = selected;
   state->documents_rendered = 0;
   snprintf(message, sizeof(message), "Theme changed to `%s:%s`.\n%s",

@@ -1165,6 +1165,14 @@ int cai_tool_display_set_mode(cai_tool_display *d, int mode, cai_error *error) {
   d->config.mode = mode;
   return CAI_OK;
 }
+int cai_tool_display_set_color(cai_tool_display *d, int enabled,
+                               cai_error *error) {
+  if (d == NULL || (enabled != 0 && enabled != 1))
+    return cai_set_error(error, CAI_ERR_INVALID,
+                         "tool display color must be zero or one");
+  d->config.color = enabled;
+  return CAI_OK;
+}
 int cai_tool_display_event(cai_tool_display *d,
                            const cai_agent_runtime_event *e, cai_error *error) {
   cai_display_call *c;

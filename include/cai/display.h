@@ -41,6 +41,11 @@ int cai_tool_display_new(const cai_tool_display_config *config,
 /** Select the mode for future calls. Active calls keep their captured mode. */
 int cai_tool_display_set_mode(cai_tool_display *display, int mode,
                               cai_error *error);
+/** Enable/disable colors between events without replacing active calls.
+ * Future output uses the new setting; command identity, preview limits and
+ * split UTF-8/control decoding state are retained. enabled must be 0 or 1. */
+int cai_tool_display_set_color(cai_tool_display *display, int enabled,
+                               cai_error *error);
 /** Set terminal columns for numbered, wrapped patch rows (32..4096).
  * Zero selects the default unwrapped patch format. Colored changed rows fill
  * the specified width; continuations align below the content. Width changes

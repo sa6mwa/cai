@@ -2745,6 +2745,14 @@ do
   ev.type = cai.AGENT_EVENT_TOOL_CALL_COMPLETED
   assert_ok(display:summary(ev, "Declined", "unsafe\27[2Jlabel", false))
   assert(table.concat(output):find("unsafe\\x1b[2Jlabel", 1, true))
+  assert_ok(display:set_color(true))
+  output = {}
+  emit(cai.AGENT_EVENT_TOOL_CALL_STARTED, nil, cai.AGENT_TOOL_ACTION_EXTERNAL)
+  ev.type = cai.AGENT_EVENT_TOOL_CALL_COMPLETED
+  assert_ok(display:summary(ev, "Accepted", "colored", true))
+  assert(table.concat(output):find("\27[92m*\27[0m", 1, true))
+  assert_ok(display:set_color(false))
+  assert_throws(function() display:set_color(1) end)
   assert_ok(display:close())
   assert_throws(function() display:event({}) end)
 end

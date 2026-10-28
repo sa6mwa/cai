@@ -6,6 +6,69 @@ typedef struct event_log_capture {
   size_t length;
 } event_log_capture;
 
+static int test_command_queue_modes(void) {
+  static const char *const turns[] = {"/new",
+                                      "/resume 1",
+                                      "/review",
+                                      "/review-and-fix",
+                                      "/shell",
+                                      "/shellshare",
+                                      "/compact",
+                                      "/trim 1",
+                                      "/queue on",
+                                      "/todo new board",
+                                      "/reasoning-tool off",
+                                      "/export output.md",
+                                      "/retention 30",
+                                      "!ls"};
+  static const char *const steers[] = {
+      "ordinary steer", "/theme gruvbox:rose-pine-dawn",
+      "/model example", "/reasoning high",
+      "/goal pause",    "/yolo on"};
+  cli_state state;
+  sl_prompt_queue_policy_t policy;
+  size_t i;
+  memset(&state, 0, sizeof(state));
+  state.was_busy = 1;
+  state.options.subagent_steering = 1;
+  for (i = 0U; i < sizeof(turns) / sizeof(turns[0]); i++) {
+    memset(&policy, 0, sizeof(policy));
+    if (cli_prompt_policy(NULL, turns[i], SL_PROMPT_QUEUE_MODE_STEER, &policy,
+                          &state) != SL_OK ||
+        policy.enqueue || policy.independent || policy.executable ||
+        cli_prompt_mode(&state, turns[i], SL_PROMPT_QUEUE_MODE_STEER) !=
+            SL_PROMPT_QUEUE_MODE_QUEUED)
+      return 1;
+  }
+  for (i = 0U; i < sizeof(steers) / sizeof(steers[0]); i++) {
+    memset(&policy, 0, sizeof(policy));
+    if (cli_prompt_policy(NULL, steers[i], SL_PROMPT_QUEUE_MODE_STEER, &policy,
+                          &state) != SL_OK ||
+        policy.enqueue)
+      return 1;
+    if (cli_prompt_mode(&state, steers[i], SL_PROMPT_QUEUE_MODE_STEER) !=
+        SL_PROMPT_QUEUE_MODE_STEER)
+      return 1;
+  }
+  state.was_busy = 0;
+  for (i = 0U; i < sizeof(turns) / sizeof(turns[0]); i++) {
+    memset(&policy, 0, sizeof(policy));
+    if (cli_prompt_policy(NULL, turns[i], SL_PROMPT_QUEUE_MODE_STEER, &policy,
+                          &state) != SL_OK ||
+        !policy.enqueue)
+      return 1;
+  }
+  state.foreground_subagent = 1;
+  state.options.subagent_steering = 0;
+  return cli_prompt_mode(&state, "child steer", SL_PROMPT_QUEUE_MODE_STEER) ==
+                     SL_PROMPT_QUEUE_MODE_QUEUED &&
+                 cli_prompt_mode(&state, "/theme plain",
+                                 SL_PROMPT_QUEUE_MODE_STEER) ==
+                     SL_PROMPT_QUEUE_MODE_STEER
+             ? 0
+             : 1;
+}
+
 static int test_goal_handoff(void) {
   cli_state state;
   cai_agent_runtime_event event;
@@ -642,9 +705,10 @@ int main(void) {
   for (rc = 0; rc < 15; rc++)
     if (test_output_failure(rc) != 0)
       return 1;
-  if (test_goal_handoff() != 0 || test_shared_auth() != 0 ||
-      test_event_logging() != 0 || test_reasoning_sections() != 0 ||
-      test_literal_tokens() != 0 || test_reasoning_quotes() != 0)
+  if (test_command_queue_modes() != 0 || test_goal_handoff() != 0 ||
+      test_shared_auth() != 0 || test_event_logging() != 0 ||
+      test_reasoning_sections() != 0 || test_literal_tokens() != 0 ||
+      test_reasoning_quotes() != 0)
     return 1;
   memset(&state, 0, sizeof(state));
   if (!cai_cli_quota_due(0, start, start, 0) ||

@@ -702,7 +702,8 @@ examples. This command is local and does not send a model request.
 .BI /theme " [NAME|SOFTLINE:LIBMDF]"
 With no argument, show the current pair, all softline pairings and all libmdf
 themes through the Markdown feed. Accepts the same aliases and explicit pairs
-as --theme. Changes are allowed between turns and affect future output in
+as --theme. Alt-Enter applies changes at the next steering boundary during a
+turn; ordinary queued submissions retain their next-turn intent. Changes affect future output in
 this app invocation, including after /new and /resume. Configuration and
 session history are not rewritten. NO_COLOR continues to override styling.
 .TP

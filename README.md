@@ -1334,6 +1334,9 @@ SDK hosts can use `<cai/display.h>` without softline or libmdf. Create a
 `cai_tool_display_config` (compact, five preview lines, no colors), feed it
 owner-thread runtime events with `cai_tool_display_event`, then close it with
 `cai_tool_display_close`. `cai_tool_display_set_mode` affects future calls.
+`cai_tool_display_set_color` (Lua `display:set_color`) changes future styling
+between events without losing active command identity, preview limits or
+split UTF-8/control decoding state.
 Hosts with structured tool presenters can use `cai_tool_display_summary` instead
 of the generic completion event, then feed details to their Markdown renderer.
 It emits a colored success/failure marker with escaped plain-text labels and

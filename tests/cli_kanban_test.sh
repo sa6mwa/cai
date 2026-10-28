@@ -36,7 +36,7 @@ send '/todo\r'; expect 'PERSISTENT BOARD CARD'
 # Busy board changes remain queued until a complete turn boundary.
 plan '{"plan":[{"pause":true,"text":"BUSY DONE"}]}'
 send 'busy\r'; expect 'STREAM in flight'
-send '/todo new deferred\033\r'; expect 'S 1. /todo new deferred'
+send '/todo new deferred\033\r'; expect 'Q 1. /todo new deferred'
 release
 expect 'BUSY DONE'
 expect 'Kanban: deferred'

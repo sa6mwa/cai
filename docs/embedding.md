@@ -253,7 +253,12 @@ the selection with the plain prompt and escape-free Markdown. Themes apply
 to the Markdown introduction and conversation feed; raw banners stay verbatim
 and logger configuration remains independent.
 The same TUI provides `/theme` to show the active pair and both libraries'
-themes, and `/theme NAME` or `/theme SOFTLINE:LIBMDF` to switch between turns.
+themes, and `/theme NAME` or `/theme SOFTLINE:LIBMDF` to change the selection.
+Alt-Enter applies a theme change at the next steering boundary during a turn;
+ordinary queued submissions retain their next-turn intent. Active command
+display state survives the change. Commands that require a whole turn boundary
+are reclassified as ordinary `Q` entries when submitted with Alt-Enter, leaving
+later valid steers eligible at their own boundaries.
 This selection applies to future output in the current app invocation,
 including after `/new` or `/resume`, without changing startup settings.
 `[paths]`, `[storage]`, and `[env]` XDG variables provide host path overrides.

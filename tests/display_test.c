@@ -413,6 +413,46 @@ static void event(cai_tool_display *d, int type, const char *id,
   assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
   cai_error_cleanup(&error);
 }
+static void palette_change(capture *c) {
+  cai_sink_callbacks callbacks;
+  cai_sink *sink = NULL;
+  cai_tool_display_config config;
+  cai_tool_display *display = NULL;
+  cai_error error;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.write = write_capture;
+  callbacks.context = c;
+  memset(&config, 0, sizeof(config));
+  cai_error_init(&error);
+  assert(cai_sink_from_callbacks(&callbacks, &sink, &error) == CAI_OK);
+  config.sink = sink;
+  config.color = 1;
+  assert(cai_tool_display_new(&config, &display, &error) == CAI_OK);
+  event(display, CAI_AGENT_EVENT_TOOL_CALL_STARTED, "palette", NULL,
+        CAI_AGENT_TOOL_ACTION_EXECUTE, 0);
+  event(display, CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED, "palette",
+        "palette command", 0, 0);
+  event(display, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "palette",
+        "\033[32mone\n\xc3", 0, 0);
+  assert(cai_tool_display_set_color(display, 0, &error) == CAI_OK);
+  reset(c);
+  event(display, CAI_AGENT_EVENT_TERMINAL_OUTPUT, "palette", "\xa5 second\n", 0,
+        0);
+  assert(strstr(c->bytes, "å second\n") != NULL);
+  assert(strchr(c->bytes, '\033') == NULL);
+  assert(cai_tool_display_set_color(display, 1, &error) == CAI_OK);
+  event(display, CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED, "palette",
+        "three\nfour\nfive\nHIDDEN\n", 0, 0);
+  assert(strstr(c->bytes, "palette command") != NULL &&
+         strstr(c->bytes, "\033[92m*\033[0m") != NULL);
+  assert(strstr(c->bytes, "HIDDEN") == NULL); /* Preserve the preview budget. */
+  assert(cai_tool_display_set_color(display, 2, &error) == CAI_ERR_INVALID);
+  assert(cai_tool_display_set_color(NULL, 1, &error) == CAI_ERR_INVALID);
+  cai_tool_display_close(display);
+  cai_sink_close(sink);
+  cai_error_cleanup(&error);
+}
+
 static void commands(capture *c) {
   cai_sink_callbacks callbacks;
   cai_sink *sink;
@@ -856,6 +896,7 @@ int main(void) {
          setlocale(LC_CTYPE, "en_US.UTF-8") != NULL);
   numbered_patches(&c);
   patches(&c);
+  palette_change(&c);
   commands(&c);
   command_controls();
   free(c.bytes);

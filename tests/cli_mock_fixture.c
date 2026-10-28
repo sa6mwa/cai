@@ -10,6 +10,11 @@
 #include <string.h>
 #include <unistd.h>
 
+static int fixture_late_steer(void *context,
+                              const cai_agent_runtime_event *event,
+                              cai_error *error);
+static cai_agent_runtime_event_fn fixture_event_callback;
+
 /* Test-only wait injection: exercise the real retry path without wall sleeps.
  */
 extern void cai_runtime_test_set_capacity_wait_fn(int (*fn)(cai_agent_runtime *,
@@ -38,6 +43,10 @@ static int fixture_runtime_open(cai_client *client,
   cai_agent_preset worker;
   cai_agent_subagent_profile profile;
   const char *volatile_session = getenv("CAI_TEST_VOLATILE_SESSION");
+  if (getenv("CAI_TEST_LATE_STEER") != NULL) {
+    fixture_event_callback = selected.event_callback;
+    selected.event_callback = fixture_late_steer;
+  }
   cai_runtime_test_set_capacity_wait_fn(
       getenv("CAI_TEST_CAPACITY_WAIT") != NULL ? fixture_capacity_wait : NULL);
   if (getenv("CAI_TEST_STEER_WORKER") != NULL) {
@@ -85,5 +94,28 @@ static int fixture_messages_start(cai_cli_messages *messages, const char *id,
 #undef cai_cli_pouch_prompt_append
 #undef cai_cli_messages_start
 #undef cai_agent_runtime_open
+
+static int fixture_late_steer(void *context,
+                              const cai_agent_runtime_event *event,
+                              cai_error *error) {
+  static int inserted;
+  cli_state *state = context;
+  const char *mode = getenv("CAI_TEST_LATE_STEER");
+  int rc = fixture_event_callback(context, event, error);
+  size_t index;
+  if (rc != CAI_OK || inserted || event->type != CAI_AGENT_EVENT_RUN_COMPLETED)
+    return rc;
+  inserted = 1;
+  index = sl_prompt_queue_count(state->sl);
+  /* Admission after the final active boundary deterministically reproduces
+   * the live session's idle S entry with a Q theme command behind it. */
+  if (sl_prompt_queue_append(state->sl, "LATE_STEER", strcmp(mode, "held") == 0,
+                             NULL) != SL_OK ||
+      sl_prompt_queue_set_mode(state->sl, index, SL_PROMPT_QUEUE_MODE_STEER) !=
+          SL_OK ||
+      sl_prompt_queue_append(state->sl, "/theme gruvbox", 0, NULL) != SL_OK)
+    return cai_cli_error(error, CAI_ERR_TRANSPORT, "inject late steer fixture");
+  return CAI_OK;
+}
 
 int main(int argc, char **argv) { return cai_cli_app_main(argc, argv, NULL); }
