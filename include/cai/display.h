@@ -67,7 +67,8 @@ int cai_tool_display_set_width(cai_tool_display *display, size_t width,
  * are discarded. Malformed UTF-8 and non-control binary bytes are escaped;
  * other tool labels, results and patch contents continue to escape control
  * bytes literally. Completed command headings include terminal_duration_ms as
- * whole elapsed seconds (e.g. "Ran for 1m3s"); the duration shares the activity
+ * a suffix (e.g. "Ran COMMAND (1m3s)"), using milliseconds below one second
+ * and whole seconds otherwise. The parentheses and duration share the activity
  * verb's color. REASONING_TOOL_RESULT renders the user-facing outcome without
  * altering the model's tool result.
  */

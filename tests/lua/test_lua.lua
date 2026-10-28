@@ -2762,9 +2762,9 @@ do
         terminal_has_exit_code = true, terminal_exit_code = 0}
   assert_ok(display:event(ev))
   local saved = table.concat(output)
-  assert(saved:find("* Ran for 0s saved command\nsaved output\n", 1, true))
+  assert(saved:find("* Ran saved command (0ms)\nsaved output\n", 1, true))
   assert(not saved:find("Running", 1, true))
-  assert(select(2, saved:gsub("Ran for 0s saved command", "")) == 1)
+  assert(select(2, saved:gsub("Ran saved command %(0ms%)", "")) == 1)
   assert_throws(function() display:set_color(1) end)
   assert_ok(display:close())
   assert_throws(function() display:event({}) end)

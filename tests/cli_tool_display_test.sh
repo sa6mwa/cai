@@ -183,7 +183,7 @@ offset=$(wc -c <"$term/text")
 prompt 'run failing command' 'COMMAND DONE'
 tail -c +$((offset+1)) "$term/text" >"$root/later"
 contains "$root/later" OUT05; absent "$root/later" OUT06
-grep -Eq 'Ran for [0-9hms]+ sh command.sh' "$root/later"; contains "$root/later" exit=3
+grep -Eq 'Ran sh command.sh \([0-9hms]+\)' "$root/later"; contains "$root/later" exit=3
 contains "$term/raw" $'\033[91m*\033[0m'
 # The committed feed has real block boundaries regardless of terminal redraws.
 # Strip only presentation controls for assertions; never alter command bytes.

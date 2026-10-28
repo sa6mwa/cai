@@ -482,10 +482,8 @@ static void commands(capture *c) {
         "\n3\n4\n5\nHIDDEN6\nHIDDEN7\n", 0, 0);
   event(d, CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED, "one", NULL, 0, 0);
   assert(strstr(c->bytes, "HIDDEN") == NULL);
-  assert(
-      strstr(c->bytes,
-             "\033[92m*\033[0m \033[0;36mRan for 0s \033[1;96mprintf args") !=
-      NULL);
+  assert(strstr(c->bytes, "\033[92m*\033[0m \033[0;36mRan \033[1;96mprintf args"
+                          "\033[0;36m (0ms)\033[0m\n") != NULL);
   reset(c);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_STARTED, "two", NULL,
         CAI_AGENT_TOOL_ACTION_EXECUTE, 0);
@@ -494,8 +492,9 @@ static void commands(capture *c) {
         0, 0);
   event(d, CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED, "two", NULL, 0, 3);
   assert(strstr(c->bytes, "SIX\nSEVEN\n") != NULL);
-  assert(strstr(c->bytes, "\033[91m*\033[0m \033[0;36mRan for 0s "
-                          "\033[1;96mexit 3\033[0m\n  exit=3") != NULL);
+  assert(strstr(c->bytes,
+                "\033[91m*\033[0m \033[0;36mRan "
+                "\033[1;96mexit 3\033[0;36m (0ms)\033[0m\n  exit=3") != NULL);
   reset(c);
   event(d, CAI_AGENT_EVENT_TOOL_CALL_STARTED, "quick", NULL,
         CAI_AGENT_TOOL_ACTION_EXECUTE, 0);
@@ -521,8 +520,9 @@ static void commands(capture *c) {
     e.terminal_signal = 15;
     e.terminal_output_truncated = 1;
     assert(cai_tool_display_event(d, &e, &error) == CAI_OK);
-    assert(strstr(c->bytes, "\033[91m*\033[0m \033[0;36mCancelled after 0s "
-                            "\033[1;96msignal command") != NULL);
+    assert(strstr(c->bytes,
+                  "\033[91m*\033[0m \033[0;36mCancelled "
+                  "\033[1;96msignal command\033[0;36m (0ms)\033[0m\n") != NULL);
     assert(strstr(c->bytes, "exit=-1 signal=15") != NULL);
     assert(strstr(c->bytes, "truncated by the tool") != NULL);
   }
@@ -735,7 +735,7 @@ static void command_control_case(const char *bytes, size_t length,
         assert(strchr(c.bytes, '\033') == NULL);
       without_sgr(plain, c.bytes);
       if (strncmp(plain, expected, expected_length) != 0 ||
-          strcmp(plain + expected_length, "\n\n* Ran for 0s command\n") != 0) {
+          strcmp(plain + expected_length, "\n\n* Ran command (0ms)\n") != 0) {
         fprintf(stderr,
                 "command controls color=%d split=%lu: [%s], expected [%s]\n",
                 color, (unsigned long)split, plain, expected);
@@ -884,11 +884,11 @@ static void command_controls(void) {
   free(c.bytes);
 }
 static void command_durations(capture *c) {
-  static const unsigned long long durations[] = {0U,     999U,     1000U,
-                                                 63000U, 3600000U, 5025000U};
-  static const char *const headings[] = {"Ran for 0s",     "Ran for 0s",
-                                         "Ran for 1s",     "Ran for 1m3s",
-                                         "Ran for 1h0m0s", "Ran for 1h23m45s"};
+  static const unsigned long long durations[] = {
+      0U, 1U, 999U, 1000U, 1001U, 59999U, 60000U, 63000U, 3600000U, 5025000U};
+  static const char *const elapsed[] = {"0ms",    "1ms",     "999ms", "1s",
+                                        "1s",     "59s",     "1m0s",  "1m3s",
+                                        "1h0m0s", "1h23m45s"};
   cai_sink_callbacks callbacks;
   cai_sink *sink = NULL;
   cai_tool_display_config config;
@@ -896,36 +896,50 @@ static void command_durations(capture *c) {
   cai_agent_runtime_event e;
   cai_error error;
   size_t i;
-  int replay;
+  int replay, color, cancelled;
+  char expected[256];
   memset(&callbacks, 0, sizeof(callbacks));
   callbacks.write = write_capture;
   callbacks.context = c;
   cai_error_init(&error);
   assert(cai_sink_from_callbacks(&callbacks, &sink, &error) == CAI_OK);
-  for (replay = 0; replay < 2; replay++) {
-    for (i = 0U; i < sizeof(durations) / sizeof(durations[0]); i++) {
-      reset(c);
-      memset(&config, 0, sizeof(config));
-      config.sink = sink;
-      assert(cai_tool_display_new(&config, &display, &error) == CAI_OK);
-      memset(&e, 0, sizeof(e));
-      e.type = CAI_AGENT_EVENT_TOOL_CALL_COMPLETED;
-      e.tool_call_id = "duration";
-      e.runtime_session_id = "session";
-      e.terminal_duration_ms = durations[i];
-      if (replay)
-        assert(cai_tool_display_replay_begin(display, &e, "Ran", "command", 1,
-                                             &error) == CAI_OK);
-      else {
-        event(display, CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED, "duration",
-              "command", 0, 0);
-        e.type = CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED;
-        e.terminal_has_exit_code = 1;
-        assert(cai_tool_display_event(display, &e, &error) == CAI_OK);
+  for (color = 0; color < 2; color++) {
+    for (cancelled = 0; cancelled < 2; cancelled++) {
+      for (replay = 0; replay < 2; replay++) {
+        for (i = 0U; i < sizeof(durations) / sizeof(durations[0]); i++) {
+          reset(c);
+          memset(&config, 0, sizeof(config));
+          config.sink = sink;
+          config.color = color;
+          assert(cai_tool_display_new(&config, &display, &error) == CAI_OK);
+          memset(&e, 0, sizeof(e));
+          e.type = CAI_AGENT_EVENT_TOOL_CALL_COMPLETED;
+          e.tool_call_id = "duration";
+          e.runtime_session_id = "session";
+          e.terminal_duration_ms = durations[i];
+          if (replay)
+            assert(cai_tool_display_replay_begin(
+                       display, &e, cancelled ? "Cancelled" : "Ran", "command",
+                       !cancelled, &error) == CAI_OK);
+          else {
+            event(display, CAI_AGENT_EVENT_TERMINAL_COMMAND_STARTED, "duration",
+                  "command", 0, 0);
+            e.type = cancelled ? CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED
+                               : CAI_AGENT_EVENT_TERMINAL_COMMAND_COMPLETED;
+            e.terminal_has_exit_code = 1;
+            assert(cai_tool_display_event(display, &e, &error) == CAI_OK);
+          }
+          snprintf(
+              expected, sizeof(expected),
+              color ? "\033[0;36m%s \033[1;96mcommand\033[0;36m (%s)\033[0m\n"
+                    : "%s command (%s)\n",
+              cancelled ? "Cancelled" : "Ran", elapsed[i]);
+          assert(strstr(c->bytes, expected) != NULL);
+          assert(strstr(c->bytes, " for ") == NULL);
+          assert(strstr(c->bytes, " after ") == NULL);
+          cai_tool_display_close(display);
+        }
       }
-      assert(strstr(c->bytes, headings[i]) != NULL);
-      assert(strstr(c->bytes, " command\n") != NULL);
-      cai_tool_display_close(display);
     }
   }
   cai_sink_close(sink);

@@ -126,12 +126,12 @@ static void commands(int full, size_t step) {
          "7,\"signal\":0,\"duration_ms\":63000}",
          step);
   }
-  assert(strstr(
-      f.text, "* Ran for 1m3s printf 'hello'\none\ntwo\nthree\nfour\nfive\n"));
+  assert(strstr(f.text,
+                "* Ran printf 'hello' (1m3s)\none\ntwo\nthree\nfour\nfive\n"));
   assert(strstr(f.text, "exit=7 signal=0"));
-  assert(strstr(f.text, "* Ran for 0s child command\nchild\n"));
-  assert(strstr(strstr(f.text, "* Ran for 1m3s printf 'hello'") + 1,
-                "* Ran for 1m3s printf 'hello'") == NULL);
+  assert(strstr(f.text, "* Ran child command (0ms)\nchild\n"));
+  assert(strstr(strstr(f.text, "* Ran printf 'hello' (1m3s)") + 1,
+                "* Ran printf 'hello' (1m3s)") == NULL);
   assert(!strstr(f.text, "Running"));
   assert(!strstr(f.text, "Tool completed"));
   assert(!strstr(f.text, "session_id"));
@@ -316,7 +316,7 @@ static void large_output(void) {
       }
     }
   }
-  assert(strstr(f.text, "* Ran for 0s large output\nrow\n"));
+  assert(strstr(f.text, "* Ran large output (0ms)\nrow\n"));
   assert(strstr(f.text, "output omitted"));
   assert(f.length < 1024U);
   assert(cai_cli_replay_tools_finish(f.tools, &f.error) == CAI_OK);

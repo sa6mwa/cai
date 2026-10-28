@@ -233,21 +233,22 @@ static size_t patch_flush_length(const char *s, size_t n) {
                                               : 1U;
   return start + expected > n ? start : n;
 }
-static void display_command_verb(char out[80], const char *verb,
-                                 unsigned long long duration_ms) {
+static void display_command_duration(char out[80],
+                                     unsigned long long duration_ms) {
   unsigned long long seconds = duration_ms / 1000U;
-  const char *elapsed = strcmp(verb, "Cancelled") == 0 ? "after" : "for";
-  if (seconds >= 3600U)
-    snprintf(out, 80U, "%s %s %lluh%llum%llus", verb, elapsed, seconds / 3600U,
+  if (duration_ms < 1000U)
+    snprintf(out, 80U, " (%llums)", duration_ms);
+  else if (seconds >= 3600U)
+    snprintf(out, 80U, " (%lluh%llum%llus)", seconds / 3600U,
              (seconds / 60U) % 60U, seconds % 60U);
   else if (seconds >= 60U)
-    snprintf(out, 80U, "%s %s %llum%llus", verb, elapsed, seconds / 60U,
-             seconds % 60U);
+    snprintf(out, 80U, " (%llum%llus)", seconds / 60U, seconds % 60U);
   else
-    snprintf(out, 80U, "%s %s %llus", verb, elapsed, seconds);
+    snprintf(out, 80U, " (%llus)", seconds);
 }
-static int display_marker(cai_tool_display *d, int result, const char *verb,
-                          const char *text, size_t n, cai_error *error) {
+static int display_marker_suffix(cai_tool_display *d, int result,
+                                 const char *verb, const char *text, size_t n,
+                                 const char *suffix, cai_error *error) {
   int rc;
   const char *star = !d->config.color || result < 0 ? "* "
                      : result                       ? "\033[92m*\033[0m "
@@ -273,11 +274,19 @@ static int display_marker(cai_tool_display *d, int result, const char *verb,
     rc = display_safe(d, text, n, error);
   if (rc == CAI_OK)
     rc = display_flush_utf8(d, error);
+  if (rc == CAI_OK && suffix != NULL && d->config.color)
+    rc = display_text(d, "\033[0;36m", error);
+  if (rc == CAI_OK && suffix != NULL)
+    rc = display_text(d, suffix, error);
   if (rc == CAI_OK && d->config.color)
     rc = display_text(d, "\033[0m", error);
   if (rc == CAI_OK)
     rc = display_text(d, "\n", error);
   return rc;
+}
+static int display_marker(cai_tool_display *d, int result, const char *verb,
+                          const char *text, size_t n, cai_error *error) {
+  return display_marker_suffix(d, result, verb, text, n, NULL, error);
 }
 static void display_call_free(cai_display_call *c) {
   while (c->locations != NULL) {
@@ -1291,13 +1300,12 @@ int cai_tool_display_event(cai_tool_display *d,
          e->terminal_has_exit_code && e->terminal_exit_code == 0 &&
          (!e->terminal_has_signal || e->terminal_signal == 0);
     if (rc == CAI_OK && !c->replay) {
-      display_command_verb(completed,
-                           e->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED
-                               ? "Cancelled"
-                               : "Ran",
-                           e->terminal_duration_ms);
-      rc = display_marker(d, ok, completed, c->command, strlen(c->command),
-                          error);
+      display_command_duration(completed, e->terminal_duration_ms);
+      rc = display_marker_suffix(
+          d, ok,
+          e->type == CAI_AGENT_EVENT_TERMINAL_COMMAND_CANCELLED ? "Cancelled"
+                                                                : "Ran",
+          c->command, strlen(c->command), completed, error);
     }
     if (rc == CAI_OK && !ok) {
       char status[96];
@@ -1397,9 +1405,10 @@ int cai_tool_display_replay_begin(cai_tool_display *d,
     return rc;
   call->command_active = 1;
   call->replay = 1;
-  if (strcmp(verb, "Ran") == 0) {
-    display_command_verb(completed, verb, e->terminal_duration_ms);
-    verb = completed;
+  if (strcmp(verb, "Ran") == 0 || strcmp(verb, "Cancelled") == 0) {
+    display_command_duration(completed, e->terminal_duration_ms);
+    return display_marker_suffix(d, success != 0, verb, label, strlen(label),
+                                 completed, error);
   }
   return display_marker(d, success != 0, verb, label, strlen(label), error);
 }

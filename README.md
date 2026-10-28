@@ -1023,7 +1023,9 @@ summaries, and shows validated review findings as Markdown. Raw review JSON
 remains in the inspection timeline, not the normal findings display. Failed
 review prose and failure details remain available without a logfile. Successful
 tool calls use the live tool presentation with one completion heading. Commands
-show `* Ran for 1m3s COMMAND` followed by their saved output, without a `Running` row;
+show `* Ran COMMAND (1m3s)` followed by their saved output, without a `Running` row.
+Durations below one second use milliseconds, for example `(23ms)`. The duration
+and parentheses use the same dimmer color as `Ran`, while the command stays brighter.
 `write_stdin` output stays attached to the original command and shares its
 preview limit. `--tool-output compact|full` controls replay just as it controls
 new calls. Saved patch previews retain confirmed line numbers and neighboring

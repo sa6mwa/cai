@@ -45,7 +45,7 @@ expect 'Conversation resumed.'
 contains "$term/text" '* Busy command not started'
 contains "$term/text" 'COMMAND_FINISHED:ok'
 absent "$term/text" '"accepted"'
-[[ $(grep -Ec '\* Ran for' "$term/text") == 2 ]]
+[[ $(grep -Ec '\* Ran .* \([0-9hms]+\)' "$term/text") == 2 ]]
 terminal_close
 [[ $(requests) == "$before" ]]
 exit 0
